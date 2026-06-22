@@ -3,36 +3,19 @@
 
 export type Role = 'owner' | 'admin' | 'operator' | 'viewer';
 
-export type Permission =
-  | 'app.read'
-  | 'app.deploy'
-  | 'app.rollback'
-  | 'machine.read'
-  | 'machine.enroll'
-  | 'network.read'
-  | 'network.benchmark'
-  | 'secret.read'
-  | 'secret.write'
-  | 'agent.run'
-  | 'audit.read';
+export type Permission = 'app.read' | 'app.deploy' | 'agent.run' | 'audit.read';
 
-const READ_ONLY: Permission[] = ['app.read', 'machine.read', 'network.read', 'audit.read'];
+const READ_ONLY: Permission[] = ['app.read', 'audit.read'];
 
 const ROLE_PERMISSIONS: Record<Role, Permission[] | '*'> = {
   owner: '*',
   admin: [
     ...READ_ONLY,
     'app.deploy',
-    'app.rollback',
-    'machine.enroll',
-    'network.benchmark',
-    'secret.read',
-    'secret.write',
-    // Running a local AI CLI can read host files/env, so it's gated like a secret-read op:
-    // admin/owner only, NOT operator.
+    // Running a local AI CLI can read host files/env, so it's gated above operator: admin/owner only.
     'agent.run',
   ],
-  operator: [...READ_ONLY, 'app.deploy', 'app.rollback', 'network.benchmark'],
+  operator: [...READ_ONLY, 'app.deploy'],
   viewer: READ_ONLY,
 };
 

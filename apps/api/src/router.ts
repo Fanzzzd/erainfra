@@ -8,19 +8,14 @@ import { parseAppSpec, importAppSpec } from './appspec.ts';
 import { buildTopology } from './topology.ts';
 import { LocalCliOrchestrator } from './runtime/orchestrator.ts';
 import { CloudflaredCli } from './runtime/cloudflared-cli.ts';
-import { tcpProbe } from './runtime/netprobe.ts';
-import { hostInfo } from './runtime/hostinfo.ts';
+import { QuickTunnelManager } from './runtime/quicktunnel.ts';
 import { ProjectStore } from './projects.ts';
-import { NetmakerNetworkProvider, InMemoryNetmakerClient } from './network/netmaker.ts';
-import type { MachineRole } from '../../../packages/core/src/index.ts';
 
 const orchestrator = new LocalCliOrchestrator();
 const cloudflared = new CloudflaredCli();
 const projects = new ProjectStore();
-// Real fabric backend. Starts empty: the only node is THIS machine until the user
-// enrolls peers, at which point each gets a real allocated WG IP + container subnet.
-const fabric = new NetmakerNetworkProvider(new InMemoryNetmakerClient());
-const MACHINE_ROLES = ['gateway', 'worker', 'database', 'edge', 'relay'] as const;
+// Public-URL manager: one Cloudflare quick tunnel per published local app (account-less, ephemeral).
+const tunnels = new QuickTunnelManager();
 // Cap on a single pasted portless.yaml so import/validate/topology can't be flooded with a huge body.
 const MAX_YAML_BYTES = 64_000;
 import { APP_TEMPLATES, buildFromTemplate } from './runtime/local.ts';
@@ -76,40 +71,6 @@ async function performRoute(ctx: { principal: Principal; audit: AuditLog }, tunn
 // A tunnel name or a UUID — not free-form, even though it's argv (never a shell).
 const tunnelRef = z.string().regex(/^([a-z0-9][a-z0-9-]{0,62}|[0-9a-f-]{36})$/i, 'a tunnel name or id');
 const hostnameRef = z.string().max(253).regex(/^([a-z0-9-]+\.)+[a-z]{2,}$/i, 'a valid hostname');
-
-// Shared safety envelope for dangerous, mutating ops (non-negotiable #10):
-// dry-run by default, confirm:true required to go live, every call audited.
-function runDangerousOp(
-  ctx: { principal: Principal; audit: AuditLog },
-  action: string,
-  target: string,
-  dryRun: boolean,
-  confirm: boolean,
-) {
-  if (!dryRun && !confirm) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `confirm:true required for a non-dry-run ${action}` });
-  }
-  const entry = ctx.audit.record({ actor: ctx.principal.id, action, target, outcome: 'success', dryRun });
-  // Honesty: this is the audited safety envelope, but cluster scheduling (Nomad/Consul) is not
-  // wired on this control plane — so a live call is recorded, not actually scheduled. Real
-  // single-machine deploys go through `local.deploy`, which launches a real process.
-  return {
-    accepted: true,
-    dryRun,
-    auditId: entry.id,
-    auditDurable: ctx.audit.lastWriteDurable(), // false ⇒ the durable audit write failed (gap)
-    status: dryRun ? ('validated' as const) : ('recorded-no-cluster' as const),
-    note: dryRun
-      ? undefined
-      : 'Recorded + audited, but not scheduled: the Nomad/Consul cluster is not running on this control plane. Use local.deploy for a real deploy on this machine.',
-  };
-}
-
-const dangerousInput = z.object({
-  app: z.string().min(1),
-  dryRun: z.boolean().default(true),
-  confirm: z.boolean().default(false),
-});
 
 // Canonicalize the existing portion of a path (resolving symlinks), re-appending any
 // not-yet-created trailing components. Lets us symlink-check a cwd that doesn't exist yet.
@@ -176,7 +137,7 @@ export const appRouter = router({
     ),
 
     // Real health: if a process by this name runs on THIS machine, do a real HTTP health
-    // check via the runtime. Otherwise it's a cluster app — say so honestly (no fake "healthy").
+    // check via the runtime. Otherwise say so honestly (no fake "healthy").
     health: requirePermission('app.read')
       .input(z.object({ app: z.string().min(1) }))
       .query(async ({ ctx, input }) => {
@@ -187,9 +148,9 @@ export const appRouter = router({
         }
         return {
           app: input.app,
-          source: 'cluster' as const,
+          source: 'none' as const,
           status: 'unknown' as const,
-          note: `No local process named "${input.app}". Per-service health requires the Consul-connected fabric, which is not running on this machine.`,
+          note: `No process named "${input.app}" is running on this machine.`,
         };
       }),
 
@@ -203,22 +164,11 @@ export const appRouter = router({
         }
         return {
           app: input.app,
-          source: 'cluster' as const,
+          source: 'none' as const,
           lines: [] as string[],
-          note: `No local process named "${input.app}". Cluster logs stream from Nomad alloc logs, which needs the fabric (not running here).`,
+          note: `No process named "${input.app}" is running on this machine.`,
         };
       }),
-
-    // Dangerous, RBAC-gated, dry-run-by-default, confirm-required, audited.
-    deploy: requirePermission('app.deploy')
-      .input(dangerousInput)
-      .mutation(({ ctx, input }) => runDangerousOp(ctx, 'app.deploy', input.app, input.dryRun, input.confirm)),
-
-    rollback: requirePermission('app.rollback')
-      .input(dangerousInput.extend({ toRelease: z.string().optional() }))
-      .mutation(({ ctx, input }) =>
-        runDangerousOp(ctx, 'app.rollback', `${input.app}${input.toRelease ? `@${input.toRelease}` : ''}`, input.dryRun, input.confirm),
-      ),
   }),
 
   // Each project/app has its OWN topology (services, ingress, external resources like R2/S3/data-platform).
@@ -340,126 +290,16 @@ export const appRouter = router({
       }),
   }),
 
-  machines: router({
-    // The first node is THIS real machine (read live from the OS); the rest are peers the
-    // user has enrolled into the fabric, each with a real allocated WG IP + container subnet.
-    list: requirePermission('machine.read').query(async () => {
-      const h = hostInfo();
-      const self = {
-        id: 'this-machine',
-        name: h.hostname,
-        roles: ['gateway', 'worker'] as MachineRole[],
-        region: `local · ${h.platform}/${h.arch} · ${h.cpus}cpu/${h.memoryGb}GB`,
-        wgIp: h.lanIp ?? '—',
-        containerSubnet: '—',
-        online: true,
-        kind: 'self' as const,
-      };
-      const enrolled = (await fabric.listMachines()).map((m) => ({
-        id: m.id,
-        name: m.name,
-        roles: m.roles,
-        region: m.region,
-        wgIp: m.wgIp,
-        containerSubnet: m.containerSubnet,
-        online: true,
-        kind: 'enrolled' as const,
-      }));
-      return [self, ...enrolled];
-    }),
-
-    // Enroll a peer into the fabric. The provider allocates a WG IP (10.88.0.x) and a
-    // container subnet (10.210.x.0/24) — real allocation. The publicKey is a real WireGuard
-    // key (the node-agent runs `wg genkey | wg pubkey`): without it the peer can't join, so we
-    // require it rather than stamping a placeholder that would yield an unusable node.
-    enroll: requirePermission('machine.enroll')
-      .input(
-        z.object({
-          name: z
-            .string()
-            .min(1)
-            .max(63)
-            .regex(/^[a-z0-9][a-z0-9-]*$/, 'lowercase letters, digits and hyphens only'),
-          // Roles are assigned after enrollment, so they're optional here (a machine can have many).
-          roles: z.array(z.enum(MACHINE_ROLES)).default([]),
-          region: z.string().min(1).max(63),
-          publicKey: z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'WireGuard public key: 44-char base64 (wg genkey | wg pubkey)'),
-        }),
-      )
-      .mutation(async ({ ctx, input }) => {
-        try {
-          const machine = await fabric.enrollMachine({
-            name: input.name,
-            roles: input.roles,
-            region: input.region,
-            publicKey: input.publicKey,
-          });
-          const op = recordOp(ctx, { action: 'machine.enroll', target: machine.id, outcome: 'success' });
-          return { machine, ...op };
-        } catch (err) {
-          recordOp(ctx, { action: 'machine.enroll', target: input.name, outcome: 'failure' });
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'machine enrollment failed' });
-        }
-      }),
-
-    // Assign/replace a machine's roles after enrollment. A machine can carry several; an empty
-    // array clears them. ponytail: full replace, not add/remove deltas — the UI sends the new set.
-    setRoles: requirePermission('machine.enroll')
-      .input(z.object({ id: z.string().min(1), roles: z.array(z.enum(MACHINE_ROLES)) }))
-      .mutation(async ({ ctx, input }) => {
-        try {
-          const machine = await fabric.setRoles(input.id, input.roles);
-          const op = recordOp(ctx, { action: 'machine.setRoles', target: input.id, outcome: 'success' });
-          return { machine, ...op };
-        } catch (err) {
-          recordOp(ctx, { action: 'machine.setRoles', target: input.id, outcome: 'failure' });
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'unknown machine' });
-        }
-      }),
-
-    revoke: requirePermission('machine.enroll')
-      .input(z.object({ id: z.string().min(1), confirm: z.boolean().default(false) }))
-      .mutation(async ({ ctx, input }) => {
-        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to revoke a machine' });
-        try {
-          await fabric.revokeMachine(input.id);
-        } catch (err) {
-          recordOp(ctx, { action: 'machine.revoke', target: input.id, outcome: 'failure' });
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'machine revocation failed (unknown or backend error)' });
-        }
-        const op = recordOp(ctx, { action: 'machine.revoke', target: input.id, outcome: 'success' });
-        return { revoked: true as const, ...op };
-      }),
-  }),
-
-  network: router({
-    // Real measured paths from the fabric provider. Empty until the node-agent records probes
-    // between enrolled peers — honest rather than a hardcoded demo matrix.
-    matrix: requirePermission('network.read').query(() => fabric.pathMatrix()),
-
-    // Real measurement: attempt an actual TCP handshake to the peer's WireGuard endpoint and
-    // time it. From a laptop most fabric endpoints are unreachable — we report that honestly
-    // rather than inventing a latency, alongside the best known path for reference.
-    benchmark: requirePermission('network.benchmark')
-      .input(z.object({ from: z.string().min(1), to: z.string().min(1) }))
-      .query(async ({ input }) => {
-        const path = await fabric.bestPath(input.from, input.to);
-        let live = null;
-        if (path?.endpoint) {
-          const [host, portStr] = path.endpoint.split(':');
-          live = await tcpProbe(host, Number(portStr) || 51820);
-        }
-        return { from: input.from, to: input.to, modeledPath: path ?? null, live };
-      }),
-  }),
-
   // Real local runtime — manage actual running projects on THIS machine.
   local: router({
     templates: requirePermission('app.read').query(() =>
       APP_TEMPLATES.map((t) => ({ id: t.id, label: t.label, description: t.description })),
     ),
 
-    list: requirePermission('app.read').query(({ ctx }) => ctx.runtime.list()),
+    // Each running process plus its public URL, if it's currently published via a quick tunnel.
+    list: requirePermission('app.read').query(({ ctx }) =>
+      ctx.runtime.list().map((p) => ({ ...p, publicUrl: tunnels.get(p.name)?.url ?? null })),
+    ),
 
     logs: requirePermission('app.read')
       .input(z.object({ name: z.string().min(1), lines: z.number().int().positive().max(1000).default(100) }))
@@ -515,6 +355,40 @@ export const appRouter = router({
         recordOp(ctx, { action: 'local.forget', target: input.name, outcome: 'success' });
         return { ok: true as const };
       }),
+
+    // Publish a running local app to a public https URL via a Cloudflare quick tunnel — the
+    // payoff: "deployed on this box → live on the internet, no public IP, no open ports". This
+    // EXPOSES the local port publicly, so it's confirm-gated + audited (fail closed before the
+    // tunnel comes up). Quick tunnels are account-less + ephemeral (don't touch the user's CF account).
+    publish: requirePermission('app.deploy')
+      .input(z.object({ name: z.string().min(1), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to expose this app on a public URL' });
+        const proc = ctx.runtime.get(input.name);
+        if (!proc || proc.status !== 'running') throw new TRPCError({ code: 'BAD_REQUEST', message: 'app is not running' });
+        if (!proc.port) throw new TRPCError({ code: 'BAD_REQUEST', message: 'app has no port to expose' });
+        if (tunnels.get(input.name)) throw new TRPCError({ code: 'CONFLICT', message: 'app is already published' });
+        requireDurableAudit(ctx, 'local.publish', input.name); // fail closed before exposing to the internet
+        try {
+          const t = await tunnels.publish(input.name, proc.port);
+          const op = recordOp(ctx, { action: 'local.publish', target: `${input.name} -> ${t.url}`, outcome: 'success' });
+          return { ok: true as const, url: t.url, ...op };
+        } catch (e) {
+          console.error('[local.publish]', (e as Error).message); // raw may include cloudflared diagnostics
+          recordOp(ctx, { action: 'local.publish', target: input.name, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'could not establish a public tunnel (see server logs)' });
+        }
+      }),
+
+    unpublish: requirePermission('app.deploy')
+      .input(z.object({ name: z.string().min(1), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to take down the public URL' });
+        const ok = await tunnels.unpublish(input.name);
+        if (!ok) throw new TRPCError({ code: 'BAD_REQUEST', message: 'app is not published' });
+        recordOp(ctx, { action: 'local.unpublish', target: input.name, outcome: 'success' });
+        return { ok: true as const };
+      }),
   }),
 
   // AI orchestration via local Codex / Claude Code CLIs (reusing their local auth).
@@ -557,9 +431,9 @@ export const appRouter = router({
   // account origin cert (~/.cloudflared/cert.pem) — no separate login. Reads are safe; create
   // tunnel / route DNS are mutating, so they require confirm:true and are audited.
   cloudflare: router({
-    status: requirePermission('network.read').query(() => cloudflared.status()),
+    status: requirePermission('app.read').query(() => cloudflared.status()),
 
-    tunnels: requirePermission('network.read').query(async ({ ctx }) => {
+    tunnels: requirePermission('app.read').query(async ({ ctx }) => {
       const status = await cloudflared.status();
       if (!status.installed) return { ok: false as const, reason: 'cloudflared not installed', tunnels: [] };
       if (!status.authenticated) return { ok: false as const, reason: 'not logged in (no cert.pem)', tunnels: [] };
@@ -605,32 +479,6 @@ export const appRouter = router({
         if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to create a DNS route' });
         await preflightRoute(ctx, input.tunnel, input.hostname);
         return performRoute(ctx, input.tunnel, input.hostname);
-      }),
-  }),
-
-  deployments: router({
-    // explain_failed_deployment backing: summarize recent audited deploy/rollback events.
-    explain: requirePermission('app.read')
-      .input(z.object({ app: z.string().optional() }).optional())
-      .query(({ ctx, input }) => {
-        const app = input?.app;
-        // Real explanation built from the audit trail: every deploy/rollback is recorded with
-        // actor, outcome and dry-run flag, so we can reconstruct what actually happened.
-        const events = ctx.audit
-          .list(50)
-          .filter((e) => e.action.startsWith('app.') && (!app || e.target === app || (e.target?.startsWith(`${app}@`) ?? false)));
-        const failures = events.filter((e) => e.outcome === 'failure');
-        const lastLive = events.find((e) => !e.dryRun);
-        const timeline = events.map((e) => `${e.at} · ${e.actor} · ${e.action} ${e.target} → ${e.outcome}${e.dryRun ? ' (dry-run)' : ''}`);
-        return {
-          app,
-          summary:
-            events.length === 0
-              ? `No deploy/rollback activity recorded${app ? ` for ${app}` : ''}.`
-              : `${events.length} event(s), ${failures.length} failure(s). Last live action: ${lastLive ? `${lastLive.action} ${lastLive.target} (${lastLive.outcome})` : 'none (all dry-run)'}.`,
-          failures,
-          timeline,
-        };
       }),
   }),
 });

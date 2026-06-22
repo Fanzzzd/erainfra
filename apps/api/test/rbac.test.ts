@@ -4,7 +4,7 @@ import { can } from '../src/rbac.ts';
 
 test('owner can do everything', () => {
   const owner = { roles: ['owner'] as const };
-  assert.ok(can(owner, 'secret.write'));
+  assert.ok(can(owner, 'agent.run'));
   assert.ok(can(owner, 'app.deploy'));
   assert.ok(can(owner, 'audit.read'));
 });
@@ -13,15 +13,14 @@ test('viewer is read-only', () => {
   const viewer = { roles: ['viewer'] as const };
   assert.ok(can(viewer, 'app.read'));
   assert.ok(!can(viewer, 'app.deploy'));
-  assert.ok(!can(viewer, 'secret.write'));
+  assert.ok(!can(viewer, 'agent.run'));
 });
 
-test('operator can deploy but not write secrets', () => {
+test('operator can deploy but not run agents', () => {
   const operator = { roles: ['operator'] as const };
   assert.ok(can(operator, 'app.deploy'));
-  assert.ok(can(operator, 'app.rollback'));
-  assert.ok(!can(operator, 'secret.write'));
-  assert.ok(!can(operator, 'machine.enroll'));
+  assert.ok(can(operator, 'app.read'));
+  assert.ok(!can(operator, 'agent.run'));
 });
 
 test('agent.run is admin/owner only — an operator cannot run local AI CLIs', () => {

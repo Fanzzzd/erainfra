@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Plus, RefreshCw, ScrollText, Square, ExternalLink, Rocket, Trash2 } from 'lucide-react';
+import { Plus, RefreshCw, ScrollText, Square, ExternalLink, Rocket, Trash2, Globe, GlobeLock } from 'lucide-react';
 import { trpcQuery, trpcMutation, type LocalProc, type Template } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -99,6 +99,32 @@ export function Apps() {
     }
   }
 
+  // Publish = expose this running app on a public https URL via a Cloudflare quick tunnel. Slow
+  // (~5-10s to bring the tunnel up), so we drive it with a loading toast.
+  function publish(name: string) {
+    toast.promise(
+      trpcMutation<{ url: string }>('local.publish', { name, confirm: true }).then((r) => {
+        refresh();
+        return r;
+      }),
+      {
+        loading: `Publishing ${name}… starting a Cloudflare tunnel`,
+        success: (r) => `Live at ${r.url}`,
+        error: (e) => (e as Error).message,
+      },
+    );
+  }
+
+  async function unpublish(name: string) {
+    try {
+      await trpcMutation('local.unpublish', { name, confirm: true });
+      toast.success(`Took ${name} offline`);
+      refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  }
+
   if (offline) {
     return (
       <EmptyState
@@ -135,6 +161,7 @@ export function Apps() {
                   <TableHead>Status</TableHead>
                   <TableHead>Health</TableHead>
                   <TableHead>Port</TableHead>
+                  <TableHead>Public URL</TableHead>
                   <TableHead>PID</TableHead>
                   <TableHead>Uptime</TableHead>
                   <TableHead className="pr-6 text-right">Actions</TableHead>
@@ -159,6 +186,15 @@ export function Apps() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
+                    <TableCell>
+                      {p.publicUrl ? (
+                        <a className="text-primary inline-flex items-center gap-1 hover:underline" href={p.publicUrl} target="_blank" rel="noreferrer">
+                          {p.publicUrl.replace(/^https:\/\//, '')} <ExternalLink className="size-3" />
+                        </a>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-muted-foreground tabular-nums">{p.pid}</TableCell>
                     <TableCell className="text-muted-foreground tabular-nums">{p.status === 'running' ? uptime(p.startedAt) : '—'}</TableCell>
                     <TableCell className="pr-6">
@@ -166,6 +202,17 @@ export function Apps() {
                         <Button variant="ghost" size="sm" onClick={() => openLogs(p.name)}>
                           <ScrollText /> Logs
                         </Button>
+                        {p.status === 'running' &&
+                          p.port &&
+                          (p.publicUrl ? (
+                            <Button variant="ghost" size="sm" onClick={() => unpublish(p.name)}>
+                              <GlobeLock /> Unpublish
+                            </Button>
+                          ) : (
+                            <Button variant="ghost" size="sm" onClick={() => publish(p.name)}>
+                              <Globe /> Publish
+                            </Button>
+                          ))}
                         {p.status === 'running' ? (
                           <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => stop(p.name)}>
                             <Square /> Stop

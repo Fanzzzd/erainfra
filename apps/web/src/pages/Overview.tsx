@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Boxes, Rocket, Cloud, Server, ArrowRight } from 'lucide-react';
-import { trpcQuery, type LocalProc, type MachineRow } from '@/api';
+import { Boxes, Rocket, Cloud, Globe, ArrowRight } from 'lucide-react';
+import { trpcQuery, type LocalProc } from '@/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
@@ -11,7 +11,6 @@ interface TunnelsResp {
 
 export function Overview() {
   const [procs, setProcs] = useState<LocalProc[]>([]);
-  const [machines, setMachines] = useState<MachineRow[]>([]);
   const [projects, setProjects] = useState<Array<{ id: string; source: 'example' | 'imported' }>>([]);
   const [tunnels, setTunnels] = useState<TunnelsResp | null>(null);
   const [offline, setOffline] = useState(false);
@@ -20,12 +19,10 @@ export function Overview() {
     // Fast local metrics first so the page paints immediately.
     Promise.all([
       trpcQuery<LocalProc[]>('local.list'),
-      trpcQuery<MachineRow[]>('machines.list'),
       trpcQuery<Array<{ id: string; source: 'example' | 'imported' }>>('project.list'),
     ])
-      .then(([p, m, pr]) => {
+      .then(([p, pr]) => {
         setProcs(p);
-        setMachines(m);
         setProjects(pr);
       })
       .catch(() => setOffline(true));
@@ -42,8 +39,8 @@ export function Overview() {
   // "configured but idle", not the alarming "Healthy tunnels: 0" when the user actually has tunnels.
   const totalTunnels = tunnels?.ok ? tunnels.tunnels.length : 0;
   const healthyTunnels = tunnels?.ok ? tunnels.tunnels.filter((t) => t.status === 'healthy').length : 0;
-  // Every machine is real now: this host plus any peers the user has enrolled into the fabric.
-  const realMachines = machines.length;
+  // Apps currently exposed on a public URL via a quick tunnel — the "live on the internet" count.
+  const published = procs.filter((p) => p.publicUrl).length;
   // Honesty: "your" projects are the imported ones; seeded examples are counted separately.
   const importedProjects = projects.filter((p) => p.source === 'imported').length;
   const exampleProjects = projects.length - importedProjects;
@@ -69,7 +66,7 @@ export function Overview() {
           value={totalTunnels}
           hint={tunnels?.ok ? `${healthyTunnels} healthy` : undefined}
         />
-        <Metric icon={<Server className="size-4" />} label="Real machines" value={realMachines} />
+        <Metric icon={<Globe className="size-4" />} label="Published" value={published} hint={published ? 'live on the internet' : undefined} />
       </div>
 
       <Card>

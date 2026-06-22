@@ -1,13 +1,33 @@
 # Portless — Handover
 
-_Last updated: 2026-06-22_
+_Last updated: 2026-06-22 (mock-removal + real Publish pass)_
 
-Dashboard-first **private PaaS for machines with no public IP** (Cloudflare Tunnel ingress,
-WireGuard/Netmaker fabric, Nomad/Consul, Go node-agent, shadcn dashboard).
+**Single-machine private PaaS**: deploy a process on a box you own (no public IP, no open
+ports) and publish it to a public `https://*.trycloudflare.com` URL via Cloudflare Tunnel —
+from one dashboard. Everything that ships is real and runs on a laptop. The multi-machine
+mock apparatus (fabric/scheduler/cluster) was **deleted** — it pretended to do things it
+couldn't.
 
-- **Location:** `~/code/personal/portless` (flattened 2026-06-22 from the old `portless-pack/portless`
-  zip-extraction nesting).
-- **Not a git repo yet.** `git init` when you want history.
+- **Location:** `~/code/personal/portless`
+- **git:** initialized 2026-06-22. Baseline commit = state before mock removal.
+
+---
+
+## What it actually does (all real, all laptop-runnable)
+
+1. **Projects** — declarative `portless.yaml` specs + per-project topology graph. Import,
+   add/remove domains (optionally route a real Cloudflare tunnel, confirm-gated), delete.
+2. **Apps** — real OS processes via `LocalRuntime`: deploy from a template → live health →
+   logs → **Publish** (public URL) → stop → clear. Dogfooded end-to-end.
+3. **Publish** (the payoff, `runtime/quicktunnel.ts`) — `cloudflared tunnel --url
+   http://127.0.0.1:<port>` per app: account-less, ephemeral, no DNS, no open ports.
+   Returns a `*.trycloudflare.com` URL; confirm-gated + durable-audited before exposure.
+4. **Cloudflare** — real `cloudflared` wrapper (reuses `~/.cloudflared/cert.pem`): list /
+   create tunnels, route DNS (mutations confirm-gated).
+5. **Orchestrate** — run local `codex` / `claude` CLIs (plan safe, execute confirm-gated, audited).
+
+Real RBAC (4 perms: app.read / app.deploy / agent.run / audit.read) + bearer auth (dev
+posture; prod ships no token, fails closed) + durable JSONL audit + dry-run/confirm envelope.
 
 ---
 
@@ -15,84 +35,57 @@ WireGuard/Netmaker fabric, Nomad/Consul, Go node-agent, shadcn dashboard).
 
 ```bash
 cd ~/code/personal/portless
-pnpm install      # first time
-pnpm dev          # turbo: API (:8787) + dashboard (Vite :5173) in parallel
+pnpm install
+pnpm dev          # turbo: API (:8787) + dashboard (Vite) in parallel
 ```
 
-Open the dashboard, e.g. **http://localhost:5173**. In dev mode the client auto-uses the bundled
-`owner-dev-token`, so it shows **"API connected"**.
-
-**Run it in your own terminal** — background servers spawned by an AI tool get reaped in this
-environment (SIGTERM 143/144); only a plainly-launched process stays up.
-
-Port note: Vite defaults to **:5173**, which collides with other Vite apps (e.g. the freight-optimizer
-work project). Run one at a time, or `pnpm --filter @portless/web dev -- --port 4173`.
+Run in **your own terminal** — background servers spawned by an AI tool get reaped (SIGTERM
+143/144); a plainly-launched process stays up. Dev mode auto-uses the bundled `owner-dev-token`.
+Vite defaults to :5173 (collides with other Vite apps) — `pnpm --filter @portless/web dev -- --port 4173`.
 
 ---
 
-## Tooling — pnpm + turborepo
+## Verified (this pass)
 
-- pnpm workspace (`pnpm@9.15.0`, `pnpm-workspace.yaml` = `apps/*`, `packages/*`). Members:
-  `@portless/api`, `@portless/web`, `@portless/core`. The Go agent (`agents/node-agent`) is **not** a
-  pnpm member.
-- **turbo 2.9.18** (`turbo.json`). Root scripts:
-  - `pnpm dev` → `turbo run dev` (api `node … server.ts` + web `vite`, parallel; `core` has no dev)
-  - `pnpm build` → `turbo run build` (web → `dist/**`, cached)
-  - `pnpm typecheck` → `turbo run typecheck` (api + web `tsc --noEmit`)
-  - `pnpm test` → `turbo run test` (api + core node tests, after typecheck) **+** `go test ./...`
+- `pnpm typecheck` clean (api + web). `pnpm build` clean (web, 1796 modules).
+- `pnpm test`: **64 api + core + Go** green (down from 92 — deleted the mock-only suites).
+- **Real end-to-end through the HTTP API**: `local.deploy` → process serves on :7801 →
+  `local.publish` → `https://sisters-wrote-remarks-pci.trycloudflare.com` → **fetched over the
+  public internet, returned the app's HTML** → `local.unpublish` → publicUrl cleared. Audit durable.
 
 ---
 
-## Current state (verified)
+## What was deleted (was mock / fake-infra theater)
 
-- **92 hermetic API tests + core tests + Go agent tests** green; api+web typecheck + web build clean.
-- Dashboard pages (all render clean, 0 console errors): **Overview, Projects, Apps, Orchestrate,
-  Cloudflare, Machines, Fabric**. Nav is URL-hash based (reload-safe, deep-linkable: `#projects/<id>`).
-- **Projects** = declarative spec + topology (master-detail). Add/remove **domains**; optionally
-  auto-route a domain via a real Cloudflare tunnel (confirm-gated). `project.delete` (confirm+audited).
-- **Apps** = real local processes (LocalRuntime): deploy → serves HTTP → logs → stop → **clear**
-  (`local.forget`). Dogfooded end-to-end.
-- **Machines** = enroll without roles (name+region+real WG pubkey), assign roles after (multi-role);
-  real `NetmakerNetworkProvider` allocates `10.88.0.x` + `10.210.x.0/24`.
-- **Cloudflare** = real `cloudflared` wrapper (reuses `~/.cloudflared/cert.pem`); lists tunnels,
-  create tunnel / route DNS gated by type-to-confirm.
-- **Orchestrate** = run local `codex` / `claude` CLIs (plan safe, execute type-to-confirmed, audited).
-- Persistence: imported projects + enrolled machines survive an API restart (atomic writes; tests stay
-  hermetic via a `--test` execArgv guard). Real RBAC + bearer auth + durable audit + dangerous-op envelope.
+- API: `runtime/{nomad,consul,deploy,secrets,hostinfo,netprobe}.ts`, `network/{netmaker,provider}.ts`,
+  the `machines` / `network` / `deployments` routers, `app.deploy`/`app.rollback` (the
+  "recorded-no-cluster" mock).
+- core: `{nomad,scheduler,ha,wireguard}.ts` (cluster placement / WG rendering for infra that didn't exist).
+- web: `Machines.tsx`, `Fabric.tsx` pages + nav.
+- All their tests; trimmed dead RBAC perms (machine/network/secret/rollback).
 
----
-
-## Known gaps / deliberately deferred
-
-- **Full session/cookie auth** — dashboard uses a browser bearer token (dev posture; the prod bundle
-  ships **no** token and fails closed). Real session auth is a design decision, not in-flight work.
-- **Infra-gated milestones** — Nomad/Temporal/real Netmaker/WireGuard/Postgres are interface+mock by
-  design (can't stand up on a laptop). Seams exist (`NetworkProvider`, `NomadProvider`, etc.).
-- `project.delete` / `removeDomain` do **not** tear down the Cloudflare DNS a domain routed (deliberate —
-  harder to undo; left to the user).
-- Re-serializing a spec on domain add/remove canonicalizes it (drops YAML comments + unmodeled keys —
-  already inert since Zod strips unknown keys at import).
+MCP tools now reflect the real surface only: `list_apps`, `get_app_health`, `get_logs`,
+`list_processes`, `deploy_app` (→ local.deploy), `publish_app` (→ local.publish).
 
 ---
 
 ## Gotchas (read before editing)
 
-- **`vite preview` serves the PROD build, which ships no auth token** → "API offline". For a local
-  prod-like server, build with `VITE_PORTLESS_TOKEN=owner-dev-token vite build`. The **dev** server
-  (`vite`) auto-uses the token. Proxy is wired for both (`server.proxy` + `preview.proxy`).
-- **`codex exec` / `claude -p` hang on an open stdin** → always redirect `< /dev/null`.
-- **TS parameter properties** (`constructor(private x)`) break `node --experimental-strip-types` —
-  use explicit fields.
-- **Do NOT live-test Cloudflare create/routeDns** — they mutate the user's real CF account. The
-  tunnel-verify path only *reads* (`tunnels()`); verify gates by rejecting a bogus tunnel name.
-- Tests are **hermetic** (in-memory stores, no Postgres/Nomad). Keep them zero-infra.
-- Review substantive changes with **Codex** (`codex exec --skip-git-repo-check --sandbox read-only …`).
+- **Quick tunnels are safe to live-test** (account-less, ephemeral) — unlike `cloudflare.routeDns`
+  / `createTunnel`, which mutate the user's real CF account. Don't live-test those.
+- **`codex exec` / `claude -p` hang on open stdin** → redirect `< /dev/null`.
+- **TS parameter properties** (`constructor(private x)`) break `node --experimental-strip-types` — use explicit fields.
+- Tests are **hermetic** (in-memory, no infra). Publish tests cover the pure arg/URL parsing +
+  the guard paths (confirm / not-running) — they never spawn cloudflared.
+- The published cloudflared child is in the API's process group, so Ctrl-C on the API takes its
+  tunnels down too. (No explicit reaper — `// ponytail`.)
 
 ---
 
 ## Suggested next steps
 
-1. `git init` + first commit (no history yet).
-2. Pin web `dev` to a non-5173 port if you routinely run it alongside other Vite apps.
-3. Decide on real auth (session/cookie) — the one substantive deferred feature.
-4. Wire live infra adapters (Nomad/Consul/Netmaker/WG) when an environment exists.
+1. Real session/cookie auth (the one substantive deferred design decision — bearer token is dev posture).
+2. More deploy templates (currently just `static-web`); a "deploy a local dir / git repo" template
+   would make Publish genuinely useful day-to-day.
+3. If a real multi-box need ever appears, re-introduce a fabric **backed by something that runs**
+   (real WireGuard / Tailscale), not a mock allocator.

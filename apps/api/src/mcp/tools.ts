@@ -25,7 +25,6 @@ export interface McpTool {
 }
 
 const empty = z.object({});
-const dangerous = z.object({ app: z.string().min(1), dryRun: z.boolean().default(true), confirm: z.boolean().default(false) });
 
 function tool<S extends z.AnyZodObject>(
   def: { name: string; description: string; dangerous?: boolean; inputSchema: S },
@@ -60,40 +59,33 @@ export const tools: McpTool[] = [
     },
     (c, i) => c.app.logs({ app: i.app, service: i.service, lines: i.lines ?? 100 }),
   ),
-  tool({ name: 'list_machines', description: 'List enrolled machines and their roles/addresses.', inputSchema: empty }, (c) =>
-    c.machines.list(),
-  ),
-  tool({ name: 'get_network_matrix', description: 'Get the machine-to-machine network path matrix.', inputSchema: empty }, (c) =>
-    c.network.matrix(),
-  ),
-  tool(
-    {
-      name: 'run_network_benchmark',
-      description: 'Benchmark the network path between two machines.',
-      inputSchema: z.object({ from: z.string().min(1), to: z.string().min(1) }),
-    },
-    (c, i) => c.network.benchmark(i),
-  ),
-  tool(
-    {
-      name: 'explain_failed_deployment',
-      description: 'Explain why a recent deployment failed, from audited events.',
-      inputSchema: z.object({ app: z.string().optional() }),
-    },
-    (c, i) => c.deployments.explain(i),
+  tool({ name: 'list_processes', description: 'List processes running on this machine, with their public URL if published.', inputSchema: empty }, (c) =>
+    c.local.list(),
   ),
   // --- dangerous: dry-run by default, confirm:true required to go live ---
-  tool({ name: 'deploy_app', description: 'Deploy an app. Dry-run unless confirm:true.', dangerous: true, inputSchema: dangerous }, (c, i) =>
-    c.app.deploy(i),
+  tool(
+    {
+      name: 'deploy_app',
+      description: 'Launch a real process on this machine from a template. Dry-run unless confirm:true.',
+      dangerous: true,
+      inputSchema: z.object({
+        name: z.string().min(1),
+        template: z.string().min(1),
+        port: z.number().int().min(1024).max(65535),
+        dryRun: z.boolean().default(true),
+        confirm: z.boolean().default(false),
+      }),
+    },
+    (c, i) => c.local.deploy(i),
   ),
   tool(
     {
-      name: 'rollback_release',
-      description: 'Roll back an app to a previous release. Dry-run unless confirm:true.',
+      name: 'publish_app',
+      description: 'Expose a running app on a public https URL via a Cloudflare quick tunnel. Requires confirm:true.',
       dangerous: true,
-      inputSchema: dangerous.extend({ toRelease: z.string().optional() }),
+      inputSchema: z.object({ name: z.string().min(1), confirm: z.boolean().default(false) }),
     },
-    (c, i) => c.app.rollback(i),
+    (c, i) => c.local.publish(i),
   ),
 ];
 

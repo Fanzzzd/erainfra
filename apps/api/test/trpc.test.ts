@@ -28,29 +28,32 @@ test('unauthenticated audit.list is UNAUTHORIZED', async () => {
 
 test('viewer cannot deploy and the denial is audited', async () => {
   const { call, audit } = caller(viewer);
-  await assert.rejects(() => call.app.deploy({ app: 'demo/prod', dryRun: true }), /permission/);
+  await assert.rejects(() => call.local.deploy({ name: 'demo', template: 'static-web', port: 8080, dryRun: true }), /permission/);
   const last = audit.list()[0];
   assert.equal(last.outcome, 'deny');
   assert.equal(last.meta?.permission, 'app.deploy');
 });
 
-test('owner dry-run deploy is accepted and audited', async () => {
+test('owner dry-run deploy is accepted and audited (no process launched)', async () => {
   const { call, audit } = caller(owner);
-  const res = await call.app.deploy({ app: 'demo/prod', dryRun: true });
-  assert.equal(res.accepted, true);
+  const res = await call.local.deploy({ name: 'demo', template: 'static-web', port: 8080, dryRun: true });
   assert.equal(res.dryRun, true);
+  assert.equal(res.plan.name, 'demo');
   const last = audit.list()[0];
-  assert.equal(last.action, 'app.deploy');
+  assert.equal(last.action, 'local.deploy');
   assert.equal(last.dryRun, true);
   assert.equal(last.outcome, 'success');
 });
 
 test('non-dry-run deploy requires confirm:true', async () => {
   const { call } = caller(owner);
-  await assert.rejects(() => call.app.deploy({ app: 'demo/prod', dryRun: false }), /confirm/);
-  const ok = await caller(owner).call.app.deploy({ app: 'demo/prod', dryRun: false, confirm: true });
-  assert.equal(ok.accepted, true);
-  assert.equal(ok.dryRun, false);
+  await assert.rejects(() => call.local.deploy({ name: 'demo', template: 'static-web', port: 8080, dryRun: false }), /confirm/);
+});
+
+test('publish needs confirm and a running app (never spawns in the guard path)', async () => {
+  const { call } = caller(owner);
+  await assert.rejects(() => call.local.publish({ name: 'ghost' }), /confirm/);
+  await assert.rejects(() => call.local.publish({ name: 'ghost', confirm: true }), /not running/);
 });
 
 const DETAIL_YAML = `project: detailtest

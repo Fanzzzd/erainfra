@@ -34,6 +34,7 @@ export interface LocalProc {
   startedAt: string;
   command: string;
   logFile: string;
+  publicUrl?: string | null; // set when the app is published via a Cloudflare quick tunnel
 }
 
 export interface Template {
@@ -46,23 +47,4 @@ export interface AppRow {
   project: string;
   environment: string;
   services: Array<{ name: string; type: string; replicas: number; image: string }>;
-}
-
-export interface MachineRow {
-  id: string;
-  name: string;
-  roles: string[];
-  region: string;
-  wgIp: string;
-  containerSubnet: string;
-  online: boolean;
-  kind: 'self' | 'enrolled'; // 'self' = this real machine (read live from the OS); 'enrolled' = a peer the user added
-}
-
-export interface PathRow {
-  from: string;
-  to: string;
-  kind: string;
-  rttMs: number;
-  throughputMbps: number;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, Boxes, Server, Network, Workflow, Bot, Cloud } from 'lucide-react';
+import { LayoutDashboard, Boxes, Workflow, Bot, Cloud } from 'lucide-react';
 import { trpcQuery } from '@/api';
 import { cn } from '@/lib/utils';
 import { Overview } from '@/pages/Overview';
@@ -7,10 +7,8 @@ import { Projects } from '@/pages/Projects';
 import { Orchestrate } from '@/pages/Orchestrate';
 import { Cloudflare } from '@/pages/Cloudflare';
 import { Apps } from '@/pages/Apps';
-import { Machines } from '@/pages/Machines';
-import { Fabric } from '@/pages/Fabric';
 
-type View = 'overview' | 'projects' | 'orchestrate' | 'cloudflare' | 'apps' | 'machines' | 'fabric';
+type View = 'overview' | 'projects' | 'orchestrate' | 'cloudflare' | 'apps';
 
 const NAV: Array<{ id: View; label: string; icon: typeof Boxes }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -18,8 +16,6 @@ const NAV: Array<{ id: View; label: string; icon: typeof Boxes }> = [
   { id: 'apps', label: 'Apps', icon: Boxes },
   { id: 'orchestrate', label: 'Orchestrate', icon: Bot },
   { id: 'cloudflare', label: 'Cloudflare', icon: Cloud },
-  { id: 'machines', label: 'Machines', icon: Server },
-  { id: 'fabric', label: 'Fabric', icon: Network },
 ];
 
 // Reload-safe / shareable nav via the URL hash (#projects, #projects/<id>). ponytail: a hash, not a
@@ -115,8 +111,6 @@ export function App() {
             {view === 'orchestrate' && <Orchestrate />}
             {view === 'cloudflare' && <Cloudflare />}
             {view === 'apps' && <Apps />}
-            {view === 'machines' && <Machines />}
-            {view === 'fabric' && <Fabric />}
           </main>
         </div>
       </div>

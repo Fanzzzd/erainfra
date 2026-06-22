@@ -14,18 +14,15 @@ function ctx(principal: Principal) {
   return { principal, audit: new InMemoryAuditLog() };
 }
 
-test('exposes the 9 documented MCP tools', () => {
+test('exposes the documented MCP tools (real surface only — no mock-backed tools)', () => {
   const names = tools.map((t) => t.name).sort();
   assert.deepEqual(names, [
     'deploy_app',
-    'explain_failed_deployment',
     'get_app_health',
     'get_logs',
-    'get_network_matrix',
     'list_apps',
-    'list_machines',
-    'rollback_release',
-    'run_network_benchmark',
+    'list_processes',
+    'publish_app',
   ]);
 });
 
@@ -50,11 +47,14 @@ test('list_apps reads through the API (real project registry, empty until import
 // fully covered by trpc.test. Here we only prove the MCP adapter threads ctx.principal so RBAC
 // is inherited "for free" — one representative check is enough.
 test('viewer cannot deploy via MCP (adapter threads RBAC through to the API)', async () => {
-  await assert.rejects(() => getTool('deploy_app')!.handler(ctx(viewer), { app: 'demo/prod' }), /permission/);
+  await assert.rejects(
+    () => getTool('deploy_app')!.handler(ctx(viewer), { name: 'x', template: 'static-web', port: 8080 }),
+    /permission/,
+  );
 });
 
 test('dangerous tools are flagged', () => {
   assert.equal(getTool('deploy_app')!.dangerous, true);
-  assert.equal(getTool('rollback_release')!.dangerous, true);
+  assert.equal(getTool('publish_app')!.dangerous, true);
   assert.equal(getTool('list_apps')!.dangerous, false);
 });
