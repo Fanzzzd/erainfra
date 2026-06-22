@@ -1,0 +1,119 @@
+product: Portless
+mission: >-
+  Build a complete private PaaS for machines without public IPs, with Cloudflare Tunnel ingress,
+  kernel WireGuard internal fabric, Nomad scheduling, Consul discovery, safe agent operations,
+  and a dashboard that can manage 20+ apps.
+principles:
+  - keep_custom_code_minimal
+  - use_mature_components
+  - performance_first_internal_network
+  - no_arbitrary_remote_shell
+  - ai_safe_operations
+  - honest_stateful_ha
+components:
+  dashboard: Vite React TypeScript
+  api: Fastify tRPC Zod TypeScript
+  database: Postgres Drizzle
+  workflow: Temporal
+  agent: Go
+  network_mvp: Netmaker + Linux kernel WireGuard
+  ingress: Cloudflare Tunnel
+  scheduler: Nomad
+  discovery: Consul
+  router: Traefik or Caddy
+milestones:
+  - id: 0
+    name: baseline
+    done_when:
+      - npm test passes
+      - ./scripts/smoke.sh passes
+  - id: 1
+    name: production_api_foundation
+    deliverables:
+      - Fastify API
+      - tRPC routers
+      - Drizzle schema
+      - Auth scaffold
+      - RBAC scaffold
+      - Audit log
+  - id: 2
+    name: appspec_database
+    deliverables:
+      - AppSpec parser
+      - Project/service/machine/domain/secret models
+      - Import examples/portless.yaml
+  - id: 3
+    name: network_provider
+    deliverables:
+      - NetworkProvider interface
+      - Netmaker provider
+      - WireGuard IP allocation
+      - Container subnet allocation
+      - Path matrix
+  - id: 4
+    name: node_agent_mvp
+    deliverables:
+      - Enrollment
+      - Heartbeat
+      - Command allowlist
+      - Install plans
+      - Resource reporting
+      - Network benchmark
+  - id: 5
+    name: nomad_consul
+    deliverables:
+      - Nomad submit/watch/logs
+      - Consul catalog/health
+      - Service discovery conventions
+  - id: 6
+    name: cloudflare
+    deliverables:
+      - Tunnel creation
+      - DNS routes
+      - Gateway node config
+      - Cloudflared token delivery
+  - id: 7
+    name: deployments
+    deliverables:
+      - Temporal deploy workflow
+      - Health wait
+      - Drain
+      - Rollback
+  - id: 8
+    name: dashboard
+    deliverables:
+      - Overview
+      - Apps
+      - Machines
+      - Fabric
+      - Deployments
+      - Logs
+      - Domains
+      - Settings
+  - id: 9
+    name: ai_mcp
+    deliverables:
+      - MCP read tools
+      - MCP deploy/rollback tools
+      - Confirmation for dangerous tools
+  - id: 10
+    name: hardening
+    deliverables:
+      - Backup/restore
+      - Secret rotation
+      - Gateway HA
+      - Relay support
+      - Failure drills
+acceptance:
+  - Add machines without public IPs
+  - Establish WireGuard fabric
+  - Deploy two-replica web app
+  - Public access through Cloudflare Tunnel
+  - Internal dependencies over WireGuard
+  - Broken release does not steal traffic
+  - Rollback works
+  - Worker failure is handled for stateless services
+  - Stateful services show explicit HA warnings
+  - Dashboard manages 20 apps clearly
+  - Agent rejects arbitrary shell
+  - MCP dangerous actions require confirmation

@@ -1,0 +1,49 @@
+project: data-pipeline
+environment: prod
+network:
+  provider: netmaker
+  overlayCidr: 10.88.0.0/16
+  containerSubnetStrategy: per-machine-/24
+services:
+  - name: ingest
+    type: worker
+    image: ghcr.io/example/ingest:sha-77f1
+    replicas: 3
+    resources:
+      cpu: 250
+      memoryMb: 512
+    connections:
+      - to: raw-events
+        type: object-storage
+        provider: s3
+      - to: ingest-queue
+        type: queue
+        provider: nats
+  - name: transform
+    type: worker
+    image: ghcr.io/example/transform:sha-77f1
+    replicas: 2
+    resources:
+      cpu: 500
+      memoryMb: 1024
+    dependencies:
+      - service: warehouse
+        latencySensitive: true
+    connections:
+      - to: ingest-queue
+        type: queue
+        provider: nats
+      - to: lakehouse
+        type: data-platform
+        external: true
+  - name: warehouse
+    type: database
+    image: clickhouse/clickhouse-server:24.3
+    replicas: 1
+    port: 8123
+    resources:
+      cpu: 1000
+      memoryMb: 4096
+    placement:
+      requiredRoles: [database]
+      sticky: true

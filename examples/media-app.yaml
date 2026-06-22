@@ -1,0 +1,45 @@
+project: media-app
+environment: prod
+network:
+  provider: netmaker
+  overlayCidr: 10.88.0.0/16
+  containerSubnetStrategy: per-machine-/24
+services:
+  - name: web
+    type: web
+    image: ghcr.io/example/media-web:sha-9c2a
+    replicas: 2
+    port: 8080
+    health:
+      path: /healthz
+    resources:
+      cpu: 250
+      memoryMb: 512
+    connections:
+      - to: uploads
+        type: object-storage
+        provider: r2
+      - to: auth
+        type: backend
+        external: true
+      - to: encode-jobs
+        type: queue
+        provider: redis
+  - name: encoder
+    type: worker
+    image: ghcr.io/example/encoder:sha-9c2a
+    replicas: 4
+    resources:
+      cpu: 1000
+      memoryMb: 2048
+    connections:
+      - to: uploads
+        type: object-storage
+        provider: r2
+      - to: encode-jobs
+        type: queue
+        provider: redis
+domains:
+  - hostname: media.example.com
+    service: web
+    ingress: cloudflare-tunnel
