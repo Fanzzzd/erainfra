@@ -43,6 +43,21 @@ Run in **your own terminal** — background servers spawned by an AI tool get re
 143/144); a plainly-launched process stays up. Dev mode auto-uses the bundled `owner-dev-token`.
 Vite defaults to :5173 (collides with other Vite apps) — `pnpm --filter @portless/web dev -- --port 4173`.
 
+### Deploy to a server (stable, your domain)
+
+`deploy/install.sh` (run **on the server**): single-origin (the API serves the dashboard +
+`/trpc` on one port) behind a **dedicated Cloudflare named tunnel** + your domain, protected by
+**Cloudflare Access**. No quick tunnels, no open ports. See `deploy/README.md`.
+
+```bash
+PORTLESS_HOSTNAME=portless.yourdomain.com ./deploy/install.sh
+```
+
+The API serves the web build when `PORTLESS_WEB_DIR` points at `apps/web/dist` (built with
+`VITE_PORTLESS_TOKEN=<token>`); `NODE_ENV=production` makes auth fail-closed, and
+`PORTLESS_DEV_TOKENS` re-supplies the one real owner token. **Can't deploy from this Mac**: its
+VPN/fake-IP proxy breaks cloudflared↔Cloudflare API (`api.cloudflare.com` → `198.18.x`, EOF).
+
 ---
 
 ## Verified (this pass)
