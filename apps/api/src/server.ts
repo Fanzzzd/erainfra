@@ -1,7 +1,9 @@
 import './boot-env.ts'; // MUST be first: sets persist-path env defaults before router.ts builds its singletons
 import Fastify, { type FastifyInstance } from 'fastify';
+import fastifyStatic from '@fastify/static';
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { appRouter } from './router.ts';
 import type { Context } from './trpc.ts';
@@ -17,7 +19,7 @@ function bearerToken(authorization: string | string[] | undefined): string | und
   return header?.startsWith('Bearer ') ? header.slice(7) : undefined;
 }
 
-export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; runtime?: LocalRuntime } = {}): FastifyInstance {
+export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; runtime?: LocalRuntime; webDir?: string } = {}): FastifyInstance {
   const audit = opts.audit ?? new InMemoryAuditLog();
   // Fail-closed in production; dev tokens only outside production (see defaultTokenStore).
   const tokens = opts.tokens ?? defaultTokenStore();
@@ -41,6 +43,15 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
     },
   });
 
+  // Single-origin production deploy: serve the built dashboard from the same origin as /trpc, so
+  // one tunnel hostname covers both. The SPA uses hash routing, so static files + index at '/' are
+  // enough (no catch-all rewrite). Only enabled when a build dir is configured AND exists; dev runs
+  // the Vite server separately and leaves this off. PORTLESS_WEB_DIR defaults to the repo's web dist.
+  const webDir = opts.webDir ?? process.env.PORTLESS_WEB_DIR;
+  if (webDir && existsSync(webDir)) {
+    app.register(fastifyStatic, { root: webDir, prefix: '/' });
+  }
+
   return app;
 }
 
@@ -48,10 +59,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? process.env.PORTLESS_PORT ?? 8787);
   // Durable audit trail on disk so dangerous Cloudflare/deploy ops survive restarts.
   const auditFile = process.env.PORTLESS_AUDIT_FILE ?? join(tmpdir(), 'portless-runtime', 'audit.jsonl');
-  // Bind loopback by default: the browser ships a bearer token, so a 0.0.0.0 bind would let
-  // anyone on the LAN call mutating routes as that principal. Opt into LAN exposure explicitly.
+  // Bind loopback by default: behind a tunnel, cloudflared connects over localhost — nothing
+  // public binds. Opt into LAN exposure with PORTLESS_BIND only when you mean it.
   const host = process.env.PORTLESS_BIND ?? '127.0.0.1';
-  createApiServer({ audit: new FileAuditLog(auditFile) })
+  // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
+  const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
+  createApiServer({ audit: new FileAuditLog(auditFile), webDir })
     .listen({ port, host })
     .then((address) => console.log(`Portless API listening on ${address}`))
     .catch((err) => {
