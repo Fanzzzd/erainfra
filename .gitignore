@@ -6,5 +6,6 @@ coverage
 *.log
 bin/
 .gstack/
+.turbo/
 deploy/portless.env
 deploy/state/
