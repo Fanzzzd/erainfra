@@ -31,22 +31,25 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
   // REST liveness check kept for smoke tests / unauthenticated probes.
   app.get('/health', async () => ({ ok: true }));
 
-  // Public mesh-node bootstrap: `curl -fsSL https://<hub>/mesh-node.sh | sh -s -- share 5432`.
-  // Unauthenticated by design — the script carries no secrets (it just installs dumbpipe and runs
-  // share/connect). We template the served URL into the script so its printed `connect` one-liner
-  // points back at this hub. Override the file path with PORTLESS_MESH_SCRIPT.
-  const meshScript = process.env.PORTLESS_MESH_SCRIPT ?? join(import.meta.dirname, '../../../deploy/mesh-node.sh');
-  app.get('/mesh-node.sh', async (req, reply) => {
-    let body: string;
-    try {
-      body = readFileSync(meshScript, 'utf8');
-    } catch {
-      return reply.code(404).type('text/plain').send('mesh-node.sh not available on this server\n');
-    }
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
-    const self = `${proto}://${req.headers.host}/mesh-node.sh`;
-    return reply.type('text/x-shellscript; charset=utf-8').send(body.split('<url>/mesh-node.sh').join(self));
-  });
+  // Public installer scripts: `curl -fsSL https://<hub>/mesh-node.sh | sh -s -- share 5432`, plus
+  // registry.sh (image store) and image.sh (build/deploy). Unauthenticated by design — they carry
+  // no secrets (install dumbpipe/zot, run share/connect/build/deploy). We template the served base
+  // URL into each (the `<hub>` placeholder) so the commands they print point back at this hub.
+  // Override the directory with PORTLESS_DEPLOY_DIR.
+  const deployDir = process.env.PORTLESS_DEPLOY_DIR ?? join(import.meta.dirname, '../../../deploy');
+  for (const script of ['mesh-node.sh', 'registry.sh', 'image.sh']) {
+    app.get(`/${script}`, async (req, reply) => {
+      let body: string;
+      try {
+        body = readFileSync(join(deployDir, script), 'utf8');
+      } catch {
+        return reply.code(404).type('text/plain').send(`${script} not available on this server\n`);
+      }
+      const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
+      const base = `${proto}://${req.headers.host}`;
+      return reply.type('text/x-shellscript; charset=utf-8').send(body.split('<hub>').join(base));
+    });
+  }
 
   app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',

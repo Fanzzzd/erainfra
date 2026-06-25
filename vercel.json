@@ -5,9 +5,11 @@
   "buildCommand": "echo skip-build (static public/ + api/ function only)",
   "outputDirectory": "public",
   "functions": {
-    "api/mesh-node.js": { "includeFiles": "deploy/mesh-node.sh" }
+    "api/installer.js": { "includeFiles": "deploy/*.sh" }
   },
   "rewrites": [
-    { "source": "/mesh-node.sh", "destination": "/api/mesh-node" }
+    { "source": "/mesh-node.sh", "destination": "/api/installer?name=mesh-node.sh" },
+    { "source": "/registry.sh", "destination": "/api/installer?name=registry.sh" },
+    { "source": "/image.sh", "destination": "/api/installer?name=image.sh" }
   ]
 }

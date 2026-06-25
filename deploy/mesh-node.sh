@@ -2,10 +2,10 @@
 # Portless mesh node bootstrap — one line to join the mesh on any NAT'd box.
 # No public IP, no account, no Rust toolchain (downloads a prebuilt dumbpipe binary).
 #
-#   curl -fsSL <url>/mesh-node.sh | sh -s -- share   <port>           # expose a local service -> prints a ticket
-#   curl -fsSL <url>/mesh-node.sh | sh -s -- connect <ticket> <port>  # dial a ticket onto a local port
-#   curl -fsSL <url>/mesh-node.sh | sh -s -- status                   # list local mesh links
-#   curl -fsSL <url>/mesh-node.sh | sh -s -- stop <name>              # tear a link down
+#   curl -fsSL <hub>/mesh-node.sh | sh -s -- share   <port>           # expose a local service -> prints a ticket
+#   curl -fsSL <hub>/mesh-node.sh | sh -s -- connect <ticket> <port>  # dial a ticket onto a local port
+#   curl -fsSL <hub>/mesh-node.sh | sh -s -- status                   # list local mesh links
+#   curl -fsSL <hub>/mesh-node.sh | sh -s -- stop <name>              # tear a link down
 #
 # `share` is location-transparent TCP: e.g. `share 5432` makes this box's Postgres reachable from
 # any other box that runs `connect <ticket> 15432`, with NO changes to Postgres. Identity is stable
@@ -19,7 +19,7 @@ BIN="$PREFIX/bin"
 STATE="${PORTLESS_STATE_DIR:-$PREFIX/mesh}"
 RUN="$PREFIX/run"
 # Where this script was served from, so `share` can print the exact one-liner for the other box.
-SELF_URL="${PORTLESS_SELF_URL:-<url>/mesh-node.sh}"
+SELF_URL="${PORTLESS_SELF_URL:-<hub>/mesh-node.sh}"
 
 log()  { printf '\033[36m[portless]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m[portless] %s\033[0m\n' "$*" >&2; exit 1; }

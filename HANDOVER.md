@@ -36,6 +36,17 @@ couldn't.
    https://<hub>/mesh-node.sh | sh -s -- share 5432` on one box, `… connect <ticket> 15432` on
    another — downloads a **prebuilt** dumbpipe (no Rust), persists a stable key, and `share` prints
    the exact `connect` line for the other box. The served script is URL-templated to point at the hub.
+7. **Build/deploy split** (`deploy/registry.sh` + `deploy/image.sh`, docs in `deploy/IMAGES.md`):
+   build on a capable box, store the image on **infra you own** (a self-hosted `zot` OCI registry —
+   single binary, **no Docker to run** — local disk now, **your S3** later), pull + run on weak
+   boxes. The store is reachable **over the mesh** (`127.0.0.1`, no public IP; Docker auto-treats it
+   as insecure so no daemon config). Not Docker Hub, not third-party. Verified store+transport
+   end-to-end (zot ← oras push/pull through a real mesh link, byte-for-byte); `docker build/run` is
+   standard (run on your boxes — no Docker daemon here).
+
+**Hosting the installers (no domain):** the API serves `GET /{mesh-node,registry,image}.sh`
+(unauthenticated, `<hub>`-templated), and the same scripts deploy to **Vercel** (`vercel.json` +
+`api/installer.js`) — so `curl https://<project>.vercel.app/mesh-node.sh | sh` works with no domain.
 
 Real RBAC (4 perms: app.read / app.deploy / agent.run / audit.read) + bearer auth (dev
 posture; prod ships no token, fails closed) + durable JSONL audit + dry-run/confirm envelope.
