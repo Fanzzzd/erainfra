@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "echo skip-install (function uses only Node builtins)",
+  "buildCommand": "echo skip-build (static public/ + api/ function only)",
+  "outputDirectory": "public",
+  "functions": {
+    "api/mesh-node.js": { "includeFiles": "deploy/mesh-node.sh" }
+  },
+  "rewrites": [
+    { "source": "/mesh-node.sh", "destination": "/api/mesh-node" }
+  ]
+}

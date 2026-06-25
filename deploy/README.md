@@ -67,6 +67,37 @@ journalctl -u cloudflared-portless -f          # tunnel logs
 Open `https://portless.yourdomain.com`, complete the Access login, and the dashboard loads
 "API connected".
 
+## Mesh: link your other machines (one-liner)
+
+Once the hub is up, pull any other NAT'd box into the mesh with a single line — no public IP, no
+account, no Rust toolchain. The hub serves the installer at `/mesh-node.sh`; it downloads a
+**prebuilt `dumbpipe`** (iroh) and wires a link by cryptographic key.
+
+A DB↔backend link is two halves, one line each:
+
+```bash
+# on the DB box — expose Postgres on the mesh; prints a ticket:
+curl -fsSL https://portless.yourdomain.com/mesh-node.sh | sh -s -- share 5432
+
+# on the backend box — dial that ticket onto a local port (transparent TCP):
+curl -fsSL https://portless.yourdomain.com/mesh-node.sh | sh -s -- connect <ticket> 15432
+```
+
+The backend then talks to `127.0.0.1:15432` as if Postgres were local — **Postgres unchanged,
+neither box needs a public IP**. `share` even prints the exact `connect` line to paste on the
+other box. Identity is stable across restarts (a per-link key is persisted under
+`~/.portless/mesh`), so a ticket keeps working after a reboot. Manage links with
+`… | sh -s -- status` and `… | sh -s -- stop <name>`.
+
+**Access caveat:** `/mesh-node.sh` must be fetchable *without* a login, so add a **Bypass** Access
+policy scoped to that one path (Zero Trust → Access → your app → add policy: Action **Bypass**,
+Include **Everyone**, path `/mesh-node.sh`). The script carries no secrets — it only installs
+dumbpipe and runs share/connect.
+
+**Relay:** links default to iroh's public relay (no signup). To stay fully self-hosted, run your
+own iroh-relay (it speaks HTTPS/WebSocket, so it can ride a Cloudflare tunnel) and set
+`IROH_RELAY_URL` in the node's environment — no script change needed.
+
 ## Updating
 
 Pull new code, then re-run the installer (it reuses the existing token and tunnel):

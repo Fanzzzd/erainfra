@@ -25,6 +25,17 @@ couldn't.
 4. **Cloudflare** — real `cloudflared` wrapper (reuses `~/.cloudflared/cert.pem`): list /
    create tunnels, route DNS (mutations confirm-gated).
 5. **Orchestrate** — run local `codex` / `claude` CLIs (plan safe, execute confirm-gated, audited).
+6. **Mesh** (`runtime/mesh.ts`) — link NAT'd machines over **iroh** via the `dumbpipe` sidecar
+   (same spawn pattern as cloudflared). `mesh.share` exposes a local service (e.g. Postgres
+   :5432) and returns a node **ticket**; `mesh.connect` dials that ticket and surfaces it on a
+   local port as **transparent TCP** — no public IP, no open ports, no account. Dial-by-key
+   (Ed25519); iroh hole-punches or relays automatically. Identity is **stable across restarts**
+   (`persistentSecret` → `IROH_SECRET`, per-link key under `PORTLESS_STATE_DIR`). Confirm-gated +
+   durably audited like publish. Self-host the relay by setting `IROH_RELAY_URL` (can ride a CF tunnel).
+   **One-liner bootstrap** (`deploy/mesh-node.sh`, served at `GET /mesh-node.sh`): `curl -fsSL
+   https://<hub>/mesh-node.sh | sh -s -- share 5432` on one box, `… connect <ticket> 15432` on
+   another — downloads a **prebuilt** dumbpipe (no Rust), persists a stable key, and `share` prints
+   the exact `connect` line for the other box. The served script is URL-templated to point at the hub.
 
 Real RBAC (4 perms: app.read / app.deploy / agent.run / audit.read) + bearer auth (dev
 posture; prod ships no token, fails closed) + durable JSONL audit + dry-run/confirm envelope.
@@ -63,7 +74,14 @@ VPN/fake-IP proxy breaks cloudflared↔Cloudflare API (`api.cloudflare.com` → 
 ## Verified (this pass)
 
 - `pnpm typecheck` clean (api + web). `pnpm build` clean (web, 1796 modules).
-- `pnpm test`: **64 api + core + Go** green (down from 92 — deleted the mock-only suites).
+- `pnpm test`: **72 api** + core + Go green (64 + 6 mesh + 2 mesh-serve).
+- **Mesh e2e** (`prototypes/relay-experiments/verify-mesh.ts`): real `MeshManager` share→connect of
+  a loopback echo service through iroh = **50/50 byte-for-byte**, twice, with an **identical NodeId
+  across restarts** (stable ticket). ~107ms here because this Mac's VPN forces the n0 relay path.
+- **One-liner bootstrap e2e** (`deploy/mesh-node.sh`): forced the **prebuilt** download (PATH without
+  cargo) → real Mach-O binary → share→connect→**25/25 byte-for-byte**, stable NodeId, clean teardown.
+  Gotcha found+fixed: a curl `--max-time` readiness probe was *destructive* (abrupt RST tore the
+  fresh link down) → switched to a non-destructive `nc -z` scan with a fixed-sleep fallback.
 - **Real end-to-end through the HTTP API**: `local.deploy` → process serves on :7801 →
   `local.publish` → `https://sisters-wrote-remarks-pci.trycloudflare.com` → **fetched over the
   public internet, returned the app's HTML** → `local.unpublish` → publicUrl cleared. Audit durable.

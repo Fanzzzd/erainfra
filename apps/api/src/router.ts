@@ -9,6 +9,7 @@ import { buildTopology } from './topology.ts';
 import { LocalCliOrchestrator } from './runtime/orchestrator.ts';
 import { CloudflaredCli } from './runtime/cloudflared-cli.ts';
 import { QuickTunnelManager } from './runtime/quicktunnel.ts';
+import { MeshManager } from './runtime/mesh.ts';
 import { ProjectStore } from './projects.ts';
 
 const orchestrator = new LocalCliOrchestrator();
@@ -16,6 +17,8 @@ const cloudflared = new CloudflaredCli();
 const projects = new ProjectStore();
 // Public-URL manager: one Cloudflare quick tunnel per published local app (account-less, ephemeral).
 const tunnels = new QuickTunnelManager();
+// Mesh manager: iroh links (via dumbpipe) between NAT'd machines — dial by key, no public IP, no account.
+const mesh = new MeshManager();
 // Cap on a single pasted portless.yaml so import/validate/topology can't be flooded with a huge body.
 const MAX_YAML_BYTES = 64_000;
 import { APP_TEMPLATES, buildFromTemplate } from './runtime/local.ts';
@@ -71,6 +74,12 @@ async function performRoute(ctx: { principal: Principal; audit: AuditLog }, tunn
 // A tunnel name or a UUID — not free-form, even though it's argv (never a shell).
 const tunnelRef = z.string().regex(/^([a-z0-9][a-z0-9-]{0,62}|[0-9a-f-]{36})$/i, 'a tunnel name or id');
 const hostnameRef = z.string().max(253).regex(/^([a-z0-9-]+\.)+[a-z]{2,}$/i, 'a valid hostname');
+
+// Mesh link identifier + iroh node ticket. The ticket is base32 (it's passed as argv, never a
+// shell), bounded so a huge body can't be shoved through; charset kept loose to survive ticket
+// format tweaks across dumbpipe versions.
+const meshLinkName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes');
+const meshTicket = z.string().min(48).max(4096).regex(/^[a-z0-9]+$/i, 'an iroh node ticket');
 
 // Canonicalize the existing portion of a path (resolving symlinks), re-appending any
 // not-yet-created trailing components. Lets us symlink-check a cwd that doesn't exist yet.
@@ -387,6 +396,59 @@ export const appRouter = router({
         const ok = await tunnels.unpublish(input.name);
         if (!ok) throw new TRPCError({ code: 'BAD_REQUEST', message: 'app is not published' });
         recordOp(ctx, { action: 'local.unpublish', target: input.name, outcome: 'success' });
+        return { ok: true as const };
+      }),
+  }),
+
+  // Mesh: link NAT'd machines over iroh (via the dumbpipe sidecar). Peers dial each other by a
+  // cryptographic node ticket — no public IP, no open ports, no account. `share` exposes a local
+  // service on the mesh and returns a ticket; `connect` dials a ticket and surfaces it on a local
+  // port as transparent TCP (so e.g. Postgres needs no changes). Both are real exposures, so they
+  // are confirm-gated + durably audited, exactly like local.publish.
+  mesh: router({
+    list: requirePermission('app.read').query(() => mesh.list()),
+
+    share: requirePermission('app.deploy')
+      .input(z.object({ name: meshLinkName, port: z.number().int().min(1).max(65535), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to expose a service on the mesh' });
+        if (mesh.get(input.name)) throw new TRPCError({ code: 'CONFLICT', message: 'a link with this name already exists' });
+        requireDurableAudit(ctx, 'mesh.share', `${input.name}:${input.port}`); // fail closed before exposing on the mesh
+        try {
+          const link = await mesh.share(input.name, input.port);
+          const op = recordOp(ctx, { action: 'mesh.share', target: `${input.name}:${input.port}`, outcome: 'success' });
+          return { ok: true as const, ticket: link.ticket, ...op };
+        } catch (e) {
+          console.error('[mesh.share]', (e as Error).message);
+          recordOp(ctx, { action: 'mesh.share', target: input.name, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'could not establish the mesh link (see server logs)' });
+        }
+      }),
+
+    connect: requirePermission('app.deploy')
+      .input(z.object({ name: meshLinkName, ticket: meshTicket, localPort: z.number().int().min(1024).max(65535), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to open a mesh link' });
+        if (mesh.get(input.name)) throw new TRPCError({ code: 'CONFLICT', message: 'a link with this name already exists' });
+        requireDurableAudit(ctx, 'mesh.connect', `${input.name}:${input.localPort}`); // fail closed before binding the local port
+        try {
+          const link = await mesh.connect(input.name, input.ticket, input.localPort);
+          const op = recordOp(ctx, { action: 'mesh.connect', target: `${input.name}:${input.localPort}`, outcome: 'success' });
+          return { ok: true as const, localPort: link.port, ...op };
+        } catch (e) {
+          console.error('[mesh.connect]', (e as Error).message);
+          recordOp(ctx, { action: 'mesh.connect', target: input.name, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'could not open the mesh link (see server logs)' });
+        }
+      }),
+
+    drop: requirePermission('app.deploy')
+      .input(z.object({ name: z.string().min(1), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to tear down a mesh link' });
+        const ok = await mesh.drop(input.name);
+        if (!ok) throw new TRPCError({ code: 'BAD_REQUEST', message: 'no such mesh link' });
+        recordOp(ctx, { action: 'mesh.drop', target: input.name, outcome: 'success' });
         return { ok: true as const };
       }),
   }),
