@@ -13,7 +13,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const ALLOWED = new Set(['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh']);
+// Note: agent.sh/agent.ps1 served here too, but the agent BINARY they fetch lives on the hub
+// (/agent-bin/*), not Vercel — so pass --hub <your-box-url> when enrolling via a Vercel-served script.
+const ALLOWED = new Set(['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh', 'agent.sh', 'agent.ps1']);
 const cache = {};
 
 function script(name) {

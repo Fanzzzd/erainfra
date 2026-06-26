@@ -89,7 +89,7 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
   // URL into each (the `<hub>` placeholder) so the commands they print point back at this hub.
   // Override the directory with PORTLESS_DEPLOY_DIR.
   const deployDir = process.env.PORTLESS_DEPLOY_DIR ?? join(import.meta.dirname, '../../../deploy');
-  for (const script of ['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh']) {
+  for (const script of ['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh', 'agent.sh', 'agent.ps1']) {
     const mime = script.endsWith('.ps1') ? 'text/plain; charset=utf-8' : 'text/x-shellscript; charset=utf-8';
     app.get(`/${script}`, async (req, reply) => {
       let body: string;
@@ -103,6 +103,20 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       return reply.type(mime).send(body.split('<hub>').join(base));
     });
   }
+
+  // Serve prebuilt agent binaries (populated by deploy/build-agents.sh) so agent.sh / agent.ps1 can
+  // download the right one. Self-hosted distribution — no Docker Hub, no third-party release host.
+  // The filename allowlist keeps this from becoming an arbitrary-file read.
+  const agentBinDir = process.env.PORTLESS_AGENT_BIN_DIR ?? join(deployDir, 'bin');
+  app.get('/agent-bin/:file', async (req, reply) => {
+    const { file } = req.params as { file: string };
+    if (!/^portless-agent-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/.test(file)) {
+      return reply.code(400).type('text/plain').send('bad agent binary name\n');
+    }
+    const f = join(agentBinDir, file);
+    if (!existsSync(f)) return reply.code(404).type('text/plain').send(`${file} not built — run deploy/build-agents.sh on the hub\n`);
+    return reply.type('application/octet-stream').send(createReadStream(f));
+  });
 
   app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',
