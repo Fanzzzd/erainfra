@@ -4,8 +4,9 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { tmpdir } from 'node:os';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, createReadStream } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { appRouter } from './router.ts';
 import type { Context } from './trpc.ts';
 import { InMemoryAuditLog, FileAuditLog, type AuditLog } from './audit.ts';
@@ -28,8 +29,40 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
   const tokens = opts.tokens ?? defaultTokenStore();
   const runtime = opts.runtime ?? new LocalRuntime();
   // requestTimeout:0 disables Node's 5-min cap so long agent orchestrations aren't cut off.
-  const app = Fastify({ logger: false, requestTimeout: 0, keepAliveTimeout: 0 });
+  // bodyLimit raised so drag-drop source uploads (tarballs) aren't capped at Fastify's 1MB default.
+  // ponytail: 256MB cap, buffered in memory then written to disk — fine for a single-user PaaS; switch
+  // to a streamed multipart upload if source bundles get large or uploads run concurrently.
+  const app = Fastify({ logger: false, requestTimeout: 0, keepAliveTimeout: 0, bodyLimit: 256 * 1024 * 1024 });
   app.addHook('onClose', async () => runtime.stopAll());
+
+  // Accept tarball uploads as a raw Buffer (drag-drop deploy sends the source as a gzipped tar).
+  app.addContentTypeParser(['application/gzip', 'application/x-tar', 'application/octet-stream'], { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+
+  // Drag-drop source ingestion: the dashboard POSTs a project's source as a .tar.gz; a build-capable
+  // agent later fetches it back over the spine and builds it. Both routes need app.deploy. The build
+  // id is a server-minted UUID, so the GET path can't be traversed.
+  const buildsDir = process.env.PORTLESS_BUILDS_DIR ?? join(tmpdir(), 'portless-runtime', 'builds');
+  const principalFor = (req: { headers: { authorization?: string | string[] } }) => {
+    const p = tokens.resolve(bearerToken(req.headers.authorization));
+    return p && can(p, 'app.deploy') ? p : undefined;
+  };
+  app.post('/upload', async (req, reply) => {
+    if (!principalFor(req)) return reply.code(401).send({ error: 'unauthorized' });
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: 'expected a non-empty tar.gz body (Content-Type: application/gzip)' });
+    const buildId = randomUUID();
+    mkdirSync(join(buildsDir, buildId), { recursive: true });
+    writeFileSync(join(buildsDir, buildId, 'source.tgz'), body);
+    return reply.code(201).send({ buildId, bytes: body.length });
+  });
+  app.get('/builds/:id/source.tgz', async (req, reply) => {
+    if (!principalFor(req)) return reply.code(401).send({ error: 'unauthorized' });
+    const { id } = req.params as { id: string };
+    if (!/^[0-9a-f-]{36}$/.test(id)) return reply.code(400).send({ error: 'bad build id' });
+    const f = join(buildsDir, id, 'source.tgz');
+    if (!existsSync(f)) return reply.code(404).send({ error: 'no such build' });
+    return reply.type('application/gzip').send(createReadStream(f));
+  });
 
   // REST liveness check kept for smoke tests / unauthenticated probes.
   app.get('/health', async () => ({ ok: true }));
