@@ -9,6 +9,7 @@
   },
   "rewrites": [
     { "source": "/mesh-node.sh", "destination": "/api/installer?name=mesh-node.sh" },
+    { "source": "/mesh-node.ps1", "destination": "/api/installer?name=mesh-node.ps1" },
     { "source": "/registry.sh", "destination": "/api/installer?name=registry.sh" },
     { "source": "/image.sh", "destination": "/api/installer?name=image.sh" }
   ]

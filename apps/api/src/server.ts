@@ -37,7 +37,8 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
   // URL into each (the `<hub>` placeholder) so the commands they print point back at this hub.
   // Override the directory with PORTLESS_DEPLOY_DIR.
   const deployDir = process.env.PORTLESS_DEPLOY_DIR ?? join(import.meta.dirname, '../../../deploy');
-  for (const script of ['mesh-node.sh', 'registry.sh', 'image.sh']) {
+  for (const script of ['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh']) {
+    const mime = script.endsWith('.ps1') ? 'text/plain; charset=utf-8' : 'text/x-shellscript; charset=utf-8';
     app.get(`/${script}`, async (req, reply) => {
       let body: string;
       try {
@@ -47,7 +48,7 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       }
       const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
       const base = `${proto}://${req.headers.host}`;
-      return reply.type('text/x-shellscript; charset=utf-8').send(body.split('<hub>').join(base));
+      return reply.type(mime).send(body.split('<hub>').join(base));
     });
   }
 

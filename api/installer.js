@@ -13,7 +13,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const ALLOWED = new Set(['mesh-node.sh', 'registry.sh', 'image.sh']);
+const ALLOWED = new Set(['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh']);
 const cache = {};
 
 function script(name) {
@@ -46,7 +46,7 @@ export default function handler(req, res) {
   const host = req.headers['x-forwarded-host'] || req.headers.host;
   const proto = req.headers['x-forwarded-proto'] || 'https';
   const base = `${proto}://${host}`;
-  res.setHeader('content-type', 'text/x-shellscript; charset=utf-8');
+  res.setHeader('content-type', name.endsWith('.ps1') ? 'text/plain; charset=utf-8' : 'text/x-shellscript; charset=utf-8');
   res.setHeader('cache-control', 'public, max-age=300');
   res.end(body.split('<hub>').join(base));
 }
