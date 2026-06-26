@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -34,6 +35,8 @@ func main() {
 		// Reads an Operation from stdin and prints the resolved allowlisted command.
 		// Dry-run only: this never executes, and there is no raw-shell path.
 		runOp()
+	case "connect":
+		runConnect()
 	default:
 		usage()
 		os.Exit(2)
@@ -41,7 +44,23 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: portless-agent <plan|resources|heartbeat|benchmark|op>")
+	fmt.Fprintln(os.Stderr, "usage: portless-agent <plan|resources|heartbeat|benchmark|op|connect>")
+}
+
+// connect dials the hub over WSS and serves its commands (deploy containers, exec). The agent dials
+// OUT — no inbound port — so it works on a NAT'd box with no public IP.
+func runConnect() {
+	fs := flag.NewFlagSet("connect", flag.ExitOnError)
+	hub := fs.String("hub", os.Getenv("PORTLESS_HUB"), "hub WSS url, e.g. wss://hub.example.com/agent")
+	token := fs.String("token", os.Getenv("PORTLESS_TOKEN"), "auth token (Bearer)")
+	name := fs.String("name", hostname(), "agent id reported to the hub")
+	docker := fs.String("docker", "docker", "container CLI (docker or podman)")
+	_ = fs.Parse(os.Args[2:])
+	if *hub == "" {
+		fmt.Fprintln(os.Stderr, "need --hub or PORTLESS_HUB (e.g. wss://hub.example.com/agent)")
+		os.Exit(2)
+	}
+	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker})
 }
 
 func runPlan() {

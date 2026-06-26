@@ -1,6 +1,7 @@
 import './boot-env.ts'; // MUST be first: sets persist-path env defaults before router.ts builds its singletons
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
@@ -10,6 +11,8 @@ import type { Context } from './trpc.ts';
 import { InMemoryAuditLog, FileAuditLog, type AuditLog } from './audit.ts';
 import { defaultTokenStore, type TokenStore } from './auth.ts';
 import { LocalRuntime } from './runtime/local.ts';
+import { can } from './rbac.ts';
+import { agentGateway } from './runtime/agents.ts';
 
 // Re-export so existing importers (and tests) keep working.
 export { appRouter, type AppRouter } from './router.ts';
@@ -30,6 +33,22 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
 
   // REST liveness check kept for smoke tests / unauthenticated probes.
   app.get('/health', async () => ({ ok: true }));
+
+  // Agent control channel (self-controlled, replaces dumbpipe): portless agents on remote NAT'd
+  // boxes dial IN over WSS and the hub pushes them commands. Authed with the same bearer token;
+  // agents need app.deploy (they execute deploys). The socket staying open is the presence signal.
+  // Encapsulated so @fastify/websocket is fully loaded BEFORE the route is added — otherwise the
+  // `{ websocket: true }` option is ignored and the upgrade just hangs.
+  app.register(async (instance) => {
+    await instance.register(fastifyWebsocket);
+    instance.get('/agent', { websocket: true }, (socket, req) => {
+      const principal = tokens.resolve(bearerToken(req.headers.authorization));
+      if (!principal || !can(principal, 'app.deploy')) { try { socket.close(1008, 'unauthorized'); } catch { /* gone */ } return; }
+      const s = { send: (d: string) => socket.send(d), close: () => socket.close() };
+      socket.on('message', (data: Buffer) => agentGateway.onMessage(s, data.toString()));
+      socket.on('close', () => agentGateway.onClose(s));
+    });
+  });
 
   // Public installer scripts: `curl -fsSL https://<hub>/mesh-node.sh | sh -s -- share 5432`, plus
   // registry.sh (image store) and image.sh (build/deploy). Unauthenticated by design — they carry

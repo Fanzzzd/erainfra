@@ -10,6 +10,7 @@ import { LocalCliOrchestrator } from './runtime/orchestrator.ts';
 import { CloudflaredCli } from './runtime/cloudflared-cli.ts';
 import { QuickTunnelManager } from './runtime/quicktunnel.ts';
 import { MeshManager } from './runtime/mesh.ts';
+import { agentGateway } from './runtime/agents.ts';
 import { ProjectStore } from './projects.ts';
 
 const orchestrator = new LocalCliOrchestrator();
@@ -450,6 +451,53 @@ export const appRouter = router({
         if (!ok) throw new TRPCError({ code: 'BAD_REQUEST', message: 'no such mesh link' });
         recordOp(ctx, { action: 'mesh.drop', target: input.name, outcome: 'success' });
         return { ok: true as const };
+      }),
+  }),
+
+  // Agents: remote boxes that dialed into the hub over WSS (the self-controlled control channel that
+  // replaces dumbpipe). The hub pushes them commands — deploy a container, run a command — and awaits
+  // the reply. Both mutators are confirm-gated + durably audited (they execute on a real machine).
+  agents: router({
+    list: requirePermission('app.read').query(() => agentGateway.list()),
+
+    // Deploy a container on an agent: it docker-pulls from the registry and docker-runs it.
+    deploy: requirePermission('app.deploy')
+      .input(
+        z.object({
+          agentId: z.string().min(1),
+          image: z.string().min(1).max(512),
+          name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes'),
+          args: z.array(z.string().max(256)).max(64).default([]),
+          confirm: z.boolean().default(false),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to deploy to an agent' });
+        requireDurableAudit(ctx, 'agents.deploy', `${input.agentId}: ${input.image}`);
+        try {
+          const reply = await agentGateway.send(input.agentId, { cmd: 'deploy', image: input.image, name: input.name, args: input.args }, 180_000);
+          const op = recordOp(ctx, { action: 'agents.deploy', target: `${input.agentId}:${input.name}`, outcome: reply.ok ? 'success' : 'failure' });
+          return { ...reply, ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'agents.deploy', target: input.agentId, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
+      }),
+
+    // Run a command on an agent (debug/ops; the container path above is the normal one).
+    run: requirePermission('app.deploy')
+      .input(z.object({ agentId: z.string().min(1), argv: z.array(z.string().min(1)).min(1).max(64), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to run a command on an agent' });
+        requireDurableAudit(ctx, 'agents.run', `${input.agentId}: ${input.argv.join(' ')}`);
+        try {
+          const reply = await agentGateway.send(input.agentId, { cmd: 'exec', argv: input.argv });
+          const op = recordOp(ctx, { action: 'agents.run', target: input.agentId, outcome: reply.ok ? 'success' : 'failure' });
+          return { ...reply, ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'agents.run', target: input.agentId, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
       }),
   }),
 
