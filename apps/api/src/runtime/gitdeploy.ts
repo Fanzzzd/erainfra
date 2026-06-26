@@ -93,8 +93,27 @@ export class GitProjectStore {
   }
 }
 
-// Run the pipeline for one commit. Mints a short-lived GitHub App token when configured + an
-// installation id is known (private repos); public repos clone tokenless.
+export type DeploySpec = { buildNode: string; deployNode: string; name: string; port: number };
+
+// Shared pipeline core: build a source on the build node (git or tar), then deploy on the deploy node.
+async function buildAndDeploy(
+  buildFields: Record<string, unknown>,
+  spec: DeploySpec,
+  sha: string,
+  cfg: DeployConfig,
+  gw: Pick<AgentGateway, 'send'>,
+): Promise<DeployResult> {
+  const tag = `${spec.name}:${(sha || 'latest').slice(0, 12)}`;
+  const image = `${cfg.registry}/${tag}`;
+  const build = await gw.send(spec.buildNode, { cmd: 'build', ...buildFields, registry: cfg.registry, tag, hubBase: cfg.hubBase }, 300_000);
+  if (!build.ok) return { ok: false, stage: 'build', image, output: build.output, error: build.error };
+  const args = ['-e', `PORT=${spec.port}`, '-p', `${spec.port}:${spec.port}`];
+  const deploy = await gw.send(spec.deployNode, { cmd: 'deploy', image, name: spec.name, args }, 180_000);
+  return { ok: deploy.ok, stage: 'deploy', image, output: deploy.output, error: deploy.error };
+}
+
+// Git push-to-deploy. Mints a short-lived GitHub App token when configured + an installation id is
+// known (private repos); public repos clone tokenless.
 export async function deployFromGit(
   b: GitBinding,
   sha: string,
@@ -106,17 +125,18 @@ export async function deployFromGit(
   if (cfg.appId && cfg.privateKey && installationId) {
     token = await installationToken(cfg.appId, cfg.privateKey, installationId);
   }
-  const tag = `${b.name}:${(sha || 'latest').slice(0, 12)}`;
-  const image = `${cfg.registry}/${tag}`;
-  const build = await gw.send(
-    b.buildNode,
-    { cmd: 'build', repoUrl: cloneUrl(b.repo, token), ref: b.branch, registry: cfg.registry, tag, hubBase: cfg.hubBase },
-    300_000,
-  );
-  if (!build.ok) return { ok: false, stage: 'build', image, output: build.output, error: build.error };
-  const args = ['-e', `PORT=${b.port}`, '-p', `${b.port}:${b.port}`];
-  const deploy = await gw.send(b.deployNode, { cmd: 'deploy', image, name: b.name, args }, 180_000);
-  return { ok: deploy.ok, stage: 'deploy', image, output: deploy.output, error: deploy.error };
+  return buildAndDeploy({ repoUrl: cloneUrl(b.repo, token), ref: b.branch }, b, sha, cfg, gw);
+}
+
+// Drag-drop deploy: build from a previously uploaded tarball (POST /upload → buildId). The build node
+// fetches the tarball from the hub with its own token (the /builds route is app.deploy-gated).
+export async function deployFromUpload(
+  buildId: string,
+  spec: DeploySpec,
+  cfg: DeployConfig,
+  gw: Pick<AgentGateway, 'send'> = agentGateway,
+): Promise<DeployResult> {
+  return buildAndDeploy({ tarUrl: `${cfg.hubBase}/builds/${buildId}/source.tgz` }, spec, buildId, cfg, gw);
 }
 
 // Default store singleton (mirrors the other runtime singletons).

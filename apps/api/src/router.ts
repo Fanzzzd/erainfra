@@ -11,7 +11,7 @@ import { CloudflaredCli } from './runtime/cloudflared-cli.ts';
 import { QuickTunnelManager } from './runtime/quicktunnel.ts';
 import { MeshManager } from './runtime/mesh.ts';
 import { agentGateway } from './runtime/agents.ts';
-import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
+import { gitProjects, deployFromGit, deployFromUpload } from './runtime/gitdeploy.ts';
 import { githubAppConfig } from './runtime/github.ts';
 import { ProjectStore } from './projects.ts';
 
@@ -558,6 +558,37 @@ export const appRouter = router({
           return { ...r, ...op };
         } catch (e) {
           recordOp(ctx, { action: 'git.deployNow', target: binding.repo, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
+      }),
+  }),
+
+  // Drag-drop deploy: source is first uploaded via POST /upload (returns a buildId), then this builds
+  // it on a node and deploys it — the non-git half of the Vercel flow. Needs PORTLESS_HUB_BASE so the
+  // build node can fetch the uploaded tarball back from the hub.
+  upload: router({
+    deploy: requirePermission('app.deploy')
+      .input(
+        z.object({
+          buildId: z.string().regex(/^[0-9a-f-]{36}$/, 'a buildId from POST /upload'),
+          name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes'),
+          port: z.number().int().min(1).max(65535),
+          buildNode: z.string().min(1),
+          deployNode: z.string().min(1),
+          confirm: z.boolean().default(false),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to deploy' });
+        const hubBase = process.env.PORTLESS_HUB_BASE;
+        if (!hubBase) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'set PORTLESS_HUB_BASE (the hub url your build nodes can reach) to deploy' });
+        requireDurableAudit(ctx, 'upload.deploy', `${input.buildId}: ${input.name}`);
+        try {
+          const r = await deployFromUpload(input.buildId, input, { registry: process.env.PORTLESS_REGISTRY ?? '127.0.0.1:5000', hubBase });
+          const op = recordOp(ctx, { action: 'upload.deploy', target: input.name, outcome: r.ok ? 'success' : 'failure' });
+          return { ...r, ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'upload.deploy', target: input.name, outcome: 'failure' });
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
         }
       }),

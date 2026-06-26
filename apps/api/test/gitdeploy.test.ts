@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GitProjectStore, deployFromGit, type GitBinding } from '../src/runtime/gitdeploy.ts';
+import { GitProjectStore, deployFromGit, deployFromUpload, type GitBinding } from '../src/runtime/gitdeploy.ts';
 
 const sampleBind = { repo: 'Owner/Repo', branch: 'main', buildNode: 'bn', deployNode: 'dn', name: 'app', port: 8080 };
 
@@ -39,6 +39,19 @@ test('deployFromGit builds then deploys, with correct image/args (fake gateway)'
   assert.equal(calls[1].cmd.cmd, 'deploy');
   assert.equal(calls[1].cmd.image, 'reg:5000/app:abcdef123456');
   assert.deepEqual(calls[1].cmd.args, ['-e', 'PORT=8080', '-p', '8080:8080']);
+});
+
+test('deployFromUpload builds from the uploaded tarball then deploys', async () => {
+  const calls: Array<{ id: string; cmd: Record<string, unknown> }> = [];
+  const gw = { send: async (id: string, cmd: Record<string, unknown>) => { calls.push({ id, cmd }); return { ok: true }; } };
+  const id = '11111111-1111-1111-1111-111111111111';
+  const r = await deployFromUpload(id, { buildNode: 'bn', deployNode: 'dn', name: 'app', port: 9000 }, { registry: 'reg:5000', hubBase: 'http://hub' }, gw);
+  assert.equal(r.ok, true);
+  assert.equal(calls[0].cmd.cmd, 'build');
+  assert.equal(calls[0].cmd.tarUrl, `http://hub/builds/${id}/source.tgz`);
+  assert.equal(calls[0].cmd.repoUrl, undefined); // tar source, not git
+  assert.equal(calls[1].cmd.cmd, 'deploy');
+  assert.deepEqual(calls[1].cmd.args, ['-e', 'PORT=9000', '-p', '9000:9000']);
 });
 
 test('deployFromGit short-circuits when the build fails (no deploy)', async () => {

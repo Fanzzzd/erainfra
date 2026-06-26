@@ -60,7 +60,7 @@ func runConnect() {
 		fmt.Fprintln(os.Stderr, "need --hub or PORTLESS_HUB (e.g. wss://hub.example.com/agent)")
 		os.Exit(2)
 	}
-	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker})
+	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token})
 }
 
 func runPlan() {
