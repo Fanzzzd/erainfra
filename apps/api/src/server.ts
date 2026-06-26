@@ -5,7 +5,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync, mkdirSync, writeFileSync, createReadStream } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appRouter } from './router.ts';
 import type { Context } from './trpc.ts';
@@ -170,9 +170,11 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
   // one tunnel hostname covers both. The SPA uses hash routing, so static files + index at '/' are
   // enough (no catch-all rewrite). Only enabled when a build dir is configured AND exists; dev runs
   // the Vite server separately and leaves this off. PORTLESS_WEB_DIR defaults to the repo's web dist.
+  // resolve() so a relative PORTLESS_WEB_DIR works (fastify-static requires an absolute root, else
+  // it throws a cryptic error at boot).
   const webDir = opts.webDir ?? process.env.PORTLESS_WEB_DIR;
   if (webDir && existsSync(webDir)) {
-    app.register(fastifyStatic, { root: webDir, prefix: '/' });
+    app.register(fastifyStatic, { root: resolve(webDir), prefix: '/' });
   }
 
   return app;
