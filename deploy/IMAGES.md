@@ -40,8 +40,13 @@ curl -fsSL https://<hub>/mesh-node.sh | sh -s -- connect <registry-ticket> 5000
 curl -fsSL https://<hub>/image.sh     | sh -s -- ship ./myapp myapp:v1
 ```
 
-`ship` = `docker build -t 127.0.0.1:5000/myapp:v1 ./myapp` then `docker push`. (The build box needs
-Docker or podman; building is the heavy step that's fine on a capable box.)
+`ship` **auto-detects** how to build, then pushes:
+- a `Dockerfile` in the context → `docker build`;
+- no Dockerfile → **Nixpacks** (a single prebuilt binary that detects Node/Python/Go/Rust/… and
+  generates the build itself — the "drag in source, no Dockerfile needed" Railway trick).
+
+The build box needs Docker or podman (Nixpacks shells `docker` specifically; for podman, provide a
+Dockerfile). Building is the heavy step that's fine on a capable box.
 
 ## 3. Pull + run (on the weak deploy box)
 
@@ -60,6 +65,15 @@ container — far lighter than building one — so it doesn't need the build too
 - **Without the mesh:** if your store box has a public IP/domain, point `PORTLESS_REGISTRY` straight
   at it (`export PORTLESS_REGISTRY=registry.example.com`) and give zot TLS, or add it to the
   daemon's `insecure-registries`. The mesh path avoids all of that.
-- **Verified:** the store + mesh transport are proven end-to-end (zot ← oras push/pull through a real
-  mesh link, byte-for-byte). The `docker build/push/pull/run` steps are standard; run them on your
-  boxes (the dev box here has no working Docker daemon).
+- **macOS / Docker Desktop build box (gotchas, Linux build boxes are unaffected):**
+  - Port **5000 is taken by AirPlay Receiver** (ControlCenter) on macOS — it'll silently intercept the
+    registry. Use another port: `registry.sh up 5005` and `PORTLESS_REGISTRY=127.0.0.1:5005`.
+  - Docker Desktop runs the daemon **in a VM**, so a *host-binary* zot on `127.0.0.1` isn't reachable
+    from the daemon for push/pull. Either run the store **as a container** (`docker run -d -p
+    5005:5000 registry:2` — its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
+    for both push and pull and stays auto-insecure/HTTP), or push to `host.docker.internal:5005` after
+    adding it to the daemon's `insecure-registries`. On a native Linux build box the host-binary zot on
+    `127.0.0.1:5000` just works — dockerd shares the host loopback.
+- **Verified end-to-end (with Docker):** Nixpacks build of a no-Dockerfile app → push → registry
+  catalog → `agents.deploy` over the spine → agent `docker pull`+`run` → the container served HTTP.
+  Separately, the store + mesh transport are proven byte-for-byte (zot ← oras over a real mesh link).
