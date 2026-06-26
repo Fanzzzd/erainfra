@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, Boxes, Workflow, Bot, Cloud } from 'lucide-react';
+import { LayoutDashboard, Boxes, Workflow, Bot, Cloud, Server, Rocket } from 'lucide-react';
 import { trpcQuery } from '@/api';
 import { cn } from '@/lib/utils';
 import { Overview } from '@/pages/Overview';
@@ -7,13 +7,17 @@ import { Projects } from '@/pages/Projects';
 import { Orchestrate } from '@/pages/Orchestrate';
 import { Cloudflare } from '@/pages/Cloudflare';
 import { Apps } from '@/pages/Apps';
+import { Nodes } from '@/pages/Nodes';
+import { Deploy } from '@/pages/Deploy';
 
-type View = 'overview' | 'projects' | 'orchestrate' | 'cloudflare' | 'apps';
+type View = 'overview' | 'projects' | 'orchestrate' | 'cloudflare' | 'apps' | 'nodes' | 'deploy';
 
 const NAV: Array<{ id: View; label: string; icon: typeof Boxes }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'projects', label: 'Projects', icon: Workflow },
   { id: 'apps', label: 'Apps', icon: Boxes },
+  { id: 'deploy', label: 'Deploy', icon: Rocket },
+  { id: 'nodes', label: 'Nodes', icon: Server },
   { id: 'orchestrate', label: 'Orchestrate', icon: Bot },
   { id: 'cloudflare', label: 'Cloudflare', icon: Cloud },
 ];
@@ -108,9 +112,11 @@ export function App() {
           <main className="flex-1 p-6 lg:p-8">
             {view === 'overview' && <Overview />}
             {view === 'projects' && <Projects />}
+            {view === 'apps' && <Apps />}
+            {view === 'deploy' && <Deploy />}
+            {view === 'nodes' && <Nodes />}
             {view === 'orchestrate' && <Orchestrate />}
             {view === 'cloudflare' && <Cloudflare />}
-            {view === 'apps' && <Apps />}
           </main>
         </div>
       </div>

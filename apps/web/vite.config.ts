@@ -18,12 +18,14 @@ export default defineConfig({
     proxy: {
       '/trpc': 'http://127.0.0.1:8787',
       '/api': 'http://127.0.0.1:8787',
+      '/upload': 'http://127.0.0.1:8787',
     },
   },
   preview: {
     proxy: {
       '/trpc': 'http://127.0.0.1:8787',
       '/api': 'http://127.0.0.1:8787',
+      '/upload': 'http://127.0.0.1:8787',
     },
   },
 });

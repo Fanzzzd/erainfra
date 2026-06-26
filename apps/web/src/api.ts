@@ -25,6 +25,19 @@ export async function trpcMutation<T>(path: string, input: unknown): Promise<T> 
   return (body as { result: { data: T } }).result.data;
 }
 
+// Upload a source tarball to POST /upload (not a tRPC route — it's raw bytes), reusing the same
+// bearer token so the auth logic stays in one place. Returns the buildId you then pass to upload.deploy.
+export async function uploadSource(file: Blob): Promise<{ buildId: string }> {
+  const res = await fetch('/upload', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/gzip' },
+    body: file,
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body?.error?.message ?? body?.error ?? `upload -> ${res.status}`);
+  return body as { buildId: string };
+}
+
 export interface LocalProc {
   name: string;
   pid: number;
@@ -47,4 +60,22 @@ export interface AppRow {
   project: string;
   environment: string;
   services: Array<{ name: string; type: string; replicas: number; image: string }>;
+}
+
+export interface AgentInfo {
+  id: string;
+  version: string | null;
+  roles: string[];
+  connectedAt: string;
+}
+
+export interface GitBinding {
+  id: string;
+  repo: string;
+  branch: string;
+  buildNode: string;
+  deployNode: string;
+  name: string;
+  port: number;
+  lastStatus?: { at: string; sha: string; ok: boolean; stage: string; error?: string };
 }
