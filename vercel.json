@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "echo skip-install (function uses only Node builtins)",
-  "buildCommand": "echo skip-build (static public/ + api/ function only)",
+  "installCommand": "echo no install needed",
+  "buildCommand": "echo no build needed",
   "outputDirectory": "public",
   "functions": {
     "api/installer.js": { "includeFiles": "deploy/*.sh" }

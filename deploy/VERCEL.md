@@ -15,13 +15,32 @@ installer URL is the whole story. Run the full dashboard/API on a real box only 
 ## Deploy
 
 1. Push this repo to GitHub.
-2. Vercel → **Add New Project** → import the repo. Keep **Root Directory = `.`** (the root
-   `vercel.json` drives everything; no framework, no build).
-3. Deploy. Done — there's nothing to configure.
+2. Vercel → **Add New Project** → import the repo.
+3. **Root Directory = `.`** and **Framework Preset = `Other`**. Vercel may auto-guess "Turborepo"
+   from `turbo.json` — that's fine (the root `vercel.json` overrides the build), but selecting
+   `Other` avoids any doubt. Don't override the Build/Install commands in the UI; `vercel.json` sets
+   them to no-ops on purpose (this is a static + function deploy, **not** a monorepo build).
+4. Deploy.
 
-`vercel.json` serves `public/index.html` statically and routes `/mesh-node.sh` to the
-`api/mesh-node.js` function, which returns `deploy/mesh-node.sh` with the deployment's own URL
-templated in (so the `connect` line it prints points back at your Vercel URL).
+`vercel.json` serves `public/index.html` statically and routes `/{mesh-node,registry,image}.sh` to
+the `api/installer.js` function, which returns the matching `deploy/*.sh` with the deployment's base
+URL templated into the `<hub>` placeholder (so the commands the scripts print point back at your
+Vercel URL — even on a custom domain, because it reads the request Host).
+
+### Verify after deploy
+
+```bash
+curl -fsSL https://<project>.vercel.app/mesh-node.sh | head -5   # should be the shell script, not 404
+```
+
+### Troubleshooting
+
+- **Build fails right after "Vercel CLI …":** an Install/Build Command has a shell-syntax issue.
+  The committed `vercel.json` uses plain no-ops (`echo no build needed`) — don't put parentheses or
+  other shell metacharacters in those commands (`echo foo (bar)` is a shell syntax error).
+- **`/mesh-node.sh` returns 500 "not available":** the function didn't bundle `deploy/*.sh`. Confirm
+  `functions["api/installer.js"].includeFiles` is `"deploy/*.sh"` and the files exist in the repo.
+- **Vercel tries to run `turbo build`:** set Framework Preset to `Other` in Project Settings → General.
 
 ## Use it
 
