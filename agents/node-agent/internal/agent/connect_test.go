@@ -6,12 +6,15 @@ import (
 )
 
 type fakeRunner struct {
-	execOut, depOut string
-	execErr, depErr error
+	execOut, depOut, buildOut string
+	execErr, depErr, buildErr error
 }
 
-func (f fakeRunner) Exec(argv []string) (string, error)              { return f.execOut, f.execErr }
+func (f fakeRunner) Exec(argv []string) (string, error)                    { return f.execOut, f.execErr }
 func (f fakeRunner) Deploy(image, name string, a []string) (string, error) { return f.depOut, f.depErr }
+func (f fakeRunner) Build(repo, ref, reg, tag, hub string) (string, error) {
+	return f.buildOut, f.buildErr
+}
 
 func TestRunCmdPing(t *testing.T) {
 	r := RunCmd(cmdMsg{Type: "cmd", ID: "1", Cmd: "ping"}, fakeRunner{})
@@ -38,6 +41,22 @@ func TestRunCmdDeploy(t *testing.T) {
 	r := RunCmd(cmdMsg{ID: "4", Cmd: "deploy", Image: "busybox", Name: "demo"}, fakeRunner{depOut: "started"})
 	if !r.OK || r.Output != "started" {
 		t.Fatalf("deploy: %+v", r)
+	}
+}
+
+func TestRunCmdBuild(t *testing.T) {
+	r := RunCmd(cmdMsg{ID: "6", Cmd: "build", RepoURL: "https://x@github.com/o/r.git", Ref: "main", Tag: "r:abc"}, fakeRunner{buildOut: "shipped"})
+	if !r.OK || r.Output != "shipped" {
+		t.Fatalf("build: %+v", r)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	if got := shellQuote("a'b"); got != `'a'\''b'` {
+		t.Fatalf("shellQuote: %s", got)
+	}
+	if got := scrub("cloning https://tok@github.com/o/r failed", "https://tok@github.com/o/r"); got != "cloning <redacted> failed" {
+		t.Fatalf("scrub: %s", got)
 	}
 }
 

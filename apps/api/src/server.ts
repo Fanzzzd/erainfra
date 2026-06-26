@@ -14,6 +14,8 @@ import { defaultTokenStore, type TokenStore } from './auth.ts';
 import { LocalRuntime } from './runtime/local.ts';
 import { can } from './rbac.ts';
 import { agentGateway } from './runtime/agents.ts';
+import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
+import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
 
 // Re-export so existing importers (and tests) keep working.
 export { appRouter, type AppRouter } from './router.ts';
@@ -80,6 +82,40 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       const s = { send: (d: string) => socket.send(d), close: () => socket.close() };
       socket.on('message', (data: Buffer) => agentGateway.onMessage(s, data.toString()));
       socket.on('close', () => agentGateway.onClose(s));
+    });
+  });
+
+  // GitHub push-to-deploy webhook (the Vercel flow). Encapsulated so the raw-body parser (needed to
+  // HMAC-verify the signature) doesn't affect tRPC's JSON parsing. On a verified push to a bound
+  // repo+branch, it kicks off clone→build→deploy in the background and records the result.
+  app.register(async (instance) => {
+    instance.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+    instance.post('/webhook/github', async (req, reply) => {
+      const cfg = githubAppConfig();
+      const raw = req.body as Buffer;
+      if (!cfg.webhookSecret || !verifyWebhook(cfg.webhookSecret, raw, req.headers['x-hub-signature-256'] as string | undefined)) {
+        return reply.code(401).send({ error: 'bad or missing signature' });
+      }
+      const event = req.headers['x-github-event'];
+      if (event === 'ping') return reply.send({ ok: true, pong: true });
+      if (event !== 'push') return reply.send({ ok: true, ignored: event });
+      let push;
+      try { push = parsePush(JSON.parse(raw.toString())); } catch { return reply.code(400).send({ error: 'bad json' }); }
+      if (!push) return reply.send({ ok: true, ignored: 'non-branch push' });
+      const binding = gitProjects.find(push.repo, push.branch);
+      if (!binding) return reply.send({ ok: true, ignored: `no binding for ${push.repo}@${push.branch}` });
+      // GitHub wants a fast 2xx — build+deploy run in the background; status is recorded on the binding.
+      const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
+      const deployCfg = {
+        registry: process.env.PORTLESS_REGISTRY ?? '127.0.0.1:5000',
+        hubBase: process.env.PORTLESS_HUB_BASE ?? `${proto}://${req.headers.host}`,
+        appId: cfg.appId,
+        privateKey: cfg.privateKey,
+      };
+      void deployFromGit(binding, push.sha, push.installationId, deployCfg)
+        .then((r) => gitProjects.setStatus(binding.id, { at: new Date().toISOString(), sha: push.sha, ok: r.ok, stage: r.stage, error: r.error }))
+        .catch((e) => gitProjects.setStatus(binding.id, { at: new Date().toISOString(), sha: push.sha, ok: false, stage: 'build', error: (e as Error).message }));
+      return reply.send({ ok: true, building: `${push.repo}@${push.sha.slice(0, 7)} → ${binding.name}` });
     });
   });
 

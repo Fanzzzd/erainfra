@@ -11,6 +11,8 @@ import { CloudflaredCli } from './runtime/cloudflared-cli.ts';
 import { QuickTunnelManager } from './runtime/quicktunnel.ts';
 import { MeshManager } from './runtime/mesh.ts';
 import { agentGateway } from './runtime/agents.ts';
+import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
+import { githubAppConfig } from './runtime/github.ts';
 import { ProjectStore } from './projects.ts';
 
 const orchestrator = new LocalCliOrchestrator();
@@ -496,6 +498,66 @@ export const appRouter = router({
           return { ...reply, ...op };
         } catch (e) {
           recordOp(ctx, { action: 'agents.run', target: input.agentId, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
+      }),
+  }),
+
+  // Git push-to-deploy (the Vercel flow): bind a repo+branch to build/deploy nodes; a GitHub webhook
+  // (see /webhook/github) or git.deployNow runs clone→build→deploy. deployNow is also the manual
+  // "redeploy" button and what verification drives.
+  git: router({
+    list: requirePermission('app.read').query(() => gitProjects.list()),
+
+    bind: requirePermission('app.deploy')
+      .input(
+        z.object({
+          repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/name'),
+          branch: z.string().min(1).max(255).default('main'),
+          buildNode: z.string().min(1),
+          deployNode: z.string().min(1),
+          name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes'),
+          port: z.number().int().min(1).max(65535),
+          confirm: z.boolean().default(false),
+        }),
+      )
+      .mutation(({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to bind a repo' });
+        const res = gitProjects.bind(input);
+        if (!res.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: res.error });
+        const op = recordOp(ctx, { action: 'git.bind', target: `${input.repo}@${input.branch}`, outcome: 'success' });
+        return { ...res.binding, ...op };
+      }),
+
+    unbind: requirePermission('app.deploy')
+      .input(z.object({ id: z.string().min(1), confirm: z.boolean().default(false) }))
+      .mutation(({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to unbind' });
+        const res = gitProjects.unbind(input.id);
+        if (!res.ok) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such binding' });
+        const op = recordOp(ctx, { action: 'git.unbind', target: input.id, outcome: 'success' });
+        return { ...res, ...op };
+      }),
+
+    // Manual deploy of a binding's current branch (the "Redeploy" button). Audits repo+sha, never the
+    // clone token. Needs PORTLESS_HUB_BASE (where build agents fetch image.sh) + PORTLESS_REGISTRY.
+    deployNow: requirePermission('app.deploy')
+      .input(z.object({ id: z.string().min(1), sha: z.string().max(64).default(''), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to deploy' });
+        const binding = gitProjects.get(input.id);
+        if (!binding) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such binding' });
+        const hubBase = process.env.PORTLESS_HUB_BASE;
+        if (!hubBase) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'set PORTLESS_HUB_BASE (the hub url your build agents can reach) to deploy' });
+        requireDurableAudit(ctx, 'git.deployNow', `${binding.repo}@${binding.branch}`);
+        const { appId, privateKey } = githubAppConfig();
+        try {
+          const r = await deployFromGit(binding, input.sha, undefined, { registry: process.env.PORTLESS_REGISTRY ?? '127.0.0.1:5000', hubBase, appId, privateKey });
+          gitProjects.setStatus(binding.id, { at: new Date().toISOString(), sha: input.sha, ok: r.ok, stage: r.stage, error: r.error });
+          const op = recordOp(ctx, { action: 'git.deployNow', target: `${binding.repo}:${binding.name}`, outcome: r.ok ? 'success' : 'failure' });
+          return { ...r, ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'git.deployNow', target: binding.repo, outcome: 'failure' });
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
         }
       }),

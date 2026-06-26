@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 type Runner interface {
 	Deploy(image, name string, args []string) (string, error)
 	Exec(argv []string) (string, error)
+	Build(repoURL, ref, registry, tag, hubBase string) (string, error)
 }
 
 // ShellRunner shells out to the container CLI (docker/podman) and the OS for exec. ponytail: CLI
@@ -62,14 +64,58 @@ func (r ShellRunner) Deploy(image, name string, args []string) (string, error) {
 	return b.String(), nil
 }
 
+// Build clones a git repo at a ref and builds+pushes it as an image, reusing the hub's image.sh
+// (Dockerfile-or-nixpacks auto-detect) so there's one source of build logic. repoURL may embed a
+// short-lived GitHub App token for private repos; it's used only for the clone and never persisted.
+func (r ShellRunner) Build(repoURL, ref, registry, tag, hubBase string) (string, error) {
+	dir, err := os.MkdirTemp("", "pl-build-")
+	if err != nil {
+		return "", fmt.Errorf("tempdir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	var b strings.Builder
+	clone := exec.Command("git", "clone", "--depth", "1", "--branch", ref, repoURL, dir)
+	if out, err := clone.CombinedOutput(); err != nil {
+		// scrub any token in the URL from the error output
+		return scrub(string(out), repoURL), fmt.Errorf("clone: %w", err)
+	} else {
+		b.Write(out)
+	}
+	// Build + push via the hub's image.sh (auto-detects Dockerfile vs nixpacks), targeting the registry.
+	sh := fmt.Sprintf("curl -fsSL %s/image.sh | PORTLESS_REGISTRY=%s sh -s -- ship %s %s",
+		shellQuote(hubBase), shellQuote(registry), shellQuote(dir), shellQuote(tag))
+	out, err := exec.Command("sh", "-c", sh).CombinedOutput()
+	b.Write(out)
+	if err != nil {
+		return b.String(), fmt.Errorf("build: %w", err)
+	}
+	return b.String(), nil
+}
+
+// scrub removes a secret-bearing URL from text (so clone errors don't leak the token).
+func scrub(text, secret string) string {
+	if secret == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, secret, "<redacted>")
+}
+
+// shellQuote single-quotes an argument for safe interpolation into `sh -c`.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
 type cmdMsg struct {
-	Type  string   `json:"type"`
-	ID    string   `json:"id"`
-	Cmd   string   `json:"cmd"`
-	Argv  []string `json:"argv"`
-	Image string   `json:"image"`
-	Name  string   `json:"name"`
-	Args  []string `json:"args"`
+	Type     string   `json:"type"`
+	ID       string   `json:"id"`
+	Cmd      string   `json:"cmd"`
+	Argv     []string `json:"argv"`
+	Image    string   `json:"image"`
+	Name     string   `json:"name"`
+	Args     []string `json:"args"`
+	RepoURL  string   `json:"repoUrl"`  // build: git url (may embed a short-lived token)
+	Ref      string   `json:"ref"`      // build: branch/tag to clone
+	Registry string   `json:"registry"` // build: where to push the image
+	Tag      string   `json:"tag"`      // build: image name:tag
+	HubBase  string   `json:"hubBase"`  // build: hub http base to fetch image.sh from
 }
 
 type replyMsg struct {
@@ -95,6 +141,8 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		out, err = r.Exec(m.Argv)
 	case "deploy":
 		out, err = r.Deploy(m.Image, m.Name, m.Args)
+	case "build":
+		out, err = r.Build(m.RepoURL, m.Ref, m.Registry, m.Tag, m.HubBase)
 	default:
 		reply.OK = false
 		reply.Error = "unknown cmd: " + m.Cmd
