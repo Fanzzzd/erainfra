@@ -1,0 +1,58 @@
+---
+title: Backups & failover
+description: Auto-redeploy apps when a node dies, and back up the hub to your own S3.
+---
+
+Two pieces of automated ops, both self-hosted: if a node goes down its apps move to a survivor on
+their own, and the hub's state is backed up to storage you control.
+
+## Auto-failover
+
+When a node's connection to the hub drops and stays gone past a grace window, portless redeploys every
+app it was running onto a surviving node and flips the route — traffic follows with no manual step. No
+rebuild happens (the image is already in your registry) and each app's [env vars](/docs/environment-variables)
+are re-injected.
+
+It's on by default. Tune or disable it:
+
+```bash
+export PORTLESS_FAILOVER_GRACE_MS=20000   # wait this long before failing over (default 20s)
+export PORTLESS_FAILOVER=0                 # disable entirely
+```
+
+The grace window matters: a brief network blip or a hub restart (agents reconnect within seconds)
+should *not* trigger a redeploy. Twenty seconds rides those out while still recovering a truly-dead node
+quickly.
+
+**Limit:** stateless apps only. A redeployed database starts empty — failover restores *availability*,
+not *data*. For data, use backups (below) and restore onto the new node.
+
+## Backups (hub → your S3)
+
+The hub holds your routes, encrypted secrets, Git bindings, and audit log. Losing it is the worst-case
+loss for the platform, so portless backs that state up to any S3-compatible storage you run (MinIO, a
+VPS, etc.) — never a third party.
+
+```bash
+export PORTLESS_BACKUP_S3_ENDPOINT=https://s3.your-host.com
+export PORTLESS_BACKUP_S3_BUCKET=portless-backups
+export PORTLESS_BACKUP_S3_ACCESS_KEY=...
+export PORTLESS_BACKUP_S3_SECRET_KEY=...
+export PORTLESS_BACKUP_S3_REGION=us-east-1            # default us-east-1
+export PORTLESS_BACKUP_INTERVAL_MIN=1440              # scheduled backup every N minutes (0 = off)
+```
+
+With the keys set you can back up on demand (the `backup.now` API / dashboard) or on a schedule. Each
+backup is a timestamped `.tar.gz` of the state dir (bulky build uploads and logs are excluded). The
+request is signed with AWS Signature V4 — no SDK, just your keys.
+
+### Restore
+
+Restore is a deliberate, destructive disaster-recovery step (it overwrites the hub's state), so it's a
+script rather than a one-click button. On a fresh hub, point it at your bucket and restore the latest
+backup, then start the hub — your routes, secrets, and bindings come back.
+
+## Self-hosted
+
+Your storage, your keys, your encryption key (the secret-key file is included in the backup, so keep
+the bucket itself private). Nothing here depends on a managed service.
