@@ -17,6 +17,7 @@ import { agentGateway } from './runtime/agents.ts';
 import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from './runtime/dataplane.ts';
 import { routeStore } from './runtime/routes.ts';
 import { installFailover } from './runtime/failover.ts';
+import { backupConfig, backupNow } from './runtime/backup.ts';
 import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
 import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -267,6 +268,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
   const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
   installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
+  // Scheduled control-plane backups to your S3 when configured (PORTLESS_BACKUP_INTERVAL_MIN>0).
+  const backupCfg = backupConfig();
+  const backupEveryMin = Number(process.env.PORTLESS_BACKUP_INTERVAL_MIN ?? 0);
+  if (backupCfg && backupEveryMin > 0) {
+    setInterval(() => backupNow(backupCfg).then((r) => console.log(`[backup] ${r.key} (${r.bytes}b)`)).catch((e) => console.error('[backup]', (e as Error).message)), backupEveryMin * 60_000);
+  }
   createApiServer({ audit: new FileAuditLog(auditFile), webDir })
     .listen({ port, host })
     .then((address) => console.log(`Portless API listening on ${address}`))

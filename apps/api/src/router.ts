@@ -16,6 +16,7 @@ import { gitProjects, deployFromGit, deployFromUpload } from './runtime/gitdeplo
 import { githubAppConfig } from './runtime/github.ts';
 import { secretStore } from './runtime/secrets.ts';
 import { routeStore } from './runtime/routes.ts';
+import { backupConfig, backupNow, listBackups } from './runtime/backup.ts';
 import { ProjectStore } from './projects.ts';
 
 const orchestrator = new LocalCliOrchestrator();
@@ -624,6 +625,38 @@ export const appRouter = router({
         const op = recordOp(ctx, { action: 'routes.remove', target: input.app, outcome: 'success' });
         return { ok: true, stopped, ...op };
       }),
+  }),
+
+  // Control-plane backup to your own S3 (routes, secrets, bindings, audit). Config (endpoint/bucket)
+  // is reported but keys never are; backup.now uploads a state tarball.
+  backup: router({
+    config: requirePermission('app.read').query(() => {
+      const cfg = backupConfig();
+      return cfg ? { configured: true as const, endpoint: cfg.endpoint, bucket: cfg.bucket, prefix: cfg.prefix } : { configured: false as const };
+    }),
+
+    now: requirePermission('app.deploy')
+      .input(z.object({ confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to back up' });
+        const cfg = backupConfig();
+        if (!cfg) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'backup not configured — set PORTLESS_BACKUP_S3_ENDPOINT/_BUCKET/_ACCESS_KEY/_SECRET_KEY' });
+        requireDurableAudit(ctx, 'backup.now', cfg.bucket);
+        try {
+          const r = await backupNow(cfg);
+          const op = recordOp(ctx, { action: 'backup.now', target: r.key, outcome: 'success' });
+          return { ok: true, ...r, ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'backup.now', target: cfg.bucket, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
+      }),
+
+    list: requirePermission('app.read').query(async () => {
+      const cfg = backupConfig();
+      if (!cfg) return [];
+      return listBackups(cfg);
+    }),
   }),
 
   // Drag-drop deploy: source is first uploaded via POST /upload (returns a buildId), then this builds
