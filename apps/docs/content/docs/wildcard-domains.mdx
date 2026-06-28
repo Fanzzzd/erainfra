@@ -1,0 +1,62 @@
+---
+title: Wildcard domains
+description: One domain for every app on every node — no per-machine tunnel.
+---
+
+Deploy an app to any node and it's instantly reachable at `https://<app>.<your-domain>` — even though
+the node is behind NAT with no public IP and no inbound port. You set up the domain **once**; every
+app on every machine in the mesh gets a subdomain automatically. No per-app tunnel, no per-machine
+DNS.
+
+## How it works
+
+Each agent opens a second outbound WebSocket to the hub (the **data channel**, separate from the
+control channel so a deploy never blocks traffic). When a request for `myapp.apps.example.com` hits the
+hub, the hub looks up which node runs `myapp` and forwards the request over that node's data channel;
+the agent fetches the container on `127.0.0.1` and streams the response back. The node never opens an
+inbound port — it dials out, like the rest of portless.
+
+## Setup (once)
+
+This is the only manual step, and you do it a single time for the whole mesh.
+
+### 1. Wildcard DNS → your hub
+
+Point a wildcard record at the hub's public hostname (the one your tunnel terminates):
+
+```
+*.apps.example.com   CNAME   your-hub.example.com
+```
+
+If you front the hub with a Cloudflare tunnel, add a wildcard public hostname
+(`*.apps.example.com`) routed to the hub's local address (e.g. `http://127.0.0.1:8787`). A single
+wildcard tunnel ingress covers every app — you never create a tunnel per app.
+
+### 2. Tell the hub its app domain
+
+```bash
+export PORTLESS_APP_DOMAIN=apps.example.com
+```
+
+Restart the hub. Requests whose `Host` is `<label>.apps.example.com` are now reverse-proxied to the
+matching app; the hub's own hostname (dashboard, `/trpc`) is untouched.
+
+## Use it
+
+Nothing extra per app — the subdomain **is** the app's container name. Deploy `myapp` (from
+[GitHub](/docs/deploy-from-github) or a drag-drop upload) and it's live at
+`https://myapp.apps.example.com`. Redeploy it to a different node and the route follows automatically
+(last deploy wins).
+
+## Limits (today)
+
+- **HTTP request/response only.** WebSocket/SSE upgrades return `501` for now.
+- **Bodies up to 10 MB** are proxied; larger uploads get `413`.
+- **One node per app.** Multi-replica round-robin comes later.
+- A redeploy has a brief downtime gap (no health-gated cutover yet); an offline app returns `503` with
+  `Retry-After`.
+
+## Stays self-hosted
+
+The domain, the DNS, and the tunnel are **yours**. Traffic rides your hub over your tunnel to your
+machines — no third-party proxy, no per-app SaaS.

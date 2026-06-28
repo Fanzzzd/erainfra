@@ -1,3 +1,3 @@
 {
-  "pages": ["index", "add-a-node", "deploy-from-github"]
+  "pages": ["index", "add-a-node", "deploy-from-github", "environment-variables", "wildcard-domains"]
 }
