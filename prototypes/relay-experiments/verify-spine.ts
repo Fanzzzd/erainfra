@@ -20,7 +20,7 @@ await app.listen({ port: PORT, host: '127.0.0.1' });
 console.log(`hub listening on :${PORT}`);
 
 const agent = spawn(
-  '/tmp/pl-agent',
+  'deploy/bin/portless-agent-darwin-arm64', // built by `sh deploy/build-agents.sh`
   ['connect', '--hub', `ws://127.0.0.1:${PORT}/agent`, '--token', 'owner-dev-token', '--name', 'testbox'],
   { stdio: ['ignore', 'pipe', 'pipe'] },
 );

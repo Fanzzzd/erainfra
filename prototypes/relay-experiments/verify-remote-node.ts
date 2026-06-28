@@ -32,7 +32,7 @@ console.log(`hub listening on 0.0.0.0:${PORT}`);
 const node = spawn('docker', [
   'run', '--rm', '--name', NODE,
   '--add-host=host.docker.internal:host-gateway',
-  '-v', '/tmp/pl-agent-linux:/pl-agent:ro',
+  '-v', `${process.cwd()}/deploy/bin/portless-agent-linux-arm64:/pl-agent:ro`, // built by build-agents.sh (Docker Desktop runs linux/arm64)
   '-v', '/var/run/docker.sock:/var/run/docker.sock',
   'docker:cli', '/pl-agent', 'connect',
   '--hub', `ws://host.docker.internal:${PORT}/agent`, '--token', 'owner-dev-token', '--name', 'linux-node',

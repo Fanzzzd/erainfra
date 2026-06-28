@@ -21,7 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const app = createApiServer();
 await app.listen({ port: HUB_PORT, host: '0.0.0.0' });
 
-const exe = readFileSync('/tmp/pl-agent.exe');
+const exe = readFileSync('deploy/bin/portless-agent-windows-amd64.exe'); // built by `sh deploy/build-agents.sh`
 const binServer = createServer((_req, res) => { res.setHeader('content-type', 'application/octet-stream'); res.end(exe); }).listen(BIN_PORT, '0.0.0.0');
 
 console.log(`hub on 0.0.0.0:${HUB_PORT}, agent download on :${BIN_PORT} (${exe.length} bytes)`);
