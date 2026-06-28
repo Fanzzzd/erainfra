@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -244,12 +245,41 @@ func connectOnce(hubURL, token, agentID, version string, roles []Role, runner Ru
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer c.Close()
-	if err := c.WriteJSON(map[string]any{"type": "hello", "agentId": agentID, "version": version, "roles": roles}); err != nil {
+	// Writes come from two goroutines now (replies + heartbeats) — gorilla forbids concurrent writers,
+	// so guard every write with a mutex and a deadline (a black-hole hub then errors instead of hanging).
+	var wmu sync.Mutex
+	writeJSON := func(v any) error {
+		wmu.Lock()
+		defer wmu.Unlock()
+		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return c.WriteJSON(v)
+	}
+	if err := writeJSON(map[string]any{"type": "hello", "agentId": agentID, "version": version, "roles": roles}); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
 	fmt.Printf("[agent] connected to %s as %q\n", hubURL, agentID)
-	// ponytail: commands run synchronously (one at a time) — a long deploy blocks the read loop, which
-	// is fine for a single-box agent. Add a write mutex + goroutines if concurrent commands are needed.
+	// Heartbeat on its OWN goroutine so it keeps flowing even while a long deploy blocks the read loop —
+	// the hub uses it for liveness (a silently-dead NAT mapping never closes the socket, so without this
+	// the hub would think a dead agent is still present and never fail its apps over).
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if err := writeJSON(map[string]any{"type": "heartbeat"}); err != nil {
+					c.Close() // dead hub → unblock the read loop → reconnect
+					return
+				}
+			}
+		}
+	}()
+	// ponytail: commands still run synchronously (one at a time) — fine for a single-box agent; only the
+	// heartbeat is concurrent. Spawn goroutines per command if concurrent execution is ever needed.
 	for {
 		var m cmdMsg
 		if err := c.ReadJSON(&m); err != nil {
@@ -258,7 +288,7 @@ func connectOnce(hubURL, token, agentID, version string, roles []Role, runner Ru
 		if m.Type != "cmd" {
 			continue
 		}
-		if err := c.WriteJSON(RunCmd(m, runner)); err != nil {
+		if err := writeJSON(RunCmd(m, runner)); err != nil {
 			return fmt.Errorf("write reply: %w", err)
 		}
 	}

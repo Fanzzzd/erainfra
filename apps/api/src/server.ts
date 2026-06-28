@@ -146,6 +146,7 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       if (!principal || !can(principal, 'app.deploy')) { try { socket.close(1008, 'unauthorized'); } catch { /* gone */ } return; }
       const s = { send: (d: string) => socket.send(d), close: () => socket.close() };
       socket.on('message', (data: Buffer) => dataGateway.onMessage(s, data.toString()));
+      socket.on('ping', () => dataGateway.touch(s)); // the agent pings every 20s; keep it alive for the reaper
       socket.on('close', () => dataGateway.onClose(s));
     });
   });
@@ -268,6 +269,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
   const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
   installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
+  // Liveness reaper: drop agents/data sockets that went silent (dead NAT mappings never close cleanly).
+  // Agents heartbeat the control channel every 15s and ping the data channel every 20s; reaping a
+  // control socket fires the disconnect → failover path.
+  setInterval(() => { agentGateway.reapStale(45_000); dataGateway.reapStale(50_000); }, 15_000).unref();
   // Scheduled control-plane backups to your S3 when configured (PORTLESS_BACKUP_INTERVAL_MIN>0).
   const backupCfg = backupConfig();
   const backupEveryMin = Number(process.env.PORTLESS_BACKUP_INTERVAL_MIN ?? 0);

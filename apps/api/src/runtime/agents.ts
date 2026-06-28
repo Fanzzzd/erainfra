@@ -47,6 +47,7 @@ export class AgentGateway {
   private byId = new Map<string, Entry>();
   private idOf = new Map<AgentSocket, string>();
   private pending = new Map<string, Pending>();
+  private lastSeen = new Map<string, number>(); // agentId -> last inbound frame time (liveness)
   private disconnectListeners: Array<(agentId: string) => void> = [];
 
   // Notify when a registered agent's socket closes (its presence is gone). Drives auto-failover.
@@ -68,6 +69,9 @@ export class AgentGateway {
   onMessage(socket: AgentSocket, raw: string): void {
     const m = parseAgentMessage(raw);
     if (!m) return;
+    // Any inbound frame (reply, heartbeat, hello) counts as liveness for the reaper.
+    const known = this.idOf.get(socket);
+    if (known) this.lastSeen.set(known, Date.now());
     switch (m.type) {
       case 'hello': {
         const id = String(m.agentId ?? '').trim();
@@ -82,6 +86,7 @@ export class AgentGateway {
         };
         this.byId.set(id, { socket, info });
         this.idOf.set(socket, id);
+        this.lastSeen.set(id, Date.now());
         break;
       }
       case 'reply': {
@@ -97,11 +102,30 @@ export class AgentGateway {
   }
 
   onClose(socket: AgentSocket): void {
+    this.removeSocket(socket);
+  }
+
+  // Remove an agent and notify disconnect listeners (drives failover). Used by both a clean socket
+  // close and the reaper; idempotent (a later close of the same socket is a no-op).
+  private removeSocket(socket: AgentSocket): void {
     const id = this.idOf.get(socket);
     this.idOf.delete(socket);
     let lost = false;
-    if (id && this.byId.get(id)?.socket === socket) { this.byId.delete(id); lost = true; }
+    if (id && this.byId.get(id)?.socket === socket) { this.byId.delete(id); this.lastSeen.delete(id); lost = true; }
     if (lost && id) for (const cb of this.disconnectListeners) { try { cb(id); } catch { /* listener error must not break close */ } }
+  }
+
+  // Close + remove any agent that hasn't sent a frame within maxIdleMs (a silently-dead NAT mapping).
+  // The removal fires disconnect listeners, so this is what makes failover trigger on real network death
+  // rather than only on a clean socket close.
+  reapStale(maxIdleMs: number): void {
+    const now = Date.now();
+    for (const [id, entry] of [...this.byId]) {
+      if (now - (this.lastSeen.get(id) ?? 0) > maxIdleMs) {
+        try { entry.socket.close(); } catch { /* already gone */ }
+        this.removeSocket(entry.socket);
+      }
+    }
   }
 
   // Send a command to an agent and resolve with its reply (or reject on timeout / not connected).

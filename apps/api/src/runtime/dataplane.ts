@@ -74,9 +74,29 @@ export class DataGateway {
   private byId = new Map<string, DataEntry>();
   private idOf = new Map<DataSocket, string>();
   private pending = new Map<string, Pending>();
+  private lastSeen = new Map<string, number>(); // node -> last inbound frame/ping time (liveness)
 
   isConnected(node: string): boolean {
     return this.byId.has(node);
+  }
+
+  // Mark a node's data socket alive (called on any inbound frame and on WS pings). Lets the reaper
+  // drop a silently-dead data socket instead of routing requests into a black hole (30s timeouts).
+  touch(socket: DataSocket): void {
+    const id = this.idOf.get(socket);
+    if (id) this.lastSeen.set(id, Date.now());
+  }
+
+  // Close + drop any data socket idle past maxIdleMs (so isConnected() stops returning true for a dead
+  // node and the proxy fast-fails / falls to failover instead of timing out).
+  reapStale(maxIdleMs: number): void {
+    const now = Date.now();
+    for (const [id, entry] of [...this.byId]) {
+      if (now - (this.lastSeen.get(id) ?? 0) > maxIdleMs) {
+        try { entry.socket.close(); } catch { /* already gone */ }
+        this.onClose(entry.socket);
+      }
+    }
   }
 
   connectedNodes(): string[] {
@@ -87,6 +107,7 @@ export class DataGateway {
     let m: Record<string, unknown> | null;
     try { const j = JSON.parse(raw); m = j && typeof j === 'object' ? j : null; } catch { m = null; }
     if (!m || typeof m.type !== 'string') return;
+    this.touch(socket); // any inbound frame counts as liveness
     switch (m.type) {
       case 'hello': {
         const id = String(m.agentId ?? '').trim();
@@ -95,6 +116,7 @@ export class DataGateway {
         if (prev && prev.socket !== socket) { try { prev.socket.close(); } catch { /* gone */ } this.rejectSocket(prev.socket, 'replaced by new data connection'); }
         this.byId.set(id, { socket, inflight: new Set() });
         this.idOf.set(socket, id);
+        this.lastSeen.set(id, Date.now());
         break;
       }
       case 'resp': {
@@ -124,9 +146,9 @@ export class DataGateway {
 
   onClose(socket: DataSocket): void {
     const id = this.idOf.get(socket);
-    this.idOf.delete(socket);
-    if (id && this.byId.get(id)?.socket === socket) this.byId.delete(id);
     this.rejectSocket(socket, 'node disconnected'); // fail in-flight requests fast (no client hang)
+    this.idOf.delete(socket);
+    if (id && this.byId.get(id)?.socket === socket) { this.byId.delete(id); this.lastSeen.delete(id); }
   }
 
   // Reject every pending request routed to a given socket's node (B2: don't let clients hang on
