@@ -129,16 +129,6 @@ export const appRouter = router({
       .query(({ ctx, input }) => ctx.audit.list(input.limit)),
   }),
 
-  appspec: router({
-    // Validate a portless.yaml and (on success) return the import records. Read-only.
-    validate: requirePermission('app.read')
-      .input(z.object({ yaml: z.string().min(1).max(MAX_YAML_BYTES) }))
-      .query(({ input }) => {
-        const result = parseAppSpec(input.yaml);
-        if (!result.ok) return { ok: false as const, errors: result.errors };
-        return { ok: true as const, warnings: result.warnings, records: importAppSpec(result.value) };
-      }),
-  }),
 
   app: router({
     // Real registry of defined projects (imported via project.import / seeded from examples),
