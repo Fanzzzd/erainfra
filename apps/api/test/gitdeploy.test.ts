@@ -1,8 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { GitProjectStore, deployFromGit, deployFromUpload, type GitBinding } from '../src/runtime/gitdeploy.ts';
 
 const sampleBind = { repo: 'Owner/Repo', branch: 'main', buildNode: 'bn', deployNode: 'dn', name: 'app', port: 8080 };
+
+test('bindings persist across a reload (config must survive a hub restart)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gp-'));
+  const file = join(dir, 'git-projects.json');
+  try {
+    const a = new GitProjectStore(file);
+    assert.ok(a.bind(sampleBind).ok);
+    // a fresh store reading the same file sees the binding (proves save+load)
+    const b = new GitProjectStore(file);
+    assert.equal(b.find('owner/repo', 'main')?.name, 'app');
+    assert.equal(b.list().length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('store binds, finds case-insensitively, dedupes, and unbinds', () => {
   const s = new GitProjectStore(undefined); // in-memory

@@ -3,16 +3,18 @@
 // clone the repo at the commit ON the build node (reusing image.sh = Dockerfile-or-nixpacks), push
 // to your registry, then deploy on the deploy node. Self-hosted end to end.
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { agentGateway, type AgentGateway } from './agents.ts';
 import { cloneUrl, installationToken } from './github.ts';
 import { secretStore } from './secrets.ts';
 import { routeStore } from './routes.ts';
 
-// Hermetic under the node test runner no matter the env (mirrors ProjectStore).
+// Persist by default (a binding is config, not session state — it must survive a hub restart like
+// routes/secrets/projects do). Hermetic (in-memory) only under the node test runner.
 function persistDefault(envVar: string | undefined): string | undefined {
-  return process.execArgv.includes('--test') ? undefined : envVar;
+  return process.execArgv.includes('--test') ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'git-projects.json'));
 }
 
 export interface GitBinding {
