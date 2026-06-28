@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { agentGateway, type AgentGateway } from './agents.ts';
 import { cloneUrl, installationToken } from './github.ts';
+import { secretStore } from './secrets.ts';
 
 // Hermetic under the node test runner no matter the env (mirrors ProjectStore).
 function persistDefault(envVar: string | undefined): string | undefined {
@@ -107,8 +108,10 @@ async function buildAndDeploy(
   const image = `${cfg.registry}/${tag}`;
   const build = await gw.send(spec.buildNode, { cmd: 'build', ...buildFields, registry: cfg.registry, tag, hubBase: cfg.hubBase }, 300_000);
   if (!build.ok) return { ok: false, stage: 'build', image, output: build.output, error: build.error };
+  // Secrets ride as a map (the agent writes them to a 0600 --env-file, never argv); PORT goes in args
+  // AFTER --env-file so the platform port always wins over a user-set PORT.
   const args = ['-e', `PORT=${spec.port}`, '-p', `${spec.port}:${spec.port}`];
-  const deploy = await gw.send(spec.deployNode, { cmd: 'deploy', image, name: spec.name, args }, 180_000);
+  const deploy = await gw.send(spec.deployNode, { cmd: 'deploy', image, name: spec.name, args, env: secretStore.get(spec.name) }, 180_000);
   return { ok: deploy.ok, stage: 'deploy', image, output: deploy.output, error: deploy.error };
 }
 

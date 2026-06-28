@@ -13,6 +13,7 @@ import { MeshManager } from './runtime/mesh.ts';
 import { agentGateway } from './runtime/agents.ts';
 import { gitProjects, deployFromGit, deployFromUpload } from './runtime/gitdeploy.ts';
 import { githubAppConfig } from './runtime/github.ts';
+import { secretStore } from './runtime/secrets.ts';
 import { ProjectStore } from './projects.ts';
 
 const orchestrator = new LocalCliOrchestrator();
@@ -477,7 +478,8 @@ export const appRouter = router({
         if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to deploy to an agent' });
         requireDurableAudit(ctx, 'agents.deploy', `${input.agentId}: ${input.image}`);
         try {
-          const reply = await agentGateway.send(input.agentId, { cmd: 'deploy', image: input.image, name: input.name, args: input.args }, 180_000);
+          // Secrets (keyed by container name) ride as a map → agent writes a 0600 --env-file, not argv.
+          const reply = await agentGateway.send(input.agentId, { cmd: 'deploy', image: input.image, name: input.name, args: input.args, env: secretStore.get(input.name) }, 180_000);
           const op = recordOp(ctx, { action: 'agents.deploy', target: `${input.agentId}:${input.name}`, outcome: reply.ok ? 'success' : 'failure' });
           return { ...reply, ...op };
         } catch (e) {
@@ -560,6 +562,38 @@ export const appRouter = router({
           recordOp(ctx, { action: 'git.deployNow', target: binding.repo, outcome: 'failure' });
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
         }
+      }),
+  }),
+
+  // Per-app environment variables / secrets (encrypted at rest), injected into the container on the
+  // next deploy. Values are write-only over the API — list returns masked previews, never plaintext.
+  env: router({
+    list: requirePermission('app.read')
+      .input(z.object({ app: z.string().min(1).max(63) }))
+      .query(({ input }) => secretStore.list(input.app)),
+
+    set: requirePermission('app.deploy')
+      .input(z.object({ app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/), vars: z.record(z.string().min(1).max(256), z.string().max(32768)) }))
+      .mutation(({ ctx, input }) => {
+        const keys = Object.keys(input.vars);
+        if (keys.length === 0) throw new TRPCError({ code: 'BAD_REQUEST', message: 'no vars given' });
+        try {
+          secretStore.setMany(input.app, input.vars);
+        } catch (e) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: (e as Error).message });
+        }
+        // Audit the KEYS, never the values.
+        const op = recordOp(ctx, { action: 'env.set', target: `${input.app}: ${keys.join(',')}`, outcome: 'success' });
+        return { ok: true, keys, ...op };
+      }),
+
+    unset: requirePermission('app.deploy')
+      .input(z.object({ app: z.string().min(1).max(63), key: z.string().min(1).max(256) }))
+      .mutation(({ ctx, input }) => {
+        const ok = secretStore.unset(input.app, input.key);
+        if (!ok) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such var' });
+        const op = recordOp(ctx, { action: 'env.unset', target: `${input.app}: ${input.key}`, outcome: 'success' });
+        return { ok, ...op };
       }),
   }),
 

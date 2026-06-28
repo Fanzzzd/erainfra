@@ -11,7 +11,9 @@ type fakeRunner struct {
 }
 
 func (f fakeRunner) Exec(argv []string) (string, error)                    { return f.execOut, f.execErr }
-func (f fakeRunner) Deploy(image, name string, a []string) (string, error) { return f.depOut, f.depErr }
+func (f fakeRunner) Deploy(image, name string, a []string, env map[string]string) (string, error) {
+	return f.depOut, f.depErr
+}
 func (f fakeRunner) Build(src BuildSource, reg, tag, hub string) (string, error) {
 	return f.buildOut, f.buildErr
 }

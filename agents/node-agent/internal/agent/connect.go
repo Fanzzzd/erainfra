@@ -19,7 +19,7 @@ import (
 // (docker CLI now, like Coolify; the Docker Go SDK later for typed lifecycle/events) and so tests
 // can use a fake.
 type Runner interface {
-	Deploy(image, name string, args []string) (string, error)
+	Deploy(image, name string, args []string, env map[string]string) (string, error)
 	Exec(argv []string) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
 }
@@ -56,14 +56,24 @@ func (r ShellRunner) Exec(argv []string) (string, error) {
 	return string(out), err
 }
 
-// Deploy pulls the image from the registry and (re)runs it detached. Idempotent on name.
-func (r ShellRunner) Deploy(image, name string, args []string) (string, error) {
+// Deploy pulls the image from the registry and (re)runs it detached. Idempotent on name. Secrets
+// arrive as a map and are written to a 0600 --env-file (never argv) so they don't show in `ps` or
+// leak into the reply output; the file is removed after the run.
+func (r ShellRunner) Deploy(image, name string, args []string, env map[string]string) (string, error) {
 	d := r.cli()
 	var b strings.Builder
 	if out, err := exec.Command(d, "pull", image).CombinedOutput(); err != nil {
 		return string(out), fmt.Errorf("pull: %w", err)
 	} else {
 		b.Write(out)
+	}
+	if len(env) > 0 {
+		ef, err := writeEnvFile(env)
+		if err != nil {
+			return "", fmt.Errorf("env-file: %w", err)
+		}
+		defer os.Remove(ef)
+		args = append([]string{"--env-file", ef}, args...) // before args, so a platform -e PORT still wins
 	}
 	_ = exec.Command(d, "rm", "-f", name).Run() // replace any prior container with this name
 	runArgs := append([]string{"run", "-d", "--name", name}, args...)
@@ -74,6 +84,33 @@ func (r ShellRunner) Deploy(image, name string, args []string) (string, error) {
 		return b.String(), fmt.Errorf("run: %w", err)
 	}
 	return b.String(), nil
+}
+
+// writeEnvFile writes KEY=VALUE lines to a 0600 temp file for `docker run --env-file`.
+// ponytail: --env-file is line-oriented, so values can't contain newlines — fine for env vars.
+func writeEnvFile(env map[string]string) (string, error) {
+	f, err := os.CreateTemp("", "pl-env-")
+	if err != nil {
+		return "", err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	var b strings.Builder
+	for k, v := range env {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v)
+		b.WriteByte('\n')
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), f.Close()
 }
 
 // Build fetches a source (git clone OR tarball) into a temp dir, then builds+pushes it as an image,
@@ -126,19 +163,20 @@ func scrub(text, secret string) string {
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 type cmdMsg struct {
-	Type     string   `json:"type"`
-	ID       string   `json:"id"`
-	Cmd      string   `json:"cmd"`
-	Argv     []string `json:"argv"`
-	Image    string   `json:"image"`
-	Name     string   `json:"name"`
-	Args     []string `json:"args"`
-	RepoURL  string   `json:"repoUrl"`  // build (git): git url (may embed a short-lived token)
-	Ref      string   `json:"ref"`      // build (git): branch/tag to clone
-	TarURL   string   `json:"tarUrl"`   // build (upload): hub url of the uploaded source.tgz
-	Registry string   `json:"registry"` // build: where to push the image
-	Tag      string   `json:"tag"`      // build: image name:tag
-	HubBase  string   `json:"hubBase"`  // build: hub http base to fetch image.sh from
+	Type     string            `json:"type"`
+	ID       string            `json:"id"`
+	Cmd      string            `json:"cmd"`
+	Argv     []string          `json:"argv"`
+	Image    string            `json:"image"`
+	Name     string            `json:"name"`
+	Args     []string          `json:"args"`
+	Env      map[string]string `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
+	RepoURL  string            `json:"repoUrl"`  // build (git): git url (may embed a short-lived token)
+	Ref      string            `json:"ref"`      // build (git): branch/tag to clone
+	TarURL   string            `json:"tarUrl"`   // build (upload): hub url of the uploaded source.tgz
+	Registry string            `json:"registry"` // build: where to push the image
+	Tag      string            `json:"tag"`      // build: image name:tag
+	HubBase  string            `json:"hubBase"`  // build: hub http base to fetch image.sh from
 }
 
 type replyMsg struct {
@@ -163,7 +201,7 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 	case "exec":
 		out, err = r.Exec(m.Argv)
 	case "deploy":
-		out, err = r.Deploy(m.Image, m.Name, m.Args)
+		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env)
 	case "build":
 		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL}, m.Registry, m.Tag, m.HubBase)
 	default:
