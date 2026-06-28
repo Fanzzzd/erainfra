@@ -14,8 +14,11 @@ import { defaultTokenStore, type TokenStore } from './auth.ts';
 import { LocalRuntime } from './runtime/local.ts';
 import { can } from './rbac.ts';
 import { agentGateway } from './runtime/agents.ts';
+import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from './runtime/dataplane.ts';
+import { routeStore } from './runtime/routes.ts';
 import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
 import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 // Re-export so existing importers (and tests) keep working.
 export { appRouter, type AppRouter } from './router.ts';
@@ -23,6 +26,56 @@ export { appRouter, type AppRouter } from './router.ts';
 function bearerToken(authorization: string | string[] | undefined): string | undefined {
   const header = Array.isArray(authorization) ? authorization[0] : authorization;
   return header?.startsWith('Bearer ') ? header.slice(7) : undefined;
+}
+
+// Read a request body into a Buffer, rejecting once it exceeds the cap (proxy bodies are buffered).
+function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (c: Buffer) => {
+      total += c.length;
+      if (total > limit) { reject(new Error('body too large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+const sendStatus = (res: ServerResponse, code: number, msg: string, extra?: Record<string, string>) => {
+  res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', ...extra });
+  res.end(msg + '\n');
+};
+
+// Reverse-proxy one inbound request for `<app>.<domain>` to the agent that holds the app, over the
+// data WS. Writes the response directly to the raw Node socket (we've hijacked the Fastify reply).
+async function proxyAppRequest(appName: string, req: IncomingMessage, res: ServerResponse, ctx: { ip: string }): Promise<void> {
+  try {
+    if ((req.headers.upgrade ?? '').toLowerCase() === 'websocket') return sendStatus(res, 501, 'websocket proxying not supported yet'); // ponytail: v1 is request/response only
+    const node = routeStore.node(appName);
+    if (!node) return sendStatus(res, 404, `no such app: ${appName}`);
+    if (!dataGateway.isConnected(node)) return sendStatus(res, 503, `app ${appName} is offline`, { 'retry-after': '5' });
+    const host = String(req.headers.host ?? '');
+    const proto = String(req.headers['x-forwarded-proto'] ?? 'http');
+    const headers = sanitizeRequestHeaders(req.headers, { host, clientIp: ctx.ip, proto });
+    const body = await readBody(req, MAX_BODY);
+    const resp = await dataGateway.proxy(node, appName, { method: req.method ?? 'GET', path: req.url ?? '/', headers, body });
+    // Strip response hop-by-hop / length headers; res.end(body) sets Content-Length itself.
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(resp.headers)) {
+      const key = k.toLowerCase();
+      if (key === 'content-length' || key === 'transfer-encoding' || key === 'connection') continue;
+      if (!/[\r\n]/.test(key) && !/[\r\n]/.test(String(v))) out[k] = String(v);
+    }
+    res.writeHead(resp.status, out);
+    res.end(resp.body);
+  } catch (e) {
+    const msg = (e as Error).message;
+    const code = msg.includes('too large') ? 413 : msg.includes('timed out') ? 504 : 502;
+    if (!res.headersSent) sendStatus(res, code, `proxy error: ${msg}`);
+    else res.end();
+  }
 }
 
 export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; runtime?: LocalRuntime; webDir?: string } = {}): FastifyInstance {
@@ -83,7 +136,30 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       socket.on('message', (data: Buffer) => agentGateway.onMessage(s, data.toString()));
       socket.on('close', () => agentGateway.onClose(s));
     });
+    // Data channel: the agent's SECOND outbound socket, carrying reverse-proxied HTTP for its apps.
+    // Same node auth (bearer + app.deploy); routing is driven by the hub's route table (set at deploy),
+    // never by what the agent claims to serve.
+    instance.get('/data', { websocket: true }, (socket, req) => {
+      const principal = tokens.resolve(bearerToken(req.headers.authorization));
+      if (!principal || !can(principal, 'app.deploy')) { try { socket.close(1008, 'unauthorized'); } catch { /* gone */ } return; }
+      const s = { send: (d: string) => socket.send(d), close: () => socket.close() };
+      socket.on('message', (data: Buffer) => dataGateway.onMessage(s, data.toString()));
+      socket.on('close', () => dataGateway.onClose(s));
+    });
   });
+
+  // Wildcard-domain ingress: any request whose Host is `<app>.<PORTLESS_APP_DOMAIN>` is reverse-proxied
+  // to the agent running that app. The hub's own host (dashboard, /trpc, /agent, /data) returns null
+  // here and falls through to normal routing. Disabled unless PORTLESS_APP_DOMAIN is set.
+  const appDomain = process.env.PORTLESS_APP_DOMAIN;
+  if (appDomain) {
+    app.addHook('onRequest', async (req, reply) => {
+      const appName = appFromHost(req.headers.host, appDomain);
+      if (!appName) return; // not an app subdomain
+      reply.hijack(); // we own the raw response
+      await proxyAppRequest(appName, req.raw, reply.raw, { ip: req.ip });
+    });
+  }
 
   // GitHub push-to-deploy webhook (the Vercel flow). Encapsulated so the raw-body parser (needed to
   // HMAC-verify the signature) doesn't affect tRPC's JSON parsing. On a verified push to a bound

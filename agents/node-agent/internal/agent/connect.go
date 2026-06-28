@@ -19,7 +19,7 @@ import (
 // (docker CLI now, like Coolify; the Docker Go SDK later for typed lifecycle/events) and so tests
 // can use a fake.
 type Runner interface {
-	Deploy(image, name string, args []string, env map[string]string) (string, error)
+	Deploy(image, name string, args []string, env map[string]string, port int) (string, error)
 	Exec(argv []string) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
 }
@@ -39,6 +39,7 @@ type BuildSource struct {
 type ShellRunner struct {
 	Docker string
 	Token  string
+	Reg    *Registry // records app->port on deploy so the data plane can proxy to it (loopback)
 }
 
 func (r ShellRunner) cli() string {
@@ -59,7 +60,7 @@ func (r ShellRunner) Exec(argv []string) (string, error) {
 // Deploy pulls the image from the registry and (re)runs it detached. Idempotent on name. Secrets
 // arrive as a map and are written to a 0600 --env-file (never argv) so they don't show in `ps` or
 // leak into the reply output; the file is removed after the run.
-func (r ShellRunner) Deploy(image, name string, args []string, env map[string]string) (string, error) {
+func (r ShellRunner) Deploy(image, name string, args []string, env map[string]string, port int) (string, error) {
 	d := r.cli()
 	var b strings.Builder
 	if out, err := exec.Command(d, "pull", image).CombinedOutput(); err != nil {
@@ -82,6 +83,9 @@ func (r ShellRunner) Deploy(image, name string, args []string, env map[string]st
 	b.Write(out)
 	if err != nil {
 		return b.String(), fmt.Errorf("run: %w", err)
+	}
+	if r.Reg != nil && port > 0 {
+		r.Reg.Set(name, port) // now the data plane can reverse-proxy <name>.<domain> -> 127.0.0.1:port
 	}
 	return b.String(), nil
 }
@@ -171,6 +175,7 @@ type cmdMsg struct {
 	Name     string            `json:"name"`
 	Args     []string          `json:"args"`
 	Env      map[string]string `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
+	Port     int               `json:"port"`     // deploy: app's loopback port, recorded for the data plane
 	RepoURL  string            `json:"repoUrl"`  // build (git): git url (may embed a short-lived token)
 	Ref      string            `json:"ref"`      // build (git): branch/tag to clone
 	TarURL   string            `json:"tarUrl"`   // build (upload): hub url of the uploaded source.tgz
@@ -201,7 +206,7 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 	case "exec":
 		out, err = r.Exec(m.Argv)
 	case "deploy":
-		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env)
+		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
 	case "build":
 		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL}, m.Registry, m.Tag, m.HubBase)
 	default:

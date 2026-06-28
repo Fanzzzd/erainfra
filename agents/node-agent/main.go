@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"portless-agent/internal/agent"
@@ -60,7 +61,12 @@ func runConnect() {
 		fmt.Fprintln(os.Stderr, "need --hub or PORTLESS_HUB (e.g. wss://hub.example.com/agent)")
 		os.Exit(2)
 	}
-	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token})
+	// One registry shared by the control runner (records app->port on deploy) and the data plane
+	// (reads it to reverse-proxy <app>.<domain> → loopback). Data channel = control URL with /agent→/data.
+	reg := agent.NewRegistry()
+	dataURL := strings.TrimSuffix(*hub, "/agent") + "/data"
+	go agent.ConnectData(dataURL, *token, *name, reg)
+	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token, Reg: reg})
 }
 
 func runPlan() {

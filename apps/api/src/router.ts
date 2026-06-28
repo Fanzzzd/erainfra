@@ -14,6 +14,7 @@ import { agentGateway } from './runtime/agents.ts';
 import { gitProjects, deployFromGit, deployFromUpload } from './runtime/gitdeploy.ts';
 import { githubAppConfig } from './runtime/github.ts';
 import { secretStore } from './runtime/secrets.ts';
+import { routeStore } from './runtime/routes.ts';
 import { ProjectStore } from './projects.ts';
 
 const orchestrator = new LocalCliOrchestrator();
@@ -471,6 +472,7 @@ export const appRouter = router({
           image: z.string().min(1).max(512),
           name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes'),
           args: z.array(z.string().max(256)).max(64).default([]),
+          port: z.number().int().min(1).max(65535).optional(), // set to register a wildcard-domain ingress route
           confirm: z.boolean().default(false),
         }),
       )
@@ -479,7 +481,8 @@ export const appRouter = router({
         requireDurableAudit(ctx, 'agents.deploy', `${input.agentId}: ${input.image}`);
         try {
           // Secrets (keyed by container name) ride as a map → agent writes a 0600 --env-file, not argv.
-          const reply = await agentGateway.send(input.agentId, { cmd: 'deploy', image: input.image, name: input.name, args: input.args, env: secretStore.get(input.name) }, 180_000);
+          const reply = await agentGateway.send(input.agentId, { cmd: 'deploy', image: input.image, name: input.name, args: input.args, env: secretStore.get(input.name), port: input.port }, 180_000);
+          if (reply.ok && input.port) routeStore.set(input.name, input.agentId); // app -> node ingress route
           const op = recordOp(ctx, { action: 'agents.deploy', target: `${input.agentId}:${input.name}`, outcome: reply.ok ? 'success' : 'failure' });
           return { ...reply, ...op };
         } catch (e) {
