@@ -11,6 +11,7 @@ import { CloudflaredCli } from './runtime/cloudflared-cli.ts';
 import { QuickTunnelManager } from './runtime/quicktunnel.ts';
 import { MeshManager } from './runtime/mesh.ts';
 import { agentGateway } from './runtime/agents.ts';
+import { dataGateway } from './runtime/dataplane.ts';
 import { gitProjects, deployFromGit, deployFromUpload } from './runtime/gitdeploy.ts';
 import { githubAppConfig } from './runtime/github.ts';
 import { secretStore } from './runtime/secrets.ts';
@@ -597,6 +598,41 @@ export const appRouter = router({
         if (!ok) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such var' });
         const op = recordOp(ctx, { action: 'env.unset', target: `${input.app}: ${input.key}`, outcome: 'success' });
         return { ok, ...op };
+      }),
+  }),
+
+  // Deployed apps = the routing/failover source of truth (app -> {node, image, port}), written on
+  // every git/upload deploy. Surfaces each app's live URL (wildcard domain) and whether it's online.
+  routes: router({
+    list: requirePermission('app.read').query(() => {
+      const domain = process.env.PORTLESS_APP_DOMAIN;
+      return routeStore.list().map((r) => ({
+        app: r.app,
+        node: r.node,
+        port: r.port,
+        online: dataGateway.isConnected(r.node), // data channel open = actually serving traffic
+        nodeConnected: !!agentGateway.get(r.node),
+        url: domain ? `https://${r.app}.${domain}` : null,
+      }));
+    }),
+
+    // Stop the container on its node and forget the route. ponytail: stop via `docker rm -f` (the
+    // common runtime); add a runtime-agnostic stop cmd if podman users need it.
+    remove: requirePermission('app.deploy')
+      .input(z.object({ app: z.string().min(1).max(63), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to remove an app' });
+        const dep = routeStore.get(input.app);
+        if (!dep) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such app' });
+        requireDurableAudit(ctx, 'routes.remove', input.app);
+        let stopped = false;
+        try {
+          const reply = await agentGateway.send(dep.node, { cmd: 'exec', argv: ['docker', 'rm', '-f', input.app] }, 30_000);
+          stopped = reply.ok;
+        } catch { /* node may be offline — still forget the route so it stops being served */ }
+        routeStore.delete(input.app);
+        const op = recordOp(ctx, { action: 'routes.remove', target: input.app, outcome: 'success' });
+        return { ok: true, stopped, ...op };
       }),
   }),
 

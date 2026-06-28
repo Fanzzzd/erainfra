@@ -69,6 +69,22 @@ export interface AgentInfo {
   connectedAt: string;
 }
 
+// A deployed app (the routing/failover record), with its live wildcard URL and whether it's serving.
+export interface RouteInfo {
+  app: string;
+  node: string;
+  port: number;
+  online: boolean;
+  nodeConnected: boolean;
+  url: string | null;
+}
+
+// Masked env var: the API never returns the value.
+export interface EnvVar {
+  key: string;
+  preview: string;
+}
+
 export interface GitBinding {
   id: string;
   repo: string;

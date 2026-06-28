@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { GitBranch, Plus, RefreshCw, Rocket, Trash2, Upload } from 'lucide-react';
-import { trpcQuery, trpcMutation, uploadSource, type AgentInfo, type GitBinding } from '@/api';
+import { ExternalLink, GitBranch, KeyRound, Plus, RefreshCw, Rocket, Trash2, Upload } from 'lucide-react';
+import { trpcQuery, trpcMutation, uploadSource, type AgentInfo, type EnvVar, type GitBinding, type RouteInfo } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -94,7 +94,190 @@ export function Deploy() {
           <UploadTab agents={agents} />
         </TabsContent>
       </Tabs>
+
+      <DeployedApps />
     </div>
+  );
+}
+
+// Everything currently deployed (the routing/failover record), with its live URL and online status.
+// This is where the wildcard-domain + secrets features surface: open the app, manage its env, remove it.
+function DeployedApps() {
+  const [routes, setRoutes] = useState<RouteInfo[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setRoutes(await trpcQuery<RouteInfo[]>('routes.list'));
+    } catch {
+      // keep last good
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 3000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  async function remove(app: string) {
+    if (!confirm(`Remove ${app}? This stops its container and unroutes it.`)) return;
+    setBusy(app);
+    try {
+      await trpcMutation('routes.remove', { app, confirm: true });
+      toast.success(`Removed ${app}`);
+      refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (routes.length === 0) return null;
+
+  return (
+    <div className="space-y-3 pt-2">
+      <h3 className="text-sm font-semibold tracking-tight">Deployed apps</h3>
+      <Card className="py-0">
+        <CardContent className="px-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="pl-6">App</TableHead>
+                <TableHead>URL</TableHead>
+                <TableHead>Node</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="pr-6 text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {routes.map((r) => (
+                <TableRow key={r.app}>
+                  <TableCell className="pl-6 font-medium">{r.app}</TableCell>
+                  <TableCell>
+                    {r.url ? (
+                      <a href={r.url} target="_blank" rel="noreferrer" className="text-primary inline-flex items-center gap-1 hover:underline">
+                        {r.url.replace(/^https?:\/\//, '')} <ExternalLink className="size-3" />
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground text-xs">set PORTLESS_APP_DOMAIN for a URL</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{r.node}</TableCell>
+                  <TableCell>
+                    <Badge variant={r.online ? 'default' : 'destructive'}>{r.online ? 'online' : r.nodeConnected ? 'starting' : 'offline'}</Badge>
+                  </TableCell>
+                  <TableCell className="pr-6">
+                    <div className="flex justify-end gap-1">
+                      <EnvDialog app={r.app} />
+                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => remove(r.app)} disabled={busy === r.app}>
+                        <Trash2 /> Remove
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// Manage an app's env vars / secrets. Values are write-only — the list shows masked previews; setting
+// a var takes effect on the next deploy.
+function EnvDialog(props: { app: string }) {
+  const [open, setOpen] = useState(false);
+  const [vars, setVars] = useState<EnvVar[]>([]);
+  const [key, setKey] = useState('');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      setVars(await trpcQuery<EnvVar[]>('env.list', { app: props.app }));
+    } catch {
+      // keep last good
+    }
+  }, [props.app]);
+
+  useEffect(() => {
+    if (open) refresh();
+  }, [open, refresh]);
+
+  async function add() {
+    if (!key) return;
+    setBusy(true);
+    try {
+      await trpcMutation('env.set', { app: props.app, vars: { [key]: value } });
+      toast.success(`Set ${key} — redeploy to apply`);
+      setKey('');
+      setValue('');
+      refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unset(k: string) {
+    setBusy(true);
+    try {
+      await trpcMutation('env.unset', { app: props.app, key: k });
+      toast.success(`Removed ${k} — redeploy to apply`);
+      refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm">
+          <KeyRound /> Env
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Environment — {props.app}</DialogTitle>
+          <DialogDescription>Encrypted at rest, injected into the container on the next deploy. Values are never shown again.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3 py-2">
+          {vars.length > 0 && (
+            <div className="rounded-md border">
+              {vars.map((v) => (
+                <div key={v.key} className="flex items-center justify-between gap-2 border-b px-3 py-2 text-sm last:border-0">
+                  <span className="font-mono">{v.key}</span>
+                  <span className="text-muted-foreground ml-auto font-mono text-xs">{v.preview}</span>
+                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => unset(v.key)} disabled={busy} aria-label={`Remove ${v.key}`}>
+                    <Trash2 />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+            <div className="grid gap-1">
+              <Label htmlFor="env-key">Key</Label>
+              <Input id="env-key" placeholder="DATABASE_URL" value={key} onChange={(e) => setKey(e.target.value)} />
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor="env-value">Value</Label>
+              <Input id="env-value" type="password" placeholder="secret" value={value} onChange={(e) => setValue(e.target.value)} />
+            </div>
+            <Button onClick={add} disabled={!key || busy}>
+              <Plus /> Set
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
