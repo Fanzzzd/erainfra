@@ -482,7 +482,7 @@ export const appRouter = router({
         try {
           // Secrets (keyed by container name) ride as a map → agent writes a 0600 --env-file, not argv.
           const reply = await agentGateway.send(input.agentId, { cmd: 'deploy', image: input.image, name: input.name, args: input.args, env: secretStore.get(input.name), port: input.port }, 180_000);
-          if (reply.ok && input.port) routeStore.set(input.name, input.agentId); // app -> node ingress route
+          if (reply.ok && input.port) routeStore.set(input.name, { node: input.agentId, image: input.image, port: input.port }); // ingress + failover record
           const op = recordOp(ctx, { action: 'agents.deploy', target: `${input.agentId}:${input.name}`, outcome: reply.ok ? 'success' : 'failure' });
           return { ...reply, ...op };
         } catch (e) {

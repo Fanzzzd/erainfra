@@ -1,6 +1,7 @@
-// Where each app runs: app (container name) -> node (agent id), recorded on every successful deploy
-// (git or upload). The reverse proxy reads it to find which agent holds an app. This is THE routing
-// source of truth — upload deploys have no GitBinding, so routes can't be derived from bindings.
+// Where each app runs AND how it was deployed: app (container name) -> {node, image, port}, recorded
+// on every successful deploy (git or upload). The reverse proxy reads `node` to find which agent holds
+// an app; failover reads `image`/`port` to redeploy it elsewhere. This is THE deployment source of
+// truth — upload deploys have no GitBinding, so routes can't be derived from bindings.
 // ponytail: last-deploy-wins, single node per app. Multi-replica/round-robin is a list here later.
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -10,8 +11,14 @@ function persistDefault(envVar: string | undefined): string | undefined {
   return process.execArgv.includes('--test') ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'routes.json'));
 }
 
+export interface Deployment {
+  node: string; // agent id running the container
+  image: string; // registry image ref, so failover can redeploy without a rebuild
+  port: number; // published/loopback port
+}
+
 export class RouteStore {
-  private byApp = new Map<string, string>(); // app -> node (agent id)
+  private byApp = new Map<string, Deployment>();
   private persistPath?: string;
 
   constructor(persistPath: string | undefined = persistDefault(process.env.PORTLESS_ROUTES_FILE)) {
@@ -22,8 +29,8 @@ export class RouteStore {
   private load(): void {
     if (!this.persistPath || !existsSync(this.persistPath)) return;
     try {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as Record<string, string>;
-      for (const [app, node] of Object.entries(raw)) this.byApp.set(app, node);
+      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as Record<string, Deployment>;
+      for (const [app, dep] of Object.entries(raw)) if (dep && dep.node) this.byApp.set(app, dep);
     } catch (e) {
       console.error('[routes] failed to load:', (e as Error).message);
     }
@@ -41,12 +48,17 @@ export class RouteStore {
     }
   }
 
-  set(app: string, node: string): void {
-    this.byApp.set(app, node);
+  set(app: string, dep: Deployment): void {
+    this.byApp.set(app, dep);
     this.save();
   }
 
+  // Which node holds the app (the proxy's lookup).
   node(app: string): string | undefined {
+    return this.byApp.get(app)?.node;
+  }
+
+  get(app: string): Deployment | undefined {
     return this.byApp.get(app);
   }
 
@@ -56,8 +68,8 @@ export class RouteStore {
     return ok;
   }
 
-  list(): Array<{ app: string; node: string }> {
-    return [...this.byApp].map(([app, node]) => ({ app, node }));
+  list(): Array<{ app: string } & Deployment> {
+    return [...this.byApp].map(([app, dep]) => ({ app, ...dep }));
   }
 }
 

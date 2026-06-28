@@ -47,6 +47,12 @@ export class AgentGateway {
   private byId = new Map<string, Entry>();
   private idOf = new Map<AgentSocket, string>();
   private pending = new Map<string, Pending>();
+  private disconnectListeners: Array<(agentId: string) => void> = [];
+
+  // Notify when a registered agent's socket closes (its presence is gone). Drives auto-failover.
+  onDisconnect(cb: (agentId: string) => void): void {
+    this.disconnectListeners.push(cb);
+  }
 
   list(): AgentInfo[] {
     return [...this.byId.values()].map((e) => ({ ...e.info }));
@@ -93,7 +99,9 @@ export class AgentGateway {
   onClose(socket: AgentSocket): void {
     const id = this.idOf.get(socket);
     this.idOf.delete(socket);
-    if (id && this.byId.get(id)?.socket === socket) this.byId.delete(id);
+    let lost = false;
+    if (id && this.byId.get(id)?.socket === socket) { this.byId.delete(id); lost = true; }
+    if (lost && id) for (const cb of this.disconnectListeners) { try { cb(id); } catch { /* listener error must not break close */ } }
   }
 
   // Send a command to an agent and resolve with its reply (or reject on timeout / not connected).

@@ -114,7 +114,7 @@ async function buildAndDeploy(
   // record app->port for the data plane to proxy to (loopback, agent-chosen target).
   const args = ['-e', `PORT=${spec.port}`, '-p', `${spec.port}:${spec.port}`];
   const deploy = await gw.send(spec.deployNode, { cmd: 'deploy', image, name: spec.name, args, env: secretStore.get(spec.name), port: spec.port }, 180_000);
-  if (deploy.ok) routeStore.set(spec.name, spec.deployNode); // ingress route: app -> node (last deploy wins)
+  if (deploy.ok) routeStore.set(spec.name, { node: spec.deployNode, image, port: spec.port }); // ingress + failover record
   return { ok: deploy.ok, stage: 'deploy', image, output: deploy.output, error: deploy.error };
 }
 

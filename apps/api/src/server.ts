@@ -16,6 +16,7 @@ import { can } from './rbac.ts';
 import { agentGateway } from './runtime/agents.ts';
 import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from './runtime/dataplane.ts';
 import { routeStore } from './runtime/routes.ts';
+import { installFailover } from './runtime/failover.ts';
 import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
 import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -265,6 +266,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const host = process.env.PORTLESS_BIND ?? '127.0.0.1';
   // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
   const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
+  installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
   createApiServer({ audit: new FileAuditLog(auditFile), webDir })
     .listen({ port, host })
     .then((address) => console.log(`Portless API listening on ${address}`))
