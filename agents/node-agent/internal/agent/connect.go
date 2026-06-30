@@ -22,6 +22,8 @@ import (
 type Runner interface {
 	Deploy(image, name string, args []string, env map[string]string, port int) (string, error)
 	DeployApp(app string, services []Service) (string, error)
+	MeshShare(name string, port int) (string, error)            // expose a local port on the mesh → ticket
+	MeshConnect(name, ticket string, localPort int) (string, error) // dial a ticket → local 127.0.0.1:localPort
 	Exec(argv []string) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
 }
@@ -53,7 +55,23 @@ type BuildSource struct {
 type ShellRunner struct {
 	Docker string
 	Token  string
-	Reg    *Registry // records app->port on deploy so the data plane can proxy to it (loopback)
+	Reg    *Registry    // records app->port on deploy so the data plane can proxy to it (loopback)
+	Mesh   *MeshManager // dumbpipe sidecars for cross-node service links
+}
+
+// MeshShare exposes a local port on the mesh and returns the ticket. MeshConnect dials a ticket and
+// returns the local address it's surfaced on.
+func (r ShellRunner) MeshShare(name string, port int) (string, error) {
+	if r.Mesh == nil {
+		return "", fmt.Errorf("mesh not enabled on this agent")
+	}
+	return r.Mesh.Share(name, port)
+}
+func (r ShellRunner) MeshConnect(name, ticket string, localPort int) (string, error) {
+	if r.Mesh == nil {
+		return "", fmt.Errorf("mesh not enabled on this agent")
+	}
+	return r.Mesh.Connect(name, ticket, localPort)
 }
 
 func (r ShellRunner) cli() string {
@@ -245,6 +263,7 @@ type cmdMsg struct {
 	Port     int               `json:"port"`     // deploy: app's loopback port, recorded for the data plane
 	App      string            `json:"app"`      // deployApp: app name (per-app network + container prefix)
 	Services []Service         `json:"services"` // deployApp: the services to bring up together
+	Ticket   string            `json:"ticket"`   // meshConnect: the mesh ticket to dial
 	RepoURL  string            `json:"repoUrl"`  // build (git): git url (may embed a short-lived token)
 	Ref      string            `json:"ref"`      // build (git): branch/tag to clone
 	TarURL   string            `json:"tarUrl"`   // build (upload): hub url of the uploaded source.tgz
@@ -278,6 +297,10 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
 	case "deployApp":
 		out, err = r.DeployApp(m.App, m.Services)
+	case "meshShare":
+		out, err = r.MeshShare(m.Name, m.Port) // Name=link name, Port=local service port → reply.output is the ticket
+	case "meshConnect":
+		out, err = r.MeshConnect(m.Name, m.Ticket, m.Port) // Name=link name, Ticket=ticket, Port=local port
 	case "build":
 		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL}, m.Registry, m.Tag, m.HubBase)
 	default:

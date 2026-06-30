@@ -546,6 +546,42 @@ export const appRouter = router({
         }
       }),
 
+    // Wire a service on one node to a service on ANOTHER node over the mesh (dumbpipe/iroh), so e.g. a
+    // backend can reach its database with no public IP and without exposing the DB on a domain. The
+    // hub only brokers the ticket: the provider node `share`s its loopback port (→ ticket), the
+    // consumer node `connect`s it (→ a local port bound on all the node's interfaces). Data then flows
+    // P2P node-to-node, not through the hub. Returns the address the consumer's containers use
+    // (host.docker.internal:<localPort> with --add-host host.docker.internal:host-gateway).
+    linkService: requirePermission('app.deploy')
+      .input(
+        z.object({
+          name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes'), // stable link id
+          provider: z.string().min(1), // node that HAS the service
+          providerPort: z.number().int().min(1).max(65535), // the service's loopback port on the provider node
+          consumer: z.string().min(1), // node that WANTS the service
+          localPort: z.number().int().min(1).max(65535), // local port the link is surfaced on, on the consumer node
+          confirm: z.boolean().default(false),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to link a service across the mesh' });
+        const connected = new Set(agentGateway.list().map((a) => a.id));
+        for (const n of [input.provider, input.consumer]) if (!connected.has(n)) throw new TRPCError({ code: 'BAD_REQUEST', message: `node "${n}" is not connected` });
+        requireDurableAudit(ctx, 'agents.linkService', `${input.name}: ${input.provider}:${input.providerPort} → ${input.consumer}:${input.localPort}`);
+        try {
+          const share = await agentGateway.send(input.provider, { cmd: 'meshShare', name: input.name, port: input.providerPort }, 60_000);
+          if (!share.ok || !share.output) throw new Error(`provider share failed: ${share.error ?? 'no ticket returned'}`);
+          // The ticket is a capability to reach the service — kept hub-internal, never returned to the caller.
+          const conn = await agentGateway.send(input.consumer, { cmd: 'meshConnect', name: input.name, ticket: share.output.trim(), port: input.localPort }, 60_000);
+          if (!conn.ok) throw new Error(`consumer connect failed: ${conn.error}`);
+          const op = recordOp(ctx, { action: 'agents.linkService', target: input.name, outcome: 'success' });
+          return { ok: true, address: `host.docker.internal:${input.localPort}`, localAddress: (conn.output ?? '').trim(), ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'agents.linkService', target: input.name, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
+      }),
+
     // Run a command on an agent (debug/ops; the container path above is the normal one).
     run: requirePermission('app.deploy')
       .input(z.object({ agentId: z.string().min(1), argv: z.array(z.string().min(1)).min(1).max(64), confirm: z.boolean().default(false) }))

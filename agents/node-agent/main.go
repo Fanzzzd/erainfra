@@ -66,7 +66,8 @@ func runConnect() {
 	reg := agent.NewRegistry()
 	dataURL := strings.TrimSuffix(*hub, "/agent") + "/data"
 	go agent.ConnectData(dataURL, *token, *name, reg)
-	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token, Reg: reg})
+	mesh := agent.NewMeshManager() // dumbpipe sidecars for cross-node service links
+	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token, Reg: reg, Mesh: mesh})
 }
 
 func runPlan() {

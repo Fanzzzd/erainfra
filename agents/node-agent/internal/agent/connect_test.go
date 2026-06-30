@@ -6,8 +6,8 @@ import (
 )
 
 type fakeRunner struct {
-	execOut, depOut, buildOut, appOut string
-	execErr, depErr, buildErr, appErr error
+	execOut, depOut, buildOut, appOut, meshOut string
+	execErr, depErr, buildErr, appErr, meshErr error
 }
 
 func (f fakeRunner) Exec(argv []string) (string, error)                    { return f.execOut, f.execErr }
@@ -17,6 +17,8 @@ func (f fakeRunner) Deploy(image, name string, a []string, env map[string]string
 func (f fakeRunner) DeployApp(app string, services []Service) (string, error) {
 	return f.appOut, f.appErr
 }
+func (f fakeRunner) MeshShare(name string, port int) (string, error)            { return f.meshOut, f.meshErr }
+func (f fakeRunner) MeshConnect(name, ticket string, localPort int) (string, error) { return f.meshOut, f.meshErr }
 func (f fakeRunner) Build(src BuildSource, reg, tag, hub string) (string, error) {
 	return f.buildOut, f.buildErr
 }
@@ -54,6 +56,17 @@ func TestRunCmdDeployApp(t *testing.T) {
 	r := RunCmd(m, fakeRunner{appOut: "up"})
 	if !r.OK || r.Output != "up" {
 		t.Fatalf("deployApp: %+v", r)
+	}
+}
+
+func TestRunCmdMesh(t *testing.T) {
+	share := RunCmd(cmdMsg{ID: "8", Cmd: "meshShare", Name: "db", Port: 5432}, fakeRunner{meshOut: "TICKET123"})
+	if !share.OK || share.Output != "TICKET123" {
+		t.Fatalf("meshShare: %+v", share)
+	}
+	conn := RunCmd(cmdMsg{ID: "9", Cmd: "meshConnect", Name: "db", Ticket: "TICKET123", Port: 15432}, fakeRunner{meshOut: "127.0.0.1:15432"})
+	if !conn.OK || conn.Output != "127.0.0.1:15432" {
+		t.Fatalf("meshConnect: %+v", conn)
 	}
 }
 

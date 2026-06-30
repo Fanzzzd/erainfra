@@ -130,3 +130,11 @@ test('agents.deployApp is RBAC-gated and validates the service set before touchi
     /not connected/,
   );
 });
+
+test('agents.linkService is RBAC-gated, confirm-gated, and checks both nodes are connected', async () => {
+  const args = { name: 'dblink', provider: 'nodeB', providerPort: 5432, consumer: 'nodeA', localPort: 15432 };
+  await assert.rejects(() => caller(viewer).call.agents.linkService({ ...args, confirm: true }), /missing permission/);
+  const { call } = caller(owner);
+  await assert.rejects(() => call.agents.linkService({ ...args }), /confirm:true required/);
+  await assert.rejects(() => call.agents.linkService({ ...args, confirm: true }), /not connected/); // no agents in this test
+});
