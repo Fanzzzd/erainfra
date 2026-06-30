@@ -64,10 +64,14 @@ func (r ShellRunner) Exec(argv []string) (string, error) {
 func (r ShellRunner) Deploy(image, name string, args []string, env map[string]string, port int) (string, error) {
 	d := r.cli()
 	var b strings.Builder
-	if out, err := exec.Command(d, "pull", image).CombinedOutput(); err != nil {
-		return string(out), fmt.Errorf("pull: %w", err)
-	} else {
-		b.Write(out)
+	// Pull only if the image isn't already present locally. This supports pre-loaded / air-gapped
+	// nodes (self-hosted, no Docker Hub) and skips a needless registry round-trip on every deploy.
+	if exec.Command(d, "image", "inspect", image).Run() != nil {
+		if out, err := exec.Command(d, "pull", image).CombinedOutput(); err != nil {
+			return string(out), fmt.Errorf("pull: %w", err)
+		} else {
+			b.Write(out)
+		}
 	}
 	if len(env) > 0 {
 		ef, err := writeEnvFile(env)
