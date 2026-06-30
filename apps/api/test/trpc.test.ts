@@ -124,4 +124,9 @@ test('agents.deployApp is RBAC-gated and validates the service set before touchi
     () => call.agents.deployApp({ agentId: 'n1', app: 'flight', services: [{ name: 'web', image: 'a', route: 'flight' }], confirm: true }),
     /route but no port/,
   );
+  // placement target must be a connected node (no agents connected in this test)
+  await assert.rejects(
+    () => call.agents.deployApp({ agentId: 'n1', app: 'flight', services: [{ name: 'web', image: 'a' }], confirm: true }),
+    /not connected/,
+  );
 });

@@ -484,15 +484,17 @@ export const appRouter = router({
         }
       }),
 
-    // Deploy a multi-service ("compose-like") app on an agent: all services come up together on a
-    // shared per-app docker network (so they reach each other by service name), and each exposed
-    // service (one with a `route`) gets a wildcard-domain ingress route — reusing the single-container
-    // data plane unchanged. Secrets are injected per service: app-level (keyed by the app name) merged
-    // with per-service overrides (keyed by `<app>-<service>`), never persisted, never in argv.
+    // Deploy a multi-service ("compose-like") app across one or more agents. Services on the SAME node
+    // share a per-app docker network (so they reach each other by service name); a service's `node`
+    // places it elsewhere (default: agentId). Each exposed service (one with a `route`) gets a
+    // wildcard-domain ingress route from its own node — reusing the single-container data plane
+    // unchanged. Cross-node service-to-service links (e.g. backend→db) are NOT set up here — that's the
+    // mesh (see agents.linkService). Secrets are injected per service: app-level (keyed by the app
+    // name) merged with per-service overrides (keyed by `<app>-<service>`), never persisted, never argv.
     deployApp: requirePermission('app.deploy')
       .input(
         z.object({
-          agentId: z.string().min(1),
+          agentId: z.string().min(1), // default node for services that don't pin their own
           app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes'),
           services: z
             .array(
@@ -502,6 +504,7 @@ export const appRouter = router({
                 args: z.array(z.string().max(256)).max(64).default([]),
                 port: z.number().int().min(1).max(65535).optional(),
                 route: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional(), // exposed service: its Args must publish `port`
+                node: z.string().min(1).optional(), // which agent runs this service (default: agentId)
               }),
             )
             .min(1)
@@ -516,18 +519,29 @@ export const appRouter = router({
         const routes = input.services.filter((s) => s.route).map((s) => s.route!);
         if (new Set(routes).size !== routes.length) throw new TRPCError({ code: 'BAD_REQUEST', message: 'service routes must be unique within the app' });
         for (const s of input.services) if (s.route && !s.port) throw new TRPCError({ code: 'BAD_REQUEST', message: `service "${s.name}" has a route but no port` });
-        requireDurableAudit(ctx, 'agents.deployApp', `${input.agentId}: ${input.app} (${input.services.length} svc)`);
+        // Resolve each service's node, then group so each node gets ONE deployApp with just its services.
+        const placed = input.services.map((s) => ({ ...s, node: s.node ?? input.agentId }));
+        const connected = new Set(agentGateway.list().map((a) => a.id));
+        for (const n of new Set(placed.map((s) => s.node))) if (!connected.has(n)) throw new TRPCError({ code: 'BAD_REQUEST', message: `node "${n}" is not connected` });
+        requireDurableAudit(ctx, 'agents.deployApp', `${input.app}: ${input.services.length} svc across ${new Set(placed.map((s) => s.node)).size} node(s)`);
         try {
-          const services = input.services.map((s) => ({ ...s, env: { ...secretStore.get(input.app), ...secretStore.get(`${input.app}-${s.name}`) } }));
-          const reply = await agentGateway.send(input.agentId, { cmd: 'deployApp', app: input.app, services }, 300_000);
-          if (reply.ok) {
-            appStore.set(input.app, { node: input.agentId, services: input.services });
-            for (const s of input.services) if (s.route && s.port) routeStore.set(s.route, { node: input.agentId, image: s.image, port: s.port });
+          const byNode = new Map<string, typeof placed>();
+          for (const s of placed) (byNode.get(s.node) ?? byNode.set(s.node, []).get(s.node)!).push(s);
+          const results: Array<{ node: string; ok: boolean; output?: string; error?: string }> = [];
+          for (const [node, svcs] of byNode) {
+            const services = svcs.map((s) => ({ name: s.name, image: s.image, args: s.args, port: s.port, route: s.route, env: { ...secretStore.get(input.app), ...secretStore.get(`${input.app}-${s.name}`) } }));
+            const reply = await agentGateway.send(node, { cmd: 'deployApp', app: input.app, services }, 300_000);
+            results.push({ node, ok: reply.ok, output: reply.output, error: reply.error });
           }
-          const op = recordOp(ctx, { action: 'agents.deployApp', target: `${input.agentId}:${input.app}`, outcome: reply.ok ? 'success' : 'failure' });
-          return { ...reply, ...op };
+          const ok = results.every((r) => r.ok);
+          if (ok) {
+            appStore.set(input.app, { node: input.agentId, services: placed.map((s) => ({ name: s.name, image: s.image, args: s.args, port: s.port, route: s.route, node: s.node })) });
+            for (const s of placed) if (s.route && s.port) routeStore.set(s.route, { node: s.node, image: s.image, port: s.port });
+          }
+          const op = recordOp(ctx, { action: 'agents.deployApp', target: `${input.app}`, outcome: ok ? 'success' : 'failure' });
+          return { ok, results, ...op };
         } catch (e) {
-          recordOp(ctx, { action: 'agents.deployApp', target: input.agentId, outcome: 'failure' });
+          recordOp(ctx, { action: 'agents.deployApp', target: input.app, outcome: 'failure' });
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
         }
       }),

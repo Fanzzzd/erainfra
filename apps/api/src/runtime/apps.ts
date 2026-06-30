@@ -19,6 +19,7 @@ export interface ServiceDeploy {
   args: string[]; // extra docker run flags (-p, -v, ...)
   port?: number; // loopback port for the data plane (set together with route)
   route?: string; // external hostname label; absent = internal-only
+  node?: string; // agent this service runs on (multi-node apps); absent = the app's primary node
 }
 
 export interface AppDeployment {
