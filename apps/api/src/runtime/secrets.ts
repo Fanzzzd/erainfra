@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 
 const stateDir = () => join(tmpdir(), 'portless-runtime');
 function persistDefault(envVar: string | undefined): string | undefined {
-  return process.execArgv.includes('--test') ? undefined : envVar; // hermetic under the test runner
+  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : envVar; // hermetic under the test runner
 }
 
 // 32-byte key: PORTLESS_SECRET_KEY (64 hex) wins; else a generated key persisted 0600; ephemeral
@@ -16,7 +16,7 @@ function persistDefault(envVar: string | undefined): string | undefined {
 function loadKey(): Buffer {
   const hex = process.env.PORTLESS_SECRET_KEY;
   if (hex && /^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
-  if (process.execArgv.includes('--test')) return randomBytes(32);
+  if ((process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT)) return randomBytes(32);
   const keyPath = process.env.PORTLESS_SECRET_KEY_FILE ?? join(stateDir(), 'secret.key');
   try {
     if (existsSync(keyPath)) return Buffer.from(readFileSync(keyPath, 'utf8').trim(), 'hex');

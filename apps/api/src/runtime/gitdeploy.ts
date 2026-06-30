@@ -14,7 +14,7 @@ import { routeStore } from './routes.ts';
 // Persist by default (a binding is config, not session state — it must survive a hub restart like
 // routes/secrets/projects do). Hermetic (in-memory) only under the node test runner.
 function persistDefault(envVar: string | undefined): string | undefined {
-  return process.execArgv.includes('--test') ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'git-projects.json'));
+  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'git-projects.json'));
 }
 
 export interface GitBinding {

@@ -7,7 +7,7 @@ import { parseAppSpec, type AppSpecFile } from './appspec.ts';
 // Default persist path. Hard-disabled under the node test runner (--test) so tests stay hermetic
 // no matter what env vars the developer has exported.
 function persistDefault(envVar: string | undefined): string | undefined {
-  return process.execArgv.includes('--test') ? undefined : envVar;
+  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : envVar;
 }
 
 // Project registry. Each project is a parsed portless.yaml AppSpec and has its own topology.
