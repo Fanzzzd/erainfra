@@ -21,8 +21,21 @@ import (
 // can use a fake.
 type Runner interface {
 	Deploy(image, name string, args []string, env map[string]string, port int) (string, error)
+	DeployApp(app string, services []Service) (string, error)
 	Exec(argv []string) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
+}
+
+// Service is one container of a multi-service ("compose-like") app. The whole app shares a per-app
+// docker network so services reach each other by Name (docker DNS); a service with a Route is also
+// published (its Args must include the matching -p) and gets a data-plane ingress route.
+type Service struct {
+	Name  string            `json:"name"`  // DNS name on the app network (e.g. "web", "db")
+	Image string            `json:"image"` // registry image ref
+	Args  []string          `json:"args"`  // extra docker run flags (-p, -v, ...)
+	Env   map[string]string `json:"env"`   // secrets → 0600 --env-file (never argv)
+	Port  int               `json:"port"`  // loopback port for the data plane (when Route is set)
+	Route string            `json:"route"` // external hostname label; empty = internal-only
 }
 
 // BuildSource is either a git repo (clone a ref) or a tarball URL (download + extract). Exactly one
@@ -91,6 +104,55 @@ func (r ShellRunner) Deploy(image, name string, args []string, env map[string]st
 	}
 	if r.Reg != nil && port > 0 {
 		r.Reg.Set(name, port) // now the data plane can reverse-proxy <name>.<domain> -> 127.0.0.1:port
+	}
+	return b.String(), nil
+}
+
+// DeployApp brings up a multi-service app: it ensures a per-app docker network (so services resolve
+// each other by name over docker DNS), then (re)runs each service detached and attached to that
+// network. Idempotent on the app+service names. Exposed services (Route set) register app->port so the
+// data plane can reverse-proxy them — their Args must publish the port (e.g. -p 127.0.0.1:port:cport).
+// Best-effort sequential: a service that fails to run aborts and returns the output so far.
+func (r ShellRunner) DeployApp(app string, services []Service) (string, error) {
+	d := r.cli()
+	net := app + "-net"
+	var b strings.Builder
+	// Ensure the shared network. `network create` errors if it already exists — that's fine on
+	// re-deploy, so only surface a failure when the network still isn't there afterwards.
+	if out, err := exec.Command(d, "network", "create", net).CombinedOutput(); err != nil {
+		if exec.Command(d, "network", "inspect", net).Run() != nil {
+			return string(out), fmt.Errorf("network %s: %w", net, err)
+		}
+	}
+	for _, s := range services {
+		name := app + "-" + s.Name
+		if exec.Command(d, "image", "inspect", s.Image).Run() != nil {
+			if out, err := exec.Command(d, "pull", s.Image).CombinedOutput(); err != nil {
+				return b.String() + string(out), fmt.Errorf("pull %s: %w", s.Name, err)
+			} else {
+				b.Write(out)
+			}
+		}
+		run := []string{"run", "-d", "--name", name, "--network", net, "--network-alias", s.Name, "--restart", "unless-stopped"}
+		if len(s.Env) > 0 {
+			ef, err := writeEnvFile(s.Env)
+			if err != nil {
+				return b.String(), fmt.Errorf("env-file %s: %w", s.Name, err)
+			}
+			defer os.Remove(ef)
+			run = append(run, "--env-file", ef)
+		}
+		run = append(run, s.Args...)
+		run = append(run, s.Image)
+		_ = exec.Command(d, "rm", "-f", name).Run() // replace any prior container with this name
+		out, err := exec.Command(d, run...).CombinedOutput()
+		b.Write(out)
+		if err != nil {
+			return b.String(), fmt.Errorf("run %s: %w", s.Name, err)
+		}
+		if r.Reg != nil && s.Port > 0 && s.Route != "" {
+			r.Reg.Set(s.Route, s.Port) // data plane: <route>.<domain> -> 127.0.0.1:port
+		}
 	}
 	return b.String(), nil
 }
@@ -181,6 +243,8 @@ type cmdMsg struct {
 	Args     []string          `json:"args"`
 	Env      map[string]string `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
 	Port     int               `json:"port"`     // deploy: app's loopback port, recorded for the data plane
+	App      string            `json:"app"`      // deployApp: app name (per-app network + container prefix)
+	Services []Service         `json:"services"` // deployApp: the services to bring up together
 	RepoURL  string            `json:"repoUrl"`  // build (git): git url (may embed a short-lived token)
 	Ref      string            `json:"ref"`      // build (git): branch/tag to clone
 	TarURL   string            `json:"tarUrl"`   // build (upload): hub url of the uploaded source.tgz
@@ -212,6 +276,8 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		out, err = r.Exec(m.Argv)
 	case "deploy":
 		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
+	case "deployApp":
+		out, err = r.DeployApp(m.App, m.Services)
 	case "build":
 		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL}, m.Registry, m.Tag, m.HubBase)
 	default:

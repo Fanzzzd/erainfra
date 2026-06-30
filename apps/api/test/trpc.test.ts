@@ -105,3 +105,23 @@ test('project.addDomain attaches to the spec; route:true needs confirm (never li
   const bad = await call.project.addDomain({ projectId: imp.id, hostname: 'y.example.com', service: 'ghost' });
   assert.equal(bad.ok, false);
 });
+
+test('agents.deployApp is RBAC-gated and validates the service set before touching any agent', async () => {
+  const svc = [{ name: 'web', image: 'nginx' }];
+  // viewer is denied by the app.deploy permission middleware (before the resolver runs)
+  await assert.rejects(() => caller(viewer).call.agents.deployApp({ agentId: 'n1', app: 'flight', services: svc, confirm: true }), /missing permission/);
+
+  const { call } = caller(owner);
+  // confirm gate
+  await assert.rejects(() => call.agents.deployApp({ agentId: 'n1', app: 'flight', services: svc }), /confirm:true required/);
+  // duplicate service names
+  await assert.rejects(
+    () => call.agents.deployApp({ agentId: 'n1', app: 'flight', services: [{ name: 'web', image: 'a' }, { name: 'web', image: 'b' }], confirm: true }),
+    /service names must be unique/,
+  );
+  // a route with no port to proxy to
+  await assert.rejects(
+    () => call.agents.deployApp({ agentId: 'n1', app: 'flight', services: [{ name: 'web', image: 'a', route: 'flight' }], confirm: true }),
+    /route but no port/,
+  );
+});

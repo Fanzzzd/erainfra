@@ -6,13 +6,16 @@ import (
 )
 
 type fakeRunner struct {
-	execOut, depOut, buildOut string
-	execErr, depErr, buildErr error
+	execOut, depOut, buildOut, appOut string
+	execErr, depErr, buildErr, appErr error
 }
 
 func (f fakeRunner) Exec(argv []string) (string, error)                    { return f.execOut, f.execErr }
 func (f fakeRunner) Deploy(image, name string, a []string, env map[string]string, port int) (string, error) {
 	return f.depOut, f.depErr
+}
+func (f fakeRunner) DeployApp(app string, services []Service) (string, error) {
+	return f.appOut, f.appErr
 }
 func (f fakeRunner) Build(src BuildSource, reg, tag, hub string) (string, error) {
 	return f.buildOut, f.buildErr
@@ -43,6 +46,14 @@ func TestRunCmdDeploy(t *testing.T) {
 	r := RunCmd(cmdMsg{ID: "4", Cmd: "deploy", Image: "busybox", Name: "demo"}, fakeRunner{depOut: "started"})
 	if !r.OK || r.Output != "started" {
 		t.Fatalf("deploy: %+v", r)
+	}
+}
+
+func TestRunCmdDeployApp(t *testing.T) {
+	m := cmdMsg{ID: "7", Cmd: "deployApp", App: "flight", Services: []Service{{Name: "web", Image: "nginx", Port: 80, Route: "flight"}, {Name: "db", Image: "postgres"}}}
+	r := RunCmd(m, fakeRunner{appOut: "up"})
+	if !r.OK || r.Output != "up" {
+		t.Fatalf("deployApp: %+v", r)
 	}
 }
 
