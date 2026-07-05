@@ -11,7 +11,6 @@ import { appRouter } from './router.ts';
 import type { Context } from './trpc.ts';
 import { InMemoryAuditLog, FileAuditLog, type AuditLog } from './audit.ts';
 import { defaultTokenStore, type TokenStore } from './auth.ts';
-import { LocalRuntime } from './runtime/local.ts';
 import { can } from './rbac.ts';
 import { agentGateway } from './runtime/agents.ts';
 import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from './runtime/dataplane.ts';
@@ -19,7 +18,8 @@ import { routeStore } from './runtime/routes.ts';
 import { installFailover } from './runtime/failover.ts';
 import { backupConfig, backupNow } from './runtime/backup.ts';
 import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
-import { gitProjects, deployFromGit } from './runtime/gitdeploy.ts';
+import { gitProjects, startGitDeploy } from './runtime/gitdeploy.ts';
+import { installLinkHealer } from './runtime/appdeploy.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 // Re-export so existing importers (and tests) keep working.
@@ -80,17 +80,15 @@ async function proxyAppRequest(appName: string, req: IncomingMessage, res: Serve
   }
 }
 
-export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; runtime?: LocalRuntime; webDir?: string } = {}): FastifyInstance {
+export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; webDir?: string } = {}): FastifyInstance {
   const audit = opts.audit ?? new InMemoryAuditLog();
   // Fail-closed in production; dev tokens only outside production (see defaultTokenStore).
   const tokens = opts.tokens ?? defaultTokenStore();
-  const runtime = opts.runtime ?? new LocalRuntime();
   // requestTimeout:0 disables Node's 5-min cap so long agent orchestrations aren't cut off.
   // bodyLimit raised so drag-drop source uploads (tarballs) aren't capped at Fastify's 1MB default.
   // ponytail: 256MB cap, buffered in memory then written to disk — fine for a single-user PaaS; switch
   // to a streamed multipart upload if source bundles get large or uploads run concurrently.
   const app = Fastify({ logger: false, requestTimeout: 0, keepAliveTimeout: 0, bodyLimit: 256 * 1024 * 1024 });
-  app.addHook('onClose', async () => runtime.stopAll());
 
   // Accept tarball uploads as a raw Buffer (drag-drop deploy sends the source as a gzipped tar).
   app.addContentTypeParser(['application/gzip', 'application/x-tar', 'application/octet-stream'], { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
@@ -195,20 +193,18 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
         appId: cfg.appId,
         privateKey: cfg.privateKey,
       };
-      void deployFromGit(binding, push.sha, push.installationId, deployCfg)
-        .then((r) => gitProjects.setStatus(binding.id, { at: new Date().toISOString(), sha: push.sha, ok: r.ok, stage: r.stage, error: r.error }))
-        .catch((e) => gitProjects.setStatus(binding.id, { at: new Date().toISOString(), sha: push.sha, ok: false, stage: 'build', error: (e as Error).message }));
+      void startGitDeploy(binding, push.sha, push.installationId, deployCfg)
+        .done.then((r) => gitProjects.setStatus(binding.id, { at: new Date().toISOString(), sha: push.sha, ok: r.ok, stage: r.stage, error: r.error }));
       return reply.send({ ok: true, building: `${push.repo}@${push.sha.slice(0, 7)} → ${binding.name}` });
     });
   });
 
-  // Public installer scripts: `curl -fsSL https://<hub>/mesh-node.sh | sh -s -- share 5432`, plus
-  // registry.sh (image store) and image.sh (build/deploy). Unauthenticated by design — they carry
-  // no secrets (install dumbpipe/zot, run share/connect/build/deploy). We template the served base
-  // URL into each (the `<hub>` placeholder) so the commands they print point back at this hub.
-  // Override the directory with PORTLESS_DEPLOY_DIR.
+  // Public installer scripts: agent.sh/agent.ps1 (node enrollment), image.sh (build/deploy),
+  // registry.sh (image store), cli.sh (the portless CLI). Unauthenticated by design — they carry
+  // no secrets. We template the served base URL into each (the `<hub>` placeholder) so the
+  // commands they print point back at this hub. Override the directory with PORTLESS_DEPLOY_DIR.
   const deployDir = process.env.PORTLESS_DEPLOY_DIR ?? join(import.meta.dirname, '../../../deploy');
-  for (const script of ['mesh-node.sh', 'mesh-node.ps1', 'registry.sh', 'image.sh', 'agent.sh', 'agent.ps1']) {
+  for (const script of ['registry.sh', 'image.sh', 'agent.sh', 'agent.ps1', 'cli.sh']) {
     const mime = script.endsWith('.ps1') ? 'text/plain; charset=utf-8' : 'text/x-shellscript; charset=utf-8';
     app.get(`/${script}`, async (req, reply) => {
       let body: string;
@@ -225,6 +221,13 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       return reply.type(mime).send(body.split('<hub>').join(base));
     });
   }
+
+  // The portless CLI itself (installed by cli.sh). No templating — it learns its hub via `login`.
+  const cliFile = process.env.PORTLESS_CLI_FILE ?? join(import.meta.dirname, '../../../packages/cli/portless.mjs');
+  app.get('/cli/portless.mjs', async (_req, reply) => {
+    if (!existsSync(cliFile)) return reply.code(404).type('text/plain').send('cli not available on this server\n');
+    return reply.type('text/javascript; charset=utf-8').send(createReadStream(cliFile));
+  });
 
   // Serve prebuilt agent binaries (populated by deploy/build-agents.sh) so agent.sh / agent.ps1 can
   // download the right one. Self-hosted distribution — no Docker Hub, no third-party release host.
@@ -247,7 +250,6 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       createContext: ({ req }: CreateFastifyContextOptions): Context => ({
         principal: tokens.resolve(bearerToken(req.headers.authorization)),
         audit,
-        runtime,
       }),
     },
   });
@@ -276,6 +278,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
   const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
   installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
+  installLinkHealer(); // re-establish cross-node mesh links after agent/hub restarts
   // Liveness reaper: drop agents/data sockets that went silent (dead NAT mappings never close cleanly).
   // Agents heartbeat the control channel every 15s and ping the data channel every 20s; reaping a
   // control socket fires the disconnect → failover path.

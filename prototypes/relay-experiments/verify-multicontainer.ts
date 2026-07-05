@@ -25,7 +25,6 @@ import { createApiServer } from '../../apps/api/src/server.ts';
 import { appRouter } from '../../apps/api/src/router.ts';
 import { createCallerFactory } from '../../apps/api/src/trpc.ts';
 import { InMemoryAuditLog } from '../../apps/api/src/audit.ts';
-import { LocalRuntime } from '../../apps/api/src/runtime/local.ts';
 import { dataGateway } from '../../apps/api/src/runtime/dataplane.ts';
 import type { Principal } from '../../apps/api/src/auth.ts';
 
@@ -46,7 +45,7 @@ function get(host: string, path: string): Promise<{ status: number; body: string
 const app = createApiServer();
 await app.listen({ port: PORT, host: '127.0.0.1' });
 console.log(`HUB_READY on 127.0.0.1:${PORT}`);
-const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog(), runtime: new LocalRuntime() });
+const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog() });
 
 const agent = spawn(AGENT_BIN, ['connect', '--hub', `ws://127.0.0.1:${PORT}/agent`, '--token', 'owner-dev-token', '--name', AGENT], { stdio: ['ignore', 'inherit', 'inherit'] });
 

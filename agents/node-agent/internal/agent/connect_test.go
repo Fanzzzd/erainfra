@@ -19,9 +19,11 @@ func (f fakeRunner) DeployApp(app string, services []Service) (string, error) {
 }
 func (f fakeRunner) MeshShare(name string, port int) (string, error)            { return f.meshOut, f.meshErr }
 func (f fakeRunner) MeshConnect(name, ticket string, localPort int) (string, error) { return f.meshOut, f.meshErr }
+func (f fakeRunner) MeshDrop(name string) (string, error)                       { return f.meshOut, f.meshErr }
 func (f fakeRunner) Build(src BuildSource, reg, tag, hub string) (string, error) {
 	return f.buildOut, f.buildErr
 }
+func (f fakeRunner) ReadSpec(src BuildSource) (string, error) { return f.buildOut, f.buildErr }
 
 func TestRunCmdPing(t *testing.T) {
 	r := RunCmd(cmdMsg{Type: "cmd", ID: "1", Cmd: "ping"}, fakeRunner{})
@@ -90,5 +92,18 @@ func TestRunCmdUnknown(t *testing.T) {
 	r := RunCmd(cmdMsg{ID: "5", Cmd: "frob"}, fakeRunner{})
 	if r.OK || r.Error == "" {
 		t.Fatalf("unknown: %+v", r)
+	}
+}
+
+func TestContextDirConfined(t *testing.T) {
+	root := t.TempDir()
+	if _, err := contextDir(root, "../escape"); err == nil {
+		t.Fatal("contextDir must reject escaping the source root")
+	}
+	if p, err := contextDir(root, "sub/dir"); err != nil || p != root+"/sub/dir" {
+		t.Fatalf("contextDir sub: %v %s", err, p)
+	}
+	if p, err := contextDir(root, ""); err != nil || p != root {
+		t.Fatalf("contextDir empty: %v %s", err, p)
 	}
 }

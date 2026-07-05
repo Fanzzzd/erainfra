@@ -1,13 +1,11 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import type { Principal } from './auth.ts';
 import type { AuditLog } from './audit.ts';
-import type { LocalRuntime } from './runtime/local.ts';
 import { can, type Permission } from './rbac.ts';
 
 export interface Context {
   principal: Principal | null;
   audit: AuditLog;
-  runtime: LocalRuntime;
 }
 
 const t = initTRPC.context<Context>().create();

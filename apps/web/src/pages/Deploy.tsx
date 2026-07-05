@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { ExternalLink, GitBranch, KeyRound, Plus, RefreshCw, Rocket, Trash2, Upload } from 'lucide-react';
-import { trpcQuery, trpcMutation, uploadSource, type AgentInfo, type EnvVar, type GitBinding, type RouteInfo } from '@/api';
+import { trpcQuery, trpcMutation, uploadSource, waitForDeploy, type AgentInfo, type EnvVar, type GitBinding, type RouteInfo } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -27,8 +27,6 @@ function since(iso: string): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
 }
-
-type DeployResult = { ok: boolean; stage?: string; error?: string };
 
 // A node <select>, shared by both tabs and the bind dialog. When no node is connected it shows a
 // disabled hint so the user knows to enroll one before deploying.
@@ -301,13 +299,15 @@ function GitTab(props: { agents: AgentInfo[] }) {
 
   async function redeploy(b: GitBinding) {
     setBusy(b.id);
+    const t = toast.loading(`Deploying ${b.name}…`);
     try {
-      const r = await trpcMutation<DeployResult>('git.deployNow', { id: b.id, confirm: true });
-      if (r.ok) toast.success(`Redeployed ${b.name}`);
-      else toast.error(`Failed at ${r.stage}: ${r.error ?? 'see server logs'}`);
+      const { deployId } = await trpcMutation<{ deployId: string }>('git.deployNow', { id: b.id, confirm: true });
+      const d = await waitForDeploy(deployId, (p) => toast.loading(`${b.name}: ${p.detail}`, { id: t }));
+      if (d.stage === 'done') toast.success(`Deployed ${b.name}${d.urls[0] ? ` → ${d.urls[0]}` : ''}`, { id: t });
+      else toast.error(`${b.name} failed: ${d.error ?? d.detail}`, { id: t });
       refresh();
     } catch (e) {
-      toast.error((e as Error).message);
+      toast.error((e as Error).message, { id: t });
     } finally {
       setBusy(null);
     }
@@ -413,7 +413,7 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('main');
   const [name, setName] = useState('');
-  const [port, setPort] = useState(8080);
+  const [port, setPort] = useState(''); // only needed when the repo has no portless.yaml
   const [buildNode, setBuildNode] = useState('');
   const [deployNode, setDeployNode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -432,7 +432,7 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
   async function bind() {
     setBusy(true);
     try {
-      await trpcMutation('git.bind', { repo, branch, buildNode, deployNode, name, port, confirm: true });
+      await trpcMutation('git.bind', { repo, branch, buildNode, deployNode, name, ...(port ? { port: Number(port) } : {}), confirm: true });
       toast.success(`Imported ${repo}@${branch}`);
       setOpen(false);
       setRepo('');
@@ -473,8 +473,8 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
             </div>
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="git-port">Port</Label>
-            <Input id="git-port" type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} />
+            <Label htmlFor="git-port">Port (only if the repo has no portless.yaml)</Label>
+            <Input id="git-port" type="number" placeholder="from portless.yaml" value={port} onChange={(e) => setPort(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
@@ -503,7 +503,7 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
 function UploadTab(props: { agents: AgentInfo[] }) {
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState('');
-  const [port, setPort] = useState(8080);
+  const [port, setPort] = useState(''); // only needed when the source has no portless.yaml
   const [buildNode, setBuildNode] = useState('');
   const [deployNode, setDeployNode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -516,7 +516,7 @@ function UploadTab(props: { agents: AgentInfo[] }) {
   }, [props.agents, buildNode, deployNode]);
 
   const noNodes = props.agents.length === 0;
-  const canDeploy = !!file && !!name && !!buildNode && !!deployNode && !noNodes && !busy;
+  const canDeploy = !!file && !!name && !noNodes && !busy;
 
   async function deploy() {
     if (!file) return;
@@ -524,10 +524,17 @@ function UploadTab(props: { agents: AgentInfo[] }) {
     const t = toast.loading('Uploading…');
     try {
       const { buildId } = await uploadSource(file);
-      toast.loading('Building + deploying…', { id: t });
-      const r = await trpcMutation<DeployResult>('upload.deploy', { buildId, name, port, buildNode, deployNode, confirm: true });
-      if (r.ok) toast.success(`Deployed ${name} on port ${port}`, { id: t });
-      else toast.error(`Failed at ${r.stage}: ${r.error ?? 'see server logs'}`, { id: t });
+      const { deployId } = await trpcMutation<{ deployId: string }>('upload.deploy', {
+        buildId,
+        app: name,
+        ...(port ? { port: Number(port) } : {}),
+        buildNode,
+        node: deployNode,
+        confirm: true,
+      });
+      const d = await waitForDeploy(deployId, (p) => toast.loading(`${name}: ${p.detail}`, { id: t }));
+      if (d.stage === 'done') toast.success(`Deployed ${name}${d.urls[0] ? ` → ${d.urls[0]}` : ''}`, { id: t });
+      else toast.error(`${name} failed: ${d.error ?? d.detail}`, { id: t });
     } catch (e) {
       toast.error((e as Error).message, { id: t });
     } finally {
@@ -557,8 +564,8 @@ function UploadTab(props: { agents: AgentInfo[] }) {
             <Input id="up-name" placeholder="my-app" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="up-port">Port</Label>
-            <Input id="up-port" type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} />
+            <Label htmlFor="up-port">Port (only if no portless.yaml)</Label>
+            <Input id="up-port" type="number" placeholder="from portless.yaml" value={port} onChange={(e) => setPort(e.target.value)} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">

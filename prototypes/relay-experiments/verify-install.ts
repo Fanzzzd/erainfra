@@ -9,7 +9,6 @@ import { createApiServer } from '../../apps/api/src/server.ts';
 import { appRouter } from '../../apps/api/src/router.ts';
 import { createCallerFactory } from '../../apps/api/src/trpc.ts';
 import { InMemoryAuditLog } from '../../apps/api/src/audit.ts';
-import { LocalRuntime } from '../../apps/api/src/runtime/local.ts';
 import type { Principal } from '../../apps/api/src/auth.ts';
 
 const PORT = 8795, NODE = 'pl-installed';
@@ -33,7 +32,7 @@ const node = spawn('docker', [
 node.stdout.on('data', (d) => process.stdout.write(`  [node] ${d}`));
 node.stderr.on('data', (d) => process.stdout.write(`  [node!] ${d}`));
 
-const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog(), runtime: new LocalRuntime() });
+const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog() });
 
 let failed = true;
 try {

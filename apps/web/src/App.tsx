@@ -1,30 +1,21 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, Boxes, Workflow, Bot, Cloud, Server, Rocket } from 'lucide-react';
+import { LayoutDashboard, Server, Rocket } from 'lucide-react';
 import { trpcQuery } from '@/api';
 import { cn } from '@/lib/utils';
 import { Overview } from '@/pages/Overview';
-import { Projects } from '@/pages/Projects';
-import { Orchestrate } from '@/pages/Orchestrate';
-import { Cloudflare } from '@/pages/Cloudflare';
-import { Apps } from '@/pages/Apps';
 import { Nodes } from '@/pages/Nodes';
 import { Deploy } from '@/pages/Deploy';
 
-type View = 'overview' | 'projects' | 'orchestrate' | 'cloudflare' | 'apps' | 'nodes' | 'deploy';
+type View = 'overview' | 'deploy' | 'nodes';
 
-const NAV: Array<{ id: View; label: string; icon: typeof Boxes }> = [
+const NAV: Array<{ id: View; label: string; icon: typeof Server }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-  { id: 'projects', label: 'Projects', icon: Workflow },
-  { id: 'apps', label: 'Apps', icon: Boxes },
   { id: 'deploy', label: 'Deploy', icon: Rocket },
   { id: 'nodes', label: 'Nodes', icon: Server },
-  { id: 'orchestrate', label: 'Orchestrate', icon: Bot },
-  { id: 'cloudflare', label: 'Cloudflare', icon: Cloud },
 ];
 
-// Reload-safe / shareable nav via the URL hash (#projects, #projects/<id>). ponytail: a hash, not a
-// router dep — the app is a flat set of pages. The VIEW is the first segment; pages own any sub-path
-// (Projects reads #projects/<id>). Unknown/empty hash falls back to overview.
+// Reload-safe / shareable nav via the URL hash. ponytail: a hash, not a router dep — the app is a
+// flat set of pages. Unknown/empty hash falls back to overview.
 function viewFromHash(): View {
   const seg = window.location.hash.replace(/^#\/?/, '').split('/')[0];
   return NAV.some((n) => n.id === seg) ? (seg as View) : 'overview';
@@ -47,7 +38,7 @@ export function App() {
 
   useEffect(() => {
     const ping = () =>
-      trpcQuery('local.list')
+      trpcQuery('agents.list')
         .then(() => setLive(true))
         .catch(() => setLive(false));
     ping();
@@ -111,12 +102,8 @@ export function App() {
 
           <main className="flex-1 p-6 lg:p-8">
             {view === 'overview' && <Overview />}
-            {view === 'projects' && <Projects />}
-            {view === 'apps' && <Apps />}
             {view === 'deploy' && <Deploy />}
             {view === 'nodes' && <Nodes />}
-            {view === 'orchestrate' && <Orchestrate />}
-            {view === 'cloudflare' && <Cloudflare />}
           </main>
         </div>
       </div>

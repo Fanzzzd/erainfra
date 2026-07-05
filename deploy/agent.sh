@@ -93,6 +93,27 @@ install_agent() {
   chmod +x "$BIN/portless-agent"
 }
 
+# dumbpipe (iroh) powers cross-node service links (backend on this box → db on another NAT'd box).
+# Prebuilt binary from its GitHub releases — no Rust toolchain. Best-effort: without it the node still
+# deploys fine; only cross-node `needs:` links are unavailable.
+DUMBPIPE_VERSION="${DUMBPIPE_VERSION:-v0.39.0}"
+ensure_dumbpipe() {
+  [ -x "$BIN/dumbpipe" ] && return 0
+  os=$(uname -s); arch=$(uname -m)
+  case "$os" in Linux) os=linux ;; Darwin) os=darwin ;; *) return 0 ;; esac
+  case "$arch" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) return 0 ;; esac
+  url="https://github.com/n0-computer/dumbpipe/releases/download/${DUMBPIPE_VERSION}/dumbpipe-${DUMBPIPE_VERSION}-${os}-${arch}.tar.gz"
+  log "downloading dumbpipe ${DUMBPIPE_VERSION} (cross-node links)…"
+  tmp=$(mktemp -d)
+  if curl -fsSL "$url" -o "$tmp/d.tgz" && tar -xzf "$tmp/d.tgz" -C "$tmp" 2>/dev/null && [ -f "$tmp/dumbpipe" ]; then
+    mv "$tmp/dumbpipe" "$BIN/dumbpipe" && chmod +x "$BIN/dumbpipe"
+    log "installed dumbpipe -> $BIN/dumbpipe"
+  else
+    warn "dumbpipe download failed — cross-node service links disabled on this node (deploys unaffected)"
+  fi
+  rm -rf "$tmp"
+}
+
 # systemd service (root only) → reconnects forever and survives reboot. Token lives in a 0600 env
 # file, never in a world-readable unit or argv.
 install_service() {
@@ -109,6 +130,7 @@ install_service() {
     'Wants=network-online.target' \
     '[Service]' \
     'EnvironmentFile=/etc/portless/agent.env' \
+    "Environment=HOME=$HOME" \
     "ExecStart=$BIN/portless-agent connect --name $nm" \
     'Restart=always' \
     'RestartSec=3' \
@@ -124,6 +146,7 @@ install_service() {
 
 ensure_docker
 install_agent
+ensure_dumbpipe
 ARGS="connect --hub $WSS --token $TOKEN"
 [ -n "$NAME" ] && ARGS="$ARGS --name $NAME"
 

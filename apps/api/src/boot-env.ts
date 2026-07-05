@@ -1,8 +1,4 @@
-// Side-effect module: set durable-state file defaults BEFORE the router builds its singletons.
-// Imported first by the server entrypoint so `node server.ts` persists projects with no config.
-// Tests import router.ts directly (never this), so they stay in-memory and hermetic.
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-const dir = join(tmpdir(), 'portless-runtime');
-process.env.PORTLESS_PROJECTS_FILE ??= join(dir, 'projects.json');
+// Side-effect module: reserved for durable-state env defaults that must be set BEFORE the router
+// builds its singletons. Runtime stores default their own persist paths (see runtime/*.ts); tests
+// import router.ts directly (never this), so they stay in-memory and hermetic.
+export {};

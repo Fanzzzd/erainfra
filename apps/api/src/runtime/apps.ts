@@ -17,14 +17,27 @@ export interface ServiceDeploy {
   name: string; // DNS name on the app network (e.g. "web", "db")
   image: string; // registry image ref, so failover can redeploy without a rebuild
   args: string[]; // extra docker run flags (-p, -v, ...)
-  port?: number; // loopback port for the data plane (set together with route)
+  port?: number; // loopback HOST port for the data plane (set together with route)
   route?: string; // external hostname label; absent = internal-only
   node?: string; // agent this service runs on (multi-node apps); absent = the app's primary node
+  env?: Record<string, string>; // PLAIN env (PORT, injected needs, spec env) — secrets are re-fetched live, never stored here
+}
+
+// A cross-node dependency wired over the mesh. Persisted so links survive hub restarts and are
+// re-established when agents come back (see appdeploy.ensureAppLinks / installLinkHealer).
+export interface AppLink {
+  name: string; // mesh link id (same on both nodes; re-share replaces)
+  need: string; // the depended-on service
+  provider: string; // node that runs `need`
+  providerPort: number; // need's loopback host port on the provider node
+  consumer: string; // node whose services depend on it
+  localPort: number; // port the link is surfaced on, on the consumer node
 }
 
 export interface AppDeployment {
   node: string; // agent id running the app's containers
   services: ServiceDeploy[];
+  links?: AppLink[];
 }
 
 export class AppStore {

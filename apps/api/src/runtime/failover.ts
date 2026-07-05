@@ -53,7 +53,12 @@ export async function failoverNode(lostId: string, deps: FailoverDeps): Promise<
   }
   for (const g of groups) {
     const to = healthy[pick++ % healthy.length];
-    const services = g.services.map((s) => ({ ...s, env: { ...deps.secrets.get(g.app), ...deps.secrets.get(`${g.app}-${s.name}`) } }));
+    // Stored plain env (PORT, injected needs) + live secrets; PORT stays platform-owned.
+    const services = g.services.map((s) => {
+      const env = { ...s.env, ...deps.secrets.get(g.app), ...deps.secrets.get(`${g.app}-${s.name}`) };
+      if (s.env?.PORT) env.PORT = s.env.PORT;
+      return { ...s, env };
+    });
     try {
       const reply = await deps.gateway.send(to, { cmd: 'deployApp', app: g.app, services }, 300_000);
       if (reply.ok) {

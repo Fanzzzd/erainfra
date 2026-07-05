@@ -47,30 +47,6 @@ export async function uploadSource(file: Blob): Promise<{ buildId: string }> {
   return body as { buildId: string };
 }
 
-export interface LocalProc {
-  name: string;
-  pid: number;
-  port?: number;
-  healthPath?: string;
-  status: 'running' | 'exited';
-  startedAt: string;
-  command: string;
-  logFile: string;
-  publicUrl?: string | null; // set when the app is published via a Cloudflare quick tunnel
-}
-
-export interface Template {
-  id: string;
-  label: string;
-  description: string;
-}
-
-export interface AppRow {
-  project: string;
-  environment: string;
-  services: Array<{ name: string; type: string; replicas: number; image: string }>;
-}
-
 export interface AgentInfo {
   id: string;
   version: string | null;
@@ -98,9 +74,31 @@ export interface GitBinding {
   id: string;
   repo: string;
   branch: string;
-  buildNode: string;
-  deployNode: string;
+  buildNode?: string; // absent = first connected node at deploy time
+  deployNode?: string;
   name: string;
-  port: number;
+  port?: number; // only for repos with no portless.yaml
   lastStatus?: { at: string; sha: string; ok: boolean; stage: string; error?: string };
+}
+
+// Progress of a background deploy (poll apps.status with the deployId from upload.deploy/git.deployNow).
+export interface Deployment {
+  id: string;
+  app: string;
+  stage: 'queued' | 'reading-spec' | 'building' | 'deploying' | 'linking' | 'done' | 'failed';
+  detail: string;
+  urls: string[];
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+// Poll a deploy until it finishes; reports stage changes via onStage.
+export async function waitForDeploy(deployId: string, onStage?: (d: Deployment) => void): Promise<Deployment> {
+  for (;;) {
+    const d = await trpcQuery<Deployment>('apps.status', { deployId });
+    onStage?.(d);
+    if (d.stage === 'done' || d.stage === 'failed') return d;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 }

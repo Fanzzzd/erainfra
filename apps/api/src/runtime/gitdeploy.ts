@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { agentGateway, type AgentGateway } from './agents.ts';
 import { cloneUrl, installationToken } from './github.ts';
-import { secretStore } from './secrets.ts';
-import { routeStore } from './routes.ts';
+import { deployments } from './deployments.ts';
+import { runDeploy, type PipelineResult } from './appdeploy.ts';
 
 // Persist by default (a binding is config, not session state — it must survive a hub restart like
 // routes/secrets/projects do). Hermetic (in-memory) only under the node test runner.
@@ -21,15 +21,14 @@ export interface GitBinding {
   id: string;
   repo: string; // "owner/name"
   branch: string;
-  buildNode: string; // agent id that clones + builds
-  deployNode: string; // agent id that runs the container
-  name: string; // container name (lowercase-dash)
-  port: number; // app listens on PORT=<port>, published host:container
+  buildNode?: string; // agent id that clones + builds (default: first connected node)
+  deployNode?: string; // default node for the app's services (default: first connected node)
+  name: string; // app name (lowercase-dash)
+  port?: number; // only for repos with NO portless.yaml: the single service's container port
   lastStatus?: { at: string; sha: string; ok: boolean; stage: string; error?: string };
 }
 
 export type DeployConfig = { registry: string; hubBase: string; appId?: string; privateKey?: string };
-export type DeployResult = { ok: boolean; stage: 'build' | 'deploy'; image: string; output?: string; error?: string };
 
 export class GitProjectStore {
   static readonly MAX = 200;
@@ -97,54 +96,71 @@ export class GitProjectStore {
   }
 }
 
-export type DeploySpec = { buildNode: string; deployNode: string; name: string; port: number };
-
-// Shared pipeline core: build a source on the build node (git or tar), then deploy on the deploy node.
-async function buildAndDeploy(
-  buildFields: Record<string, unknown>,
-  spec: DeploySpec,
-  sha: string,
-  cfg: DeployConfig,
-  gw: Pick<AgentGateway, 'send'>,
-): Promise<DeployResult> {
-  const tag = `${spec.name}:${(sha || 'latest').slice(0, 12)}`;
-  const image = `${cfg.registry}/${tag}`;
-  const build = await gw.send(spec.buildNode, { cmd: 'build', ...buildFields, registry: cfg.registry, tag, hubBase: cfg.hubBase }, 300_000);
-  if (!build.ok) return { ok: false, stage: 'build', image, output: build.output, error: build.error };
-  // Secrets ride as a map (the agent writes them to a 0600 --env-file, never argv); PORT goes in args
-  // AFTER --env-file so the platform port always wins over a user-set PORT. `port` lets the agent
-  // record app->port for the data plane to proxy to (loopback, agent-chosen target).
-  const args = ['-e', `PORT=${spec.port}`, '-p', `${spec.port}:${spec.port}`];
-  const deploy = await gw.send(spec.deployNode, { cmd: 'deploy', image, name: spec.name, args, env: secretStore.get(spec.name), port: spec.port }, 180_000);
-  if (deploy.ok) routeStore.set(spec.name, { node: spec.deployNode, image, port: spec.port }); // ingress + failover record
-  return { ok: deploy.ok, stage: 'deploy', image, output: deploy.output, error: deploy.error };
+// Resolve a node preference to a connected agent: the preference itself if given, else the first
+// connected node. "One box" is the common case — make it zero-config.
+function resolveNode(pref: string | undefined, gw: Pick<AgentGateway, 'list'>): string {
+  if (pref) return pref;
+  const first = gw.list()[0];
+  if (!first) throw new Error('no nodes connected — enroll one with agent.sh first');
+  return first.id;
 }
 
+export type StartedDeploy = { deployId: string; done: Promise<PipelineResult> };
+
 // Git push-to-deploy. Mints a short-lived GitHub App token when configured + an installation id is
-// known (private repos); public repos clone tokenless.
-export async function deployFromGit(
+// known (private repos); public repos clone tokenless. Returns immediately with a deployId; the
+// pipeline runs in the background (poll apps.status).
+export function startGitDeploy(
   b: GitBinding,
   sha: string,
   installationId: number | undefined,
   cfg: DeployConfig,
-  gw: Pick<AgentGateway, 'send'> = agentGateway,
-): Promise<DeployResult> {
-  let token: string | undefined;
-  if (cfg.appId && cfg.privateKey && installationId) {
-    token = await installationToken(cfg.appId, cfg.privateKey, installationId);
-  }
-  return buildAndDeploy({ repoUrl: cloneUrl(b.repo, token), ref: b.branch }, b, sha, cfg, gw);
+  gw: Pick<AgentGateway, 'send' | 'list'> = agentGateway,
+): StartedDeploy {
+  const d = deployments.create(b.name);
+  const done = (async () => {
+    let token: string | undefined;
+    if (cfg.appId && cfg.privateKey && installationId) {
+      token = await installationToken(cfg.appId, cfg.privateKey, installationId);
+    }
+    return runDeploy(d.id, { repoUrl: cloneUrl(b.repo, token), ref: b.branch }, {
+      app: b.name,
+      port: b.port,
+      buildNode: resolveNode(b.buildNode, gw),
+      defaultNode: resolveNode(b.deployNode, gw),
+      registry: cfg.registry,
+      hubBase: cfg.hubBase,
+      sha,
+    }, gw);
+  })().catch((e): PipelineResult => {
+    deployments.update(d.id, { stage: 'failed', detail: 'deploying', error: (e as Error).message });
+    return { ok: false, stage: 'deploying', urls: [], error: (e as Error).message };
+  });
+  return { deployId: d.id, done };
 }
 
-// Drag-drop deploy: build from a previously uploaded tarball (POST /upload → buildId). The build node
+// Upload deploy: build from a previously uploaded tarball (POST /upload → buildId). The build node
 // fetches the tarball from the hub with its own token (the /builds route is app.deploy-gated).
-export async function deployFromUpload(
+export function startUploadDeploy(
   buildId: string,
-  spec: DeploySpec,
+  opts: { app: string; port?: number; buildNode?: string; node?: string },
   cfg: DeployConfig,
-  gw: Pick<AgentGateway, 'send'> = agentGateway,
-): Promise<DeployResult> {
-  return buildAndDeploy({ tarUrl: `${cfg.hubBase}/builds/${buildId}/source.tgz` }, spec, buildId, cfg, gw);
+  gw: Pick<AgentGateway, 'send' | 'list'> = agentGateway,
+): StartedDeploy {
+  const d = deployments.create(opts.app);
+  const done = runDeploy(d.id, { tarUrl: `${cfg.hubBase}/builds/${buildId}/source.tgz` }, {
+    app: opts.app,
+    port: opts.port,
+    buildNode: resolveNode(opts.buildNode, gw),
+    defaultNode: resolveNode(opts.node, gw),
+    registry: cfg.registry,
+    hubBase: cfg.hubBase,
+    sha: buildId,
+  }, gw).catch((e): PipelineResult => {
+    deployments.update(d.id, { stage: 'failed', detail: 'deploying', error: (e as Error).message });
+    return { ok: false, stage: 'deploying', urls: [], error: (e as Error).message };
+  });
+  return { deployId: d.id, done };
 }
 
 // Default store singleton (mirrors the other runtime singletons).

@@ -15,7 +15,6 @@ import { createApiServer } from '../../apps/api/src/server.ts';
 import { appRouter } from '../../apps/api/src/router.ts';
 import { createCallerFactory } from '../../apps/api/src/trpc.ts';
 import { InMemoryAuditLog } from '../../apps/api/src/audit.ts';
-import { LocalRuntime } from '../../apps/api/src/runtime/local.ts';
 import { agentGateway } from '../../apps/api/src/runtime/agents.ts';
 import { dataGateway } from '../../apps/api/src/runtime/dataplane.ts';
 import { routeStore } from '../../apps/api/src/runtime/routes.ts';
@@ -51,7 +50,7 @@ await app.listen({ port: PORT, host: '127.0.0.1' });
 installFailover({ gateway: agentGateway, routes: routeStore, secrets: secretStore, log: (m) => console.log(`  [failover] ${m}`) }, GRACE);
 let nodeA = spawnAgent('nodeA');
 const nodeB = spawnAgent('nodeB');
-const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog(), runtime: new LocalRuntime() });
+const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog() });
 
 let failed = true;
 try {

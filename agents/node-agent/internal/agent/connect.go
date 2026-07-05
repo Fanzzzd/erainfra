@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,8 +25,10 @@ type Runner interface {
 	DeployApp(app string, services []Service) (string, error)
 	MeshShare(name string, port int) (string, error)            // expose a local port on the mesh → ticket
 	MeshConnect(name, ticket string, localPort int) (string, error) // dial a ticket → local 127.0.0.1:localPort
+	MeshDrop(name string) (string, error)                       // tear down a mesh link by name
 	Exec(argv []string) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
+	ReadSpec(src BuildSource) (string, error) // fetch the source, return its portless.yaml ("" if absent)
 }
 
 // Service is one container of a multi-service ("compose-like") app. The whole app shares a per-app
@@ -41,11 +44,13 @@ type Service struct {
 }
 
 // BuildSource is either a git repo (clone a ref) or a tarball URL (download + extract). Exactly one
-// of RepoURL / TarURL is set.
+// of RepoURL / TarURL is set. Dir optionally selects a subdirectory of the source as the build
+// context (multi-service repos build each service from its own dir).
 type BuildSource struct {
 	RepoURL string // git: clone url (may embed a short-lived GitHub App token)
 	Ref     string // git: branch/tag
 	TarURL  string // tar: hub url of the uploaded source.tgz (fetched with the agent's own token)
+	Dir     string // optional build-context subdir within the source (validated: no escaping the root)
 }
 
 // ShellRunner shells out to the container CLI (docker/podman) and the OS for exec. ponytail: CLI
@@ -72,6 +77,15 @@ func (r ShellRunner) MeshConnect(name, ticket string, localPort int) (string, er
 		return "", fmt.Errorf("mesh not enabled on this agent")
 	}
 	return r.Mesh.Connect(name, ticket, localPort)
+}
+func (r ShellRunner) MeshDrop(name string) (string, error) {
+	if r.Mesh == nil {
+		return "", fmt.Errorf("mesh not enabled on this agent")
+	}
+	if r.Mesh.Drop(name) {
+		return "dropped", nil
+	}
+	return "no such link", nil
 }
 
 func (r ShellRunner) cli() string {
@@ -202,17 +216,10 @@ func writeEnvFile(env map[string]string) (string, error) {
 	return f.Name(), f.Close()
 }
 
-// Build fetches a source (git clone OR tarball) into a temp dir, then builds+pushes it as an image,
-// reusing the hub's image.sh (Dockerfile-or-nixpacks auto-detect) so there's one source of build
-// logic. Git urls may embed a short-lived GitHub App token; tarballs are fetched with the agent's own
-// hub token. Neither is persisted.
-func (r ShellRunner) Build(src BuildSource, registry, tag, hubBase string) (string, error) {
-	dir, err := os.MkdirTemp("", "pl-build-")
-	if err != nil {
-		return "", fmt.Errorf("tempdir: %w", err)
-	}
-	defer os.RemoveAll(dir)
-	var b strings.Builder
+// fetchSource materializes a BuildSource (git clone OR tarball download) into dir. Git urls may embed
+// a short-lived GitHub App token; tarballs are fetched with the agent's own hub token. Neither is
+// persisted, and clone errors are scrubbed of the url before they leave this box.
+func (r ShellRunner) fetchSource(dir string, src BuildSource) (string, error) {
 	switch {
 	case src.TarURL != "":
 		// Token via env (not argv) so it doesn't show in `ps`. The /builds route is app.deploy-gated.
@@ -221,23 +228,77 @@ func (r ShellRunner) Build(src BuildSource, registry, tag, hubBase string) (stri
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return string(out), fmt.Errorf("fetch source: %w", err)
 		}
+		return "", nil
 	default:
 		clone := exec.Command("git", "clone", "--depth", "1", "--branch", src.Ref, src.RepoURL, dir)
-		if out, err := clone.CombinedOutput(); err != nil {
-			return scrub(string(out), src.RepoURL), fmt.Errorf("clone: %w", err) // scrub any token in the url
-		} else {
-			b.Write(out)
+		out, err := clone.CombinedOutput()
+		if err != nil {
+			return scrub(string(out), src.RepoURL), fmt.Errorf("clone: %w", err)
 		}
+		return scrub(string(out), src.RepoURL), nil
+	}
+}
+
+// contextDir resolves the optional build-context subdir, confined to the source root (a spec that
+// says `build: ../../etc` must not escape the checkout).
+func contextDir(root, sub string) (string, error) {
+	if sub == "" || sub == "." {
+		return root, nil
+	}
+	p := filepath.Clean(filepath.Join(root, sub))
+	if p != root && !strings.HasPrefix(p, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("build dir %q escapes the source root", sub)
+	}
+	return p, nil
+}
+
+// Build fetches a source into a temp dir, then builds+pushes its (sub)directory as an image, reusing
+// the hub's image.sh (Dockerfile-or-nixpacks auto-detect) so there's one source of build logic.
+func (r ShellRunner) Build(src BuildSource, registry, tag, hubBase string) (string, error) {
+	dir, err := os.MkdirTemp("", "pl-build-")
+	if err != nil {
+		return "", fmt.Errorf("tempdir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	var b strings.Builder
+	out, err := r.fetchSource(dir, src)
+	b.WriteString(out)
+	if err != nil {
+		return b.String(), err
+	}
+	ctx, err := contextDir(dir, src.Dir)
+	if err != nil {
+		return b.String(), err
 	}
 	// Build + push via the hub's image.sh (auto-detects Dockerfile vs nixpacks), targeting the registry.
 	sh := fmt.Sprintf("curl -fsSL %s/image.sh | PORTLESS_REGISTRY=%s sh -s -- ship %s %s",
-		shellQuote(hubBase), shellQuote(registry), shellQuote(dir), shellQuote(tag))
-	out, err := exec.Command("sh", "-c", sh).CombinedOutput()
-	b.Write(out)
+		shellQuote(hubBase), shellQuote(registry), shellQuote(ctx), shellQuote(tag))
+	sout, err := exec.Command("sh", "-c", sh).CombinedOutput()
+	b.Write(sout)
 	if err != nil {
 		return b.String(), fmt.Errorf("build: %w", err)
 	}
 	return b.String(), nil
+}
+
+// ReadSpec fetches the source and returns its portless.yaml (or .yml) content, "" when the repo has
+// none — the hub then falls back to a single-service deploy. Kept as its own cheap command so the hub
+// can plan (services, builds, placement, links) BEFORE kicking off any build.
+func (r ShellRunner) ReadSpec(src BuildSource) (string, error) {
+	dir, err := os.MkdirTemp("", "pl-spec-")
+	if err != nil {
+		return "", fmt.Errorf("tempdir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	if out, err := r.fetchSource(dir, src); err != nil {
+		return out, err
+	}
+	for _, f := range []string{"portless.yaml", "portless.yml"} {
+		if body, err := os.ReadFile(filepath.Join(dir, f)); err == nil {
+			return string(body), nil
+		}
+	}
+	return "", nil
 }
 
 // scrub removes a secret-bearing URL from text (so clone errors don't leak the token).
@@ -264,9 +325,10 @@ type cmdMsg struct {
 	App      string            `json:"app"`      // deployApp: app name (per-app network + container prefix)
 	Services []Service         `json:"services"` // deployApp: the services to bring up together
 	Ticket   string            `json:"ticket"`   // meshConnect: the mesh ticket to dial
-	RepoURL  string            `json:"repoUrl"`  // build (git): git url (may embed a short-lived token)
-	Ref      string            `json:"ref"`      // build (git): branch/tag to clone
-	TarURL   string            `json:"tarUrl"`   // build (upload): hub url of the uploaded source.tgz
+	RepoURL  string            `json:"repoUrl"`  // build/spec (git): git url (may embed a short-lived token)
+	Ref      string            `json:"ref"`      // build/spec (git): branch/tag to clone
+	TarURL   string            `json:"tarUrl"`   // build/spec (upload): hub url of the uploaded source.tgz
+	Dir      string            `json:"dir"`      // build: context subdir within the source
 	Registry string            `json:"registry"` // build: where to push the image
 	Tag      string            `json:"tag"`      // build: image name:tag
 	HubBase  string            `json:"hubBase"`  // build: hub http base to fetch image.sh from
@@ -301,8 +363,12 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		out, err = r.MeshShare(m.Name, m.Port) // Name=link name, Port=local service port → reply.output is the ticket
 	case "meshConnect":
 		out, err = r.MeshConnect(m.Name, m.Ticket, m.Port) // Name=link name, Ticket=ticket, Port=local port
+	case "meshDrop":
+		out, err = r.MeshDrop(m.Name)
 	case "build":
-		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL}, m.Registry, m.Tag, m.HubBase)
+		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL, Dir: m.Dir}, m.Registry, m.Tag, m.HubBase)
+	case "spec":
+		out, err = r.ReadSpec(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL})
 	default:
 		reply.OK = false
 		reply.Error = "unknown cmd: " + m.Cmd

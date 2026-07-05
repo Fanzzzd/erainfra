@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -29,6 +31,24 @@ type meshLink struct {
 
 func NewMeshManager() *MeshManager { return &MeshManager{links: map[string]*meshLink{}} }
 
+// dumbpipeBin resolves the dumbpipe binary: $PORTLESS_PREFIX/bin (where agent.sh installs it),
+// ~/.portless/bin, then PATH. Under systemd the PATH is minimal, so the explicit locations matter.
+func dumbpipeBin() string {
+	candidates := []string{}
+	if p := os.Getenv("PORTLESS_PREFIX"); p != "" {
+		candidates = append(candidates, filepath.Join(p, "bin", "dumbpipe"))
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(h, ".portless", "bin", "dumbpipe"))
+	}
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	return "dumbpipe"
+}
+
 // dumbpipe prints a ready-to-run `dumbpipe connect-tcp <ticket>` line; take that token, else the first
 // long base32 run. Matches parseTicket in mesh.ts.
 var afterConnectRe = regexp.MustCompile(`(?i)connect(?:-tcp)?\s+([a-z2-7]{48,})`)
@@ -47,7 +67,7 @@ func parseTicket(s string) string {
 // Share exposes local 127.0.0.1:<port> on the mesh and returns the ticket to hand to the other node.
 func (m *MeshManager) Share(name string, port int) (string, error) {
 	_ = m.Drop(name) // replace any prior link with this name
-	cmd := exec.Command("dumbpipe", "listen-tcp", "--host", fmt.Sprintf("127.0.0.1:%d", port))
+	cmd := exec.Command(dumbpipeBin(), "listen-tcp", "--host", fmt.Sprintf("127.0.0.1:%d", port))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -96,7 +116,7 @@ func (m *MeshManager) Share(name string, port int) (string, error) {
 // it's ready; a bad ticket exits fast.
 func (m *MeshManager) Connect(name, ticket string, localPort int) (string, error) {
 	_ = m.Drop(name)
-	cmd := exec.Command("dumbpipe", "connect-tcp", "--addr", fmt.Sprintf("0.0.0.0:%d", localPort), ticket)
+	cmd := exec.Command(dumbpipeBin(), "connect-tcp", "--addr", fmt.Sprintf("0.0.0.0:%d", localPort), ticket)
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("dumbpipe start: %w", err)
 	}

@@ -8,7 +8,6 @@ import { createApiServer } from '../../apps/api/src/server.ts';
 import { appRouter } from '../../apps/api/src/router.ts';
 import { createCallerFactory } from '../../apps/api/src/trpc.ts';
 import { InMemoryAuditLog } from '../../apps/api/src/audit.ts';
-import { LocalRuntime } from '../../apps/api/src/runtime/local.ts';
 import type { Principal } from '../../apps/api/src/auth.ts';
 
 const PORT = 8787, AGENT = 'winbox-46';
@@ -18,7 +17,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const app = createApiServer();
 await app.listen({ port: PORT, host: '0.0.0.0' }); // runs in a published container on work-remote; .46 reaches it via the Docker-published port (bypasses the host firewall)
 console.log(`HUB_READY on 0.0.0.0:${PORT}`);
-const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog(), runtime: new LocalRuntime() });
+const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog() });
 
 // Persistent watch: stay up and, for every fresh connection of the agent, prove control + dump the
 // Startup entry the -Install fallback writes. (Kept running so the box can re-enroll/retest freely.)

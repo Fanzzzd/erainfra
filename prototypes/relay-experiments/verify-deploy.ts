@@ -9,7 +9,6 @@ import { createApiServer } from '../../apps/api/src/server.ts';
 import { appRouter } from '../../apps/api/src/router.ts';
 import { createCallerFactory } from '../../apps/api/src/trpc.ts';
 import { InMemoryAuditLog } from '../../apps/api/src/audit.ts';
-import { LocalRuntime } from '../../apps/api/src/runtime/local.ts';
 import type { Principal } from '../../apps/api/src/auth.ts';
 
 const PORT = 8795;
@@ -32,7 +31,7 @@ const agent = spawn(
 agent.stdout.on('data', (d) => process.stdout.write(`  [agent] ${d}`));
 agent.stderr.on('data', (d) => process.stdout.write(`  [agent!] ${d}`));
 
-const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog(), runtime: new LocalRuntime() });
+const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog() });
 
 let failed = false;
 try {

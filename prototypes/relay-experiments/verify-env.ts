@@ -11,7 +11,6 @@ import { createApiServer } from '../../apps/api/src/server.ts';
 import { appRouter } from '../../apps/api/src/router.ts';
 import { createCallerFactory } from '../../apps/api/src/trpc.ts';
 import { InMemoryAuditLog } from '../../apps/api/src/audit.ts';
-import { LocalRuntime } from '../../apps/api/src/runtime/local.ts';
 import type { Principal } from '../../apps/api/src/auth.ts';
 
 const PORT = 8795, APP = 'env-app', APP_PORT = 8093;
@@ -30,7 +29,7 @@ const app = createApiServer();
 await app.listen({ port: PORT, host: '127.0.0.1' });
 const agent = spawn('deploy/bin/portless-agent-darwin-arm64', ['connect', '--hub', `ws://127.0.0.1:${PORT}/agent`, '--token', 'owner-dev-token', '--name', 'builder'], { stdio: ['ignore', 'pipe', 'pipe'] });
 agent.stderr.on('data', (d) => process.stdout.write(`  [agent!] ${d}`));
-const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog(), runtime: new LocalRuntime() });
+const caller = createCallerFactory(appRouter)({ principal: owner, audit: new InMemoryAuditLog() });
 
 let failed = true;
 try {
