@@ -1,8 +1,0 @@
-# Run on gateway machines after creating a Cloudflare Tunnel.
-services:
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --config /etc/cloudflared/config.yml run
-    restart: unless-stopped
-    volumes:
-      - ./cloudflared:/etc/cloudflared:ro
