@@ -1,10 +1,19 @@
 // Minimal tRPC-over-HTTP client. ponytail: plain fetch instead of @trpc/client +
 // react-query — queries are simple GETs and the dashboard only reads a handful.
-// The token is read from VITE_PORTLESS_TOKEN. The convenient 'owner-dev-token' fallback applies
-// ONLY in dev builds — a production bundle never ships a privileged default token.
-// NOTE: bundling any bearer token in client JS is a dev posture; real deployments should move to
-// server-side/session auth (the API already fails closed in production without dev tokens).
-const TOKEN = import.meta.env.VITE_PORTLESS_TOKEN ?? (import.meta.env.DEV ? 'owner-dev-token' : '');
+// Token resolution, in order: localStorage (runtime, survives rebuilds, never in the bundle) →
+// VITE_PORTLESS_TOKEN (build-time, only for private/Access-protected deployments) → dev fallback.
+// A public production bundle ships NO token: the user is prompted once and it lands in localStorage.
+// ponytail: prompt()+localStorage is the whole login UI; swap for sessions/OIDC when multi-user.
+function resolveToken(): string {
+  const stored = localStorage.getItem('portless-token');
+  if (stored) return stored;
+  const baked = import.meta.env.VITE_PORTLESS_TOKEN ?? (import.meta.env.DEV ? 'owner-dev-token' : '');
+  if (baked) return baked;
+  const entered = window.prompt('Portless access token:')?.trim() ?? '';
+  if (entered) localStorage.setItem('portless-token', entered);
+  return entered;
+}
+const TOKEN = resolveToken();
 
 export async function trpcQuery<T>(path: string, input?: unknown): Promise<T> {
   const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify(input))}`;

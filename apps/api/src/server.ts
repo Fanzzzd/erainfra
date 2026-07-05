@@ -152,11 +152,15 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
   });
 
   // Wildcard-domain ingress: any request whose Host is `<app>.<PORTLESS_APP_DOMAIN>` is reverse-proxied
-  // to the agent running that app. The hub's own host (dashboard, /trpc, /agent, /data) returns null
-  // here and falls through to normal routing. Disabled unless PORTLESS_APP_DOMAIN is set.
+  // to the agent running that app. Disabled unless PORTLESS_APP_DOMAIN is set.
+  // When the hub's own hostname lives UNDER the app domain (e.g. hub portless.on99.ai with apps at
+  // *.on99.ai — Cloudflare's free Universal SSL only covers one wildcard level, so a separate
+  // apps.<zone> level would fail TLS), set PORTLESS_HUB_HOST so dashboard traffic bypasses the proxy.
   const appDomain = process.env.PORTLESS_APP_DOMAIN;
+  const hubHost = process.env.PORTLESS_HUB_HOST?.toLowerCase();
   if (appDomain) {
     app.addHook('onRequest', async (req, reply) => {
+      if (hubHost && (req.headers.host ?? '').toLowerCase().split(':')[0] === hubHost) return; // the hub itself is never an app
       const appName = appFromHost(req.headers.host, appDomain);
       if (!appName) return; // not an app subdomain
       reply.hijack(); // we own the raw response
@@ -213,7 +217,10 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; r
       } catch {
         return reply.code(404).type('text/plain').send(`${script} not available on this server\n`);
       }
-      const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
+      // Behind a TLS tunnel cloudflared sets x-forwarded-proto=https; for a direct LAN/HTTP hub there's
+      // no XFP, so fall back to the actual request scheme (http) instead of assuming https — otherwise
+      // the templated download URL is https against a plaintext port and curl/irm fail.
+      const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol;
       const base = `${proto}://${req.headers.host}`;
       return reply.type(mime).send(body.split('<hub>').join(base));
     });
