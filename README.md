@@ -1,90 +1,94 @@
-# Portless
+# portless
 
-Portless is an integration-first private PaaS for machines that may not have public IP addresses.
+Deploy to **your own machines** — no public IP, no open ports, no third-party PaaS.
 
-**Mission:** Deploy anywhere. Open no ports. Keep internal traffic fast.
+A hub (control plane + dashboard) runs on one box behind a Cloudflare tunnel. Agents on your other
+machines dial **out** to it over WSS, so everything works behind NAT/firewalls. Apps get automatic
+`https://<app>.<your-domain>` URLs, served through the hub's single tunnel and reverse-proxied to
+whichever node runs them.
 
-Portless keeps custom code intentionally small:
-
-- **Cloudflare Tunnel**: public ingress and bootstrap endpoint.
-- **Netmaker / Linux kernel WireGuard**: high-performance machine-to-machine network.
-- **Nomad**: scheduling, rolling deployments, rescheduling, rollback.
-- **Consul**: service discovery and health checks.
-- **Traefik or Caddy**: HTTP routing from Cloudflare Tunnel to healthy internal services.
-- **Portless control plane**: dashboard, AppSpec model, deployment workflows, placement policy, network path policy, audit API, MCP tools.
-- **Portless node-agent**: controlled machine install/heartbeat/maintenance logic.
-
-This repository is a tested starting point plus a complete product/agent build plan. It is meant to be handed to an AI coding agent with `prompts/SETGOAL_PROMPT.md`.
-
-## Run Tests
-
-Requires Node.js 22+, Go 1.23+, and pnpm 9+.
-
-```bash
-pnpm install   # installs API deps (Fastify, tRPC, Zod, Drizzle)
-npm test
-./scripts/smoke.sh
+```
+   browser ──https──▶ Cloudflare ──tunnel──▶ hub ──ws──▶ agent(node A) ──▶ containers
+   git push ─webhook─▶  hub: build → registry → deploy → route            │
+   portless deploy ──▶                                        mesh (iroh) ┴── agent(node B)
 ```
 
-## Dev API
+Everything is self-hosted: your registry (`registry:2`), your S3 for backups, your GitHub App for
+push-to-deploy. Builds use your Dockerfile, or [Nixpacks](https://nixpacks.com) when there isn't one.
 
-```bash
-npm run api:dev
-curl http://localhost:8787/health
-curl http://localhost:8787/api/sample-plan
+## Use it
+
+```sh
+curl -fsSL https://<hub>/cli.sh | sh          # install the CLI (needs node >= 20)
+portless login https://<hub>                  # paste your owner token, once
+
+portless deploy                               # deploy the current directory → live URL
+portless apps                                 # what's running, where, with URLs
+portless logs my-app                          # container logs
+portless env my-app set DATABASE_URL=...      # encrypted secrets
 ```
 
-## Dashboard (shadcn/ui)
+AI agents get the same capabilities, typed, over MCP: `claude mcp add portless -- portless mcp`.
 
-Run the API and the dashboard, then open http://localhost:5173:
+## portless.yaml
 
-```bash
-npm run api:dev                      # control plane on :8787
-pnpm --filter @portless/web dev      # dashboard on :5173 (proxies /trpc to the API)
+How a project deploys is written in the project — the platform executes it deterministically:
+
+```yaml
+services:
+  web:
+    build: .            # Dockerfile or Nixpacks auto-detect
+    port: 3000
+    route: true         # → https://<app>.<your-domain>
+    needs: [db]         # injects DB_HOST / DB_PORT
+  db:
+    image: 127.0.0.1:61050/postgres:16   # from YOUR registry
+    port: 5432
+    volumes: [pgdata:/var/lib/postgresql/data]
+    # node: other-box   # optional placement; needs: wires cross-node over the mesh (iroh)
 ```
 
-The **Projects** page manages real running processes on this machine: deploy a
-template, watch live HTTP health, tail logs, and stop — no cluster or Docker required
-(see `apps/api/src/runtime/local.ts`).
+No `portless.yaml` → single service, built from the repo root, routed at the app name.
 
-## Important Docs
+Same-node services reach each other by name (per-app docker network). Cross-node `needs:` are wired
+over an encrypted P2P mesh link (hole-punched when possible) — the database never touches a public
+domain. If a node dies, its apps auto-redeploy onto a survivor and the routes flip (stateless only).
 
-```text
-docs/00-executive-summary.md       Product summary and principles
-docs/01-final-architecture.md      Final architecture
-docs/02-network-fabric.md          WireGuard/Netmaker/relay design
-docs/03-cloudflare-ingress.md      Cloudflare Tunnel design
-docs/04-runtime-and-scheduler.md   Nomad/Consul runtime design
-docs/05-node-agent.md              Go agent design
-docs/06-data-model.md              Product data model
-docs/07-ui-ux.md                   Dashboard design
-docs/08-security-and-safety.md     Security and AI safety
-docs/09-development-roadmap.md     Incremental build plan
-docs/10-acceptance-tests.md        Done criteria
-docs/11-why-portless-wins.md       Product differentiation target
-docs/12-api-and-mcp-contracts.md   API/MCP shape
-docs/13-agent-implementation-playbook.md AI coding guide
-prompts/SETGOAL_PROMPT.md          Full prompt for setgoal
-prompts/SHORT_SETGOAL_PROMPT.md    Short prompt for setgoal
-AGENT_TASKS.yaml                   Machine-readable milestone manifest
+## Stand up the infrastructure
+
+**Hub** (a Linux box with docker + cloudflared + a CF origin cert):
+
+```sh
+PORTLESS_ZONE=example.com sh deploy/hub.sh
 ```
 
-## Repo Layout
+That brings up the hub + dashboard (`https://portless.<zone>`), an OCI registry, a dedicated named
+tunnel with a first-level wildcard (`*.<zone>` — Cloudflare's free Universal SSL covers exactly one
+level), systemd units, and prints the enroll command.
 
-```text
-apps/web                 Vite React dashboard shell
-apps/api                 Fastify + tRPC + Zod control-plane API (auth/RBAC/audit scaffold)
-packages/core            AppSpec, scheduler, HA policy, WireGuard/Nomad/Cloudflare renderers
-agents/node-agent        Go agent skeleton and install plan logic
-infra/compose            Example integration compose files
-examples/portless.yaml   Example app spec
-prompts                  AI-agent prompts
-.agent                   Agent goal metadata
+**Nodes** (any Linux box; installs docker if missing, systemd-persisted):
+
+```sh
+curl -fsSL https://<hub>/agent.sh | sudo sh -s -- --token <node-token> --name <name>
 ```
 
-## Why Not Put the Data Plane on Cloudflare Mesh?
+Windows: `deploy/agent.ps1` (see `deploy/WINDOWS.md`).
 
-Cloudflare Tunnel is excellent for public ingress without a public IP, but internal service traffic should use direct Linux kernel WireGuard when performance matters. Portless uses Cloudflare for entry/bootstrap and uses Netmaker or a future custom WireGuard orchestrator for the internal data plane.
+**Push-to-deploy**: create a GitHub App (webhook → `https://<hub>/webhook/github`), set
+`PORTLESS_GH_*` on the hub, bind a repo (`portless bind owner/repo`). Public repos also work without
+an App via `portless redeploy`.
 
-Cloudflare Mesh can be supported later as an emergency fallback or compatibility mode, but not as the default internal path.
+## Develop
 
+```sh
+pnpm install
+pnpm dev        # api :8787 + dashboard (vite)
+pnpm test       # hermetic — no docker, no network, no infra
+```
+
+- `apps/api` — hub: Fastify + tRPC control plane, data plane (wildcard ingress over agent WS),
+  deploy pipeline (`runtime/appdeploy.ts`), failover, secrets, backups.
+- `agents/node-agent` — Go agent: outbound WS, docker deploys, builds, mesh links (dumbpipe/iroh).
+- `packages/cli` — the `portless` CLI + MCP server. Zero dependencies.
+- `apps/web` — dashboard (React + shadcn).
+- `deploy/` — `hub.sh`, `agent.sh`, `image.sh` (build), `registry.sh`, `cli.sh`.
