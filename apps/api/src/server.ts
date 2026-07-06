@@ -1,5 +1,6 @@
 import './boot-env.ts'; // MUST be first: sets persist-path env defaults before router.ts builds its singletons
 import Fastify, { type FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
@@ -10,7 +11,10 @@ import { randomUUID } from 'node:crypto';
 import { appRouter } from './router.ts';
 import type { Context } from './trpc.ts';
 import { InMemoryAuditLog, FileAuditLog, type AuditLog } from './audit.ts';
-import { defaultTokenStore, type TokenStore } from './auth.ts';
+import { defaultTokenStore, defaultAuthStores, resolveRequestAuth, LoginRateLimiter, SESSION_COOKIE, parseCookies, type TokenStore, type Principal } from './auth.ts';
+import { userStore } from './runtime/users.ts';
+import { sessionStore } from './runtime/sessions.ts';
+import { apiTokenStore } from './runtime/apitokens.ts';
 import { can } from './rbac.ts';
 import { agentGateway } from './runtime/agents.ts';
 import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from './runtime/dataplane.ts';
@@ -24,11 +28,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 // Re-export so existing importers (and tests) keep working.
 export { appRouter, type AppRouter } from './router.ts';
-
-function bearerToken(authorization: string | string[] | undefined): string | undefined {
-  const header = Array.isArray(authorization) ? authorization[0] : authorization;
-  return header?.startsWith('Bearer ') ? header.slice(7) : undefined;
-}
 
 // Read a request body into a Buffer, rejecting once it exceeds the cap (proxy bodies are buffered).
 function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
@@ -82,8 +81,11 @@ async function proxyAppRequest(appName: string, req: IncomingMessage, res: Serve
 
 export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; webDir?: string } = {}): FastifyInstance {
   const audit = opts.audit ?? new InMemoryAuditLog();
-  // Fail-closed in production; dev tokens only outside production (see defaultTokenStore).
+  // Legacy static tokens (tests + PORTLESS_DEV_TOKENS bootstrap); fail-closed in production.
   const tokens = opts.tokens ?? defaultTokenStore();
+  // Real authentication: user sessions (cookie) → revocable API tokens (bearer) → legacy static.
+  const auth = defaultAuthStores(tokens);
+  const authFor = (req: { headers: { authorization?: string | string[]; cookie?: string } }): Principal | null => resolveRequestAuth(req, auth);
   // requestTimeout:0 disables Node's 5-min cap so long agent orchestrations aren't cut off.
   // bodyLimit raised so drag-drop source uploads (tarballs) aren't capped at Fastify's 1MB default.
   // ponytail: 256MB cap, buffered in memory then written to disk — fine for a single-user PaaS; switch
@@ -97,8 +99,8 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
   // agent later fetches it back over the spine and builds it. Both routes need app.deploy. The build
   // id is a server-minted UUID, so the GET path can't be traversed.
   const buildsDir = process.env.PORTLESS_BUILDS_DIR ?? join(tmpdir(), 'portless-runtime', 'builds');
-  const principalFor = (req: { headers: { authorization?: string | string[] } }) => {
-    const p = tokens.resolve(bearerToken(req.headers.authorization));
+  const principalFor = (req: { headers: { authorization?: string | string[]; cookie?: string } }) => {
+    const p = authFor(req);
     return p && can(p, 'app.deploy') ? p : undefined;
   };
   app.post('/upload', async (req, reply) => {
@@ -122,6 +124,82 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
   // REST liveness check kept for smoke tests / unauthenticated probes.
   app.get('/health', async () => ({ ok: true }));
 
+  // ---- Account auth (the Dokploy model): user accounts + password login + cookie sessions. -----
+  // REST (not tRPC) because these set/clear cookies and run before any principal exists.
+  const loginLimiter = new LoginRateLimiter();
+  const sessionCookie = (req: { headers: Record<string, unknown> }, token: string, maxAgeSec: number) => {
+    // Secure whenever the request came over TLS (cloudflared sets x-forwarded-proto). SameSite=Lax
+    // blocks cross-site POSTs from riding the cookie; HttpOnly keeps it away from page JS.
+    const secure = (req.headers['x-forwarded-proto'] ?? '') === 'https' ? '; Secure' : '';
+    return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
+  };
+  const loginBody = z.object({ email: z.string().min(3).max(254), password: z.string().min(1).max(1024) });
+
+  // Does this instance need first-boot setup? (Public: reveals only "are there users yet".)
+  app.get('/auth/status', async () => ({ setup: userStore.count() === 0 }));
+
+  // One-time first-boot setup: create the OWNER account. Locked forever once any user exists.
+  app.post('/auth/setup', async (req, reply) => {
+    if (userStore.count() > 0) return reply.code(403).send({ error: 'setup already completed' });
+    const body = loginBody.extend({ name: z.string().max(64).optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.issues[0].message });
+    const r = userStore.create({ email: body.data.email, password: body.data.password, name: body.data.name, roles: ['owner'] });
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    audit.record({ actor: r.user.id, action: 'auth.setup', target: r.user.email, outcome: 'success' });
+    const { token } = sessionStore.create(r.user.id, req.headers['user-agent'] as string | undefined);
+    return reply.header('set-cookie', sessionCookie(req, token, 30 * 24 * 3600)).send({ ok: true, user: r.user });
+  });
+
+  app.post('/auth/login', async (req, reply) => {
+    const body = loginBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'email and password required' });
+    const key = `${req.ip}|${body.data.email.toLowerCase()}`;
+    const gate = loginLimiter.check(key);
+    if (!gate.allowed) return reply.code(429).header('retry-after', String(gate.retryAfterSec)).send({ error: `too many attempts — retry in ${gate.retryAfterSec}s` });
+    const user = userStore.verify(body.data.email, body.data.password);
+    if (!user) {
+      loginLimiter.fail(key);
+      audit.record({ actor: body.data.email.toLowerCase(), action: 'auth.login', outcome: 'failure' });
+      return reply.code(401).send({ error: 'wrong email or password' });
+    }
+    loginLimiter.clear(key);
+    audit.record({ actor: user.id, action: 'auth.login', target: user.email, outcome: 'success' });
+    const { token } = sessionStore.create(user.id, req.headers['user-agent'] as string | undefined);
+    return reply.header('set-cookie', sessionCookie(req, token, 30 * 24 * 3600)).send({ ok: true, user });
+  });
+
+  app.post('/auth/logout', async (req, reply) => {
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    if (token) sessionStore.revokeByToken(token);
+    return reply.header('set-cookie', sessionCookie(req, '', 0)).send({ ok: true });
+  });
+
+  app.get('/auth/me', async (req, reply) => {
+    const p = authFor(req);
+    if (!p) return reply.code(401).send({ error: 'unauthorized' });
+    return { id: p.id, name: p.name, roles: p.roles };
+  });
+
+  // Exchange email+password for a long-lived API token — the `portless login` flow. Same throttle
+  // as login; the token is returned exactly once.
+  app.post('/auth/cli-token', async (req, reply) => {
+    const body = loginBody.extend({ name: z.string().max(64).default('cli') }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'email and password required' });
+    const key = `${req.ip}|${body.data.email.toLowerCase()}`;
+    const gate = loginLimiter.check(key);
+    if (!gate.allowed) return reply.code(429).header('retry-after', String(gate.retryAfterSec)).send({ error: `too many attempts — retry in ${gate.retryAfterSec}s` });
+    const user = userStore.verify(body.data.email, body.data.password);
+    if (!user) {
+      loginLimiter.fail(key);
+      audit.record({ actor: body.data.email.toLowerCase(), action: 'auth.cli-token', outcome: 'failure' });
+      return reply.code(401).send({ error: 'wrong email or password' });
+    }
+    loginLimiter.clear(key);
+    const { token, record } = apiTokenStore.create({ name: body.data.name, roles: user.roles, createdBy: user.id });
+    audit.record({ actor: user.id, action: 'auth.cli-token', target: record.name, outcome: 'success' });
+    return { ok: true, token, id: record.id, name: record.name };
+  });
+
   // Agent control channel (self-controlled, replaces dumbpipe): portless agents on remote NAT'd
   // boxes dial IN over WSS and the hub pushes them commands. Authed with the same bearer token;
   // agents need app.deploy (they execute deploys). The socket staying open is the presence signal.
@@ -130,7 +208,7 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
   app.register(async (instance) => {
     await instance.register(fastifyWebsocket);
     instance.get('/agent', { websocket: true }, (socket, req) => {
-      const principal = tokens.resolve(bearerToken(req.headers.authorization));
+      const principal = authFor(req);
       if (!principal || !can(principal, 'app.deploy')) { try { socket.close(1008, 'unauthorized'); } catch { /* gone */ } return; }
       const s = { send: (d: string) => socket.send(d), close: () => socket.close() };
       socket.on('message', (data: Buffer) => agentGateway.onMessage(s, data.toString()));
@@ -140,7 +218,7 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
     // Same node auth (bearer + app.deploy); routing is driven by the hub's route table (set at deploy),
     // never by what the agent claims to serve.
     instance.get('/data', { websocket: true }, (socket, req) => {
-      const principal = tokens.resolve(bearerToken(req.headers.authorization));
+      const principal = authFor(req);
       if (!principal || !can(principal, 'app.deploy')) { try { socket.close(1008, 'unauthorized'); } catch { /* gone */ } return; }
       const s = { send: (d: string) => socket.send(d), close: () => socket.close() };
       socket.on('message', (data: Buffer) => dataGateway.onMessage(s, data.toString()));
@@ -248,7 +326,7 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
     trpcOptions: {
       router: appRouter,
       createContext: ({ req }: CreateFastifyContextOptions): Context => ({
-        principal: tokens.resolve(bearerToken(req.headers.authorization)),
+        principal: authFor(req),
         audit,
       }),
     },

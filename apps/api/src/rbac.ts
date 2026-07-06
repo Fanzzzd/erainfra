@@ -3,7 +3,7 @@
 
 export type Role = 'owner' | 'admin' | 'operator' | 'viewer';
 
-export type Permission = 'app.read' | 'app.deploy' | 'agent.run' | 'audit.read';
+export type Permission = 'app.read' | 'app.deploy' | 'agent.run' | 'audit.read' | 'account.admin';
 
 const READ_ONLY: Permission[] = ['app.read', 'audit.read'];
 
@@ -12,8 +12,9 @@ const ROLE_PERMISSIONS: Record<Role, Permission[] | '*'> = {
   admin: [
     ...READ_ONLY,
     'app.deploy',
-    // Running a local AI CLI can read host files/env, so it's gated above operator: admin/owner only.
     'agent.run',
+    // Manage users and API tokens (create/revoke credentials): admin/owner only.
+    'account.admin',
   ],
   operator: [...READ_ONLY, 'app.deploy'],
   viewer: READ_ONLY,

@@ -1,23 +1,14 @@
 // Minimal tRPC-over-HTTP client. ponytail: plain fetch instead of @trpc/client +
 // react-query — queries are simple GETs and the dashboard only reads a handful.
-// Token resolution, in order: localStorage (runtime, survives rebuilds, never in the bundle) →
-// VITE_PORTLESS_TOKEN (build-time, only for private/Access-protected deployments) → dev fallback.
-// A public production bundle ships NO token: the user is prompted once and it lands in localStorage.
-// ponytail: prompt()+localStorage is the whole login UI; swap for sessions/OIDC when multi-user.
-function resolveToken(): string {
-  const stored = localStorage.getItem('portless-token');
-  if (stored) return stored;
-  const baked = import.meta.env.VITE_PORTLESS_TOKEN ?? (import.meta.env.DEV ? 'owner-dev-token' : '');
-  if (baked) return baked;
-  const entered = window.prompt('Portless access token:')?.trim() ?? '';
-  if (entered) localStorage.setItem('portless-token', entered);
-  return entered;
-}
-const TOKEN = resolveToken();
+// Auth is the portless_session cookie (set by /auth/login, sent automatically same-origin).
+// A bearer token is only a fallback: localStorage (manual escape hatch) → VITE_PORTLESS_TOKEN
+// (baked private builds) → owner-dev-token in dev so a fresh checkout works with zero setup.
+const TOKEN = localStorage.getItem('portless-token') ?? import.meta.env.VITE_PORTLESS_TOKEN ?? (import.meta.env.DEV ? 'owner-dev-token' : '');
+const AUTH_HEADERS: Record<string, string> = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
 
 export async function trpcQuery<T>(path: string, input?: unknown): Promise<T> {
   const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify(input))}`;
-  const res = await fetch(`/trpc/${path}${qs}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+  const res = await fetch(`/trpc/${path}${qs}`, { headers: AUTH_HEADERS });
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error?.message ?? `${path} -> ${res.status}`);
   return (body as { result: { data: T } }).result.data;
@@ -26,7 +17,7 @@ export async function trpcQuery<T>(path: string, input?: unknown): Promise<T> {
 export async function trpcMutation<T>(path: string, input: unknown): Promise<T> {
   const res = await fetch(`/trpc/${path}`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+    headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
     body: JSON.stringify(input ?? {}),
   });
   const body = await res.json();
@@ -39,7 +30,7 @@ export async function trpcMutation<T>(path: string, input: unknown): Promise<T> 
 export async function uploadSource(file: Blob): Promise<{ buildId: string }> {
   const res = await fetch('/upload', {
     method: 'POST',
-    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/gzip' },
+    headers: { ...AUTH_HEADERS, 'content-type': 'application/gzip' },
     body: file,
   });
   const body = await res.json();
@@ -101,4 +92,55 @@ export async function waitForDeploy(deployId: string, onStage?: (d: Deployment) 
     if (d.stage === 'done' || d.stage === 'failed') return d;
     await new Promise((r) => setTimeout(r, 2000));
   }
+}
+
+// ---- Account auth --------------------------------------------------------------------------
+
+export interface AuthUser {
+  id: string;
+  name: string;
+  roles: string[];
+}
+
+async function authPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const out = await res.json();
+  if (!res.ok) throw new Error(out?.error ?? `${path} -> ${res.status}`);
+  return out as T;
+}
+
+export const authStatus = async (): Promise<{ setup: boolean }> => (await fetch('/auth/status')).json();
+
+// The logged-in identity, or null when there is no valid session/token.
+export async function authMe(): Promise<AuthUser | null> {
+  const res = await fetch('/auth/me', { headers: AUTH_HEADERS });
+  return res.ok ? ((await res.json()) as AuthUser) : null;
+}
+
+export const login = (email: string, password: string) => authPost<{ user: AuthUser }>('/auth/login', { email, password });
+export const setupOwner = (email: string, password: string, name?: string) => authPost<{ user: AuthUser }>('/auth/setup', { email, password, name });
+export const logout = () => authPost<{ ok: boolean }>('/auth/logout', {});
+
+export interface ApiTokenInfo {
+  id: string;
+  name: string;
+  prefix: string;
+  roles: string[];
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface UserInfo {
+  id: string;
+  email: string;
+  name: string;
+  roles: string[];
+  createdAt: string;
+}
+
+export interface SessionInfo {
+  id: string;
+  createdAt: string;
+  lastSeenAt: string;
+  userAgent?: string;
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // portless — the CLI for your private PaaS. Zero dependencies, Node >= 20.
 //
-//   portless login <hub-url>        connect this machine to your hub (token prompted or --token)
+//   portless login <hub-url>        sign in with your hub account (or --token for a pre-made token)
 //   portless deploy [dir]           deploy a project directory → live https URL
 //   portless apps                   what's deployed, where, and its URLs
 //   portless logs <app> [service]   tail an app's container logs
@@ -17,7 +17,7 @@
 // Config lives in ~/.portless/config.json; PORTLESS_HUB / PORTLESS_TOKEN override it.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -222,9 +222,23 @@ async function deployDir(cfg, dir, { app, port, node, buildNode } = {}, onStage)
 const commands = {
   async login({ flags, pos }) {
     const hub = (pos[0] ?? '').replace(/\/+$/, '');
-    if (!hub) die('usage: portless login https://portless.example.com [--token <token>]');
-    const token = flags.token ?? (await prompt('access token: ', { hidden: true }));
-    if (!token) die('a token is required (find it in hub.env on your hub box)');
+    if (!hub) die('usage: portless login https://portless.example.com [--token <token> | --email <email>]');
+    let token = flags.token;
+    if (!token) {
+      // Default flow: sign in with your hub account; the hub mints a personal API token for this
+      // machine (revocable later in Settings → API tokens). --token skips this for pre-made tokens.
+      const email = flags.email ?? (await prompt('email: '));
+      if (!email) die('an email (or --token) is required');
+      const password = await prompt('password: ', { hidden: true });
+      const res = await fetch(`${hub}/auth/cli-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password, name: `cli @${hostname()}` }),
+      }).catch((e) => die(`cannot reach ${hub}: ${e.message}`));
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) die(`login failed: ${body.error ?? res.status}`);
+      token = body.token;
+    }
     const cfg = { hub, token };
     const nodes = await query(cfg, 'agents.list').catch((e) => die(`login failed: ${e.message}`));
     mkdirSync(join(homedir(), '.portless'), { recursive: true });
@@ -415,7 +429,7 @@ const commands = {
     console.log(`${c.bold('portless')} ${VERSION} — deploy to your own machines, no public IP needed
 
 ${c.bold('setup')}
-  login <hub-url> [--token X]     connect to your hub (saves ~/.portless/config.json)
+  login <hub-url>                 sign in (email+password, or --token X) -> ~/.portless/config.json
   nodes                           connected machines (+ how to enroll more)
 
 ${c.bold('deploy')}

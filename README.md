@@ -20,7 +20,7 @@ push-to-deploy. Builds use your Dockerfile, or [Nixpacks](https://nixpacks.com) 
 
 ```sh
 curl -fsSL https://<hub>/cli.sh | sh          # install the CLI (needs node >= 20)
-portless login https://<hub>                  # paste your owner token, once
+portless login https://<hub>                  # sign in with your hub account (email+password)
 
 portless deploy                               # deploy the current directory → live URL
 portless apps                                 # what's running, where, with URLs
@@ -69,7 +69,7 @@ level), systemd units, and prints the enroll command.
 **Nodes** (any Linux box; installs docker if missing, systemd-persisted):
 
 ```sh
-curl -fsSL https://<hub>/agent.sh | sudo sh -s -- --token <node-token> --name <name>
+curl -fsSL https://<hub>/agent.sh | sudo sh -s -- --token <plt_...> --name <name>   # token: dashboard Settings → API tokens (role: operator)
 ```
 
 Windows: `deploy/agent.ps1` (see `deploy/WINDOWS.md`).

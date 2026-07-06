@@ -11,6 +11,9 @@ import { secretStore } from './runtime/secrets.ts';
 import { routeStore } from './runtime/routes.ts';
 import { appStore } from './runtime/apps.ts';
 import { backupConfig, backupNow, listBackups } from './runtime/backup.ts';
+import { userStore } from './runtime/users.ts';
+import { sessionStore } from './runtime/sessions.ts';
+import { apiTokenStore } from './runtime/apitokens.ts';
 import type { AuditLog } from './audit.ts';
 import type { Principal } from './auth.ts';
 
@@ -459,6 +462,90 @@ export const appRouter = router({
           throw new TRPCError({ code: 'NOT_FOUND', message: (e as Error).message });
         }
       }),
+  }),
+
+  // Accounts, sessions, and API tokens — the credential surface. Reads/self-service need only a
+  // login; creating or revoking credentials (users, tokens) is account.admin (owner/admin).
+  account: router({
+    me: requirePermission('app.read').query(({ ctx }) => ({ id: ctx.principal.id, name: ctx.principal.name, roles: ctx.principal.roles })),
+
+    // Change YOUR password (requires the current one) and drop every other session.
+    changePassword: requirePermission('app.read')
+      .input(z.object({ current: z.string().min(1).max(1024), next: z.string().min(8).max(1024) }))
+      .mutation(({ ctx, input }) => {
+        const user = userStore.get(ctx.principal.id);
+        if (!user) throw new TRPCError({ code: 'BAD_REQUEST', message: 'password change requires a user session (not an API token)' });
+        if (!userStore.verify(user.email, input.current)) {
+          recordOp(ctx, { action: 'account.changePassword', target: user.email, outcome: 'failure' });
+          throw new TRPCError({ code: 'UNAUTHORIZED', message: 'current password is wrong' });
+        }
+        const r = userStore.setPassword(user.id, input.next);
+        if (!r.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: r.error });
+        sessionStore.revokeAllForUser(user.id); // stolen cookies die with the old password
+        const op = recordOp(ctx, { action: 'account.changePassword', target: user.email, outcome: 'success' });
+        return { ok: true, ...op };
+      }),
+
+    sessions: router({
+      list: requirePermission('app.read').query(({ ctx }) => sessionStore.listForUser(ctx.principal.id)),
+      revoke: requirePermission('app.read')
+        .input(z.object({ id: z.string().min(1) }))
+        .mutation(({ ctx, input }) => {
+          // You can only revoke your own sessions (admins reset via user removal / password change).
+          const mine = sessionStore.listForUser(ctx.principal.id).some((s) => s.id === input.id);
+          if (!mine || !sessionStore.revokeById(input.id)) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such session' });
+          recordOp(ctx, { action: 'account.sessions.revoke', target: input.id, outcome: 'success' });
+          return { ok: true };
+        }),
+    }),
+
+    tokens: router({
+      list: requirePermission('account.admin').query(() => apiTokenStore.list()),
+      // Create an API token (CLI / node enrollment / CI). The token value is returned exactly once.
+      create: requirePermission('account.admin')
+        .input(z.object({ name: z.string().min(1).max(64), role: z.enum(['owner', 'admin', 'operator', 'viewer']).default('operator') }))
+        .mutation(({ ctx, input }) => {
+          requireDurableAudit(ctx, 'account.tokens.create', `${input.name} (${input.role})`);
+          const { token, record } = apiTokenStore.create({ name: input.name, roles: [input.role], createdBy: ctx.principal.id });
+          const op = recordOp(ctx, { action: 'account.tokens.create', target: record.name, outcome: 'success' });
+          return { token, record, ...op };
+        }),
+      revoke: requirePermission('account.admin')
+        .input(z.object({ id: z.string().min(1) }))
+        .mutation(({ ctx, input }) => {
+          if (!apiTokenStore.revoke(input.id)) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such token' });
+          const op = recordOp(ctx, { action: 'account.tokens.revoke', target: input.id, outcome: 'success' });
+          return { ok: true, ...op };
+        }),
+    }),
+
+    users: router({
+      list: requirePermission('account.admin').query(() => userStore.list()),
+      create: requirePermission('account.admin')
+        .input(z.object({
+          email: z.string().min(3).max(254),
+          password: z.string().min(8).max(1024),
+          name: z.string().max(64).optional(),
+          role: z.enum(['owner', 'admin', 'operator', 'viewer']).default('viewer'),
+        }))
+        .mutation(({ ctx, input }) => {
+          const r = userStore.create({ email: input.email, password: input.password, name: input.name, roles: [input.role] });
+          if (!r.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: r.error });
+          const op = recordOp(ctx, { action: 'account.users.create', target: r.user.email, outcome: 'success' });
+          return { user: r.user, ...op };
+        }),
+      remove: requirePermission('account.admin')
+        .input(z.object({ id: z.string().min(1), confirm: z.boolean().default(false) }))
+        .mutation(({ ctx, input }) => {
+          if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to remove a user' });
+          if (input.id === ctx.principal.id) throw new TRPCError({ code: 'BAD_REQUEST', message: 'cannot remove yourself' });
+          const r = userStore.remove(input.id);
+          if (!r.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: r.error });
+          sessionStore.revokeAllForUser(input.id);
+          const op = recordOp(ctx, { action: 'account.users.remove', target: input.id, outcome: 'success' });
+          return { ok: true, ...op };
+        }),
+    }),
   }),
 });
 

@@ -33,15 +33,12 @@ command -v cloudflared >/dev/null || die "cloudflared is required"
 [ -f "$CERT" ] || die "origin cert not found: $CERT (run cloudflared login)"
 export TUNNEL_ORIGIN_CERT="$CERT"
 
-# --- tokens: generate once, keep in a 0600 env file -------------------------------------------
+# --- hub env: 0600, no baked credentials — auth is user accounts (created on first visit) ------
 mkdir -p "$ENVDIR"
 if [ ! -f "$ENVDIR/hub.env" ]; then
-  OWNER=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  NODE_TOK=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   umask 077
   cat > "$ENVDIR/hub.env" <<EOF
 NODE_ENV=production
-PORTLESS_DEV_TOKENS={"$OWNER":{"id":"u-owner","name":"Owner","roles":["owner"]},"$NODE_TOK":{"id":"u-nodes","name":"Node Agent","roles":["operator"]}}
 PORTLESS_BIND=0.0.0.0
 PORTLESS_APP_DOMAIN=$ZONE
 PORTLESS_HUB_HOST=$HUB_HOST
@@ -51,7 +48,7 @@ PORTLESS_REGISTRY=127.0.0.1:$REG_PORT
 TMPDIR=/data
 PORTLESS_STATE_DIR=/data/state
 EOF
-  log "tokens generated → $ENVDIR/hub.env (owner token: $OWNER)"
+  log "hub env written → $ENVDIR/hub.env"
 else
   log "reusing existing $ENVDIR/hub.env"
 fi
@@ -125,5 +122,7 @@ sleep 6
 curl -sf --max-time 20 "https://$HUB_HOST/health" >/dev/null || die "https://$HUB_HOST/health not reachable yet (DNS may need a minute)"
 log "✅ hub is live: https://$HUB_HOST"
 NODE_TOK=$(sed -n 's/.*"\([0-9a-f]\{48\}\)":{"id":"u-nodes".*/\1/p' "$ENVDIR/hub.env")
-log "enroll a node:  curl -fsSL https://$HUB_HOST/agent.sh | sudo sh -s -- --token $NODE_TOK --name <node>"
-log "enroll THIS box: curl -fsSL http://127.0.0.1:$HUB_PORT/agent.sh -o /tmp/a.sh && sudo sh /tmp/a.sh --token $NODE_TOK --name $(hostname) --hub ws://127.0.0.1:$HUB_PORT/agent"
+log "first boot: open https://$HUB_HOST → create the owner account (one-time setup)"
+log "node tokens: dashboard Settings → API tokens → create (role: operator), then:"
+log "  enroll a node:  curl -fsSL https://$HUB_HOST/agent.sh | sudo sh -s -- --token <plt_...> --name <node>"
+log "  enroll THIS box: curl -fsSL http://127.0.0.1:$HUB_PORT/agent.sh -o /tmp/a.sh && sudo sh /tmp/a.sh --token <plt_...> --name $(hostname) --hub ws://127.0.0.1:$HUB_PORT/agent"
