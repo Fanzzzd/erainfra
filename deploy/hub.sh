@@ -46,7 +46,6 @@ PORTLESS_WEB_DIR=/srv/portless/apps/web/dist
 PORTLESS_HUB_BASE=https://$HUB_HOST
 PORTLESS_REGISTRY=127.0.0.1:$REG_PORT
 TMPDIR=/data
-PORTLESS_STATE_DIR=/data/state
 EOF
   log "hub env written → $ENVDIR/hub.env"
 else

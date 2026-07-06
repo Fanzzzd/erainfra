@@ -8,6 +8,7 @@ import { hashPassword, verifyPassword, UserStore } from '../src/runtime/users.ts
 import { SessionStore } from '../src/runtime/sessions.ts';
 import { ApiTokenStore } from '../src/runtime/apitokens.ts';
 import { LoginRateLimiter, StaticTokenStore } from '../src/auth.ts';
+import { createDb } from '../src/db.ts';
 
 test('scrypt password hashing: roundtrip, reject wrong, params encoded in the hash', () => {
   const h = hashPassword('correct horse battery');
@@ -18,7 +19,7 @@ test('scrypt password hashing: roundtrip, reject wrong, params encoded in the ha
 });
 
 test('user store: create/dup/verify, last-owner protection', () => {
-  const s = new UserStore(undefined);
+  const s = new UserStore(createDb(':memory:'));
   assert.equal(s.count(), 0);
   const r = s.create({ email: 'A@Example.com', password: 'hunter22', roles: ['owner'] });
   assert.ok(r.ok);
@@ -32,7 +33,7 @@ test('user store: create/dup/verify, last-owner protection', () => {
 });
 
 test('user store: updateEmail validates, dedups, keeps id-keyed references intact', () => {
-  const s = new UserStore(undefined);
+  const s = new UserStore(createDb(':memory:'));
   const a = s.create({ email: 'a@example.com', password: 'hunter22', roles: ['owner'] });
   const b = s.create({ email: 'b@example.com', password: 'hunter22', roles: ['viewer'] });
   assert.ok(a.ok && b.ok);
@@ -47,7 +48,7 @@ test('user store: updateEmail validates, dedups, keeps id-keyed references intac
 });
 
 test('sessions: opaque token resolves, revocation works, hash at rest', () => {
-  const s = new SessionStore(undefined);
+  const s = new SessionStore(createDb(':memory:'));
   const { token, session } = s.create('u1', 'test-agent');
   assert.notEqual(token, session.tokenHash); // never stored raw
   assert.equal(s.resolve(token)?.userId, 'u1');
@@ -57,7 +58,7 @@ test('sessions: opaque token resolves, revocation works, hash at rest', () => {
 });
 
 test('api tokens: create-once value, resolve, revoke, masked listing', () => {
-  const s = new ApiTokenStore(undefined);
+  const s = new ApiTokenStore(createDb(':memory:'));
   const { token, record } = s.create({ name: 'cli @test', roles: ['operator'], createdBy: 'u1' });
   assert.match(token, /^plt_[0-9a-f]{48}$/);
   assert.equal(s.resolve(token)?.id, record.id);

@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
+import { db } from './db.ts';
 
 export type AuditOutcome = 'allow' | 'deny' | 'success' | 'failure' | 'attempt';
 
@@ -22,8 +22,7 @@ export interface AuditLog {
   lastWriteDurable(): boolean;
 }
 
-// In-memory ring buffer — used by tests. Production uses FileAuditLog (durable). Both back
-// the `audit_log` Drizzle table seam for when the API runs against Postgres.
+// In-memory ring buffer — used by tests. Production uses SqliteAuditLog (durable).
 export class InMemoryAuditLog implements AuditLog {
   private entries: AuditEntry[] = [];
   private seq = 0;
@@ -45,54 +44,49 @@ export class InMemoryAuditLog implements AuditLog {
   }
 }
 
-// Durable audit log: append-only JSONL on disk, reloaded on startup so the trail survives
-// restarts (dangerous Cloudflare/deploy ops must stay auditable across crashes). ponytail:
-// JSONL append, not a DB — swap for the Postgres audit_log table when wired.
-export class FileAuditLog implements AuditLog {
-  private entries: AuditEntry[] = [];
-  private seq = 0;
-  private file: string;
+// Durable audit log: a table in the control-plane SQLite DB, so the trail survives restarts and
+// is queryable (per-actor/action filtering when needed). record() must never throw into the
+// request path — a failed write flips lastWriteDurable() so dangerous-op handlers can refuse.
+export class SqliteAuditLog implements AuditLog {
   private durable = true;
 
-  constructor(file: string) {
-    this.file = file;
-    mkdirSync(dirname(file), { recursive: true });
-    if (existsSync(file)) {
-      for (const line of readFileSync(file, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const e = JSON.parse(line) as AuditEntry;
-          this.entries.push(e);
-          const n = Number(String(e.id).replace(/^a-/, ''));
-          if (Number.isFinite(n) && n > this.seq) this.seq = n;
-        } catch {
-          /* skip a corrupt line rather than lose the whole trail */
-        }
-      }
-    }
+  private d: DatabaseSync;
+
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
   }
 
   record(entry: Omit<AuditEntry, 'id' | 'at'>): AuditEntry {
-    const full: AuditEntry = { id: `a-${++this.seq}`, at: new Date().toISOString(), ...entry };
-    this.entries.push(full);
+    const at = new Date().toISOString();
     try {
-      appendFileSync(this.file, JSON.stringify(full) + '\n');
+      const r = this.d.prepare('INSERT INTO audit (at, actor, action, target, outcome, dry_run, meta) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(at, entry.actor, entry.action, entry.target ?? null, entry.outcome, entry.dryRun ? 1 : 0, entry.meta ? JSON.stringify(entry.meta) : null);
       this.durable = true;
+      return { id: `a-${r.lastInsertRowid}`, at, ...entry };
     } catch (e) {
-      // Never block the request on a disk hiccup, but a swallowed failure would mean a
-      // dangerous op "succeeds" with no durable trail — so make it LOUD and remember it.
+      // Never block the request on a write hiccup, but a swallowed failure would mean a dangerous
+      // op "succeeds" with no durable trail — so make it LOUD and remember it.
       this.durable = false;
-      console.error(`[audit] FAILED to persist entry ${full.id} (${full.action} ${full.target ?? ''}):`, (e as Error).message);
+      console.error(`[audit] FAILED to persist (${entry.action} ${entry.target ?? ''}):`, (e as Error).message);
+      return { id: 'a-unpersisted', at, ...entry };
     }
-    return full;
   }
 
-  // Last write durable? Lets callers/health checks detect a broken audit trail.
   lastWriteDurable(): boolean {
     return this.durable;
   }
 
   list(limit = 100): AuditEntry[] {
-    return this.entries.slice(-limit).reverse();
+    const rows = this.d.prepare('SELECT * FROM audit ORDER BY seq DESC LIMIT ?').all(limit) as unknown as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: `a-${r.seq}`,
+      at: String(r.at),
+      actor: String(r.actor),
+      action: String(r.action),
+      target: r.target == null ? undefined : String(r.target),
+      outcome: String(r.outcome) as AuditOutcome,
+      dryRun: r.dry_run ? true : undefined,
+      meta: r.meta ? (JSON.parse(String(r.meta)) as Record<string, unknown>) : undefined,
+    }));
   }
 }

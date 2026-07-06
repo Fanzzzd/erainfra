@@ -3,13 +3,8 @@
 // an app; failover reads `image`/`port` to redeploy it elsewhere. This is THE deployment source of
 // truth — upload deploys have no GitBinding, so routes can't be derived from bindings.
 // ponytail: last-deploy-wins, single node per app. Multi-replica/round-robin is a list here later.
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
-
-function persistDefault(envVar: string | undefined): string | undefined {
-  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'routes.json'));
-}
+import type { DatabaseSync } from 'node:sqlite';
+import { db } from '../db.ts';
 
 export interface Deployment {
   node: string; // agent id running the container
@@ -17,59 +12,37 @@ export interface Deployment {
   port: number; // published/loopback port
 }
 
+interface Row { app: string; node: string; image: string; port: number }
+
 export class RouteStore {
-  private byApp = new Map<string, Deployment>();
-  private persistPath?: string;
+  private d: DatabaseSync;
 
-  constructor(persistPath: string | undefined = persistDefault(process.env.PORTLESS_ROUTES_FILE)) {
-    this.persistPath = persistPath;
-    this.load();
-  }
-
-  private load(): void {
-    if (!this.persistPath || !existsSync(this.persistPath)) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as Record<string, Deployment>;
-      for (const [app, dep] of Object.entries(raw)) if (dep && dep.node) this.byApp.set(app, dep);
-    } catch (e) {
-      console.error('[routes] failed to load:', (e as Error).message);
-    }
-  }
-
-  private save(): void {
-    if (!this.persistPath) return;
-    try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      const tmp = `${this.persistPath}.tmp`;
-      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.byApp), null, 2));
-      renameSync(tmp, this.persistPath);
-    } catch (e) {
-      console.error('[routes] failed to persist:', (e as Error).message);
-    }
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
   }
 
   set(app: string, dep: Deployment): void {
-    this.byApp.set(app, dep);
-    this.save();
+    this.d.prepare('INSERT INTO routes (app, node, image, port) VALUES (?, ?, ?, ?) ON CONFLICT(app) DO UPDATE SET node = excluded.node, image = excluded.image, port = excluded.port')
+      .run(app, dep.node, dep.image, dep.port);
   }
 
   // Which node holds the app (the proxy's lookup).
   node(app: string): string | undefined {
-    return this.byApp.get(app)?.node;
+    return (this.d.prepare('SELECT node FROM routes WHERE app = ?').get(app) as { node: string } | undefined)?.node;
   }
 
   get(app: string): Deployment | undefined {
-    return this.byApp.get(app);
+    const r = this.d.prepare('SELECT * FROM routes WHERE app = ?').get(app) as Row | undefined;
+    return r && { node: r.node, image: r.image, port: Number(r.port) };
   }
 
   delete(app: string): boolean {
-    const ok = this.byApp.delete(app);
-    if (ok) this.save();
-    return ok;
+    return this.d.prepare('DELETE FROM routes WHERE app = ?').run(app).changes > 0;
   }
 
   list(): Array<{ app: string } & Deployment> {
-    return [...this.byApp].map(([app, dep]) => ({ app, ...dep }));
+    return (this.d.prepare('SELECT * FROM routes ORDER BY app').all() as unknown as Row[])
+      .map((r) => ({ app: r.app, node: r.node, image: r.image, port: Number(r.port) }));
   }
 }
 

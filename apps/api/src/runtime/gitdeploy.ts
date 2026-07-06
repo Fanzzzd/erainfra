@@ -2,20 +2,13 @@
 // deploy node, and a container name/port. A push webhook (or a manual trigger) runs the pipeline:
 // clone the repo at the commit ON the build node (reusing image.sh = Dockerfile-or-nixpacks), push
 // to your registry, then deploy on the deploy node. Self-hosted end to end.
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import { db } from '../db.ts';
 import { agentGateway, type AgentGateway } from './agents.ts';
 import { cloneUrl, installationToken } from './github.ts';
 import { deployments } from './deployments.ts';
 import { runDeploy, type PipelineResult } from './appdeploy.ts';
-
-// Persist by default (a binding is config, not session state — it must survive a hub restart like
-// routes/secrets/projects do). Hermetic (in-memory) only under the node test runner.
-function persistDefault(envVar: string | undefined): string | undefined {
-  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'git-projects.json'));
-}
 
 export interface GitBinding {
   id: string;
@@ -32,67 +25,50 @@ export type DeployConfig = { registry: string; hubBase: string; appId?: string; 
 
 export class GitProjectStore {
   static readonly MAX = 200;
-  private byId = new Map<string, GitBinding>();
-  private persistPath?: string;
 
-  constructor(persistPath: string | undefined = persistDefault(process.env.PORTLESS_GIT_PROJECTS_FILE)) {
-    this.persistPath = persistPath;
-    this.load();
+  private d: DatabaseSync;
+
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
   }
 
-  private load(): void {
-    if (!this.persistPath || !existsSync(this.persistPath)) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as { bindings?: GitBinding[] };
-      for (const b of raw.bindings ?? []) this.byId.set(b.id, b);
-    } catch (e) {
-      console.error('[gitdeploy] failed to load bindings:', (e as Error).message);
-    }
+  private rows(): GitBinding[] {
+    return (this.d.prepare('SELECT doc FROM git_bindings').all() as unknown as Array<{ doc: string }>).map((r) => JSON.parse(r.doc) as GitBinding);
   }
 
-  private save(): void {
-    if (!this.persistPath) return;
-    try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      const tmp = `${this.persistPath}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ bindings: [...this.byId.values()] }, null, 2));
-      renameSync(tmp, this.persistPath);
-    } catch (e) {
-      console.error('[gitdeploy] failed to persist bindings:', (e as Error).message);
-    }
+  private put(b: GitBinding): void {
+    this.d.prepare('INSERT INTO git_bindings (id, doc) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc').run(b.id, JSON.stringify(b));
   }
 
   list(): GitBinding[] {
-    return [...this.byId.values()];
+    return this.rows();
   }
 
   get(id: string): GitBinding | undefined {
-    return this.byId.get(id);
+    const r = this.d.prepare('SELECT doc FROM git_bindings WHERE id = ?').get(id) as { doc: string } | undefined;
+    return r && (JSON.parse(r.doc) as GitBinding);
   }
 
   // First binding matching a repo+branch (what a push webhook looks up). Repo match is case-insensitive.
   find(repo: string, branch: string): GitBinding | undefined {
-    return [...this.byId.values()].find((b) => b.repo.toLowerCase() === repo.toLowerCase() && b.branch === branch);
+    return this.rows().find((b) => b.repo.toLowerCase() === repo.toLowerCase() && b.branch === branch);
   }
 
   bind(b: Omit<GitBinding, 'id' | 'lastStatus'>): { ok: true; binding: GitBinding } | { ok: false; error: string } {
-    if (this.byId.size >= GitProjectStore.MAX) return { ok: false, error: `binding limit reached (${GitProjectStore.MAX})` };
+    if (this.rows().length >= GitProjectStore.MAX) return { ok: false, error: `binding limit reached (${GitProjectStore.MAX})` };
     if (this.find(b.repo, b.branch)) return { ok: false, error: `already bound: ${b.repo}@${b.branch}` };
     const binding: GitBinding = { ...b, id: randomUUID() };
-    this.byId.set(binding.id, binding);
-    this.save();
+    this.put(binding);
     return { ok: true, binding };
   }
 
   unbind(id: string): { ok: boolean } {
-    const ok = this.byId.delete(id);
-    if (ok) this.save();
-    return { ok };
+    return { ok: this.d.prepare('DELETE FROM git_bindings WHERE id = ?').run(id).changes > 0 };
   }
 
   setStatus(id: string, status: GitBinding['lastStatus']): void {
-    const b = this.byId.get(id);
-    if (b) { b.lastStatus = status; this.save(); }
+    const b = this.get(id);
+    if (b) { b.lastStatus = status; this.put(b); }
   }
 }
 

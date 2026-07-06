@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SecretStore } from '../src/runtime/secrets.ts';
+import { createDb } from '../src/db.ts';
 
 test('secrets round-trip, mask, inject as -e args, and reject bad names', () => {
-  const s = new SecretStore(undefined); // in-memory, ephemeral key
+  const s = new SecretStore(createDb(':memory:')); // ephemeral key under test
   s.setMany('app', { API_KEY: 'sk-123', DATABASE_URL: 'postgres://u:p@h/db' });
 
   // decrypted for injection
@@ -25,7 +26,7 @@ test('secrets round-trip, mask, inject as -e args, and reject bad names', () => 
 });
 
 test('encryption uses a fresh nonce per value (no ciphertext reuse)', () => {
-  const s = new SecretStore(undefined);
+  const s = new SecretStore(createDb(':memory:'));
   s.setMany('a', { K: 'same-value' });
   s.setMany('b', { K: 'same-value' });
   // both decrypt to the same plaintext...

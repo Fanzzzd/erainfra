@@ -421,7 +421,9 @@ export const appRouter = router({
         return d;
       }),
 
-    recent: requirePermission('app.read').query(() => deployments.list()),
+    recent: requirePermission('app.read')
+      .input(z.object({ app: z.string().optional(), limit: z.number().int().min(1).max(200).default(20) }).optional())
+      .query(({ input }) => deployments.list(input?.limit ?? 20, input?.app)),
 
     // Tail a service's container logs from its node. Read-only but runs docker on the node.
     logs: requirePermission('app.read')

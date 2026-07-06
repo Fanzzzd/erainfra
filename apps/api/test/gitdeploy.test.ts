@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitProjectStore, startGitDeploy, startUploadDeploy, type GitBinding } from '../src/runtime/gitdeploy.ts';
+import { createDb } from '../src/db.ts';
 
 const sampleBind = { repo: 'Owner/Repo', branch: 'main', buildNode: 'bn', deployNode: 'dn', name: 'app', port: 8080 };
 
@@ -22,12 +23,12 @@ function fakeGw(replies: Record<string, { ok: boolean; output?: string; error?: 
 
 test('bindings persist across a reload (config must survive a hub restart)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gp-'));
-  const file = join(dir, 'git-projects.json');
+  const file = join(dir, 'portless.db');
   try {
-    const a = new GitProjectStore(file);
+    const a = new GitProjectStore(createDb(file));
     assert.ok(a.bind(sampleBind).ok);
     // a fresh store reading the same file sees the binding (proves save+load)
-    const b = new GitProjectStore(file);
+    const b = new GitProjectStore(createDb(file));
     assert.equal(b.find('owner/repo', 'main')?.name, 'app');
     assert.equal(b.list().length, 1);
   } finally {
@@ -36,7 +37,7 @@ test('bindings persist across a reload (config must survive a hub restart)', () 
 });
 
 test('store binds, finds case-insensitively, dedupes, and unbinds', () => {
-  const s = new GitProjectStore(undefined); // in-memory
+  const s = new GitProjectStore(createDb(':memory:'));
   const r = s.bind(sampleBind);
   assert.ok(r.ok && r.binding.id);
   // find is case-insensitive on the repo

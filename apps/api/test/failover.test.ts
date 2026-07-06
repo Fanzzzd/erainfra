@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { failoverNode, type FailoverDeps } from '../src/runtime/failover.ts';
 import { RouteStore } from '../src/runtime/routes.ts';
 import { AppStore } from '../src/runtime/apps.ts';
+import { createDb } from '../src/db.ts';
 
 // A fake gateway: `present` is the set of connected agent ids; `sent` records deploy commands.
 function fakeDeps(present: string[], opts: { fail?: Set<string> } = {}) {
-  const routes = new RouteStore(undefined); // in-memory
+  const routes = new RouteStore(createDb(':memory:'));
   const sent: Array<{ to: string; cmd: any }> = [];
   const gateway: FailoverDeps['gateway'] = {
     get: (id) => (present.includes(id) ? ({ id, version: null, roles: [], connectedAt: '' }) : undefined),
@@ -54,7 +55,7 @@ test('no-op when the lost node reconnected within the grace window', async () =>
 
 test('a multi-service app fails over as a group; its routes are not redeployed individually', async () => {
   const { deps, routes, sent } = fakeDeps(['nodeB']);
-  const apps = new AppStore(undefined); // in-memory
+  const apps = new AppStore(createDb(':memory:'));
   deps.apps = apps;
   // "flight" app on nodeA: web (exposed) + db (internal). The exposed service also has a route entry.
   apps.set('flight', {

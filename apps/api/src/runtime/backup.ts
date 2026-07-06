@@ -8,6 +8,7 @@
 // (KBs–MBs); switch to multipart if a hub ever accumulates GB of audit log.
 import { createHash, createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { db } from '../db.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -24,7 +25,7 @@ export function backupConfig(): S3Config | null {
 }
 
 export function stateDir(): string {
-  return process.env.PORTLESS_STATE_DIR ?? join(tmpdir(), 'portless-runtime');
+  return join(tmpdir(), 'portless-runtime'); // where db.ts and the secrets key live
 }
 
 const sha256hex = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
@@ -86,6 +87,7 @@ export function packState(dir: string = stateDir()): Buffer {
 
 // Back up now: pack state, upload as <prefix>portless-state-<ISO>.tar.gz. Returns the key + size.
 export async function backupNow(cfg: S3Config, now: Date = new Date()): Promise<{ key: string; bytes: number }> {
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* backup proceeds; WAL is tarred too */ }
   const tar = packState();
   const key = `${cfg.prefix}portless-state-${now.toISOString().replace(/[:.]/g, '-')}.tar.gz`;
   await putObject(cfg, key, tar, now);

@@ -1,15 +1,9 @@
 // API tokens: long-lived bearer credentials for the CLI, agents (node enrollment), and CI. Shown
-// ONCE at creation ("plt_" prefix + 32 hex), stored hashed, revocable individually — replaces the
-// old shared-secret PORTLESS_DEV_TOKENS env for day-to-day use.
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+// ONCE at creation ("plt_" prefix), stored hashed, revocable individually.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import { db } from '../db.ts';
 import type { Role } from '../rbac.ts';
-
-function persistDefault(envVar: string | undefined): string | undefined {
-  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'apitokens.json'));
-}
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
@@ -26,35 +20,24 @@ export interface ApiToken {
 
 export type PublicApiToken = Omit<ApiToken, 'hash'>;
 
+interface Row {
+  hash: string;
+  id: string;
+  name: string;
+  prefix: string;
+  roles: string;
+  created_by: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+const toToken = (r: Row): ApiToken => ({ id: r.id, name: r.name, hash: r.hash, prefix: r.prefix, roles: JSON.parse(r.roles) as Role[], createdBy: r.created_by, createdAt: r.created_at, lastUsedAt: r.last_used_at ?? undefined });
+
 export class ApiTokenStore {
-  private byHash = new Map<string, ApiToken>();
-  private persistPath?: string;
+  private d: DatabaseSync;
 
-  constructor(persistPath: string | undefined = persistDefault(process.env.PORTLESS_APITOKENS_FILE)) {
-    this.persistPath = persistPath;
-    this.load();
-  }
-
-  private load(): void {
-    if (!this.persistPath || !existsSync(this.persistPath)) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as { tokens?: ApiToken[] };
-      for (const t of raw.tokens ?? []) this.byHash.set(t.hash, t);
-    } catch (e) {
-      console.error('[apitokens] failed to load:', (e as Error).message);
-    }
-  }
-
-  private save(): void {
-    if (!this.persistPath) return;
-    try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      const tmp = `${this.persistPath}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ tokens: [...this.byHash.values()] }, null, 2), { mode: 0o600 });
-      renameSync(tmp, this.persistPath);
-    } catch (e) {
-      console.error('[apitokens] failed to persist:', (e as Error).message);
-    }
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
   }
 
   create(input: { name: string; roles: Role[]; createdBy: string }): { token: string; record: PublicApiToken } {
@@ -68,39 +51,34 @@ export class ApiTokenStore {
       createdBy: input.createdBy,
       createdAt: new Date().toISOString(),
     };
-    this.byHash.set(record.hash, record);
-    this.save();
+    this.d.prepare('INSERT INTO api_tokens (hash, id, name, prefix, roles, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(record.hash, record.id, record.name, record.prefix, JSON.stringify(record.roles), record.createdBy, record.createdAt);
     const { hash: _h, ...pub } = record;
     return { token, record: pub };
   }
 
-  // Resolve a presented bearer token. lastUsedAt is persisted lazily (once a minute) so agent
-  // traffic doesn't hammer the file.
+  // Resolve a presented bearer token. lastUsedAt is written at most once a minute so agent traffic
+  // doesn't turn every request into an UPDATE.
   resolve(token: string | undefined): ApiToken | null {
     if (!token?.startsWith('plt_')) return null;
-    const t = this.byHash.get(sha256(token));
-    if (!t) return null;
+    const r = this.d.prepare('SELECT * FROM api_tokens WHERE hash = ?').get(sha256(token)) as Row | undefined;
+    if (!r) return null;
+    const t = toToken(r);
     const now = Date.now();
     if (!t.lastUsedAt || now - Date.parse(t.lastUsedAt) > 60_000) {
       t.lastUsedAt = new Date(now).toISOString();
-      this.save();
+      this.d.prepare('UPDATE api_tokens SET last_used_at = ? WHERE hash = ?').run(t.lastUsedAt, t.hash);
     }
     return t;
   }
 
   revoke(id: string): boolean {
-    for (const [h, t] of this.byHash) {
-      if (t.id === id) {
-        this.byHash.delete(h);
-        this.save();
-        return true;
-      }
-    }
-    return false;
+    return this.d.prepare('DELETE FROM api_tokens WHERE id = ?').run(id).changes > 0;
   }
 
   list(): PublicApiToken[] {
-    return [...this.byHash.values()].map(({ hash: _h, ...t }) => t);
+    return (this.d.prepare('SELECT * FROM api_tokens ORDER BY created_at').all() as unknown as Row[])
+      .map((r) => { const { hash: _h, ...t } = toToken(r); return t; });
   }
 }
 

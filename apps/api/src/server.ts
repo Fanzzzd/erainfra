@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appRouter } from './router.ts';
 import type { Context } from './trpc.ts';
-import { InMemoryAuditLog, FileAuditLog, type AuditLog } from './audit.ts';
+import { InMemoryAuditLog, SqliteAuditLog, type AuditLog } from './audit.ts';
 import { defaultTokenStore, defaultAuthStores, resolveRequestAuth, LoginRateLimiter, SESSION_COOKIE, parseCookies, type TokenStore, type Principal } from './auth.ts';
 import { userStore } from './runtime/users.ts';
 import { sessionStore } from './runtime/sessions.ts';
@@ -24,6 +24,7 @@ import { backupConfig, backupNow } from './runtime/backup.ts';
 import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
 import { gitProjects, startGitDeploy } from './runtime/gitdeploy.ts';
 import { installLinkHealer, installServeRehydrator } from './runtime/appdeploy.ts';
+import { deployments } from './runtime/deployments.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 // Re-export so existing importers (and tests) keep working.
@@ -349,13 +350,12 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? process.env.PORTLESS_PORT ?? 8787);
-  // Durable audit trail on disk so dangerous Cloudflare/deploy ops survive restarts.
-  const auditFile = process.env.PORTLESS_AUDIT_FILE ?? join(tmpdir(), 'portless-runtime', 'audit.jsonl');
   // Bind loopback by default: behind a tunnel, cloudflared connects over localhost — nothing
   // public binds. Opt into LAN exposure with PORTLESS_BIND only when you mean it.
   const host = process.env.PORTLESS_BIND ?? '127.0.0.1';
   // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
   const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
+  deployments.failStale('hub restarted mid-deploy'); // in-flight pipelines died with the old process
   installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
   installLinkHealer(); // re-establish cross-node mesh links after agent/hub restarts
   installServeRehydrator(); // re-push app->port registrations when an agent reconnects (agent restarts forget them)
@@ -369,7 +369,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (backupCfg && backupEveryMin > 0) {
     setInterval(() => backupNow(backupCfg).then((r) => console.log(`[backup] ${r.key} (${r.bytes}b)`)).catch((e) => console.error('[backup]', (e as Error).message)), backupEveryMin * 60_000);
   }
-  createApiServer({ audit: new FileAuditLog(auditFile), webDir })
+  createApiServer({ audit: new SqliteAuditLog(), webDir })
     .listen({ port, host })
     .then((address) => console.log(`Portless API listening on ${address}`))
     .catch((err) => {

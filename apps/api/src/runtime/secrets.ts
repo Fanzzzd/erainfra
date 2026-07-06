@@ -1,15 +1,12 @@
 // Per-app environment variables / secrets, encrypted at rest (AES-256-GCM). Injected into the
 // container on deploy as `-e KEY=VALUE`. Self-hosted: the encryption key is yours (PORTLESS_SECRET_KEY
-// or a generated 0600 key file), nothing leaves the hub.
+// or a generated 0600 key file), nothing leaves the hub. Ciphertext blobs live in the SQLite DB;
+// the KEY deliberately lives in a separate file so a copied database alone can't be decrypted.
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
-
-const stateDir = () => join(tmpdir(), 'portless-runtime');
-function persistDefault(envVar: string | undefined): string | undefined {
-  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : envVar; // hermetic under the test runner
-}
+import type { DatabaseSync } from 'node:sqlite';
+import { db, stateDir } from '../db.ts';
 
 // 32-byte key: PORTLESS_SECRET_KEY (64 hex) wins; else a generated key persisted 0600; ephemeral
 // under --test so tests never touch disk.
@@ -48,70 +45,39 @@ const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/; // valid env var name
 
 export class SecretStore {
   private key = loadKey();
-  private byApp = new Map<string, Map<string, string>>(); // app -> key -> encrypted blob
-  private persistPath?: string;
 
-  constructor(persistPath: string | undefined = persistDefault(process.env.PORTLESS_SECRETS_FILE ?? join(stateDir(), 'secrets.json'))) {
-    this.persistPath = persistPath;
-    this.load();
+  private d: DatabaseSync;
+
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
   }
 
-  private load(): void {
-    if (!this.persistPath || !existsSync(this.persistPath)) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as Record<string, Record<string, string>>;
-      for (const [app, kv] of Object.entries(raw)) this.byApp.set(app, new Map(Object.entries(kv)));
-    } catch (e) {
-      console.error('[secrets] failed to load:', (e as Error).message);
-    }
-  }
-
-  private save(): void {
-    if (!this.persistPath) return;
-    try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      const obj: Record<string, Record<string, string>> = {};
-      for (const [app, kv] of this.byApp) obj[app] = Object.fromEntries(kv);
-      const tmp = `${this.persistPath}.tmp`;
-      writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
-      renameSync(tmp, this.persistPath);
-    } catch (e) {
-      console.error('[secrets] failed to persist:', (e as Error).message);
-    }
-  }
-
-  // Set/overwrite multiple vars for an app. Throws on an invalid key name.
+  // Set/overwrite multiple vars for an app. Validates ALL names first — an invalid one applies nothing.
   setMany(app: string, vars: Record<string, string>): void {
-    const m = this.byApp.get(app) ?? new Map<string, string>();
-    for (const [k, v] of Object.entries(vars)) {
+    for (const k of Object.keys(vars)) {
       if (!KEY_RE.test(k)) throw new Error(`invalid env var name: ${k}`);
-      m.set(k, enc(this.key, v));
     }
-    this.byApp.set(app, m);
-    this.save();
+    for (const [k, v] of Object.entries(vars)) {
+      this.d.prepare('INSERT INTO secrets (app, key, blob) VALUES (?, ?, ?) ON CONFLICT(app, key) DO UPDATE SET blob = excluded.blob')
+        .run(app, k, enc(this.key, v));
+    }
   }
 
   unset(app: string, key: string): boolean {
-    const m = this.byApp.get(app);
-    const ok = m?.delete(key) ?? false;
-    if (ok) this.save();
-    return ok;
+    return this.d.prepare('DELETE FROM secrets WHERE app = ? AND key = ?').run(app, key).changes > 0;
   }
 
   // Decrypted vars for injection at deploy time.
   get(app: string): Record<string, string> {
-    const m = this.byApp.get(app);
-    if (!m) return {};
-    return Object.fromEntries([...m].map(([k, blob]) => [k, dec(this.key, blob)]));
+    const rows = this.d.prepare('SELECT key, blob FROM secrets WHERE app = ?').all(app) as unknown as Array<{ key: string; blob: string }>;
+    return Object.fromEntries(rows.map((r) => [r.key, dec(this.key, r.blob)]));
   }
 
   // Masked view for the dashboard/API — never returns plaintext (secrets.read could be broad).
   list(app: string): Array<{ key: string; preview: string }> {
-    const m = this.byApp.get(app);
-    if (!m) return [];
-    return [...m.keys()].sort().map((key) => ({ key, preview: '••••••' }));
+    return (this.d.prepare('SELECT key FROM secrets WHERE app = ? ORDER BY key').all(app) as unknown as Array<{ key: string }>)
+      .map((r) => ({ key: r.key, preview: '••••••' }));
   }
-
 }
 
 export const secretStore = new SecretStore();

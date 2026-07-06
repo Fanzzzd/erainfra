@@ -1,16 +1,12 @@
 // Real user accounts with password login (the Dokploy/Portainer model): the FIRST account is
 // created through a one-time setup flow and owns the instance; more users can be added later.
 // Passwords are scrypt-hashed (node:crypto, OWASP params) with a per-user salt and verified in
-// constant time; the store never holds a plaintext or reversible password.
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+// constant time; the store never holds a plaintext or reversible password. Rows live in the
+// control-plane SQLite DB (src/db.ts).
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import { db } from '../db.ts';
 import type { Role } from '../rbac.ts';
-
-function persistDefault(envVar: string | undefined): string | undefined {
-  return (process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT) ? undefined : (envVar ?? join(tmpdir(), 'portless-runtime', 'users.json'));
-}
 
 export interface User {
   id: string;
@@ -46,55 +42,41 @@ export function verifyPassword(password: string, stored: string): boolean {
   return timingSafeEqual(actual, expected);
 }
 
+interface Row {
+  id: string;
+  email: string;
+  name: string;
+  roles: string;
+  password_hash: string;
+  created_at: string;
+}
+
+const toUser = (r: Row): User => ({ id: r.id, email: r.email, name: r.name, roles: JSON.parse(r.roles) as Role[], passwordHash: r.password_hash, createdAt: r.created_at });
 const publicView = ({ passwordHash: _ph, ...u }: User): PublicUser => u;
 
 export class UserStore {
-  private byId = new Map<string, User>();
-  private persistPath?: string;
+  private d: DatabaseSync;
 
-  constructor(persistPath: string | undefined = persistDefault(process.env.PORTLESS_USERS_FILE)) {
-    this.persistPath = persistPath;
-    this.load();
-  }
-
-  private load(): void {
-    if (!this.persistPath || !existsSync(this.persistPath)) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.persistPath, 'utf8')) as { users?: User[] };
-      for (const u of raw.users ?? []) this.byId.set(u.id, u);
-    } catch (e) {
-      console.error('[users] failed to load:', (e as Error).message);
-    }
-  }
-
-  private save(): void {
-    if (!this.persistPath) return;
-    try {
-      mkdirSync(dirname(this.persistPath), { recursive: true });
-      const tmp = `${this.persistPath}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ users: [...this.byId.values()] }, null, 2), { mode: 0o600 });
-      renameSync(tmp, this.persistPath);
-    } catch (e) {
-      console.error('[users] failed to persist:', (e as Error).message);
-    }
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
   }
 
   count(): number {
-    return this.byId.size;
+    return Number((this.d.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n);
   }
 
   list(): PublicUser[] {
-    return [...this.byId.values()].map(publicView);
+    return (this.d.prepare('SELECT * FROM users ORDER BY created_at').all() as unknown as Row[]).map((r) => publicView(toUser(r)));
   }
 
   get(id: string): PublicUser | undefined {
-    const u = this.byId.get(id);
-    return u && publicView(u);
+    const r = this.d.prepare('SELECT * FROM users WHERE id = ?').get(id) as Row | undefined;
+    return r && publicView(toUser(r));
   }
 
   findByEmail(email: string): User | undefined {
-    const e = email.trim().toLowerCase();
-    return [...this.byId.values()].find((u) => u.email === e);
+    const r = this.d.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase()) as Row | undefined;
+    return r && toUser(r);
   }
 
   create(input: { email: string; password: string; name?: string; roles: Role[] }): { ok: true; user: PublicUser } | { ok: false; error: string } {
@@ -110,8 +92,8 @@ export class UserStore {
       passwordHash: hashPassword(input.password),
       createdAt: new Date().toISOString(),
     };
-    this.byId.set(user.id, user);
-    this.save();
+    this.d.prepare('INSERT INTO users (id, email, name, roles, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(user.id, user.email, user.name, JSON.stringify(user.roles), user.passwordHash, user.createdAt);
     return { ok: true, user: publicView(user) };
   }
 
@@ -129,35 +111,33 @@ export class UserStore {
   // Everything references users by id (sessions, tokens, audit), so an email change is just this
   // record — nothing else to rewrite.
   updateEmail(id: string, newEmail: string): { ok: true; user: PublicUser } | { ok: false; error: string } {
-    const u = this.byId.get(id);
-    if (!u) return { ok: false, error: 'no such user' };
+    const r = this.d.prepare('SELECT * FROM users WHERE id = ?').get(id) as Row | undefined;
+    if (!r) return { ok: false, error: 'no such user' };
     const email = newEmail.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'not a valid email address' };
     const existing = this.findByEmail(email);
     if (existing && existing.id !== id) return { ok: false, error: 'an account with this email already exists' };
-    u.email = email;
-    this.save();
-    return { ok: true, user: publicView(u) };
+    this.d.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, id);
+    return { ok: true, user: publicView(toUser({ ...r, email })) };
   }
 
   setPassword(id: string, newPassword: string): { ok: true } | { ok: false; error: string } {
-    const u = this.byId.get(id);
-    if (!u) return { ok: false, error: 'no such user' };
     if (newPassword.length < 8) return { ok: false, error: 'password must be at least 8 characters' };
-    u.passwordHash = hashPassword(newPassword);
-    this.save();
-    return { ok: true };
+    const changed = this.d.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), id).changes;
+    return changed ? { ok: true } : { ok: false, error: 'no such user' };
   }
 
   remove(id: string): { ok: true } | { ok: false; error: string } {
-    const u = this.byId.get(id);
-    if (!u) return { ok: false, error: 'no such user' };
+    const r = this.d.prepare('SELECT * FROM users WHERE id = ?').get(id) as Row | undefined;
+    if (!r) return { ok: false, error: 'no such user' };
+    const u = toUser(r);
     // Never delete the last owner — that would brick the instance.
-    if (u.roles.includes('owner') && [...this.byId.values()].filter((x) => x.roles.includes('owner')).length === 1) {
-      return { ok: false, error: 'cannot remove the last owner account' };
+    if (u.roles.includes('owner')) {
+      const owners = (this.d.prepare('SELECT roles FROM users').all() as unknown as Array<{ roles: string }>)
+        .filter((x) => (JSON.parse(x.roles) as Role[]).includes('owner')).length;
+      if (owners === 1) return { ok: false, error: 'cannot remove the last owner account' };
     }
-    this.byId.delete(id);
-    this.save();
+    this.d.prepare('DELETE FROM users WHERE id = ?').run(id);
     return { ok: true };
   }
 }

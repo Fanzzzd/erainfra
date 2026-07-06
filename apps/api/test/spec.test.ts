@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { parseSpec, implicitSpec, envName } from '../src/runtime/spec.ts';
 import { planDeploy } from '../src/runtime/appdeploy.ts';
 import { PortAllocator } from '../src/runtime/ports.ts';
+import { createDb } from '../src/db.ts';
 
 test('parseSpec: a full valid spec normalizes routes, env, needs', () => {
   const r = parseSpec(
@@ -69,7 +70,7 @@ test('implicitSpec: single routed web service on the given port', () => {
 });
 
 test('planDeploy: cross-node needs get a mesh link, host.docker.internal env, and --add-host', () => {
-  const alloc = new PortAllocator(undefined);
+  const alloc = new PortAllocator(createDb(':memory:'));
   const parsed = parseSpec(
     `
 app: flight
@@ -107,7 +108,7 @@ services:
 });
 
 test('planDeploy: same-node needs use docker DNS, no links, no host port for the dependency', () => {
-  const alloc = new PortAllocator(undefined);
+  const alloc = new PortAllocator(createDb(':memory:'));
   const parsed = parseSpec(
     `services:\n  web:\n    build: .\n    port: 3000\n    route: true\n    needs: [db]\n  db:\n    image: reg/pg\n    port: 5432`,
     'one',
