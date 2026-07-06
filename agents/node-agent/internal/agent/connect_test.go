@@ -10,16 +10,19 @@ type fakeRunner struct {
 	execErr, depErr, buildErr, appErr, meshErr error
 }
 
-func (f fakeRunner) Exec(argv []string) (string, error)                    { return f.execOut, f.execErr }
+func (f fakeRunner) Exec(argv []string) (string, error) { return f.execOut, f.execErr }
 func (f fakeRunner) Deploy(image, name string, a []string, env map[string]string, port int) (string, error) {
 	return f.depOut, f.depErr
 }
 func (f fakeRunner) DeployApp(app string, services []Service) (string, error) {
 	return f.appOut, f.appErr
 }
-func (f fakeRunner) MeshShare(name string, port int) (string, error)            { return f.meshOut, f.meshErr }
-func (f fakeRunner) MeshConnect(name, ticket string, localPort int) (string, error) { return f.meshOut, f.meshErr }
-func (f fakeRunner) MeshDrop(name string) (string, error)                       { return f.meshOut, f.meshErr }
+func (f fakeRunner) MeshShare(name string, port int) (string, error) { return f.meshOut, f.meshErr }
+func (f fakeRunner) MeshConnect(name, ticket string, localPort int) (string, error) {
+	return f.meshOut, f.meshErr
+}
+func (f fakeRunner) MeshDrop(name string) (string, error)       { return f.meshOut, f.meshErr }
+func (f fakeRunner) Serve(app string, port int) (string, error) { return "registered " + app, nil }
 func (f fakeRunner) Build(src BuildSource, reg, tag, hub string) (string, error) {
 	return f.buildOut, f.buildErr
 }

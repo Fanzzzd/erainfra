@@ -23,9 +23,10 @@ import (
 type Runner interface {
 	Deploy(image, name string, args []string, env map[string]string, port int) (string, error)
 	DeployApp(app string, services []Service) (string, error)
-	MeshShare(name string, port int) (string, error)            // expose a local port on the mesh → ticket
+	MeshShare(name string, port int) (string, error)                // expose a local port on the mesh → ticket
 	MeshConnect(name, ticket string, localPort int) (string, error) // dial a ticket → local 127.0.0.1:localPort
-	MeshDrop(name string) (string, error)                       // tear down a mesh link by name
+	MeshDrop(name string) (string, error)                           // tear down a mesh link by name
+	Serve(app string, port int) (string, error)                     // (re)register app->port for the data plane, no deploy
 	Exec(argv []string) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
 	ReadSpec(src BuildSource) (string, error) // fetch the source, return its portless.yaml ("" if absent)
@@ -138,6 +139,18 @@ func (r ShellRunner) Deploy(image, name string, args []string, env map[string]st
 		r.Reg.Set(name, port) // now the data plane can reverse-proxy <name>.<domain> -> 127.0.0.1:port
 	}
 	return b.String(), nil
+}
+
+// Serve (re)registers app -> loopback port for the data plane without touching containers. The hub
+// pushes these on reconnect: an agent restart forgets the registry while its containers keep running.
+func (r ShellRunner) Serve(app string, port int) (string, error) {
+	if app == "" || port <= 0 {
+		return "", fmt.Errorf("serve: app and port required")
+	}
+	if r.Reg != nil {
+		r.Reg.Set(app, port)
+	}
+	return "registered " + app, nil
 }
 
 // DeployApp brings up a multi-service app: it ensures a per-app docker network (so services resolve
@@ -359,6 +372,8 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
 	case "deployApp":
 		out, err = r.DeployApp(m.App, m.Services)
+	case "serve":
+		out, err = r.Serve(m.App, m.Port)
 	case "meshShare":
 		out, err = r.MeshShare(m.Name, m.Port) // Name=link name, Port=local service port → reply.output is the ticket
 	case "meshConnect":

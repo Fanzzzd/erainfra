@@ -49,10 +49,17 @@ export class AgentGateway {
   private pending = new Map<string, Pending>();
   private lastSeen = new Map<string, number>(); // agentId -> last inbound frame time (liveness)
   private disconnectListeners: Array<(agentId: string) => void> = [];
+  private connectListeners: Array<(agentId: string) => void> = [];
 
   // Notify when a registered agent's socket closes (its presence is gone). Drives auto-failover.
   onDisconnect(cb: (agentId: string) => void): void {
     this.disconnectListeners.push(cb);
+  }
+
+  // Notify on every agent hello (fresh connect OR reconnect). Drives state rehydration — an agent
+  // restart loses its in-memory app registry while its containers keep running.
+  onConnect(cb: (agentId: string) => void): void {
+    this.connectListeners.push(cb);
   }
 
   list(): AgentInfo[] {
@@ -87,6 +94,7 @@ export class AgentGateway {
         this.byId.set(id, { socket, info });
         this.idOf.set(socket, id);
         this.lastSeen.set(id, Date.now());
+        for (const cb of this.connectListeners) { try { cb(id); } catch { /* listener's problem */ } }
         break;
       }
       case 'reply': {

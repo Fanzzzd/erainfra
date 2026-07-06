@@ -29,6 +29,7 @@ export interface DeployOpts {
 }
 
 type Gw = Pick<AgentGateway, 'send' | 'list'>;
+type GwConnect = Gw & Pick<AgentGateway, 'onConnect'>;
 
 const appDomain = () => process.env.PORTLESS_APP_DOMAIN;
 
@@ -259,6 +260,17 @@ export async function removeApp(app: string, gw: Gw = agentGateway): Promise<{ o
 
 // Boot-time / periodic sweep: re-establish every stored link whose nodes are connected. Agent
 // restarts lose their dumbpipe sidecars; this heals them without anyone asking.
+// An agent restart wipes its in-memory app->port registry while its containers keep running,
+// turning every route on that node into "app not deployed here". The hub's route table is the
+// source of truth, so on every agent hello we push the node's registrations back down (idempotent).
+export function installServeRehydrator(gw: GwConnect = agentGateway): void {
+  gw.onConnect((agentId) => {
+    for (const r of routeStore.list()) {
+      if (r.node === agentId) void gw.send(agentId, { cmd: 'serve', app: r.app, port: r.port }, 30_000).catch(() => {});
+    }
+  });
+}
+
 export function installLinkHealer(gw: Gw = agentGateway, everyMs = 60_000): void {
   const sweep = async () => {
     for (const { app, links } of appStore.list()) {

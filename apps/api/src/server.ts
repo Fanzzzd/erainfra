@@ -23,7 +23,7 @@ import { installFailover } from './runtime/failover.ts';
 import { backupConfig, backupNow } from './runtime/backup.ts';
 import { githubAppConfig, verifyWebhook, parsePush } from './runtime/github.ts';
 import { gitProjects, startGitDeploy } from './runtime/gitdeploy.ts';
-import { installLinkHealer } from './runtime/appdeploy.ts';
+import { installLinkHealer, installServeRehydrator } from './runtime/appdeploy.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 // Re-export so existing importers (and tests) keep working.
@@ -357,6 +357,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, '../../web/dist');
   installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
   installLinkHealer(); // re-establish cross-node mesh links after agent/hub restarts
+  installServeRehydrator(); // re-push app->port registrations when an agent reconnects (agent restarts forget them)
   // Liveness reaper: drop agents/data sockets that went silent (dead NAT mappings never close cleanly).
   // Agents heartbeat the control channel every 15s and ping the data channel every 20s; reaping a
   // control socket fires the disconnect → failover path.
