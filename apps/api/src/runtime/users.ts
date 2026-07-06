@@ -126,6 +126,20 @@ export class UserStore {
     return verifyPassword(password, u.passwordHash) ? publicView(u) : null;
   }
 
+  // Everything references users by id (sessions, tokens, audit), so an email change is just this
+  // record — nothing else to rewrite.
+  updateEmail(id: string, newEmail: string): { ok: true; user: PublicUser } | { ok: false; error: string } {
+    const u = this.byId.get(id);
+    if (!u) return { ok: false, error: 'no such user' };
+    const email = newEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'not a valid email address' };
+    const existing = this.findByEmail(email);
+    if (existing && existing.id !== id) return { ok: false, error: 'an account with this email already exists' };
+    u.email = email;
+    this.save();
+    return { ok: true, user: publicView(u) };
+  }
+
   setPassword(id: string, newPassword: string): { ok: true } | { ok: false; error: string } {
     const u = this.byId.get(id);
     if (!u) return { ok: false, error: 'no such user' };

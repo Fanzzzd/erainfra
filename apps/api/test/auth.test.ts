@@ -31,6 +31,21 @@ test('user store: create/dup/verify, last-owner protection', () => {
   if (r.ok) assert.equal(s.remove(r.user.id).ok, false); // last owner survives
 });
 
+test('user store: updateEmail validates, dedups, keeps id-keyed references intact', () => {
+  const s = new UserStore(undefined);
+  const a = s.create({ email: 'a@example.com', password: 'hunter22', roles: ['owner'] });
+  const b = s.create({ email: 'b@example.com', password: 'hunter22', roles: ['viewer'] });
+  assert.ok(a.ok && b.ok);
+  if (!a.ok || !b.ok) return;
+  assert.equal(s.updateEmail(a.user.id, 'not-an-email').ok, false);
+  assert.equal(s.updateEmail(a.user.id, 'B@example.com').ok, false); // taken (case-insensitive)
+  const r = s.updateEmail(a.user.id, 'NEW@Example.com');
+  assert.ok(r.ok && r.user.email === 'new@example.com');
+  assert.ok(s.verify('new@example.com', 'hunter22')); // same id, same password
+  assert.equal(s.verify('a@example.com', 'hunter22'), null); // old address gone
+  assert.equal(s.updateEmail(a.user.id, 'new@example.com').ok, true); // re-setting your own is fine
+});
+
 test('sessions: opaque token resolves, revocation works, hash at rest', () => {
   const s = new SessionStore(undefined);
   const { token, session } = s.create('u1', 'test-agent');
@@ -130,6 +145,28 @@ test('http flow: setup-once → login (cookie) → tRPC → cli-token → logout
     r = await app.inject({ method: 'POST', url: '/auth/cli-token', payload: { email: 'me@example.com', password: 'super-secret-1', name: 'cli @mac' } });
     assert.equal(r.statusCode, 200);
     assert.match((r.json() as { token: string }).token, /^plt_/);
+
+    // change email: wrong password rejected, right one re-anchors login; the session survives
+    r = await app.inject({
+      method: 'POST',
+      url: '/trpc/account.changeEmail',
+      headers: { cookie, 'content-type': 'application/json' },
+      payload: JSON.stringify({ password: 'wrong-wrong', email: 'me2@example.com' }),
+    });
+    assert.equal(r.statusCode, 401);
+    r = await app.inject({
+      method: 'POST',
+      url: '/trpc/account.changeEmail',
+      headers: { cookie, 'content-type': 'application/json' },
+      payload: JSON.stringify({ password: 'super-secret-1', email: 'me2@example.com' }),
+    });
+    assert.equal(r.statusCode, 200);
+    r = await app.inject({ method: 'GET', url: '/auth/me', headers: { cookie } });
+    assert.equal((r.json() as { email: string }).email, 'me2@example.com');
+    r = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'me2@example.com', password: 'super-secret-1' } });
+    assert.equal(r.statusCode, 200); // new address signs in
+    r = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'me@example.com', password: 'super-secret-1' } });
+    assert.equal(r.statusCode, 401); // old address is dead
 
     // logout revokes the session
     r = await app.inject({ method: 'POST', url: '/auth/logout', headers: { cookie } });

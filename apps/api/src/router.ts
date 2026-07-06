@@ -469,6 +469,22 @@ export const appRouter = router({
   account: router({
     me: requirePermission('app.read').query(({ ctx }) => ({ id: ctx.principal.id, name: ctx.principal.name, roles: ctx.principal.roles })),
 
+    // Change YOUR email (requires the password — a stolen cookie must not re-anchor the account).
+    changeEmail: requirePermission('app.read')
+      .input(z.object({ password: z.string().min(1).max(1024), email: z.string().min(3).max(254) }))
+      .mutation(({ ctx, input }) => {
+        const user = userStore.get(ctx.principal.id);
+        if (!user) throw new TRPCError({ code: 'BAD_REQUEST', message: 'email change requires a user session (not an API token)' });
+        if (!userStore.verify(user.email, input.password)) {
+          recordOp(ctx, { action: 'account.changeEmail', target: user.email, outcome: 'failure' });
+          throw new TRPCError({ code: 'UNAUTHORIZED', message: 'password is wrong' });
+        }
+        const r = userStore.updateEmail(user.id, input.email);
+        if (!r.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: r.error });
+        const op = recordOp(ctx, { action: 'account.changeEmail', target: `${user.email} -> ${r.user.email}`, outcome: 'success' });
+        return { user: r.user, ...op };
+      }),
+
     // Change YOUR password (requires the current one) and drop every other session.
     changePassword: requirePermission('app.read')
       .input(z.object({ current: z.string().min(1).max(1024), next: z.string().min(8).max(1024) }))

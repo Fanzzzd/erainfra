@@ -100,6 +100,7 @@ export interface AuthUser {
   id: string;
   name: string;
   roles: string[];
+  email?: string;
 }
 
 async function authPost<T>(path: string, body: unknown): Promise<T> {

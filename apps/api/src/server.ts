@@ -177,7 +177,8 @@ export function createApiServer(opts: { audit?: AuditLog; tokens?: TokenStore; w
   app.get('/auth/me', async (req, reply) => {
     const p = authFor(req);
     if (!p) return reply.code(401).send({ error: 'unauthorized' });
-    return { id: p.id, name: p.name, roles: p.roles };
+    // Real users get their email too (the dashboard shows it); token principals have none.
+    return { id: p.id, name: p.name, roles: p.roles, email: userStore.get(p.id)?.email };
   });
 
   // Exchange email+password for a long-lived API token — the `portless login` flow. Same throttle

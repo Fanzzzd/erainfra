@@ -11,6 +11,53 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '—');
 
+function ChangeEmail({ me }: { me: AuthUser }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [current, setCurrent] = useState(me.email);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await trpcMutation<{ user: { email: string } }>('account.changeEmail', { password, email });
+      toast.success(`Email changed to ${r.user.email}`);
+      setCurrent(r.user.email);
+      setEmail('');
+      setPassword('');
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Email</CardTitle>
+        <CardDescription>You sign in with this address{current ? ` — currently ${current}` : ''}.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={submit} className="flex max-w-md flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="em-new">New email</Label>
+            <Input id="em-new" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="em-pw">Current password</Label>
+            <Input id="em-pw" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+          </div>
+          <Button type="submit" disabled={busy} className="self-start">
+            Change email
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ChangePassword() {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -337,6 +384,7 @@ export function Settings({ me }: { me: AuthUser }) {
           Signed in as {me.name} · {me.roles.join(', ')}
         </p>
       </div>
+      <ChangeEmail me={me} />
       <ChangePassword />
       <Sessions />
       {isAdmin && <ApiTokens />}
