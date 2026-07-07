@@ -8,6 +8,8 @@
 //   portless env <app> ...          list / set K=V / unset K (encrypted at rest)
 //   portless nodes                  connected machines
 //   portless repos                  git bindings (push-to-deploy)
+//   portless link a:5432 b          surface a's port 5432 on node b (P2P mesh, no tunnel)
+//   portless links / unlink <name>  list / remove mesh links
 //   portless redeploy <app>         rebuild + redeploy a bound repo
 //   portless remove <app>           tear an app down everywhere
 //   portless backup [now|list]      control-plane backups to your S3
@@ -417,6 +419,48 @@ const commands = {
     spawnSync(opener, [url], { stdio: 'ignore' });
   },
 
+  // 内网互连：portless link <provider>:<port> <consumer>[:<localPort>] — consumer 节点上出现
+  // 127.0.0.1:<localPort>，流量走 iroh P2P 直连（NAT 打洞，不经 hub、不经 tunnel）。
+  async link({ flags, pos }) {
+    const cfg = requireConfig();
+    const [src, dst] = pos;
+    const m = /^([^:]+):(\d+)$/.exec(src ?? '');
+    if (!m || !dst) die('usage: portless link <provider-node>:<port> <consumer-node>[:<local-port>] [--name X]');
+    const [consumer, localPortStr] = dst.split(':');
+    const r = await mutate(cfg, 'mesh.link', {
+      provider: m[1],
+      providerPort: Number(m[2]),
+      consumer,
+      ...(localPortStr ? { localPort: Number(localPortStr) } : {}),
+      ...(flags.name ? { name: flags.name } : {}),
+      confirm: true,
+    });
+    ok(`${c.bold(consumer)} can now reach ${c.bold(src)} at ${c.cyan(r.address)} (containers: ${r.containerAddress}) — link "${r.name}", auto-healed`);
+  },
+
+  async links({ flags }) {
+    const cfg = requireConfig();
+    const list = await query(cfg, 'mesh.list');
+    if (flags.json) return console.log(JSON.stringify(list, null, 2));
+    if (!list.length) return console.log('no mesh links — create one: portless link <node>:<port> <node>');
+    table(
+      list.map((l) => [l.name, `${l.provider}:${l.providerPort}`, `${l.consumer} @127.0.0.1:${l.localPort}`, l.online ? c.green('online') : c.red('node offline'), c.dim(l.createdBy ?? '-')]),
+      ['LINK', 'FROM', 'SURFACED ON', 'STATUS', 'BY'],
+    );
+  },
+
+  async unlink({ flags, pos }) {
+    const cfg = requireConfig();
+    const name = pos[0];
+    if (!name) die('usage: portless unlink <name> [-y]');
+    if (!flags.yes) {
+      const a = await prompt(`remove mesh link ${name} (both ends torn down)? [y/N] `);
+      if (a.toLowerCase() !== 'y') return console.log('aborted');
+    }
+    await mutate(cfg, 'mesh.unlink', { name, confirm: true });
+    ok(`unlinked ${name}`);
+  },
+
   async mcp() {
     await serveMcp();
   },
@@ -440,6 +484,13 @@ ${c.bold('deploy')}
                                   bind a GitHub repo (push-to-deploy via webhook)
   redeploy <app>                  rebuild + redeploy a bound repo
   remove <app> [-y]               tear an app down everywhere
+
+${c.bold('mesh')}
+  link <node>:<port> <node>[:<port>]
+                                  surface a port from one node on another (P2P, no tunnel),
+                                  e.g. portless link gpu-box:8080 web-box — auto-healed forever
+  links                           every mesh link + status
+  unlink <name> [-y]              tear a link down on both ends
 
 ${c.bold('operate')}
   apps | status [--json]          everything deployed, with URLs and liveness
@@ -539,6 +590,36 @@ const MCP_TOOLS = [
     description: 'Tear an app down everywhere: containers, routes, cross-node links. Destructive.',
     inputSchema: { type: 'object', properties: { app: { type: 'string' } }, required: ['app'], additionalProperties: false },
     handler: async (cfg, args) => mutate(cfg, 'apps.remove', { app: args.app, confirm: true }),
+  },
+  {
+    name: 'portless_link',
+    description:
+      'Wire two nodes over the P2P mesh: surface <provider>:<providerPort> on <consumer> at 127.0.0.1:<localPort> (containers: host.docker.internal). No public IP or tunnel; persisted and auto-healed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        provider: { type: 'string', description: 'node that has the service' },
+        providerPort: { type: 'number' },
+        consumer: { type: 'string', description: 'node that wants the service' },
+        localPort: { type: 'number', description: 'port on the consumer (default: providerPort)' },
+        name: { type: 'string', description: 'stable link name (default: derived)' },
+      },
+      required: ['provider', 'providerPort', 'consumer'],
+      additionalProperties: false,
+    },
+    handler: async (cfg, args) => mutate(cfg, 'mesh.link', { ...args, confirm: true }),
+  },
+  {
+    name: 'portless_links',
+    description: 'List every standalone mesh link (node-to-node port wiring) with liveness.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async (cfg) => query(cfg, 'mesh.list'),
+  },
+  {
+    name: 'portless_unlink',
+    description: 'Tear down a mesh link on both ends and stop auto-healing it.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false },
+    handler: async (cfg, args) => mutate(cfg, 'mesh.unlink', { name: args.name, confirm: true }),
   },
   {
     name: 'portless_backup_now',

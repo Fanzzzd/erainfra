@@ -99,7 +99,7 @@ cmd_up() {
   done
   printf '\n\033[32m✅ image store up at %s:%s\033[0m (pid %s)\n' "$BIND" "$port" "$(cat "$pidf")" >&2
   printf '   Put it on the mesh so deploy boxes can reach it with no public IP:\n' >&2
-  printf '     curl -fsSL <hub>/mesh-node.sh | sh -s -- share %s\n' "$port" >&2
+  printf '     portless link <registry-node>:%s <this-node>   # nodes enrolled via agent.sh\n' "$port" >&2
 }
 
 cmd_status() {
