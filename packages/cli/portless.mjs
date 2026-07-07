@@ -12,13 +12,14 @@
 //   portless remove <app>           tear an app down everywhere
 //   portless backup [now|list]      control-plane backups to your S3
 //   portless open <app>             open the app's URL in a browser
+//   portless chats ...              archive + full-text search Claude Code / Codex sessions
 //   portless mcp                    serve these capabilities to an AI agent over MCP (stdio)
 //
 // Config lives in ~/.portless/config.json; PORTLESS_HUB / PORTLESS_TOKEN override it.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve, basename, dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const VERSION = '1.0.0';
@@ -216,6 +217,143 @@ async function deployDir(cfg, dir, { app, port, node, buildNode } = {}, onStage)
     confirm: true,
   });
   return waitForDeploy(cfg, started.deployId, onStage);
+}
+
+
+// ---------- AI chat transcripts (Claude Code / Codex CLI) --------------------------------------
+// Both CLIs journal every session as append-only JSONL. We parse them into plain user/assistant
+// text messages and sync each session to the hub (chats.ingest replaces the whole session, so
+// re-sending a grown file is idempotent). Tool calls/results and reasoning blocks are skipped —
+// the archive is for reading and searching what was SAID, not replaying the run.
+const CHAT_TEXT_CAP = 100_000; // per-message cap; giant pasted blobs get truncated, search survives
+
+function listJsonlFiles(dir) {
+  const out = [];
+  const walk = (d) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const f = join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(f);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+const cap = (t) => (t.length > CHAT_TEXT_CAP ? `${t.slice(0, CHAT_TEXT_CAP)}\n…[truncated]` : t);
+const mkTitle = (msgs) => msgs.find((m) => m.role === 'user')?.text.split('\n')[0].slice(0, 120);
+
+// Claude Code: ~/.claude/projects/<slug>/<session-uuid>.jsonl. Real user prompts have a STRING
+// message.content; assistant lines carry content blocks (keep text, skip thinking/tool_use);
+// user lines whose content is an array are tool results / interruption markers — skip the former.
+function parseClaudeFile(file) {
+  const id = basename(file, '.jsonl');
+  const messages = [];
+  let project, startedAt, updatedAt;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (d.type !== 'user' && d.type !== 'assistant') continue;
+    const m = d.message;
+    if (!m || d.isMeta) continue;
+    project ??= d.cwd;
+    let text = '';
+    let model;
+    if (d.type === 'user') {
+      if (typeof m.content === 'string') text = m.content;
+      else if (Array.isArray(m.content)) text = m.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      if (/^<[a-z-]+>/.test(text.trim()) || text.startsWith('[Request interrupted')) text = ''; // injected wrappers, not the human
+    } else {
+      model = m.model;
+      if (Array.isArray(m.content)) text = m.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+    }
+    text = text.trim();
+    if (!text) continue;
+    startedAt ??= d.timestamp;
+    updatedAt = d.timestamp ?? updatedAt;
+    messages.push({ seq: messages.length, role: d.type, model, at: d.timestamp, text: cap(text) });
+  }
+  return { session: { id, source: 'claude', host: hostname(), project, title: mkTitle(messages), startedAt, updatedAt }, messages };
+}
+
+// Codex CLI: ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl. Messages ride response_item
+// payloads; role "developer" is injected instructions, and the first "user" items are AGENTS.md /
+// permission wrappers — skip anything that reads like scaffolding rather than the human.
+function parseCodexFile(file) {
+  const messages = [];
+  let id, project, model, startedAt, updatedAt;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    const p = d.payload ?? {};
+    if (d.type === 'session_meta') {
+      id = p.id ?? p.session_id ?? id;
+      project = p.cwd ?? project;
+      startedAt = p.timestamp ?? d.timestamp ?? startedAt;
+      continue;
+    }
+    if (d.type === 'turn_context') {
+      model = p.model ?? model;
+      project ??= p.cwd;
+      continue;
+    }
+    if (d.type !== 'response_item' || p.type !== 'message') continue;
+    if (p.role !== 'user' && p.role !== 'assistant') continue; // developer = injected instructions
+    let text = (Array.isArray(p.content) ? p.content : [])
+      .filter((b) => b.type === 'input_text' || b.type === 'output_text' || b.type === 'text')
+      .map((b) => b.text).join('\n').trim();
+    if (p.role === 'user' && (/^<[a-z_ -]+>/i.test(text) || text.startsWith('# AGENTS.md'))) continue; // scaffolding
+    if (!text) continue;
+    updatedAt = d.timestamp ?? updatedAt;
+    messages.push({ seq: messages.length, role: p.role, model: p.role === 'assistant' ? model : undefined, at: d.timestamp, text: cap(text) });
+  }
+  const fallbackId = basename(file, '.jsonl').replace(/^rollout-/, '');
+  return { session: { id: id ?? fallbackId, source: 'codex', host: hostname(), project, title: mkTitle(messages), startedAt, updatedAt }, messages };
+}
+
+// Incremental sync: remember each file's size; re-parse + re-send only when it changed.
+const CHAT_STATE_PATH = join(homedir(), '.portless', 'chats-sync.json');
+
+async function syncChats(cfg, { verbose = false } = {}) {
+  let state = {};
+  try { state = JSON.parse(readFileSync(CHAT_STATE_PATH, 'utf8')); } catch { /* first run */ }
+  const targets = [
+    { root: join(homedir(), '.claude', 'projects'), parse: parseClaudeFile },
+    { root: join(homedir(), '.codex', 'sessions'), parse: parseCodexFile },
+  ];
+  let sent = 0, skipped = 0, empty = 0, failed = 0;
+  for (const t of targets) {
+    if (!existsSync(t.root)) continue;
+    for (const file of listJsonlFiles(t.root)) {
+      const size = statSync(file).size;
+      if (state[file]?.size === size) { skipped++; continue; }
+      let parsed;
+      try { parsed = t.parse(file); } catch (e) {
+        failed++;
+        if (verbose) console.error(c.yellow(`! ${file}: ${e.message}`));
+        continue;
+      }
+      if (parsed.messages.length === 0) { state[file] = { size }; empty++; continue; }
+      try {
+        await mutate(cfg, 'chats.ingest', parsed);
+        state[file] = { size, sessionId: parsed.session.id };
+        sent++;
+        if (verbose) console.log(`  ${parsed.session.source} ${parsed.session.id.slice(0, 8)} ${parsed.messages.length} msgs`);
+        else stageLine(`synced ${sent} session${sent === 1 ? '' : 's'}…`);
+      } catch (e) {
+        failed++;
+        console.error(c.yellow(`! ${basename(file)}: ${e.message}`));
+      }
+    }
+  }
+  stageDone();
+  mkdirSync(dirname(CHAT_STATE_PATH), { recursive: true });
+  writeFileSync(CHAT_STATE_PATH, JSON.stringify(state), { mode: 0o600 });
+  return { sent, skipped, empty, failed };
 }
 
 // ---------- commands ---------------------------------------------------------------------------
@@ -417,6 +555,89 @@ const commands = {
     spawnSync(opener, [url], { stdio: 'ignore' });
   },
 
+  // AI conversation archive: sync local Claude Code / Codex transcripts to the hub, then search
+  // them from anywhere. `autosync` installs a launchd (macOS) / systemd (Linux) timer.
+  async chats({ flags, pos }) {
+    const sub = pos[0] ?? 'list';
+    if (sub === 'sync') {
+      const cfg = requireConfig();
+      const r = await syncChats(cfg, { verbose: !!flags.verbose });
+      const st = await query(cfg, 'chats.stats');
+      ok(`synced ${r.sent} changed session(s) (${r.skipped} unchanged, ${r.empty} empty, ${r.failed} failed) — hub now has ${st.sessions} sessions / ${st.messages} messages`);
+    } else if (sub === 'list') {
+      const cfg = requireConfig();
+      const sessions = await query(cfg, 'chats.sessions', { ...(flags.source ? { source: flags.source } : {}), ...(flags.project ? { project: flags.project } : {}), limit: Number(flags.limit ?? 25) });
+      if (flags.json) return console.log(JSON.stringify(sessions, null, 2));
+      if (!sessions.length) return console.log('no chat sessions on the hub yet — run: portless chats sync');
+      table(sessions.map((x) => [x.id.slice(0, 8), x.source, String(x.messageCount), (x.project ?? '').split('/').slice(-2).join('/'), (x.title ?? '').slice(0, 60), (x.updatedAt ?? '').slice(0, 16)]),
+        ['ID', 'SOURCE', 'MSGS', 'PROJECT', 'TITLE', 'UPDATED']);
+    } else if (sub === 'search') {
+      const cfg = requireConfig();
+      const q = pos.slice(1).join(' ');
+      if (!q) die('usage: portless chats search <query>');
+      const hits = await query(cfg, 'chats.search', { q, limit: Number(flags.limit ?? 15) });
+      if (flags.json) return console.log(JSON.stringify(hits, null, 2));
+      if (!hits.length) return console.log('no matches');
+      for (const h of hits) {
+        console.log(`${c.bold(h.session.id.slice(0, 8))} ${c.dim(`${h.session.source} · ${h.role} · ${(h.at ?? '').slice(0, 16)} · ${(h.session.project ?? '').split('/').pop() ?? ''}`)}`);
+        console.log(`  ${h.snippet.replaceAll('\n', ' ')}`);
+      }
+      console.log(c.dim(`\nfull session: portless chats show <id>`));
+    } else if (sub === 'show') {
+      const cfg = requireConfig();
+      const id = pos[1];
+      if (!id) die('usage: portless chats show <session-id (or 8-char prefix)>');
+      let full = id;
+      if (id.length < 32) {
+        const all = await query(cfg, 'chats.sessions', { limit: 500 });
+        const m = all.find((x) => x.id.startsWith(id));
+        if (!m) die(`no session starting with "${id}"`);
+        full = m.id;
+      }
+      const { session, messages } = await query(cfg, 'chats.messages', { id: full });
+      if (flags.json) return console.log(JSON.stringify({ session, messages }, null, 2));
+      console.log(`${c.bold(session.title ?? session.id)} ${c.dim(`(${session.source} · ${session.project ?? ''} · ${messages.length} msgs)`)}\n`);
+      for (const m of messages) {
+        const who = m.role === 'user' ? c.cyan('you') : c.green(m.model ?? 'assistant');
+        console.log(`${who} ${c.dim((m.at ?? '').slice(0, 16))}\n${m.text}\n`);
+      }
+    } else if (sub === 'parse') {
+      // debug: parse a transcript locally without uploading
+      const file = pos[1];
+      if (!file) die('usage: portless chats parse <file.jsonl>');
+      const parsed = file.includes('.codex') || basename(file).startsWith('rollout-') ? parseCodexFile(file) : parseClaudeFile(file);
+      console.log(JSON.stringify(parsed, null, 2));
+    } else if (sub === 'autosync') {
+      requireConfig(); // fail early if not logged in
+      const bin = process.argv[1];
+      if (process.platform === 'darwin') {
+        const plist = join(homedir(), 'Library', 'LaunchAgents', 'ai.portless.chats-sync.plist');
+        mkdirSync(dirname(plist), { recursive: true });
+        writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.portless.chats-sync</string>
+  <key>ProgramArguments</key><array>
+    <string>${process.execPath}</string><string>${bin}</string><string>chats</string><string>sync</string>
+  </array>
+  <key>StartInterval</key><integer>900</integer>
+  <key>StandardOutPath</key><string>/tmp/portless-chats-sync.log</string>
+  <key>StandardErrorPath</key><string>/tmp/portless-chats-sync.log</string>
+</dict></plist>
+`);
+        spawnSync('launchctl', ['unload', plist], { stdio: 'ignore' });
+        const r = spawnSync('launchctl', ['load', plist], { stdio: 'pipe' });
+        if (r.status !== 0) die(`launchctl load failed: ${r.stderr}`);
+        ok(`autosync installed — every 15 min via launchd (${plist})`);
+      } else {
+        console.log('add to crontab (crontab -e):');
+        console.log(c.cyan(`*/15 * * * * ${process.execPath} ${bin} chats sync >>/tmp/portless-chats-sync.log 2>&1`));
+      }
+    } else {
+      die('usage: portless chats [sync|list|search <q>|show <id>|autosync]');
+    }
+  },
+
   async mcp() {
     await serveMcp();
   },
@@ -450,6 +671,9 @@ ${c.bold('operate')}
   open <app>                      open the app's public URL
 
 ${c.bold('ai')}
+  chats sync                      archive local Claude Code + Codex transcripts to the hub
+  chats [search <q>|show <id>]    browse / full-text search every past AI session
+  chats autosync                  keep syncing automatically (launchd/cron, every 15 min)
   mcp                             MCP server over stdio (for Claude Code / Codex):
                                   claude mcp add portless -- portless mcp`);
   },
@@ -516,6 +740,23 @@ const MCP_TOOLS = [
       additionalProperties: false,
     },
     handler: async (cfg, args) => query(cfg, 'apps.logs', { app: args.app, ...(args.service ? { service: args.service } : {}), lines: args.lines ?? 100 }),
+  },
+  {
+    name: 'portless_chats_search',
+    description: 'Full-text search the archived Claude Code / Codex conversation history (all machines, all projects). Returns matching messages with snippets and session ids.',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'search terms' }, limit: { type: 'number' } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: async (cfg, args) => query(cfg, 'chats.search', { q: args.query, limit: args.limit ?? 15 }),
+  },
+  {
+    name: 'portless_chats_get',
+    description: 'Fetch one archived AI conversation (all its user/assistant messages) by session id.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
+    handler: async (cfg, args) => query(cfg, 'chats.messages', { id: args.id }),
   },
   {
     name: 'portless_env_list',

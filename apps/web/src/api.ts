@@ -145,3 +145,32 @@ export interface SessionInfo {
   lastSeenAt: string;
   userAgent?: string;
 }
+
+// ---- Chat archive ---------------------------------------------------------------------------
+
+export interface ChatSession {
+  id: string;
+  source: 'claude' | 'codex';
+  host: string;
+  project?: string;
+  title?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  messageCount: number;
+}
+
+export interface ChatMessage {
+  seq: number;
+  role: 'user' | 'assistant';
+  model?: string;
+  at?: string;
+  text: string;
+}
+
+export interface ChatHit {
+  session: ChatSession;
+  seq: number;
+  role: string;
+  at?: string;
+  snippet: string;
+}

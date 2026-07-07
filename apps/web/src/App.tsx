@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, LogOut, Server, Rocket, Settings as SettingsIcon } from 'lucide-react';
+import { LayoutDashboard, LogOut, MessageSquare, Server, Rocket, Settings as SettingsIcon } from 'lucide-react';
 import { authMe, authStatus, logout, trpcQuery, type AuthUser } from '@/api';
 import { cn } from '@/lib/utils';
 import { Overview } from '@/pages/Overview';
@@ -7,13 +7,15 @@ import { Nodes } from '@/pages/Nodes';
 import { Deploy } from '@/pages/Deploy';
 import { Login } from '@/pages/Login';
 import { Settings } from '@/pages/Settings';
+import { Chats } from '@/pages/Chats';
 
-type View = 'overview' | 'deploy' | 'nodes' | 'settings';
+type View = 'overview' | 'deploy' | 'nodes' | 'chats' | 'settings';
 
 const NAV: Array<{ id: View; label: string; icon: typeof Server }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'deploy', label: 'Deploy', icon: Rocket },
   { id: 'nodes', label: 'Nodes', icon: Server },
+  { id: 'chats', label: 'Chats', icon: MessageSquare },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
@@ -148,6 +150,7 @@ export function App() {
             {view === 'overview' && <Overview />}
             {view === 'deploy' && <Deploy />}
             {view === 'nodes' && <Nodes />}
+            {view === 'chats' && <Chats />}
             {view === 'settings' && <Settings me={auth.user} />}
           </main>
         </div>

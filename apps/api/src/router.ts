@@ -11,6 +11,7 @@ import { secretStore } from './runtime/secrets.ts';
 import { routeStore } from './runtime/routes.ts';
 import { appStore } from './runtime/apps.ts';
 import { backupConfig, backupNow, listBackups } from './runtime/backup.ts';
+import { chatStore } from './runtime/chats.ts';
 import { userStore } from './runtime/users.ts';
 import { sessionStore } from './runtime/sessions.ts';
 import { apiTokenStore } from './runtime/apitokens.ts';
@@ -464,6 +465,61 @@ export const appRouter = router({
           throw new TRPCError({ code: 'NOT_FOUND', message: (e as Error).message });
         }
       }),
+  }),
+
+  // AI conversation archive (Claude Code / Codex transcripts synced from each machine).
+  // chat.read/chat.write are admin/owner-only: transcripts can contain anything typed at a terminal.
+  chats: router({
+    // Full-session replace, sent by `portless chats sync` whenever a transcript file changed.
+    ingest: requirePermission('chat.write')
+      .input(z.object({
+        session: z.object({
+          id: z.string().min(1).max(128),
+          source: z.enum(['claude', 'codex']),
+          host: z.string().min(1).max(128),
+          project: z.string().max(512).optional(),
+          title: z.string().max(300).optional(),
+          startedAt: z.string().max(64).optional(),
+          updatedAt: z.string().max(64).optional(),
+        }),
+        messages: z.array(z.object({
+          seq: z.number().int().min(0),
+          role: z.enum(['user', 'assistant']),
+          model: z.string().max(128).optional(),
+          at: z.string().max(64).optional(),
+          text: z.string().max(200_000),
+        })).max(20_000),
+      }))
+      .mutation(({ input }) => {
+        chatStore.replaceSession(input.session, input.messages);
+        return { ok: true, messages: input.messages.length };
+      }),
+
+    sessions: requirePermission('chat.read')
+      .input(z.object({ source: z.enum(['claude', 'codex']).optional(), project: z.string().max(512).optional(), limit: z.number().int().min(1).max(500).default(50) }).optional())
+      .query(({ input }) => chatStore.listSessions({ source: input?.source, project: input?.project, limit: input?.limit ?? 50 })),
+
+    messages: requirePermission('chat.read')
+      .input(z.object({ id: z.string().min(1) }))
+      .query(({ input }) => {
+        const session = chatStore.get(input.id);
+        if (!session) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such chat session' });
+        return { session, messages: chatStore.messages(input.id) };
+      }),
+
+    search: requirePermission('chat.read')
+      .input(z.object({ q: z.string().min(1).max(500), limit: z.number().int().min(1).max(100).default(20) }))
+      .query(({ input }) => chatStore.search(input.q, input.limit)),
+
+    remove: requirePermission('chat.write')
+      .input(z.object({ id: z.string().min(1) }))
+      .mutation(({ ctx, input }) => {
+        if (!chatStore.remove(input.id)) throw new TRPCError({ code: 'NOT_FOUND', message: 'no such chat session' });
+        const op = recordOp(ctx, { action: 'chats.remove', target: input.id, outcome: 'success' });
+        return { ok: true, ...op };
+      }),
+
+    stats: requirePermission('chat.read').query(() => chatStore.stats()),
   }),
 
   // Accounts, sessions, and API tokens — the credential surface. Reads/self-service need only a

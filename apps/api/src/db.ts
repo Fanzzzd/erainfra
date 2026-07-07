@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS deployments (
   id TEXT PRIMARY KEY, app TEXT NOT NULL, stage TEXT NOT NULL, detail TEXT NOT NULL,
   urls TEXT NOT NULL, error TEXT, started_at TEXT NOT NULL, finished_at TEXT);
 CREATE INDEX IF NOT EXISTS deployments_app ON deployments(app, started_at DESC);
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL, host TEXT NOT NULL, project TEXT,
+  title TEXT, started_at TEXT, updated_at TEXT, message_count INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS chat_sessions_updated ON chat_sessions(updated_at DESC);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  session_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL,
+  model TEXT, at TEXT, text TEXT NOT NULL, PRIMARY KEY (session_id, seq));
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(text, session_id UNINDEXED, seq UNINDEXED);
 CREATE TABLE IF NOT EXISTS audit (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, actor TEXT NOT NULL,
   action TEXT NOT NULL, target TEXT, outcome TEXT NOT NULL, dry_run INTEGER, meta TEXT);

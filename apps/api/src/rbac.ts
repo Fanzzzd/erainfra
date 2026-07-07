@@ -3,7 +3,7 @@
 
 export type Role = 'owner' | 'admin' | 'operator' | 'viewer';
 
-export type Permission = 'app.read' | 'app.deploy' | 'agent.run' | 'audit.read' | 'account.admin';
+export type Permission = 'app.read' | 'app.deploy' | 'agent.run' | 'audit.read' | 'account.admin' | 'chat.read' | 'chat.write';
 
 const READ_ONLY: Permission[] = ['app.read', 'audit.read'];
 
@@ -15,6 +15,10 @@ const ROLE_PERMISSIONS: Record<Role, Permission[] | '*'> = {
     'agent.run',
     // Manage users and API tokens (create/revoke credentials): admin/owner only.
     'account.admin',
+    // AI conversation archive: transcripts can contain anything typed at a terminal, so node
+    // (operator) and viewer tokens get NO access — admin/owner only.
+    'chat.read',
+    'chat.write',
   ],
   operator: [...READ_ONLY, 'app.deploy'],
   viewer: READ_ONLY,
