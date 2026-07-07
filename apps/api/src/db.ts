@@ -50,7 +50,7 @@ CREATE INDEX IF NOT EXISTS chat_sessions_updated ON chat_sessions(updated_at DES
 CREATE TABLE IF NOT EXISTS chat_messages (
   session_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL,
   model TEXT, at TEXT, text TEXT NOT NULL, PRIMARY KEY (session_id, seq));
-CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(text, session_id UNINDEXED, seq UNINDEXED);
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(text, session_id UNINDEXED, seq UNINDEXED, tokenize='trigram');
 CREATE TABLE IF NOT EXISTS audit (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, actor TEXT NOT NULL,
   action TEXT NOT NULL, target TEXT, outcome TEXT NOT NULL, dry_run INTEGER, meta TEXT);
@@ -66,6 +66,15 @@ export function createDb(file: string = TEST ? ':memory:' : (process.env.PORTLES
     d.exec('PRAGMA synchronous = NORMAL');
   }
   d.exec(SCHEMA);
+  // chat_fts needs the trigram tokenizer (substring + CJK search — unicode61 can't tokenize
+  // Chinese at all). Rebuild the index once if an older definition exists; source of truth is
+  // chat_messages, so this is cheap and lossless.
+  const ftsSql = (d.prepare("SELECT sql FROM sqlite_master WHERE name = 'chat_fts'").get() as { sql: string } | undefined)?.sql ?? '';
+  if (!ftsSql.includes('trigram')) {
+    d.exec('DROP TABLE IF EXISTS chat_fts');
+    d.exec("CREATE VIRTUAL TABLE chat_fts USING fts5(text, session_id UNINDEXED, seq UNINDEXED, tokenize='trigram')");
+    d.exec('INSERT INTO chat_fts (text, session_id, seq) SELECT text, session_id, seq FROM chat_messages');
+  }
   if (file !== ':memory:') importLegacyJson(d, dirname(file));
   return d;
 }

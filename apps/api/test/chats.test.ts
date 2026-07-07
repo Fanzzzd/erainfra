@@ -44,6 +44,16 @@ test('chat store: replace is idempotent, list/messages/search work', () => {
   assert.equal(s.search('css grid')[0].session.id, 's2');
   assert.equal(s.search('zzz-no-such-term').length, 0);
 
+  // CJK: trigram FTS for >=3-char terms, LIKE fallback below the window
+  s.replaceSession(meta('s3', { title: 'zh' }), [
+    { seq: 0, role: 'user', text: '帮我取消掉我的订阅，然后配置泛域名证书' },
+  ]);
+  assert.equal(s.search('泛域名')[0].session.id, 's3'); // 3 chars → trigram index
+  const like = s.search('订阅'); // 2 chars → LIKE fallback
+  assert.equal(like[0].session.id, 's3');
+  assert.match(like[0].snippet, /\[订阅\]/);
+  s.remove('s3');
+
   // remove drops messages and the index
   assert.ok(s.remove('s2'));
   assert.equal(s.search('css grid').length, 0);

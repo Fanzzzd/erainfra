@@ -114,18 +114,31 @@ export class ChatStore {
   }
 
   // Full-text search across every synced conversation; one best hit per message with a snippet.
+  // The trigram FTS index handles any term of >= 3 characters (including CJK); shorter terms fall
+  // below the trigram window, so those queries take a LIKE scan instead (fine at this scale).
+  // Snippets are built by hand from the message text — trigram's snippet() marks 3-char fragments,
+  // which reads terribly.
   search(q: string, limit = 20): Array<{ session: ChatSession; seq: number; role: string; at?: string; snippet: string }> {
-    const match = ftsQuery(q);
-    if (!match) return [];
-    const rows = this.d.prepare(
-      `SELECT f.session_id, f.seq, snippet(chat_fts, 0, '[', ']', ' … ', 12) AS snip
-         FROM chat_fts f WHERE chat_fts MATCH ? ORDER BY rank LIMIT ?`).all(match, limit);
+    const terms = q.split(/\s+/).filter(Boolean);
+    if (!terms.length) return [];
+    let rows: Array<{ session_id: string; seq: number; role: string; at: string | null; text: string }>;
+    if (terms.every((t) => [...t].length >= 3)) {
+      rows = this.d.prepare(
+        `SELECT m.session_id, m.seq, m.role, m.at, m.text
+           FROM chat_fts f JOIN chat_messages m ON m.session_id = f.session_id AND m.seq = f.seq
+          WHERE chat_fts MATCH ? ORDER BY rank LIMIT ?`).all(ftsQuery(q), limit) as never;
+    } else {
+      const esc = (t: string) => t.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+      const cond = terms.map(() => "text LIKE ? ESCAPE '\\'").join(' AND ');
+      rows = this.d.prepare(
+        `SELECT session_id, seq, role, at, text FROM chat_messages WHERE ${cond} ORDER BY rowid DESC LIMIT ?`)
+        .all(...terms.map((t) => `%${esc(t)}%`), limit) as never;
+    }
     const out: Array<{ session: ChatSession; seq: number; role: string; at?: string; snippet: string }> = [];
-    for (const r of rows as unknown as Array<{ session_id: string; seq: number; snip: string }>) {
+    for (const r of rows) {
       const session = this.get(r.session_id);
       if (!session) continue;
-      const m = this.d.prepare('SELECT role, at FROM chat_messages WHERE session_id = ? AND seq = ?').get(r.session_id, r.seq) as { role: string; at: string | null } | undefined;
-      out.push({ session, seq: Number(r.seq), role: m?.role ?? 'user', at: m?.at ?? undefined, snippet: r.snip });
+      out.push({ session, seq: Number(r.seq), role: r.role, at: r.at ?? undefined, snippet: buildSnippet(r.text, terms) });
     }
     return out;
   }
@@ -136,6 +149,21 @@ export class ChatStore {
       messages: Number((this.d.prepare('SELECT COUNT(*) n FROM chat_messages').get() as { n: number }).n),
     };
   }
+}
+
+
+// Mark the first matching term in context: "… before [term] after …".
+function buildSnippet(text: string, terms: string[]): string {
+  const flat = text.replaceAll('\n', ' ');
+  const lower = flat.toLowerCase();
+  for (const t of terms) {
+    const i = lower.indexOf(t.toLowerCase());
+    if (i < 0) continue;
+    const a = Math.max(0, i - 40);
+    const b = Math.min(flat.length, i + t.length + 90);
+    return `${a > 0 ? '… ' : ''}${flat.slice(a, i)}[${flat.slice(i, i + t.length)}]${flat.slice(i + t.length, b)}${b < flat.length ? ' …' : ''}`;
+  }
+  return flat.slice(0, 130) + (flat.length > 130 ? ' …' : ''); // FTS matched but not verbatim (rare)
 }
 
 export const chatStore = new ChatStore();
