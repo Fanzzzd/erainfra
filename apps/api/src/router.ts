@@ -218,11 +218,9 @@ export const appRouter = router({
         if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to create a mesh link' });
         const localPort = input.localPort ?? input.providerPort;
         const name = input.name ?? `${input.provider}-${input.providerPort}-${input.consumer}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 63);
+        // Re-linking an existing name re-points it — the agents replace same-name links, so this is
+        // also the manual heal ("run it again").
         const link = { name, provider: input.provider, providerPort: input.providerPort, consumer: input.consumer, localPort, createdBy: 'user' as const };
-        const existing = linkStore.get(name);
-        if (existing && (existing.provider !== link.provider || existing.providerPort !== link.providerPort || existing.consumer !== link.consumer)) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: `link "${name}" already exists (${existing.provider}:${existing.providerPort} → ${existing.consumer}) — unlink it first or pick another --name` });
-        }
         requireDurableAudit(ctx, 'mesh.link', `${name}: ${input.provider}:${input.providerPort} → ${input.consumer}:${localPort}`);
         try {
           await establishLink(link);

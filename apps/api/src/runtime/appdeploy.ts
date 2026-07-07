@@ -104,7 +104,7 @@ export function planDeploy(spec: AppSpec, opts: Pick<DeployOpts, 'defaultNode' |
 // Establish ONE mesh link: share on the provider (→ ticket, hub-internal), connect on the consumer.
 // Idempotent — the agent replaces same-name links. Throws with a reason on failure. The ticket is a
 // capability to reach the service; it never leaves the hub.
-export async function establishLink(l: Pick<MeshLink, 'name' | 'provider' | 'providerPort' | 'consumer' | 'localPort'>, gw: Gw = agentGateway): Promise<void> {
+export async function establishLink(l: MeshLink, gw: Gw = agentGateway): Promise<void> {
   const connected = new Set(gw.list().map((a) => a.id));
   if (!connected.has(l.provider) || !connected.has(l.consumer)) throw new Error('node offline');
   const share = await gw.send(l.provider, { cmd: 'meshShare', name: l.name, port: l.providerPort }, 60_000);

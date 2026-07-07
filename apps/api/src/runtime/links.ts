@@ -1,9 +1,7 @@
-// Standalone mesh links: "reach <provider-node>:<port> from <consumer-node>" as a first-class,
-// persisted object — independent of any app. This is the user-facing "machine + port" wiring
-// (registry distribution, a DB on another box, LocalAI on the GPU box, …). App-declared links
-// (portless.yaml `needs:`) stay in AppStore; these are the ad-hoc ones created via `portless link`
-// or by the deploy pipeline (registry auto-links). Persisted so they survive hub restarts and are
-// re-established by the link healer when agents come back.
+// Standalone mesh links: "reach <provider-node>:<port> from <consumer-node>" as a persisted object,
+// independent of any app (created via `portless link` or by the deploy pipeline's registry
+// auto-links; app-declared `needs:` links stay in AppStore). Persisted so the link healer can
+// re-establish them across hub/agent restarts.
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from '../db.ts';
 
