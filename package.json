@@ -1,0 +1,27 @@
+{
+  "name": "runner-center",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev:backend": "convex dev",
+    "codegen": "convex codegen",
+    "deploy": "npx @convex-dev/static-hosting deploy --dist apps/dashboard/dist --build-command \"pnpm --filter @runner-center/dashboard build\""
+  },
+  "dependencies": {
+    "@auth/core": "0.41.3",
+    "@convex-dev/auth": "0.0.94",
+    "@convex-dev/static-hosting": "0.2.0",
+    "convex": "1.42.3",
+    "octokit": "5.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.11",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.17.0"
+}
