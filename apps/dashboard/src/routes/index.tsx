@@ -38,6 +38,17 @@ export const Route = createFileRoute("/")({ component: MachinesPage });
 type NewCredential = { token: string; command: string };
 type CopiedField = "token" | "command";
 
+const SUPPORTED_RUNS_ON_LABELS = [
+  {
+    os: "Linux",
+    labels: ["ubuntu-22.04", "ubuntu-24.04", "rc-linux"],
+  },
+  {
+    os: "macOS",
+    labels: ["macos-15", "macos-26", "rc-mac"],
+  },
+] as const;
+
 function MachinesPage() {
   const machines = useQuery(api.machines.list);
   const jobs = useQuery(api.jobs.list);
@@ -243,6 +254,37 @@ function MachinesPage() {
           detail="Queued since local midnight"
         />
       </div>
+
+      <section
+        className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5"
+        aria-labelledby="runs-on-labels-heading"
+      >
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 id="runs-on-labels-heading" className="text-sm font-medium text-zinc-200">
+              Supported runs-on labels
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
+              Image labels select the execution environment by host OS. Machines do not
+              need to register these labels.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:gap-5">
+            {SUPPORTED_RUNS_ON_LABELS.map((group) => (
+              <div key={group.os} className="flex items-center gap-2">
+                <span className="w-12 shrink-0 text-xs text-[#7c7c85]">{group.os}</span>
+                <div className="flex flex-wrap gap-1">
+                  {group.labels.map((label) => (
+                    <Badge key={label} variant="outline" className="font-mono text-zinc-300">
+                      {label}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
       <section className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]" aria-labelledby="fleet-heading">
         <div className="flex h-12 items-center justify-between border-b border-white/[0.08] px-4">

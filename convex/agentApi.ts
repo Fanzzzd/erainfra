@@ -62,6 +62,7 @@ export const claim = mutation({
     v.null(),
     v.object({
       jitConfig: v.string(),
+      image: v.optional(v.string()),
       runnerName: v.string(),
       os: osValidator,
     }),
@@ -92,6 +93,7 @@ export const claim = mutation({
     });
     return {
       jitConfig,
+      image: command.image,
       runnerName: command.runnerName,
       os: machine.os,
     };

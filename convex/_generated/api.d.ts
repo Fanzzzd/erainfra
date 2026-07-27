@@ -11,6 +11,7 @@
 import type * as admin from "../admin.js";
 import type * as agentApi from "../agentApi.js";
 import type * as auth from "../auth.js";
+import type * as catalog from "../catalog.js";
 import type * as crons from "../crons.js";
 import type * as github from "../github.js";
 import type * as http from "../http.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   admin: typeof admin;
   agentApi: typeof agentApi;
   auth: typeof auth;
+  catalog: typeof catalog;
   crons: typeof crons;
   github: typeof github;
   http: typeof http;

@@ -4,7 +4,7 @@ set -euo pipefail
 : "${RUNNER_NAME:?RUNNER_NAME is required}"
 : "${JIT_CONFIG:?JIT_CONFIG is required}"
 
-BASE_IMAGE="${BASE_IMAGE:-ghcr.io/cirruslabs/macos-sequoia-base:latest}"
+IMAGE="${IMAGE:-${BASE_IMAGE:-ghcr.io/cirruslabs/macos-sequoia-base:latest}}"
 VM_NAME="$RUNNER_NAME"
 TART="${TART:-/opt/homebrew/bin/tart}"
 SSHPASS="${SSHPASS:-/opt/homebrew/bin/sshpass}"
@@ -47,7 +47,7 @@ if [[ ! -x "$SSHPASS" ]]; then
   exit 1
 fi
 
-"$TART" clone "$BASE_IMAGE" "$VM_NAME"
+"$TART" clone "$IMAGE" "$VM_NAME"
 "$TART" run "$VM_NAME" --no-graphics &
 VM_PID=$!
 

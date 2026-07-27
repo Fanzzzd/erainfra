@@ -9,6 +9,7 @@ import {
   type ActionCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { selectImageForMachine } from "./catalog";
 
 const osValidator = v.union(
   v.literal("linux"),
@@ -132,8 +133,7 @@ export const hasCapacity = internalQuery({
       ) {
         return false;
       }
-      const available = new Set(["self-hosted", ...machine.labels]);
-      return args.labels.every((label) => available.has(label));
+      return selectImageForMachine(args.labels, machine) !== undefined;
     });
   },
 });

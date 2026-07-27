@@ -93,18 +93,34 @@ The machine appears online after its first heartbeat.
 
 ## Using it in workflows
 
-Request the labels registered for the machine. `self-hosted` is matched automatically by Runner Center but should remain in the workflow:
+Use a catalog label in `runs-on` to select the execution environment. Runner Center uses the first catalog label in the job's label array, matches its OS to a machine, and treats any remaining labels as machine capability requirements. `self-hosted` is matched automatically and should remain in the workflow. Machines do not need to register image catalog labels.
+
+| Label | OS | Image | Notes |
+| --- | --- | --- | --- |
+| `ubuntu-22.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0` | Compatibility label. The current pinned image reports `ImageOS=ubuntu24`; it is a minimal runner image, not the GitHub-hosted Ubuntu 22.04 toolchain. |
+| `ubuntu-24.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0` | Minimal Ubuntu 24.04-based runner image. Install project dependencies in workflow steps. |
+| `rc-linux` | Linux | `ghcr.io/actions/actions-runner:2.336.0` | Alias for the default Linux image. |
+| `macos-15` | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Tart base image for macOS Sequoia. |
+| `macos-26` | macOS | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Tart base image for macOS Tahoe. |
+| `rc-mac` | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Alias for the default macOS image. |
+
+The Linux catalog intentionally uses GitHub's minimal runner image because the larger `catthehacker/ubuntu:act-*` images provide an Actions-like toolchain but do not contain the runner binary required by the provisioner. Bring language runtimes and other dependencies through setup actions or workflow steps.
 
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, rc-linux]
+    runs-on: [self-hosted, ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - run: npm test
 ```
 
-For best-effort fallback, use a small GitHub-hosted routing job. `GET /runs-on` returns either the requested self-hosted label array or the fallback runner string:
+Additional labels still select machine capabilities. For example, `[self-hosted, ubuntu-24.04, gpu]` requires a Linux machine registered with `gpu`; the machine does not need `ubuntu-24.04` in its labels. If a job has no catalog label, Runner Center uses the default image for the selected machine OS (`rc-linux` or `rc-mac`).
+
+For best-effort fallback, use a small GitHub-hosted routing job. `GET /runs-on` applies the same catalog and capability matching as the scheduler, then returns either the requested self-hosted label array or the fallback runner string:
 
 ```yaml
 name: linux-ci
@@ -119,7 +135,7 @@ jobs:
       - id: pick
         run: |
           echo "runs-on=$(curl -sf --max-time 10 \
-            'https://<deployment>.convex.site/runs-on?labels=rc-linux&fallback=ubuntu-latest' \
+            'https://<deployment>.convex.site/runs-on?labels=ubuntu-22.04&fallback=ubuntu-latest' \
             | jq -c '."runs-on"' || echo '"ubuntu-latest"')" >> "$GITHUB_OUTPUT"
 
   build:
@@ -141,13 +157,13 @@ The capacity probe is intentionally unauthenticated and exposes only whether mat
 
 Each job runs in a new container that is removed on exit. The host needs Docker access; no Docker socket or host workspace is mounted into the runner container.
 
-The default is pinned to `ghcr.io/actions/actions-runner:2.336.0`. Set `RUNNER_IMAGE` before starting the agent to use a compatible custom image:
+Catalog-backed commands pass their selected image to the provisioner as `IMAGE`. The provisioner resolves Linux images in this order: `IMAGE`, then `RUNNER_IMAGE`, then `ghcr.io/actions/actions-runner:2.336.0`. `RUNNER_IMAGE` remains a fallback for commands created by an older backend without an image field:
 
 ```bash
 export RUNNER_IMAGE='ghcr.io/actions/actions-runner:2.336.0'
 ```
 
-The tag is pinned instead of using `latest` so runner updates are deliberate and deployments are reproducible. GitHub deprecates old runner versions, so update and verify this pin regularly rather than leaving it unchanged indefinitely.
+The runner tag is pinned instead of using `latest` so runner updates are deliberate and deployments are reproducible. GitHub deprecates old runner versions, so update and verify this pin regularly rather than leaving it unchanged indefinitely.
 
 ### macOS: Tart
 
@@ -158,13 +174,15 @@ brew install cirruslabs/cli/tart
 brew install cirruslabs/cli/sshpass
 ```
 
-The default image is `ghcr.io/cirruslabs/macos-sequoia-base:latest`. Override it before starting the agent:
+Catalog-backed commands pass their selected image as `IMAGE`. The provisioner resolves macOS images in this order: `IMAGE`, then `BASE_IMAGE`, then `ghcr.io/cirruslabs/macos-sequoia-base:latest`. `BASE_IMAGE` remains a fallback when a command has no image field:
 
 ```bash
 export BASE_IMAGE='ghcr.io/cirruslabs/macos-sequoia-xcode:16.4'
 ```
 
 Custom images must support the provisioner's `admin` SSH login and contain the runner at `~/actions-runner`. Under Apple's macOS Software License Agreement, configure no more than two concurrent macOS VM slots on one Apple-branded host.
+
+After deploying catalog support to Convex, redeploy each machine agent. Older agents can still claim commands because the response change only adds an optional field, but they ignore the selected image and continue using their provisioner environment defaults until upgraded.
 
 Tart caches pulled OCI images. Prune old cache entries periodically:
 

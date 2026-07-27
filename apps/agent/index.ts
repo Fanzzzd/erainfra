@@ -28,12 +28,14 @@ async function provision(
   os: "linux" | "mac" | "win",
   jitConfig: string,
   runnerName: string,
+  image?: string,
 ) {
   const script = provisionerPath(os);
   const env = {
     ...process.env,
     JIT_CONFIG: jitConfig,
     RUNNER_NAME: runnerName,
+    ...(image === undefined ? {} : { IMAGE: image }),
   };
   const result =
     os === "win"
@@ -67,6 +69,7 @@ async function runCommand(command: PendingCommand) {
       claimed.os,
       claimed.jitConfig,
       claimed.runnerName,
+      claimed.image,
     );
     console.log(
       `Ephemeral runner ${claimed.runnerName} exited with code ${exitCode}`,

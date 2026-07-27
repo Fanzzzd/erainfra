@@ -40,6 +40,7 @@ export default defineSchema({
     machineId: v.id("machines"),
     jobId: v.id("jobs"),
     jitConfig: v.optional(v.string()),
+    image: v.optional(v.string()),
     runnerName: v.string(),
     status: v.union(
       v.literal("pending"),

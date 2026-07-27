@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
+import { selectImageForMachine } from "./catalog";
 
 export const tryAssign = internalMutation({
   args: {},
@@ -27,10 +28,13 @@ export const tryAssign = internalMutation({
         if (usedSlots >= doc.maxSlots || now - doc.lastSeen >= 120_000) {
           return false;
         }
-        const availableLabels = new Set(["self-hosted", ...doc.labels]);
-        return job.labels.every((label) => availableLabels.has(label));
+        return selectImageForMachine(job.labels, doc) !== undefined;
       });
       if (candidate === undefined) {
+        continue;
+      }
+      const catalogEntry = selectImageForMachine(job.labels, candidate.doc);
+      if (catalogEntry === undefined) {
         continue;
       }
 
@@ -52,6 +56,7 @@ export const tryAssign = internalMutation({
       const commandId = await ctx.db.insert("commands", {
         machineId: candidate.doc._id,
         jobId: job._id,
+        image: catalogEntry.image,
         runnerName,
         status: "pending",
       });
