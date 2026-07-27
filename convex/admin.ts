@@ -2,6 +2,23 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 
+// Operator cleanup: remove a machine and any commands pointing at it.
+export const deleteMachine = internalMutation({
+  args: { machineId: v.id("machines") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const commands = await ctx.db
+      .query("commands")
+      .filter((q) => q.eq(q.field("machineId"), args.machineId))
+      .collect();
+    for (const command of commands) {
+      await ctx.db.delete(command._id);
+    }
+    await ctx.db.delete(args.machineId);
+    return null;
+  },
+});
+
 // Operator cleanup: remove a dashboard user and all their auth records.
 export const deleteUser = internalMutation({
   args: { userId: v.id("users") },
