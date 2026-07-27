@@ -22,6 +22,7 @@ export default defineSchema({
 
   jobs: defineTable({
     ghJobId: v.number(),
+    githubInstallationId: v.optional(v.number()),
     repo: v.string(),
     workflowName: v.string(),
     labels: v.array(v.string()),

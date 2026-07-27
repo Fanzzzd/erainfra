@@ -39,7 +39,7 @@ GitHub credentials and scheduling state stay in Convex. A machine receives only 
 
 - Node.js 22 or newer and pnpm 11
 - A Convex account and authenticated Convex CLI
-- A GitHub classic PAT with `repo` scope and administrator access to each target repository
+- Permission to create and install a private GitHub App owned by the target user or organization
 - Docker on Linux runner machines, or Tart and `sshpass` on macOS runner machines
 
 Clone the project, install dependencies, and build the agent:
@@ -58,28 +58,40 @@ npx convex dev --once
 npx @convex-dev/auth
 ```
 
-Set the deployment secrets. Keep the webhook value: GitHub must use the same value in the next step.
+Choose a random webhook secret, then create a GitHub App from the settings for the target user or organization. Keep the app private by allowing installation only on that account, and use these settings:
+
+- **Homepage URL:** `https://<deployment>.convex.site` is sufficient
+- **Webhook:** active
+- **Webhook URL:** `https://<deployment>.convex.site/github/webhook`
+- **Webhook secret:** the random value you chose for `GITHUB_WEBHOOK_SECRET`
+- **Repository permissions → Actions:** **Read and write**. Workflow job events require read access, and the JIT runner endpoint requires write access.
+- **Subscribe to events:** **Workflow jobs** only
+
+After creating the app, note its **App ID** and generate and download a private key PEM. Store the webhook secret, App ID, and PEM in the Convex deployment:
 
 ```bash
 npx convex env set GITHUB_WEBHOOK_SECRET '<random-webhook-secret>'
-npx convex env set GITHUB_PAT '<classic-github-pat>'
+npx convex env set GITHUB_APP_ID '<github-app-id>'
+npx convex env set GITHUB_APP_PRIVATE_KEY "$(cat /path/to/private-key.pem)"
 ```
 
-Deploy the Convex backend and hosted dashboard:
+The private key can be stored as a multiline PEM or with escaped `\n` newline sequences. Deploy the Convex backend and hosted dashboard:
 
 ```bash
 npm run deploy
 ```
 
-In the GitHub repository, open **Settings → Webhooks → Add webhook** and set:
+From the GitHub App page, choose **Install App** and install it for all repositories or only the repositories Runner Center should serve. The installation ID does not need manual configuration; GitHub includes it in each App webhook payload. The webhook is at the site root, with no `/api` prefix.
 
-- **Payload URL:** `https://<deployment>.convex.site/github/webhook`
-- **Content type:** `application/json`
-- **Secret:** the value of `GITHUB_WEBHOOK_SECRET`
-- **Events:** select **Workflow jobs** only
-- **Active:** enabled
+### Legacy PAT and repository webhook fallback
 
-The webhook is at the site root. There is no `/api` prefix.
+Existing setups can keep a classic PAT and one webhook per repository. This path is used only for repository webhook jobs whose payload has no GitHub App installation ID:
+
+```bash
+npx convex env set GITHUB_PAT '<classic-github-pat-with-repo-scope>'
+```
+
+The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**. A job stored with an App installation ID always uses installation authentication and never falls back to the PAT. When migrating, install the App, disable the old repository webhooks, wait for jobs already received through them to finish, and then remove the PAT. Disabling the old webhooks avoids overlapping deliveries after assignment has begun.
 
 Open `https://<deployment>.convex.site`, choose **Sign up**, and create the first account. Go to **Machines → Add machine** and copy the generated command. Run it on the macOS or Linux host you want to register:
 
@@ -242,7 +254,9 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 
 ### Security model
 
-- `GITHUB_PAT` and `GITHUB_WEBHOOK_SECRET` exist only in Convex deployment environment variables.
+- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and the optional legacy `GITHUB_PAT` exist only in Convex deployment environment variables.
+- The recommended GitHub App has only Actions read/write access and can be limited to selected repositories.
+- Jobs stored with an App installation ID use it to obtain an installation-scoped token and never fall back to the legacy PAT.
 - Runner machines hold a machine token, not GitHub credentials. Treat the token as a secret.
 - Webhook bodies are verified with `X-Hub-Signature-256` before processing.
 - Agents initiate outbound Convex WebSocket connections; runner hosts need no inbound port or public IP.

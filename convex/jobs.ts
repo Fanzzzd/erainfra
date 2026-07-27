@@ -14,6 +14,7 @@ const listedJobValidator = v.object({
   _id: v.id("jobs"),
   _creationTime: v.number(),
   ghJobId: v.number(),
+  githubInstallationId: v.optional(v.number()),
   repo: v.string(),
   workflowName: v.string(),
   labels: v.array(v.string()),
@@ -67,6 +68,7 @@ export const handleWorkflowJob = internalMutation({
       v.literal("completed"),
     ),
     ghJobId: v.number(),
+    githubInstallationId: v.optional(v.number()),
     repo: v.string(),
     workflowName: v.string(),
     labels: v.array(v.string()),
@@ -80,11 +82,24 @@ export const handleWorkflowJob = internalMutation({
       .first();
 
     if (args.action === "queued") {
-      if (!args.labels.includes("self-hosted") || existing !== null) {
+      if (!args.labels.includes("self-hosted")) {
+        return null;
+      }
+      if (existing !== null) {
+        if (
+          existing.status === "queued" &&
+          existing.githubInstallationId === undefined &&
+          args.githubInstallationId !== undefined
+        ) {
+          await ctx.db.patch(existing._id, {
+            githubInstallationId: args.githubInstallationId,
+          });
+        }
         return null;
       }
       await ctx.db.insert("jobs", {
         ghJobId: args.ghJobId,
+        githubInstallationId: args.githubInstallationId,
         repo: args.repo,
         workflowName: args.workflowName,
         labels: args.labels,

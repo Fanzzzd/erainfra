@@ -64,6 +64,7 @@ export const tryAssign = internalMutation({
         commandId,
         jobId: job._id,
         repo: job.repo,
+        githubInstallationId: job.githubInstallationId,
         runnerName,
         labels: job.labels,
       });

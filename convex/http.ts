@@ -134,6 +134,19 @@ function parseWorkflowJob(payload: unknown) {
   if (!isRecord(workflowJob) || !isRecord(repository)) {
     return null;
   }
+
+  let githubInstallationId: number | undefined;
+  if (payload.installation !== undefined) {
+    if (
+      !isRecord(payload.installation) ||
+      typeof payload.installation.id !== "number" ||
+      !Number.isSafeInteger(payload.installation.id) ||
+      payload.installation.id <= 0
+    ) {
+      return null;
+    }
+    githubInstallationId = payload.installation.id;
+  }
   if (
     typeof workflowJob.id !== "number" ||
     typeof repository.full_name !== "string" ||
@@ -157,6 +170,7 @@ function parseWorkflowJob(payload: unknown) {
   return {
     action: action as "queued" | "in_progress" | "completed",
     ghJobId: workflowJob.id,
+    githubInstallationId,
     repo: repository.full_name,
     workflowName,
     labels: workflowJob.labels as string[],
