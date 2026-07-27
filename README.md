@@ -81,15 +81,37 @@ In the GitHub repository, open **Settings → Webhooks → Add webhook** and set
 
 The webhook is at the site root. There is no `/api` prefix.
 
-Open `https://<deployment>.convex.site`, choose **Sign up**, and create the first account. Go to **Machines → Add machine**, select the OS, add labels such as `rc-linux`, set the slot count, and copy the generated one-line agent command.
-
-On the registered machine, repeat the clone, install, and agent-build commands above if it does not already have the checkout. Install the OS provisioner prerequisites described below, then paste the command from the dashboard. It has this form:
+Open `https://<deployment>.convex.site`, choose **Sign up**, and create the first account. Go to **Machines → Add machine** and copy the generated command. Run it on the macOS or Linux host you want to register:
 
 ```bash
-CONVEX_URL='https://<deployment>.convex.cloud' MACHINE_TOKEN='<machine-token>' pnpm --filter @runner-center/agent start
+curl -fsSL https://<deployment>.convex.site/install | bash -s -- --token rcreg_xxx
 ```
 
-The machine appears online after its first heartbeat.
+The single-use registration token expires after 15 minutes. The installer detects the OS, architecture, CPU count, and hostname; installs Node.js 22 under `~/.runner-center` when needed; downloads and builds the agent; registers the machine; installs the `rc` CLI; and starts a launchd or systemd user service. On Linux hosts without a working user systemd session, it uses `nohup` plus an `@reboot` crontab entry.
+
+The dashboard waits for the registration and shows the new machine name as soon as it appears. Expand **Advanced options** before copying if you need to append any of these flags:
+
+```bash
+--name build-linux-01 --labels gpu,docker --slots 2
+```
+
+Install the OS provisioner prerequisites described below before assigning jobs to the machine.
+
+### Agent CLI
+
+The installer adds `~/.runner-center/bin` to your shell `PATH`. Open a new shell, or source the shell file named by the installer, then use:
+
+| Command | Description |
+| --- | --- |
+| `rc status` | Show whether the agent process is running, its machine name, and the latest log line. |
+| `rc logs` | Show the latest 100 agent log lines. |
+| `rc logs -f` | Follow the agent log. |
+| `rc restart` | Restart the installed launchd, systemd, or fallback service. |
+| `rc stop` | Stop the agent service. |
+| `rc update` | Download the latest `main` agent, rebuild it, and restart without registering again. |
+| `rc uninstall` | Stop the service, remove local Runner Center files and the `PATH` entry, and remind you to delete the dashboard machine. |
+
+The machine reports online after its first heartbeat.
 
 ## Using it in workflows
 
@@ -208,44 +230,15 @@ A Convex cron runs every 60 seconds and repairs control-plane state:
 
 Agents heartbeat every 30 seconds. A machine is schedulable while its latest heartbeat is less than 120 seconds old.
 
-### Keep the agent running
+### Agent lifecycle
 
-For a simple host, run it from the repository checkout with `nohup`:
+Machine onboarding installs the agent under `~/.runner-center/agent` and keeps it running automatically:
 
-```bash
-nohup env CONVEX_URL='https://<deployment>.convex.cloud' MACHINE_TOKEN='<machine-token>' \
-  pnpm --filter @runner-center/agent start \
-  >runner-center-agent.log 2>&1 &
-```
+- macOS uses `~/Library/LaunchAgents/center.runner.agent.plist`;
+- Linux uses `~/.config/systemd/user/runner-center-agent.service` when a user systemd session is available;
+- other Linux sessions use the same `nohup` plus `@reboot` crontab pattern used by the fallback installer.
 
-For Linux, a minimal systemd unit is more reliable:
-
-```ini
-# /etc/systemd/system/runner-center-agent.service
-[Unit]
-Description=Runner Center agent
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=runner
-WorkingDirectory=/opt/runner-center
-Environment=CONVEX_URL=https://<deployment>.convex.cloud
-Environment=MACHINE_TOKEN=<machine-token>
-ExecStart=/usr/bin/env bash -lc 'exec pnpm --filter @runner-center/agent start'
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now runner-center-agent
-sudo systemctl status runner-center-agent
-```
+Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uninstall` instead of managing those files directly. Agent credentials are stored in `~/.runner-center/agent/.env` with mode `600`.
 
 ### Security model
 

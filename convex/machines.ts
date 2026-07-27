@@ -1,15 +1,15 @@
 import { ConvexError, v } from "convex/values";
-import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import { selectImageForMachine } from "./catalog";
 import {
-  action,
   internalMutation,
   internalQuery,
+  mutation,
   query,
-  type ActionCtx,
+  type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { selectImageForMachine } from "./catalog";
+
+const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
 
 const osValidator = v.union(
   v.literal("linux"),
@@ -36,12 +36,29 @@ const machineListItemValidator = v.object({
   ),
 });
 
-async function requireDashboardAuth(ctx: QueryCtx | ActionCtx) {
+async function requireDashboardAuth(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (identity === null) {
     throw new ConvexError("Authentication required");
   }
   return identity;
+}
+
+function randomHex(length: number) {
+  let value = "";
+  for (let index = 0; index < length; index += 1) {
+    value += Math.floor(Math.random() * 16).toString(16);
+  }
+  return value;
+}
+
+function sanitizeMachineName(hostname: string) {
+  const sanitized = hostname
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return sanitized.length > 0 ? sanitized : "runner";
 }
 
 export const list = query({
@@ -78,43 +95,114 @@ export const list = query({
   },
 });
 
-export const create = action({
-  args: {
-    name: v.string(),
-    os: osValidator,
-    labels: v.array(v.string()),
-    maxSlots: v.number(),
-  },
+export const createRegistrationToken = mutation({
+  args: {},
   returns: v.object({
-    machineId: v.id("machines"),
     token: v.string(),
+    expiresAt: v.number(),
   }),
-  handler: async (ctx, args): Promise<{ machineId: Id<"machines">; token: string }> => {
+  handler: async (ctx) => {
     await requireDashboardAuth(ctx);
 
-    const name = args.name.trim();
-    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-      throw new ConvexError(
-        "Machine name must contain only letters, numbers, dots, underscores, and hyphens",
-      );
+    let token = "";
+    do {
+      token = `rcreg_${randomHex(24)}`;
+    } while (
+      (await ctx.db
+        .query("registrationTokens")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique()) !== null
+    );
+
+    const createdAt = Date.now();
+    await ctx.db.insert("registrationTokens", { token, createdAt });
+    return { token, expiresAt: createdAt + REGISTRATION_TOKEN_TTL_MS };
+  },
+});
+
+export const registerAgent = internalMutation({
+  args: {
+    registrationToken: v.string(),
+    name: v.string(),
+    os: osValidator,
+    arch: v.string(),
+    cpus: v.number(),
+    labels: v.optional(v.array(v.string())),
+    maxSlots: v.optional(v.number()),
+  },
+  returns: v.union(
+    v.object({
+      ok: v.literal(true),
+      machineToken: v.string(),
+    }),
+    v.object({
+      ok: v.literal(false),
+      status: v.number(),
+      error: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const registration = await ctx.db
+      .query("registrationTokens")
+      .withIndex("by_token", (q) => q.eq("token", args.registrationToken))
+      .unique();
+    if (registration === null) {
+      return { ok: false as const, status: 401, error: "Invalid registration token" };
     }
-    if (!Number.isInteger(args.maxSlots) || args.maxSlots < 1) {
-      throw new ConvexError("Max slots must be a positive integer");
+    if (registration.usedAt !== undefined) {
+      return {
+        ok: false as const,
+        status: 409,
+        error: "Registration token has already been used",
+      };
     }
 
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    const token = Array.from(bytes, (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
+    const now = Date.now();
+    if (now - registration.createdAt >= REGISTRATION_TOKEN_TTL_MS) {
+      return { ok: false as const, status: 410, error: "Registration token has expired" };
+    }
 
-    return await ctx.runMutation(internal.machines.createInternal, {
+    const existingNames = new Set(
+      (await ctx.db.query("machines").collect()).map((machine) => machine.name),
+    );
+    const baseName = sanitizeMachineName(args.name);
+    let name = baseName;
+    let suffix = 2;
+    while (existingNames.has(name)) {
+      name = `${baseName}-${suffix}`;
+      suffix += 1;
+    }
+
+    const defaultSlots =
+      args.os === "linux"
+        ? Math.min(2, Math.max(1, Math.floor(args.cpus / 4)))
+        : 1;
+    const maxSlots = args.maxSlots ?? defaultSlots;
+    const labels = [
+      ...new Set((args.labels ?? []).map((label) => label.trim()).filter(Boolean)),
+    ];
+
+    let machineToken = "";
+    do {
+      machineToken = randomHex(32);
+    } while (
+      (await ctx.db
+        .query("machines")
+        .withIndex("by_token", (q) => q.eq("token", machineToken))
+        .unique()) !== null
+    );
+
+    await ctx.db.patch(registration._id, { usedAt: now });
+    await ctx.db.insert("machines", {
       name,
       os: args.os,
-      labels: [...new Set(args.labels.map((label) => label.trim()).filter(Boolean))],
-      maxSlots: args.maxSlots,
-      token,
+      labels,
+      maxSlots,
+      usedSlots: 0,
+      lastSeen: 0,
+      token: machineToken,
     });
+    return { ok: true as const, machineToken };
   },
 });
 
@@ -135,39 +223,5 @@ export const hasCapacity = internalQuery({
       }
       return selectImageForMachine(args.labels, machine) !== undefined;
     });
-  },
-});
-
-export const createInternal = internalMutation({
-  args: {
-    name: v.string(),
-    os: osValidator,
-    labels: v.array(v.string()),
-    maxSlots: v.number(),
-    token: v.string(),
-  },
-  returns: v.object({
-    machineId: v.id("machines"),
-    token: v.string(),
-  }),
-  handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("machines")
-      .filter((q) => q.eq(q.field("name"), args.name))
-      .first();
-    if (existing !== null) {
-      throw new ConvexError("A machine with this name already exists");
-    }
-
-    const machineId = await ctx.db.insert("machines", {
-      name: args.name,
-      os: args.os,
-      labels: args.labels,
-      maxSlots: args.maxSlots,
-      usedSlots: 0,
-      lastSeen: 0,
-      token: args.token,
-    });
-    return { machineId, token: args.token };
   },
 });

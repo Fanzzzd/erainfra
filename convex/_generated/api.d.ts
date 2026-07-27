@@ -15,6 +15,7 @@ import type * as catalog from "../catalog.js";
 import type * as crons from "../crons.js";
 import type * as github from "../github.js";
 import type * as http from "../http.js";
+import type * as installScript from "../installScript.js";
 import type * as jobs from "../jobs.js";
 import type * as machines from "../machines.js";
 import type * as reconcile from "../reconcile.js";
@@ -34,6 +35,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   github: typeof github;
   http: typeof http;
+  installScript: typeof installScript;
   jobs: typeof jobs;
   machines: typeof machines;
   reconcile: typeof reconcile;

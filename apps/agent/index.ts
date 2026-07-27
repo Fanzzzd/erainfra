@@ -1,13 +1,45 @@
 import { ConvexClient } from "convex/browser";
-import type { FunctionReturnType } from "convex/server";
+import { makeFunctionReference } from "convex/server";
 import { execa } from "execa";
 import { fileURLToPath } from "node:url";
-import { api } from "../../convex/_generated/api.js";
 import { config } from "./config.js";
 
-type PendingCommand = FunctionReturnType<
-  typeof api.agentApi.pendingCommands
->["commands"][number];
+type MachineOs = "linux" | "mac" | "win";
+type PendingCommand = { commandId: string; runnerName: string };
+
+type PendingCommandsResult = {
+  os: MachineOs;
+  maxSlots: number;
+  commands: PendingCommand[];
+};
+
+type ClaimedCommand = {
+  jitConfig: string;
+  image?: string;
+  runnerName: string;
+  os: MachineOs;
+};
+
+const pendingCommands = makeFunctionReference<
+  "query",
+  { token: string },
+  PendingCommandsResult
+>("agentApi:pendingCommands");
+const claimCommand = makeFunctionReference<
+  "mutation",
+  { token: string; commandId: string },
+  ClaimedCommand | null
+>("agentApi:claim");
+const reportCommand = makeFunctionReference<
+  "mutation",
+  { token: string; commandId: string; exitCode: number },
+  boolean
+>("agentApi:report");
+const heartbeatAgent = makeFunctionReference<
+  "mutation",
+  { token: string },
+  { os: MachineOs; maxSlots: number }
+>("agentApi:heartbeat");
 
 const client = new ConvexClient(config.convexUrl);
 const queuedIds = new Set<string>();
@@ -16,16 +48,16 @@ let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
 
-function provisionerPath(os: "linux" | "mac" | "win") {
+function provisionerPath(os: MachineOs) {
   const filename =
     os === "win" ? "provision-win.ps1" : `provision-${os}.sh`;
   return fileURLToPath(
-    new URL(`../../../provisioners/${filename}`, import.meta.url),
+    new URL(`../provisioners/${filename}`, import.meta.url),
   );
 }
 
 async function provision(
-  os: "linux" | "mac" | "win",
+  os: MachineOs,
   jitConfig: string,
   runnerName: string,
   image?: string,
@@ -56,7 +88,7 @@ async function runCommand(command: PendingCommand) {
   let exitCode = 1;
   let claimedByThisAgent = false;
   try {
-    const claimed = await client.mutation(api.agentApi.claim, {
+    const claimed = await client.mutation(claimCommand, {
       token: config.machineToken,
       commandId: command.commandId,
     });
@@ -79,7 +111,7 @@ async function runCommand(command: PendingCommand) {
   } finally {
     if (claimedByThisAgent) {
       try {
-        await client.mutation(api.agentApi.report, {
+        await client.mutation(reportCommand, {
           token: config.machineToken,
           commandId: command.commandId,
           exitCode,
@@ -106,7 +138,7 @@ function pump() {
 }
 
 const unsubscribe = client.onUpdate(
-  api.agentApi.pendingCommands,
+  pendingCommands,
   { token: config.machineToken },
   (result) => {
     maxSlots = result.maxSlots;
@@ -123,7 +155,7 @@ const unsubscribe = client.onUpdate(
 
 async function heartbeat() {
   try {
-    const machine = await client.mutation(api.agentApi.heartbeat, {
+    const machine = await client.mutation(heartbeatAgent, {
       token: config.machineToken,
     });
     maxSlots = machine.maxSlots;

@@ -3,10 +3,18 @@ import { httpRouter } from "convex/server";
 import { auth } from "./auth";
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import { renderInstallScript } from "./installScript";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
 registerStaticRoutes(http, components.staticHosting);
+
+function jsonResponse(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
 
 function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
@@ -52,6 +60,61 @@ async function verifySignature(rawBody: ArrayBuffer, signature: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function parseRegistrationRequest(payload: unknown) {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  if (
+    typeof payload.registrationToken !== "string" ||
+    payload.registrationToken.length === 0 ||
+    typeof payload.name !== "string" ||
+    payload.name.trim().length === 0 ||
+    (payload.os !== "linux" && payload.os !== "mac" && payload.os !== "win") ||
+    typeof payload.arch !== "string" ||
+    payload.arch.trim().length === 0 ||
+    typeof payload.cpus !== "number" ||
+    !Number.isInteger(payload.cpus) ||
+    payload.cpus < 1
+  ) {
+    return null;
+  }
+
+  let labels: string[] | undefined;
+  if (payload.labels !== undefined) {
+    if (
+      !Array.isArray(payload.labels) ||
+      !payload.labels.every((label) => typeof label === "string")
+    ) {
+      return null;
+    }
+    labels = payload.labels
+      .map((label) => label.trim())
+      .filter((label) => label.length > 0);
+  }
+
+  let maxSlots: number | undefined;
+  if (payload.maxSlots !== undefined) {
+    if (
+      typeof payload.maxSlots !== "number" ||
+      !Number.isInteger(payload.maxSlots) ||
+      payload.maxSlots < 1
+    ) {
+      return null;
+    }
+    maxSlots = payload.maxSlots;
+  }
+
+  return {
+    registrationToken: payload.registrationToken,
+    name: payload.name,
+    os: payload.os as "linux" | "mac" | "win",
+    arch: payload.arch,
+    cpus: payload.cpus,
+    labels,
+    maxSlots,
+  };
 }
 
 function parseWorkflowJob(payload: unknown) {
@@ -102,6 +165,57 @@ function parseWorkflowJob(payload: unknown) {
 }
 
 http.route({
+  path: "/install",
+  method: "GET",
+  handler: httpAction(async (_ctx, request) => {
+    const siteUrl = new URL(request.url).origin;
+    return new Response(renderInstallScript(siteUrl), {
+      status: 200,
+      headers: { "Content-Type": "text/x-shellscript; charset=utf-8" },
+    });
+  }),
+});
+
+http.route({
+  path: "/agents/register",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return jsonResponse({ error: "Invalid JSON" }, 400);
+    }
+
+    const registration = parseRegistrationRequest(payload);
+    if (registration === null) {
+      return jsonResponse(
+        {
+          error:
+            "Expected registrationToken, name, os, arch, and a positive integer cpus",
+        },
+        400,
+      );
+    }
+
+    const result = await ctx.runMutation(
+      internal.machines.registerAgent,
+      registration,
+    );
+    if (!result.ok) {
+      return jsonResponse({ error: result.error }, result.status);
+    }
+
+    const convexUrl = process.env.CONVEX_CLOUD_URL;
+    if (convexUrl === undefined || convexUrl.length === 0) {
+      console.error("CONVEX_CLOUD_URL is not available");
+      return jsonResponse({ error: "Server configuration error" }, 500);
+    }
+    return jsonResponse({ machineToken: result.machineToken, convexUrl }, 201);
+  }),
+});
+
+http.route({
   path: "/github/webhook",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
@@ -147,10 +261,7 @@ http.route({
       .filter((label) => label.length > 0);
     const fallback = url.searchParams.get("fallback") ?? "ubuntu-latest";
     if (labels.length === 0) {
-      return new Response(JSON.stringify({ error: "labels is required" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+      return jsonResponse({ error: "labels is required" }, 400);
     }
 
     const selfHostedLabels = labels.includes("self-hosted")
@@ -159,9 +270,9 @@ http.route({
     const available = await ctx.runQuery(internal.machines.hasCapacity, {
       labels: selfHostedLabels,
     });
-    return new Response(
-      JSON.stringify({ "runs-on": available ? selfHostedLabels : fallback }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
+    return jsonResponse(
+      { "runs-on": available ? selfHostedLabels : fallback },
+      200,
     );
   }),
 });

@@ -1,13 +1,7 @@
-import { type FormEvent, type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useAction, useQuery } from "convex/react";
-import {
-  AlertTriangle,
-  Check,
-  Clipboard,
-  Plus,
-  Server,
-} from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
+import { Check, Clipboard, Plus, Server } from "lucide-react";
 import { api } from "@convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,8 +14,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -35,8 +27,21 @@ import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 
 export const Route = createFileRoute("/")({ component: MachinesPage });
 
-type NewCredential = { token: string; command: string };
-type CopiedField = "token" | "command";
+type RegistrationCommand = {
+  command: string;
+  issuedAt: number;
+  expiresAt: number;
+  knownMachineIds: string[];
+};
+
+const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
+
+function convexSiteUrl() {
+  return String(import.meta.env.VITE_CONVEX_URL).replace(
+    /\.convex\.cloud\/?$/,
+    ".convex.site",
+  );
+}
 
 const SUPPORTED_RUNS_ON_LABELS = [
   {
@@ -52,13 +57,13 @@ const SUPPORTED_RUNS_ON_LABELS = [
 function MachinesPage() {
   const machines = useQuery(api.machines.list);
   const jobs = useQuery(api.jobs.list);
-  const createMachine = useAction(api.machines.create);
+  const createRegistrationToken = useMutation(api.machines.createRegistrationToken);
   const now = useNow();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
-  const [credential, setCredential] = useState<NewCredential>();
-  const [copied, setCopied] = useState<CopiedField>();
+  const [registration, setRegistration] = useState<RegistrationCommand>();
+  const [copied, setCopied] = useState(false);
 
   const summary = useMemo(() => {
     const list = machines ?? [];
@@ -75,51 +80,60 @@ function MachinesPage() {
     };
   }, [jobs, machines, now]);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const connectedMachine = useMemo(() => {
+    if (registration === undefined || machines === undefined) return undefined;
+    return machines.find(
+      (machine) =>
+        machine._creationTime >= registration.issuedAt &&
+        !registration.knownMachineIds.includes(machine._id),
+    );
+  }, [machines, registration]);
+
+  async function beginRegistration() {
     setSubmitting(true);
     setError(undefined);
-    const form = new FormData(event.currentTarget);
+    setRegistration(undefined);
+    setCopied(false);
 
     try {
-      const result = await createMachine({
-        name: String(form.get("name") ?? ""),
-        os: String(form.get("os") ?? "linux") as "linux" | "mac" | "win",
-        labels: String(form.get("labels") ?? "")
-          .split(",")
-          .map((label) => label.trim())
-          .filter(Boolean),
-        maxSlots: Number(form.get("maxSlots") ?? 1),
+      const result = await createRegistrationToken({});
+      const siteUrl = convexSiteUrl();
+      setRegistration({
+        command: `curl -fsSL ${siteUrl}/install | bash -s -- --token ${result.token}`,
+        issuedAt: result.expiresAt - REGISTRATION_TTL_MS,
+        expiresAt: result.expiresAt,
+        knownMachineIds: (machines ?? []).map((machine) => machine._id),
       });
-      const command = `CONVEX_URL='${import.meta.env.VITE_CONVEX_URL}' MACHINE_TOKEN='${result.token}' pnpm --filter @runner-center/agent start`;
-      setCredential({ token: result.token, command });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not create machine");
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not create a registration command",
+      );
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function copyCredential(field: CopiedField, value: string) {
+  async function copyCommand(value: string) {
     try {
       await navigator.clipboard.writeText(value);
-      setCopied(field);
+      setCopied(true);
       setError(undefined);
-      window.setTimeout(
-        () => setCopied((current) => (current === field ? undefined : current)),
-        1_500,
-      );
+      window.setTimeout(() => setCopied(false), 1_500);
     } catch {
-      setError("Clipboard access was blocked. Select and copy the value manually.");
+      setError("Clipboard access was blocked. Select and copy the command manually.");
     }
   }
 
   function changeDialog(open: boolean) {
     setDialogOpen(open);
-    if (!open) {
-      setCredential(undefined);
+    if (open) {
+      void beginRegistration();
+    } else {
+      setRegistration(undefined);
       setError(undefined);
-      setCopied(undefined);
+      setCopied(false);
       setSubmitting(false);
     }
   }
@@ -140,94 +154,113 @@ function MachinesPage() {
               Add machine
             </Button>
           </DialogTrigger>
-          <DialogContent>
-            {credential ? (
-              <CredentialView
-                credential={credential}
-                copied={copied}
-                error={error}
-                onCopy={(field, value) => void copyCredential(field, value)}
-                onDone={() => changeDialog(false)}
-              />
-            ) : (
-              <form onSubmit={(event) => void submit(event)}>
-                <DialogHeader>
-                  <DialogTitle>Add machine</DialogTitle>
-                  <DialogDescription>
-                    Register a host and its scheduler capacity. It will remain offline
-                    until the agent sends its first heartbeat.
-                  </DialogDescription>
-                </DialogHeader>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Add machine</DialogTitle>
+              <DialogDescription>
+                Run one command on a macOS or Linux host. Runner Center installs,
+                registers, and starts the agent for you.
+              </DialogDescription>
+            </DialogHeader>
 
-                <div className="grid gap-5 py-5">
+            <div className="space-y-4 py-2">
+              {submitting && (
+                <div className="flex items-center gap-3 rounded-md border border-white/[0.08] bg-white/[0.025] px-4 py-5 text-sm text-zinc-300">
+                  <span className="status-pulse size-2 rounded-full bg-emerald-400" />
+                  Creating a short-lived registration command…
+                </div>
+              )}
+
+              {registration && (
+                <>
                   <div className="space-y-2">
-                    <Label htmlFor="name">Machine name</Label>
-                    <Input
-                      id="name"
-                      name="name"
-                      placeholder="build-linux-01"
-                      pattern="[A-Za-z0-9._-]+"
-                      autoComplete="off"
-                      required
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="os">Operating system</Label>
-                      <select
-                        id="os"
-                        name="os"
-                        defaultValue="linux"
-                        className="h-10 w-full rounded-md border border-white/[0.12] bg-[#0a0a0b] px-3 text-sm text-zinc-100 outline-none transition-[border-color,box-shadow] duration-150 focus-visible:border-emerald-400/70 focus-visible:ring-2 focus-visible:ring-emerald-400/15"
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-zinc-200">
+                        Run on the new machine
+                      </span>
+                      <span className="text-[11px] text-amber-300">
+                        Expires in {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))} min
+                      </span>
+                    </div>
+                    <div className="relative rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
+                      <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-zinc-300">
+                        <code>{registration.command}</code>
+                      </pre>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="absolute right-1.5 top-1.5 size-8"
+                        aria-label="Copy install command"
+                        onClick={() => void copyCommand(registration.command)}
                       >
-                        <option value="linux">Linux</option>
-                        <option value="mac">macOS</option>
-                        <option value="win">Windows</option>
-                      </select>
+                        {copied ? <Check /> : <Clipboard />}
+                      </Button>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="maxSlots">Concurrent slots</Label>
-                      <Input
-                        id="maxSlots"
-                        name="maxSlots"
-                        type="number"
-                        min="1"
-                        step="1"
-                        defaultValue="1"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="labels">Runner labels</Label>
-                    <Input
-                      id="labels"
-                      name="labels"
-                      defaultValue="rc-linux"
-                      placeholder="rc-linux, docker"
-                      autoComplete="off"
-                    />
                     <p className="text-xs leading-5 text-[#8a8a93]">
-                      Comma-separated. The <span className="font-mono">self-hosted</span>{" "}
-                      label is matched automatically.
+                      The registration token expires in 15 minutes and can be used once.
                     </p>
                   </div>
 
-                  {error && <ErrorMessage>{error}</ErrorMessage>}
-                </div>
+                  {connectedMachine ? (
+                    <div className="flex gap-3 rounded-md border border-emerald-400/20 bg-emerald-400/[0.07] p-3 text-sm text-emerald-200">
+                      <Check className="mt-0.5 size-4 shrink-0" />
+                      <div>
+                        <p className="font-medium">{connectedMachine.name} connected</p>
+                        <p className="mt-0.5 text-xs text-emerald-200/70">
+                          The machine is registered and will report online after its first heartbeat.
+                        </p>
+                      </div>
+                    </div>
+                  ) : now >= registration.expiresAt ? (
+                    <div className="rounded-md border border-amber-400/20 bg-amber-400/[0.07] p-3 text-xs leading-5 text-amber-200">
+                      This command has expired. Generate a new command before installing.
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 rounded-md border border-white/[0.08] bg-white/[0.025] p-3 text-sm text-zinc-300">
+                      <span className="status-pulse size-2 rounded-full bg-emerald-400" />
+                      Waiting for machine…
+                    </div>
+                  )}
 
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => changeDialog(false)}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={submitting}>
-                    {submitting ? "Creating…" : "Create machine"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            )}
+                  <details className="rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-xs text-[#8a8a93]">
+                    <summary className="cursor-pointer select-none font-medium text-zinc-300">
+                      Advanced options
+                    </summary>
+                    <div className="mt-3 space-y-2 leading-5">
+                      <p>
+                        Append <code className="text-zinc-300">--name build-linux-01</code> to override the hostname.
+                      </p>
+                      <p>
+                        Append <code className="text-zinc-300">--labels gpu,docker</code> for machine capability labels.
+                      </p>
+                      <p>
+                        Append <code className="text-zinc-300">--slots 2</code> to override detected concurrency.
+                      </p>
+                    </div>
+                  </details>
+                </>
+              )}
+
+              {error && <ErrorMessage>{error}</ErrorMessage>}
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => changeDialog(false)}>
+                {connectedMachine ? "Done" : "Cancel"}
+              </Button>
+              {(error || (registration && now >= registration.expiresAt)) && (
+                <Button type="button" onClick={() => void beginRegistration()} disabled={submitting}>
+                  Generate new command
+                </Button>
+              )}
+              {registration && !connectedMachine && now < registration.expiresAt && (
+                <Button type="button" onClick={() => void copyCommand(registration.command)}>
+                  {copied ? <Check /> : <Clipboard />}
+                  {copied ? "Copied" : "Copy command"}
+                </Button>
+              )}
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
@@ -332,7 +365,7 @@ function MachinesPage() {
                     <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
                       Add a host to make capacity available to the scheduler.
                     </p>
-                    <Button className="mt-4" size="sm" onClick={() => setDialogOpen(true)}>
+                    <Button className="mt-4" size="sm" onClick={() => changeDialog(true)}>
                       <Plus />
                       Add machine
                     </Button>
@@ -511,91 +544,6 @@ function CurrentJobs({
         </div>
       ))}
     </div>
-  );
-}
-
-function CredentialView({
-  credential,
-  copied,
-  error,
-  onCopy,
-  onDone,
-}: {
-  credential: NewCredential;
-  copied?: CopiedField;
-  error?: string;
-  onCopy: (field: CopiedField, value: string) => void;
-  onDone: () => void;
-}) {
-  return (
-    <>
-      <DialogHeader>
-        <DialogTitle>Machine created</DialogTitle>
-        <DialogDescription>
-          Start the agent on the registered host to bring it online.
-        </DialogDescription>
-      </DialogHeader>
-
-      <div className="flex gap-3 rounded-md border border-amber-400/20 bg-amber-400/[0.07] p-3 text-xs leading-5 text-amber-200">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <p>This credential will not be shown again. Store it before closing this dialog.</p>
-      </div>
-
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <Label>Machine token</Label>
-          <div className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-[#09090a] p-2 pl-3">
-            <code className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-emerald-300">
-              {credential.token}
-            </code>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0"
-              aria-label="Copy machine token"
-              onClick={() => onCopy("token", credential.token)}
-            >
-              {copied === "token" ? <Check /> : <Clipboard />}
-            </Button>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label>Agent command</Label>
-            <span className="text-[11px] text-[#7c7c85]">Run from the repository root</span>
-          </div>
-          <div className="relative rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-zinc-300">
-              <code>{credential.command}</code>
-            </pre>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="absolute right-1.5 top-1.5 size-8"
-              aria-label="Copy agent command"
-              onClick={() => onCopy("command", credential.command)}
-            >
-              {copied === "command" ? <Check /> : <Clipboard />}
-            </Button>
-          </div>
-        </div>
-
-        {error && <ErrorMessage>{error}</ErrorMessage>}
-      </div>
-
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>
-          Done
-        </Button>
-        <Button type="button" onClick={() => onCopy("command", credential.command)}>
-          {copied === "command" ? <Check /> : <Clipboard />}
-          {copied === "command" ? "Copied" : "Copy command"}
-        </Button>
-      </DialogFooter>
-    </>
   );
 }
 

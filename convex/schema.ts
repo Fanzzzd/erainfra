@@ -14,6 +14,12 @@ export default defineSchema({
     token: v.string(),
   }).index("by_token", ["token"]),
 
+  registrationTokens: defineTable({
+    token: v.string(),
+    createdAt: v.number(),
+    usedAt: v.optional(v.number()),
+  }).index("by_token", ["token"]),
+
   jobs: defineTable({
     ghJobId: v.number(),
     repo: v.string(),
