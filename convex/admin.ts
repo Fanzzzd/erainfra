@@ -2,6 +2,37 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 
+// Operator cleanup: remove a dashboard user and all their auth records.
+export const deleteUser = internalMutation({
+  args: { userId: v.id("users") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const accounts = await ctx.db
+      .query("authAccounts")
+      .withIndex("userIdAndProvider", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const account of accounts) {
+      await ctx.db.delete(account._id);
+    }
+    const sessions = await ctx.db
+      .query("authSessions")
+      .withIndex("userId", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const session of sessions) {
+      const tokens = await ctx.db
+        .query("authRefreshTokens")
+        .withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+        .collect();
+      for (const token of tokens) {
+        await ctx.db.delete(token._id);
+      }
+      await ctx.db.delete(session._id);
+    }
+    await ctx.db.delete(args.userId);
+    return null;
+  },
+});
+
 // Operator cleanup: drop a job (any state) with its commands, release the
 // machine slot it held, and re-run the scheduler.
 export const dropJob = internalMutation({
