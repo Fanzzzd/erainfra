@@ -508,8 +508,8 @@ function LabelChips({ labels }: { labels: string[] }) {
 
   return (
     <div className="flex max-w-[240px] flex-wrap gap-1">
-      {labels.map((label, index) => (
-        <Badge key={`${label}-${index}`} variant="outline" className="font-mono text-zinc-400">
+      {[...new Set(labels)].map((label) => (
+        <Badge key={label} variant="outline" className="font-mono text-zinc-400">
           {label}
         </Badge>
       ))}

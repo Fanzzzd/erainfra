@@ -17,6 +17,9 @@
     "no-console": "off",
     // Convex mutations are transactional: sequential awaits are intended.
     "no-await-in-loop": "off",
+    // Query results are reshaped by spreading to drop secrets (machine tokens)
+    // and add derived fields; the rows are few and the copy is deliberate.
+    "oxc/no-map-spread": "off",
     // Convex documents expose `_id` / `_creationTime`.
     "no-underscore-dangle": "off",
     // React 19 automatic JSX runtime — no `React` import needed.

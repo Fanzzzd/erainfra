@@ -77,7 +77,7 @@ commands: defineTable({
 
 ## Flow
 
-1. **Webhook** `POST /github/webhook` (convex/http.ts, httpAction):
+1. **Webhook** `POST /github/webhook` (packages/backend/convex/http.ts, httpAction):
    - Verify `X-Hub-Signature-256` HMAC-SHA256 with env `GITHUB_WEBHOOK_SECRET`
      (use Web Crypto — `crypto.subtle`, available in Convex runtime; timing-safe compare).
    - Only event `workflow_job`. action=queued → insert job (status queued) IF
