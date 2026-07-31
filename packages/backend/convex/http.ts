@@ -244,15 +244,21 @@ http.route({
 });
 
 // The requested image label doubles as the GitHub-hosted fallback when
-// GitHub offers it (ubuntu-22.04, macos-15, …); otherwise fall back to the
-// latest hosted runner for the catalog OS.
+// GitHub offers it (ubuntu-22.04, macos-15, windows-2022, …); otherwise fall
+// back to the latest hosted runner for the catalog OS.
+const LATEST_HOSTED_RUNNER_BY_OS = {
+  linux: "ubuntu-latest",
+  mac: "macos-latest",
+  win: "windows-latest",
+} as const;
+
 function defaultGitHubHostedFallback(labels: string[]) {
   const imageLabel = findImageLabel(labels);
-  if (imageLabel !== undefined && /^(ubuntu|macos)-\d/.test(imageLabel)) {
+  if (imageLabel !== undefined && /^(ubuntu|macos|windows)-\d/.test(imageLabel)) {
     return imageLabel;
   }
   const os = imageLabel === undefined ? "linux" : IMAGE_CATALOG[imageLabel].os;
-  return os === "mac" ? "macos-latest" : "ubuntu-latest";
+  return LATEST_HOSTED_RUNNER_BY_OS[os];
 }
 
 // Capacity probe for drop-in fallback. A cheap "router" job calls this and
