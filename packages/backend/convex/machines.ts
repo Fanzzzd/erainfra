@@ -11,11 +11,7 @@ import {
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
 
-const osValidator = v.union(
-  v.literal("linux"),
-  v.literal("mac"),
-  v.literal("win"),
-);
+const osValidator = v.union(v.literal("linux"), v.literal("mac"), v.literal("win"));
 
 const machineListItemValidator = v.object({
   _id: v.id("machines"),
@@ -45,11 +41,10 @@ async function requireDashboardAuth(ctx: QueryCtx | MutationCtx) {
 }
 
 function randomHex(length: number) {
-  let value = "";
-  for (let index = 0; index < length; index += 1) {
-    value += Math.floor(Math.random() * 16).toString(16);
-  }
-  return value;
+  const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, length);
 }
 
 function sanitizeMachineName(hostname: string) {
@@ -80,7 +75,7 @@ export const list = query({
 
     const activeJobs = [...assignedJobs, ...runningJobs];
     return machines
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .toSorted((a, b) => a.name.localeCompare(b.name))
       .map(({ token: _token, ...machine }) => ({
         ...machine,
         currentJobs: activeJobs
@@ -174,13 +169,9 @@ export const registerAgent = internalMutation({
     }
 
     const defaultSlots =
-      args.os === "linux"
-        ? Math.min(2, Math.max(1, Math.floor(args.cpus / 4)))
-        : 1;
+      args.os === "linux" ? Math.min(2, Math.max(1, Math.floor(args.cpus / 4))) : 1;
     const maxSlots = args.maxSlots ?? defaultSlots;
-    const labels = [
-      ...new Set((args.labels ?? []).map((label) => label.trim()).filter(Boolean)),
-    ];
+    const labels = [...new Set((args.labels ?? []).map((label) => label.trim()).filter(Boolean))];
 
     let machineToken = "";
     do {
@@ -206,22 +197,35 @@ export const registerAgent = internalMutation({
   },
 });
 
-// Availability probe for the runs-on fallback endpoint: is any online
-// machine with free slots able to satisfy these labels right now?
+// Availability probe for the runs-on fallback endpoint: will a slot actually
+// be free for this job? Counts free slots on matching online machines minus
+// the queued jobs already competing for them, so callers are not routed onto
+// a backlog they would wait behind.
 export const hasCapacity = internalQuery({
   args: { labels: v.array(v.string()) },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const now = Date.now();
-    const machines = await ctx.db.query("machines").collect();
-    return machines.some((machine) => {
-      if (
-        machine.usedSlots >= machine.maxSlots ||
-        now - machine.lastSeen >= 120_000
-      ) {
-        return false;
-      }
-      return selectImageForMachine(args.labels, machine) !== undefined;
-    });
+    const [machines, queuedJobs] = await Promise.all([
+      ctx.db.query("machines").collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "queued"))
+        .collect(),
+    ]);
+
+    const eligibleMachines = machines.filter(
+      (machine) =>
+        now - machine.lastSeen < 120_000 &&
+        selectImageForMachine(args.labels, machine) !== undefined,
+    );
+    const freeSlots = eligibleMachines.reduce(
+      (total, machine) => total + Math.max(0, machine.maxSlots - machine.usedSlots),
+      0,
+    );
+    const backlog = queuedJobs.filter((job) =>
+      eligibleMachines.some((machine) => selectImageForMachine(job.labels, machine) !== undefined),
+    ).length;
+    return freeSlots > backlog;
   },
 });

@@ -2,7 +2,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { Check, Clipboard, Plus, Server } from "lucide-react";
-import { api } from "@convex/_generated/api";
+import { api } from "@runner-center/backend/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,10 +37,7 @@ type RegistrationCommand = {
 const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
 
 function convexSiteUrl() {
-  return String(import.meta.env.VITE_CONVEX_URL).replace(
-    /\.convex\.cloud\/?$/,
-    ".convex.site",
-  );
+  return String(import.meta.env.VITE_CONVEX_URL).replace(/\.convex\.cloud\/?$/, ".convex.site");
 }
 
 const SUPPORTED_RUNS_ON_LABELS = [
@@ -75,8 +72,7 @@ function MachinesPage() {
       totalMachines: list.length,
       usedSlots: list.reduce((total, machine) => total + machine.usedSlots, 0),
       totalSlots: list.reduce((total, machine) => total + machine.maxSlots, 0),
-      jobsToday:
-        jobs?.filter((job) => job.queuedAt >= startOfToday.getTime()).length ?? 0,
+      jobsToday: jobs?.filter((job) => job.queuedAt >= startOfToday.getTime()).length ?? 0,
     };
   }, [jobs, machines, now]);
 
@@ -106,9 +102,7 @@ function MachinesPage() {
       });
     } catch (caught) {
       setError(
-        caught instanceof Error
-          ? caught.message
-          : "Could not create a registration command",
+        caught instanceof Error ? caught.message : "Could not create a registration command",
       );
     } finally {
       setSubmitting(false);
@@ -158,8 +152,8 @@ function MachinesPage() {
             <DialogHeader>
               <DialogTitle>Add machine</DialogTitle>
               <DialogDescription>
-                Run one command on a macOS or Linux host. Runner Center installs,
-                registers, and starts the agent for you.
+                Run one command on a macOS or Linux host. Runner Center installs, registers, and
+                starts the agent for you.
               </DialogDescription>
             </DialogHeader>
 
@@ -179,7 +173,8 @@ function MachinesPage() {
                         Run on the new machine
                       </span>
                       <span className="text-[11px] text-amber-300">
-                        Expires in {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))} min
+                        Expires in {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))}{" "}
+                        min
                       </span>
                     </div>
                     <div className="relative rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
@@ -208,7 +203,8 @@ function MachinesPage() {
                       <div>
                         <p className="font-medium">{connectedMachine.name} connected</p>
                         <p className="mt-0.5 text-xs text-emerald-200/70">
-                          The machine is registered and will report online after its first heartbeat.
+                          The machine is registered and will report online after its first
+                          heartbeat.
                         </p>
                       </div>
                     </div>
@@ -229,13 +225,16 @@ function MachinesPage() {
                     </summary>
                     <div className="mt-3 space-y-2 leading-5">
                       <p>
-                        Append <code className="text-zinc-300">--name build-linux-01</code> to override the hostname.
+                        Append <code className="text-zinc-300">--name build-linux-01</code> to
+                        override the hostname.
                       </p>
                       <p>
-                        Append <code className="text-zinc-300">--labels gpu,docker</code> for machine capability labels.
+                        Append <code className="text-zinc-300">--labels gpu,docker</code> for
+                        machine capability labels.
                       </p>
                       <p>
-                        Append <code className="text-zinc-300">--slots 2</code> to override detected concurrency.
+                        Append <code className="text-zinc-300">--slots 2</code> to override detected
+                        concurrency.
                       </p>
                     </div>
                   </details>
@@ -250,7 +249,11 @@ function MachinesPage() {
                 {connectedMachine ? "Done" : "Cancel"}
               </Button>
               {(error || (registration && now >= registration.expiresAt)) && (
-                <Button type="button" onClick={() => void beginRegistration()} disabled={submitting}>
+                <Button
+                  type="button"
+                  onClick={() => void beginRegistration()}
+                  disabled={submitting}
+                >
                   Generate new command
                 </Button>
               )}
@@ -298,8 +301,8 @@ function MachinesPage() {
               Supported runs-on labels
             </h2>
             <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-              Image labels select the execution environment by host OS. Machines do not
-              need to register these labels.
+              Image labels select the execution environment by host OS. Machines do not need to
+              register these labels.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:gap-5">
@@ -317,9 +320,13 @@ function MachinesPage() {
             ))}
           </div>
         </div>
+        <FallbackSnippet />
       </section>
 
-      <section className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]" aria-labelledby="fleet-heading">
+      <section
+        className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
+        aria-labelledby="fleet-heading"
+      >
         <div className="flex h-12 items-center justify-between border-b border-white/[0.08] px-4">
           <div className="flex items-center gap-2.5">
             <h2 id="fleet-heading" className="text-sm font-medium text-zinc-200">
@@ -411,9 +418,7 @@ function MachinesPage() {
                         >
                           <div
                             className={`h-full rounded-full transition-[width] duration-150 ${
-                              machine.usedSlots >= machine.maxSlots
-                                ? "bg-amber-400"
-                                : "bg-zinc-400"
+                              machine.usedSlots >= machine.maxSlots ? "bg-amber-400" : "bg-zinc-400"
                             }`}
                             style={{ width: `${slotPercent}%` }}
                           />
@@ -486,7 +491,9 @@ function StatTile({
 
 function MachineStatus({ online }: { online: boolean }) {
   return (
-    <span className={`inline-flex items-center gap-2 ${online ? "text-emerald-300" : "text-[#8a8a93]"}`}>
+    <span
+      className={`inline-flex items-center gap-2 ${online ? "text-emerald-300" : "text-[#8a8a93]"}`}
+    >
       <span
         className={`size-1.5 rounded-full ${online ? "status-pulse bg-emerald-400" : "bg-zinc-500"}`}
         aria-hidden="true"
@@ -528,22 +535,77 @@ function CurrentJobs({
         <div key={job._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
           <span
             className={`size-1.5 shrink-0 rounded-full ${
-              job.status === "running"
-                ? "status-pulse bg-emerald-400"
-                : "bg-amber-400"
+              job.status === "running" ? "status-pulse bg-emerald-400" : "bg-amber-400"
             }`}
             aria-hidden="true"
           />
           <span className="sr-only">{job.status}: </span>
-          <span className="max-w-40 truncate font-mono text-[12px] text-zinc-300">
-            {job.repo}
-          </span>
-          <span className="max-w-40 truncate text-xs text-[#7c7c85]">
-            {job.workflowName}
-          </span>
+          <span className="max-w-40 truncate font-mono text-[12px] text-zinc-300">{job.repo}</span>
+          <span className="max-w-40 truncate text-xs text-[#7c7c85]">{job.workflowName}</span>
         </div>
       ))}
     </div>
+  );
+}
+
+function FallbackSnippet() {
+  const [copied, setCopied] = useState(false);
+  const snippet = `jobs:
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      runs-on: \${{ steps.pick.outputs.runs-on }}
+    steps:
+      - id: pick
+        run: |
+          echo "runs-on=$(curl -sf --max-time 10 \\
+            '${convexSiteUrl()}/runs-on?labels=ubuntu-22.04&fallback=ubuntu-latest' \\
+            | jq -c '."runs-on"' || echo '"ubuntu-latest"')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: route
+    runs-on: \${{ fromJSON(needs.route.outputs.runs-on) }}`;
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // Clipboard blocked: the snippet stays selectable below.
+    }
+  }
+
+  return (
+    <details className="mt-3 rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-xs text-[#8a8a93]">
+      <summary className="cursor-pointer select-none font-medium text-zinc-300">
+        GitHub-hosted fallback when the fleet is busy
+      </summary>
+      <p className="mt-3 leading-5">
+        A small routing job asks Runner Center whether a slot will be free. It routes to your fleet
+        when capacity is available and falls back to GitHub-hosted runners otherwise — including
+        when Runner Center itself is unreachable.
+      </p>
+      <div className="relative mt-2 rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
+        <pre className="overflow-x-auto font-mono text-xs leading-5 text-zinc-300">
+          <code>{snippet}</code>
+        </pre>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="absolute right-1.5 top-1.5 size-8"
+          aria-label="Copy fallback workflow snippet"
+          onClick={() => void copy()}
+        >
+          {copied ? <Check /> : <Clipboard />}
+        </Button>
+      </div>
+      <p className="mt-2 leading-5">
+        Swap <code className="text-zinc-300">labels</code> and{" "}
+        <code className="text-zinc-300">fallback</code> for the environment each workflow needs.
+      </p>
+    </details>
   );
 }
 

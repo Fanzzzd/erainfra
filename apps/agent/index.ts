@@ -20,11 +20,9 @@ type ClaimedCommand = {
   os: MachineOs;
 };
 
-const pendingCommands = makeFunctionReference<
-  "query",
-  { token: string },
-  PendingCommandsResult
->("agentApi:pendingCommands");
+const pendingCommands = makeFunctionReference<"query", { token: string }, PendingCommandsResult>(
+  "agentApi:pendingCommands",
+);
 const claimCommand = makeFunctionReference<
   "mutation",
   { token: string; commandId: string },
@@ -49,19 +47,11 @@ let maxSlots = 1;
 let shuttingDown = false;
 
 function provisionerPath(os: MachineOs) {
-  const filename =
-    os === "win" ? "provision-win.ps1" : `provision-${os}.sh`;
-  return fileURLToPath(
-    new URL(`../provisioners/${filename}`, import.meta.url),
-  );
+  const filename = os === "win" ? "provision-win.ps1" : `provision-${os}.sh`;
+  return fileURLToPath(new URL(`../provisioners/${filename}`, import.meta.url));
 }
 
-async function provision(
-  os: MachineOs,
-  jitConfig: string,
-  runnerName: string,
-  image?: string,
-) {
+async function provision(os: MachineOs, jitConfig: string, runnerName: string, image?: string) {
   const script = provisionerPath(os);
   const env = {
     ...process.env,
@@ -97,15 +87,8 @@ async function runCommand(command: PendingCommand) {
     }
     claimedByThisAgent = true;
     console.log(`Starting ephemeral runner ${claimed.runnerName}`);
-    exitCode = await provision(
-      claimed.os,
-      claimed.jitConfig,
-      claimed.runnerName,
-      claimed.image,
-    );
-    console.log(
-      `Ephemeral runner ${claimed.runnerName} exited with code ${exitCode}`,
-    );
+    exitCode = await provision(claimed.os, claimed.jitConfig, claimed.runnerName, claimed.image);
+    console.log(`Ephemeral runner ${claimed.runnerName} exited with code ${exitCode}`);
   } catch (error) {
     console.error(`Provisioning ${command.runnerName} failed`, error);
   } finally {
@@ -124,7 +107,10 @@ async function runCommand(command: PendingCommand) {
 }
 
 function pump() {
-  while (!shuttingDown && active < maxSlots && queue.length > 0) {
+  if (shuttingDown) {
+    return;
+  }
+  while (active < maxSlots && queue.length > 0) {
     const command = queue.shift();
     if (command === undefined) {
       break;

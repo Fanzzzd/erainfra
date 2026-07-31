@@ -555,8 +555,5 @@ printf '✅ Runner Center is connected. Dashboard: %s\n' "$SITE_URL"
 `;
 
 export function renderInstallScript(siteUrl: string) {
-  return INSTALL_SCRIPT.replaceAll(
-    "__RUNNER_CENTER_SITE_URL__",
-    siteUrl.replace(/\/+$/, ""),
-  );
+  return INSTALL_SCRIPT.replaceAll("__RUNNER_CENTER_SITE_URL__", siteUrl.replace(/\/+$/, ""));
 }

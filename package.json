@@ -4,21 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm -r build",
-    "dev:backend": "convex dev",
-    "codegen": "convex codegen",
-    "deploy": "npx @convex-dev/static-hosting deploy --dist apps/dashboard/dist --build-command \"pnpm --filter @runner-center/dashboard build\""
-  },
-  "dependencies": {
-    "@auth/core": "0.41.3",
-    "@convex-dev/auth": "0.0.94",
-    "@convex-dev/static-hosting": "0.2.0",
-    "convex": "1.42.3",
-    "octokit": "5.0.5"
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:backend": "turbo run dev --filter=@runner-center/backend",
+    "dev:dashboard": "turbo run dev --filter=@runner-center/dashboard",
+    "typecheck": "turbo run typecheck",
+    "codegen": "turbo run codegen",
+    "convex": "pnpm --filter @runner-center/backend exec convex",
+    "deploy": "pnpm --filter @runner-center/backend deploy",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck"
   },
   "devDependencies": {
-    "@types/node": "22.19.11",
-    "typescript": "5.9.3"
+    "oxfmt": "0.61.0",
+    "oxlint": "1.76.0",
+    "turbo": "2.10.7",
+    "typescript": "catalog:"
   },
   "engines": {
     "node": ">=22"

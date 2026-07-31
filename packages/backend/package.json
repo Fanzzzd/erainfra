@@ -1,0 +1,35 @@
+{
+  "name": "@runner-center/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./api": {
+      "types": "./convex/_generated/api.d.ts",
+      "default": "./convex/_generated/api.js"
+    },
+    "./dataModel": {
+      "types": "./convex/_generated/dataModel.d.ts"
+    },
+    "./catalog": "./convex/catalog.ts"
+  },
+  "scripts": {
+    "dev": "convex dev",
+    "codegen": "convex codegen",
+    "typecheck": "tsc -p convex/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
+    "deploy": "static-hosting deploy --dist ../../apps/dashboard/dist --build-command \"pnpm --filter @runner-center/dashboard build\"",
+    "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts"
+  },
+  "dependencies": {
+    "@auth/core": "0.41.3",
+    "@convex-dev/auth": "0.0.94",
+    "@convex-dev/static-hosting": "0.2.0",
+    "convex": "catalog:",
+    "octokit": "5.0.5"
+  },
+  "devDependencies": {
+    "@runner-center/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

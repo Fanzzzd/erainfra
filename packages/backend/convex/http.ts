@@ -3,6 +3,7 @@ import { httpRouter } from "convex/server";
 import { auth } from "./auth";
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import { findImageLabel, IMAGE_CATALOG } from "./catalog";
 import { renderInstallScript } from "./installScript";
 
 const http = httpRouter();
@@ -17,9 +18,7 @@ function jsonResponse(body: unknown, status: number) {
 }
 
 function bytesToHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
-  );
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function timingSafeHexEqual(left: string, right: string) {
@@ -52,10 +51,7 @@ async function verifySignature(rawBody: ArrayBuffer, signature: string) {
     ["sign"],
   );
   const digest = await crypto.subtle.sign("HMAC", key, rawBody);
-  return timingSafeHexEqual(
-    bytesToHex(new Uint8Array(digest)),
-    match[1].toLowerCase(),
-  );
+  return timingSafeHexEqual(bytesToHex(new Uint8Array(digest)), match[1].toLowerCase());
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,9 +85,7 @@ function parseRegistrationRequest(payload: unknown) {
     ) {
       return null;
     }
-    labels = payload.labels
-      .map((label) => label.trim())
-      .filter((label) => label.length > 0);
+    labels = payload.labels.map((label) => label.trim()).filter((label) => label.length > 0);
   }
 
   let maxSlots: number | undefined;
@@ -122,11 +116,7 @@ function parseWorkflowJob(payload: unknown) {
     return null;
   }
   const action = payload.action;
-  if (
-    action !== "queued" &&
-    action !== "in_progress" &&
-    action !== "completed"
-  ) {
+  if (action !== "queued" && action !== "in_progress" && action !== "completed") {
     return null;
   }
   const workflowJob = payload.workflow_job;
@@ -163,9 +153,7 @@ function parseWorkflowJob(payload: unknown) {
         ? workflowJob.name
         : "Unknown workflow";
   const conclusion =
-    typeof workflowJob.conclusion === "string"
-      ? workflowJob.conclusion
-      : undefined;
+    typeof workflowJob.conclusion === "string" ? workflowJob.conclusion : undefined;
 
   return {
     action: action as "queued" | "in_progress" | "completed",
@@ -205,17 +193,13 @@ http.route({
     if (registration === null) {
       return jsonResponse(
         {
-          error:
-            "Expected registrationToken, name, os, arch, and a positive integer cpus",
+          error: "Expected registrationToken, name, os, arch, and a positive integer cpus",
         },
         400,
       );
     }
 
-    const result = await ctx.runMutation(
-      internal.machines.registerAgent,
-      registration,
-    );
+    const result = await ctx.runMutation(internal.machines.registerAgent, registration);
     if (!result.ok) {
       return jsonResponse({ error: result.error }, result.status);
     }
@@ -259,10 +243,24 @@ http.route({
   }),
 });
 
+// The requested image label doubles as the GitHub-hosted fallback when
+// GitHub offers it (ubuntu-22.04, macos-15, …); otherwise fall back to the
+// latest hosted runner for the catalog OS.
+function defaultGitHubHostedFallback(labels: string[]) {
+  const imageLabel = findImageLabel(labels);
+  if (imageLabel !== undefined && /^(ubuntu|macos)-\d/.test(imageLabel)) {
+    return imageLabel;
+  }
+  const os = imageLabel === undefined ? "linux" : IMAGE_CATALOG[imageLabel].os;
+  return os === "mac" ? "macos-latest" : "ubuntu-latest";
+}
+
 // Capacity probe for drop-in fallback. A cheap "router" job calls this and
 // routes the real job to self-hosted labels or a GitHub-hosted fallback:
 //   GET /runs-on?labels=rc-linux&fallback=ubuntu-latest
 // → {"runs-on": ["self-hosted","rc-linux"]} or {"runs-on": "ubuntu-latest"}
+// The fallback defaults to the requested image label when GitHub hosts it
+// (e.g. macos-15), else the latest hosted runner for that OS.
 // Read-only, unauthenticated by design: it leaks only "capacity yes/no".
 http.route({
   path: "/runs-on",
@@ -273,21 +271,16 @@ http.route({
       .split(",")
       .map((label) => label.trim())
       .filter((label) => label.length > 0);
-    const fallback = url.searchParams.get("fallback") ?? "ubuntu-latest";
     if (labels.length === 0) {
       return jsonResponse({ error: "labels is required" }, 400);
     }
+    const fallback = url.searchParams.get("fallback") ?? defaultGitHubHostedFallback(labels);
 
-    const selfHostedLabels = labels.includes("self-hosted")
-      ? labels
-      : ["self-hosted", ...labels];
+    const selfHostedLabels = labels.includes("self-hosted") ? labels : ["self-hosted", ...labels];
     const available = await ctx.runQuery(internal.machines.hasCapacity, {
       labels: selfHostedLabels,
     });
-    return jsonResponse(
-      { "runs-on": available ? selfHostedLabels : fallback },
-      200,
-    );
+    return jsonResponse({ "runs-on": available ? selfHostedLabels : fallback }, 200);
   }),
 });
 

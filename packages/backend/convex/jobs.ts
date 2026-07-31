@@ -40,33 +40,25 @@ export const list = query({
   returns: v.array(listedJobValidator),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
+    // ponytail: newest 200 jobs; paginate if history browsing ever matters
     const [jobs, machines] = await Promise.all([
-      ctx.db.query("jobs").collect(),
+      ctx.db.query("jobs").order("desc").take(200),
       ctx.db.query("machines").collect(),
     ]);
-    const machineNames = new Map(
-      machines.map((machine) => [machine._id, machine.name]),
-    );
+    const machineNames = new Map(machines.map((machine) => [machine._id, machine.name]));
 
     return jobs
-      .sort((a, b) => b.queuedAt - a.queuedAt)
+      .toSorted((a, b) => b.queuedAt - a.queuedAt)
       .map((job) => ({
         ...job,
-        machineName:
-          job.machineId === undefined
-            ? undefined
-            : machineNames.get(job.machineId),
+        machineName: job.machineId === undefined ? undefined : machineNames.get(job.machineId),
       }));
   },
 });
 
 export const handleWorkflowJob = internalMutation({
   args: {
-    action: v.union(
-      v.literal("queued"),
-      v.literal("in_progress"),
-      v.literal("completed"),
-    ),
+    action: v.union(v.literal("queued"), v.literal("in_progress"), v.literal("completed")),
     ghJobId: v.number(),
     githubInstallationId: v.optional(v.number()),
     repo: v.string(),
@@ -125,9 +117,9 @@ export const handleWorkflowJob = internalMutation({
       return null;
     }
 
-    const wasActive =
-      existing.status === "assigned" || existing.status === "running";
-    if (!wasActive) {
+    // "completed" can also arrive for a still-queued job (cancelled before
+    // assignment); it must leave the queue or the scheduler keeps assigning it.
+    if (existing.status === "done" || existing.status === "failed") {
       return null;
     }
 

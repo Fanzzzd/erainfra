@@ -49,11 +49,7 @@ export default defineSchema({
     jitConfig: v.optional(v.string()),
     image: v.optional(v.string()),
     runnerName: v.string(),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("claimed"),
-      v.literal("finished"),
-    ),
+    status: v.union(v.literal("pending"), v.literal("claimed"), v.literal("finished")),
     exitCode: v.optional(v.number()),
   }).index("by_machine_status", ["machineId", "status"]),
 });

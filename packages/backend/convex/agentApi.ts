@@ -2,11 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 
-const osValidator = v.union(
-  v.literal("linux"),
-  v.literal("mac"),
-  v.literal("win"),
-);
+const osValidator = v.union(v.literal("linux"), v.literal("mac"), v.literal("win"));
 
 async function machineForToken(ctx: QueryCtx, token: string) {
   const machine = await ctx.db
@@ -35,9 +31,7 @@ export const pendingCommands = query({
     const machine = await machineForToken(ctx, args.token);
     const commands = await ctx.db
       .query("commands")
-      .withIndex("by_machine_status", (q) =>
-        q.eq("machineId", machine._id).eq("status", "pending"),
-      )
+      .withIndex("by_machine_status", (q) => q.eq("machineId", machine._id).eq("status", "pending"))
       .collect();
 
     return {
@@ -120,11 +114,7 @@ export const report = mutation({
     }
 
     const command = await ctx.db.get(args.commandId);
-    if (
-      command === null ||
-      command.machineId !== machine._id ||
-      command.status === "pending"
-    ) {
+    if (command === null || command.machineId !== machine._id || command.status === "pending") {
       return false;
     }
     await ctx.db.patch(command._id, {
@@ -156,7 +146,10 @@ export const heartbeat = mutation({
     os: osValidator,
     maxSlots: v.number(),
   }),
-  handler: async (ctx, args): Promise<{
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
     os: "linux" | "mac" | "win";
     maxSlots: number;
   }> => {

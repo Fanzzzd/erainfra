@@ -6,6 +6,8 @@ const AGENT_OFFLINE_MS = 120_000;
 const ASSIGNMENT_STUCK_MS = 10 * 60_000;
 const RUNNING_ABANDONED_MS = 10 * 60_000;
 const QUEUE_EXPIRED_MS = 24 * 60 * 60_000;
+const REGISTRATION_TOKEN_RETENTION_MS = 60 * 60_000;
+const FINISHED_JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
 export const run = internalMutation({
   args: {},
@@ -19,41 +21,38 @@ export const run = internalMutation({
     const now = Date.now();
 
     // ponytail: full-table scans, fine for <100 machines
-    const [assignedJobs, runningJobs, queuedJobs, machines, commands] =
-      await Promise.all([
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "assigned"))
-          .collect(),
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "running"))
-          .collect(),
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "queued"))
-          .collect(),
-        ctx.db.query("machines").collect(),
-        ctx.db.query("commands").collect(),
-      ]);
+    const [assignedJobs, runningJobs, queuedJobs, machines, commands] = await Promise.all([
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "assigned"))
+        .collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "running"))
+        .collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "queued"))
+        .collect(),
+      ctx.db.query("machines").collect(),
+      ctx.db.query("commands").collect(),
+    ]);
 
-    const machinesById = new Map(
-      machines.map((machine) => [machine._id, machine]),
-    );
-    const machineSlots = new Map(
-      machines.map((machine) => [machine._id, machine.usedSlots]),
-    );
+    const machinesById = new Map(machines.map((machine) => [machine._id, machine]));
+    const machineSlots = new Map(machines.map((machine) => [machine._id, machine.usedSlots]));
     const activeJobsByMachine = new Map<string, number>();
     const commandsByJob = new Map<string, typeof commands>();
 
     for (const job of [...assignedJobs, ...runningJobs]) {
       if (job.machineId === undefined) continue;
-      activeJobsByMachine.set(
-        job.machineId,
-        (activeJobsByMachine.get(job.machineId) ?? 0) + 1,
-      );
+      activeJobsByMachine.set(job.machineId, (activeJobsByMachine.get(job.machineId) ?? 0) + 1);
     }
     for (const command of commands) {
+      // Retention: nothing reads finished commands, so drop them here.
+      if (command.status === "finished") {
+        await ctx.db.delete(command._id);
+        continue;
+      }
       const jobCommands = commandsByJob.get(command.jobId) ?? [];
       jobCommands.push(command);
       commandsByJob.set(command.jobId, jobCommands);
@@ -64,16 +63,10 @@ export const run = internalMutation({
     let expired = 0;
 
     for (const job of assignedJobs) {
-      const machine =
-        job.machineId === undefined
-          ? undefined
-          : machinesById.get(job.machineId);
-      const agentOffline =
-        machine === undefined || now - machine.lastSeen > AGENT_OFFLINE_MS;
+      const machine = job.machineId === undefined ? undefined : machinesById.get(job.machineId);
+      const agentOffline = machine === undefined || now - machine.lastSeen > AGENT_OFFLINE_MS;
       const currentCommands = (commandsByJob.get(job._id) ?? []).filter(
-        (command) =>
-          command.runnerName === job.runnerName &&
-          command.machineId === job.machineId,
+        (command) => command.runnerName === job.runnerName && command.machineId === job.machineId,
       );
       const assignedAt = currentCommands.reduce(
         (latest, command) => Math.max(latest, command._creationTime),
@@ -87,10 +80,7 @@ export const run = internalMutation({
         await ctx.db.delete(command._id);
       }
       if (machine !== undefined) {
-        const usedSlots = Math.max(
-          0,
-          (machineSlots.get(machine._id) ?? machine.usedSlots) - 1,
-        );
+        const usedSlots = Math.max(0, (machineSlots.get(machine._id) ?? machine.usedSlots) - 1);
         machineSlots.set(machine._id, usedSlots);
         await ctx.db.patch(machine._id, { usedSlots });
         activeJobsByMachine.set(
@@ -107,12 +97,8 @@ export const run = internalMutation({
     }
 
     for (const job of runningJobs) {
-      const machine =
-        job.machineId === undefined
-          ? undefined
-          : machinesById.get(job.machineId);
-      const agentAbandoned =
-        machine === undefined || now - machine.lastSeen > RUNNING_ABANDONED_MS;
+      const machine = job.machineId === undefined ? undefined : machinesById.get(job.machineId);
+      const agentAbandoned = machine === undefined || now - machine.lastSeen > RUNNING_ABANDONED_MS;
 
       if (!agentAbandoned) continue;
 
@@ -127,10 +113,7 @@ export const run = internalMutation({
         }
       }
       if (machine !== undefined) {
-        const usedSlots = Math.max(
-          0,
-          (machineSlots.get(machine._id) ?? machine.usedSlots) - 1,
-        );
+        const usedSlots = Math.max(0, (machineSlots.get(machine._id) ?? machine.usedSlots) - 1);
         machineSlots.set(machine._id, usedSlots);
         await ctx.db.patch(machine._id, { usedSlots });
         activeJobsByMachine.set(
@@ -150,6 +133,28 @@ export const run = internalMutation({
         finishedAt: now,
       });
       expired += 1;
+    }
+
+    // Retention: expired registration tokens and month-old finished jobs.
+    for (const registration of await ctx.db.query("registrationTokens").collect()) {
+      if (
+        registration.usedAt !== undefined ||
+        now - registration.createdAt >= REGISTRATION_TOKEN_RETENTION_MS
+      ) {
+        await ctx.db.delete(registration._id);
+      }
+    }
+    for (const status of ["done", "failed"] as const) {
+      const finishedJobs = await ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", status))
+        .order("asc")
+        .take(100);
+      for (const job of finishedJobs) {
+        if (now - (job.finishedAt ?? job._creationTime) >= FINISHED_JOB_RETENTION_MS) {
+          await ctx.db.delete(job._id);
+        }
+      }
     }
 
     let slotsRepaired = 0;

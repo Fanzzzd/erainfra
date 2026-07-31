@@ -7,8 +7,7 @@ type ImageCatalogEntry = {
 };
 
 const ACTIONS_RUNNER_IMAGE = "ghcr.io/actions/actions-runner:2.336.0";
-const MACOS_SEQUOIA_IMAGE =
-  "ghcr.io/cirruslabs/macos-sequoia-base:latest";
+const MACOS_SEQUOIA_IMAGE = "ghcr.io/cirruslabs/macos-sequoia-base:latest";
 const MACOS_TAHOE_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest";
 
 export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
@@ -51,9 +50,7 @@ const DEFAULT_IMAGE_LABEL_BY_OS: Record<CatalogOs, string> = {
 };
 
 export function findImageLabel(labels: readonly string[]) {
-  return labels.find((label) =>
-    Object.prototype.hasOwnProperty.call(IMAGE_CATALOG, label),
-  );
+  return labels.find((label) => Object.prototype.hasOwnProperty.call(IMAGE_CATALOG, label));
 }
 
 export function selectImageForMachine(
@@ -64,8 +61,7 @@ export function selectImageForMachine(
   },
 ) {
   const imageLabel = findImageLabel(jobLabels);
-  const fallbackLabel =
-    machine.os === "win" ? undefined : DEFAULT_IMAGE_LABEL_BY_OS[machine.os];
+  const fallbackLabel = machine.os === "win" ? undefined : DEFAULT_IMAGE_LABEL_BY_OS[machine.os];
   const catalogEntry = IMAGE_CATALOG[imageLabel ?? fallbackLabel ?? ""];
 
   if (catalogEntry === undefined || catalogEntry.os !== machine.os) {
@@ -74,10 +70,7 @@ export function selectImageForMachine(
 
   const machineLabels = new Set(machine.labels);
   const hasRequiredLabels = jobLabels.every(
-    (label) =>
-      label === "self-hosted" ||
-      label === imageLabel ||
-      machineLabels.has(label),
+    (label) => label === "self-hosted" || label === imageLabel || machineLabels.has(label),
   );
 
   return hasRequiredLabels ? catalogEntry : undefined;

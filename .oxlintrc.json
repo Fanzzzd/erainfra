@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "warn"
+  },
+  "env": {
+    "builtin": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["**/_generated/**", "**/routeTree.gen.ts", "**/.tanstack/**"],
+  "rules": {
+    "import/no-cycle": "error",
+    "import/no-unassigned-import": ["error", { "allow": ["**/*.css"] }],
+    "no-console": "off",
+    // Convex mutations are transactional: sequential awaits are intended.
+    "no-await-in-loop": "off",
+    // Convex documents expose `_id` / `_creationTime`.
+    "no-underscore-dangle": "off",
+    // React 19 automatic JSX runtime — no `React` import needed.
+    "react/react-in-jsx-scope": "off"
+  },
+  "overrides": [
+    {
+      "files": ["apps/dashboard/**"],
+      "env": { "browser": true }
+    },
+    {
+      "files": ["apps/agent/**", "packages/backend/scripts/**"],
+      "env": { "node": true }
+    }
+  ]
+}

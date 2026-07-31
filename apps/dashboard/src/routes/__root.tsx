@@ -1,11 +1,5 @@
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
-import {
-  createRootRoute,
-  Link,
-  Navigate,
-  Outlet,
-  useLocation,
-} from "@tanstack/react-router";
+import { createRootRoute, Link, Navigate, Outlet, useLocation } from "@tanstack/react-router";
 import { ListChecks, LogOut, Server } from "lucide-react";
 
 export const Route = createRootRoute({ component: RootComponent });

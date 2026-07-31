@@ -48,14 +48,14 @@ Clone the project, install dependencies, and build the agent:
 git clone https://github.com/Fanzzzd/runner-center.git
 cd runner-center
 pnpm install
-pnpm --filter @runner-center/agent build
+pnpm build
 ```
 
 Create or select a Convex deployment, then initialize Convex Auth:
 
 ```bash
-npx convex dev --once
-npx @convex-dev/auth
+pnpm convex dev --once
+(cd packages/backend && npx @convex-dev/auth)
 ```
 
 Choose a random webhook secret, then create a GitHub App from the settings for the target user or organization. Keep the app private by allowing installation only on that account, and use these settings:
@@ -70,15 +70,15 @@ Choose a random webhook secret, then create a GitHub App from the settings for t
 After creating the app, note its **App ID** and generate and download a private key PEM. Store the webhook secret, App ID, and PEM in the Convex deployment:
 
 ```bash
-npx convex env set GITHUB_WEBHOOK_SECRET '<random-webhook-secret>'
-npx convex env set GITHUB_APP_ID '<github-app-id>'
-npx convex env set GITHUB_APP_PRIVATE_KEY "$(cat /path/to/private-key.pem)"
+pnpm convex env set GITHUB_WEBHOOK_SECRET '<random-webhook-secret>'
+pnpm convex env set GITHUB_APP_ID '<github-app-id>'
+pnpm convex env set GITHUB_APP_PRIVATE_KEY "$(cat /path/to/private-key.pem)"
 ```
 
 The private key can be stored as a multiline PEM or with escaped `\n` newline sequences. Deploy the Convex backend and hosted dashboard:
 
 ```bash
-npm run deploy
+pnpm deploy
 ```
 
 From the GitHub App page, choose **Install App** and install it for all repositories or only the repositories Runner Center should serve. The installation ID does not need manual configuration; GitHub includes it in each App webhook payload. The webhook is at the site root, with no `/api` prefix.
@@ -88,7 +88,7 @@ From the GitHub App page, choose **Install App** and install it for all reposito
 Existing setups can keep a classic PAT and one webhook per repository. This path is used only for repository webhook jobs whose payload has no GitHub App installation ID:
 
 ```bash
-npx convex env set GITHUB_PAT '<classic-github-pat-with-repo-scope>'
+pnpm convex env set GITHUB_PAT '<classic-github-pat-with-repo-scope>'
 ```
 
 The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**. A job stored with an App installation ID always uses installation authentication and never falls back to the PAT. When migrating, install the App, disable the old repository webhooks, wait for jobs already received through them to finish, and then remove the PAT. Disabling the old webhooks avoids overlapping deliveries after assignment has begun.
@@ -113,14 +113,14 @@ Install the OS provisioner prerequisites described below before assigning jobs t
 
 The installer adds `~/.runner-center/bin` to your shell `PATH`. Open a new shell, or source the shell file named by the installer, then use:
 
-| Command | Description |
-| --- | --- |
-| `rc status` | Show whether the agent process is running, its machine name, and the latest log line. |
-| `rc logs` | Show the latest 100 agent log lines. |
-| `rc logs -f` | Follow the agent log. |
-| `rc restart` | Restart the installed launchd, systemd, or fallback service. |
-| `rc stop` | Stop the agent service. |
-| `rc update` | Download the latest `main` agent, rebuild it, and restart without registering again. |
+| Command        | Description                                                                                                              |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `rc status`    | Show whether the agent process is running, its machine name, and the latest log line.                                    |
+| `rc logs`      | Show the latest 100 agent log lines.                                                                                     |
+| `rc logs -f`   | Follow the agent log.                                                                                                    |
+| `rc restart`   | Restart the installed launchd, systemd, or fallback service.                                                             |
+| `rc stop`      | Stop the agent service.                                                                                                  |
+| `rc update`    | Download the latest `main` agent, rebuild it, and restart without registering again.                                     |
 | `rc uninstall` | Stop the service, remove local Runner Center files and the `PATH` entry, and remind you to delete the dashboard machine. |
 
 The machine reports online after its first heartbeat.
@@ -129,14 +129,14 @@ The machine reports online after its first heartbeat.
 
 Use a catalog label in `runs-on` to select the execution environment. Runner Center uses the first catalog label in the job's label array, matches its OS to a machine, and treats any remaining labels as machine capability requirements. `self-hosted` is matched automatically and should remain in the workflow. Machines do not need to register image catalog labels.
 
-| Label | OS | Image | Notes |
-| --- | --- | --- | --- |
-| `ubuntu-22.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0` | Compatibility label. The current pinned image reports `ImageOS=ubuntu24`; it is a minimal runner image, not the GitHub-hosted Ubuntu 22.04 toolchain. |
-| `ubuntu-24.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0` | Minimal Ubuntu 24.04-based runner image. Install project dependencies in workflow steps. |
-| `rc-linux` | Linux | `ghcr.io/actions/actions-runner:2.336.0` | Alias for the default Linux image. |
-| `macos-15` | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Tart base image for macOS Sequoia. |
-| `macos-26` | macOS | `ghcr.io/cirruslabs/macos-tahoe-base:latest` | Tart base image for macOS Tahoe. |
-| `rc-mac` | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Alias for the default macOS image. |
+| Label          | OS    | Image                                          | Notes                                                                                                                                                 |
+| -------------- | ----- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ubuntu-22.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0`       | Compatibility label. The current pinned image reports `ImageOS=ubuntu24`; it is a minimal runner image, not the GitHub-hosted Ubuntu 22.04 toolchain. |
+| `ubuntu-24.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0`       | Minimal Ubuntu 24.04-based runner image. Install project dependencies in workflow steps.                                                              |
+| `rc-linux`     | Linux | `ghcr.io/actions/actions-runner:2.336.0`       | Alias for the default Linux image.                                                                                                                    |
+| `macos-15`     | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Tart base image for macOS Sequoia.                                                                                                                    |
+| `macos-26`     | macOS | `ghcr.io/cirruslabs/macos-tahoe-base:latest`   | Tart base image for macOS Tahoe.                                                                                                                      |
+| `rc-mac`       | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Alias for the default macOS image.                                                                                                                    |
 
 The Linux catalog intentionally uses GitHub's minimal runner image because the larger `catthehacker/ubuntu:act-*` images provide an Actions-like toolchain but do not contain the runner binary required by the provisioner. Bring language runtimes and other dependencies through setup actions or workflow steps.
 
@@ -154,7 +154,7 @@ jobs:
 
 Additional labels still select machine capabilities. For example, `[self-hosted, ubuntu-24.04, gpu]` requires a Linux machine registered with `gpu`; the machine does not need `ubuntu-24.04` in its labels. If a job has no catalog label, Runner Center uses the default image for the selected machine OS (`rc-linux` or `rc-mac`).
 
-For best-effort fallback, use a small GitHub-hosted routing job. `GET /runs-on` applies the same catalog and capability matching as the scheduler, then returns either the requested self-hosted label array or the fallback runner string:
+For best-effort fallback, use a small GitHub-hosted routing job. `GET /runs-on` applies the same catalog and capability matching as the scheduler and accounts for jobs already waiting in the queue, then returns either the requested self-hosted label array or a GitHub-hosted fallback runner string. The `fallback` parameter is optional: it defaults to the requested image label when GitHub hosts it (`ubuntu-22.04`, `macos-15`, …), otherwise `ubuntu-latest`/`macos-latest` by OS. The dashboard's Machines page has this snippet ready to copy with your deployment URL filled in:
 
 ```yaml
 name: linux-ci
@@ -263,9 +263,50 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 - GitHub JIT configuration is valid for a single runner job and is cleared from the command when the agent claims it.
 - Docker containers and Tart VMs are deleted after the runner process exits.
 
+## Development
+
+The repository is a pnpm workspace driven by [Turborepo](https://turborepo.com):
+
+```text
+runner-center/
+├── apps/
+│   ├── agent/                  # Node daemon installed on runner machines
+│   │   └── provisioners/       # provision-linux.sh, provision-mac.sh, provision-win.ps1
+│   └── dashboard/              # Vite + React 19 + TanStack Router UI
+├── packages/
+│   ├── backend/                # Convex deployment: convex/, convex.json, .env.local
+│   └── typescript-config/      # shared tsconfig presets (base, node, react)
+├── turbo.json                  # task graph
+├── pnpm-workspace.yaml         # workspace globs + dependency catalog
+├── .oxlintrc.json              # oxlint rules
+└── .oxfmtrc.json               # oxfmt options
+```
+
+| Command              | Description                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `pnpm dev`           | Run every package's dev task (Convex watcher + Vite) in parallel.                  |
+| `pnpm dev:backend`   | Convex watcher only.                                                               |
+| `pnpm dev:dashboard` | Vite dev server only.                                                              |
+| `pnpm build`         | Build the agent and the dashboard through the Turborepo task graph.                |
+| `pnpm typecheck`     | Typecheck every package.                                                           |
+| `pnpm lint`          | oxlint over the whole repository (`pnpm lint:fix` to autofix).                     |
+| `pnpm format`        | oxfmt over the whole repository (`pnpm format:check` in CI).                       |
+| `pnpm check`         | lint + format check + typecheck, the same gate CI runs.                            |
+| `pnpm convex …`      | Run the Convex CLI against `packages/backend`, e.g. `pnpm convex env set FOO bar`. |
+| `pnpm deploy`        | Build the dashboard and deploy backend plus static hosting.                        |
+
+The dashboard imports backend types through the `@runner-center/backend/api`
+package export, so `convex/_generated` is committed and no path aliases point
+across package boundaries.
+
+`apps/agent` is intentionally self-contained: machines download only that
+directory from the source tarball and install it with plain `npm install`. It
+must therefore never use the `workspace:` or `catalog:` protocols, and its
+`tsconfig.json` must not extend the shared config package.
+
 ## Contributing
 
-Issues and pull requests are welcome, especially for provisioners, platform coverage, and scheduler hardening. Run `pnpm install`, `pnpm build`, and `npx convex dev` before opening a pull request. Keep platform-specific lifecycle logic in `apps/agent/provisioners/`, keep credentials out of logs and source control, and document any new host dependency.
+Issues and pull requests are welcome, especially for provisioners, platform coverage, and scheduler hardening. Run `pnpm install` and `pnpm check` (lint, format, typecheck) before opening a pull request. Keep platform-specific lifecycle logic in `apps/agent/provisioners/`, keep credentials out of logs and source control, and document any new host dependency.
 
 ## License
 

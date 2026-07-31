@@ -33,10 +33,7 @@ export const issueJit = internalAction({
           throw new Error("GITHUB_APP_ID must be a positive integer");
         }
         const privateKeyValue = process.env.GITHUB_APP_PRIVATE_KEY;
-        if (
-          privateKeyValue === undefined ||
-          privateKeyValue.trim().length === 0
-        ) {
+        if (privateKeyValue === undefined || privateKeyValue.trim().length === 0) {
           throw new Error("GITHUB_APP_PRIVATE_KEY is not configured");
         }
 
@@ -47,9 +44,7 @@ export const issueJit = internalAction({
           appId: Number(appIdValue),
           privateKey,
         });
-        octokit = await app.getInstallationOctokit(
-          args.githubInstallationId,
-        );
+        octokit = await app.getInstallationOctokit(args.githubInstallationId);
       } else {
         const token = process.env.GITHUB_PAT;
         if (token === undefined || token.length === 0) {
@@ -79,9 +74,7 @@ export const issueJit = internalAction({
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(
-        `Failed to issue JIT config for ${args.repo}/${args.runnerName}: ${message}`,
-      );
+      console.error(`Failed to issue JIT config for ${args.repo}/${args.runnerName}: ${message}`);
       await ctx.runMutation(internal.scheduler.revertAssignment, {
         commandId: args.commandId,
         jobId: args.jobId,

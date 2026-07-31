@@ -24,17 +24,20 @@ export const tryAssign = internalMutation({
     let assigned = 0;
 
     for (const job of queuedJobs) {
-      const candidate = machines.find(({ doc, usedSlots }) => {
-        if (usedSlots >= doc.maxSlots || now - doc.lastSeen >= 120_000) {
-          return false;
+      let candidate: (typeof machines)[number] | undefined;
+      let catalogEntry: ReturnType<typeof selectImageForMachine>;
+      for (const machine of machines) {
+        if (machine.usedSlots >= machine.doc.maxSlots || now - machine.doc.lastSeen >= 120_000) {
+          continue;
         }
-        return selectImageForMachine(job.labels, doc) !== undefined;
-      });
-      if (candidate === undefined) {
-        continue;
+        const entry = selectImageForMachine(job.labels, machine.doc);
+        if (entry !== undefined) {
+          candidate = machine;
+          catalogEntry = entry;
+          break;
+        }
       }
-      const catalogEntry = selectImageForMachine(job.labels, candidate.doc);
-      if (catalogEntry === undefined) {
+      if (candidate === undefined || catalogEntry === undefined) {
         continue;
       }
 
@@ -98,10 +101,7 @@ export const revertAssignment = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
-    const [command, job] = await Promise.all([
-      ctx.db.get(args.commandId),
-      ctx.db.get(args.jobId),
-    ]);
+    const [command, job] = await Promise.all([ctx.db.get(args.commandId), ctx.db.get(args.jobId)]);
     if (
       command === null ||
       job === null ||

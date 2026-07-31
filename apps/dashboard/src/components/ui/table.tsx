@@ -4,10 +4,7 @@ import { cn } from "@/lib/utils";
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div className="relative w-full overflow-auto">
-      <table
-        className={cn("w-full caption-bottom text-[13px]", className)}
-        {...props}
-      />
+      <table className={cn("w-full caption-bottom text-[13px]", className)} {...props} />
     </div>
   );
 }
@@ -59,13 +56,4 @@ function TableCaption({ className, ...props }: React.ComponentProps<"caption">) 
   return <caption className={cn("mt-4 text-sm text-[#8a8a93]", className)} {...props} />;
 }
 
-export {
-  Table,
-  TableHeader,
-  TableBody,
-  TableFooter,
-  TableHead,
-  TableRow,
-  TableCell,
-  TableCaption,
-};
+export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption };

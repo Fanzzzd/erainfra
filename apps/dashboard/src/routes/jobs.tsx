@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { ListChecks } from "lucide-react";
-import { api } from "@convex/_generated/api";
+import { api } from "@runner-center/backend/api";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -13,11 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useNow } from "@/hooks/use-now";
-import {
-  formatAbsoluteTime,
-  formatDuration,
-  formatRelativeTime,
-} from "@/lib/time";
+import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/jobs")({ component: JobsPage });
@@ -39,7 +35,7 @@ function JobsPage() {
 
   const orderedJobs = useMemo(() => {
     if (jobs === undefined) return undefined;
-    return [...jobs].sort((a, b) => {
+    return jobs.toSorted((a, b) => {
       const queuedDifference = b.queuedAt - a.queuedAt;
       if (queuedDifference !== 0) return queuedDifference;
       return String(b._id).localeCompare(String(a._id));
@@ -96,16 +92,17 @@ function JobsPage() {
               onClick={() => setFilter(item.value)}
             >
               {item.label}
-              <span className="tabular-nums text-[10px] text-[#7c7c85]">
-                {counts[item.value]}
-              </span>
+              <span className="tabular-nums text-[10px] text-[#7c7c85]">{counts[item.value]}</span>
             </button>
           ))}
         </div>
         <span className="text-xs text-[#7c7c85]">Newest first</span>
       </div>
 
-      <section className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]" aria-labelledby="jobs-heading">
+      <section
+        className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
+        aria-labelledby="jobs-heading"
+      >
         <div className="flex h-12 items-center gap-2.5 border-b border-white/[0.08] px-4">
           <h2 id="jobs-heading" className="text-sm font-medium text-zinc-200">
             Job history
@@ -165,13 +162,14 @@ function JobsPage() {
                     <TableCell>
                       <JobStatusBadge status={job.status} />
                       {job.conclusion && job.status === "failed" && (
-                        <div className="mt-1 pl-2 text-[10px] text-[#7c7c85]">
-                          {job.conclusion}
-                        </div>
+                        <div className="mt-1 pl-2 text-[10px] text-[#7c7c85]">{job.conclusion}</div>
                       )}
                     </TableCell>
                     <TableCell>
-                      <div className="max-w-[190px] truncate font-mono text-[12px] text-zinc-200" title={job.repo}>
+                      <div
+                        className="max-w-[190px] truncate font-mono text-[12px] text-zinc-200"
+                        title={job.repo}
+                      >
                         {job.repo}
                       </div>
                       <div className="tabular-nums mt-0.5 font-mono text-[10px] text-[#7c7c85]">
@@ -179,13 +177,19 @@ function JobsPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="max-w-[180px] truncate text-zinc-300" title={job.workflowName}>
+                      <div
+                        className="max-w-[180px] truncate text-zinc-300"
+                        title={job.workflowName}
+                      >
                         {job.workflowName}
                       </div>
                     </TableCell>
                     <TableCell>
                       {job.machineName ? (
-                        <span className="inline-block max-w-[160px] truncate align-middle text-zinc-300" title={job.runnerName}>
+                        <span
+                          className="inline-block max-w-[160px] truncate align-middle text-zinc-300"
+                          title={job.runnerName}
+                        >
                           {job.machineName}
                         </span>
                       ) : (

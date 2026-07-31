@@ -16,10 +16,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
-      "@convex": path.resolve(import.meta.dirname, "../../convex"),
     },
   },
   server: {
+    // The backend package is a workspace symlink outside this app's root.
     fs: {
       allow: [path.resolve(import.meta.dirname, "../..")],
     },

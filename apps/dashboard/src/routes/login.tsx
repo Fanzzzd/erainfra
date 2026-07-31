@@ -49,7 +49,10 @@ function LoginPage() {
           <span className="mt-3 text-sm font-medium text-zinc-200">Runner Center</span>
         </div>
 
-        <section className="rounded-lg border border-white/[0.09] bg-[#0d0d0f] p-5" aria-labelledby="login-heading">
+        <section
+          className="rounded-lg border border-white/[0.09] bg-[#0d0d0f] p-5"
+          aria-labelledby="login-heading"
+        >
           <div className="mb-5">
             <h1 id="login-heading" className="text-lg font-semibold tracking-tight text-zinc-100">
               {isSignIn ? "Sign in" : "Create account"}
