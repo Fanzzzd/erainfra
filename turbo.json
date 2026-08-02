@@ -12,6 +12,10 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
     "codegen": {
       "cache": false
     },

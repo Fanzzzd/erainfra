@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "convex dev",
     "codegen": "convex codegen",
+    "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
     "typecheck": "tsc -p convex/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
     "deploy": "static-hosting deploy --dist ../../apps/dashboard/dist --build-command \"pnpm --filter @runner-center/dashboard build\"",
     "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts"
