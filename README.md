@@ -147,11 +147,13 @@ pnpm convex env set GITHUB_PAT '<classic-github-pat-with-repo-scope>'
 
 The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**.
 
+This path cannot recover deliveries that never arrive — see [Recovering lost deliveries](#recovering-lost-deliveries). A webhook GitHub fails to deliver on this path is lost, and the job it carried waits out GitHub's 24-hour queue timeout.
+
 #### Migrating off the legacy path
 
 Work through these in order. Disabling the old webhooks before removing anything avoids overlapping deliveries after assignment has begun:
 
-1. Connect the App from the dashboard and install it on the target repositories.
+1. Connect the App from the dashboard and install it on the target repositories. Recovery of deliveries GitHub failed to make starts working from this point on.
 2. Confirm a workflow job is delivered and assigned through the App.
 3. Disable or delete the per-repository webhooks.
 4. Wait for jobs already received through them to finish.
@@ -312,6 +314,7 @@ A Convex cron runs every 60 seconds and repairs control-plane state:
 - queued jobs expire after 24 hours;
 - each machine's used-slot count is rebuilt from active assigned and running jobs;
 - webhook deliveries still pending after 60 seconds are retried, and abandoned after 5 attempts;
+- settled webhook deliveries are kept for 7 days — deliberately longer than the window GitHub can redeliver from, so a delivery that has already been processed can never look lost to the recovery scan;
 - abandoned JIT runner registrations are deleted from GitHub;
 - requeued work is sent back through the scheduler immediately.
 
@@ -322,6 +325,24 @@ Agents heartbeat every 30 seconds. A machine is schedulable while its latest hea
 `POST /github/webhook` verifies the signature, records the delivery keyed by `X-GitHub-Delivery`, and returns `202` immediately; a scheduled mutation does the work. GitHub marks any response slower than 10 seconds as failed and never redelivers on its own, so the recorded delivery is what makes a transient backend error survivable.
 
 Because the delivery id is the key, a redelivery is a no-op rather than a second job. Delivery order is not guaranteed either: if `in_progress` or `completed` arrives for a job Runner Center has never seen, the job is recorded in that state, so a late `queued` cannot provision a runner for work that has already finished.
+
+### Recovering lost deliveries
+
+Retrying a recorded delivery only helps once it has arrived. A delivery that never reached the deployment at all — a cold start, a rotated secret rejected with `401`, a response slower than 10 seconds — leaves no record to retry, and GitHub does not resend it. The workflow then waits in GitHub's queue until it is cancelled 24 hours later, with nothing in the dashboard to explain it.
+
+A second cron runs every 5 minutes, lists the App's recent webhook deliveries, and asks GitHub to redeliver the failed ones this deployment has no record of. Nothing about intake changes: the redelivery arrives with the same `X-GitHub-Delivery`, so a redelivery that races a late original is still a duplicate rather than a second job.
+
+It is bounded on every axis:
+
+- deliveries GitHub recorded as **successful are never redelivered**, even when no job came of them — that is what keeps events Runner Center deliberately ignores from being requested forever;
+- deliveries older than 24 hours are skipped, because GitHub has already cancelled the job;
+- at most 3 pages (300 deliveries) are examined and 20 redeliveries requested per run;
+- each delivery is requested at most 3 times, with a growing gap (1m, 5m, 30m), and is then given up on;
+- a run that fails widens the gap before the next one (1m, 5m, 15m, 1h), so a revoked App does not keep both sides busy.
+
+**This requires a GitHub App.** The `/app/hook/deliveries` endpoints are authenticated with a JWT signed by the App's private key, which a classic PAT cannot produce, and the per-repository equivalent would need a webhook ID Runner Center never sees plus `read:repo_hook`/`write:repo_hook`. On the legacy path the scan exits without making a request and the dashboard says so. Recovering lost deliveries is one of the things [migrating to an App](#migrating-off-the-legacy-path) buys.
+
+The **Intake health** panel on the Jobs page shows the last scan, how many deliveries were missing, how many redeliveries were requested, and how many were recovered or given up on. Errors are recorded by HTTP status alone — a delivery's payload and this deployment's own response are never fetched, so neither can reach a log.
 
 ### Provisioning attempts
 
@@ -345,6 +366,7 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 
 - GitHub credentials never leave the Convex deployment. An app created through the Manifest flow lives in the `githubApp` table, read only by internal functions; a hand-registered app lives in `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET`, alongside the optional legacy `GITHUB_PAT`.
 - No client-facing query returns the private key or webhook secret; the dashboard sees only the app ID, client ID, name, and install URL. Conversion failures are logged by HTTP status alone, never by response body.
+- Delivery recovery lists and redelivers only. It never calls `GET /app/hook/deliveries/{delivery_id}`, the one endpoint that returns a delivery's request payload, request headers, and this deployment's own response body — so none of that is ever fetched, stored, or logged. GitHub failures are recorded by status code alone.
 - The GitHub App requests `administration: write` and `actions: read` only, and can be limited to selected repositories.
 - Only repositories named in `ALLOWED_REPOS` can queue work, and a public repository additionally needs `ALLOW_PUBLIC_REPOS`. The check runs before a job row is created, so a repository you have not named never reaches a machine.
 - Jobs stored with an App installation ID use it to obtain an installation-scoped token and never fall back to the legacy PAT; if no app is configured, the job fails closed with a setup error rather than downgrading.

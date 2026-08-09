@@ -80,6 +80,58 @@ export default defineSchema({
     .index("by_deliveryId", ["deliveryId"])
     .index("by_status", ["status"]),
 
+  // One row per delivery GUID we have asked GitHub to redeliver. Some
+  // deliveries can never be accepted — a payload parseWorkflowJob rejects, a
+  // signature from a retired secret — and without this row they would be
+  // re-requested on every run for the whole window GitHub keeps them.
+  //
+  // `guid` is GitHub's delivery GUID, which is what it sends as
+  // X-GitHub-Delivery and therefore what `webhookDeliveries.deliveryId` holds
+  // once a delivery finally lands.
+  webhookRecovery: defineTable({
+    guid: v.string(),
+    // GitHub's numeric id for the failed attempt we asked it to repeat.
+    githubDeliveryId: v.number(),
+    event: v.string(),
+    deliveredAt: v.number(),
+    // The status GitHub recorded for that attempt, so an operator can tell a
+    // rotated secret (401) from a cold deployment (0 or 5xx).
+    statusCode: v.number(),
+    // Redelivery requests we made, capped by recovery.MAX_RECOVERY_ATTEMPTS.
+    attempts: v.number(),
+    firstRequestedAt: v.number(),
+    lastRequestedAt: v.number(),
+    nextAttemptAt: v.number(),
+    state: v.union(v.literal("requested"), v.literal("recovered"), v.literal("abandoned")),
+    // Status-code text only; a GitHub response body never reaches this field.
+    lastError: v.optional(v.string()),
+  })
+    .index("by_guid", ["guid"])
+    .index("by_state", ["state"]),
+
+  // Singleton run record for the recovery cron: the watermark it scans from and
+  // the circuit breaker that stops it from hammering GitHub — or its own
+  // deployment — every five minutes when something is broken.
+  webhookRecoveryState: defineTable({
+    scannedThrough: v.number(),
+    lastRunAt: v.number(),
+    lastSuccessAt: v.optional(v.number()),
+    nextRunAt: v.number(),
+    consecutiveFailures: v.number(),
+    lastOutcome: v.union(
+      v.literal("pending"),
+      v.literal("ok"),
+      v.literal("skipped-no-app"),
+      v.literal("skipped-backoff"),
+      v.literal("error"),
+    ),
+    lastError: v.optional(v.string()),
+    // Counters from the most recent completed scan.
+    listed: v.number(),
+    missing: v.number(),
+    requested: v.number(),
+  }),
+
   jobs: defineTable({
     ghJobId: v.number(),
     githubInstallationId: v.optional(v.number()),

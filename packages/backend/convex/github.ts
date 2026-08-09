@@ -5,6 +5,14 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, type ActionCtx } from "./_generated/server";
 import { resolveAppCredentials } from "./githubAppConfig";
+import {
+  parseNextCursor,
+  PER_PAGE,
+  runRecovery,
+  type FinishRecoveryRun,
+  type RecoveryCandidate,
+  type RecoveryClient,
+} from "./recovery";
 
 function splitRepo(fullName: string) {
   const [owner, repo, extra] = fullName.split("/");
@@ -53,6 +61,34 @@ async function octokitFor(
     );
   }
   return new Octokit({ auth: token });
+}
+
+/**
+ * A client authenticated as the App itself, with a JWT rather than an
+ * installation token. Every `/app/hook/*` endpoint requires one: "You must use
+ * a JWT to access this endpoint." `@octokit/app` builds `App.octokit` on
+ * createAppAuth, so app-level routes are signed automatically.
+ *
+ * Same credential precedence as `octokitFor`: the record the Manifest flow
+ * stored outranks GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY.
+ *
+ * Returns null instead of throwing when no App is configured. A deployment on
+ * the legacy GITHUB_PAT cannot mint a JWT — there is no App to sign as — so
+ * that is a capability it does not have, not a failure it should back off from.
+ * The private key is read here, handed to `App`, and never returned or logged;
+ * `resolveAppCredentials`'s guidance message is for the dashboard, not for a
+ * log line repeated every five minutes.
+ */
+async function appOctokit(ctx: ActionCtx): Promise<Octokit | null> {
+  const stored = await ctx.runQuery(internal.githubApp.credentials, {});
+  const resolved = resolveAppCredentials(stored, {
+    appId: process.env.GITHUB_APP_ID,
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
+  });
+  if (!resolved.ok) {
+    return null;
+  }
+  return new App({ appId: resolved.appId, privateKey: resolved.privateKey }).octokit;
 }
 
 function describeError(error: unknown) {
@@ -191,5 +227,69 @@ export const drainRunnerDeletions = internalAction({
       }
     }
     return { deleted, failed };
+  },
+});
+
+/**
+ * Ask GitHub to redeliver workflow_job events that never reached this
+ * deployment. See recovery.ts for the algorithm and why the delivery GUID makes
+ * it safe; this function is only the wiring.
+ *
+ * Two endpoints are used, both app-scoped and both JWT-authenticated:
+ *   GET  /app/hook/deliveries
+ *   POST /app/hook/deliveries/{delivery_id}/attempts
+ *
+ * The third, `GET /app/hook/deliveries/{delivery_id}`, is deliberately never
+ * called. It is the only one that returns `request.payload`, `request.headers`
+ * (including X-Hub-Signature-256) and `response.payload` — the event body and
+ * this deployment's own response to it. The list endpoint returns none of that,
+ * so not calling it is what keeps both out of this process and out of the logs.
+ */
+export const recoverLostDeliveries = internalAction({
+  args: {},
+  returns: v.object({ listed: v.number(), missing: v.number(), requested: v.number() }),
+  handler: async (ctx): Promise<{ listed: number; missing: number; requested: number }> => {
+    const openClient = async (): Promise<RecoveryClient | null> => {
+      const octokit = await appOctokit(ctx);
+      if (octokit === null) {
+        return null;
+      }
+      return {
+        listDeliveries: async (cursor) => {
+          const response = await octokit.request("GET /app/hook/deliveries", {
+            per_page: PER_PAGE,
+            ...(cursor === undefined ? {} : { cursor }),
+            headers: { "X-GitHub-Api-Version": "2022-11-28" },
+          });
+          // Cursor pagination: the next page is named in the `link` header, not
+          // by a page number.
+          return { items: response.data, nextCursor: parseNextCursor(response.headers.link) };
+        },
+        redeliver: async (githubDeliveryId: number) => {
+          await octokit.request("POST /app/hook/deliveries/{delivery_id}/attempts", {
+            delivery_id: githubDeliveryId,
+            headers: { "X-GitHub-Api-Version": "2022-11-28" },
+          });
+        },
+      };
+    };
+
+    const result = await runRecovery({
+      now: () => Date.now(),
+      reconcile: (now: number) => ctx.runMutation(internal.webhooks.reconcileRecovered, { now }),
+      begin: (now: number) => ctx.runMutation(internal.webhooks.beginRecoveryRun, { now }),
+      openClient,
+      missingGuids: (guids: string[]) => ctx.runQuery(internal.webhooks.missingGuids, { guids }),
+      claim: (now: number, candidates: RecoveryCandidate[]) =>
+        ctx.runMutation(internal.webhooks.claimRecovery, { now, candidates }),
+      settle: async (guid: string, ok: boolean, error?: string) => {
+        await ctx.runMutation(internal.webhooks.settleRecovery, { guid, ok, error });
+      },
+      finish: async (finished: FinishRecoveryRun) => {
+        await ctx.runMutation(internal.webhooks.finishRecoveryRun, finished);
+      },
+    });
+
+    return { listed: result.listed, missing: result.missing, requested: result.requested };
   },
 });
