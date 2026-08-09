@@ -10,9 +10,9 @@
  * - entries are written in the caller's order (the packer sorts them);
  * - every mtime is 0 and every uid/gid is 0 with empty owner names;
  * - modes come from an explicit policy, never from the source file;
- * - the gzip header is written by hand with mtime 0 and OS byte 255 (unknown).
+ * - gzip uses stored DEFLATE blocks written here, so the bytes do not depend on
+ *   the Node binary's bundled zlib version.
  */
-import { crc32, deflateRawSync } from "node:zlib";
 
 export type TarEntry = {
   /** Path inside the archive. Directory paths must end with a slash. */
@@ -27,6 +27,7 @@ const BLOCK_SIZE = 512;
 /** tar readers expect the archive to end on a 20-block boundary. */
 const RECORD_BLOCKS = 20;
 const NAME_LIMIT = 100;
+const MAX_STORED_BLOCK = 0xffff;
 
 function putString(header: Uint8Array, value: string, offset: number, size: number) {
   const bytes = Buffer.from(value, "utf8");
@@ -102,10 +103,41 @@ export function createTar(entries: readonly TarEntry[]) {
   return Buffer.concat(blocks);
 }
 
+function crc32(data: Uint8Array) {
+  let checksum = 0xffffffff;
+  for (const byte of data) {
+    checksum ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      checksum = (checksum >>> 1) ^ (0xedb88320 & -(checksum & 1));
+    }
+  }
+  return (checksum ^ 0xffffffff) >>> 0;
+}
+
 /**
- * Wrap raw deflate output in a gzip container. Node's `gzipSync` stamps a
- * platform-dependent OS byte, so the 10-byte header is written here instead.
+ * A DEFLATE stream made only from stored (uncompressed) blocks. Compression
+ * would save roughly 100 KiB here, but zlib is part of the Node binary and has
+ * produced different level-9 bytes for the same tar across supported Node 22
+ * and 24 releases. Stored blocks have one canonical representation, keeping
+ * the committed deployment checksum reproducible on every build host.
  */
+function deflateStored(data: Uint8Array) {
+  const blocks: Buffer[] = [];
+  let offset = 0;
+  do {
+    const length = Math.min(MAX_STORED_BLOCK, data.length - offset);
+    const final = offset + length === data.length;
+    const header = Buffer.alloc(5);
+    header[0] = final ? 1 : 0; // BFINAL plus BTYPE=00, then byte alignment.
+    header.writeUInt16LE(length, 1);
+    header.writeUInt16LE(~length & MAX_STORED_BLOCK, 3);
+    blocks.push(header, Buffer.from(data.subarray(offset, offset + length)));
+    offset += length;
+  } while (offset < data.length);
+  return Buffer.concat(blocks);
+}
+
+/** Wrap deterministic stored DEFLATE blocks in a normalized gzip container. */
 export function gzip(data: Uint8Array) {
   const header = Buffer.from([
     0x1f,
@@ -116,10 +148,10 @@ export function gzip(data: Uint8Array) {
     0x00,
     0x00,
     0x00, // mtime 0
-    0x02, // maximum compression
+    0x00, // no compression hint
     0xff, // unknown operating system
   ]);
-  const body = deflateRawSync(data, { level: 9 });
+  const body = deflateStored(data);
   const trailer = Buffer.alloc(8);
   trailer.writeUInt32LE(crc32(data), 0);
   trailer.writeUInt32LE(data.length >>> 0, 4);
