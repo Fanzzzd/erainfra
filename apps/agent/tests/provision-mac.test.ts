@@ -382,7 +382,10 @@ describe("provision-mac.sh VM lifecycle", () => {
   it("still honours the per-OS timeout name as a compatibility fallback", async () => {
     const harness = newHarness();
     const result = await harness.run(PROVISION_MAC, {
-      env: { RC_FAKE_RUNNER_SLEEP: "60", RC_MAC_JOB_TIMEOUT_S: "2", RC_JOB_TIMEOUT_S: "" },
+      // This case tests precedence, not prompt process-group teardown (covered
+      // above). Keep the fake job bounded so a loaded CI host cannot turn a
+      // missed TERM scheduling window into the harness's 60-second kill path.
+      env: { RC_FAKE_RUNNER_SLEEP: "5", RC_MAC_JOB_TIMEOUT_S: "1", RC_JOB_TIMEOUT_S: "" },
     });
 
     assert.equal(result.code, 124);
