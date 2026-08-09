@@ -4,6 +4,32 @@ import { v } from "convex/values";
 
 export default defineSchema({
   ...authTables,
+
+  // Single-use permission to create exactly one dashboard account. Sign-up is
+  // closed unless the caller presents a live grant: `bootstrap` grants are
+  // minted by presenting BOOTSTRAP_SECRET while the instance has no users,
+  // `invite` grants by an already-authenticated admin. Only the SHA-256 of the
+  // token is stored, so the database never holds a usable credential.
+  signupGrants: defineTable({
+    kind: v.union(v.literal("bootstrap"), v.literal("invite")),
+    tokenHash: v.string(),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    usedAt: v.optional(v.number()),
+    // Which admin issued an invite. Absent for bootstrap grants, which by
+    // definition predate every account.
+    invitedBy: v.optional(v.id("users")),
+  }).index("by_tokenHash", ["tokenHash"]),
+
+  // Failed-bootstrap throttle. At most one row: bootstrap is a single
+  // instance-wide event, and Convex mutations cannot see a client address, so
+  // the counter is deliberately global rather than per-caller.
+  bootstrapThrottle: defineTable({
+    failures: v.number(),
+    lockedUntil: v.number(),
+    updatedAt: v.number(),
+  }),
+
   machines: defineTable({
     name: v.string(),
     os: v.union(v.literal("linux"), v.literal("mac"), v.literal("win")),
