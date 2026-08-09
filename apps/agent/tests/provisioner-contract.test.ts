@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { provisionerPath, provisionInvocation } from "../provision.ts";
-import { PROVISION_LINUX, PROVISION_MAC } from "./helpers/harness.ts";
+import { PROVISION_LINUX, PROVISION_MAC, PROVISION_WIN } from "./helpers/harness.ts";
 
 const SHELL_PROVISIONERS = [PROVISION_MAC, PROVISION_LINUX];
 
@@ -64,6 +64,45 @@ describe("provisioner scripts", () => {
       !/\bJIT_CONFIG\b/.test(source),
       "the agent still puts the JIT configuration in the child's environment",
     );
+  });
+});
+
+// There is no PowerShell on the machines that run this suite, so the Windows
+// provisioner can only be checked statically. Its behaviour is unverified.
+describe("provision-win.ps1 (preview, static checks only)", () => {
+  const source = readFileSync(PROVISION_WIN, "utf8");
+
+  it("reads the JIT configuration from stdin", () => {
+    assert.match(source, /\[Console\]::In\.ReadToEnd\(\)/);
+    assert.ok(
+      !/\bJIT_CONFIG\b/.test(source),
+      "the provisioner still reads the JIT configuration from the environment",
+    );
+  });
+
+  it("hands the runner the environment variable, not an argument", () => {
+    assert.match(source, /\$env:ACTIONS_RUNNER_INPUT_JITCONFIG = \$Jit/);
+    assert.match(source, /\$env:ACTIONS_RUNNER_INPUT_JITCONFIG = \$null/);
+    assert.ok(
+      !/--jitconfig/.test(source),
+      "the provisioner still passes the JIT configuration as a command line argument",
+    );
+  });
+
+  it("returns one shaped exit-code record instead of the raw output stream", () => {
+    // `& $runner` writes to the success stream, so `return $LASTEXITCODE` alone
+    // hands the host the runner's log lines with the code buried among them.
+    assert.match(source, /ForEach-Object \{ Write-Host \$_ \}/);
+    assert.match(source, /\$code = \$LASTEXITCODE/);
+    assert.match(source, /RcExitCode = \[int\] \$code/);
+    assert.match(source, /PSObject\.Properties\['RcExitCode'\]/);
+    assert.ok(!/return \$LASTEXITCODE/.test(source));
+  });
+
+  it("honours the shared timeout names and exits 124 on expiry", () => {
+    assert.match(source, /RC_JOB_TIMEOUT_S/);
+    assert.match(source, /RC_BOOT_TIMEOUT_S/);
+    assert.match(source, /exit 124/);
   });
 });
 

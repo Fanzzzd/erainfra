@@ -11,16 +11,22 @@
 #   - a local administrator account whose credentials this script can present
 #
 # Environment:
-#   RUNNER_NAME     (required) also used as the VM name
-#   JIT_CONFIG      (required) opaque one-shot runner registration
-#   IMAGE           (required) parent VHDX name, without the .vhdx suffix
-#   RC_HOME         defaults to %USERPROFILE%\.runner-center
-#   IMAGE_USER      guest account, defaults to "runner"
-#   IMAGE_PASSWORD  guest password, defaults to the DPAPI credential file
-#   VM_CPU_COUNT    defaults to 4
-#   VM_MEMORY_GB    defaults to 8
-#   VM_SWITCH       defaults to "Default Switch"
-#   BOOT_TIMEOUT_S  defaults to 300
+#   RUNNER_NAME        (required) also used as the VM name
+#   IMAGE              (required) parent VHDX name, without the .vhdx suffix
+#   RC_HOME            defaults to %USERPROFILE%\.runner-center
+#   IMAGE_USER         guest account, defaults to "runner"
+#   IMAGE_PASSWORD     guest password, defaults to the DPAPI credential file
+#   VM_CPU_COUNT       defaults to 4
+#   VM_MEMORY_GB       defaults to 8
+#   VM_SWITCH          defaults to "Default Switch"
+#   RC_BOOT_TIMEOUT_S  defaults to 300 (BOOT_TIMEOUT_S is a fallback)
+#   RC_JOB_TIMEOUT_S   defaults to 21600 (JOB_TIMEOUT_S is a fallback); on
+#                      expiry the VM is destroyed and this exits 124, matching
+#                      the macOS and Linux provisioners
+#
+# Stdin:
+#   The opaque one-shot JIT configuration. It is read from stdin rather than an
+#   environment variable so it never appears in this host's process listing.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -40,14 +46,20 @@ function Get-EnvOrDefault([string] $Name, $Default) {
 }
 
 $runnerName = Get-RequiredEnv 'RUNNER_NAME'
-$jitConfig = Get-RequiredEnv 'JIT_CONFIG'
 $image = Get-RequiredEnv 'IMAGE'
+
+$jitConfig = [Console]::In.ReadToEnd()
+if ($null -ne $jitConfig) { $jitConfig = $jitConfig.Trim() }
+if ([string]::IsNullOrWhiteSpace($jitConfig)) {
+    throw 'Read an empty JIT configuration from stdin.'
+}
 
 $rcHome = Get-EnvOrDefault 'RC_HOME' (Join-Path $env:USERPROFILE '.runner-center')
 $cpuCount = [int] (Get-EnvOrDefault 'VM_CPU_COUNT' 4)
 $memoryGb = [int] (Get-EnvOrDefault 'VM_MEMORY_GB' 8)
 $switchName = Get-EnvOrDefault 'VM_SWITCH' 'Default Switch'
-$bootTimeout = [int] (Get-EnvOrDefault 'BOOT_TIMEOUT_S' 300)
+$bootTimeout = [int] (Get-EnvOrDefault 'RC_BOOT_TIMEOUT_S' (Get-EnvOrDefault 'BOOT_TIMEOUT_S' 300))
+$jobTimeout = [int] (Get-EnvOrDefault 'RC_JOB_TIMEOUT_S' (Get-EnvOrDefault 'JOB_TIMEOUT_S' 21600))
 
 $imageDir = Join-Path $rcHome 'images'
 $parentDisk = Join-Path $imageDir "$image.vhdx"
@@ -84,6 +96,7 @@ function Resolve-GuestCredential {
 $credential = Resolve-GuestCredential
 $vm = $null
 $session = $null
+$job = $null
 
 try {
     if (Get-VM -Name $runnerName -ErrorAction SilentlyContinue) {
@@ -118,21 +131,55 @@ try {
     Write-Host "Guest $runnerName is up; starting the ephemeral runner."
 
     # -ArgumentList serialises the JIT config over the VM socket, so it never
-    # appears in a command line or in the guest's process list.
-    $exitCode = Invoke-Command -Session $session -ArgumentList $jitConfig -ScriptBlock {
-        param($jit)
+    # appears in a command line on this host. Inside the guest it goes into
+    # ACTIONS_RUNNER_INPUT_JITCONFIG, the only input upstream's Runner.Listener
+    # accepts that is not argv. Passing it as a command line argument instead
+    # would publish it in the guest's process list for the whole job.
+    #
+    # The runner's own output is routed through Write-Host so it cannot join the
+    # scriptblock's result stream, and $LASTEXITCODE is captured immediately and
+    # returned as a single shaped object. Selecting that object by shape is what
+    # keeps an unexpected extra output record from being mistaken for the exit
+    # code.
+    $guestScript = {
+        param($Jit)
         $runner = 'C:\actions-runner\run.cmd'
         if (-not (Test-Path -LiteralPath $runner)) {
-            Write-Error "The image does not contain $runner"
-            return 1
+            Write-Host "The image does not contain $runner"
+            return [pscustomobject]@{ RcExitCode = 1 }
         }
-        & $runner --jitconfig $jit
-        return $LASTEXITCODE
+
+        $env:ACTIONS_RUNNER_INPUT_JITCONFIG = $Jit
+        $env:ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE = '1'
+        try {
+            & $runner 2>&1 | ForEach-Object { Write-Host $_ }
+            $code = $LASTEXITCODE
+            if ($null -eq $code) { $code = 1 }
+            return [pscustomobject]@{ RcExitCode = [int] $code }
+        } finally {
+            $env:ACTIONS_RUNNER_INPUT_JITCONFIG = $null
+        }
     }
 
-    if ($null -eq $exitCode) { $exitCode = 1 }
-    exit [int] $exitCode
+    $job = Invoke-Command -Session $session -AsJob -ArgumentList $jitConfig -ScriptBlock $guestScript
+
+    if ($null -eq (Wait-Job -Job $job -Timeout $jobTimeout)) {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue
+        Write-Host "The job exceeded RC_JOB_TIMEOUT_S (${jobTimeout}s); destroying $runnerName."
+        exit 124
+    }
+
+    $exitRecord = @(Receive-Job -Job $job -ErrorAction SilentlyContinue) |
+        Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['RcExitCode'] } |
+        Select-Object -Last 1
+
+    if ($null -eq $exitRecord) { exit 1 }
+    exit [int] $exitRecord.RcExitCode
 } finally {
+    if ($null -ne $job) {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
     if ($null -ne $session) {
         Remove-PSSession -Session $session -ErrorAction SilentlyContinue
     }
