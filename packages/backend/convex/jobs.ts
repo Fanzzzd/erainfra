@@ -1,9 +1,9 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, query, type MutationCtx } from "./_generated/server";
 import { requireDashboardAuth } from "./dashboardAuth";
-import { enqueueRunnerDeletion } from "./runners";
+import { discardCommand, enqueueRunnerDeletion } from "./runners";
 
 const jobStatusValidator = v.union(
   v.literal("queued"),
@@ -64,6 +64,7 @@ export type WorkflowJobEvent = {
   repoIsPublic: boolean;
   workflowName: string;
   labels: string[];
+  runnerName?: string;
   conclusion?: string;
 };
 
@@ -72,6 +73,118 @@ function commandsForJob(ctx: MutationCtx, jobId: Id<"jobs">) {
     .query("commands")
     .withIndex("by_jobId", (q) => q.eq("jobId", jobId))
     .collect();
+}
+
+/**
+ * A repository-scoped JIT config is constrained by labels, not by workflow job
+ * id. When several compatible jobs are queued, GitHub may therefore hand the
+ * runner we provisioned for one row to another. The in-progress/completed
+ * webhook's runner_name is the source of truth: move the live command and its
+ * machine slot to the job GitHub actually started, then put the displaced job
+ * back at the front of the queue without treating the reassignment as a
+ * provisioning failure. Its attempt number stays consumed so the next runner
+ * name remains unique while GitHub removes the ephemeral registration.
+ */
+async function adoptRunnerAssignment(
+  ctx: MutationCtx,
+  actual: Doc<"jobs">,
+  runnerName: string | undefined,
+  now: number,
+) {
+  if (runnerName === undefined || actual.status === "done" || actual.status === "failed") {
+    return actual;
+  }
+
+  const command = await ctx.db
+    .query("commands")
+    .withIndex("by_runnerName", (q) => q.eq("runnerName", runnerName))
+    .unique();
+  if (command === null || command.status === "cancelled") {
+    return actual;
+  }
+
+  const provisioned = await ctx.db.get(command.jobId);
+  if (
+    provisioned === null ||
+    provisioned.repo !== actual.repo ||
+    provisioned.status !== "assigned"
+  ) {
+    return actual;
+  }
+
+  if (provisioned._id !== actual._id) {
+    // A running row already has an authoritative runner. Do not let a stale or
+    // duplicated webhook steal it from underneath the live command.
+    if (
+      actual.status === "running" &&
+      (actual.runnerName !== undefined || actual.machineId !== undefined)
+    ) {
+      return actual;
+    }
+
+    const previousCommands = await commandsForJob(ctx, actual._id);
+    const previousCommand = previousCommands.find(
+      (candidate) =>
+        candidate.runnerName === actual.runnerName &&
+        candidate.machineId === actual.machineId &&
+        (candidate.status === "pending" || candidate.status === "claimed"),
+    );
+
+    await ctx.db.patch(command._id, { jobId: actual._id });
+    if (actual.status === "assigned" && previousCommand !== undefined) {
+      // Two outstanding JIT runners crossed. Preserve both slots and swap the
+      // still-live command mappings; GitHub may already be starting the second
+      // runner on the displaced job, so destroying it here would race that
+      // webhook and could kill useful work.
+      await ctx.db.patch(previousCommand._id, { jobId: provisioned._id });
+      await ctx.db.patch(provisioned._id, {
+        machineId: previousCommand.machineId,
+        runnerName: previousCommand.runnerName,
+        nextAttemptAt: undefined,
+      });
+    } else {
+      // No usable assignment exists to swap back. Retire any stale commands
+      // and release their one recorded slot before requeueing the displaced
+      // job. The incoming command's slot remains occupied by `actual`.
+      for (const previous of previousCommands) {
+        await discardCommand(ctx, previous, actual);
+      }
+      if (actual.status === "assigned" && actual.machineId !== undefined) {
+        const previousMachine = await ctx.db.get(actual.machineId);
+        if (previousMachine !== null) {
+          await ctx.db.patch(previousMachine._id, {
+            usedSlots: Math.max(0, previousMachine.usedSlots - 1),
+          });
+        }
+        await ctx.scheduler.runAfter(0, internal.github.drainRunnerDeletions, {});
+      }
+      await ctx.db.patch(provisioned._id, {
+        status: "queued",
+        machineId: undefined,
+        runnerName: undefined,
+        nextAttemptAt: undefined,
+      });
+    }
+  }
+
+  const adopted = {
+    ...actual,
+    status: "running" as const,
+    machineId: command.machineId,
+    runnerName,
+    startedAt: actual.startedAt ?? now,
+    attempts: provisioned._id === actual._id ? actual.attempts : (actual.attempts ?? 0) + 1,
+    nextAttemptAt: undefined,
+  };
+  await ctx.db.patch(actual._id, {
+    status: adopted.status,
+    machineId: adopted.machineId,
+    runnerName: adopted.runnerName,
+    startedAt: adopted.startedAt,
+    attempts: adopted.attempts,
+    nextAttemptAt: undefined,
+  });
+  return adopted;
 }
 
 /**
@@ -86,7 +199,7 @@ function commandsForJob(ctx: MutationCtx, jobId: Id<"jobs">) {
  * instead of provisioning a runner for a job that has already moved on.
  */
 export async function applyWorkflowJob(ctx: MutationCtx, args: WorkflowJobEvent) {
-  const existing = await ctx.db
+  let existing = await ctx.db
     .query("jobs")
     .withIndex("by_ghJobId", (q) => q.eq("ghJobId", args.ghJobId))
     .first();
@@ -129,7 +242,7 @@ export async function applyWorkflowJob(ctx: MutationCtx, args: WorkflowJobEvent)
   if (args.action === "in_progress") {
     if (existing === null) {
       // Out of order: the job started before we saw it queued.
-      await ctx.db.insert("jobs", {
+      const jobId = await ctx.db.insert("jobs", {
         ghJobId: args.ghJobId,
         githubInstallationId: args.githubInstallationId,
         repo: args.repo,
@@ -140,8 +253,10 @@ export async function applyWorkflowJob(ctx: MutationCtx, args: WorkflowJobEvent)
         startedAt: now,
         attempts: 0,
       });
-      return;
+      existing = await ctx.db.get(jobId);
+      if (existing === null) return;
     }
+    existing = await adoptRunnerAssignment(ctx, existing, args.runnerName, now);
     if (existing.status === "assigned" || existing.status === "queued") {
       await ctx.db.patch(existing._id, { status: "running", startedAt: now });
     }
@@ -151,7 +266,7 @@ export async function applyWorkflowJob(ctx: MutationCtx, args: WorkflowJobEvent)
   const conclusion = args.conclusion ?? "unknown";
   const terminalStatus = conclusion === "success" ? ("done" as const) : ("failed" as const);
 
-  if (existing === null) {
+  if (existing === null && args.runnerName === undefined) {
     // Out of order: the job finished (or was cancelled) before we saw it
     // queued. Record the outcome so a late "queued" cannot resurrect it.
     await ctx.db.insert("jobs", {
@@ -168,6 +283,27 @@ export async function applyWorkflowJob(ctx: MutationCtx, args: WorkflowJobEvent)
     });
     return;
   }
+
+  if (existing === null) {
+    // A runner name proves the job did run. Create the row in that state first
+    // so ownership can move from whichever compatible queued job originally
+    // caused this JIT runner to be minted, even when "in_progress" was lost.
+    const jobId = await ctx.db.insert("jobs", {
+      ghJobId: args.ghJobId,
+      githubInstallationId: args.githubInstallationId,
+      repo: args.repo,
+      workflowName: args.workflowName,
+      labels: args.labels,
+      status: "running",
+      queuedAt: now,
+      startedAt: now,
+      attempts: 0,
+    });
+    existing = await ctx.db.get(jobId);
+    if (existing === null) return;
+  }
+
+  existing = await adoptRunnerAssignment(ctx, existing, args.runnerName, now);
 
   if (existing.status === "done" || existing.status === "failed") {
     return;
@@ -220,6 +356,7 @@ export const handleWorkflowJob = internalMutation({
     repoIsPublic: v.boolean(),
     workflowName: v.string(),
     labels: v.array(v.string()),
+    runnerName: v.optional(v.string()),
     conclusion: v.optional(v.string()),
   },
   returns: v.null(),

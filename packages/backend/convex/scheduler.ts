@@ -137,8 +137,12 @@ export const failAttempt = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
-    const job = await ctx.db.get(args.jobId);
     const command = args.commandId === undefined ? null : await ctx.db.get(args.commandId);
+    // A JIT action captures its original job id before GitHub can assign the
+    // label-matched runner to a different queued job. Reconciliation may move
+    // the command while that action is still in flight, so the command's live
+    // ownership wins over the stale action argument.
+    const job = command === null ? await ctx.db.get(args.jobId) : await ctx.db.get(command.jobId);
     const now = Date.now();
 
     if (command !== null) {

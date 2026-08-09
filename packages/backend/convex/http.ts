@@ -131,7 +131,7 @@ function parseRegistrationRequest(payload: unknown) {
   };
 }
 
-function parseWorkflowJob(payload: unknown) {
+export function parseWorkflowJob(payload: unknown) {
   if (!isRecord(payload)) {
     return null;
   }
@@ -174,6 +174,10 @@ function parseWorkflowJob(payload: unknown) {
         : "Unknown workflow";
   const conclusion =
     typeof workflowJob.conclusion === "string" ? workflowJob.conclusion : undefined;
+  const runnerName =
+    typeof workflowJob.runner_name === "string" && workflowJob.runner_name.length > 0
+      ? workflowJob.runner_name
+      : undefined;
   // Absent or malformed `private` is treated as public: the repository policy
   // fails closed rather than trusting a payload we could not read.
   const repoIsPublic = repository.private !== true;
@@ -186,6 +190,7 @@ function parseWorkflowJob(payload: unknown) {
     repoIsPublic,
     workflowName,
     labels: workflowJob.labels as string[],
+    runnerName,
     conclusion,
   };
 }

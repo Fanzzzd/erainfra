@@ -87,6 +87,181 @@ async function assignWithJit(t: Harness, ghJobId = 1, runnerId = 900) {
 }
 
 describe("assignment bookkeeping", () => {
+  it("moves a claimed runner to the same-label job GitHub actually started", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addMachine(t, "alpha");
+    await queueJob(t, 1);
+    await queueJob(t, 2);
+
+    const { commandId, current } = await assignWithJit(t, 1);
+    await t.mutation(api.agentApi.claim, { token: "token-alpha", commandId });
+    await t.mutation(internal.jobs.handleWorkflowJob, {
+      action: "in_progress",
+      ghJobId: 2,
+      githubInstallationId: 42,
+      repo: REPO,
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["self-hosted", "rc-linux"],
+      runnerName: current.runnerName,
+    });
+
+    const actual = await job(t, 2);
+    const displaced = await job(t, 1);
+    const command = await t.run(async (ctx) => ctx.db.get(commandId));
+    expect(actual.status).toBe("running");
+    expect(actual.runnerName).toBe(current.runnerName);
+    expect(actual.machineId).toBe(current.machineId);
+    expect(displaced.status).toBe("queued");
+    expect(displaced.runnerName).toBeUndefined();
+    expect(displaced.machineId).toBeUndefined();
+    expect(displaced.attempts).toBe(1);
+    expect(command?.jobId).toBe(actual._id);
+
+    await t.mutation(api.agentApi.report, {
+      token: "token-alpha",
+      commandId,
+      exitCode: 0,
+    });
+    await t.mutation(internal.jobs.handleWorkflowJob, {
+      action: "completed",
+      ghJobId: 2,
+      githubInstallationId: 42,
+      repo: REPO,
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["self-hosted", "rc-linux"],
+      runnerName: current.runnerName,
+      conclusion: "success",
+    });
+
+    expect((await job(t, 2)).status).toBe("done");
+    expect((await t.run(async (ctx) => ctx.db.get(commandId)))?.status).toBe("finished");
+    expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
+  });
+
+  it("swaps outstanding assignments when two same-label runners cross", async () => {
+    const t = convexTest(schema, modules);
+    await addMachine(t, "alpha", 2);
+    await queueJob(t, 1);
+    await queueJob(t, 2);
+
+    expect(await t.mutation(internal.scheduler.tryAssign, {})).toBe(2);
+    const firstBefore = await job(t, 1);
+    const secondBefore = await job(t, 2);
+    const [firstCommand, secondCommand] = await commands(t);
+    if (firstCommand === undefined || secondCommand === undefined) {
+      throw new Error("expected two commands");
+    }
+    await t.mutation(internal.jobs.handleWorkflowJob, {
+      action: "in_progress",
+      ghJobId: 2,
+      githubInstallationId: 42,
+      repo: REPO,
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["self-hosted", "rc-linux"],
+      runnerName: firstBefore.runnerName,
+    });
+
+    const firstAfter = await job(t, 1);
+    const secondAfter = await job(t, 2);
+    const firstCommandAfter = await t.run(async (ctx) => ctx.db.get(firstCommand._id));
+    const secondCommandAfter = await t.run(async (ctx) => ctx.db.get(secondCommand._id));
+    expect(secondAfter.status).toBe("running");
+    expect(secondAfter.runnerName).toBe(firstBefore.runnerName);
+    expect(firstCommandAfter?.jobId).toBe(secondAfter._id);
+    expect(firstAfter.status).toBe("assigned");
+    expect(firstAfter.runnerName).toBe(secondBefore.runnerName);
+    expect(secondCommandAfter?.jobId).toBe(firstAfter._id);
+  });
+
+  it("charges a late JIT failure to a command's swapped job", async () => {
+    const t = convexTest(schema, modules);
+    await addMachine(t, "alpha", 2);
+    await queueJob(t, 1);
+    await queueJob(t, 2);
+    await t.mutation(internal.scheduler.tryAssign, {});
+
+    const firstBefore = await job(t, 1);
+    const secondBefore = await job(t, 2);
+    const [, secondCommand] = await commands(t);
+    if (secondCommand === undefined) throw new Error("expected the second command");
+    await t.mutation(internal.jobs.handleWorkflowJob, {
+      action: "in_progress",
+      ghJobId: 2,
+      githubInstallationId: 42,
+      repo: REPO,
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["self-hosted", "rc-linux"],
+      runnerName: firstBefore.runnerName,
+    });
+
+    // issueJit captured job 2 before its command was swapped to job 1.
+    await t.mutation(internal.scheduler.failAttempt, {
+      commandId: secondCommand._id,
+      jobId: secondBefore._id,
+      error: "late JIT failure",
+    });
+
+    const displaced = await job(t, 1);
+    expect(displaced.status).toBe("queued");
+    expect(displaced.lastError).toBe("late JIT failure");
+  });
+
+  it("settles the actual job when completed arrives without in-progress", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addMachine(t, "alpha");
+    await queueJob(t, 1);
+    await queueJob(t, 2);
+
+    const { commandId, current } = await assignWithJit(t, 1, 777);
+    await t.mutation(api.agentApi.claim, { token: "token-alpha", commandId });
+    await t.mutation(internal.jobs.handleWorkflowJob, {
+      action: "completed",
+      ghJobId: 2,
+      githubInstallationId: 42,
+      repo: REPO,
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["self-hosted", "rc-linux"],
+      runnerName: current.runnerName,
+      conclusion: "success",
+    });
+
+    expect((await job(t, 2)).status).toBe("done");
+    expect((await job(t, 2)).runnerName).toBe(current.runnerName);
+    expect((await job(t, 1)).status).toBe("queued");
+    expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
+    expect((await t.run(async (ctx) => ctx.db.get(commandId)))?.jobId).toBe((await job(t, 2))._id);
+    expect(await runnerDeletions(t)).toHaveLength(0);
+  });
+
+  it("adopts a runner even when the actual job's queued event was lost", async () => {
+    const t = convexTest(schema, modules);
+    await addMachine(t, "alpha");
+    await queueJob(t, 1);
+
+    const { commandId, current } = await assignWithJit(t, 1);
+    await t.mutation(api.agentApi.claim, { token: "token-alpha", commandId });
+    await t.mutation(internal.jobs.handleWorkflowJob, {
+      action: "in_progress",
+      ghJobId: 2,
+      githubInstallationId: 42,
+      repo: REPO,
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["self-hosted", "rc-linux"],
+      runnerName: current.runnerName,
+    });
+
+    expect((await job(t, 2)).status).toBe("running");
+    expect((await job(t, 2)).runnerName).toBe(current.runnerName);
+    expect((await job(t, 1)).status).toBe("queued");
+    expect((await t.run(async (ctx) => ctx.db.get(commandId)))?.jobId).toBe((await job(t, 2))._id);
+  });
+
   it("counts an attempt and names the runner after it", async () => {
     const t = convexTest(schema, modules);
     await addMachine(t, "alpha");

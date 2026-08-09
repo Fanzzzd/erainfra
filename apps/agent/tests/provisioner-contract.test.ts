@@ -129,7 +129,10 @@ describe("provisionInvocation", () => {
     for (const os of ["linux", "mac", "win"] as const) {
       const { args, env } = provisionInvocation(os, "rc-machine-42", "some-image");
       assert.deepEqual(env, { RUNNER_NAME: "rc-machine-42", IMAGE: "some-image" });
-      assert.ok(!args.some((arg) => arg.toLowerCase().includes("jit")));
+      assert.doesNotMatch(
+        args.join("\0"),
+        /--jit-?config|ACTIONS_RUNNER_INPUT_JITCONFIG|JIT_CONFIG=/i,
+      );
     }
   });
 
