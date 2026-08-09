@@ -185,12 +185,38 @@ function parseWorkflowJob(payload: unknown) {
   };
 }
 
+// Any URL this deployment publishes — the agent installer's SITE_URL, and
+// everything the GitHub App Manifest flow hands to GitHub — is built from the
+// deployment's own configured origin, never from the request. See
+// resolveSiteUrl for why that distinction matters.
+function misconfiguredSiteUrlResponse(context: string, error: string) {
+  console.error(`${context}: ${error}. Check the deployment's Convex configuration.`);
+  return new Response(
+    "This deployment has no canonical site URL configured. Check the Convex logs and try again.",
+    {
+      status: 500,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}
+
 http.route({
   path: "/install",
   method: "GET",
-  handler: httpAction(async (_ctx, request) => {
-    const siteUrl = new URL(request.url).origin;
-    return new Response(renderInstallScript(siteUrl), {
+  handler: httpAction(async () => {
+    // The installer bakes this origin into the machine's agent config, so it
+    // has to be the deployment's own, not whatever Host the request carried.
+    // Failing closed is safe for the documented `curl -fsSL … | bash`: curl
+    // aborts on 5xx and pipes nothing.
+    const site = resolveSiteUrl(process.env.CONVEX_SITE_URL);
+    if (!site.ok) {
+      return misconfiguredSiteUrlResponse("Refusing to render the agent installer", site.error);
+    }
+
+    return new Response(renderInstallScript(site.siteUrl), {
       status: 200,
       headers: { "Content-Type": "text/x-shellscript; charset=utf-8" },
     });
@@ -323,24 +349,6 @@ http.route({
     return jsonResponse({ "runs-on": available ? selfHostedLabels : fallback }, 200);
   }),
 });
-
-// Every URL the Manifest flow hands to GitHub — homepage, webhook, OAuth
-// redirect — and the dashboard redirect afterwards is built from the
-// deployment's own configured origin, never from the request. See
-// resolveSiteUrl for why that distinction matters.
-function misconfiguredSiteUrlResponse(context: string, error: string) {
-  console.error(`${context}: ${error}. Check the deployment's Convex configuration.`);
-  return new Response(
-    "This deployment has no canonical site URL configured. Check the Convex logs and try again.",
-    {
-      status: 500,
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    },
-  );
-}
 
 // Step 1 of the GitHub App Manifest flow. The dashboard mints a single-use
 // state and sends the operator here; GitHub only accepts a manifest as a form
