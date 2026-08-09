@@ -147,6 +147,18 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  packages/release:
+    devDependencies:
+      '@runner-center/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.11
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   packages/typescript-config: {}
 
 packages:
