@@ -11,6 +11,32 @@ function commandsForJob(ctx: MutationCtx, jobId: Id<"jobs">) {
     .collect();
 }
 
+// Operator control: change how many concurrent jobs a machine may claim.
+export const setMachineMaxSlots = internalMutation({
+  args: {
+    machineId: v.id("machines"),
+    maxSlots: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (!Number.isInteger(args.maxSlots) || args.maxSlots < 1 || args.maxSlots > 128) {
+      throw new Error("maxSlots must be an integer between 1 and 128");
+    }
+    const machine = await ctx.db.get(args.machineId);
+    if (machine === null) {
+      throw new Error("Machine not found");
+    }
+    if (args.maxSlots < machine.usedSlots) {
+      throw new Error(
+        `maxSlots cannot be lower than the machine's ${machine.usedSlots} active slot(s)`,
+      );
+    }
+    await ctx.db.patch(machine._id, { maxSlots: args.maxSlots });
+    await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
+    return null;
+  },
+});
+
 // Operator cleanup: remove a machine and any commands pointing at it.
 export const deleteMachine = internalMutation({
   args: { machineId: v.id("machines") },
