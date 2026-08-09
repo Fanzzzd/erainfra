@@ -2,6 +2,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "../convex/_generated/api";
 import schema from "../convex/schema";
+import { parseWorkflowJob } from "../convex/http";
 import { githubMock } from "./support/githubMock.ts";
 
 // The real `github` module is swapped out: convex-test executes scheduled
@@ -20,6 +21,7 @@ type WorkflowJob = {
   repoIsPublic: boolean;
   workflowName: string;
   labels: string[];
+  runnerName?: string;
   conclusion?: string;
 };
 
@@ -69,6 +71,27 @@ function deliveries(t: Harness) {
 beforeEach(() => {
   vi.stubEnv("ALLOWED_REPOS", "acme/app");
   vi.stubEnv("ALLOW_PUBLIC_REPOS", "");
+});
+
+describe("workflow_job payload parsing", () => {
+  it("retains GitHub's actual runner name for assignment reconciliation", () => {
+    expect(
+      parseWorkflowJob({
+        action: "in_progress",
+        workflow_job: {
+          id: 1234,
+          workflow_name: "CI",
+          labels: ["self-hosted", "macos-15"],
+          runner_name: "rc-host-5678-1",
+        },
+        repository: { full_name: "acme/app", private: true },
+        installation: { id: 42 },
+      }),
+    ).toMatchObject({
+      ghJobId: 1234,
+      runnerName: "rc-host-5678-1",
+    });
+  });
 });
 
 describe("repository allowlist", () => {

@@ -96,6 +96,7 @@ export default defineSchema({
         repoIsPublic: v.boolean(),
         workflowName: v.string(),
         labels: v.array(v.string()),
+        runnerName: v.optional(v.string()),
         conclusion: v.optional(v.string()),
       }),
     ),
@@ -209,7 +210,8 @@ export default defineSchema({
     exitCode: v.optional(v.number()),
   })
     .index("by_machine_status", ["machineId", "status"])
-    .index("by_jobId", ["jobId"]),
+    .index("by_jobId", ["jobId"])
+    .index("by_runnerName", ["runnerName"]),
 
   // Work queue for deleting JIT runner registrations that were created on
   // GitHub but never consumed. Mutations cannot call GitHub, so they enqueue

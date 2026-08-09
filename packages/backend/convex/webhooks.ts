@@ -26,6 +26,7 @@ const workflowJobValidator = v.object({
   repoIsPublic: v.boolean(),
   workflowName: v.string(),
   labels: v.array(v.string()),
+  runnerName: v.optional(v.string()),
   conclusion: v.optional(v.string()),
 });
 
