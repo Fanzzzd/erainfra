@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
@@ -26,13 +26,13 @@ describe("provisioner scripts", () => {
     });
 
     it(`${script.split("/").pop()} passes shellcheck`, (t) => {
-      try {
-        execFileSync("shellcheck", ["--version"], { stdio: "ignore" });
-      } catch {
+      const version = spawnSync("shellcheck", ["--version"], { encoding: "utf8" });
+      if (version.error !== undefined) {
         t.skip("shellcheck is not installed");
         return;
       }
-      execFileSync("shellcheck", ["-s", "bash", script], { stdio: "pipe" });
+      const result = spawnSync("shellcheck", ["-s", "bash", script], { encoding: "utf8" });
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
     });
 
     it(`${script.split("/").pop()} takes the JIT configuration on stdin only`, () => {
