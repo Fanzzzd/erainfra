@@ -58,13 +58,51 @@ pnpm convex dev --once
 (cd packages/backend && npx @convex-dev/auth)
 ```
 
-Choose a random webhook secret, then create a GitHub App from the settings for the target user or organization. Keep the app private by allowing installation only on that account, and use these settings:
+Deploy the Convex backend and hosted dashboard:
+
+```bash
+pnpm deploy
+```
+
+Open `https://<deployment>.convex.site`, choose **Sign up**, and create the first account.
+
+### Connect GitHub
+
+The dashboard shows a **Connect GitHub** card until GitHub credentials exist. Enter an organization login to own the app there, or leave the field empty to create it under your personal account, then choose **Create GitHub App**. Runner Center uses the [GitHub App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest): GitHub shows you a preconfigured app to confirm, then hands the App ID, client ID, private key, and webhook secret straight back to your deployment. There is no app form to fill in and no environment variable to copy.
+
+The generated app is private to that account and requests only what Runner Center uses:
+
+| Setting                | Value                                             |
+| ---------------------- | ------------------------------------------------- |
+| Webhook URL            | `https://<deployment>.convex.site/github/webhook` |
+| Repository permissions | `administration: write`, `actions: read`          |
+| Events                 | Workflow jobs                                     |
+
+`administration: write` is what creating and deleting a JIT runner requires (`POST`/`DELETE /repos/{owner}/{repo}/actions/runners/…`); `actions: read` is what delivers `workflow_job` webhooks. Nothing else is requested.
+
+Because Convex environment variables are read-only at runtime, the callback cannot write to `convex env`. The credentials are stored in the `githubApp` table instead, reachable only from internal functions. **Disconnect** on the same card forgets them; the app itself stays on GitHub.
+
+After the app is created, use **Install on repositories** to install it for all repositories or only the ones Runner Center should serve. The installation ID needs no configuration; GitHub includes it in each App webhook payload. The webhook is at the site root, with no `/api` prefix.
+
+### Credential precedence
+
+| Order | Source                                     | Notes                                                                             |
+| ----- | ------------------------------------------ | --------------------------------------------------------------------------------- |
+| 1     | `githubApp` table                          | Created by **Create GitHub App**. Outranks everything below.                      |
+| 2     | `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` | Hand-registered app, for setups that prefer environment variables.                |
+| 3     | `GITHUB_PAT`                               | Legacy fallback, used only for jobs whose payload carries no App installation ID. |
+
+The dashboard keeps offering **Create GitHub App** while a PAT or a hand-registered app is in use, so an existing deployment can migrate without editing environment variables first. Webhook deliveries are verified against the stored app secret _and_ `GITHUB_WEBHOOK_SECRET`, accepting either, so App and repository webhooks both keep verifying while you cut over. A job that arrived with an App installation ID always uses App authentication and never silently falls back to the PAT.
+
+### Manual GitHub App registration
+
+Registering the app by hand still works. Choose a random webhook secret, then create a GitHub App from the settings for the target user or organization, keeping it private to that account:
 
 - **Homepage URL:** `https://<deployment>.convex.site` is sufficient
 - **Webhook:** active
 - **Webhook URL:** `https://<deployment>.convex.site/github/webhook`
 - **Webhook secret:** the random value you chose for `GITHUB_WEBHOOK_SECRET`
-- **Repository permissions → Actions:** **Read and write**. Workflow job events require read access, and the JIT runner endpoint requires write access.
+- **Repository permissions:** **Administration: Read and write** and **Actions: Read-only**
 - **Subscribe to events:** **Workflow jobs** only
 
 After creating the app, note its **App ID** and generate and download a private key PEM. Store the webhook secret, App ID, and PEM in the Convex deployment:
@@ -75,13 +113,7 @@ pnpm convex env set GITHUB_APP_ID '<github-app-id>'
 pnpm convex env set GITHUB_APP_PRIVATE_KEY "$(cat /path/to/private-key.pem)"
 ```
 
-The private key can be stored as a multiline PEM or with escaped `\n` newline sequences. Deploy the Convex backend and hosted dashboard:
-
-```bash
-pnpm deploy
-```
-
-From the GitHub App page, choose **Install App** and install it for all repositories or only the repositories Runner Center should serve. The installation ID does not need manual configuration; GitHub includes it in each App webhook payload. The webhook is at the site root, with no `/api` prefix.
+The private key can be stored as a multiline PEM or with escaped `\n` newline sequences.
 
 ### Legacy PAT and repository webhook fallback
 
@@ -91,9 +123,11 @@ Existing setups can keep a classic PAT and one webhook per repository. This path
 pnpm convex env set GITHUB_PAT '<classic-github-pat-with-repo-scope>'
 ```
 
-The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**. A job stored with an App installation ID always uses installation authentication and never falls back to the PAT. When migrating, install the App, disable the old repository webhooks, wait for jobs already received through them to finish, and then remove the PAT. Disabling the old webhooks avoids overlapping deliveries after assignment has begun.
+The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**. When migrating, connect the App, install it, disable the old repository webhooks, wait for jobs already received through them to finish, and then remove the PAT. Disabling the old webhooks avoids overlapping deliveries after assignment has begun.
 
-Open `https://<deployment>.convex.site`, choose **Sign up**, and create the first account. Go to **Machines → Add machine** and copy the generated command. Run it on the macOS or Linux host you want to register:
+### Add a machine
+
+In the dashboard, go to **Machines → Add machine** and copy the generated command. Run it on the macOS or Linux host you want to register:
 
 ```bash
 curl -fsSL https://<deployment>.convex.site/install | bash -s -- --token rcreg_xxx
@@ -254,9 +288,10 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 
 ### Security model
 
-- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and the optional legacy `GITHUB_PAT` exist only in Convex deployment environment variables.
-- The recommended GitHub App has only Actions read/write access and can be limited to selected repositories.
-- Jobs stored with an App installation ID use it to obtain an installation-scoped token and never fall back to the legacy PAT.
+- GitHub credentials never leave the Convex deployment. An app created through the Manifest flow lives in the `githubApp` table, read only by internal functions; a hand-registered app lives in `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET`, alongside the optional legacy `GITHUB_PAT`.
+- No client-facing query returns the private key or webhook secret; the dashboard sees only the app ID, client ID, name, and install URL. Conversion failures are logged by HTTP status alone, never by response body.
+- The GitHub App requests `administration: write` and `actions: read` only, and can be limited to selected repositories.
+- Jobs stored with an App installation ID use it to obtain an installation-scoped token and never fall back to the legacy PAT; if no app is configured, the job fails closed with a setup error rather than downgrading.
 - Runner machines hold a machine token, not GitHub credentials. Treat the token as a secret.
 - Webhook bodies are verified with `X-Hub-Signature-256` before processing.
 - Agents initiate outbound Convex WebSocket connections; runner hosts need no inbound port or public IP.
