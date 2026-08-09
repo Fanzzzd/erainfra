@@ -20,8 +20,11 @@ type AppOptions = { appId: number; privateKey: string };
 
 const constructedApps: AppOptions[] = [];
 const constructedPats: string[] = [];
-const sentRequests: Array<{ route: string; via: "installation" | "pat"; installationId?: number }> =
-  [];
+const sentRequests: Array<{
+  route: string;
+  via: "installation" | "pat" | "app";
+  installationId?: number;
+}> = [];
 
 vi.mock("octokit", () => {
   class RequestError extends Error {
@@ -32,10 +35,16 @@ vi.mock("octokit", () => {
     }
   }
 
-  function recordingClient(via: "installation" | "pat", installationId?: number) {
+  function recordingClient(via: "installation" | "pat" | "app", installationId?: number) {
     return {
       request: (route: string) => {
         sentRequests.push({ route, via, installationId });
+        // Shape the response per route: the delivery listing is read for its
+        // `link` header and an array body, so a JIT-shaped reply would make the
+        // scan fail before it proves anything.
+        if (route.startsWith("GET /app/hook/deliveries")) {
+          return Promise.resolve({ data: [], headers: {} });
+        }
         return Promise.resolve({
           data: { encoded_jit_config: "jit-config", runner: { id: 77 } },
         });
@@ -57,6 +66,8 @@ vi.mock("octokit", () => {
     getInstallationOctokit(installationId: number) {
       return Promise.resolve(recordingClient("installation", installationId));
     }
+    // App-level (JWT) client used by the delivery-recovery scan.
+    octokit = recordingClient("app");
   }
 
   return { App, Octokit, RequestError };
@@ -151,6 +162,31 @@ async function issueJitFor(t: ReturnType<typeof setup>, githubInstallationId: nu
     runnerName: "rc-abc123",
     labels: ["self-hosted"],
   });
+}
+
+/**
+ * Record only what `run` itself did.
+ *
+ * issueJit schedules drainRunnerDeletions on its failure path, and a
+ * `runAfter(0)` that has not started yet is not drained by
+ * `finishInProgressScheduledFunctions`. It belongs to the convex-test instance
+ * that created it, so once its test ends nothing can flush it and it fires
+ * during the next test — against that test's environment. Asserting on a delta
+ * rather than on the whole recording keeps each test about its own action.
+ */
+async function record<T>(run: () => Promise<T>) {
+  const from = {
+    apps: constructedApps.length,
+    pats: constructedPats.length,
+    requests: sentRequests.length,
+  };
+  const result = await run();
+  return {
+    result,
+    apps: constructedApps.slice(from.apps),
+    pats: constructedPats.slice(from.pats),
+    requests: sentRequests.slice(from.requests),
+  };
 }
 
 describe("runner deletion credential resolution", () => {
@@ -251,5 +287,74 @@ describe("issueJit and runner deletion share one resolver", () => {
     expect(constructedApps).toEqual([]);
     expect(constructedPats).toEqual([]);
     expect(sentRequests).toEqual([]);
+
+    // issueJit's failure path scheduled another drain. A `runAfter(0)` that has
+    // not started is not flushed by finishInProgressScheduledFunctions, and it
+    // belongs to this convex-test instance, so once this test ends nothing can
+    // flush it: it fires during the next test, finds this row still pending,
+    // and builds a client against that test's environment. Clearing the queue
+    // makes that late run a no-op.
+    await t.run(async (ctx) => {
+      for (const deletion of await ctx.db.query("runnerDeletions").collect()) {
+        await ctx.db.delete(deletion._id);
+      }
+    });
+  });
+});
+
+// The delivery-recovery scan is a third GitHub client construction site, and
+// unlike the other two it authenticates as the App itself with a JWT. The
+// recovery module's own tests inject a client, so nothing there pins which
+// credentials that client is built from.
+describe("delivery recovery credential resolution", () => {
+  it("signs as the Manifest-stored App, not the environment App", async () => {
+    const t = setup();
+    await storeApp(t);
+
+    const run = await record(() => t.action(internal.github.recoverLostDeliveries, {}));
+
+    expect(run.apps).toEqual([STORED]);
+    expect(run.pats).toEqual([]);
+    // App-level routes only; every request went out on the JWT client.
+    expect(run.requests.every((request) => request.via === "app")).toBe(true);
+    expect(run.requests.length).toBeGreaterThan(0);
+  });
+
+  it("falls back to the hand-registered environment App", async () => {
+    const t = setup();
+
+    const run = await record(() => t.action(internal.github.recoverLostDeliveries, {}));
+
+    expect(run.apps).toEqual([{ appId: 999, privateKey: "-----BEGIN RSA PRIVATE KEY-----env" }]);
+    expect(run.pats).toEqual([]);
+  });
+
+  // A JWT needs an App to sign as, so the legacy path is a capability gap
+  // rather than a failure: no client, no request, no PAT downgrade.
+  it("makes no request at all on the legacy PAT", async () => {
+    const t = setup();
+    vi.stubEnv("GITHUB_APP_ID", "");
+    vi.stubEnv("GITHUB_APP_PRIVATE_KEY", "");
+
+    const run = await record(() => t.action(internal.github.recoverLostDeliveries, {}));
+
+    expect(run.result).toEqual({ listed: 0, missing: 0, requested: 0 });
+    expect(run.apps).toEqual([]);
+    expect(run.pats).toEqual([]);
+    expect(run.requests).toEqual([]);
+  });
+
+  // The one endpoint that would pull a delivery's payload, its request headers
+  // and this deployment's own response body into the process.
+  it("never calls the endpoint that returns payloads and response bodies", async () => {
+    const t = setup();
+    await storeApp(t);
+
+    const run = await record(() => t.action(internal.github.recoverLostDeliveries, {}));
+
+    expect(run.requests.length).toBeGreaterThan(0);
+    for (const request of run.requests) {
+      expect(request.route).not.toBe("GET /app/hook/deliveries/{delivery_id}");
+    }
   });
 });
