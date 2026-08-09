@@ -1,4 +1,5 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
+import { requireDashboardAuth } from "./dashboardAuth";
 import {
   evaluateSetupState,
   isSetupStateCollectable,
@@ -32,14 +33,6 @@ const appSummaryValidator = v.object({
   installUrl: v.string(),
   createdAt: v.number(),
 });
-
-async function requireDashboardAuth(ctx: QueryCtx | MutationCtx) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (identity === null) {
-    throw new ConvexError("Authentication required");
-  }
-  return identity;
-}
 
 function randomHex(length: number) {
   const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));
