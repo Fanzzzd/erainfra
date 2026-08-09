@@ -1,6 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import { internalMutation, query } from "./_generated/server";
+import { requireDashboardAuth } from "./dashboardAuth";
 import { applyWorkflowJob } from "./jobs";
 import { decideRepository, parseRepositoryPolicy } from "./policy";
 
@@ -17,6 +19,79 @@ const workflowJobValidator = v.object({
   workflowName: v.string(),
   labels: v.array(v.string()),
   conclusion: v.optional(v.string()),
+});
+
+export const RECENT_FAILURE_LIMIT = 50;
+
+const failedDeliveryValidator = v.object({
+  _id: v.id("webhookDeliveries"),
+  deliveryId: v.string(),
+  event: v.string(),
+  repo: v.optional(v.string()),
+  status: v.union(v.literal("rejected"), v.literal("failed")),
+  receivedAt: v.number(),
+  settledAt: v.optional(v.number()),
+  attempts: v.number(),
+  lastError: v.optional(v.string()),
+});
+
+/**
+ * Project a delivery down to what an operator needs to diagnose it.
+ *
+ * Built field by field rather than by spreading the document: `workflowJob`
+ * carries the whole narrowed event and must not reach a browser, so only the
+ * repository name is lifted out of it. Adding a field to the table therefore
+ * cannot silently widen what this returns.
+ */
+export function toFailedDeliveryView(
+  delivery: Doc<"webhookDeliveries">,
+  status: "rejected" | "failed",
+) {
+  return {
+    _id: delivery._id,
+    deliveryId: delivery.deliveryId,
+    event: delivery.event,
+    repo: delivery.workflowJob?.repo,
+    status,
+    receivedAt: delivery.receivedAt,
+    settledAt: delivery.settledAt,
+    attempts: delivery.attempts,
+    lastError: delivery.lastError,
+  };
+}
+
+/**
+ * Deliveries that arrived, verified, and were then refused or gave up.
+ *
+ * This is the only place an allowlist rejection is visible: intake fails
+ * closed and creates no job row, so without this the symptom is an empty Jobs
+ * table and no explanation anywhere.
+ */
+export const recentFailures = query({
+  args: {},
+  returns: v.array(failedDeliveryValidator),
+  handler: async (ctx) => {
+    await requireDashboardAuth(ctx);
+    const [rejected, failed] = await Promise.all([
+      ctx.db
+        .query("webhookDeliveries")
+        .withIndex("by_status", (q) => q.eq("status", "rejected"))
+        .order("desc")
+        .take(RECENT_FAILURE_LIMIT),
+      ctx.db
+        .query("webhookDeliveries")
+        .withIndex("by_status", (q) => q.eq("status", "failed"))
+        .order("desc")
+        .take(RECENT_FAILURE_LIMIT),
+    ]);
+
+    return [
+      ...rejected.map((delivery) => toFailedDeliveryView(delivery, "rejected")),
+      ...failed.map((delivery) => toFailedDeliveryView(delivery, "failed")),
+    ]
+      .toSorted((a, b) => b.receivedAt - a.receivedAt)
+      .slice(0, RECENT_FAILURE_LIMIT);
+  },
 });
 
 /**

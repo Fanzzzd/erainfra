@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { decideRepository, parseRepositoryPolicy } from "../convex/policy.ts";
+import {
+  decideRepository,
+  parseRepositoryPolicy,
+  summarizeRepositoryPolicy,
+} from "../convex/policy.ts";
 
 const privateRepo = false;
 const publicRepo = true;
@@ -85,5 +89,55 @@ describe("decideRepository", () => {
   it("rejects an empty repository name", () => {
     const policy = parseRepositoryPolicy({ ALLOWED_REPOS: "*" });
     expect(decideRepository("   ", privateRepo, policy).allowed).toBe(false);
+  });
+});
+
+describe("summarizeRepositoryPolicy", () => {
+  it("reports an unset allowlist as not configured", () => {
+    const summary = summarizeRepositoryPolicy(parseRepositoryPolicy({}));
+    expect(summary).toEqual({
+      configured: false,
+      allowedRepos: [],
+      allowsAllRepos: false,
+      allowPublicRepos: false,
+    });
+  });
+
+  it("shows the patterns the way the matcher sees them, de-duplicated", () => {
+    const summary = summarizeRepositoryPolicy(
+      parseRepositoryPolicy({ ALLOWED_REPOS: " Acme/App , acme/tools , ACME/APP " }),
+    );
+    expect(summary.configured).toBe(true);
+    expect(summary.allowedRepos).toEqual(["acme/app", "acme/tools"]);
+  });
+
+  it("flags the catch-all pattern", () => {
+    expect(
+      summarizeRepositoryPolicy(parseRepositoryPolicy({ ALLOWED_REPOS: "acme/*" })).allowsAllRepos,
+    ).toBe(false);
+    expect(
+      summarizeRepositoryPolicy(parseRepositoryPolicy({ ALLOWED_REPOS: "acme/app,*" }))
+        .allowsAllRepos,
+    ).toBe(true);
+  });
+
+  it("carries the public opt-in through", () => {
+    const summary = summarizeRepositoryPolicy(
+      parseRepositoryPolicy({ ALLOWED_REPOS: "acme/app", ALLOW_PUBLIC_REPOS: "yes" }),
+    );
+    expect(summary.allowPublicRepos).toBe(true);
+  });
+
+  // A summary that says "configured" while decideRepository refuses everything
+  // would be worse than no card at all.
+  it("agrees with decideRepository about whether anything is allowed", () => {
+    for (const value of ["", "   ", ",,"]) {
+      const policy = parseRepositoryPolicy({ ALLOWED_REPOS: value });
+      expect(summarizeRepositoryPolicy(policy).configured).toBe(false);
+      expect(decideRepository("acme/app", privateRepo, policy).allowed).toBe(false);
+    }
+    const policy = parseRepositoryPolicy({ ALLOWED_REPOS: "acme/app" });
+    expect(summarizeRepositoryPolicy(policy).configured).toBe(true);
+    expect(decideRepository("acme/app", privateRepo, policy).allowed).toBe(true);
   });
 });

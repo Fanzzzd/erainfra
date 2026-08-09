@@ -13,6 +13,7 @@ import type * as agentApi from "../agentApi.js";
 import type * as auth from "../auth.js";
 import type * as catalog from "../catalog.js";
 import type * as crons from "../crons.js";
+import type * as dashboardAuth from "../dashboardAuth.js";
 import type * as github from "../github.js";
 import type * as githubApp from "../githubApp.js";
 import type * as githubAppConfig from "../githubAppConfig.js";
@@ -25,6 +26,7 @@ import type * as reconcile from "../reconcile.js";
 import type * as retry from "../retry.js";
 import type * as runners from "../runners.js";
 import type * as scheduler from "../scheduler.js";
+import type * as settings from "../settings.js";
 import type * as webhooks from "../webhooks.js";
 
 import type {
@@ -39,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   catalog: typeof catalog;
   crons: typeof crons;
+  dashboardAuth: typeof dashboardAuth;
   github: typeof github;
   githubApp: typeof githubApp;
   githubAppConfig: typeof githubAppConfig;
@@ -51,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   retry: typeof retry;
   runners: typeof runners;
   scheduler: typeof scheduler;
+  settings: typeof settings;
   webhooks: typeof webhooks;
 }>;
 

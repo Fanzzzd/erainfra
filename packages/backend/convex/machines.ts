@@ -1,13 +1,7 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { selectImageForMachine } from "./catalog";
-import {
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-  type MutationCtx,
-  type QueryCtx,
-} from "./_generated/server";
+import { requireDashboardAuth } from "./dashboardAuth";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
 
@@ -31,14 +25,6 @@ const machineListItemValidator = v.object({
     }),
   ),
 });
-
-async function requireDashboardAuth(ctx: QueryCtx | MutationCtx) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (identity === null) {
-    throw new ConvexError("Authentication required");
-  }
-  return identity;
-}
 
 function randomHex(length: number) {
   const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));

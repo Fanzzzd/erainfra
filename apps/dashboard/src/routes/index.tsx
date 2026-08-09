@@ -1,7 +1,7 @@
 import { type ReactNode, useMemo, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
-import { Check, Clipboard, Plus, Server } from "lucide-react";
+import { Check, Clipboard, Plus, Server, ShieldAlert } from "lucide-react";
 import { api } from "@runner-center/backend/api";
 import { GithubAppSetup } from "@/components/github-app-setup";
 import { Badge } from "@/components/ui/badge";
@@ -289,6 +289,9 @@ function MachinesPage() {
         />
       </div>
 
+      {/* Allowlist first: it must be set before the App is installed, or every
+          delivery the new installation sends is rejected. */}
+      <AllowlistWarning />
       <GithubAppSetup />
 
       <section
@@ -447,6 +450,36 @@ function MachinesPage() {
           </TableBody>
         </Table>
       </section>
+    </div>
+  );
+}
+
+/**
+ * Registering machines is pointless while intake rejects everything, and the
+ * rejection is otherwise invisible from this page — so the warning belongs
+ * here, next to onboarding, not only on the Jobs page where the diagnosis
+ * lives. Silent when the allowlist is set.
+ */
+function AllowlistWarning() {
+  const policy = useQuery(api.settings.repositoryPolicy);
+  if (policy === undefined || policy.configured) return null;
+
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-red-400/20 bg-red-400/[0.07] px-4 py-3 text-xs leading-5 text-red-200"
+    >
+      <span className="inline-flex items-center gap-2 font-medium">
+        <ShieldAlert className="size-4 shrink-0" aria-hidden="true" />
+        No repositories are allowed yet
+      </span>
+      <span className="text-red-200/80">
+        <code className="text-red-100">ALLOWED_REPOS</code> is unset, so every workflow job is
+        rejected. Set it before installing the GitHub App.
+      </span>
+      <Link to="/jobs" className="ml-auto shrink-0 underline underline-offset-2 hover:text-red-100">
+        See rejected deliveries
+      </Link>
     </div>
   );
 }
