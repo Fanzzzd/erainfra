@@ -44,7 +44,7 @@ WATCHDOG_PID=""
 
 # `docker run --rm` only removes the container when the client sees it exit, so
 # a signalled or timed-out run has to remove it explicitly.
-# shellcheck disable=SC2329  # invoked through the EXIT trap below
+# shellcheck disable=SC2317,SC2329  # old/new ShellCheck codes for trap-only calls
 cleanup() {
   local exit_code=$?
   trap - EXIT
