@@ -1,5 +1,6 @@
 import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { httpRouter } from "convex/server";
+import { AGENT_RELEASE } from "./agentRelease";
 import { auth } from "./auth";
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
@@ -171,7 +172,7 @@ http.route({
   method: "GET",
   handler: httpAction(async (_ctx, request) => {
     const siteUrl = new URL(request.url).origin;
-    return new Response(renderInstallScript(siteUrl), {
+    return new Response(renderInstallScript(siteUrl, AGENT_RELEASE), {
       status: 200,
       headers: { "Content-Type": "text/x-shellscript; charset=utf-8" },
     });
