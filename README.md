@@ -92,7 +92,7 @@ After the app is created, use **Install on repositories** to install it for all 
 | 2     | `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` | Hand-registered app, for setups that prefer environment variables.                |
 | 3     | `GITHUB_PAT`                               | Legacy fallback, used only for jobs whose payload carries no App installation ID. |
 
-The dashboard keeps offering **Create GitHub App** while a PAT or a hand-registered app is in use, so an existing deployment can migrate without editing environment variables first. Webhook deliveries are verified against the stored app secret _and_ `GITHUB_WEBHOOK_SECRET`, accepting either, so App and repository webhooks both keep verifying while you cut over. A job that arrived with an App installation ID always uses App authentication and never silently falls back to the PAT.
+The dashboard keeps offering **Create GitHub App** while a PAT or a hand-registered app is in use, so an existing deployment can migrate without editing environment variables first. Webhook deliveries are verified against the stored app secret _and_ `GITHUB_WEBHOOK_SECRET`, accepting either, so App and repository webhooks both keep verifying while you cut over — which also means the old secret keeps being trusted until you remove it, so finish the cut-over with [Migrating off the legacy path](#migrating-off-the-legacy-path). A job that arrived with an App installation ID always uses App authentication and never silently falls back to the PAT.
 
 ### Manual GitHub App registration
 
@@ -123,7 +123,24 @@ Existing setups can keep a classic PAT and one webhook per repository. This path
 pnpm convex env set GITHUB_PAT '<classic-github-pat-with-repo-scope>'
 ```
 
-The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**. When migrating, connect the App, install it, disable the old repository webhooks, wait for jobs already received through them to finish, and then remove the PAT. Disabling the old webhooks avoids overlapping deliveries after assignment has begun.
+The PAT needs `repo` scope and administrator access to each target repository. In each repository, add an active `application/json` webhook at `https://<deployment>.convex.site/github/webhook`, use the same `GITHUB_WEBHOOK_SECRET`, and subscribe only to **Workflow jobs**.
+
+#### Migrating off the legacy path
+
+Work through these in order. Disabling the old webhooks before removing anything avoids overlapping deliveries after assignment has begun:
+
+1. Connect the App from the dashboard and install it on the target repositories.
+2. Confirm a workflow job is delivered and assigned through the App.
+3. Disable or delete the per-repository webhooks.
+4. Wait for jobs already received through them to finish.
+5. Remove both legacy secrets:
+
+```bash
+pnpm convex env remove GITHUB_PAT
+pnpm convex env remove GITHUB_WEBHOOK_SECRET
+```
+
+Step 5 is not optional. Until `GITHUB_WEBHOOK_SECRET` is removed it stays an accepted signing key for `/github/webhook`, so anyone still holding the old secret — including whoever configured the retired repository webhooks — can keep submitting deliveries the verifier trusts. Removing it leaves the App's own secret as the only one that verifies. If a hand-registered app is also being retired, drop `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` in the same step.
 
 ### Add a machine
 
