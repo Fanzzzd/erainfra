@@ -58,13 +58,27 @@ pnpm convex dev --once
 (cd packages/backend && npx @convex-dev/auth)
 ```
 
+Set the bootstrap secret **before** you deploy. It is what stops a stranger who finds your deployment URL from creating the dashboard's only admin account, so generate it with a real random source and treat it like a root password:
+
+```bash
+pnpm convex env set BOOTSTRAP_SECRET "$(openssl rand -hex 32)"
+```
+
+Print it once when you need it (`pnpm convex env get BOOTSTRAP_SECRET`); it never appears in the dashboard.
+
 Deploy the Convex backend and hosted dashboard:
 
 ```bash
 pnpm deploy
 ```
 
-Open `https://<deployment>.convex.site`, choose **Sign up**, and create the first account.
+Open `https://<deployment>.convex.site`, choose **Create the first admin**, and paste the bootstrap secret along with the email and password you want to sign in with. Sign-up is closed from that moment: the secret only works while the instance has no accounts, and every later account needs an invitation from someone already signed in.
+
+Until `BOOTSTRAP_SECRET` is set, no account can be created at all — the deployment fails closed rather than falling back to open sign-up.
+
+### Add another operator
+
+Sign in, open **Invite another operator** on the Machines page, and send the generated invitation over a channel you trust. It is single-use, expires in ten minutes, and is shown only once. The recipient enters it on the sign-in page under **Accept an invitation**.
 
 ### Allow the repositories
 
@@ -343,6 +357,11 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 
 ### Security model
 
+- Dashboard sign-up is closed. Creating an account requires a single-use grant: either the bootstrap grant, minted by presenting `BOOTSTRAP_SECRET` while the instance still has no users, or an invitation issued by an admin who is already signed in.
+- `BOOTSTRAP_SECRET` lives only in the deployment environment, is never written to the database, and is compared as SHA-256 digests through a constant-time equality. A missing or under-32-character secret disables account creation entirely instead of reopening sign-up.
+- Grants are 256 bits, stored only as a SHA-256 hash, single-use, and expire after ten minutes. A bootstrap grant becomes inert the moment any account exists, so one that loses a race cannot be replayed into a second admin. Account creation consumes the grant in the same transaction that inserts the user, and Convex mutations are serializable, so exactly one concurrent attempt can win.
+- Failed bootstrap attempts are throttled: five are tolerated, then the lockout doubles up to fifteen minutes. The counter is instance-wide, because a Convex mutation cannot see a client address. An attacker can therefore stall an operator's own first-time setup, but cannot get past it.
+- Every sign-up refusal returns one message, so a missing grant, an expired grant and "this instance already has an admin" are indistinguishable to an unauthenticated caller. Only a caller who has already proved the bootstrap secret is told that the instance is set up.
 - GitHub credentials never leave the Convex deployment. An app created through the Manifest flow lives in the `githubApp` table, read only by internal functions; a hand-registered app lives in `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET`, alongside the optional legacy `GITHUB_PAT`.
 - No client-facing query returns the private key or webhook secret; the dashboard sees only the app ID, client ID, name, and install URL. Conversion failures are logged by HTTP status alone, never by response body.
 - The GitHub App requests `administration: write` and `actions: read` only, and can be limited to selected repositories.
