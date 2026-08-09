@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { requireDashboardAuth } from "./dashboardAuth";
 import {
   DISCONNECT_CONFIRMATION,
   evaluateSetupState,
@@ -8,7 +9,6 @@ import {
   canConnectApp,
   toAppSummary,
 } from "./githubAppConfig";
-import { requireDashboardAuth } from "./dashboardAuth";
 import {
   internalMutation,
   internalQuery,
