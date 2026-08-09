@@ -17,7 +17,7 @@ function provisioner(name: string) {
 const provisionWin = provisioner("provision-win.ps1");
 const buildImage = provisioner("build-image.ps1");
 const provisionLinux = provisioner("provision-linux.sh");
-const agentSource = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
+const agentSource = readFileSync(new URL("../provision.ts", import.meta.url), "utf8");
 
 // The runner archive pin, shared by the checksum and drift tests below.
 const PINNED_RUNNER_VERSION = "2.336.0";
@@ -49,13 +49,32 @@ describe("provision-win.ps1 exit codes", () => {
 describe("provision-win.ps1 secret handling", () => {
   // Regression: the guest ran `run.cmd --jitconfig $jit`, so the one-shot
   // registration sat in the guest's process list where a workflow step could
-  // read it back. It is now materialised as the runner's own config files.
+  // read it back.
   it("never puts the JIT configuration on a command line", () => {
     assert.doesNotMatch(provisionWin, /--jitconfig/);
   });
 
+  it("reads the JIT configuration from stdin, never from the environment", () => {
+    assert.match(provisionWin, /\[Console\]::In\.ReadToEnd\(\)/);
+    assert.doesNotMatch(provisionWin, /\bJIT_CONFIG\b/);
+  });
+
   it("passes the JIT configuration over the remoting socket instead", () => {
     assert.match(provisionWin, /-ArgumentList \$jitConfig, \$RunnerRoot/);
+  });
+
+  // The guest hands it to the runner through the one non-argv input upstream
+  // accepts, and clears it again, rather than unpacking the blob into the
+  // runner's own config files — that duplicated logic owned by the runner and
+  // had to be re-checked against its source on every version bump.
+  it("gives the runner ACTIONS_RUNNER_INPUT_JITCONFIG and clears it afterwards", () => {
+    assert.match(provisionWin, /\$env:ACTIONS_RUNNER_INPUT_JITCONFIG = \$Jit/);
+    assert.match(provisionWin, /\} finally \{\s*\$env:ACTIONS_RUNNER_INPUT_JITCONFIG = \$null/);
+  });
+
+  it("no longer materialises the blob as runner config files", () => {
+    assert.doesNotMatch(provisionWin, /ProtectedData/);
+    assert.doesNotMatch(provisionWin, /WriteAllBytes/);
   });
 
   it("never writes the JIT configuration or a password to output", () => {
@@ -63,10 +82,6 @@ describe("provision-win.ps1 secret handling", () => {
       if (!/Write-(Host|Output|Error|Warning)/.test(line)) continue;
       assert.doesNotMatch(line, /\$jitConfig|\$Jit\b|\$password|\$credential/, line.trim());
     }
-  });
-
-  it("refuses runner config file names that could escape the runner root", () => {
-    assert.match(provisionWin, /\$name -notmatch '\^\\\.\[A-Za-z0-9_\]\{1,64\}\$'/);
   });
 });
 
@@ -98,9 +113,16 @@ describe("provision-win.ps1 cleanup", () => {
 
 describe("provision-win.ps1 timeouts", () => {
   it("bounds both the boot wait and the runner itself", () => {
-    assert.match(provisionWin, /Get-PositiveIntEnv 'BOOT_TIMEOUT_S' \d+/);
-    assert.match(provisionWin, /Get-PositiveIntEnv 'JOB_TIMEOUT_S' \d+/);
-    assert.match(provisionWin, /Timed out after \$\{jobTimeout\}s/);
+    assert.match(provisionWin, /Get-TimeoutEnv 'RC_BOOT_TIMEOUT_S' 'BOOT_TIMEOUT_S' \d+/);
+    assert.match(provisionWin, /Get-TimeoutEnv 'RC_JOB_TIMEOUT_S' 'JOB_TIMEOUT_S' \d+/);
+  });
+
+  // A timeout has to be distinguishable from a failed job, so every provisioner
+  // reports it as 124 rather than throwing into a generic non-zero exit.
+  it("reports a job that outlives its budget as 124", () => {
+    assert.match(provisionWin, /exceeded RC_JOB_TIMEOUT_S/);
+    assert.match(provisionWin, /^\s*exit 124$/m);
+    assert.doesNotMatch(provisionWin, /throw "Timed out after \$\{jobTimeout\}s/);
   });
 
   it("rejects non-numeric timeout and sizing input", () => {
@@ -232,8 +254,11 @@ describe("build-image.ps1 Defender", () => {
 });
 
 describe("agent invocation of the Windows provisioner", () => {
-  it("hands the provisioner its input through the environment, never argv", () => {
-    assert.match(agentSource, /JIT_CONFIG: jitConfig/);
+  // The JIT configuration reaches every provisioner on stdin, so it is in
+  // neither argv nor the child's environment block, on any platform.
+  it("hands the provisioner its input on stdin, never argv or the environment", () => {
+    assert.match(agentSource, /input: jitConfig/);
+    assert.doesNotMatch(agentSource, /\bJIT_CONFIG\b/);
     const afterExe = agentSource.slice(agentSource.indexOf('"powershell.exe"'));
     const argv = afterExe.slice(afterExe.indexOf("["), afterExe.indexOf("]") + 1);
     assert.match(argv, /"-File", script/);

@@ -30,7 +30,6 @@
 #
 # Environment:
 #   RUNNER_NAME         (required) also used as the VM name
-#   JIT_CONFIG          (required) opaque one-shot runner registration
 #   IMAGE               (required) parent VHDX name, without the .vhdx suffix
 #   RC_HOME             defaults to %USERPROFILE%\.runner-center
 #   IMAGE_USER          guest account, defaults to "runner"
@@ -38,9 +37,18 @@
 #   VM_CPU_COUNT        defaults to 4
 #   VM_MEMORY_GB        defaults to 8
 #   VM_SWITCH           defaults to "Default Switch"
-#   BOOT_TIMEOUT_S      defaults to 300
-#   JOB_TIMEOUT_S       defaults to 21600 (GitHub's own per-job ceiling)
+#   RC_BOOT_TIMEOUT_S   defaults to 300; seconds to boot and accept PowerShell
+#                       Direct. Legacy fallback: BOOT_TIMEOUT_S.
+#   RC_JOB_TIMEOUT_S    defaults to 21600 (GitHub's own per-job ceiling); seconds
+#                       the runner may take before the VM is destroyed and this
+#                       exits 124, the same as the macOS and Linux provisioners.
+#                       Legacy fallback: JOB_TIMEOUT_S.
 #   ORPHAN_MAX_AGE_MIN  defaults to 720; older leftover VM directories are reaped
+#
+# Stdin:
+#   The opaque one-shot JIT configuration, base64 as GitHub issues it. It is read
+#   from stdin rather than an environment variable so it never appears in this
+#   host's process listing.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -70,6 +78,14 @@ function Get-PositiveIntEnv([string] $Name, [int] $Default) {
         throw "$Name must be a positive integer, got '$raw'."
     }
     return $parsed
+}
+
+# Every provisioner reads the same RC_-prefixed budget, in seconds. The per-OS
+# spelling stays honoured so an agent configured before the names were unified
+# keeps working.
+function Get-TimeoutEnv([string] $Name, [string] $LegacyName, [int] $Default) {
+    $legacy = Get-PositiveIntEnv $LegacyName $Default
+    return Get-PositiveIntEnv $Name $legacy
 }
 
 # The runner name becomes a VM name and a directory name, so refuse anything
@@ -106,17 +122,25 @@ function Remove-RcOrphan([string] $VmRoot, [int] $MaxAgeMinutes) {
 }
 
 $runnerName = Get-RequiredEnv 'RUNNER_NAME'
-$jitConfig = Get-RequiredEnv 'JIT_CONFIG'
 $image = Get-RequiredEnv 'IMAGE'
 Assert-SafeName $runnerName 'RUNNER_NAME'
 Assert-SafeName $image 'IMAGE'
+
+$jitConfig = [Console]::In.ReadToEnd()
+if ($null -ne $jitConfig) { $jitConfig = $jitConfig.Trim() }
+if ([string]::IsNullOrWhiteSpace($jitConfig)) {
+    throw 'Read an empty JIT configuration from stdin.'
+}
+if ($jitConfig -notmatch '^[A-Za-z0-9+/=]+$') {
+    throw 'The JIT configuration read from stdin is not base64. Pipe the value of encoded_jit_config verbatim.'
+}
 
 $rcHome = Get-EnvOrDefault 'RC_HOME' (Join-Path $env:USERPROFILE '.runner-center')
 $cpuCount = Get-PositiveIntEnv 'VM_CPU_COUNT' 4
 $memoryGb = Get-PositiveIntEnv 'VM_MEMORY_GB' 8
 $switchName = Get-EnvOrDefault 'VM_SWITCH' 'Default Switch'
-$bootTimeout = Get-PositiveIntEnv 'BOOT_TIMEOUT_S' 300
-$jobTimeout = Get-PositiveIntEnv 'JOB_TIMEOUT_S' 21600
+$bootTimeout = Get-TimeoutEnv 'RC_BOOT_TIMEOUT_S' 'BOOT_TIMEOUT_S' 300
+$jobTimeout = Get-TimeoutEnv 'RC_JOB_TIMEOUT_S' 'JOB_TIMEOUT_S' 21600
 $orphanMaxAgeMin = Get-PositiveIntEnv 'ORPHAN_MAX_AGE_MIN' 720
 
 $imageDir = Join-Path $rcHome 'images'
@@ -172,55 +196,30 @@ $guestScript = {
         return [pscustomobject]@{ RcExitCode = 1 }
     }
 
-    # Mirrors actions/runner v2.336.0 src/Runner.Listener/Runner.cs: the blob is
-    # base64(UTF-8 JSON) mapping a runner-root file name to base64 content, and
-    # on Windows .credentials_rsaparams is DPAPI-protected at LocalMachine scope
-    # before it is written. Writing these files ourselves is what keeps the
-    # registration off run.cmd's command line. Re-check this against the runner
-    # source whenever the pinned runner version moves.
+    # ACTIONS_RUNNER_INPUT_JITCONFIG is the one input upstream's Runner.Listener
+    # accepts that is not argv: src/Runner.Listener/CommandSettings.cs consumes
+    # any ACTIONS_RUNNER_INPUT_* variable, clears it from its own environment,
+    # and — because `jitconfig` is in Constants.Runner.CommandLine.Args.Secrets —
+    # registers the value with the secret masker. Passing it as an argument
+    # instead would publish the registration in the guest's process list for the
+    # whole job, and unpacking it into the runner's own config files here would
+    # duplicate logic that belongs to the runner and has to be re-checked against
+    # its source on every version bump.
+    $env:ACTIONS_RUNNER_INPUT_JITCONFIG = $Jit
+    # Surface a runner GitHub has deprecated as exit 7 instead of a silent 0.
+    $env:ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE = '1'
     try {
-        $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Jit))
-        $files = @{}
-        foreach ($property in (ConvertFrom-Json $decoded).PSObject.Properties) {
-            $files[$property.Name] = [string] $property.Value
-        }
-    } catch {
-        Write-Host "Could not decode the JIT configuration: $($_.Exception.Message)"
-        return [pscustomobject]@{ RcExitCode = 1 }
+        # Route runner output to the host stream so it is displayed but stays out
+        # of the returned object collection, leaving one unambiguous exit-code
+        # record. $LASTEXITCODE is captured immediately, before the finally block
+        # below can run anything that would overwrite it.
+        & $runner 2>&1 | ForEach-Object { Write-Host $_ }
+        $code = $LASTEXITCODE
+        if ($null -eq $code) { $code = 1 }
+        return [pscustomobject]@{ RcExitCode = [int] $code }
+    } finally {
+        $env:ACTIONS_RUNNER_INPUT_JITCONFIG = $null
     }
-    if ($files.Count -eq 0) {
-        Write-Host 'The JIT configuration decoded to no runner config files.'
-        return [pscustomobject]@{ RcExitCode = 1 }
-    }
-
-    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
-    try {
-        foreach ($name in $files.Keys) {
-            # The blob is trusted input from the control plane, but it decides
-            # file names: refuse anything that is not a runner dotfile.
-            if ($name -notmatch '^\.[A-Za-z0-9_]{1,64}$') {
-                throw "Refusing to write unexpected runner config file '$name'."
-            }
-            $bytes = [Convert]::FromBase64String($files[$name])
-            if ($name -eq '.credentials_rsaparams') {
-                $bytes = [Security.Cryptography.ProtectedData]::Protect(
-                    $bytes, $null, [Security.Cryptography.DataProtectionScope]::LocalMachine)
-            }
-            $path = Join-Path $RunnerRoot $name
-            [IO.File]::WriteAllBytes($path, $bytes)
-            (Get-Item -LiteralPath $path -Force).Attributes = 'Hidden'
-        }
-    } catch {
-        Write-Host "Could not install the JIT configuration: $($_.Exception.Message)"
-        return [pscustomobject]@{ RcExitCode = 1 }
-    }
-
-    # Route runner output to the host stream so it is displayed but stays out of
-    # the returned object collection, leaving one unambiguous exit-code record.
-    & $runner 2>&1 | ForEach-Object { Write-Host $_ }
-    $code = $LASTEXITCODE
-    if ($null -eq $code) { $code = 1 }
-    return [pscustomobject]@{ RcExitCode = [int] $code }
 }
 
 $credential = Resolve-GuestCredential
@@ -286,7 +285,10 @@ try {
         if ($chunk.Count -gt 0) { $returned += $chunk }
         if ($job.State -ne 'Running' -and $job.State -ne 'NotStarted') { break }
         if ((Get-Date) -gt $jobDeadline) {
-            throw "Timed out after ${jobTimeout}s waiting for the runner on $runnerName to exit."
+            # 124 rather than a throw, so agentApi:report can tell a timeout from
+            # an ordinary runner failure. The finally block destroys the VM.
+            Write-Host "The job exceeded RC_JOB_TIMEOUT_S (${jobTimeout}s); destroying $runnerName."
+            exit 124
         }
         Start-Sleep -Seconds 5
     }
