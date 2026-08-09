@@ -8,6 +8,7 @@ import {
   describeSetupState,
   parseManifestConversion,
   renderManifestForm,
+  resolveSiteUrl,
   type SetupStateStatus,
 } from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
@@ -323,6 +324,24 @@ http.route({
   }),
 });
 
+// Every URL the Manifest flow hands to GitHub — homepage, webhook, OAuth
+// redirect — and the dashboard redirect afterwards is built from the
+// deployment's own configured origin, never from the request. See
+// resolveSiteUrl for why that distinction matters.
+function misconfiguredSiteUrlResponse(context: string, error: string) {
+  console.error(`${context}: ${error}. Check the deployment's Convex configuration.`);
+  return new Response(
+    "This deployment has no canonical site URL configured. Check the Convex logs and try again.",
+    {
+      status: 500,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}
+
 // Step 1 of the GitHub App Manifest flow. The dashboard mints a single-use
 // state and sends the operator here; GitHub only accepts a manifest as a form
 // POST, so this returns a self-submitting form rather than a redirect.
@@ -330,6 +349,11 @@ http.route({
   path: "/github/app/new",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
+    const site = resolveSiteUrl(process.env.CONVEX_SITE_URL);
+    if (!site.ok) {
+      return misconfiguredSiteUrlResponse("Refusing to build a GitHub App manifest", site.error);
+    }
+
     const url = new URL(request.url);
     const state = url.searchParams.get("state") ?? "";
     const org = url.searchParams.get("org") ?? undefined;
@@ -345,7 +369,7 @@ http.route({
       });
     }
 
-    return new Response(renderManifestForm(url.origin, state, org), {
+    return new Response(renderManifestForm(site.siteUrl, state, org), {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
@@ -368,11 +392,19 @@ http.route({
   path: "/github/app/callback",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
+    // Resolved before the state is consumed: a misconfigured deployment must
+    // not burn the operator's single-use setup state on a request it cannot
+    // finish, and the redirect target itself has to be trusted.
+    const site = resolveSiteUrl(process.env.CONVEX_SITE_URL);
+    if (!site.ok) {
+      return misconfiguredSiteUrlResponse("Cannot complete GitHub App setup", site.error);
+    }
+
     const url = new URL(request.url);
     const dashboard = (params: string) =>
       new Response(null, {
         status: 302,
-        headers: { Location: `${url.origin}/?${params}`, "Cache-Control": "no-store" },
+        headers: { Location: `${site.siteUrl}/?${params}`, "Cache-Control": "no-store" },
       });
 
     const code = url.searchParams.get("code") ?? "";

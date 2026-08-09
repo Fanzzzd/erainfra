@@ -193,6 +193,60 @@ export function isSetupStateCollectable(
   return evaluateSetupState(setup, now) !== "valid";
 }
 
+export type SiteUrlResult = { ok: true; siteUrl: string } | { ok: false; error: string };
+
+// Loopback hosts, the only place a plaintext origin is accepted. `convex dev
+// --local` serves over http on 127.0.0.1, and nothing there crosses a network.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Resolve the deployment's canonical origin from its own configuration.
+ *
+ * This must never be derived from `request.url` or the `Host` header. Both are
+ * client-controlled, and every URL built from this value is a security
+ * decision: the manifest's homepage, its webhook URL, its OAuth redirect, and
+ * the post-setup dashboard redirect. A request reaching these routes through an
+ * attacker-chosen hostname could otherwise register an App whose webhook and
+ * callback point at that host — handing over the private key and webhook secret
+ * at conversion time — or bounce the operator off-site after setup.
+ *
+ * Fails closed. The error never echoes the configured value.
+ */
+export function resolveSiteUrl(rawSiteUrl: string | undefined): SiteUrlResult {
+  if (rawSiteUrl === undefined || rawSiteUrl.trim().length === 0) {
+    return {
+      ok: false,
+      error: "CONVEX_SITE_URL is not set on this deployment",
+    };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(rawSiteUrl.trim());
+  } catch {
+    return { ok: false, error: "CONVEX_SITE_URL is not a valid absolute URL" };
+  }
+
+  if (url.username.length > 0 || url.password.length > 0) {
+    return { ok: false, error: "CONVEX_SITE_URL must not embed credentials" };
+  }
+
+  const isLoopback = LOOPBACK_HOSTS.has(url.hostname);
+  if (url.protocol === "http:" && !isLoopback) {
+    return {
+      ok: false,
+      error: "CONVEX_SITE_URL must use https outside of a loopback address",
+    };
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return { ok: false, error: "CONVEX_SITE_URL must use the https scheme" };
+  }
+
+  // `origin` drops any path, query, fragment, and trailing slash, so callers
+  // can concatenate without producing a double slash.
+  return { ok: true, siteUrl: url.origin };
+}
+
 export function buildManifest(siteUrl: string) {
   return {
     name: "Runner Center",
