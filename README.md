@@ -1,6 +1,6 @@
 # Runner Center
 
-Runner Center is an open-source control plane on Convex for ephemeral self-hosted GitHub Actions runners on your own machines. Linux and macOS are supported today, with Windows planned. Machines need no public IP or inbound firewall rule: the agent connects out over WebSocket. Every job gets a clean Docker container or Tart VM, and workflows can use Runner Center as a drop-in `runs-on` target with an optional GitHub-hosted fallback when the fleet is busy.
+Runner Center is an open-source control plane on Convex for ephemeral self-hosted GitHub Actions runners on your own machines. Linux and macOS are supported today; Windows exists only as an [unvalidated, preview-gated path](#windows-preview-not-supported). Machines need no public IP or inbound firewall rule: the agent connects out over WebSocket. Every job gets a clean Docker container or Tart VM, and workflows can use Runner Center as a drop-in `runs-on` target with an optional GitHub-hosted fallback when the fleet is busy.
 
 ## Architecture
 
@@ -224,9 +224,23 @@ Tart caches pulled OCI images. Prune old cache entries periodically:
 tart prune --entries caches --older-than 7
 ```
 
-### Windows: planned
+### Windows: preview, not supported
 
-The Windows provisioner is currently a stub and exits with an error. The planned backend uses a Hyper-V golden image, GitHub JIT configuration, and one disposable VM per job. Contributions are welcome.
+**A Windows machine cannot be onboarded through any supported path today, and no code in this section has ever been run against a real Windows host.** The provisioner and image builder are written and reviewed but unvalidated, so every Windows catalog label — `windows-2022`, `windows-2025`, `rc-win` — is preview-gated: `selectImageForMachine` refuses it unless the machine carries the `rc-preview` label. A Windows machine that has not opted in matches no image and is never assigned work. `/runs-on` therefore keeps routing Windows requests to the GitHub-hosted fallback.
+
+Two things are missing before Windows can be called supported:
+
+1. **Onboarding.** `curl … | bash` is the only installer, and it refuses anything that is not macOS or Linux. There is no PowerShell equivalent. Registering a Windows machine means calling `POST /agents/register` yourself and running `apps/agent` by hand.
+2. **Validation.** Neither `provision-win.ps1` nor `build-image.ps1` has been executed. They are covered only by the source-level regression guards in `apps/agent/tests/provisioners.test.ts`, which pin specific defects (exit-code handling, credentials on a command line, an unpinned runner download, missing cleanup) and prove nothing about whether the scripts run.
+
+The design, for whoever picks this up:
+
+- `build-image.ps1` turns a Windows ISO into a parent VHDX. It applies the edition with DISM instead of running interactive setup, seeds an unattend that creates the guest account, and provisions from `SetupComplete.cmd` — as SYSTEM, at the end of setup, before any logon exists. The Actions runner is downloaded at a pinned version and verified against a pinned SHA-256 before it is expanded.
+- `provision-win.ps1` gives each job a differencing child disk off that read-only parent, hands the JIT configuration to the guest over PowerShell Direct, and destroys the VM and child disk in a `finally` block. The guest needs no inbound network, no WinRM and no SSH. A `PowerShell.Exiting` handler covers a graceful unwind past `finally`, and every run reaps leftover VM directories older than `ORPHAN_MAX_AGE_MIN` (default 720) so a hard-killed run cannot strand a disk pinning the parent.
+
+Windows-specific environment: `JOB_TIMEOUT_S` (default 21600, GitHub's own per-job ceiling), `BOOT_TIMEOUT_S`, `ORPHAN_MAX_AGE_MIN`, `VM_CPU_COUNT`, `VM_MEMORY_GB`, `VM_SWITCH`, `IMAGE_USER`, `IMAGE_PASSWORD`.
+
+Contributions are welcome, particularly a PowerShell onboarding path and a first real validation run.
 
 ## Operations
 
@@ -263,6 +277,14 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 - GitHub JIT configuration is valid for a single runner job and is cleared from the command when the agent claims it.
 - Docker containers and Tart VMs are deleted after the runner process exits.
 
+The Windows preview adds its own model, documented in full at the top of each script:
+
+- The JIT configuration never reaches a command line on either side of the VM socket. The host passes it to `Invoke-Command` through `-ArgumentList`; the guest materialises it as the runner's own config files rather than passing it to `run.cmd`, so a workflow step cannot read the registration back out of the guest process list. The Linux and macOS provisioners still pass it as an argument inside their own disposable container or VM.
+- `build-image.ps1` configures no AutoLogon, so no plaintext logon password is written to the image's registry. The guest account's password does pass through the unattend file in plaintext — Windows offers no offline alternative for creating a local account — and provisioning deletes every cached copy before the build verifies, offline, that the file is gone and that no AutoLogon values survive. The build refuses to bless an image that fails either check.
+- The built-in Administrator gets an independent throwaway password that is never recorded, and the account is disabled during provisioning. The only password kept is the guest account's, DPAPI-encrypted as `<image>.cred.xml` and readable only by the account that ran the build.
+- Defender real-time monitoring stays on unless `-DisableDefenderRealtime` is passed, and the choice is recorded in `<image>.image.json` next to the VHDX.
+- All of this is design and code review only. None of it has been observed working.
+
 ## Development
 
 The repository is a pnpm workspace driven by [Turborepo](https://turborepo.com):
@@ -271,7 +293,8 @@ The repository is a pnpm workspace driven by [Turborepo](https://turborepo.com):
 runner-center/
 ├── apps/
 │   ├── agent/                  # Node daemon installed on runner machines
-│   │   └── provisioners/       # provision-linux.sh, provision-mac.sh, provision-win.ps1
+│   │   ├── provisioners/       # provision-linux.sh, provision-mac.sh, provision-win.ps1, build-image.ps1
+│   │   └── tests/              # source-level guards for the PowerShell provisioners
 │   └── dashboard/              # Vite + React 19 + TanStack Router UI
 ├── packages/
 │   ├── backend/                # Convex deployment: convex/, convex.json, .env.local
@@ -289,6 +312,7 @@ runner-center/
 | `pnpm dev:dashboard` | Vite dev server only.                                                              |
 | `pnpm build`         | Build the agent and the dashboard through the Turborepo task graph.                |
 | `pnpm typecheck`     | Typecheck every package.                                                           |
+| `pnpm test`          | Run every package's `node:test` suite.                                             |
 | `pnpm lint`          | oxlint over the whole repository (`pnpm lint:fix` to autofix).                     |
 | `pnpm format`        | oxfmt over the whole repository (`pnpm format:check` in CI).                       |
 | `pnpm check`         | lint + format check + typecheck, the same gate CI runs.                            |
@@ -302,11 +326,13 @@ across package boundaries.
 `apps/agent` is intentionally self-contained: machines download only that
 directory from the source tarball and install it with plain `npm install`. It
 must therefore never use the `workspace:` or `catalog:` protocols, and its
-`tsconfig.json` must not extend the shared config package.
+`tsconfig.json` must not extend the shared config package. Its tests run on
+`node:test` alone for the same reason, and `pnpm build` compiles `tsconfig.json`
+only, so they are never emitted into `dist`.
 
 ## Contributing
 
-Issues and pull requests are welcome, especially for provisioners, platform coverage, and scheduler hardening. Run `pnpm install` and `pnpm check` (lint, format, typecheck) before opening a pull request. Keep platform-specific lifecycle logic in `apps/agent/provisioners/`, keep credentials out of logs and source control, and document any new host dependency.
+Issues and pull requests are welcome, especially for provisioners, platform coverage, and scheduler hardening. Run `pnpm install` and `pnpm check` (lint, format, typecheck, test) before opening a pull request. Keep platform-specific lifecycle logic in `apps/agent/provisioners/`, keep credentials out of logs and source control, and document any new host dependency.
 
 ## License
 

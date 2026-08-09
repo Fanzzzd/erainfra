@@ -99,7 +99,7 @@ case "$(uname -s)" in
     NODE_OS='linux'
     ;;
   *)
-    fail 'Runner Center supports macOS and Linux hosts'
+    fail 'This installer onboards macOS and Linux hosts only. Windows is a preview with no supported onboarding path yet; see the Windows section of the README.'
     ;;
 esac
 

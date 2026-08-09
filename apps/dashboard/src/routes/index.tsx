@@ -304,6 +304,10 @@ function MachinesPage() {
               Image labels select the execution environment by host OS. Machines do not need to
               register these labels.
             </p>
+            <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
+              Windows labels exist but are preview-gated: they match nothing until a machine is
+              onboarded by hand and given the <span className="font-mono">rc-preview</span> label.
+            </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:gap-5">
             {SUPPORTED_RUNS_ON_LABELS.map((group) => (
@@ -626,6 +630,8 @@ function isMachineOnline(lastSeen: number, now: number) {
 
 function formatOs(os: "linux" | "mac" | "win") {
   if (os === "mac") return "macOS";
-  if (os === "win") return "win";
+  // Windows machines can only exist through manual onboarding, and their images
+  // stay inert without the rc-preview opt-in label. Say so where they are listed.
+  if (os === "win") return "Windows (preview)";
   return "linux";
 }
