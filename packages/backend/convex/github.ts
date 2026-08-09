@@ -4,6 +4,7 @@ import { App, Octokit } from "octokit";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
+import { resolveAppCredentials } from "./githubAppConfig";
 
 export const issueJit = internalAction({
   args: {
@@ -24,31 +25,30 @@ export const issueJit = internalAction({
 
       let octokit: Octokit;
       if (args.githubInstallationId !== undefined) {
-        const appIdValue = process.env.GITHUB_APP_ID;
-        if (
-          appIdValue === undefined ||
-          !/^[1-9]\d*$/.test(appIdValue) ||
-          !Number.isSafeInteger(Number(appIdValue))
-        ) {
-          throw new Error("GITHUB_APP_ID must be a positive integer");
-        }
-        const privateKeyValue = process.env.GITHUB_APP_PRIVATE_KEY;
-        if (privateKeyValue === undefined || privateKeyValue.trim().length === 0) {
-          throw new Error("GITHUB_APP_PRIVATE_KEY is not configured");
+        // App credentials stored by the Manifest flow outrank the environment;
+        // a hand-registered App in GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY is the
+        // fallback. Either way this path never downgrades to the PAT: the job
+        // arrived through an App installation and must be served as that App.
+        const stored = await ctx.runQuery(internal.githubApp.credentials, {});
+        const resolved = resolveAppCredentials(stored, {
+          appId: process.env.GITHUB_APP_ID,
+          privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
+        });
+        if (!resolved.ok) {
+          throw new Error(resolved.error);
         }
 
-        const privateKey = privateKeyValue.includes("\\n")
-          ? privateKeyValue.replace(/\\n/g, "\n")
-          : privateKeyValue;
         const app = new App({
-          appId: Number(appIdValue),
-          privateKey,
+          appId: resolved.appId,
+          privateKey: resolved.privateKey,
         });
         octokit = await app.getInstallationOctokit(args.githubInstallationId);
       } else {
         const token = process.env.GITHUB_PAT;
         if (token === undefined || token.length === 0) {
-          throw new Error("GITHUB_PAT is not configured");
+          throw new Error(
+            "This job arrived without a GitHub App installation and GITHUB_PAT is not configured. Connect a GitHub App from the dashboard and install it on this repository, or set GITHUB_PAT for the legacy path.",
+          );
         }
         octokit = new Octokit({ auth: token });
       }

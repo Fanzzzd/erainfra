@@ -4,6 +4,12 @@ import { auth } from "./auth";
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { findImageLabel, IMAGE_CATALOG } from "./catalog";
+import {
+  describeSetupState,
+  parseManifestConversion,
+  renderManifestForm,
+  type SetupStateStatus,
+} from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
 
 const http = httpRouter();
@@ -32,17 +38,7 @@ function timingSafeHexEqual(left: string, right: string) {
   return mismatch === 0;
 }
 
-async function verifySignature(rawBody: ArrayBuffer, signature: string) {
-  const secret = process.env.GITHUB_WEBHOOK_SECRET;
-  if (secret === undefined || secret.length === 0) {
-    console.error("GITHUB_WEBHOOK_SECRET is not configured");
-    return false;
-  }
-  const match = /^sha256=([0-9a-f]{64})$/i.exec(signature);
-  if (match === null) {
-    return false;
-  }
-
+async function hmacHex(secret: string, rawBody: ArrayBuffer) {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -51,7 +47,29 @@ async function verifySignature(rawBody: ArrayBuffer, signature: string) {
     ["sign"],
   );
   const digest = await crypto.subtle.sign("HMAC", key, rawBody);
-  return timingSafeHexEqual(bytesToHex(new Uint8Array(digest)), match[1].toLowerCase());
+  return bytesToHex(new Uint8Array(digest));
+}
+
+// Accepts any configured secret. During a PAT-to-App migration both delivery
+// paths are live at once — the App signs with the secret GitHub generated,
+// while any remaining repository webhook still signs with
+// GITHUB_WEBHOOK_SECRET. Both are operator-configured, so this is secret
+// rotation rather than a weakening. Every candidate is checked even after a
+// match so the work does not depend on which secret verified.
+async function verifySignature(secrets: string[], rawBody: ArrayBuffer, signature: string) {
+  const match = /^sha256=([0-9a-f]{64})$/i.exec(signature);
+  if (match === null) {
+    return false;
+  }
+  const expected = match[1].toLowerCase();
+
+  let verified = false;
+  for (const secret of secrets) {
+    if (timingSafeHexEqual(await hmacHex(secret, rawBody), expected)) {
+      verified = true;
+    }
+  }
+  return verified;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -219,7 +237,22 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     const rawBody = await request.arrayBuffer();
     const signature = request.headers.get("X-Hub-Signature-256") ?? "";
-    if (!(await verifySignature(rawBody, signature))) {
+
+    // A Manifest-created App's secret outranks the environment, but both are
+    // offered so deliveries keep verifying mid-migration.
+    const storedSecret = await ctx.runQuery(internal.githubApp.webhookSecret, {});
+    const envSecret = process.env.GITHUB_WEBHOOK_SECRET;
+    const secrets = [
+      ...(storedSecret === null ? [] : [storedSecret]),
+      ...(envSecret !== undefined && envSecret.length > 0 ? [envSecret] : []),
+    ];
+    if (secrets.length === 0) {
+      console.error(
+        "Rejecting webhook: no secret is configured. Connect a GitHub App from the dashboard, or set GITHUB_WEBHOOK_SECRET.",
+      );
+      return new Response("Invalid signature", { status: 401 });
+    }
+    if (!(await verifySignature(secrets, rawBody, signature))) {
       return new Response("Invalid signature", { status: 401 });
     }
 
@@ -287,6 +320,106 @@ http.route({
       labels: selfHostedLabels,
     });
     return jsonResponse({ "runs-on": available ? selfHostedLabels : fallback }, 200);
+  }),
+});
+
+// Step 1 of the GitHub App Manifest flow. The dashboard mints a single-use
+// state and sends the operator here; GitHub only accepts a manifest as a form
+// POST, so this returns a self-submitting form rather than a redirect.
+http.route({
+  path: "/github/app/new",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const state = url.searchParams.get("state") ?? "";
+    const org = url.searchParams.get("org") ?? undefined;
+
+    const stateStatus = await ctx.runQuery(internal.githubApp.setupStateStatus, { state });
+    if (stateStatus !== "valid") {
+      return new Response(describeSetupState(stateStatus), {
+        status: 400,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+
+    return new Response(renderManifestForm(url.origin, state, org), {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+  }),
+});
+
+const SETUP_ERROR_REASON: Record<Exclude<SetupStateStatus, "valid">, string> = {
+  unknown: "state_unknown",
+  consumed: "state_consumed",
+  expired: "state_expired",
+};
+
+// Step 3 of the Manifest flow: exchange the temporary code for the App's id,
+// client id, private key, and webhook secret, then hand the operator back to
+// the dashboard. The code is single-use and expires one hour after step 1.
+http.route({
+  path: "/github/app/callback",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const dashboard = (params: string) =>
+      new Response(null, {
+        status: 302,
+        headers: { Location: `${url.origin}/?${params}`, "Cache-Control": "no-store" },
+      });
+
+    const code = url.searchParams.get("code") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    if (code.length === 0) {
+      return dashboard("setup=error&reason=missing_code");
+    }
+
+    const stateStatus = await ctx.runMutation(internal.githubApp.consumeSetupState, { state });
+    if (stateStatus !== "valid") {
+      return dashboard(`setup=error&reason=${SETUP_ERROR_REASON[stateStatus]}`);
+    }
+
+    const response = await fetch(
+      `https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "runner-center",
+        },
+      },
+    );
+    if (!response.ok) {
+      // Status only: a conversion response body carries the private key and
+      // webhook secret, so it must never reach the logs.
+      console.error(
+        `GitHub App manifest conversion failed with HTTP ${response.status}. The setup code is single-use and expires one hour after it is issued; start again from the dashboard.`,
+      );
+      return dashboard("setup=error&reason=conversion_failed");
+    }
+
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    const credentials = parseManifestConversion(payload);
+    if (credentials === null) {
+      console.error("GitHub App manifest conversion returned unexpected fields");
+      return dashboard("setup=error&reason=conversion_failed");
+    }
+
+    await ctx.runMutation(internal.githubApp.store, credentials);
+    return dashboard("setup=created");
   }),
 });
 
