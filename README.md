@@ -362,7 +362,7 @@ git push origin main
 git push origin v0.2.0
 ```
 
-Pushing the tag runs `.github/workflows/release.yml`, which re-runs `pnpm check`, builds the archive twice and compares the bytes, verifies that `apps/agent/package-lock.json` installs with the exact `npm ci` command machines use, records a build provenance attestation, and publishes `runner-center-agent-<version>.tar.gz` and its `.sha256` with the GitHub CLI. Assets are never replaced on an existing release; a correction is a new version.
+Pushing the tag runs `.github/workflows/release.yml`, which refuses to publish unless the tag matches both package versions exactly, re-runs `pnpm check`, builds the archive twice and compares the bytes, verifies that `apps/agent/package-lock.json` installs with the exact `npm ci` command machines use, records a build provenance attestation, and publishes `runner-center-agent-<version>.tar.gz` and its `.sha256` with the GitHub CLI. Assets are never replaced on an existing release; a correction is a new version.
 
 Roll the fleet forward once the release is published: set `AGENT_RELEASE` in `packages/backend/convex/agentRelease.ts` to that version and the checksum from the release notes, then run `pnpm deploy`. Machines install it on their next `rc update`. Rolling back is the same edit with the previous values; a single machine can be moved with `rc update --version v0.1.0`.
 
