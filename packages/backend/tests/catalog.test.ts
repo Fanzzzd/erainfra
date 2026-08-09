@@ -13,6 +13,20 @@ const macMachine = { os: "mac", labels: [] } as const;
 const winMachine = { os: "win", labels: [] } as const;
 const previewWinMachine = { os: "win", labels: [PREVIEW_OPT_IN_LABEL] } as const;
 
+// Labels a workflow may rely on: a validated provisioner and an image a job has
+// actually been run on. Everything else belongs behind PREVIEW_OPT_IN_LABEL.
+const PRODUCTION_LABELS = [
+  "ubuntu-22.04",
+  "ubuntu-24.04",
+  "rc-linux",
+  "macos-15",
+  "rc-mac",
+] as const;
+
+// The Sequoia digest the end-to-end Tart runs were executed against.
+const TESTED_SEQUOIA_DIGEST =
+  "sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed";
+
 describe("findImageLabel", () => {
   it("returns the first label that is in the catalog", () => {
     expect(findImageLabel(["self-hosted", "gpu", "windows-2025"])).toBe("windows-2025");
@@ -92,12 +106,31 @@ describe("preview gating", () => {
     }
   });
 
-  it("leaves the supported platforms ungated", () => {
-    for (const [label, entry] of Object.entries(IMAGE_CATALOG)) {
-      if (entry.os === "linux" || entry.os === "mac") {
-        expect(entry.preview, `${label} became preview-gated`).toBeUndefined();
-      }
+  // Named one by one rather than derived from `os`, so that gating a single
+  // unvalidated image (macos-26) can never quietly take a validated one with it.
+  it("leaves every validated production label ungated", () => {
+    for (const label of PRODUCTION_LABELS) {
+      const entry = IMAGE_CATALOG[label];
+      expect(entry, `${label} left the catalog`).toBeDefined();
+      expect(entry?.preview, `${label} became preview-gated`).toBeUndefined();
+      expect(
+        selectImageForMachine(["self-hosted", label], { os: entry!.os, labels: [] }),
+        `${label} stopped scheduling without an opt-in`,
+      ).toBeDefined();
     }
+  });
+
+  // Tahoe has never been pulled, booted, or given a job. Until it has, its label
+  // must not look like capacity a workflow can rely on.
+  it("gates the macOS release that has never been run", () => {
+    expect(IMAGE_CATALOG["macos-26"]?.preview).toBe(true);
+    expect(selectImageForMachine(["self-hosted", "macos-26"], macMachine)).toBeUndefined();
+    expect(
+      selectImageForMachine(["self-hosted", "macos-26"], {
+        os: "mac",
+        labels: [PREVIEW_OPT_IN_LABEL],
+      }),
+    ).toBeDefined();
   });
 });
 
@@ -110,6 +143,24 @@ describe("IMAGE_CATALOG", () => {
       });
       expect(entry, `${os} has no default image`).toBeDefined();
       expect(entry?.os).toBe(os);
+    }
+  });
+
+  // Regression: macos-15 and rc-mac pointed at `:latest`, which had already
+  // moved to a different image than the one the end-to-end runs verified. A
+  // machine re-pulling the tag would have swapped the OS out silently.
+  it("pins the production macOS image to the digest jobs were verified on", () => {
+    for (const label of ["macos-15", "rc-mac"] as const) {
+      expect(IMAGE_CATALOG[label]?.image, `${label} is not pinned by digest`).toBe(
+        `ghcr.io/cirruslabs/macos-sequoia-base@${TESTED_SEQUOIA_DIGEST}`,
+      );
+    }
+  });
+
+  it("never points a production label at a floating tag", () => {
+    for (const label of PRODUCTION_LABELS) {
+      const image = IMAGE_CATALOG[label]?.image ?? "";
+      expect(image, `${label} floats on :latest`).not.toMatch(/:latest$/);
     }
   });
 

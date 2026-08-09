@@ -17,7 +17,7 @@
 #
 # Environment
 #   RUNNER_NAME              (required) also the VM name
-#   IMAGE / BASE_IMAGE       base image, defaults to macos-sequoia-base:latest
+#   IMAGE / BASE_IMAGE       base image, defaults to the pinned Sequoia digest
 #   TART                     tart binary, defaults to /opt/homebrew/bin/tart
 #   SSHPASS                  sshpass binary, defaults to /opt/homebrew/bin/sshpass
 #   RC_HOME                  state directory, defaults to ~/.runner-center
@@ -46,7 +46,11 @@ set -euo pipefail
 RC_RUNNER_VERSION_DEFAULT="2.336.0"
 RC_RUNNER_SHA256_DEFAULT="8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079"
 
-RC_DEFAULT_IMAGE="ghcr.io/cirruslabs/macos-sequoia-base:latest"
+# Pinned by digest for the same reason the runner tarball is: `:latest` moves.
+# This is the image the end-to-end runs were executed against, and it must track
+# the macos-15/rc-mac entries in packages/backend/convex/catalog.ts. It is only a
+# fallback -- a catalog-backed command always passes IMAGE explicitly.
+RC_DEFAULT_IMAGE="ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed"
 
 # --- Mutable run state ------------------------------------------------------
 WORKDIR=""

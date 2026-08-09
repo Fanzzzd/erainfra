@@ -14,13 +14,29 @@ type ImageCatalogEntry = {
 };
 
 /**
- * Operators add this label to a machine to accept that its platform is a
- * preview: unvalidated provisioner, manual installation, no support promise.
+ * Operators add this label to a machine to accept that its platform or image is
+ * a preview: unvalidated provisioner or image, manual installation, no support
+ * promise.
  */
 export const PREVIEW_OPT_IN_LABEL = "rc-preview";
 
 const ACTIONS_RUNNER_IMAGE = "ghcr.io/actions/actions-runner:2.336.0";
-const MACOS_SEQUOIA_IMAGE = "ghcr.io/cirruslabs/macos-sequoia-base:latest";
+
+// Pinned by digest, not by `:latest`, because `:latest` is mutable and moves
+// without notice: this digest is the one four end-to-end Tart runs were executed
+// against, and by the time it was pinned the upstream tag had already advanced
+// to a different image. A tag would have silently swapped the tested OS out from
+// under the fleet. Tart resolves an `@sha256:` reference for both `clone` and
+// `pull`, and the digest remains pullable from ghcr independently of the tag.
+//
+// To refresh: pull the new digest, run a job against it end to end, then move
+// this constant. Bumping it is a deliberate act, not a side effect of a machine
+// happening to re-pull.
+const MACOS_SEQUOIA_IMAGE =
+  "ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed";
+
+// Tahoe is deliberately still a floating tag: nothing pins a build that was
+// never pulled, booted or run a job on. Its label is preview-gated to match.
 const MACOS_TAHOE_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest";
 // Windows has no OCI-style VM image registry, so a Windows image is the bare
 // name of a parent VHDX the machine keeps under %RC_HOME%\images\<name>.vhdx.
@@ -54,12 +70,14 @@ export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
   "macos-15": {
     os: "mac",
     image: MACOS_SEQUOIA_IMAGE,
-    description: "macOS Sequoia base image for Tart.",
+    description: "macOS Sequoia base image for Tart, pinned to the digest jobs were verified on.",
   },
   "macos-26": {
     os: "mac",
     image: MACOS_TAHOE_IMAGE,
-    description: "macOS Tahoe base image for Tart.",
+    description:
+      "Preview: macOS Tahoe base image for Tart. No Tahoe image has been pulled, booted or run a job on.",
+    preview: true,
   },
   "rc-mac": {
     os: "mac",

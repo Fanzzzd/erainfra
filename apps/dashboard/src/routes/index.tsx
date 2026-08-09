@@ -44,8 +44,10 @@ const SUPPORTED_RUNS_ON_LABELS = [
     labels: ["ubuntu-22.04", "ubuntu-24.04", "rc-linux"],
   },
   {
+    // macos-26 is omitted on purpose: Tahoe is preview-gated, so offering it
+    // here would advertise capacity a machine cannot take without opting in.
     os: "macOS",
-    labels: ["macos-15", "macos-26", "rc-mac"],
+    labels: ["macos-15", "rc-mac"],
   },
 ] as const;
 

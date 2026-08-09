@@ -107,6 +107,7 @@ commands: defineTable({
    - Concurrency: run up to (maxSlots) provisions concurrently; simple in-process
      counter is fine.
 5. **provision-linux.sh**:
+
    ```bash
    #!/usr/bin/env bash
    set -euo pipefail
@@ -115,8 +116,15 @@ commands: defineTable({
      ghcr.io/actions/actions-runner:2.328.0 \
      ./run.sh --jitconfig "$JIT_CONFIG"
    ```
+
    (Verify the current tag with `docker manifest inspect` or use a known-good
    recent tag; do NOT use :latest.)
+
+   The same rule applies to the macOS Tart images, and more strictly: a tag is
+   mutable, so `macos-15`/`rc-mac` are pinned to the `@sha256:` digest a job was
+   actually verified on rather than to `:latest`. Tart accepts a digest
+   reference for `clone` and `pull`. An image label that has never been booted
+   stays `preview` in the catalog instead of being advertised as capacity.
 
 ## Dashboard (apps/dashboard)
 

@@ -223,14 +223,23 @@ The machine reports online after its first heartbeat.
 
 Use a catalog label in `runs-on` to select the execution environment. Runner Center uses the first catalog label in the job's label array, matches its OS to a machine, and treats any remaining labels as machine capability requirements. `self-hosted` is matched automatically and should remain in the workflow. Machines do not need to register image catalog labels.
 
-| Label          | OS    | Image                                          | Notes                                                                                                                                                 |
-| -------------- | ----- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ubuntu-22.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0`       | Compatibility label. The current pinned image reports `ImageOS=ubuntu24`; it is a minimal runner image, not the GitHub-hosted Ubuntu 22.04 toolchain. |
-| `ubuntu-24.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0`       | Minimal Ubuntu 24.04-based runner image. Install project dependencies in workflow steps.                                                              |
-| `rc-linux`     | Linux | `ghcr.io/actions/actions-runner:2.336.0`       | Alias for the default Linux image.                                                                                                                    |
-| `macos-15`     | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Tart base image for macOS Sequoia.                                                                                                                    |
-| `macos-26`     | macOS | `ghcr.io/cirruslabs/macos-tahoe-base:latest`   | Tart base image for macOS Tahoe.                                                                                                                      |
-| `rc-mac`       | macOS | `ghcr.io/cirruslabs/macos-sequoia-base:latest` | Alias for the default macOS image.                                                                                                                    |
+| Label          | OS    | Image                                                    | Notes                                                                                                                                                   |
+| -------------- | ----- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ubuntu-22.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0`                 | Compatibility label. The current pinned image reports `ImageOS=ubuntu24`; it is a minimal runner image, not the GitHub-hosted Ubuntu 22.04 toolchain.   |
+| `ubuntu-24.04` | Linux | `ghcr.io/actions/actions-runner:2.336.0`                 | Minimal Ubuntu 24.04-based runner image. Install project dependencies in workflow steps.                                                                |
+| `rc-linux`     | Linux | `ghcr.io/actions/actions-runner:2.336.0`                 | Alias for the default Linux image.                                                                                                                      |
+| `macos-15`     | macOS | `ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a…` | Tart base image for macOS Sequoia, pinned to the digest jobs were verified on.                                                                          |
+| `macos-26`     | macOS | `ghcr.io/cirruslabs/macos-tahoe-base:latest`             | **Preview.** Requires the `rc-preview` machine label. No Tahoe image has been pulled, booted or run a job on, so the tag is left floating and unpinned. |
+| `rc-mac`       | macOS | `ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a…` | Alias for the default macOS image.                                                                                                                      |
+
+The macOS entries are pinned by **digest**, not by `:latest`. When that pin was
+introduced, `ghcr.io/cirruslabs/macos-sequoia-base:latest` had already advanced
+past the digest the end-to-end runs were executed against, so a machine
+re-pulling the tag would have swapped the guest OS silently. Refreshing it is a
+deliberate act: pull the new digest, run a job against it end to end, then move
+`MACOS_SEQUOIA_IMAGE` in `packages/backend/convex/catalog.ts` and
+`RC_DEFAULT_IMAGE` in `apps/agent/provisioners/provision-mac.sh` together. Tart
+accepts an `@sha256:` reference for both `clone` and `pull`.
 
 The Linux catalog intentionally uses GitHub's minimal runner image because the larger `catthehacker/ubuntu:act-*` images provide an Actions-like toolchain but do not contain the runner binary required by the provisioner. Bring language runtimes and other dependencies through setup actions or workflow steps.
 
@@ -306,11 +315,13 @@ brew install cirruslabs/cli/tart
 brew install cirruslabs/cli/sshpass
 ```
 
-Catalog-backed commands pass their selected image as `IMAGE`. The provisioner resolves macOS images in this order: `IMAGE`, then `BASE_IMAGE`, then `ghcr.io/cirruslabs/macos-sequoia-base:latest`. `BASE_IMAGE` remains a fallback when a command has no image field:
+Catalog-backed commands pass their selected image as `IMAGE`. The provisioner resolves macOS images in this order: `IMAGE`, then `BASE_IMAGE`, then the pinned Sequoia digest in `RC_DEFAULT_IMAGE`, which tracks the `macos-15`/`rc-mac` catalog entries. `BASE_IMAGE` remains a fallback when a command has no image field, and pinning it by digest is worth the extra characters for the same reason the catalog does:
 
 ```bash
 export BASE_IMAGE='ghcr.io/cirruslabs/macos-sequoia-xcode:16.4'
 ```
+
+Only Sequoia is production-eligible. `macos-26` (Tahoe) is preview-gated exactly like the Windows labels: no Tahoe image has ever been pulled, booted, or given a job here, so `selectImageForMachine` refuses it unless the machine carries `rc-preview`. Nothing about the provisioner is Sequoia-specific and Tahoe is expected to work, but "expected to work" is not the same claim as `macos-15`, which was verified end to end. Its tag is left floating and unpinned for the same reason: there is no verified digest to pin it to.
 
 Custom images must support the provisioner's `admin` SSH login. They do **not** need a runner preinstalled: the provisioner downloads a pinned `actions/runner` osx-arm64 release once per host, verifies its SHA-256 against the checksum GitHub publishes in the release, caches it under `~/.runner-center/cache`, and installs it into each VM. The digest is verified again inside the guest before it is unpacked. The `cirruslabs/macos-*-base` images do ship a runner under `~/actions-runner`, but its version is whatever was current when that mutable `:latest` tag was last built, so the provisioner ignores it and installs the pin instead.
 

@@ -6,6 +6,14 @@ import { FAKE_HOST_KEY, FAKE_JIT, Harness, PROVISION_MAC, waitFor } from "./help
 
 const SENTINEL = "RC-FAKE-JIT-SENTINEL-DO-NOT-LEAK";
 
+// Read out of the script so the fixtures follow the pin rather than restating
+// it: the image reference is also what the host key pin file is named after.
+const DEFAULT_IMAGE = (() => {
+  const match = /^RC_DEFAULT_IMAGE="([^"]+)"$/m.exec(readFileSync(PROVISION_MAC, "utf8"));
+  assert.ok(match, "provision-mac.sh no longer declares RC_DEFAULT_IMAGE");
+  return match[1] as string;
+})();
+
 const harnesses: Harness[] = [];
 function newHarness(options?: { tarballContent?: string }) {
   const harness = new Harness(options);
@@ -90,7 +98,7 @@ describe("provision-mac.sh preflight", () => {
   it("recognises a cached image whose reference contains slashes", async () => {
     const harness = newHarness();
     const result = await harness.run(PROVISION_MAC, {
-      env: { RC_FAKE_TART_NAMES: "ghcr.io/cirruslabs/macos-sequoia-base:latest\n" },
+      env: { RC_FAKE_TART_NAMES: `${DEFAULT_IMAGE}\n` },
     });
 
     assert.equal(result.code, 0);
@@ -292,7 +300,7 @@ describe("provision-mac.sh host key handling", () => {
     mkdirSync(pins, { recursive: true });
     // The pin file name is the sanitised image reference.
     writeFileSync(
-      join(pins, "ghcr.io_cirruslabs_macos-sequoia-base_latest.pub"),
+      join(pins, `${DEFAULT_IMAGE.replace(/[^A-Za-z0-9._-]/g, "_")}.pub`),
       `${FAKE_HOST_KEY.replace(/Fa$/, "Zz")}\n`,
     );
 
