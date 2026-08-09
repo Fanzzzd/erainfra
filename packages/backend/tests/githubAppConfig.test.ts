@@ -12,6 +12,7 @@ import {
   parseManifestConversion,
   resolveAppCredentials,
   resolveCredentialSource,
+  resolveSiteUrl,
   SETUP_STATE_TTL_MS,
   toAppSummary,
 } from "../convex/githubAppConfig.ts";
@@ -164,6 +165,92 @@ describe("evaluateSetupState", () => {
     assert.equal(isSetupStateCollectable({ createdAt: now }, now), false);
     assert.equal(isSetupStateCollectable({ createdAt: now, usedAt: now }, now), true);
     assert.equal(isSetupStateCollectable({ createdAt: now - SETUP_STATE_TTL_MS - 1 }, now), true);
+  });
+});
+
+describe("resolveSiteUrl", () => {
+  it("accepts an https deployment origin", () => {
+    const result = resolveSiteUrl("https://example.convex.site");
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+  });
+
+  it("normalizes away a trailing slash so callers can concatenate", () => {
+    const result = resolveSiteUrl("https://example.convex.site/");
+    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+  });
+
+  it("drops any path, query, and fragment", () => {
+    const result = resolveSiteUrl("https://example.convex.site/nested?a=1#b");
+    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+  });
+
+  it("keeps an explicit port", () => {
+    const result = resolveSiteUrl("https://example.convex.site:8443");
+    assert.equal(result.ok && result.siteUrl, "https://example.convex.site:8443");
+  });
+
+  it("trims surrounding whitespace", () => {
+    const result = resolveSiteUrl("  https://example.convex.site  ");
+    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+  });
+
+  it("fails closed when unset", () => {
+    assert.equal(resolveSiteUrl(undefined).ok, false);
+  });
+
+  it("fails closed when blank", () => {
+    assert.equal(resolveSiteUrl("   ").ok, false);
+  });
+
+  it("rejects a value that is not an absolute URL", () => {
+    assert.equal(resolveSiteUrl("example.convex.site").ok, false);
+    assert.equal(resolveSiteUrl("/github/app/callback").ok, false);
+  });
+
+  it("rejects plaintext http for a non-loopback host", () => {
+    const result = resolveSiteUrl("http://example.convex.site");
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.error : "", /https/);
+  });
+
+  // Narrow dev affordance: `convex dev --local` serves http on loopback.
+  it("allows http on loopback hosts only", () => {
+    assert.equal(resolveSiteUrl("http://localhost:3210").ok, true);
+    assert.equal(resolveSiteUrl("http://127.0.0.1:3210").ok, true);
+    assert.equal(resolveSiteUrl("http://[::1]:3210").ok, true);
+  });
+
+  it("does not treat a lookalike hostname as loopback", () => {
+    assert.equal(resolveSiteUrl("http://localhost.evil.example").ok, false);
+    assert.equal(resolveSiteUrl("http://notlocalhost").ok, false);
+  });
+
+  it("rejects embedded credentials", () => {
+    const result = resolveSiteUrl("https://user:pass@example.convex.site");
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.error : "", /credentials/);
+  });
+
+  it("rejects a non-http scheme", () => {
+    assert.equal(resolveSiteUrl("ftp://example.convex.site").ok, false);
+    assert.equal(resolveSiteUrl("javascript:alert(1)").ok, false);
+  });
+
+  it("never echoes the configured value in the error", () => {
+    for (const bad of [
+      "http://attacker.example",
+      "https://user:pass@example.convex.site",
+      "ftp://example.convex.site",
+      "not-a-url",
+    ]) {
+      const result = resolveSiteUrl(bad);
+      assert.equal(result.ok, false);
+      const error = result.ok === false ? result.error : "";
+      assert.equal(error.includes(bad), false);
+      assert.equal(error.includes("attacker"), false);
+      assert.equal(error.includes("pass"), false);
+    }
   });
 });
 
