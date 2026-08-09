@@ -172,7 +172,9 @@ In the dashboard, go to **Machines → Add machine** and copy the generated comm
 curl -fsSL https://<deployment>.convex.site/install | bash -s -- --token rcreg_xxx
 ```
 
-The single-use registration token expires after 15 minutes. The installer detects the OS, architecture, CPU count, and hostname; installs Node.js 22 under `~/.runner-center` when needed; downloads and builds the agent; registers the machine; installs the `rc` CLI; and starts a launchd or systemd user service. On Linux hosts without a working user systemd session, it uses `nohup` plus an `@reboot` crontab entry.
+The single-use registration token expires after 15 minutes. The installer detects the OS, architecture, CPU count, and hostname; installs Node.js 22 under `~/.runner-center` when needed; downloads the agent release your deployment pins and verifies its SHA-256 before installing it; registers the machine; installs the `rc` CLI; and starts a launchd or systemd user service. On Linux hosts without a working user systemd session, it uses `nohup` plus an `@reboot` crontab entry.
+
+The agent is never fetched from a branch. Every machine installs the same immutable `runner-center-agent-<version>.tar.gz` release asset, installs its dependencies with `npm ci` from the lockfile inside that asset, and keeps the replaced installation at `~/.runner-center/agent.previous` so a bad release can be undone. See [Releases and versioning](#releases-and-versioning).
 
 The dashboard waits for the registration and shows the new machine name as soon as it appears. Expand **Advanced options** before copying if you need to append any of these flags:
 
@@ -186,15 +188,16 @@ Install the OS provisioner prerequisites described below before assigning jobs t
 
 The installer adds `~/.runner-center/bin` to your shell `PATH`. Open a new shell, or source the shell file named by the installer, then use:
 
-| Command        | Description                                                                                                              |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `rc status`    | Show whether the agent process is running, its machine name, and the latest log line.                                    |
-| `rc logs`      | Show the latest 100 agent log lines.                                                                                     |
-| `rc logs -f`   | Follow the agent log.                                                                                                    |
-| `rc restart`   | Restart the installed launchd, systemd, or fallback service.                                                             |
-| `rc stop`      | Stop the agent service.                                                                                                  |
-| `rc update`    | Download the latest `main` agent, rebuild it, and restart without registering again.                                     |
-| `rc uninstall` | Stop the service, remove local Runner Center files and the `PATH` entry, and remind you to delete the dashboard machine. |
+| Command                      | Description                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `rc status`                  | Show the machine name, the installed agent version, whether the process is running, and the latest log line.             |
+| `rc logs`                    | Show the latest 100 agent log lines.                                                                                     |
+| `rc logs -f`                 | Follow the agent log.                                                                                                    |
+| `rc restart`                 | Restart the installed launchd, systemd, or fallback service.                                                             |
+| `rc stop`                    | Stop the agent service.                                                                                                  |
+| `rc update`                  | Install the agent release this deployment pins and restart, without registering again.                                   |
+| `rc update --version v1.2.3` | Install that exact release instead, for pinning one machine or rolling it back.                                          |
+| `rc uninstall`               | Stop the service, remove local Runner Center files and the `PATH` entry, and remind you to delete the dashboard machine. |
 
 The machine reports online after its first heartbeat.
 
@@ -341,6 +344,36 @@ Machine onboarding installs the agent under `~/.runner-center/agent` and keeps i
 
 Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uninstall` instead of managing those files directly. Agent credentials are stored in `~/.runner-center/agent/.env` with mode `600`.
 
+An install or update never removes the working agent before its replacement is ready. The new release is downloaded, checksummed, unpacked, and given its dependencies in a temporary directory; only then is the running service stopped, the old directory moved to `~/.runner-center/agent.previous`, and the new one moved into place. If the new agent does not log a connection within 20 seconds, an update restores `agent.previous` and restarts it.
+
+### Releases and versioning
+
+Runner Center is versioned as one product, not as separately published packages. The root `package.json` and `apps/agent/package.json` carry the same version, the git tag `v<version>` is the release, and packaging refuses to run if those two versions have drifted. Nothing is published to a package registry: the only artifact is the agent archive attached to the GitHub release.
+
+Cut a release:
+
+```bash
+# bump the version in package.json and apps/agent/package.json, then
+pnpm check
+pnpm release:package        # writes dist/release/ and prints the SHA-256
+git commit -am 'chore: release v0.2.0'
+git tag v0.2.0
+git push origin main
+git push origin v0.2.0
+```
+
+Pushing the tag runs `.github/workflows/release.yml`, which re-runs `pnpm check`, builds the archive twice and compares the bytes, verifies that `apps/agent/package-lock.json` installs with the exact `npm ci` command machines use, records a build provenance attestation, and publishes `runner-center-agent-<version>.tar.gz` and its `.sha256` with the GitHub CLI. Assets are never replaced on an existing release; a correction is a new version.
+
+Roll the fleet forward once the release is published: set `AGENT_RELEASE` in `packages/backend/convex/agentRelease.ts` to that version and the checksum from the release notes, then run `pnpm deploy`. Machines install it on their next `rc update`. Rolling back is the same edit with the previous values; a single machine can be moved with `rc update --version v0.1.0`.
+
+A machine accepts an archive only when its SHA-256 matches the checksum published beside the asset **and** the checksum pinned in the deployment that served the install script. The pin can only be filled in after the release exists, so a version that has not shipped yet has an empty `sha256` and installs verify against the published checksum alone.
+
+The provenance attestation is an optional extra check for operators, never a requirement for installing:
+
+```bash
+gh attestation verify runner-center-agent-0.2.0.tar.gz --repo Fanzzzd/runner-center
+```
+
 ### Security model
 
 - GitHub credentials never leave the Convex deployment. An app created through the Manifest flow lives in the `githubApp` table, read only by internal functions; a hand-registered app lives in `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET`, alongside the optional legacy `GITHUB_PAT`.
@@ -349,6 +382,9 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 - Only repositories named in `ALLOWED_REPOS` can queue work, and a public repository additionally needs `ALLOW_PUBLIC_REPOS`. The check runs before a job row is created, so a repository you have not named never reaches a machine.
 - Jobs stored with an App installation ID use it to obtain an installation-scoped token and never fall back to the legacy PAT; if no app is configured, the job fails closed with a setup error rather than downgrading.
 - Runner machines hold a machine token, not GitHub credentials. Treat the token as a secret.
+- Machines install a pinned, immutable release asset and verify its SHA-256 before replacing the running agent; no install path fetches a branch tarball.
+- Agent dependencies come from the lockfile inside the release asset through `npm ci`, so a machine never resolves a version range on its own.
+- CI and release workflows pin every action by commit SHA, and the release job holds the only write permissions in the repository.
 - Webhook bodies are verified with `X-Hub-Signature-256` before processing.
 - Agents initiate outbound Convex WebSocket connections; runner hosts need no inbound port or public IP.
 - GitHub JIT configuration is valid for a single runner job and is cleared from the command when the agent claims it.
@@ -366,34 +402,49 @@ runner-center/
 │   └── dashboard/              # Vite + React 19 + TanStack Router UI
 ├── packages/
 │   ├── backend/                # Convex deployment: convex/, convex.json, .env.local
+│   ├── release/                # deterministic packaging of the agent release archive
 │   └── typescript-config/      # shared tsconfig presets (base, node, react)
+├── .github/workflows/          # ci.yml (every push) and release.yml (v* tags)
 ├── turbo.json                  # task graph
 ├── pnpm-workspace.yaml         # workspace globs + dependency catalog
 ├── .oxlintrc.json              # oxlint rules
 └── .oxfmtrc.json               # oxfmt options
 ```
 
-| Command              | Description                                                                        |
-| -------------------- | ---------------------------------------------------------------------------------- |
-| `pnpm dev`           | Run every package's dev task (Convex watcher + Vite) in parallel.                  |
-| `pnpm dev:backend`   | Convex watcher only.                                                               |
-| `pnpm dev:dashboard` | Vite dev server only.                                                              |
-| `pnpm build`         | Build the agent and the dashboard through the Turborepo task graph.                |
-| `pnpm typecheck`     | Typecheck every package.                                                           |
-| `pnpm lint`          | oxlint over the whole repository (`pnpm lint:fix` to autofix).                     |
-| `pnpm format`        | oxfmt over the whole repository (`pnpm format:check` in CI).                       |
-| `pnpm check`         | lint + format check + typecheck, the same gate CI runs.                            |
-| `pnpm convex …`      | Run the Convex CLI against `packages/backend`, e.g. `pnpm convex env set FOO bar`. |
-| `pnpm deploy`        | Build the dashboard and deploy backend plus static hosting.                        |
+| Command                | Description                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| `pnpm dev`             | Run every package's dev task (Convex watcher + Vite) in parallel.                                |
+| `pnpm dev:backend`     | Convex watcher only.                                                                             |
+| `pnpm dev:dashboard`   | Vite dev server only.                                                                            |
+| `pnpm build`           | Build the agent and the dashboard through the Turborepo task graph.                              |
+| `pnpm typecheck`       | Typecheck every package.                                                                         |
+| `pnpm lint`            | oxlint over the whole repository (`pnpm lint:fix` to autofix).                                   |
+| `pnpm format`          | oxfmt over the whole repository (`pnpm format:check` in CI).                                     |
+| `pnpm check`           | lint + format check + typecheck, the same gate CI runs.                                          |
+| `pnpm convex …`        | Run the Convex CLI against `packages/backend`, e.g. `pnpm convex env set FOO bar`.               |
+| `pnpm deploy`          | Build the dashboard and deploy backend plus static hosting.                                      |
+| `pnpm release:package` | Build the agent and write `dist/release/runner-center-agent-<version>.tar.gz` plus its checksum. |
 
 The dashboard imports backend types through the `@runner-center/backend/api`
 package export, so `convex/_generated` is committed and no path aliases point
 across package boundaries.
 
-`apps/agent` is intentionally self-contained: machines download only that
-directory from the source tarball and install it with plain `npm install`. It
-must therefore never use the `workspace:` or `catalog:` protocols, and its
-`tsconfig.json` must not extend the shared config package.
+`apps/agent` is intentionally self-contained: it is packaged into the release
+archive and installed by machines with plain `npm ci`, which understands neither
+the `workspace:` nor the `catalog:` protocol. It must therefore pin its
+dependencies literally, its `tsconfig.json` must not extend the shared config
+package, and `apps/agent/package-lock.json` is committed and regenerated
+whenever its `package.json` changes. Remove the pnpm-linked `node_modules`
+first, or npm records paths into the pnpm store instead of registry tarballs:
+
+```bash
+rm -rf apps/agent/node_modules
+npm install --package-lock-only --prefix apps/agent
+pnpm install
+```
+
+CI runs `npm ci` in `apps/agent` to catch a lockfile that has drifted from the
+manifest.
 
 ## Contributing
 

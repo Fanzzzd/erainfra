@@ -1,5 +1,6 @@
 import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { httpRouter } from "convex/server";
+import { AGENT_RELEASE } from "./agentRelease";
 import { auth } from "./auth";
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
@@ -220,7 +221,7 @@ http.route({
       return misconfiguredSiteUrlResponse("Refusing to render the agent installer", site.error);
     }
 
-    return new Response(renderInstallScript(site.siteUrl), {
+    return new Response(renderInstallScript(site.siteUrl, AGENT_RELEASE), {
       status: 200,
       headers: { "Content-Type": "text/x-shellscript; charset=utf-8" },
     });
