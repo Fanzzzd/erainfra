@@ -293,9 +293,13 @@ export RUNNER_IMAGE='ghcr.io/actions/actions-runner:2.336.0'
 
 The runner tag is pinned instead of using `latest` so runner updates are deliberate and deployments are reproducible. GitHub deprecates old runner versions, so update and verify this pin regularly rather than leaving it unchanged indefinitely.
 
+The JIT configuration is read from stdin and forwarded with `docker run --env ACTIONS_RUNNER_INPUT_JITCONFIG`, which passes the value from the provisioner's own environment rather than writing it into the docker client's argv where every local user could read it.
+
+`RC_JOB_TIMEOUT_S` (default `21600`, `JOB_TIMEOUT_S` accepted as a fallback) bounds the run: on expiry the container is stopped and the provisioner exits `124`. The container is also removed explicitly on any signal, because `docker run --rm` only cleans up when the client itself observes the exit.
+
 ### macOS: Tart
 
-Each job clones a base image into a temporary Tart VM, boots it without graphics, runs the JIT runner over SSH, and deletes the VM when the runner exits.
+Each job clones a base image into a temporary Tart VM, boots it without graphics, installs a pinned GitHub Actions runner, runs the JIT runner over SSH, and deletes the VM when the runner exits — on success, failure, timeout or signal.
 
 ```bash
 brew install cirruslabs/cli/tart
@@ -308,7 +312,38 @@ Catalog-backed commands pass their selected image as `IMAGE`. The provisioner re
 export BASE_IMAGE='ghcr.io/cirruslabs/macos-sequoia-xcode:16.4'
 ```
 
-Custom images must support the provisioner's `admin` SSH login and contain the runner at `~/actions-runner`. Under Apple's macOS Software License Agreement, configure no more than two concurrent macOS VM slots on one Apple-branded host.
+Custom images must support the provisioner's `admin` SSH login. They do **not** need a runner preinstalled: the provisioner downloads a pinned `actions/runner` osx-arm64 release once per host, verifies its SHA-256 against the checksum GitHub publishes in the release, caches it under `~/.runner-center/cache`, and installs it into each VM. The digest is verified again inside the guest before it is unpacked. The `cirruslabs/macos-*-base` images do ship a runner under `~/actions-runner`, but its version is whatever was current when that mutable `:latest` tag was last built, so the provisioner ignores it and installs the pin instead.
+
+Under Apple's macOS Software License Agreement, configure no more than two concurrent macOS VM slots on one Apple-branded host. The provisioner warns when it sees more Tart VMs running than `RC_MAC_MAX_CONCURRENT_VMS` (default 2).
+
+Behaviour is tunable through the environment:
+
+| Variable                    | Default                   | Purpose                                               |
+| --------------------------- | ------------------------- | ----------------------------------------------------- |
+| `RC_MAC_RUNNER_VERSION`     | pinned in the provisioner | `actions/runner` release to install.                  |
+| `RC_MAC_RUNNER_SHA256`      | pinned in the provisioner | Expected SHA-256 of that release's osx-arm64 tarball. |
+| `RC_MAC_GUEST_USER`         | `admin`                   | Guest account used for SSH.                           |
+| `RC_MAC_GUEST_PASSWORD`     | `admin`                   | Guest password, read from a mode-600 file.            |
+| `RC_BOOT_TIMEOUT_S`         | `300`                     | Budget for the guest to boot and accept SSH.          |
+| `RC_JOB_TIMEOUT_S`          | `21600`                   | Overall job budget; exceeding it exits `124`.         |
+| `RC_MAC_ATTEST_TIMEOUT_S`   | `60`                      | Budget for host key attestation over the guest agent. |
+| `RC_MAC_MAX_CONCURRENT_VMS` | `2`                       | Licensing guard rail for the warning above.           |
+
+`RC_BOOT_TIMEOUT_S` and `RC_JOB_TIMEOUT_S` are shared by every provisioner and are always in seconds, so `agentApi:report` can tell a timeout (`124`) from an ordinary runner failure regardless of OS. The older per-OS spellings `RC_MAC_BOOT_TIMEOUT_S`, `RC_MAC_JOB_TIMEOUT_S`, `BOOT_TIMEOUT_S` and `JOB_TIMEOUT_S` are still accepted as compatibility fallbacks.
+
+**Exit code fidelity:** upstream's `run-helper.sh` maps most runner failures to exit `0` (`Runner listener exit with terminated error, stop the service, no retry needed.`), so a provisioner exit of `0` means "the runner process ended", not "the job succeeded". Job outcomes come from the `workflow_job` webhook, not from this exit code. The provisioner sets `ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1` so at least a runner GitHub has deprecated surfaces as exit `7` instead of disappearing into `0`.
+
+#### Secret handling
+
+The JIT configuration never appears in a command line or an environment block on the host: the agent pipes it into the provisioner's stdin, and the provisioner stages it in a mode-600 file inside a mode-700 directory that is removed when the run ends. It reaches the guest over the SSH channel's stdin, lands in another mode-600 file, and the guest deletes that file before starting the runner.
+
+The final hand-off is the one place where a choice has to be made. Upstream's `Runner.Listener` accepts the value either as `--jitconfig` on the command line or in `ACTIONS_RUNNER_INPUT_JITCONFIG`, and nothing else. The provisioner uses the environment variable: `ps` exposes argv to every local user, while `ps -E` only exposes an environment to processes with the same uid. **Residual exposure:** a workflow step can therefore read the listener's environment for the life of its own job. That is not an escalation — the runner writes the same credentials to `.credentials_rsaparams` in its own directory, the guest is single-tenant and destroyed after one job, and the configuration is issued for that job alone — but it is worth knowing. The listener clears the variable from its own environment and registers it with the secret masker as soon as it reads it.
+
+#### SSH host authentication
+
+The provisioner does not use `StrictHostKeyChecking=no`. Before the first SSH byte is sent it reads the guest's SSH host key over the Tart guest agent's vsock channel, which does not travel over the bridge the SSH session uses, pins that key under `~/.runner-center/known_hosts.d/<image>.pub`, and connects with strict checking against it. A key that later contradicts the pin aborts the run rather than reconnecting.
+
+**Residual first-use trust:** if the guest agent does not answer — a vanilla image, or a build without `tart-guest-agent` — there is no out-of-band channel to attest the key, so the provisioner falls back to `StrictHostKeyChecking=accept-new`, prints a warning, and pins whatever key it saw for later runs. That one boot is exposed to a local attacker on the Tart bridge. Note also that the `cirruslabs` base images ship a fixed host key and the well-known `admin` password, both of which are public to anyone who pulls the image; pinning detects a guest that is not the image you cloned, it does not authenticate the image itself.
 
 After deploying catalog support to Convex, redeploy each machine agent. Older agents can still claim commands because the response change only adds an optional field, but they ignore the selected image and continue using their provisioner environment defaults until upgraded.
 

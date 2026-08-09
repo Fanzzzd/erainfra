@@ -1,10 +1,8 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
-import { execa, type ResultPromise } from "execa";
-import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
+import { type MachineOs, spawnProvisioner } from "./provision.js";
 
-type MachineOs = "linux" | "mac" | "win";
 type PendingCommand = { commandId: string; runnerName: string };
 
 type PendingCommandsResult = {
@@ -45,37 +43,10 @@ const heartbeatAgent = makeFunctionReference<
 const client = new ConvexClient(config.convexUrl);
 const queuedIds = new Set<string>();
 const queue: PendingCommand[] = [];
-const running = new Map<string, ResultPromise>();
+const running = new Map<string, ReturnType<typeof spawnProvisioner>>();
 let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
-
-function provisionerPath(os: MachineOs) {
-  const filename = os === "win" ? "provision-win.ps1" : `provision-${os}.sh`;
-  return fileURLToPath(new URL(`../provisioners/${filename}`, import.meta.url));
-}
-
-function spawnProvisioner(os: MachineOs, jitConfig: string, runnerName: string, image?: string) {
-  const script = provisionerPath(os);
-  const env = {
-    ...process.env,
-    JIT_CONFIG: jitConfig,
-    RUNNER_NAME: runnerName,
-    ...(image === undefined ? {} : { IMAGE: image }),
-  };
-  // SIGTERM reaches the provisioner, whose own traps delete the container or
-  // VM; killing the agent's child alone would leave the runner behind.
-  const options = {
-    env,
-    reject: false as const,
-    stdio: "inherit" as const,
-    killSignal: "SIGTERM" as const,
-    forceKillAfterDelay: 30_000,
-  };
-  return os === "win"
-    ? execa("powershell.exe", ["-NoProfile", "-File", script], options)
-    : execa(script, [], options);
-}
 
 async function runCommand(command: PendingCommand) {
   let exitCode = 1;
