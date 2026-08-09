@@ -59,13 +59,20 @@ async function provision(os: MachineOs, jitConfig: string, runnerName: string, i
     RUNNER_NAME: runnerName,
     ...(image === undefined ? {} : { IMAGE: image }),
   };
+  // The provisioner reads everything from `env`, so no secret reaches argv.
+  // Bypass covers the default Restricted policy on Windows client SKUs, and
+  // NonInteractive turns a would-be prompt into a failure the agent can report.
   const result =
     os === "win"
-      ? await execa("powershell.exe", ["-NoProfile", "-File", script], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        })
+      ? await execa(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script],
+          {
+            env,
+            reject: false,
+            stdio: "inherit",
+          },
+        )
       : await execa(script, [], {
           env,
           reject: false,
