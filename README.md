@@ -453,17 +453,18 @@ Cut a release:
 # bump the version in package.json and apps/agent/package.json, then
 pnpm check
 pnpm release:package        # writes dist/release/ and prints the SHA-256
+# copy that version and SHA-256 into AGENT_RELEASE in the same release commit
 git commit -am 'chore: release v0.2.0'
 git tag v0.2.0
 git push origin main
 git push origin v0.2.0
 ```
 
-Pushing the tag runs `.github/workflows/release.yml`, which refuses to publish unless the tag matches both package versions exactly, re-runs `pnpm check`, builds the archive twice and compares the bytes, verifies that `apps/agent/package-lock.json` installs with the exact `npm ci` command machines use, records a build provenance attestation, and publishes `runner-center-agent-<version>.tar.gz` and its `.sha256` with the GitHub CLI. Assets are never replaced on an existing release; a correction is a new version.
+Pushing the tag runs `.github/workflows/release.yml`, which refuses to publish unless the tag, both package versions, and `AGENT_RELEASE` agree. It re-runs `pnpm check`, builds the archive twice and compares the bytes, rejects any archive whose SHA-256 differs from the deployment pin, verifies that `apps/agent/package-lock.json` installs with the exact `npm ci` command machines use, records a build provenance attestation, and publishes `runner-center-agent-<version>.tar.gz` and its `.sha256` with the GitHub CLI. Assets are never replaced on an existing release; a correction is a new version.
 
-Roll the fleet forward once the release is published: set `AGENT_RELEASE` in `packages/backend/convex/agentRelease.ts` to that version and the checksum from the release notes, then run `pnpm deploy`. Machines install it on their next `rc update`. Rolling back is the same edit with the previous values; a single machine can be moved with `rc update --version v0.1.0`.
+Roll the fleet forward once the release is published by running `pnpm deploy`; the release commit already points `AGENT_RELEASE` at the verified bytes. Machines install it on their next `rc update`. Rolling back is an edit to the previous release values followed by another deploy; a single machine can be moved with `rc update --version v0.1.0`.
 
-A machine accepts an archive only when its SHA-256 matches the checksum published beside the asset **and** the checksum pinned in the deployment that served the install script. The pin can only be filled in after the release exists, so a version that has not shipped yet has an empty `sha256` and installs verify against the published checksum alone.
+A machine accepts an archive only when its SHA-256 matches the checksum published beside the asset **and** the checksum pinned in the deployment that served the install script. The packager is deterministic, so that checksum is computed and committed before the tag; the release workflow rebuilds the archive and refuses to publish unless the bytes match the independent deployment pin.
 
 The provenance attestation is an optional extra check for operators, never a requirement for installing:
 

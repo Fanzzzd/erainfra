@@ -3,7 +3,7 @@ export type AgentRelease = {
   repo: string;
   /** Product version, without the leading `v` of the git tag. */
   version: string;
-  /** SHA-256 of `runner-center-agent-<version>.tar.gz`, or "" until published. */
+  /** SHA-256 of `runner-center-agent-<version>.tar.gz`. */
   sha256: string;
 };
 
@@ -15,18 +15,17 @@ export type AgentRelease = {
  * exactly that asset. Nothing tracks a branch, so a machine installed today and
  * a machine installed next month run identical bytes.
  *
- * This constant is the fleet's rollout pointer, and publishing a release does
- * not move it. Once the release exists, set `version` and `sha256` to the
- * published values and run `pnpm deploy`; rolling the fleet back is the same
- * edit with the previous values. Because the install script is served by this
- * deployment over TLS, `sha256` is a trust root outside the release itself, so
- * an archive that matches the release but not this pin is rejected.
- *
- * `sha256` may be empty only before its release has been published; installs
- * then fall back to the checksum published beside the asset.
+ * This constant is the fleet's rollout pointer. The deterministic packager
+ * makes the archive checksum available before tagging, so the release commit
+ * pins it here and the tag workflow refuses to publish different bytes. Deploy
+ * only after the matching release asset exists; rolling the fleet back is the
+ * same edit with the previous release values. Because the install script is
+ * served by this deployment over TLS, `sha256` is a trust root outside the
+ * release itself, so an archive that matches the release but not this pin is
+ * rejected.
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/runner-center",
   version: "0.1.0",
-  sha256: "",
+  sha256: "1c5becd02296614e3c43be9e0bd692c554fcbc5e0c474e647d4c3905fb5ea62b",
 };
