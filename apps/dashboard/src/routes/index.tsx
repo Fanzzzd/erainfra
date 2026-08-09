@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { Check, Clipboard, Plus, Server } from "lucide-react";
 import { api } from "@runner-center/backend/api";
+import { GithubAppSetup } from "@/components/github-app-setup";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useNow } from "@/hooks/use-now";
+import { convexSiteUrl } from "@/lib/convex-site";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 
 export const Route = createFileRoute("/")({ component: MachinesPage });
@@ -35,10 +37,6 @@ type RegistrationCommand = {
 };
 
 const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
-
-function convexSiteUrl() {
-  return String(import.meta.env.VITE_CONVEX_URL).replace(/\.convex\.cloud\/?$/, ".convex.site");
-}
 
 const SUPPORTED_RUNS_ON_LABELS = [
   {
@@ -290,6 +288,8 @@ function MachinesPage() {
           detail="Queued since local midnight"
         />
       </div>
+
+      <GithubAppSetup />
 
       <section
         className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5"
