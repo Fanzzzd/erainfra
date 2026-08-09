@@ -14,7 +14,15 @@ const RUNNING_ABANDONED_MS = 10 * 60_000;
 const QUEUE_EXPIRED_MS = 24 * 60 * 60_000;
 const REGISTRATION_TOKEN_RETENTION_MS = 60 * 60_000;
 const FINISHED_JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
-const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
+// Must stay strictly greater than recovery.RECOVERY_WINDOW_MS — asserted in
+// tests/recovery.test.ts. These rows are what tells the recovery scan a
+// delivery already arrived. If one expired while GitHub could still list its
+// delivery, the scan would read that absence as a loss, ask for a redelivery,
+// and re-apply a stale `queued` event for a job that finished days ago.
+export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
+// Settled recovery rows are diagnostics, kept on the same clock as the
+// deliveries they describe.
+const RECOVERY_RETENTION_MS = DELIVERY_RETENTION_MS;
 
 export const run = internalMutation({
   args: {},
@@ -195,6 +203,18 @@ export const run = internalMutation({
       for (const delivery of settled) {
         if (now - (delivery.settledAt ?? delivery.receivedAt) >= DELIVERY_RETENTION_MS) {
           await ctx.db.delete(delivery._id);
+        }
+      }
+    }
+    for (const recoveryState of ["recovered", "abandoned"] as const) {
+      const settled = await ctx.db
+        .query("webhookRecovery")
+        .withIndex("by_state", (q) => q.eq("state", recoveryState))
+        .order("asc")
+        .take(200);
+      for (const row of settled) {
+        if (now - row.lastRequestedAt >= RECOVERY_RETENTION_MS) {
+          await ctx.db.delete(row._id);
         }
       }
     }

@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Inbox, ListChecks, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Inbox, ListChecks, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api } from "@runner-center/backend/api";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -308,11 +308,14 @@ function AttemptCell({
 
 /**
  * Everything that can stop a workflow job from ever becoming a row above:
- * a closed allowlist, or a delivery that was refused or gave up.
+ * a closed allowlist, a delivery that was refused or gave up, or a delivery
+ * that never arrived at all.
  */
 function IntakeHealth({ now }: { now: number }) {
   const policy = useQuery(api.settings.repositoryPolicy);
   const failures = useQuery(api.webhooks.recentFailures);
+  const recovery = useQuery(api.webhooks.recoveryStatus);
+  const app = useQuery(api.githubApp.status);
 
   return (
     <section
@@ -330,9 +333,136 @@ function IntakeHealth({ now }: { now: number }) {
 
       <div className="space-y-4 px-4 py-3.5">
         <RepositoryPolicyCard policy={policy} />
+        <DeliveryRecoveryCard recovery={recovery} source={app?.source} now={now} />
         <RejectedDeliveries failures={failures} now={now} />
       </div>
     </section>
+  );
+}
+
+type RecoveryStatus = {
+  lastRunAt: number;
+  lastSuccessAt?: number;
+  nextRunAt: number;
+  lastOutcome: "pending" | "ok" | "skipped-no-app" | "skipped-backoff" | "error";
+  lastError?: string;
+  consecutiveFailures: number;
+  listed: number;
+  missing: number;
+  requested: number;
+  outstanding: number;
+  recovered: number;
+  abandoned: number;
+};
+
+const RECOVERY_OUTCOME: Record<RecoveryStatus["lastOutcome"], { label: string; tone: string }> = {
+  pending: { label: "starting", tone: "text-[#8a8a93]" },
+  ok: { label: "healthy", tone: "text-emerald-300" },
+  "skipped-no-app": { label: "unavailable", tone: "text-amber-300" },
+  "skipped-backoff": { label: "backing off", tone: "text-amber-300" },
+  error: { label: "failing", tone: "text-red-300" },
+};
+
+/**
+ * GitHub never retries a webhook it failed to deliver, so an outage silently
+ * drops queued jobs. This is where an operator sees that the repair loop is
+ * running — and, on the legacy PAT, that it cannot run at all.
+ */
+function DeliveryRecoveryCard({
+  recovery,
+  source,
+  now,
+}: {
+  recovery: RecoveryStatus | null | undefined;
+  source: string | undefined;
+  now: number;
+}) {
+  if (recovery === undefined || source === undefined) {
+    return <p className="text-xs text-[#8a8a93]">Checking delivery recovery…</p>;
+  }
+
+  // The /app/hook endpoints need a JWT signed by an App private key, so this is
+  // one capability the legacy PAT structurally cannot have.
+  if (source === "pat" || source === "none") {
+    return (
+      <div className="flex gap-3 rounded-md border border-amber-400/20 bg-amber-400/[0.06] p-3">
+        <RotateCcw className="mt-0.5 size-4 shrink-0 text-amber-300" aria-hidden="true" />
+        <p className="text-xs leading-5 text-amber-200">
+          <span className="font-medium">Lost deliveries are not being recovered.</span> GitHub does
+          not retry a webhook it failed to deliver, and asking it to redeliver one requires a GitHub
+          App.{" "}
+          <Link to="/" className="underline underline-offset-2 hover:text-amber-100">
+            Connect an App
+          </Link>{" "}
+          to turn this on.
+        </p>
+      </div>
+    );
+  }
+
+  const outcome = RECOVERY_OUTCOME[recovery?.lastOutcome ?? "pending"];
+  const backingOff = recovery !== null && recovery.nextRunAt > now;
+
+  return (
+    <div className="rounded-md border border-white/[0.08] bg-white/[0.02] p-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="inline-flex items-center gap-2 text-xs font-medium text-zinc-300">
+          <RotateCcw className="size-4 text-[#7c7c85]" aria-hidden="true" />
+          Delivery recovery
+        </span>
+        <span className={cn("text-xs font-medium", outcome.tone)}>{outcome.label}</span>
+        {recovery !== null && (
+          <span
+            className="tabular-nums text-xs text-[#7c7c85]"
+            title={formatAbsoluteTime(recovery.lastRunAt)}
+          >
+            last run {formatRelativeTime(recovery.lastRunAt, now)}
+          </span>
+        )}
+      </div>
+
+      {recovery === null ? (
+        <p className="mt-2 text-xs leading-5 text-[#8a8a93]">
+          The recovery scan has not run yet. It checks GitHub for failed deliveries every five
+          minutes.
+        </p>
+      ) : (
+        <>
+          <p className="tabular-nums mt-2 text-xs leading-5 text-[#8a8a93]">
+            Last scan saw {recovery.listed} deliveries, {recovery.missing} of them never received,
+            and asked GitHub to redeliver {recovery.requested}.
+          </p>
+          <p className="tabular-nums mt-1 text-xs leading-5 text-[#8a8a93]">
+            {recovery.outstanding} awaiting redelivery
+            <span className="px-1.5 text-[#7c7c85]">·</span>
+            <span className="text-emerald-300">{recovery.recovered} recovered</span>
+            <span className="px-1.5 text-[#7c7c85]">·</span>
+            <span className={recovery.abandoned > 0 ? "text-red-300" : undefined}>
+              {recovery.abandoned} given up on
+            </span>
+          </p>
+          {backingOff && (
+            <p
+              className="tabular-nums mt-1 text-xs text-amber-300"
+              title={formatAbsoluteTime(recovery.nextRunAt)}
+            >
+              Backing off after {recovery.consecutiveFailures} failed{" "}
+              {recovery.consecutiveFailures === 1 ? "run" : "runs"} — next attempt in{" "}
+              {formatDuration(recovery.nextRunAt - now)}
+            </p>
+          )}
+          {recovery.lastError !== undefined && (
+            <p className="mt-1 text-xs leading-5 text-red-300/80">
+              <span className="sr-only">Last error: </span>
+              <span aria-hidden="true" className="pr-1.5 text-[#7c7c85]">
+                ↳
+              </span>
+              {recovery.lastError}
+            </p>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

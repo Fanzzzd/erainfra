@@ -24,6 +24,7 @@ import type * as jobs from "../jobs.js";
 import type * as machines from "../machines.js";
 import type * as policy from "../policy.js";
 import type * as reconcile from "../reconcile.js";
+import type * as recovery from "../recovery.js";
 import type * as retry from "../retry.js";
 import type * as runners from "../runners.js";
 import type * as scheduler from "../scheduler.js";
@@ -53,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   machines: typeof machines;
   policy: typeof policy;
   reconcile: typeof reconcile;
+  recovery: typeof recovery;
   retry: typeof retry;
   runners: typeof runners;
   scheduler: typeof scheduler;
