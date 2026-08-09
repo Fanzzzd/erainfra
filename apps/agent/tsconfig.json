@@ -11,5 +11,5 @@
     "types": ["node"],
     "sourceMap": true
   },
-  "include": ["index.ts", "config.ts"]
+  "include": ["index.ts", "config.ts", "provision.ts"]
 }

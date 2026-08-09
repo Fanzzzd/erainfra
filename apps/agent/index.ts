@@ -1,10 +1,8 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
-import { execa } from "execa";
-import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
+import { type MachineOs, provision } from "./provision.js";
 
-type MachineOs = "linux" | "mac" | "win";
 type PendingCommand = { commandId: string; runnerName: string };
 
 type PendingCommandsResult = {
@@ -45,34 +43,6 @@ const queue: PendingCommand[] = [];
 let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
-
-function provisionerPath(os: MachineOs) {
-  const filename = os === "win" ? "provision-win.ps1" : `provision-${os}.sh`;
-  return fileURLToPath(new URL(`../provisioners/${filename}`, import.meta.url));
-}
-
-async function provision(os: MachineOs, jitConfig: string, runnerName: string, image?: string) {
-  const script = provisionerPath(os);
-  const env = {
-    ...process.env,
-    JIT_CONFIG: jitConfig,
-    RUNNER_NAME: runnerName,
-    ...(image === undefined ? {} : { IMAGE: image }),
-  };
-  const result =
-    os === "win"
-      ? await execa("powershell.exe", ["-NoProfile", "-File", script], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        })
-      : await execa(script, [], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        });
-  return result.exitCode ?? 1;
-}
 
 async function runCommand(command: PendingCommand) {
   let exitCode = 1;
