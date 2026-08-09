@@ -13,9 +13,11 @@
 # Security model:
 #   - The JIT registration blob never reaches a command line. On the host it is
 #     passed to Invoke-Command through -ArgumentList, which serialises it over
-#     the VM socket. In the guest it is materialised as the runner's own config
-#     files instead of being handed to run.cmd as a command-line flag, so a
-#     workflow step cannot read it back out of the guest process list.
+#     the VM socket. In the guest it is handed to Runner.Listener through
+#     ACTIONS_RUNNER_INPUT_JITCONFIG instead of argv or a provisioner-owned
+#     config file. Runner.Listener clears that variable after consuming it, but
+#     another process running as the same guest user could inspect its environment
+#     during that brief window.
 #   - The guest credential comes from a DPAPI-protected file readable only by
 #     the account that built the image, which is the account that runs the
 #     agent. IMAGE_PASSWORD overrides it for unattended rebuilds and is the only
