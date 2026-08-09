@@ -21,6 +21,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -229,8 +230,12 @@ function run(
   args: readonly string[],
   options: { connect?: boolean; npmFails?: boolean } = {},
 ) {
-  return spawnSync("bash", [sandbox.scriptPath, ...args], {
-    encoding: "utf8",
+  return spawnSync("bash", [sandbox.scriptPath, ...args], spawnOptions(sandbox, options));
+}
+
+function spawnOptions(sandbox: Sandbox, options: { connect?: boolean; npmFails?: boolean } = {}) {
+  return {
+    encoding: "utf8" as const,
     env: {
       PATH: `${path.join(sandbox.root, "bin")}:/usr/bin:/bin:/usr/sbin:/sbin`,
       HOME: sandbox.home,
@@ -241,7 +246,7 @@ function run(
       RC_TEST_NPM_FAIL: options.npmFails === true ? "1" : "0",
       RC_TEST_CONNECT: options.connect === false ? "0" : "1",
     },
-  });
+  };
 }
 
 function readLog(filePath: string) {
@@ -299,6 +304,25 @@ describe("install", () => {
 });
 
 describe("update", () => {
+  it("can replace the legacy CLI without corrupting its running shell", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishRelease(sandbox, CURRENT, "new agent");
+    seedExistingInstall(sandbox, "0.1.0", "legacy agent");
+    route(sandbox, `${SITE_URL}/install`, sandbox.scriptPath);
+
+    const legacyCli = path.join(import.meta.dirname, "fixtures", "legacy-rc-v0.sh");
+    const rcPath = path.join(sandbox.rcHome, "bin", "rc");
+    mkdirSync(path.dirname(rcPath), { recursive: true });
+    writeExecutable(rcPath, readFileSync(legacyCli, "utf8"));
+
+    const result = spawnSync("bash", [rcPath, "update"], spawnOptions(sandbox));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).not.toMatch(/syntax error|unexpected EOF/);
+    expect(agentMarker(sandbox)).toBe("// new agent");
+    expect(existsSync(rcPath)).toBeTruthy();
+    expect(statSync(rcPath).mode & 0o111).not.toBe(0);
+  });
+
   it("installs an older version when the operator supplies its independent checksum", () => {
     const sandbox = createSandbox(CURRENT);
     publishRelease(sandbox, CURRENT, "new agent");

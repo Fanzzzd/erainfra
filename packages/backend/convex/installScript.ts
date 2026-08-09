@@ -26,6 +26,7 @@ VERSION_ARG=""
 SHA_ARG=""
 UPDATE=0
 TMP_DIR=""
+RC_CLI_TMP=""
 SERVICE_KIND=""
 
 fail() {
@@ -45,6 +46,9 @@ trap 'on_error $LINENO' ERR
 cleanup() {
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
     rm -rf "$TMP_DIR"
+  fi
+  if [ -n "$RC_CLI_TMP" ] && [ -f "$RC_CLI_TMP" ]; then
+    rm -f "$RC_CLI_TMP"
   fi
 }
 trap cleanup EXIT
@@ -442,7 +446,12 @@ exec "$NODE_BIN" "$AGENT_DIR/dist/index.js"
 START_AGENT
 chmod 700 "$START_SCRIPT"
 
-cat > "$BIN_DIR/rc" <<'RC_CLI'
+# The update command runs this installer from the existing CLI. Replacing that path by
+# truncating it lets bash read a mixture of the old and new scripts after the
+# child installer returns. Build beside it and rename atomically so the running
+# shell keeps its old inode while the next invocation sees the new CLI.
+RC_CLI_TMP=$(mktemp "$BIN_DIR/.rc.XXXXXX")
+cat > "$RC_CLI_TMP" <<'RC_CLI'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -593,7 +602,9 @@ case "$command" in
     ;;
 esac
 RC_CLI
-chmod 755 "$BIN_DIR/rc"
+chmod 755 "$RC_CLI_TMP"
+mv "$RC_CLI_TMP" "$BIN_DIR/rc"
+RC_CLI_TMP=""
 
 PATH_LINE='export PATH="$HOME/.runner-center/bin:$PATH" # runner-center'
 CURRENT_SHELL=$(printenv SHELL || true)
