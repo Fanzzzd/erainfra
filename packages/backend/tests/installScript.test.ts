@@ -472,6 +472,11 @@ describe("rendered script", () => {
     expect(script).toMatch(/releases\/download\/v\$VERSION/);
   });
 
+  it("writes systemd agent output to the connection log", () => {
+    expect(script).toMatch(/StandardOutput=append:\$LOG_FILE/);
+    expect(script).toMatch(/StandardError=append:\$LOG_FILE/);
+  });
+
   it("carries the release this deployment pins", () => {
     expect(AGENT_RELEASE.version).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/);
     expect(AGENT_RELEASE.repo).toMatch(/^[\w.-]+\/[\w.-]+$/);
