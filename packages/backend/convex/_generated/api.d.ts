@@ -12,6 +12,8 @@ import type * as admin from "../admin.js";
 import type * as agentApi from "../agentApi.js";
 import type * as agentRelease from "../agentRelease.js";
 import type * as auth from "../auth.js";
+import type * as bootstrap from "../bootstrap.js";
+import type * as bootstrapPolicy from "../bootstrapPolicy.js";
 import type * as catalog from "../catalog.js";
 import type * as crons from "../crons.js";
 import type * as dashboardAuth from "../dashboardAuth.js";
@@ -42,6 +44,8 @@ declare const fullApi: ApiFromModules<{
   agentApi: typeof agentApi;
   agentRelease: typeof agentRelease;
   auth: typeof auth;
+  bootstrap: typeof bootstrap;
+  bootstrapPolicy: typeof bootstrapPolicy;
   catalog: typeof catalog;
   crons: typeof crons;
   dashboardAuth: typeof dashboardAuth;
