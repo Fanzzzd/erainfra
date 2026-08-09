@@ -27,5 +27,5 @@ export type AgentRelease = {
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/runner-center",
   version: "0.1.0",
-  sha256: "1c5becd02296614e3c43be9e0bd692c554fcbc5e0c474e647d4c3905fb5ea62b",
+  sha256: "1d2fe6a9e5d973a7234009954d3d1cc0fc877b03c2d3217160ac877f2a7f5b56",
 };

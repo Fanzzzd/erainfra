@@ -315,6 +315,9 @@ if [ -n "$VERSION_ARG" ]; then
   VERSION=$VERSION_ARG
 fi
 [ -n "$VERSION" ] || fail 'This Runner Center deployment pins no agent version; redeploy the backend'
+if [ -n "$VERSION_ARG" ] && [ "$VERSION" != "$PINNED_VERSION" ] && [ -z "$SHA_ARG" ]; then
+  fail 'Updating to a release other than the deployment pin requires --sha256 with an independently verified digest'
+fi
 
 ASSET="runner-center-agent-$VERSION.tar.gz"
 RELEASE_URL="https://github.com/$AGENT_REPO/releases/download/v$VERSION"

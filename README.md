@@ -206,16 +206,16 @@ Install the OS provisioner prerequisites described below before assigning jobs t
 
 The installer adds `~/.runner-center/bin` to your shell `PATH`. Open a new shell, or source the shell file named by the installer, then use:
 
-| Command                      | Description                                                                                                              |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `rc status`                  | Show the machine name, the installed agent version, whether the process is running, and the latest log line.             |
-| `rc logs`                    | Show the latest 100 agent log lines.                                                                                     |
-| `rc logs -f`                 | Follow the agent log.                                                                                                    |
-| `rc restart`                 | Restart the installed launchd, systemd, or fallback service.                                                             |
-| `rc stop`                    | Stop the agent service.                                                                                                  |
-| `rc update`                  | Install the agent release this deployment pins and restart, without registering again.                                   |
-| `rc update --version v1.2.3` | Install that exact release instead, for pinning one machine or rolling it back.                                          |
-| `rc uninstall`               | Stop the service, remove local Runner Center files and the `PATH` entry, and remind you to delete the dashboard machine. |
+| Command                                   | Description                                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `rc status`                               | Show the machine name, the installed agent version, whether the process is running, and the latest log line.             |
+| `rc logs`                                 | Show the latest 100 agent log lines.                                                                                     |
+| `rc logs -f`                              | Follow the agent log.                                                                                                    |
+| `rc restart`                              | Restart the installed launchd, systemd, or fallback service.                                                             |
+| `rc stop`                                 | Stop the agent service.                                                                                                  |
+| `rc update`                               | Install the agent release this deployment pins and restart, without registering again.                                   |
+| `rc update --version v1.2.3 --sha256 HEX` | Install a release other than the deployment pin; the independent digest is required.                                     |
+| `rc uninstall`                            | Stop the service, remove local Runner Center files and the `PATH` entry, and remind you to delete the dashboard machine. |
 
 The machine reports online after its first heartbeat.
 
@@ -340,7 +340,7 @@ Behaviour is tunable through the environment:
 | `RC_MAC_ATTEST_TIMEOUT_S`   | `60`                      | Budget for host key attestation over the guest agent. |
 | `RC_MAC_MAX_CONCURRENT_VMS` | `2`                       | Licensing guard rail for the warning above.           |
 
-`RC_BOOT_TIMEOUT_S` and `RC_JOB_TIMEOUT_S` are shared by every provisioner and are always in seconds, so `agentApi:report` can tell a timeout (`124`) from an ordinary runner failure regardless of OS. The older per-OS spellings `RC_MAC_BOOT_TIMEOUT_S`, `RC_MAC_JOB_TIMEOUT_S`, `BOOT_TIMEOUT_S` and `JOB_TIMEOUT_S` are still accepted as compatibility fallbacks.
+`RC_BOOT_TIMEOUT_S` and `RC_JOB_TIMEOUT_S` are shared by every provisioner and are always in seconds. A job timeout therefore has the same diagnostic exit code (`124`) in every agent log; the backend currently applies the normal bounded provisioning retry policy to it. The older per-OS spellings `RC_MAC_BOOT_TIMEOUT_S`, `RC_MAC_JOB_TIMEOUT_S`, `BOOT_TIMEOUT_S` and `JOB_TIMEOUT_S` are still accepted as compatibility fallbacks.
 
 **Exit code fidelity:** upstream's `run-helper.sh` maps most runner failures to exit `0` (`Runner listener exit with terminated error, stop the service, no retry needed.`), so a provisioner exit of `0` means "the runner process ended", not "the job succeeded". Job outcomes come from the `workflow_job` webhook, not from this exit code. The provisioner sets `ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1` so at least a runner GitHub has deprecated surfaces as exit `7` instead of disappearing into `0`.
 
@@ -462,7 +462,7 @@ git push origin v0.2.0
 
 Pushing the tag runs `.github/workflows/release.yml`, which refuses to publish unless the tag, both package versions, and `AGENT_RELEASE` agree. It re-runs `pnpm check`, builds the archive twice and compares the bytes, rejects any archive whose SHA-256 differs from the deployment pin, verifies that `apps/agent/package-lock.json` installs with the exact `npm ci` command machines use, records a build provenance attestation, and publishes `runner-center-agent-<version>.tar.gz` and its `.sha256` with the GitHub CLI. Assets are never replaced on an existing release; a correction is a new version.
 
-Roll the fleet forward once the release is published by running `pnpm deploy`; the release commit already points `AGENT_RELEASE` at the verified bytes. Machines install it on their next `rc update`. Rolling back is an edit to the previous release values followed by another deploy; a single machine can be moved with `rc update --version v0.1.0`.
+Roll the fleet forward once the release is published by running `pnpm deploy`; the release commit already points `AGENT_RELEASE` at the verified bytes. Machines install it on their next `rc update`. Rolling back the fleet is an edit to the previous release values followed by another deploy. Moving one machine to a release other than the deployment pin requires both its version and the independently verified digest: `rc update --version v0.1.0 --sha256 <release-sha256>`.
 
 A machine accepts an archive only when its SHA-256 matches the checksum published beside the asset **and** the checksum pinned in the deployment that served the install script. The packager is deterministic, so that checksum is computed and committed before the tag; the release workflow rebuilds the archive and refuses to publish unless the bytes match the independent deployment pin.
 

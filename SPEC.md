@@ -145,11 +145,9 @@ commands: defineTable({
 
 Use the official component `@convex-dev/static-hosting` (v0.2.x):
 
-- `packages/backend/convex/convex.config.ts`: `defineApp({ httpPrefix: "/api" })` +
-  `app.use(staticHosting, { httpPrefix: "/" })` — static site owns `/`,
-  our http.ts routes are served under `/api`. So the GitHub webhook URL is
-  `https://<deployment>.convex.site/api/github/webhook` (http.ts still
-  declares path `/github/webhook`).
+- `packages/backend/convex/convex.config.ts` mounts static hosting at `/`, while
+  explicit routes in `http.ts` keep their declared paths. The GitHub webhook URL
+  is therefore `https://<deployment>.convex.site/github/webhook`.
 - `packages/backend` script `deploy` runs `static-hosting deploy` with
   `--dist ../../apps/dashboard/dist`, and builds the dashboard first via
   `--build-command`. `pnpm deploy` at the root forwards to it.

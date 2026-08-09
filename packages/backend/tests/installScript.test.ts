@@ -299,13 +299,13 @@ describe("install", () => {
 });
 
 describe("update", () => {
-  it("installs the version the operator pins, so a rollback is one command", () => {
+  it("installs an older version when the operator supplies its independent checksum", () => {
     const sandbox = createSandbox(CURRENT);
     publishRelease(sandbox, CURRENT, "new agent");
-    publishRelease(sandbox, OLDER, "older agent");
+    const older = publishRelease(sandbox, OLDER, "older agent");
     seedExistingInstall(sandbox, "1.4.2", "current agent");
 
-    const result = run(sandbox, ["--update", "--version", "v1.3.0"]);
+    const result = run(sandbox, ["--update", "--version", "v1.3.0", "--sha256", older.sha256]);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const requested = readLog(sandbox.curlLog);
@@ -315,6 +315,18 @@ describe("update", () => {
     expect(requested).not.toMatch(/runner-center-agent-1\.4\.2/);
     expect(agentMarker(sandbox)).toBe("// older agent");
     expect(metaField(sandbox, "AGENT_VERSION")).toBe("1.3.0");
+  });
+
+  it("refuses a historical release without an independently supplied checksum", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishRelease(sandbox, OLDER, "older agent");
+    seedExistingInstall(sandbox, "1.4.2", "current agent");
+
+    const result = run(sandbox, ["--update", "--version", "v1.3.0"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/other than the deployment pin requires --sha256/);
+    expect(readLog(sandbox.curlLog)).toBe("");
+    expect(agentMarker(sandbox)).toBe("// current agent");
   });
 
   it("keeps the replaced installation so a bad release can be recovered", () => {

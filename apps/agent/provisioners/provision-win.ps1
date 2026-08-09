@@ -287,8 +287,9 @@ try {
         if ($chunk.Count -gt 0) { $returned += $chunk }
         if ($job.State -ne 'Running' -and $job.State -ne 'NotStarted') { break }
         if ((Get-Date) -gt $jobDeadline) {
-            # 124 rather than a throw, so agentApi:report can tell a timeout from
-            # an ordinary runner failure. The finally block destroys the VM.
+            # Use 124 consistently across provisioners so the agent log identifies
+            # a timeout; the backend applies its normal bounded retry policy. The
+            # finally block destroys the VM.
             Write-Host "The job exceeded RC_JOB_TIMEOUT_S (${jobTimeout}s); destroying $runnerName."
             exit 124
         }

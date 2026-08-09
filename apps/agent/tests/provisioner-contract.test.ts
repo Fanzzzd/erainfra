@@ -51,8 +51,8 @@ describe("provisioner scripts", () => {
     it(`${script.split("/").pop()} honours the shared RC_JOB_TIMEOUT_S`, () => {
       const source = readFileSync(script, "utf8");
       assert.match(source, /RC_JOB_TIMEOUT_S/);
-      // Every provisioner reports a timeout as 124 so agentApi:report can tell
-      // a timeout from an ordinary runner failure.
+      // Every provisioner uses 124 so agent logs identify a timeout consistently;
+      // the backend applies the normal bounded retry policy.
       assert.match(source, /exit 124/);
     });
   }

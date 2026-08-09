@@ -106,8 +106,7 @@ jobs:
             printf '    %s\n\n' "$sha256"
             printf 'The release commit already pins these bytes in `AGENT_RELEASE`.\n'
             printf 'Roll the fleet forward with `pnpm deploy` after this workflow succeeds.\n'
-            printf 'A single machine can be moved with\n'
-            printf '`rc update --version v%s`.\n' "$VERSION"
+            printf 'After that deploy, a single machine can be moved with `rc update`.\n'
           } > release-notes.md
           gh release create "v$VERSION" \
             --title "v$VERSION" \
