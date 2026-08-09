@@ -16,7 +16,7 @@
   "scripts": {
     "dev": "convex dev",
     "codegen": "convex codegen",
-    "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
+    "test": "vitest run",
     "typecheck": "tsc -p convex/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
     "deploy": "static-hosting deploy --dist ../../apps/dashboard/dist --build-command \"pnpm --filter @runner-center/dashboard build\"",
     "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts"
@@ -29,8 +29,12 @@
     "octokit": "5.0.5"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
     "@runner-center/typescript-config": "workspace:*",
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "convex-test": "0.0.54",
+    "typescript": "catalog:",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
   }
 }
