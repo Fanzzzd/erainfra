@@ -1,16 +1,17 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
-import { execa } from "execa";
-import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
+import { type MachineOs, spawnProvisioner } from "./provision.js";
 
-type MachineOs = "linux" | "mac" | "win";
 type PendingCommand = { commandId: string; runnerName: string };
 
 type PendingCommandsResult = {
   os: MachineOs;
   maxSlots: number;
   commands: PendingCommand[];
+  // Added by newer backends. Absent means the backend cannot tell us about
+  // cancellations, so we leave running provisioners alone.
+  liveCommandIds?: string[];
 };
 
 type ClaimedCommand = {
@@ -20,11 +21,9 @@ type ClaimedCommand = {
   os: MachineOs;
 };
 
-const pendingCommands = makeFunctionReference<
-  "query",
-  { token: string },
-  PendingCommandsResult
->("agentApi:pendingCommands");
+const pendingCommands = makeFunctionReference<"query", { token: string }, PendingCommandsResult>(
+  "agentApi:pendingCommands",
+);
 const claimCommand = makeFunctionReference<
   "mutation",
   { token: string; commandId: string },
@@ -44,45 +43,10 @@ const heartbeatAgent = makeFunctionReference<
 const client = new ConvexClient(config.convexUrl);
 const queuedIds = new Set<string>();
 const queue: PendingCommand[] = [];
+const running = new Map<string, ReturnType<typeof spawnProvisioner>>();
 let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
-
-function provisionerPath(os: MachineOs) {
-  const filename =
-    os === "win" ? "provision-win.ps1" : `provision-${os}.sh`;
-  return fileURLToPath(
-    new URL(`../provisioners/${filename}`, import.meta.url),
-  );
-}
-
-async function provision(
-  os: MachineOs,
-  jitConfig: string,
-  runnerName: string,
-  image?: string,
-) {
-  const script = provisionerPath(os);
-  const env = {
-    ...process.env,
-    JIT_CONFIG: jitConfig,
-    RUNNER_NAME: runnerName,
-    ...(image === undefined ? {} : { IMAGE: image }),
-  };
-  const result =
-    os === "win"
-      ? await execa("powershell.exe", ["-NoProfile", "-File", script], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        })
-      : await execa(script, [], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        });
-  return result.exitCode ?? 1;
-}
 
 async function runCommand(command: PendingCommand) {
   let exitCode = 1;
@@ -97,15 +61,20 @@ async function runCommand(command: PendingCommand) {
     }
     claimedByThisAgent = true;
     console.log(`Starting ephemeral runner ${claimed.runnerName}`);
-    exitCode = await provision(
+    const child = spawnProvisioner(
       claimed.os,
       claimed.jitConfig,
       claimed.runnerName,
       claimed.image,
     );
-    console.log(
-      `Ephemeral runner ${claimed.runnerName} exited with code ${exitCode}`,
-    );
+    running.set(command.commandId, child);
+    try {
+      const result = await child;
+      exitCode = result.exitCode ?? 1;
+    } finally {
+      running.delete(command.commandId);
+    }
+    console.log(`Ephemeral runner ${claimed.runnerName} exited with code ${exitCode}`);
   } catch (error) {
     console.error(`Provisioning ${command.runnerName} failed`, error);
   } finally {
@@ -123,8 +92,45 @@ async function runCommand(command: PendingCommand) {
   }
 }
 
+/**
+ * Tear down work the control plane no longer considers live: a cancelled job,
+ * a command reconciled away, or a machine whose registration was removed.
+ * Without this the provisioner would keep an ephemeral runner — and this
+ * agent's slot — occupied forever.
+ */
+function reconcileWithServer(liveCommandIds: string[] | undefined) {
+  if (liveCommandIds === undefined) {
+    return;
+  }
+  const live = new Set(liveCommandIds);
+
+  for (const [commandId, child] of running) {
+    if (live.has(commandId)) {
+      continue;
+    }
+    console.log(`Command ${commandId} is no longer live; stopping its runner`);
+    child.kill();
+  }
+
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const queued = queue[index];
+    if (queued !== undefined && !live.has(queued.commandId)) {
+      queue.splice(index, 1);
+    }
+  }
+  // Keeps the dedup set bounded over the daemon's lifetime.
+  for (const commandId of queuedIds) {
+    if (!live.has(commandId) && !running.has(commandId)) {
+      queuedIds.delete(commandId);
+    }
+  }
+}
+
 function pump() {
-  while (!shuttingDown && active < maxSlots && queue.length > 0) {
+  if (shuttingDown) {
+    return;
+  }
+  while (active < maxSlots && queue.length > 0) {
     const command = queue.shift();
     if (command === undefined) {
       break;
@@ -142,6 +148,7 @@ const unsubscribe = client.onUpdate(
   { token: config.machineToken },
   (result) => {
     maxSlots = result.maxSlots;
+    reconcileWithServer(result.liveCommandIds);
     for (const command of result.commands) {
       if (!queuedIds.has(command.commandId)) {
         queuedIds.add(command.commandId);

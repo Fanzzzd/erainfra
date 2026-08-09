@@ -1,4 +1,15 @@
 packages:
   - "apps/*"
+  - "packages/*"
+
+# Shared versions for dependencies that must not drift between packages.
+# NOTE: apps/agent deliberately does NOT use `catalog:` — machines download that
+# directory on its own and install it with plain `npm install`, which does not
+# understand the `catalog:` or `workspace:` protocols.
+catalog:
+  "@types/node": 22.19.11
+  convex: 1.42.3
+  typescript: 5.9.3
+
 allowBuilds:
   esbuild: true

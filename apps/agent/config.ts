@@ -12,9 +12,7 @@ export const config = {
   heartbeatMs: 30_000,
 };
 
-try {
-  new URL(config.convexUrl);
-} catch {
+if (!URL.canParse(config.convexUrl)) {
   throw new Error("CONVEX_URL must be a valid URL");
 }
 

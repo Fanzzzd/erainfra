@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["index.ts", "config.ts", "provision.ts", "tests/**/*.ts"]
+}

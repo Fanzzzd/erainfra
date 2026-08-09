@@ -1,0 +1,116 @@
+name: Release
+
+# Tagging `v<version>` publishes the agent archive machines install. Nothing
+# else creates releases, and no release is ever overwritten.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the build provenance attestation
+      attestations: write # record the attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          # setup-node v7 auto-enables package-manager caching from package.json;
+          # release jobs consume no mutable cache before publishing artifacts.
+          package-manager-cache: false
+
+      # Runner Center ships as one product, so the tag has to match the version
+      # in the workspace root and in apps/agent exactly. Fail here rather than
+      # publish an asset whose embedded package.json disagrees with its name.
+      - name: Verify the tag matches both package versions
+        run: |
+          root=$(node -p "require('./package.json').version")
+          agent=$(node -p "require('./apps/agent/package.json').version")
+          if [ "$root" != "$agent" ]; then
+            echo "Version drift: package.json is $root but apps/agent/package.json is $agent" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "refs/tags/v$root" ]; then
+            echo "Tag $GITHUB_REF does not match the product version $root" >&2
+            exit 1
+          fi
+          echo "VERSION=$root" >> "$GITHUB_ENV"
+
+          node --experimental-strip-types --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { AGENT_RELEASE } from "./packages/backend/convex/agentRelease.ts";
+
+          const version = process.env.GITHUB_REF_NAME?.replace(/^v/, "");
+          if (AGENT_RELEASE.repo !== process.env.GITHUB_REPOSITORY) {
+            throw new Error(
+              `Agent release repository ${AGENT_RELEASE.repo} does not match ${process.env.GITHUB_REPOSITORY}`,
+            );
+          }
+          if (AGENT_RELEASE.version !== version) {
+            throw new Error(
+              `Agent release pin ${AGENT_RELEASE.version} does not match tag ${process.env.GITHUB_REF_NAME}`,
+            );
+          }
+          if (!/^[a-f0-9]{64}$/.test(AGENT_RELEASE.sha256)) {
+            throw new Error("Agent release pin must contain a lowercase SHA-256 checksum");
+          }
+          appendFileSync(process.env.GITHUB_ENV, `PINNED_SHA256=${AGENT_RELEASE.sha256}\n`);
+          NODE
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
+      - name: Build the agent release archive
+        run: pnpm release:package
+
+      - name: Verify the archive is reproducible
+        run: |
+          pnpm --filter @runner-center/release package-agent --out dist/release-recheck
+          cmp "dist/release/runner-center-agent-$VERSION.tar.gz" \
+            "dist/release-recheck/runner-center-agent-$VERSION.tar.gz"
+          actual=$(cut -d ' ' -f 1 < "dist/release/runner-center-agent-$VERSION.tar.gz.sha256")
+          if [ "$actual" != "$PINNED_SHA256" ]; then
+            echo "Archive checksum $actual does not match deployment pin $PINNED_SHA256" >&2
+            exit 1
+          fi
+
+      # Exactly the command a machine runs during install.
+      - name: Verify the agent lockfile installs cleanly
+        working-directory: apps/agent
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/release/runner-center-agent-${{ env.VERSION }}.tar.gz
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256=$(cut -d ' ' -f 1 < "dist/release/runner-center-agent-$VERSION.tar.gz.sha256")
+          {
+            printf 'Agent archive for Runner Center %s.\n\n' "$VERSION"
+            printf 'SHA-256 of `runner-center-agent-%s.tar.gz`:\n\n' "$VERSION"
+            printf '    %s\n\n' "$sha256"
+            printf 'The release commit already pins these bytes in `AGENT_RELEASE`.\n'
+            printf 'Roll the fleet forward with `pnpm deploy` after this workflow succeeds.\n'
+            printf 'After that deploy, a single machine can be moved with `rc update`.\n'
+          } > release-notes.md
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            "dist/release/runner-center-agent-$VERSION.tar.gz" \
+            "dist/release/runner-center-agent-$VERSION.tar.gz.sha256"

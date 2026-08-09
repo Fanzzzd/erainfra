@@ -9,26 +9,37 @@ environment, destroyed after.
 
 ```
 runner-center/
-├── package.json            # workspace root, scripts
-├── pnpm-workspace.yaml     # packages: ["apps/*"] — convex lives at root
-├── convex/                 # Convex backend (root-level convex/ dir, single deployment)
-│   ├── schema.ts
-│   ├── auth.ts             # @convex-dev/auth, Password provider only
-│   ├── http.ts             # POST /github/webhook
-│   ├── github.ts           # internal action: issueJit (calls GitHub REST)
-│   ├── scheduler.ts        # internal mutation: tryAssign
-│   ├── machines.ts         # queries/mutations for machines (dashboard + agent)
-│   ├── jobs.ts             # queries/mutations for jobs
-│   └── agentApi.ts         # agent-facing: pendingCommands query, claim/report mutations, heartbeat
+├── package.json            # thin workspace root: turbo, oxlint, oxfmt
+├── turbo.json              # task graph: build, typecheck, codegen, dev, deploy
+├── pnpm-workspace.yaml     # packages: ["apps/*", "packages/*"] + dependency catalog
+├── .oxlintrc.json          # oxlint config (linting)
+├── .oxfmtrc.json           # oxfmt config (formatting)
+├── packages/backend/       # @runner-center/backend — the Convex deployment
+│   ├── convex.json
+│   ├── .env.local          # CONVEX_DEPLOYMENT (untracked)
+│   ├── scripts/            # print-install-script.ts
+│   └── convex/
+│       ├── schema.ts
+│       ├── auth.ts         # @convex-dev/auth, Password provider only
+│       ├── http.ts         # POST /github/webhook
+│       ├── github.ts       # internal action: issueJit (calls GitHub REST)
+│       ├── scheduler.ts    # internal mutation: tryAssign
+│       ├── machines.ts     # queries/mutations for machines (dashboard + agent)
+│       ├── jobs.ts         # queries/mutations for jobs
+│       └── agentApi.ts     # agent-facing: pendingCommands query, claim/report mutations, heartbeat
+├── packages/typescript-config/  # shared tsconfig presets: base, node, react
 ├── apps/dashboard/         # Vite + React 19 + TanStack Router + shadcn/ui + convex/react
+│                           # imports the API via `@runner-center/backend/api`
 └── apps/agent/             # Node daemon: ConvexClient subscription + execa → provisioner
+    │                       # standalone on purpose: installed by machines with plain
+    │                       # `npm install`, so no workspace:/catalog: protocols here
     └── provisioners/
         ├── provision-linux.sh
         ├── provision-mac.sh      # stub OK for v1 (echo "not implemented" && exit 1)
         └── provision-win.ps1     # stub OK for v1
 ```
 
-## Schema (convex/schema.ts)
+## Schema (packages/backend/convex/schema.ts)
 
 ```ts
 machines: defineTable({
@@ -66,7 +77,7 @@ commands: defineTable({
 
 ## Flow
 
-1. **Webhook** `POST /github/webhook` (convex/http.ts, httpAction):
+1. **Webhook** `POST /github/webhook` (packages/backend/convex/http.ts, httpAction):
    - Verify `X-Hub-Signature-256` HMAC-SHA256 with env `GITHUB_WEBHOOK_SECRET`
      (use Web Crypto — `crypto.subtle`, available in Convex runtime; timing-safe compare).
    - Only event `workflow_job`. action=queued → insert job (status queued) IF
@@ -96,6 +107,7 @@ commands: defineTable({
    - Concurrency: run up to (maxSlots) provisions concurrently; simple in-process
      counter is fine.
 5. **provision-linux.sh**:
+
    ```bash
    #!/usr/bin/env bash
    set -euo pipefail
@@ -104,8 +116,15 @@ commands: defineTable({
      ghcr.io/actions/actions-runner:2.328.0 \
      ./run.sh --jitconfig "$JIT_CONFIG"
    ```
+
    (Verify the current tag with `docker manifest inspect` or use a known-good
    recent tag; do NOT use :latest.)
+
+   The same rule applies to the macOS Tart images, and more strictly: a tag is
+   mutable, so `macos-15`/`rc-mac` are pinned to the `@sha256:` digest a job was
+   actually verified on rather than to `:latest`. Tart accepts a digest
+   reference for `clone` and `pull`. An image label that has never been booted
+   stays `preview` in the catalog instead of being advertised as capacity.
 
 ## Dashboard (apps/dashboard)
 
@@ -126,15 +145,12 @@ commands: defineTable({
 
 Use the official component `@convex-dev/static-hosting` (v0.2.x):
 
-- `convex/convex.config.ts`: `defineApp({ httpPrefix: "/api" })` +
-  `app.use(staticHosting, { httpPrefix: "/" })` — static site owns `/`,
-  our http.ts routes are served under `/api`. So the GitHub webhook URL is
-  `https://<deployment>.convex.site/api/github/webhook` (http.ts still
-  declares path `/github/webhook`).
-- Root package.json script: `"deploy": "npx @convex-dev/static-hosting deploy"`
-  configured so the static upload uses the dashboard's Vite build output
-  (check the component README for how to point it at apps/dashboard/dist —
-  run `npx @convex-dev/static-hosting setup` and adapt what it generates).
+- `packages/backend/convex/convex.config.ts` mounts static hosting at `/`, while
+  explicit routes in `http.ts` keep their declared paths. The GitHub webhook URL
+  is therefore `https://<deployment>.convex.site/github/webhook`.
+- `packages/backend` script `deploy` runs `static-hosting deploy` with
+  `--dist ../../apps/dashboard/dist`, and builds the dashboard first via
+  `--build-command`. `pnpm deploy` at the root forwards to it.
 - Dashboard is then live at `https://<deployment>.convex.site`. No GitHub
   Pages / Vercel needed.
 
@@ -144,8 +160,9 @@ GITHUB_WEBHOOK_SECRET, GITHUB_PAT (classic, repo scope, must be repo admin).
 
 ## Acceptance (implementer must ensure)
 
-- `pnpm install` clean; `npx convex dev --once` typechecks & pushes; dashboard
-  `pnpm build` passes; agent `pnpm build` (tsc) passes.
+- `pnpm install` clean; `pnpm convex dev --once` typechecks & pushes;
+  `pnpm build` (turbo: dashboard + agent) and `pnpm check` (oxlint, oxfmt,
+  typecheck) pass.
 - No `any` leaks in public function args; Convex validators on every function.
 - README.md at root: what it is, architecture ASCII diagram, setup steps
   (convex deploy, env vars, GitHub webhook creation, add machine, run agent),
@@ -153,4 +170,7 @@ GITHUB_WEBHOOK_SECRET, GITHUB_PAT (classic, repo scope, must be repo admin).
 - Do NOT invent packages; use: convex, @convex-dev/auth, @auth/core, octokit
   (or @octokit/request), execa, @tanstack/react-router, tailwindcss, shadcn deps.
 - Do NOT touch anything outside /Users/fanzhende/code/personal/runner-center.
+
+```
+
 ```

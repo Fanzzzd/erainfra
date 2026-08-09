@@ -1,13 +1,9 @@
 {
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@runner-center/typescript-config/node.json",
   "compilerOptions": {
     "composite": true,
-    "skipLibCheck": true,
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "allowImportingTsExtensions": true,
-    "strict": true,
-    "noEmit": true,
-    "types": ["node"]
+    "allowImportingTsExtensions": true
   },
   "include": ["vite.config.ts"]
 }
