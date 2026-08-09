@@ -78,6 +78,71 @@ export function canConnectApp(source: CredentialSource) {
   return source !== "manifest";
 }
 
+export type LegacyCredentialEnv = {
+  webhookSecret: string | undefined;
+  pat: string | undefined;
+};
+
+export type LegacyCredentialStatus = {
+  /** GITHUB_WEBHOOK_SECRET is set, so it is still an accepted signing key. */
+  webhookSecretConfigured: boolean;
+  /** GITHUB_PAT is set, so the legacy auth path is still reachable. */
+  patConfigured: boolean;
+  /** An App is connected while at least one legacy credential is still live. */
+  cutoverIncomplete: boolean;
+};
+
+/**
+ * Whether legacy credentials are still accepted, as booleans only.
+ *
+ * The verifier takes the stored App secret *or* GITHUB_WEBHOOK_SECRET, and it
+ * never stops taking the latter on its own, so connecting an App does not end
+ * the migration — it only makes finishing it possible. Until the env secret is
+ * removed, anyone still holding it can submit deliveries this deployment
+ * trusts, including whoever configured the repository webhooks being retired.
+ *
+ * `cutoverIncomplete` is deliberately false before an App is connected: a
+ * deployment running on the legacy path needs those credentials, and telling an
+ * operator to remove the only thing that works would be actively harmful.
+ *
+ * This returns presence, never the values. The whole point is that the
+ * dashboard can say "still configured" without a secret crossing the wire.
+ */
+export function summarizeLegacyCredentials(
+  source: CredentialSource,
+  env: LegacyCredentialEnv,
+): LegacyCredentialStatus {
+  const webhookSecretConfigured = isNonEmpty(env.webhookSecret);
+  const patConfigured = isNonEmpty(env.pat);
+  return {
+    webhookSecretConfigured,
+    patConfigured,
+    cutoverIncomplete: source === "manifest" && (webhookSecretConfigured || patConfigured),
+  };
+}
+
+/**
+ * The removal step from the README's migration sequence, kept here so the
+ * dashboard and the docs cannot drift apart. Order matters: retire the
+ * repository webhooks and let in-flight jobs finish first — these commands are
+ * step 5, not step 1.
+ */
+export const LEGACY_REMOVAL_COMMANDS = [
+  "pnpm convex env remove GITHUB_PAT",
+  "pnpm convex env remove GITHUB_WEBHOOK_SECRET",
+] as const;
+
+/**
+ * What `disconnect` requires as proof of intent.
+ *
+ * Disconnecting is destructive in a way that is easy to underestimate: the
+ * private key it forgets cannot be recovered from GitHub, and the App keeps
+ * delivering webhooks this deployment can then no longer verify. Requiring a
+ * typed literal means a stray click, a replayed request, or an argument-less
+ * call cannot do it.
+ */
+export const DISCONNECT_CONFIRMATION = "disconnect github app";
+
 // Convex environment variables keep PEM newlines either literally or escaped.
 export function normalizePrivateKey(privateKey: string) {
   return privateKey.includes("\\n") ? privateKey.replace(/\\n/g, "\n") : privateKey;

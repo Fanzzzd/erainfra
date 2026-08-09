@@ -102,7 +102,9 @@ The generated app is private to that account and requests only what Runner Cente
 
 `administration: write` is what creating and deleting a JIT runner requires (`POST`/`DELETE /repos/{owner}/{repo}/actions/runners/…`); `actions: read` is what delivers `workflow_job` webhooks. Nothing else is requested.
 
-Because Convex environment variables are read-only at runtime, the callback cannot write to `convex env`. The credentials are stored in the `githubApp` table instead, reachable only from internal functions. **Disconnect** on the same card forgets them; the app itself stays on GitHub.
+Because Convex environment variables are read-only at runtime, the callback cannot write to `convex env`. The credentials are stored in the `githubApp` table instead, reachable only from internal functions.
+
+**Disconnect** on the same card forgets those credentials, and asks you to confirm first because it does less than it sounds like and more damage than it sounds like: the App and its installations stay on GitHub and keep delivering webhooks, but this deployment can no longer verify them, so App-authenticated jobs stop arriving. GitHub will not hand the private key out again either — reconnecting registers a second App. To stop the deliveries themselves, uninstall or delete the App on GitHub.
 
 After the app is created, use **Install on repositories** to install it for all repositories or only the ones Runner Center should serve. The installation ID needs no configuration; GitHub includes it in each App webhook payload. The webhook is at the site root, with no `/api` prefix.
 

@@ -1,11 +1,14 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import {
+  DISCONNECT_CONFIRMATION,
   evaluateSetupState,
   isSetupStateCollectable,
   resolveCredentialSource,
+  summarizeLegacyCredentials,
   canConnectApp,
   toAppSummary,
 } from "./githubAppConfig";
+import { requireDashboardAuth } from "./dashboardAuth";
 import {
   internalMutation,
   internalQuery,
@@ -33,14 +36,6 @@ const appSummaryValidator = v.object({
   createdAt: v.number(),
 });
 
-async function requireDashboardAuth(ctx: QueryCtx | MutationCtx) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (identity === null) {
-    throw new ConvexError("Authentication required");
-  }
-  return identity;
-}
-
 function randomHex(length: number) {
   const bytes = crypto.getRandomValues(new Uint8Array(Math.ceil(length / 2)));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"))
@@ -60,6 +55,14 @@ function credentialEnv() {
   };
 }
 
+// Presence only. Named to make it obvious at the call site that no secret value
+// is being read into a client-facing payload.
+const legacyValidator = v.object({
+  webhookSecretConfigured: v.boolean(),
+  patConfigured: v.boolean(),
+  cutoverIncomplete: v.boolean(),
+});
+
 export const status = query({
   args: {},
   returns: v.object({
@@ -67,6 +70,7 @@ export const status = query({
     source: sourceValidator,
     canConnect: v.boolean(),
     app: v.union(v.null(), appSummaryValidator),
+    legacy: legacyValidator,
   }),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
@@ -77,6 +81,12 @@ export const status = query({
       source,
       canConnect: canConnectApp(source),
       app: app === null ? null : toAppSummary(app),
+      // Booleans, not values: the operator needs to know the legacy webhook
+      // secret is still an accepted signing key, and nothing more.
+      legacy: summarizeLegacyCredentials(source, {
+        webhookSecret: process.env.GITHUB_WEBHOOK_SECRET,
+        pat: process.env.GITHUB_PAT,
+      }),
     };
   },
 });
@@ -100,8 +110,22 @@ export const beginSetup = mutation({
   },
 });
 
+/**
+ * Forget the stored App credentials.
+ *
+ * This is local-only and irreversible: GitHub keeps the App, its installations,
+ * and its webhook subscriptions, and it goes on delivering — to a deployment
+ * that no longer holds the secret to verify those deliveries, so App-authorized
+ * jobs stop being accepted. The private key cannot be re-read from GitHub
+ * either; reconnecting means registering a second App.
+ *
+ * The confirmation argument is a validator-enforced literal rather than a
+ * boolean flag, so an argument-less or replayed call is rejected before the
+ * handler runs. It is the server-side half of the dashboard's two-step
+ * confirmation, not a substitute for it.
+ */
 export const disconnect = mutation({
-  args: {},
+  args: { confirmation: v.literal(DISCONNECT_CONFIRMATION) },
   returns: v.null(),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);

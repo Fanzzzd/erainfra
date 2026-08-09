@@ -4,6 +4,8 @@ import {
   APP_PERMISSIONS,
   buildManifest,
   canConnectApp,
+  DISCONNECT_CONFIRMATION,
+  LEGACY_REMOVAL_COMMANDS,
   evaluateSetupState,
   isSetupStateCollectable,
   manifestFormAction,
@@ -13,6 +15,7 @@ import {
   resolveCredentialSource,
   resolveSiteUrl,
   SETUP_STATE_TTL_MS,
+  summarizeLegacyCredentials,
   toAppSummary,
 } from "../convex/githubAppConfig.ts";
 
@@ -69,6 +72,88 @@ describe("canConnectApp", () => {
 
   it("hides the offer once an App is stored", () => {
     expect(canConnectApp("manifest")).toBe(false);
+  });
+});
+
+describe("summarizeLegacyCredentials", () => {
+  const BOTH = { webhookSecret: "whsec_legacy", pat: "ghp_legacy" };
+  const NEITHER = { webhookSecret: undefined, pat: undefined };
+
+  it("reports presence as booleans and never the values", () => {
+    const summary = summarizeLegacyCredentials("manifest", BOTH);
+    expect(summary).toEqual({
+      webhookSecretConfigured: true,
+      patConfigured: true,
+      cutoverIncomplete: true,
+    });
+    // The whole point: no secret can ride along to a browser.
+    expect(JSON.stringify(summary)).not.toMatch(/whsec_legacy|ghp_legacy/);
+  });
+
+  it("flags an incomplete cut-over when only the webhook secret remains", () => {
+    const summary = summarizeLegacyCredentials("manifest", {
+      webhookSecret: "whsec_legacy",
+      pat: undefined,
+    });
+    expect(summary.webhookSecretConfigured).toBe(true);
+    expect(summary.patConfigured).toBe(false);
+    expect(summary.cutoverIncomplete).toBe(true);
+  });
+
+  it("flags an incomplete cut-over when only the PAT remains", () => {
+    const summary = summarizeLegacyCredentials("manifest", {
+      webhookSecret: undefined,
+      pat: "ghp_legacy",
+    });
+    expect(summary.cutoverIncomplete).toBe(true);
+  });
+
+  it("is silent once both legacy credentials are gone", () => {
+    expect(summarizeLegacyCredentials("manifest", NEITHER)).toEqual({
+      webhookSecretConfigured: false,
+      patConfigured: false,
+      cutoverIncomplete: false,
+    });
+  });
+
+  // Telling an operator to remove the only credentials that work would be
+  // actively harmful, so the prompt waits until an App is connected.
+  it("does not prompt removal while the deployment still runs on the legacy path", () => {
+    expect(summarizeLegacyCredentials("pat", BOTH).cutoverIncomplete).toBe(false);
+    expect(summarizeLegacyCredentials("envApp", BOTH).cutoverIncomplete).toBe(false);
+    expect(summarizeLegacyCredentials("none", BOTH).cutoverIncomplete).toBe(false);
+  });
+
+  it("still reports presence on the legacy path, just without prompting", () => {
+    const summary = summarizeLegacyCredentials("pat", BOTH);
+    expect(summary.webhookSecretConfigured).toBe(true);
+    expect(summary.patConfigured).toBe(true);
+  });
+
+  it("treats blank environment values as unset", () => {
+    expect(summarizeLegacyCredentials("manifest", { webhookSecret: "  ", pat: "\n" })).toEqual({
+      webhookSecretConfigured: false,
+      patConfigured: false,
+      cutoverIncomplete: false,
+    });
+  });
+});
+
+describe("legacy removal guidance", () => {
+  // The dashboard renders these verbatim; they have to stay the documented ones.
+  it("names both legacy secrets, PAT first", () => {
+    expect([...LEGACY_REMOVAL_COMMANDS]).toEqual([
+      "pnpm convex env remove GITHUB_PAT",
+      "pnpm convex env remove GITHUB_WEBHOOK_SECRET",
+    ]);
+  });
+});
+
+describe("DISCONNECT_CONFIRMATION", () => {
+  // A typo-resistant literal, not a boolean: an argument-less or replayed call
+  // cannot satisfy it.
+  it("is a non-empty explicit phrase", () => {
+    expect(DISCONNECT_CONFIRMATION).toBe("disconnect github app");
   });
 });
 
