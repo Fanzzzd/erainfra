@@ -75,6 +75,26 @@ pnpm convex env set GITHUB_APP_ID '<github-app-id>'
 pnpm convex env set GITHUB_APP_PRIVATE_KEY "$(cat /path/to/private-key.pem)"
 ```
 
+Then name the repositories that may put work on your machines. Runner Center fails closed: until `ALLOWED_REPOS` is set, every incoming `workflow_job` is rejected and no job is created.
+
+```bash
+pnpm convex env set ALLOWED_REPOS 'acme/app,acme/tools'
+```
+
+| Value      | Meaning                                            |
+| ---------- | -------------------------------------------------- |
+| `acme/app` | That one repository. Matching is case-insensitive. |
+| `acme/*`   | Every repository owned by `acme`.                  |
+| `*`        | Every repository the App is installed on.          |
+
+A **public** repository additionally needs an explicit opt-in, because a fork of a public repository can run attacker-controlled code on your runner hosts by opening a pull request — this is why GitHub recommends self-hosted runners only for private repositories. Being listed in `ALLOWED_REPOS` is not enough on its own:
+
+```bash
+pnpm convex env set ALLOW_PUBLIC_REPOS true
+```
+
+Only set this if you understand and accept that risk, and prefer naming the individual public repositories rather than using a wildcard.
+
 The private key can be stored as a multiline PEM or with escaped `\n` newline sequences. Deploy the Convex backend and hosted dashboard:
 
 ```bash
@@ -234,13 +254,29 @@ The Windows provisioner is currently a stub and exits with an error. The planned
 
 A Convex cron runs every 60 seconds and repairs control-plane state:
 
-- assigned jobs are requeued when an agent is offline for more than 120 seconds or an assignment is stuck for 10 minutes;
+- assigned jobs are requeued when an agent is offline for more than 120 seconds or provisioning has not started 45 minutes after the agent claimed the command;
 - running jobs are marked failed with conclusion `abandoned` after their agent has been offline for 10 minutes;
 - queued jobs expire after 24 hours;
 - each machine's used-slot count is rebuilt from active assigned and running jobs;
+- webhook deliveries still pending after 60 seconds are retried, and abandoned after 5 attempts;
+- abandoned JIT runner registrations are deleted from GitHub;
 - requeued work is sent back through the scheduler immediately.
 
 Agents heartbeat every 30 seconds. A machine is schedulable while its latest heartbeat is less than 120 seconds old.
+
+### Webhook intake
+
+`POST /github/webhook` verifies the signature, records the delivery keyed by `X-GitHub-Delivery`, and returns `202` immediately; a scheduled mutation does the work. GitHub marks any response slower than 10 seconds as failed and never redelivers on its own, so the recorded delivery is what makes a transient backend error survivable.
+
+Because the delivery id is the key, a redelivery is a no-op rather than a second job. Delivery order is not guaranteed either: if `in_progress` or `completed` arrives for a job Runner Center has never seen, the job is recorded in that state, so a late `queued` cannot provision a runner for work that has already finished.
+
+### Provisioning attempts
+
+A job gets at most 3 provisioning attempts. Each failure records a human-readable `lastError` on the job, frees the slot, hands the abandoned JIT runner registration back to GitHub, and holds the job behind a growing backoff (15s, 60s, 300s) before retrying — preferring a machine other than the one that just failed. After the third failure the job ends as `failed` with conclusion `provision-failed` rather than cycling forever.
+
+A provisioner that exits **zero** never requeues: the runner did its work and GitHub's `completed` event settles the job.
+
+When a job is cancelled or completes while its command is still outstanding, the command is marked `cancelled`. The agent watches its live command set and tears the provisioner down, so a cancelled job does not leave an ephemeral runner — and a runner slot — occupied.
 
 ### Agent lifecycle
 
@@ -255,6 +291,7 @@ Use `rc status`, `rc logs -f`, `rc restart`, `rc stop`, `rc update`, and `rc uni
 ### Security model
 
 - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and the optional legacy `GITHUB_PAT` exist only in Convex deployment environment variables.
+- Only repositories named in `ALLOWED_REPOS` can queue work, and a public repository additionally needs `ALLOW_PUBLIC_REPOS`. The check runs before a job row is created, so a repository you have not named never reaches a machine.
 - The recommended GitHub App has only Actions read/write access and can be limited to selected repositories.
 - Jobs stored with an App installation ID use it to obtain an installation-scoped token and never fall back to the legacy PAT.
 - Runner machines hold a machine token, not GitHub credentials. Treat the token as a secret.
