@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+import { gunzipSync } from "node:zlib";
 import { createTar, createTarGz, gzip, type TarEntry } from "../src/tar.ts";
 
 const workspaces: string[] = [];
@@ -73,8 +74,16 @@ describe("createTarGz", () => {
 });
 
 describe("gzip", () => {
-  it("writes a header with no timestamp and no host operating system", () => {
+  it("has one exact representation independent of the host zlib", () => {
     const compressed = gzip(Buffer.from("hello"));
-    assert.deepEqual([...compressed.subarray(0, 10)], [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 2, 0xff]);
+    assert.equal(
+      compressed.toString("hex"),
+      "1f8b08000000000000ff010500faff68656c6c6f86a6103605000000",
+    );
+  });
+
+  it("splits payloads larger than one stored block and remains gzip-compatible", () => {
+    const original = Buffer.alloc(70_000, 0xa5);
+    assert.deepEqual(gunzipSync(gzip(original)), original);
   });
 });
