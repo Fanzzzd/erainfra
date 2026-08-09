@@ -24,27 +24,37 @@ export const issueJit = internalAction({
 
       let octokit: Octokit;
       if (args.githubInstallationId !== undefined) {
-        const appIdValue = process.env.GITHUB_APP_ID;
-        if (
-          appIdValue === undefined ||
-          !/^[1-9]\d*$/.test(appIdValue) ||
-          !Number.isSafeInteger(Number(appIdValue))
-        ) {
-          throw new Error("GITHUB_APP_ID must be a positive integer");
-        }
-        const privateKeyValue = process.env.GITHUB_APP_PRIVATE_KEY;
-        if (
-          privateKeyValue === undefined ||
-          privateKeyValue.trim().length === 0
-        ) {
-          throw new Error("GITHUB_APP_PRIVATE_KEY is not configured");
+        // An App created through the Manifest flow lives in the database;
+        // hand-registered Apps still come from environment variables.
+        const stored = await ctx.runQuery(internal.githubApp.credentials, {});
+        let appId: number;
+        let privateKeyValue: string;
+
+        if (stored !== null) {
+          appId = stored.appId;
+          privateKeyValue = stored.privateKey;
+        } else {
+          const appIdValue = process.env.GITHUB_APP_ID;
+          if (
+            appIdValue === undefined ||
+            !/^[1-9]\d*$/.test(appIdValue) ||
+            !Number.isSafeInteger(Number(appIdValue))
+          ) {
+            throw new Error("GITHUB_APP_ID must be a positive integer");
+          }
+          const envPrivateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+          if (envPrivateKey === undefined || envPrivateKey.trim().length === 0) {
+            throw new Error("GITHUB_APP_PRIVATE_KEY is not configured");
+          }
+          appId = Number(appIdValue);
+          privateKeyValue = envPrivateKey;
         }
 
         const privateKey = privateKeyValue.includes("\\n")
           ? privateKeyValue.replace(/\\n/g, "\n")
           : privateKeyValue;
         const app = new App({
-          appId: Number(appIdValue),
+          appId,
           privateKey,
         });
         octokit = await app.getInstallationOctokit(

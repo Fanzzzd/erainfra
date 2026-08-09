@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { Check, Clipboard, Plus, Server } from "lucide-react";
 import { api } from "@convex/_generated/api";
+import { GithubAppSetup } from "@/components/github-app-setup";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -287,6 +288,8 @@ function MachinesPage() {
           detail="Queued since local midnight"
         />
       </div>
+
+      <GithubAppSetup />
 
       <section
         className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5"
