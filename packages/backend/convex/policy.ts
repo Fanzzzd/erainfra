@@ -40,6 +40,28 @@ export function parseRepositoryPolicy(env: Record<string, string | undefined>): 
   };
 }
 
+export type RepositoryPolicySummary = {
+  configured: boolean;
+  allowedRepos: string[];
+  allowsAllRepos: boolean;
+  allowPublicRepos: boolean;
+};
+
+/**
+ * The operator-facing view of the policy: what this deployment will accept,
+ * after the same normalization `decideRepository` matches against, with
+ * duplicates collapsed so a pasted list reads cleanly.
+ */
+export function summarizeRepositoryPolicy(policy: RepositoryPolicy): RepositoryPolicySummary {
+  const allowedRepos = [...new Set(policy.allowedRepos)];
+  return {
+    configured: allowedRepos.length > 0,
+    allowedRepos,
+    allowsAllRepos: allowedRepos.includes(WILDCARD),
+    allowPublicRepos: policy.allowPublicRepos,
+  };
+}
+
 function matchesPattern(repo: string, pattern: string) {
   if (pattern === WILDCARD) {
     return true;

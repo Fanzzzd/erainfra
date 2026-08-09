@@ -1,7 +1,8 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { internalMutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internalMutation, query, type MutationCtx } from "./_generated/server";
+import { requireDashboardAuth } from "./dashboardAuth";
 import { enqueueRunnerDeletion } from "./runners";
 
 const jobStatusValidator = v.union(
@@ -33,13 +34,6 @@ const listedJobValidator = v.object({
   nextAttemptAt: v.optional(v.number()),
   lastFailedMachineId: v.optional(v.id("machines")),
 });
-
-async function requireDashboardAuth(ctx: QueryCtx) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (identity === null) {
-    throw new ConvexError("Authentication required");
-  }
-}
 
 export const list = query({
   args: {},
