@@ -26,23 +26,38 @@ export const pendingCommands = query({
         runnerName: v.string(),
       }),
     ),
+    // Every command this machine should still be working on. Anything the agent
+    // is running that is missing from this list has been cancelled or settled
+    // server-side and must be torn down.
+    liveCommandIds: v.array(v.id("commands")),
   }),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    const commands = await ctx.db
-      .query("commands")
-      .withIndex("by_machine_status", (q) => q.eq("machineId", machine._id).eq("status", "pending"))
-      .collect();
+    const [pending, claimed] = await Promise.all([
+      ctx.db
+        .query("commands")
+        .withIndex("by_machine_status", (q) =>
+          q.eq("machineId", machine._id).eq("status", "pending"),
+        )
+        .collect(),
+      ctx.db
+        .query("commands")
+        .withIndex("by_machine_status", (q) =>
+          q.eq("machineId", machine._id).eq("status", "claimed"),
+        )
+        .collect(),
+    ]);
 
     return {
       os: machine.os,
       maxSlots: machine.maxSlots,
-      commands: commands
+      commands: pending
         .filter((command) => command.jitConfig !== undefined)
         .map((command) => ({
           commandId: command._id,
           runnerName: command.runnerName,
         })),
+      liveCommandIds: [...pending, ...claimed].map((command) => command._id),
     };
   },
 });
@@ -83,6 +98,7 @@ export const claim = mutation({
     const jitConfig = command.jitConfig;
     await ctx.db.patch(command._id, {
       status: "claimed",
+      claimedAt: Date.now(),
       jitConfig: undefined,
     });
     return {
@@ -101,7 +117,7 @@ export const report = mutation({
     exitCode: v.number(),
   },
   returns: v.boolean(),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<boolean> => {
     if (!Number.isInteger(args.exitCode)) {
       throw new ConvexError("Exit code must be an integer");
     }
@@ -117,25 +133,29 @@ export const report = mutation({
     if (command === null || command.machineId !== machine._id || command.status === "pending") {
       return false;
     }
+
+    const job = await ctx.db.get(command.jobId);
+    const wasCancelled = command.status === "cancelled";
+
+    if (!wasCancelled && job !== null && job.status === "assigned" && args.exitCode !== 0) {
+      // The provisioner failed before the job ever started. Route through the
+      // bounded-retry path so this cannot loop forever on the same machine.
+      await ctx.runMutation(internal.scheduler.failAttempt, {
+        commandId: command._id,
+        jobId: job._id,
+        error: `Provisioner exited with code ${args.exitCode}`,
+      });
+      return true;
+    }
+
     await ctx.db.patch(command._id, {
       status: "finished",
       exitCode: args.exitCode,
     });
 
-    // Runner exited without ever picking up the job (e.g. dead-on-arrival
-    // runner): free the slot and requeue so a fresh JIT runner is issued.
-    const job = await ctx.db.get(command.jobId);
-    if (job !== null && job.status === "assigned") {
-      await ctx.db.patch(machine._id, {
-        usedSlots: Math.max(0, machine.usedSlots - 1),
-      });
-      await ctx.db.patch(job._id, {
-        status: "queued",
-        machineId: undefined,
-        runnerName: undefined,
-      });
-      await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
-    }
+    // A clean exit means the runner did its work; GitHub's "completed" webhook
+    // settles the job and frees the slot. Requeueing here would provision a
+    // second runner for a job that has already run.
     return true;
   },
 });

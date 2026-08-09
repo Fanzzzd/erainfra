@@ -154,12 +154,16 @@ function parseWorkflowJob(payload: unknown) {
         : "Unknown workflow";
   const conclusion =
     typeof workflowJob.conclusion === "string" ? workflowJob.conclusion : undefined;
+  // Absent or malformed `private` is treated as public: the repository policy
+  // fails closed rather than trusting a payload we could not read.
+  const repoIsPublic = repository.private !== true;
 
   return {
     action: action as "queued" | "in_progress" | "completed",
     ghJobId: workflowJob.id,
     githubInstallationId,
     repo: repository.full_name,
+    repoIsPublic,
     workflowName,
     labels: workflowJob.labels as string[],
     conclusion,
@@ -213,6 +217,10 @@ http.route({
   }),
 });
 
+// Verify, record, acknowledge. GitHub marks any response slower than 10s as a
+// failed delivery and never retries it on its own, so the handler does the
+// minimum here and leaves the real work to a scheduled mutation. The delivery
+// row is keyed by X-GitHub-Delivery, which also makes a redelivery a no-op.
 http.route({
   path: "/github/webhook",
   method: "POST",
@@ -223,8 +231,14 @@ http.route({
       return new Response("Invalid signature", { status: 401 });
     }
 
-    if (request.headers.get("X-GitHub-Event") !== "workflow_job") {
+    const event = request.headers.get("X-GitHub-Event") ?? "";
+    if (event !== "workflow_job") {
       return new Response("Ignored", { status: 200 });
+    }
+
+    const deliveryId = request.headers.get("X-GitHub-Delivery") ?? "";
+    if (deliveryId.length === 0) {
+      return new Response("Missing X-GitHub-Delivery", { status: 400 });
     }
 
     let payload: unknown;
@@ -233,13 +247,17 @@ http.route({
     } catch {
       return new Response("Invalid JSON", { status: 400 });
     }
-    const event = parseWorkflowJob(payload);
-    if (event === null) {
+    const workflowJob = parseWorkflowJob(payload);
+    if (workflowJob === null) {
       return new Response("Ignored", { status: 200 });
     }
 
-    await ctx.runMutation(internal.jobs.handleWorkflowJob, event);
-    return new Response("OK", { status: 200 });
+    const { duplicate } = await ctx.runMutation(internal.webhooks.recordDelivery, {
+      deliveryId,
+      event,
+      workflowJob,
+    });
+    return new Response(duplicate ? "Duplicate" : "Accepted", { status: 202 });
   }),
 });
 
