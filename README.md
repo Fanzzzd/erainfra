@@ -353,7 +353,10 @@ pnpm install
 ```
 
 CI runs `npm ci` in `apps/agent` to catch a lockfile that has drifted from the
-manifest.
+manifest, and does it last because it replaces the pnpm-linked `node_modules`.
+Running that command locally leaves the directory without the agent's
+devDependencies, and `pnpm install` reports the workspace as up to date rather
+than repairing it; delete `apps/agent/node_modules` and install again.
 
 ## Contributing
 
