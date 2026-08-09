@@ -116,7 +116,7 @@ function crc32(data: Uint8Array) {
 
 /**
  * A DEFLATE stream made only from stored (uncompressed) blocks. Compression
- * would save roughly 100 KiB here, but zlib is part of the Node binary and has
+ * would save roughly 80 KiB here, but zlib is part of the Node binary and has
  * produced different level-9 bytes for the same tar across supported Node 22
  * and 24 releases. Stored blocks have one canonical representation, keeping
  * the committed deployment checksum reproducible on every build host.
