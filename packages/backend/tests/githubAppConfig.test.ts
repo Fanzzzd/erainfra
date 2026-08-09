@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, expect, it } from "vitest";
 import {
   APP_EVENTS,
   APP_PERMISSIONS,
@@ -22,35 +21,33 @@ const ENV_APP = { appId: "12345", privateKey: "-----BEGIN RSA PRIVATE KEY-----" 
 
 describe("resolveCredentialSource", () => {
   it("prefers a stored App over a legacy PAT", () => {
-    assert.equal(resolveCredentialSource(true, { ...NO_ENV, pat: "ghp_legacy" }), "manifest");
+    expect(resolveCredentialSource(true, { ...NO_ENV, pat: "ghp_legacy" })).toBe("manifest");
   });
 
   it("prefers a stored App over hand-registered environment credentials", () => {
-    assert.equal(resolveCredentialSource(true, { ...ENV_APP, pat: "ghp_legacy" }), "manifest");
+    expect(resolveCredentialSource(true, { ...ENV_APP, pat: "ghp_legacy" })).toBe("manifest");
   });
 
   it("falls back to a hand-registered App before the PAT", () => {
-    assert.equal(resolveCredentialSource(false, { ...ENV_APP, pat: "ghp_legacy" }), "envApp");
+    expect(resolveCredentialSource(false, { ...ENV_APP, pat: "ghp_legacy" })).toBe("envApp");
   });
 
   it("uses the PAT only when no App is configured anywhere", () => {
-    assert.equal(resolveCredentialSource(false, { ...NO_ENV, pat: "ghp_legacy" }), "pat");
+    expect(resolveCredentialSource(false, { ...NO_ENV, pat: "ghp_legacy" })).toBe("pat");
   });
 
   it("reports nothing configured when the environment is empty", () => {
-    assert.equal(resolveCredentialSource(false, NO_ENV), "none");
+    expect(resolveCredentialSource(false, NO_ENV)).toBe("none");
   });
 
   it("treats a half-configured environment App as absent", () => {
-    assert.equal(
+    expect(
       resolveCredentialSource(false, { appId: "12345", privateKey: undefined, pat: "ghp_legacy" }),
-      "pat",
-    );
+    ).toBe("pat");
   });
 
   it("treats blank environment values as unset", () => {
-    assert.equal(
-      resolveCredentialSource(false, { appId: "  ", privateKey: "\n", pat: "  " }),
+    expect(resolveCredentialSource(false, { appId: "  ", privateKey: "\n", pat: "  " })).toBe(
       "none",
     );
   });
@@ -59,75 +56,73 @@ describe("resolveCredentialSource", () => {
 describe("canConnectApp", () => {
   // Requirement: a PAT-configured deployment must still be able to migrate.
   it("keeps the offer open on the legacy PAT", () => {
-    assert.equal(canConnectApp("pat"), true);
+    expect(canConnectApp("pat")).toBe(true);
   });
 
   it("keeps the offer open for a hand-registered App", () => {
-    assert.equal(canConnectApp("envApp"), true);
+    expect(canConnectApp("envApp")).toBe(true);
   });
 
   it("keeps the offer open when nothing is configured", () => {
-    assert.equal(canConnectApp("none"), true);
+    expect(canConnectApp("none")).toBe(true);
   });
 
   it("hides the offer once an App is stored", () => {
-    assert.equal(canConnectApp("manifest"), false);
+    expect(canConnectApp("manifest")).toBe(false);
   });
 });
 
 describe("resolveAppCredentials", () => {
   it("uses stored credentials ahead of the environment", () => {
     const result = resolveAppCredentials({ appId: 999, privateKey: "stored-pem" }, ENV_APP);
-    assert.equal(result.ok, true);
-    assert.equal(result.ok && result.appId, 999);
-    assert.equal(result.ok && result.privateKey, "stored-pem");
-    assert.equal(result.ok && result.source, "manifest");
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.appId).toBe(999);
+    expect(result.ok && result.privateKey).toBe("stored-pem");
+    expect(result.ok && result.source).toBe("manifest");
   });
 
   it("falls back to the environment when nothing is stored", () => {
     const result = resolveAppCredentials(null, ENV_APP);
-    assert.equal(result.ok, true);
-    assert.equal(result.ok && result.appId, 12345);
-    assert.equal(result.ok && result.source, "envApp");
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.appId).toBe(12345);
+    expect(result.ok && result.source).toBe("envApp");
   });
 
   it("fails closed with an actionable message when no App is configured", () => {
     const result = resolveAppCredentials(null, { appId: undefined, privateKey: undefined });
-    assert.equal(result.ok, false);
-    assert.match(
-      result.ok === false ? result.error : "",
+    expect(result.ok).toBe(false);
+    expect(result.ok === false ? result.error : "").toMatch(
       /Connect a GitHub App from the dashboard/,
     );
   });
 
   it("rejects a non-numeric GITHUB_APP_ID", () => {
     const result = resolveAppCredentials(null, { appId: "not-a-number", privateKey: "pem" });
-    assert.equal(result.ok, false);
-    assert.match(
-      result.ok === false ? result.error : "",
+    expect(result.ok).toBe(false);
+    expect(result.ok === false ? result.error : "").toMatch(
       /GITHUB_APP_ID must be a positive integer/,
     );
   });
 
   it("reports a missing private key separately from a missing app id", () => {
     const result = resolveAppCredentials(null, { appId: "12345", privateKey: undefined });
-    assert.equal(result.ok, false);
-    assert.match(result.ok === false ? result.error : "", /GITHUB_APP_PRIVATE_KEY/);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false ? result.error : "").toMatch(/GITHUB_APP_PRIVATE_KEY/);
   });
 
   it("rejects a stored record with an unusable app id", () => {
     const result = resolveAppCredentials({ appId: 0, privateKey: "pem" }, ENV_APP);
-    assert.equal(result.ok, false);
-    assert.match(result.ok === false ? result.error : "", /Disconnect and reconnect/);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false ? result.error : "").toMatch(/Disconnect and reconnect/);
   });
 
   it("expands escaped newlines in an environment PEM", () => {
     const result = resolveAppCredentials(null, { appId: "7", privateKey: "line-1\\nline-2" });
-    assert.equal(result.ok && result.privateKey, "line-1\nline-2");
+    expect(result.ok && result.privateKey).toBe("line-1\nline-2");
   });
 
   it("leaves a literal multiline PEM untouched", () => {
-    assert.equal(normalizePrivateKey("line-1\nline-2"), "line-1\nline-2");
+    expect(normalizePrivateKey("line-1\nline-2")).toBe("line-1\nline-2");
   });
 });
 
@@ -135,106 +130,105 @@ describe("evaluateSetupState", () => {
   const now = 1_700_000_000_000;
 
   it("accepts a fresh unused state", () => {
-    assert.equal(evaluateSetupState({ createdAt: now }, now), "valid");
+    expect(evaluateSetupState({ createdAt: now }, now)).toBe("valid");
   });
 
   it("rejects a state it has never seen", () => {
-    assert.equal(evaluateSetupState(null, now), "unknown");
+    expect(evaluateSetupState(null, now)).toBe("unknown");
   });
 
   it("rejects a state that was already consumed", () => {
-    assert.equal(evaluateSetupState({ createdAt: now, usedAt: now }, now), "consumed");
+    expect(evaluateSetupState({ createdAt: now, usedAt: now }, now)).toBe("consumed");
   });
 
   it("rejects a state older than the TTL", () => {
-    assert.equal(evaluateSetupState({ createdAt: now - SETUP_STATE_TTL_MS - 1 }, now), "expired");
+    expect(evaluateSetupState({ createdAt: now - SETUP_STATE_TTL_MS - 1 }, now)).toBe("expired");
   });
 
   it("still accepts a state exactly at the TTL boundary", () => {
-    assert.equal(evaluateSetupState({ createdAt: now - SETUP_STATE_TTL_MS }, now), "valid");
+    expect(evaluateSetupState({ createdAt: now - SETUP_STATE_TTL_MS }, now)).toBe("valid");
   });
 
   it("reports consumed ahead of expired for a used, aged state", () => {
-    assert.equal(
-      evaluateSetupState({ createdAt: now - SETUP_STATE_TTL_MS - 1, usedAt: now }, now),
+    expect(evaluateSetupState({ createdAt: now - SETUP_STATE_TTL_MS - 1, usedAt: now }, now)).toBe(
       "consumed",
     );
   });
 
   it("collects every state that is no longer usable", () => {
-    assert.equal(isSetupStateCollectable({ createdAt: now }, now), false);
-    assert.equal(isSetupStateCollectable({ createdAt: now, usedAt: now }, now), true);
-    assert.equal(isSetupStateCollectable({ createdAt: now - SETUP_STATE_TTL_MS - 1 }, now), true);
+    expect(isSetupStateCollectable({ createdAt: now }, now)).toBe(false);
+    expect(isSetupStateCollectable({ createdAt: now, usedAt: now }, now)).toBe(true);
+    expect(isSetupStateCollectable({ createdAt: now - SETUP_STATE_TTL_MS - 1 }, now)).toBe(true);
   });
 });
 
 describe("resolveSiteUrl", () => {
   it("accepts an https deployment origin", () => {
     const result = resolveSiteUrl("https://example.convex.site");
-    assert.equal(result.ok, true);
-    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.siteUrl).toBe("https://example.convex.site");
   });
 
   it("normalizes away a trailing slash so callers can concatenate", () => {
     const result = resolveSiteUrl("https://example.convex.site/");
-    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+    expect(result.ok && result.siteUrl).toBe("https://example.convex.site");
   });
 
   it("drops any path, query, and fragment", () => {
     const result = resolveSiteUrl("https://example.convex.site/nested?a=1#b");
-    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+    expect(result.ok && result.siteUrl).toBe("https://example.convex.site");
   });
 
   it("keeps an explicit port", () => {
     const result = resolveSiteUrl("https://example.convex.site:8443");
-    assert.equal(result.ok && result.siteUrl, "https://example.convex.site:8443");
+    expect(result.ok && result.siteUrl).toBe("https://example.convex.site:8443");
   });
 
   it("trims surrounding whitespace", () => {
     const result = resolveSiteUrl("  https://example.convex.site  ");
-    assert.equal(result.ok && result.siteUrl, "https://example.convex.site");
+    expect(result.ok && result.siteUrl).toBe("https://example.convex.site");
   });
 
   it("fails closed when unset", () => {
-    assert.equal(resolveSiteUrl(undefined).ok, false);
+    expect(resolveSiteUrl(undefined).ok).toBe(false);
   });
 
   it("fails closed when blank", () => {
-    assert.equal(resolveSiteUrl("   ").ok, false);
+    expect(resolveSiteUrl("   ").ok).toBe(false);
   });
 
   it("rejects a value that is not an absolute URL", () => {
-    assert.equal(resolveSiteUrl("example.convex.site").ok, false);
-    assert.equal(resolveSiteUrl("/github/app/callback").ok, false);
+    expect(resolveSiteUrl("example.convex.site").ok).toBe(false);
+    expect(resolveSiteUrl("/github/app/callback").ok).toBe(false);
   });
 
   it("rejects plaintext http for a non-loopback host", () => {
     const result = resolveSiteUrl("http://example.convex.site");
-    assert.equal(result.ok, false);
-    assert.match(result.ok === false ? result.error : "", /https/);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false ? result.error : "").toMatch(/https/);
   });
 
   // Narrow dev affordance: `convex dev --local` serves http on loopback.
   it("allows http on loopback hosts only", () => {
-    assert.equal(resolveSiteUrl("http://localhost:3210").ok, true);
-    assert.equal(resolveSiteUrl("http://127.0.0.1:3210").ok, true);
-    assert.equal(resolveSiteUrl("http://[::1]:3210").ok, true);
+    expect(resolveSiteUrl("http://localhost:3210").ok).toBe(true);
+    expect(resolveSiteUrl("http://127.0.0.1:3210").ok).toBe(true);
+    expect(resolveSiteUrl("http://[::1]:3210").ok).toBe(true);
   });
 
   it("does not treat a lookalike hostname as loopback", () => {
-    assert.equal(resolveSiteUrl("http://localhost.evil.example").ok, false);
-    assert.equal(resolveSiteUrl("http://notlocalhost").ok, false);
+    expect(resolveSiteUrl("http://localhost.evil.example").ok).toBe(false);
+    expect(resolveSiteUrl("http://notlocalhost").ok).toBe(false);
   });
 
   it("rejects embedded credentials", () => {
     const result = resolveSiteUrl("https://user:pass@example.convex.site");
-    assert.equal(result.ok, false);
-    assert.match(result.ok === false ? result.error : "", /credentials/);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false ? result.error : "").toMatch(/credentials/);
   });
 
   it("rejects a non-http scheme", () => {
-    assert.equal(resolveSiteUrl("ftp://example.convex.site").ok, false);
-    assert.equal(resolveSiteUrl("javascript:alert(1)").ok, false);
+    expect(resolveSiteUrl("ftp://example.convex.site").ok).toBe(false);
+    expect(resolveSiteUrl("javascript:alert(1)").ok).toBe(false);
   });
 
   it("never echoes the configured value in the error", () => {
@@ -245,11 +239,11 @@ describe("resolveSiteUrl", () => {
       "not-a-url",
     ]) {
       const result = resolveSiteUrl(bad);
-      assert.equal(result.ok, false);
+      expect(result.ok).toBe(false);
       const error = result.ok === false ? result.error : "";
-      assert.equal(error.includes(bad), false);
-      assert.equal(error.includes("attacker"), false);
-      assert.equal(error.includes("pass"), false);
+      expect(error.includes(bad)).toBe(false);
+      expect(error.includes("attacker")).toBe(false);
+      expect(error.includes("pass")).toBe(false);
     }
   });
 });
@@ -258,35 +252,34 @@ describe("buildManifest", () => {
   const manifest = buildManifest("https://example.convex.site");
 
   it("requests only the permissions the JIT runner endpoints need", () => {
-    assert.deepEqual(manifest.default_permissions, {
+    expect(manifest.default_permissions).toEqual({
       actions: "read",
       administration: "write",
     });
-    assert.deepEqual(APP_PERMISSIONS, { actions: "read", administration: "write" });
+    expect(APP_PERMISSIONS).toEqual({ actions: "read", administration: "write" });
   });
 
   it("subscribes to workflow_job only", () => {
-    assert.deepEqual([...manifest.default_events], ["workflow_job"]);
-    assert.deepEqual([...APP_EVENTS], ["workflow_job"]);
+    expect([...manifest.default_events]).toEqual(["workflow_job"]);
+    expect([...APP_EVENTS]).toEqual(["workflow_job"]);
   });
 
   it("points the webhook and redirect at this deployment", () => {
-    assert.equal(manifest.hook_attributes.url, "https://example.convex.site/github/webhook");
-    assert.equal(manifest.redirect_url, "https://example.convex.site/github/app/callback");
+    expect(manifest.hook_attributes.url).toBe("https://example.convex.site/github/webhook");
+    expect(manifest.redirect_url).toBe("https://example.convex.site/github/app/callback");
   });
 
   it("keeps the app private to its owner", () => {
-    assert.equal(manifest.public, false);
+    expect(manifest.public).toBe(false);
   });
 
   it("targets the personal app form when no organization is given", () => {
-    assert.equal(manifestFormAction(undefined), "https://github.com/settings/apps/new");
-    assert.equal(manifestFormAction("   "), "https://github.com/settings/apps/new");
+    expect(manifestFormAction(undefined)).toBe("https://github.com/settings/apps/new");
+    expect(manifestFormAction("   ")).toBe("https://github.com/settings/apps/new");
   });
 
   it("targets the organization app form and escapes the login", () => {
-    assert.equal(
-      manifestFormAction("my org"),
+    expect(manifestFormAction("my org")).toBe(
       "https://github.com/organizations/my%20org/settings/apps/new",
     );
   });
@@ -305,7 +298,7 @@ describe("parseManifestConversion", () => {
   };
 
   it("accepts a well-formed conversion response", () => {
-    assert.deepEqual(parseManifestConversion(valid), {
+    expect(parseManifestConversion(valid)).toEqual({
       appId: 42,
       clientId: "Iv1.abc123",
       slug: "runner-center-abc",
@@ -318,29 +311,29 @@ describe("parseManifestConversion", () => {
 
   it("does not carry the client secret through", () => {
     const parsed = parseManifestConversion(valid);
-    assert.equal(Object.hasOwn(parsed ?? {}, "clientSecret"), false);
-    assert.equal(JSON.stringify(parsed).includes("should-be-ignored"), false);
+    expect(Object.hasOwn(parsed ?? {}, "clientSecret")).toBe(false);
+    expect(JSON.stringify(parsed).includes("should-be-ignored")).toBe(false);
   });
 
   it("rejects a response missing the client id", () => {
-    assert.equal(parseManifestConversion({ ...valid, client_id: undefined }), null);
+    expect(parseManifestConversion({ ...valid, client_id: undefined })).toBe(null);
   });
 
   it("rejects a response missing the private key", () => {
-    assert.equal(parseManifestConversion({ ...valid, pem: "" }), null);
+    expect(parseManifestConversion({ ...valid, pem: "" })).toBe(null);
   });
 
   it("rejects a response missing the webhook secret", () => {
-    assert.equal(parseManifestConversion({ ...valid, webhook_secret: undefined }), null);
+    expect(parseManifestConversion({ ...valid, webhook_secret: undefined })).toBe(null);
   });
 
   it("rejects a non-positive app id", () => {
-    assert.equal(parseManifestConversion({ ...valid, id: 0 }), null);
+    expect(parseManifestConversion({ ...valid, id: 0 })).toBe(null);
   });
 
   it("rejects a non-object payload", () => {
-    assert.equal(parseManifestConversion("nope"), null);
-    assert.equal(parseManifestConversion(null), null);
+    expect(parseManifestConversion("nope")).toBe(null);
+    expect(parseManifestConversion(null)).toBe(null);
   });
 });
 
@@ -358,26 +351,25 @@ describe("toAppSummary", () => {
 
   it("never exposes the private key or webhook secret", () => {
     const summary = toAppSummary(stored);
-    assert.equal(Object.hasOwn(summary, "privateKey"), false);
-    assert.equal(Object.hasOwn(summary, "webhookSecret"), false);
-    assert.equal(Object.hasOwn(summary, "slug"), false);
+    expect(Object.hasOwn(summary, "privateKey")).toBe(false);
+    expect(Object.hasOwn(summary, "webhookSecret")).toBe(false);
+    expect(Object.hasOwn(summary, "slug")).toBe(false);
 
     const serialized = JSON.stringify(summary);
-    assert.equal(serialized.includes("super-secret"), false);
-    assert.equal(serialized.includes("whsec"), false);
+    expect(serialized.includes("super-secret")).toBe(false);
+    expect(serialized.includes("whsec")).toBe(false);
   });
 
   it("derives the installation URL from the slug", () => {
-    assert.equal(
-      toAppSummary(stored).installUrl,
+    expect(toAppSummary(stored).installUrl).toBe(
       "https://github.com/apps/runner-center-abc/installations/new",
     );
   });
 
   it("keeps the public identifiers the dashboard shows", () => {
     const summary = toAppSummary(stored);
-    assert.equal(summary.appId, 42);
-    assert.equal(summary.clientId, "Iv1.abc123");
-    assert.equal(summary.name, "Runner Center");
+    expect(summary.appId).toBe(42);
+    expect(summary.clientId).toBe("Iv1.abc123");
+    expect(summary.name).toBe("Runner Center");
   });
 });
