@@ -1,6 +1,6 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
-import { execa } from "execa";
+import { execa, type ResultPromise } from "execa";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 
@@ -11,6 +11,9 @@ type PendingCommandsResult = {
   os: MachineOs;
   maxSlots: number;
   commands: PendingCommand[];
+  // Added by newer backends. Absent means the backend cannot tell us about
+  // cancellations, so we leave running provisioners alone.
+  liveCommandIds?: string[];
 };
 
 type ClaimedCommand = {
@@ -42,6 +45,7 @@ const heartbeatAgent = makeFunctionReference<
 const client = new ConvexClient(config.convexUrl);
 const queuedIds = new Set<string>();
 const queue: PendingCommand[] = [];
+const running = new Map<string, ResultPromise>();
 let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
@@ -51,7 +55,7 @@ function provisionerPath(os: MachineOs) {
   return fileURLToPath(new URL(`../provisioners/${filename}`, import.meta.url));
 }
 
-async function provision(os: MachineOs, jitConfig: string, runnerName: string, image?: string) {
+function spawnProvisioner(os: MachineOs, jitConfig: string, runnerName: string, image?: string) {
   const script = provisionerPath(os);
   const env = {
     ...process.env,
@@ -59,19 +63,18 @@ async function provision(os: MachineOs, jitConfig: string, runnerName: string, i
     RUNNER_NAME: runnerName,
     ...(image === undefined ? {} : { IMAGE: image }),
   };
-  const result =
-    os === "win"
-      ? await execa("powershell.exe", ["-NoProfile", "-File", script], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        })
-      : await execa(script, [], {
-          env,
-          reject: false,
-          stdio: "inherit",
-        });
-  return result.exitCode ?? 1;
+  // SIGTERM reaches the provisioner, whose own traps delete the container or
+  // VM; killing the agent's child alone would leave the runner behind.
+  const options = {
+    env,
+    reject: false as const,
+    stdio: "inherit" as const,
+    killSignal: "SIGTERM" as const,
+    forceKillAfterDelay: 30_000,
+  };
+  return os === "win"
+    ? execa("powershell.exe", ["-NoProfile", "-File", script], options)
+    : execa(script, [], options);
 }
 
 async function runCommand(command: PendingCommand) {
@@ -87,7 +90,19 @@ async function runCommand(command: PendingCommand) {
     }
     claimedByThisAgent = true;
     console.log(`Starting ephemeral runner ${claimed.runnerName}`);
-    exitCode = await provision(claimed.os, claimed.jitConfig, claimed.runnerName, claimed.image);
+    const child = spawnProvisioner(
+      claimed.os,
+      claimed.jitConfig,
+      claimed.runnerName,
+      claimed.image,
+    );
+    running.set(command.commandId, child);
+    try {
+      const result = await child;
+      exitCode = result.exitCode ?? 1;
+    } finally {
+      running.delete(command.commandId);
+    }
     console.log(`Ephemeral runner ${claimed.runnerName} exited with code ${exitCode}`);
   } catch (error) {
     console.error(`Provisioning ${command.runnerName} failed`, error);
@@ -102,6 +117,40 @@ async function runCommand(command: PendingCommand) {
       } catch (error) {
         console.error(`Reporting ${command.runnerName} failed`, error);
       }
+    }
+  }
+}
+
+/**
+ * Tear down work the control plane no longer considers live: a cancelled job,
+ * a command reconciled away, or a machine whose registration was removed.
+ * Without this the provisioner would keep an ephemeral runner — and this
+ * agent's slot — occupied forever.
+ */
+function reconcileWithServer(liveCommandIds: string[] | undefined) {
+  if (liveCommandIds === undefined) {
+    return;
+  }
+  const live = new Set(liveCommandIds);
+
+  for (const [commandId, child] of running) {
+    if (live.has(commandId)) {
+      continue;
+    }
+    console.log(`Command ${commandId} is no longer live; stopping its runner`);
+    child.kill();
+  }
+
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const queued = queue[index];
+    if (queued !== undefined && !live.has(queued.commandId)) {
+      queue.splice(index, 1);
+    }
+  }
+  // Keeps the dedup set bounded over the daemon's lifetime.
+  for (const commandId of queuedIds) {
+    if (!live.has(commandId) && !running.has(commandId)) {
+      queuedIds.delete(commandId);
     }
   }
 }
@@ -128,6 +177,7 @@ const unsubscribe = client.onUpdate(
   { token: config.machineToken },
   (result) => {
     maxSlots = result.maxSlots;
+    reconcileWithServer(result.liveCommandIds);
     for (const command of result.commands) {
       if (!queuedIds.has(command.commandId)) {
         queuedIds.add(command.commandId);
