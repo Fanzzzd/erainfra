@@ -324,6 +324,7 @@ function MachinesPage() {
           </div>
         </div>
         <FallbackSnippet />
+        <InviteOperator />
       </section>
 
       <section
@@ -578,6 +579,92 @@ function CurrentJobs({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * The only way to open sign-up once this instance has an admin. The grant is
+ * shown once and never read back: it exists in this component's state until the
+ * operator navigates away, and only its hash is stored server-side.
+ */
+function InviteOperator() {
+  const invite = useMutation(api.bootstrap.invite);
+  const [grant, setGrant] = useState<{ token: string; expiresAt: number }>();
+  const [error, setError] = useState<string>();
+  const [copied, setCopied] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  async function generate() {
+    setError(undefined);
+    setPending(true);
+    try {
+      const result = await invite({});
+      setGrant({ token: result.grantToken, expiresAt: result.expiresAt });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not create an invitation");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function copy() {
+    if (grant === undefined) return;
+    try {
+      await navigator.clipboard.writeText(grant.token);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // Clipboard blocked: the invitation stays selectable below.
+    }
+  }
+
+  return (
+    <details className="mt-3 rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-xs text-[#8a8a93]">
+      <summary className="cursor-pointer select-none font-medium text-zinc-300">
+        Invite another operator
+      </summary>
+      <p className="mt-3 leading-5">
+        Sign-up is closed. An invitation is the only way to add an account after the first one. It
+        is single-use, expires in ten minutes, and is shown here once — send it over a channel you
+        trust.
+      </p>
+
+      {grant === undefined ? (
+        <Button type="button" className="mt-3" disabled={pending} onClick={() => void generate()}>
+          {pending ? "Please wait…" : "Create an invitation"}
+          {!pending && <Plus />}
+        </Button>
+      ) : (
+        <div className="relative mt-3 rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
+          <code className="block break-all font-mono text-xs leading-5 text-zinc-300">
+            {grant.token}
+          </code>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute right-1.5 top-1.5 size-8"
+            aria-label="Copy invitation"
+            onClick={() => void copy()}
+          >
+            {copied ? <Check /> : <Clipboard />}
+          </Button>
+        </div>
+      )}
+
+      {grant !== undefined && (
+        <p className="mt-2 leading-5">
+          Expires {formatAbsoluteTime(grant.expiresAt)}. The recipient enters it on the sign-in page
+          under “Accept an invitation”.
+        </p>
+      )}
+
+      {error !== undefined && (
+        <p role="alert" className="mt-2 leading-5 text-red-300">
+          {error}
+        </p>
+      )}
+    </details>
   );
 }
 
