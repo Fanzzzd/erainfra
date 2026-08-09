@@ -32,3 +32,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      # Runner machines install the agent with npm, not pnpm, so its lockfile
+      # has to stay in sync with its package.json. This replaces the pnpm
+      # node_modules in apps/agent, so keep it last.
+      - name: Verify the agent lockfile matches its manifest
+        working-directory: apps/agent
+        run: npm ci --omit=dev --no-audit --no-fund

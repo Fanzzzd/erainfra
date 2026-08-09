@@ -13,6 +13,7 @@
     "codegen": "turbo run codegen",
     "convex": "pnpm --filter @runner-center/backend exec convex",
     "deploy": "pnpm --filter @runner-center/backend deploy",
+    "release:package": "turbo run build --filter=@runner-center/agent && pnpm --filter @runner-center/release package-agent",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",

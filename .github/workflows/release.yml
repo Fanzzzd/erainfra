@@ -1,0 +1,83 @@
+name: Release
+
+# Tagging `v<version>` publishes the agent archive machines install. Nothing
+# else creates releases, and no release is ever overwritten.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the build provenance attestation
+      attestations: write # record the attestation
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Runner Center ships as one product: the tag is the version in
+      # package.json, and packaging fails if apps/agent has drifted from it.
+      - name: Resolve the release version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "refs/tags/v$version" != "$GITHUB_REF" ]; then
+            echo "Tag $GITHUB_REF does not match package.json version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
+      - name: Build the agent release archive
+        run: pnpm release:package
+
+      - name: Verify the archive is reproducible
+        run: |
+          pnpm --filter @runner-center/release package-agent --out dist/release-recheck
+          cmp "dist/release/runner-center-agent-$VERSION.tar.gz" \
+            "dist/release-recheck/runner-center-agent-$VERSION.tar.gz"
+
+      # Exactly the command a machine runs during install.
+      - name: Verify the agent lockfile installs cleanly
+        working-directory: apps/agent
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/release/runner-center-agent-${{ env.VERSION }}.tar.gz
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256=$(cut -d ' ' -f 1 < "dist/release/runner-center-agent-$VERSION.tar.gz.sha256")
+          {
+            printf 'Agent archive for Runner Center %s.\n\n' "$VERSION"
+            printf 'SHA-256 of `runner-center-agent-%s.tar.gz`:\n\n' "$VERSION"
+            printf '    %s\n\n' "$sha256"
+            printf 'Roll the fleet forward by setting `AGENT_RELEASE` in\n'
+            printf '`packages/backend/convex/agentRelease.ts` to this version and checksum and\n'
+            printf 'running `pnpm deploy`. A single machine can be moved with\n'
+            printf '`rc update --version v%s`.\n' "$VERSION"
+          } > release-notes.md
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            "dist/release/runner-center-agent-$VERSION.tar.gz" \
+            "dist/release/runner-center-agent-$VERSION.tar.gz.sha256"
