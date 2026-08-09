@@ -671,6 +671,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$AGENT_DIR
 ExecStart=$START_SCRIPT
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
 Restart=always
 RestartSec=5
 
