@@ -4,6 +4,8 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { releaseAttemptSlot, releaseMachineSlot } from "./attemptScheduler";
 
+const completedExecutorDrainMs = 30_000;
+
 const executorValidator = v.union(
   v.literal("docker"),
   v.literal("firecracker"),
@@ -112,6 +114,7 @@ export const pendingAttempts = query({
     const machine = await machineForToken(ctx, args.token);
     const attempts = await ctx.db.query("attempts").collect();
     const owned = attempts.filter((attempt) => attempt.machineId === machine._id);
+    const now = Date.now();
     return {
       maxSlots: machine.maxSlots,
       attempts: owned
@@ -123,7 +126,11 @@ export const pendingAttempts = query({
             attempt.state === "pending" ||
             attempt.state === "preparing" ||
             attempt.state === "ready" ||
-            attempt.state === "running",
+            attempt.state === "running" ||
+            (attempt.state === "completed" &&
+              attempt.executorFinishedAt === undefined &&
+              attempt.finishedAt !== undefined &&
+              now - attempt.finishedAt < completedExecutorDrainMs),
         )
         .map((attempt) => attempt._id),
     };

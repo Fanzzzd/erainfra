@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,24 +118,24 @@ func (s *Store) CancelAttempt(ctx context.Context, profile, runnerName, reason s
 }
 
 func (s *Store) MarkJobStarted(ctx context.Context, event fleet.JobStarted) error {
-	return s.doJSON(ctx, http.MethodPost, "/controller/jobs/started", struct {
+	err := s.doJSON(ctx, http.MethodPost, "/controller/jobs/started", struct {
 		Profile          string `json:"profile"`
 		RunnerName       string `json:"runnerName"`
-		RunnerRequestID  int64  `json:"runnerRequestId"`
-		Repository       string `json:"repository"`
-		Owner            string `json:"owner"`
-		JobID            string `json:"jobId"`
-		WorkflowRef      string `json:"workflowRef"`
-		DisplayName      string `json:"displayName"`
-		WorkflowRunID    int64  `json:"workflowRunId"`
-		EventName        string `json:"eventName"`
+		RunnerRequestID  string `json:"runnerRequestId,omitempty"`
+		Repository       string `json:"repository,omitempty"`
+		Owner            string `json:"owner,omitempty"`
+		JobID            string `json:"jobId,omitempty"`
+		WorkflowRef      string `json:"workflowRef,omitempty"`
+		DisplayName      string `json:"displayName,omitempty"`
+		WorkflowRunID    int64  `json:"workflowRunId,omitempty"`
+		EventName        string `json:"eventName,omitempty"`
 		QueueTime        *int64 `json:"queueTime,omitempty"`
 		AssignedAt       *int64 `json:"assignedAt,omitempty"`
 		RunnerAssignedAt *int64 `json:"runnerAssignedAt,omitempty"`
 	}{
 		Profile:          event.Profile,
 		RunnerName:       event.RunnerName,
-		RunnerRequestID:  event.RunnerRequestID,
+		RunnerRequestID:  optionalInt64(event.RunnerRequestID),
 		Repository:       event.Repository,
 		Owner:            event.Owner,
 		JobID:            event.JobID,
@@ -146,24 +147,58 @@ func (s *Store) MarkJobStarted(ctx context.Context, event fleet.JobStarted) erro
 		AssignedAt:       unixMillis(event.AssignedAt),
 		RunnerAssignedAt: unixMillis(event.RunnerAssignedAt),
 	}, nil, true)
+	if err != nil {
+		return fmt.Errorf(
+			"mark job started (runner=%q request=%d job=%q repository=%q owner=%q display=%q workflowRun=%d event=%q): %w",
+			event.RunnerName,
+			event.RunnerRequestID,
+			event.JobID,
+			event.Repository,
+			event.Owner,
+			event.DisplayName,
+			event.WorkflowRunID,
+			event.EventName,
+			err,
+		)
+	}
+	return nil
 }
 
 func (s *Store) MarkJobCompleted(ctx context.Context, event fleet.JobCompleted) error {
-	return s.doJSON(ctx, http.MethodPost, "/controller/jobs/completed", struct {
+	err := s.doJSON(ctx, http.MethodPost, "/controller/jobs/completed", struct {
 		Profile         string `json:"profile"`
 		RunnerName      string `json:"runnerName"`
-		RunnerRequestID int64  `json:"runnerRequestId"`
-		JobID           string `json:"jobId"`
-		Result          string `json:"result"`
+		RunnerRequestID string `json:"runnerRequestId,omitempty"`
+		JobID           string `json:"jobId,omitempty"`
+		Result          string `json:"result,omitempty"`
 		FinishedAt      int64  `json:"finishedAt"`
 	}{
 		Profile:         event.Profile,
 		RunnerName:      event.RunnerName,
-		RunnerRequestID: event.RunnerRequestID,
+		RunnerRequestID: optionalInt64(event.RunnerRequestID),
 		JobID:           event.JobID,
 		Result:          event.Result,
 		FinishedAt:      event.FinishedAt.UnixMilli(),
 	}, nil, true)
+	if err != nil {
+		return fmt.Errorf(
+			"mark job completed (runner=%q request=%d job=%q result=%q finishedAt=%s): %w",
+			event.RunnerName,
+			event.RunnerRequestID,
+			event.JobID,
+			event.Result,
+			event.FinishedAt.UTC().Format(time.RFC3339Nano),
+			err,
+		)
+	}
+	return nil
+}
+
+func optionalInt64(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
 }
 
 func unixMillis(value time.Time) *int64 {

@@ -31,11 +31,30 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function optionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
 function safePositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+const maxSignedInt64 = "9223372036854775807";
+
+function positiveInt64Decimal(value: unknown): value is string {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,18}$/.test(value)) return false;
+  return value.length < maxSignedInt64.length || value <= maxSignedInt64;
+}
+
+function optionalInt64Decimal(value: unknown): value is string | undefined {
+  return value === undefined || positiveInt64Decimal(value);
+}
+
 function optionalTimestamp(value: unknown): value is number | undefined {
+  return value === undefined || safePositiveInteger(value);
+}
+
+function optionalPositiveInteger(value: unknown): value is number | undefined {
   return value === undefined || safePositiveInteger(value);
 }
 
@@ -141,14 +160,14 @@ export function parseJobStarted(payload: unknown) {
     !isRecord(payload) ||
     !nonEmptyString(payload.profile) ||
     !nonEmptyString(payload.runnerName) ||
-    !safePositiveInteger(payload.runnerRequestId) ||
-    !nonEmptyString(payload.repository) ||
-    !nonEmptyString(payload.owner) ||
-    !nonEmptyString(payload.jobId) ||
-    typeof payload.workflowRef !== "string" ||
-    !nonEmptyString(payload.displayName) ||
-    !safePositiveInteger(payload.workflowRunId) ||
-    !nonEmptyString(payload.eventName) ||
+    !optionalInt64Decimal(payload.runnerRequestId) ||
+    !optionalString(payload.repository) ||
+    !optionalString(payload.owner) ||
+    !optionalString(payload.jobId) ||
+    !optionalString(payload.workflowRef) ||
+    !optionalString(payload.displayName) ||
+    !optionalPositiveInteger(payload.workflowRunId) ||
+    !optionalString(payload.eventName) ||
     !optionalTimestamp(payload.queueTime) ||
     !optionalTimestamp(payload.assignedAt) ||
     !optionalTimestamp(payload.runnerAssignedAt)
@@ -159,13 +178,13 @@ export function parseJobStarted(payload: unknown) {
     profile: payload.profile.trim(),
     runnerName: payload.runnerName.trim(),
     runnerRequestId: payload.runnerRequestId,
-    repository: payload.repository,
-    owner: payload.owner,
-    jobId: payload.jobId,
-    workflowRef: payload.workflowRef,
-    displayName: payload.displayName,
+    repository: payload.repository?.trim() || undefined,
+    owner: payload.owner?.trim() || undefined,
+    jobId: payload.jobId?.trim() || undefined,
+    workflowRef: payload.workflowRef?.trim() || undefined,
+    displayName: payload.displayName?.trim() || undefined,
     workflowRunId: payload.workflowRunId,
-    eventName: payload.eventName,
+    eventName: payload.eventName?.trim() || undefined,
     queueTime: payload.queueTime,
     assignedAt: payload.assignedAt,
     runnerAssignedAt: payload.runnerAssignedAt,
@@ -177,9 +196,9 @@ export function parseJobCompleted(payload: unknown) {
     !isRecord(payload) ||
     !nonEmptyString(payload.profile) ||
     !nonEmptyString(payload.runnerName) ||
-    !safePositiveInteger(payload.runnerRequestId) ||
-    !nonEmptyString(payload.jobId) ||
-    !nonEmptyString(payload.result) ||
+    !optionalInt64Decimal(payload.runnerRequestId) ||
+    !optionalString(payload.jobId) ||
+    !optionalString(payload.result) ||
     !safePositiveInteger(payload.finishedAt)
   ) {
     return null;
@@ -188,8 +207,8 @@ export function parseJobCompleted(payload: unknown) {
     profile: payload.profile.trim(),
     runnerName: payload.runnerName.trim(),
     runnerRequestId: payload.runnerRequestId,
-    jobId: payload.jobId,
-    result: payload.result,
+    jobId: payload.jobId?.trim() || undefined,
+    result: payload.result?.trim() || undefined,
     finishedAt: payload.finishedAt,
   };
 }

@@ -14,6 +14,8 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 	var created fleet.NewAttempt
 	var registered fleet.ProfileSpec
 	var completedCleanup fleet.RunnerCleanup
+	var started map[string]any
+	var completed map[string]any
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer controller-secret" {
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
@@ -42,7 +44,17 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 				t.Fatal(err)
 			}
 			response.WriteHeader(http.StatusNoContent)
-		case "/controller/attempts/cancel", "/controller/jobs/started", "/controller/jobs/completed":
+		case "/controller/attempts/cancel":
+			response.WriteHeader(http.StatusNoContent)
+		case "/controller/jobs/started":
+			if err := json.NewDecoder(request.Body).Decode(&started); err != nil {
+				t.Fatal(err)
+			}
+			response.WriteHeader(http.StatusNoContent)
+		case "/controller/jobs/completed":
+			if err := json.NewDecoder(request.Body).Decode(&completed); err != nil {
+				t.Fatal(err)
+			}
 			response.WriteHeader(http.StatusNoContent)
 		case "/controller/runner-cleanups":
 			_ = json.NewEncoder(response).Encode(map[string]any{"cleanups": []map[string]any{{
@@ -124,6 +136,35 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 	if completedCleanup != cleanups[0] {
 		t.Fatalf("completed cleanup = %#v", completedCleanup)
 	}
+
+	const opaqueRequestID = int64(9_007_199_254_740_993)
+	if err := store.MarkJobStarted(t.Context(), fleet.JobStarted{
+		Profile:         input.Profile,
+		RunnerName:      input.RunnerName,
+		RunnerRequestID: opaqueRequestID,
+		Repository:      "runner-center",
+		Owner:           "Fanzzzd",
+		JobID:           "job-1",
+		DisplayName:     "check",
+		WorkflowRunID:   99,
+		EventName:       "pull_request",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkJobCompleted(t.Context(), fleet.JobCompleted{
+		Profile:         input.Profile,
+		RunnerName:      input.RunnerName,
+		RunnerRequestID: opaqueRequestID,
+		JobID:           "job-1",
+		Result:          "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, payload := range map[string]map[string]any{"started": started, "completed": completed} {
+		if payload["runnerRequestId"] != "9007199254740993" {
+			t.Fatalf("%s runnerRequestId = %#v", name, payload["runnerRequestId"])
+		}
+	}
 }
 
 func TestStoreDoesNotReflectJITOnFailure(t *testing.T) {
@@ -162,5 +203,14 @@ func TestStoreRequiresHTTPSAndToken(t *testing.T) {
 	}
 	if _, err := New("https://runner-center.example", "", nil); err == nil {
 		t.Fatal("empty token accepted")
+	}
+}
+
+func TestOptionalInt64OmitsUnavailableGitHubRequestID(t *testing.T) {
+	if actual := optionalInt64(0); actual != "" {
+		t.Fatalf("optionalInt64(0) = %q", actual)
+	}
+	if actual := optionalInt64(9_007_199_254_740_993); actual != "9007199254740993" {
+		t.Fatalf("optionalInt64(unsafe JS integer) = %q", actual)
 	}
 }
