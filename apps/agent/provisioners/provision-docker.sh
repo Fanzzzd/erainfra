@@ -116,6 +116,7 @@ docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --pids-limit 4096 \
   --user runner \
   --workdir /opt/runner \
+  --label "runner-center.profile=$RC_PROFILE" \
   --env-file "$WORKDIR/runner.env" \
   --env ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1 \
   --env ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/action-cache \

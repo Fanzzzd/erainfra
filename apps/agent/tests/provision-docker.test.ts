@@ -35,6 +35,7 @@ describe("provision-docker.sh", () => {
     const argv = harness.argv();
     assert.match(argv, /^docker\trun\t--rm\t--pull=never\t--init/m);
     assert.doesNotMatch(argv, /--mount|--volume|runner-cache/);
+    assert.match(argv, /--label\trunner-center\.profile=rc-linux-js/);
     assert.match(
       argv,
       new RegExp(`\\t${IMAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\t\\./run\\.sh$`, "m"),
