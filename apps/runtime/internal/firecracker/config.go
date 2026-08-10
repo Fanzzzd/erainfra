@@ -41,7 +41,16 @@ func DefaultConfig() Config {
 		KernelImagePath: "/var/lib/runner-center/kernels/vmlinux",
 		// ipv6.disable=1 is part of the network policy, not a tuning choice: the
 		// nftables rules are IPv4 and a dual-stack guest could route around them.
-		KernelArgs:          "console=ttyS0 noapic reboot=k panic=1 pci=off nomodules ipv6.disable=1 rw",
+		//
+		// noapic and nomodules are deliberately absent, and neither appears in
+		// Firecracker's own documented command line. Since Firecracker 1.8.0 --
+		// we pin 1.16.1 -- ACPI is how the VMM describes vCPUs, interrupt
+		// controllers and VirtIO devices to the guest, and MPTable support is
+		// deprecated, so telling the kernel to ignore the APIC is not a
+		// configuration Firecracker supports. nomodules is not a kernel
+		// parameter at all; the kernel hands words it does not recognise to init
+		// as arguments.
+		KernelArgs:          "console=ttyS0 reboot=k panic=1 pci=off ipv6.disable=1 rw",
 		ContainerdAddress:   "/run/runner-center-containerd/containerd.sock",
 		ContainerdNamespace: "runner-center",
 		Snapshotter:         "devmapper",
