@@ -277,7 +277,9 @@ export default defineSchema({
     finishedAt: v.optional(v.number()),
     executorFinishedAt: v.optional(v.number()),
     executorExitCode: v.optional(v.number()),
-    runnerRequestId: v.optional(v.number()),
+    // The official client exposes this opaque int64 as zero when GitHub omits
+    // it. Persist present values as decimal text so no int64 is rounded by JS.
+    runnerRequestId: v.optional(v.union(v.string(), v.number())),
     repo: v.optional(v.string()),
     owner: v.optional(v.string()),
     jobId: v.optional(v.string()),

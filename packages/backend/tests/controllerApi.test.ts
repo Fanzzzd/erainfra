@@ -89,7 +89,7 @@ describe("scale-set Attempt protocol", () => {
     const started = {
       profile: "rc-linux-js",
       runnerName: "runner-a",
-      runnerRequestId: 7,
+      runnerRequestId: "7",
       repository: "runner-center",
       owner: "Fanzzzd",
       jobId: "job-1",
@@ -106,7 +106,7 @@ describe("scale-set Attempt protocol", () => {
     await t.mutation(internal.controllerApi.markJobCompleted, {
       profile: "rc-linux-js",
       runnerName: "runner-a",
-      runnerRequestId: 7,
+      runnerRequestId: "7",
       jobId: "job-1",
       result: "succeeded",
       finishedAt: 400,
@@ -114,7 +114,7 @@ describe("scale-set Attempt protocol", () => {
     await t.mutation(internal.controllerApi.markJobCompleted, {
       profile: "rc-linux-js",
       runnerName: "runner-a",
-      runnerRequestId: 7,
+      runnerRequestId: "7",
       jobId: "job-1",
       result: "succeeded",
       finishedAt: 400,
@@ -165,7 +165,7 @@ describe("scale-set Attempt protocol", () => {
     await t.mutation(internal.controllerApi.markJobStarted, {
       profile: "rc-linux-js",
       runnerName: "running",
-      runnerRequestId: 8,
+      runnerRequestId: "8",
       repository: "runner-center",
       owner: "Fanzzzd",
       jobId: "job-2",

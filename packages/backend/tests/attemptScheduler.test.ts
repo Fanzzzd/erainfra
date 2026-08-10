@@ -245,7 +245,7 @@ describe("readiness-gated Attempt scheduling", () => {
     await t.mutation(internal.controllerApi.markJobCompleted, {
       profile: CONTRACT.profile,
       runnerName: "runner-a",
-      runnerRequestId: 42,
+      runnerRequestId: "42",
       jobId: "job-42",
       result: "Succeeded",
       finishedAt: Date.now(),
@@ -257,6 +257,37 @@ describe("readiness-gated Attempt scheduling", () => {
       result: "Succeeded",
       jobId: "job-42",
     });
+  });
+
+  it("gives a completed runner time to drain before stopping its executor", async () => {
+    const t = convexTest(schema, modules);
+    await addWorker(t, "alpha");
+    await createAttempt(t);
+    const attempt = await t.run(async (ctx) => ctx.db.query("attempts").first());
+    if (attempt === null) throw new Error("missing attempt");
+    await t.mutation(api.workerApi.claimAttempt, {
+      token: "token-alpha",
+      attemptId: attempt._id,
+    });
+    await t.mutation(internal.controllerApi.markJobCompleted, {
+      profile: CONTRACT.profile,
+      runnerName: "runner-a",
+      result: "succeeded",
+      finishedAt: Date.now(),
+    });
+
+    expect(
+      (await t.query(api.workerApi.pendingAttempts, { token: "token-alpha" })).liveAttemptIds,
+    ).toContain(attempt._id);
+
+    await t.run(async (ctx) =>
+      ctx.db.patch(attempt._id, {
+        finishedAt: Date.now() - 31_000,
+      }),
+    );
+    expect(
+      (await t.query(api.workerApi.pendingAttempts, { token: "token-alpha" })).liveAttemptIds,
+    ).not.toContain(attempt._id);
   });
 
   it("spreads simultaneous Attempts before filling a Worker", async () => {

@@ -121,7 +121,7 @@ describe("controller payloads", () => {
       parseJobStarted({
         profile: "rc-linux-js",
         runnerName: "runner-a",
-        runnerRequestId: 7,
+        runnerRequestId: "9007199254740993",
         repository: "runner-center",
         owner: "Fanzzzd",
         jobId: "job-1",
@@ -135,7 +135,7 @@ describe("controller payloads", () => {
       parseJobCompleted({
         profile: "rc-linux-js",
         runnerName: "runner-a",
-        runnerRequestId: 7,
+        runnerRequestId: "9007199254740993",
         jobId: "job-1",
         result: "succeeded",
         finishedAt: 1_786_300_000_000,
@@ -148,5 +148,43 @@ describe("controller payloads", () => {
         runnerId: 42,
       }),
     ).toEqual({ profile: "rc-linux-js", runnerName: "runner-a", runnerId: 42 });
+  });
+
+  it("keeps GitHub int64 request identifiers lossless", () => {
+    const base = {
+      profile: "rc-linux-js",
+      runnerName: "runner-a",
+      runnerRequestId: "9223372036854775807",
+      jobId: "job-1",
+    };
+    expect(
+      parseJobStarted({
+        ...base,
+        repository: "runner-center",
+        owner: "Fanzzzd",
+        workflowRef: "",
+        displayName: "check",
+        workflowRunId: 99,
+        eventName: "pull_request",
+      }),
+    ).not.toBeNull();
+    expect(
+      parseJobCompleted({
+        ...base,
+        result: "succeeded",
+        finishedAt: 1_786_300_000_000,
+      }),
+    ).not.toBeNull();
+    expect(parseJobStarted({ ...base, runnerRequestId: undefined })).not.toBeNull();
+    expect(
+      parseJobCompleted({
+        ...base,
+        runnerRequestId: undefined,
+        result: "succeeded",
+        finishedAt: 1_786_300_000_000,
+      }),
+    ).not.toBeNull();
+    expect(parseJobCompleted({ ...base, runnerRequestId: Number.MAX_SAFE_INTEGER + 2 })).toBeNull();
+    expect(parseJobCompleted({ ...base, runnerRequestId: "9223372036854775808" })).toBeNull();
   });
 });
