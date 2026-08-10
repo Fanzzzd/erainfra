@@ -54,9 +54,11 @@ sudo deploy/provision-firecracker-host.sh \
   --worker-user "$USER"
 ```
 
-For an evaluation host with no spare devices, swap both device flags for
-`--file-backed-pool 60`. That backs the pool with sparse files on the root filesystem, so a full
-root filesystem fails every running job at once. Do not ship it.
+For an evaluation host with no spare devices, swap both device flags for `--file-backed-pool 60`,
+adding `--pool-dir /path/on/a/roomy/filesystem` when the root filesystem is tight. That backs the
+pool with sparse files, so filling their filesystem fails every running job at once. The provisioner
+refuses a filesystem that cannot hold the whole pool, but that check is a floor, not a licence: do
+not ship it.
 
 The provisioner ends by printing the readiness report. Every check must pass. If one does not, the
 report names it; `journalctl -u runner-center-runtime -n 50 --no-pager` has the detail.

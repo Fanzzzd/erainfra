@@ -225,8 +225,10 @@ runtime service, then runs readiness and prints the report. Everything lands und
 Docker or Kubernetes keeps its own containerd configuration, CNI directory and firewall tables.
 `sudo deploy/provision-firecracker-host.sh --uninstall` reverses it.
 
-Useful flags: `--file-backed-pool GIB` (32 minimum) backs the thin-pool with sparse files for evaluation only
-(never in production: a full root filesystem then fails every running job at once);
+Useful flags: `--file-backed-pool GIB` (32 minimum) backs the thin-pool with sparse files for
+evaluation only (never in production: a full backing filesystem then fails every running job at
+once), and `--pool-dir PATH` puts those files on a data filesystem when the root filesystem is
+nearly full;
 `--egress-mode allowlist` with `--egress-allow CIDR,CIDR` denies every destination a Profile has not
 declared; `--network-subnet` moves the guest range if it collides with the host's.
 
