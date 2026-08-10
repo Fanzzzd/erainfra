@@ -33,7 +33,6 @@ import { renderInstallScript } from "../convex/installScript.ts";
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
 const MACHINE_TOKEN = "a".repeat(32);
-const CONNECTED_LINE = "Runner Center agent connected to https://example.convex.cloud";
 const SERVICE_KIND = process.platform === "darwin" ? "launchd" : "systemd";
 
 const sandboxes: string[] = [];
@@ -93,14 +92,15 @@ fi
 exit 0
 `;
 
-/** Both service managers "start" the agent by writing the line the installer waits for. */
+/** Both service managers "start" the agent by publishing its versioned readiness file. */
 const SERVICE_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"
 for arg in "$@"; do
   case "$arg" in
     kickstart|restart)
       if [ "$RC_TEST_CONNECT" = "1" ]; then
-        printf '${CONNECTED_LINE}\\n' >> "$HOME/.runner-center/agent.log"
+        version=$(node -p "require(process.env.HOME + '/.runner-center/agent/package.json').version")
+        printf '%s\\n' "$version" > "$HOME/.runner-center/agent.ready"
       fi
       ;;
   esac
@@ -290,6 +290,7 @@ describe("install", () => {
     expect(requested).not.toMatch(/archive\/refs\/heads/);
     expect(agentMarker(sandbox)).toBe("// new agent");
     expect(metaField(sandbox, "AGENT_VERSION")).toBe("1.4.2");
+    expect(readFileSync(path.join(sandbox.rcHome, "agent.ready"), "utf8")).toBe("1.4.2\n");
     expect(readFileSync(path.join(sandbox.rcHome, "agent", ".env"), "utf8")).toMatch(
       new RegExp(`MACHINE_TOKEN=${MACHINE_TOKEN}`),
     );
@@ -453,6 +454,8 @@ describe("rollback", () => {
     const sandbox = createSandbox(CURRENT);
     publishRelease(sandbox, CURRENT, "new agent");
     seedExistingInstall(sandbox, "1.3.0", "older agent");
+    // A previous process or version must never satisfy this rollout's probe.
+    writeFileSync(path.join(sandbox.rcHome, "agent.ready"), `${CURRENT.version}\n`);
 
     const result = run(sandbox, ["--update"], { connect: false });
     expect(result.status).not.toBe(0);
@@ -491,6 +494,13 @@ describe("rendered script", () => {
   it("writes systemd agent output to the connection log", () => {
     expect(script).toMatch(/StandardOutput=append:\$LOG_FILE/);
     expect(script).toMatch(/StandardError=append:\$LOG_FILE/);
+  });
+
+  it("waits for a fresh readiness signal from the exact installed version", () => {
+    expect(script).toMatch(/rm -f "\$RC_HOME\/agent\.ready"/);
+    expect(script).toMatch(/cat "\$RC_HOME\/agent\.ready"/);
+    expect(script).toMatch(/= "\$VERSION"/);
+    expect(script).not.toMatch(/grep -Fq 'Runner Center agent connected'/);
   });
 
   it("accepts either trusted Docker or isolated Firecracker on Linux", () => {
