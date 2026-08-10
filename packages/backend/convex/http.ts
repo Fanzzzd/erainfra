@@ -6,6 +6,15 @@ import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { findImageLabel, IMAGE_CATALOG } from "./catalog";
 import {
+  controllerAuthorization,
+  parseCancelAttempt,
+  parseCompleteRunnerCleanup,
+  parseCreateAttempt,
+  parseJobCompleted,
+  parseJobStarted,
+  parseRegisterProfile,
+} from "./controllerHttp";
+import {
   describeSetupState,
   parseManifestConversion,
   renderManifestForm,
@@ -23,6 +32,29 @@ function jsonResponse(body: unknown, status: number) {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
+}
+
+function controllerAuthFailure(request: Request) {
+  const authStatus = controllerAuthorization(
+    request.headers.get("Authorization"),
+    process.env.CONTROLLER_TOKEN,
+  );
+  if (authStatus === "ok") {
+    return null;
+  }
+  if (authStatus === "not-configured") {
+    console.error("Controller API refused a request because CONTROLLER_TOKEN is not configured");
+    return jsonResponse({ error: "Controller API is not configured" }, 503);
+  }
+  return jsonResponse({ error: "Unauthorized" }, 401);
+}
+
+async function requestJson(request: Request) {
+  try {
+    return { ok: true as const, payload: (await request.json()) as unknown };
+  } catch {
+    return { ok: false as const };
+  }
 }
 
 function bytesToHex(bytes: Uint8Array) {
@@ -97,6 +129,18 @@ function parseRegistrationRequest(payload: unknown) {
     return null;
   }
 
+  let memoryMiB: number | undefined;
+  if (payload.memoryMiB !== undefined) {
+    if (
+      typeof payload.memoryMiB !== "number" ||
+      !Number.isInteger(payload.memoryMiB) ||
+      payload.memoryMiB < 256
+    ) {
+      return null;
+    }
+    memoryMiB = payload.memoryMiB;
+  }
+
   let labels: string[] | undefined;
   if (payload.labels !== undefined) {
     if (
@@ -126,6 +170,7 @@ function parseRegistrationRequest(payload: unknown) {
     os: payload.os as "linux" | "mac" | "win",
     arch: payload.arch,
     cpus: payload.cpus,
+    memoryMiB,
     labels,
     maxSlots,
   };
@@ -265,6 +310,157 @@ http.route({
       return jsonResponse({ error: "Server configuration error" }, 500);
     }
     return jsonResponse({ machineToken: result.machineToken, convexUrl }, 201);
+  }),
+});
+
+// The controller API is separate from both dashboard auth and Worker tokens.
+// It is a machine-to-machine seam for the long-running official scale-set
+// listener; every route fails closed when CONTROLLER_TOKEN is absent.
+http.route({
+  path: "/controller/profiles",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const profile = body.ok ? parseRegisterProfile(body.payload) : null;
+    if (profile === null) {
+      return jsonResponse({ error: "Invalid Profile" }, 400);
+    }
+    await ctx.runMutation(internal.controllerApi.registerProfile, profile);
+    return new Response(null, { status: 204 });
+  }),
+});
+
+http.route({
+  path: "/controller/attempts",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const profile = new URL(request.url).searchParams.get("profile")?.trim() ?? "";
+    if (profile.length === 0) {
+      return jsonResponse({ error: "profile is required" }, 400);
+    }
+    const attempts = await ctx.runQuery(internal.controllerApi.listActiveAttempts, { profile });
+    return jsonResponse({ attempts }, 200);
+  }),
+});
+
+http.route({
+  path: "/controller/attempts",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const attempt = body.ok ? parseCreateAttempt(body.payload) : null;
+    if (attempt === null) {
+      // Never reflect this payload: a valid-looking subset can contain JIT.
+      return jsonResponse({ error: "Invalid Attempt" }, 400);
+    }
+    try {
+      await ctx.runMutation(internal.controllerApi.createAttempt, attempt);
+    } catch {
+      return jsonResponse({ error: "Attempt conflicts with existing state" }, 409);
+    }
+    return new Response(null, { status: 204 });
+  }),
+});
+
+http.route({
+  path: "/controller/attempts/cancel",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const attempt = body.ok ? parseCancelAttempt(body.payload) : null;
+    if (attempt === null) {
+      return jsonResponse({ error: "Invalid cancellation" }, 400);
+    }
+    try {
+      await ctx.runMutation(internal.controllerApi.cancelAttempt, attempt);
+    } catch {
+      return jsonResponse({ error: "Attempt is already running" }, 409);
+    }
+    return new Response(null, { status: 204 });
+  }),
+});
+
+http.route({
+  path: "/controller/runner-cleanups",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const profile = new URL(request.url).searchParams.get("profile")?.trim() ?? "";
+    if (profile.length === 0) return jsonResponse({ error: "profile is required" }, 400);
+    const cleanups = await ctx.runQuery(internal.controllerApi.listRunnerCleanups, { profile });
+    return jsonResponse({ cleanups }, 200);
+  }),
+});
+
+http.route({
+  path: "/controller/runner-cleanups/complete",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const cleanup = body.ok ? parseCompleteRunnerCleanup(body.payload) : null;
+    if (cleanup === null) return jsonResponse({ error: "Invalid runner cleanup" }, 400);
+    const completed = await ctx.runMutation(internal.controllerApi.completeRunnerCleanup, cleanup);
+    if (!completed) return jsonResponse({ error: "Unknown runner cleanup" }, 404);
+    return new Response(null, { status: 204 });
+  }),
+});
+
+http.route({
+  path: "/controller/jobs/started",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const event = body.ok ? parseJobStarted(body.payload) : null;
+    if (event === null) {
+      return jsonResponse({ error: "Invalid JobStarted event" }, 400);
+    }
+    try {
+      await ctx.runMutation(internal.controllerApi.markJobStarted, event);
+    } catch {
+      return jsonResponse({ error: "Unknown Attempt" }, 409);
+    }
+    return new Response(null, { status: 204 });
+  }),
+});
+
+http.route({
+  path: "/controller/jobs/completed",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const event = body.ok ? parseJobCompleted(body.payload) : null;
+    if (event === null) {
+      return jsonResponse({ error: "Invalid JobCompleted event" }, 400);
+    }
+    try {
+      await ctx.runMutation(internal.controllerApi.markJobCompleted, event);
+    } catch {
+      return jsonResponse({ error: "Unknown Attempt" }, 409);
+    }
+    return new Response(null, { status: 204 });
   }),
 });
 

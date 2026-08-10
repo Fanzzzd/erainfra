@@ -13,6 +13,11 @@ const machineListItemValidator = v.object({
   name: v.string(),
   os: osValidator,
   labels: v.array(v.string()),
+  arch: v.optional(v.string()),
+  cpus: v.optional(v.number()),
+  memoryMiB: v.optional(v.number()),
+  slotPolicy: v.optional(v.union(v.literal("auto"), v.literal("fixed"))),
+  recommendedSlots: v.optional(v.number()),
   maxSlots: v.number(),
   usedSlots: v.number(),
   lastSeen: v.number(),
@@ -22,6 +27,40 @@ const machineListItemValidator = v.object({
       repo: v.string(),
       workflowName: v.string(),
       status: v.union(v.literal("assigned"), v.literal("running")),
+    }),
+  ),
+  currentAttempts: v.array(
+    v.object({
+      _id: v.id("attempts"),
+      profile: v.string(),
+      state: v.union(
+        v.literal("pending"),
+        v.literal("preparing"),
+        v.literal("ready"),
+        v.literal("running"),
+      ),
+    }),
+  ),
+  currentExperiments: v.array(
+    v.object({
+      _id: v.id("experiments"),
+      name: v.string(),
+      state: v.union(v.literal("queued"), v.literal("preparing"), v.literal("running")),
+    }),
+  ),
+  readiness: v.array(
+    v.object({
+      profile: v.string(),
+      executor: v.union(
+        v.literal("docker"),
+        v.literal("firecracker"),
+        v.literal("tart"),
+        v.literal("hyperv"),
+      ),
+      imageRelease: v.string(),
+      state: v.union(v.literal("preparing"), v.literal("ready"), v.literal("failed")),
+      checkedAt: v.number(),
+      lastError: v.optional(v.string()),
     }),
   ),
 });
@@ -47,17 +86,21 @@ export const list = query({
   returns: v.array(machineListItemValidator),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    const [machines, assignedJobs, runningJobs] = await Promise.all([
-      ctx.db.query("machines").collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "assigned"))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "running"))
-        .collect(),
-    ]);
+    const [machines, assignedJobs, runningJobs, attempts, experiments, readiness] =
+      await Promise.all([
+        ctx.db.query("machines").collect(),
+        ctx.db
+          .query("jobs")
+          .withIndex("by_status", (q) => q.eq("status", "assigned"))
+          .collect(),
+        ctx.db
+          .query("jobs")
+          .withIndex("by_status", (q) => q.eq("status", "running"))
+          .collect(),
+        ctx.db.query("attempts").collect(),
+        ctx.db.query("experiments").collect(),
+        ctx.db.query("workerReadiness").collect(),
+      ]);
 
     const activeJobs = [...assignedJobs, ...runningJobs];
     return machines
@@ -71,6 +114,44 @@ export const list = query({
             repo: job.repo,
             workflowName: job.workflowName,
             status: job.status as "assigned" | "running",
+          })),
+        currentAttempts: attempts
+          .filter(
+            (attempt) =>
+              attempt.machineId === machine._id &&
+              (attempt.state === "pending" ||
+                attempt.state === "preparing" ||
+                attempt.state === "ready" ||
+                attempt.state === "running"),
+          )
+          .map((attempt) => ({
+            _id: attempt._id,
+            profile: attempt.profile,
+            state: attempt.state as "pending" | "preparing" | "ready" | "running",
+          })),
+        currentExperiments: experiments
+          .filter(
+            (experiment) =>
+              experiment.machineId === machine._id &&
+              (experiment.state === "queued" ||
+                experiment.state === "preparing" ||
+                experiment.state === "running"),
+          )
+          .map((experiment) => ({
+            _id: experiment._id,
+            name: experiment.name,
+            state: experiment.state as "queued" | "preparing" | "running",
+          })),
+        readiness: readiness
+          .filter((entry) => entry.machineId === machine._id)
+          .toSorted((left, right) => left.profile.localeCompare(right.profile))
+          .map((entry) => ({
+            profile: entry.profile,
+            executor: entry.executor,
+            imageRelease: entry.imageRelease,
+            state: entry.state,
+            checkedAt: entry.checkedAt,
+            lastError: entry.lastError,
           })),
       }));
   },
@@ -108,6 +189,7 @@ export const registerAgent = internalMutation({
     os: osValidator,
     arch: v.string(),
     cpus: v.number(),
+    memoryMiB: v.optional(v.number()),
     labels: v.optional(v.array(v.string())),
     maxSlots: v.optional(v.number()),
   },
@@ -154,8 +236,15 @@ export const registerAgent = internalMutation({
       suffix += 1;
     }
 
+    const cpuSlots = Math.max(1, Math.floor(args.cpus / 4));
+    const memorySlots =
+      args.memoryMiB === undefined ? cpuSlots : Math.max(1, Math.floor(args.memoryMiB / 8_192));
     const defaultSlots =
-      args.os === "linux" ? Math.min(2, Math.max(1, Math.floor(args.cpus / 4))) : 1;
+      args.os === "linux"
+        ? Math.min(16, cpuSlots, memorySlots)
+        : args.os === "mac"
+          ? Math.min(2, cpuSlots, memorySlots)
+          : 1;
     const maxSlots = args.maxSlots ?? defaultSlots;
     const labels = [...new Set((args.labels ?? []).map((label) => label.trim()).filter(Boolean))];
 
@@ -174,6 +263,11 @@ export const registerAgent = internalMutation({
       name,
       os: args.os,
       labels,
+      arch: args.arch,
+      cpus: args.cpus,
+      memoryMiB: args.memoryMiB,
+      slotPolicy: args.maxSlots === undefined ? "auto" : "fixed",
+      recommendedSlots: defaultSlots,
       maxSlots,
       usedSlots: 0,
       lastSeen: 0,

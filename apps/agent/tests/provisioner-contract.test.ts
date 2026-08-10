@@ -3,10 +3,16 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { provisionerPath, provisionInvocation } from "../provision.ts";
+import {
+  attemptInvocation,
+  dockerProvisionerPath,
+  experimentInvocation,
+  provisionerPath,
+  provisionInvocation,
+} from "../provision.ts";
 import { PROVISION_LINUX, PROVISION_MAC } from "./helpers/harness.ts";
 
-const SHELL_PROVISIONERS = [PROVISION_MAC, PROVISION_LINUX];
+const SHELL_PROVISIONERS = [PROVISION_MAC, PROVISION_LINUX, dockerProvisionerPath()];
 
 /** The pin the macOS provisioner installs, read straight out of the script. */
 function macRunnerPin() {
@@ -153,5 +159,92 @@ describe("provisionInvocation", () => {
       "-File",
       provisionerPath("win"),
     ]);
+  });
+});
+
+describe("scale-set Attempt invocation", () => {
+  it("runs the trusted Docker fallback with exact Profile resources", () => {
+    const invocation = attemptInvocation({
+      attemptId: "attempt-docker",
+      runnerName: "runner-docker",
+      profile: "rc-linux-js",
+      executor: "docker",
+      imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+      vcpus: 4,
+      memoryMiB: 8192,
+    });
+    assert.equal(invocation.file, dockerProvisionerPath());
+    assert.deepEqual(invocation.args, []);
+    assert.deepEqual(invocation.env, {
+      RUNNER_NAME: "runner-docker",
+      RC_PROFILE: "rc-linux-js",
+      IMAGE: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+      RC_VCPUS: "4",
+      RC_MEMORY_MIB: "8192",
+    });
+  });
+
+  it("runs Firecracker by Profile without exposing JIT", () => {
+    const invocation = attemptInvocation({
+      attemptId: "attempt-1",
+      runnerName: "runner-a",
+      profile: "rc-linux-js",
+      executor: "firecracker",
+      imageRelease:
+        "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      vcpus: 4,
+      memoryMiB: 8192,
+    });
+    assert.equal(invocation.file, "runner-center-runtime");
+    assert.deepEqual(invocation.args, ["run"]);
+    assert.deepEqual(invocation.env, {
+      RC_ATTEMPT_ID: "attempt-1",
+      RC_RUNNER_NAME: "runner-a",
+      RC_PROFILE: "rc-linux-js",
+      RC_IMAGE_RELEASE:
+        "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      RC_VCPUS: "4",
+      RC_MEMORY_MIB: "8192",
+    });
+    assert.doesNotMatch(JSON.stringify(invocation), /jit|secret/i);
+  });
+
+  it("reuses the validated Tart path for macOS Profiles", () => {
+    const invocation = attemptInvocation({
+      attemptId: "attempt-2",
+      runnerName: "runner-b",
+      profile: "rc-macos-15",
+      executor: "tart",
+      imageRelease:
+        "ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed",
+      vcpus: 4,
+      memoryMiB: 8192,
+    });
+    assert.equal(invocation.file, provisionerPath("mac"));
+    assert.deepEqual(invocation.env, {
+      RUNNER_NAME: "runner-b",
+      IMAGE:
+        "ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed",
+    });
+  });
+});
+
+describe("Experiment invocation", () => {
+  it("uses the isolated runtime and keeps the command off argv and env", () => {
+    const invocation = experimentInvocation({
+      experimentId: "experiment-1",
+      name: "benchmark",
+      profile: "rc-linux-js",
+      executor: "firecracker",
+      imageRelease:
+        "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      vcpus: 4,
+      memoryMiB: 8192,
+      timeoutSeconds: 900,
+    });
+    assert.equal(invocation.file, "runner-center-runtime");
+    assert.deepEqual(invocation.args, ["experiment"]);
+    assert.equal(invocation.env.RC_JOB_TIMEOUT_S, "900");
+    assert.doesNotMatch(JSON.stringify(invocation), /pnpm test|bash -lc/);
   });
 });

@@ -88,7 +88,14 @@ DOCKER_PID=$!
 
 if [ "$JOB_TIMEOUT_S" -gt 0 ]; then
   (
-    sleep "$JOB_TIMEOUT_S"
+    remaining="$JOB_TIMEOUT_S"
+    while [ "$remaining" -gt 0 ]; do
+      sleep 1
+      if ! kill -0 "$DOCKER_PID" 2>/dev/null; then
+        exit 0
+      fi
+      remaining=$((remaining - 1))
+    done
     : >"$WORKDIR/timed-out"
     docker stop --time 30 "$RUNNER_NAME" >/dev/null 2>&1 || true
   ) &

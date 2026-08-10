@@ -1,0 +1,31 @@
+[Unit]
+Description=Runner Center privileged Firecracker runtime
+Documentation=https://github.com/Fanzzzd/runner-center
+Requires=containerd.service
+After=containerd.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/runner-center/runtime.env
+Environment=RC_RUNTIME_GROUP=runner-center
+ExecStart=/usr/local/lib/runner-center/runner-center-runtime serve
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=45s
+UMask=0077
+RuntimeDirectory=runner-center
+StateDirectory=runner-center
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

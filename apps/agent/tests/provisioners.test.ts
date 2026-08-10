@@ -17,11 +17,55 @@ function provisioner(name: string) {
 const provisionWin = provisioner("provision-win.ps1");
 const buildImage = provisioner("build-image.ps1");
 const provisionLinux = provisioner("provision-linux.sh");
+const provisionMac = provisioner("provision-mac.sh");
+const provisionDocker = provisioner("provision-docker.sh");
 const agentSource = readFileSync(new URL("../provision.ts", import.meta.url), "utf8");
 
 // The runner archive pin, shared by the checksum and drift tests below.
 const PINNED_RUNNER_VERSION = "2.336.0";
 const PINNED_RUNNER_SHA256 = "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162";
+
+describe("provision-mac.sh capacity guard", () => {
+  it("takes an atomic host slot and refuses to exceed the configured allowance", () => {
+    assert.match(provisionMac, /if mkdir "\$candidate"/);
+    assert.match(provisionMac, /All \$MAX_CONCURRENT_VMS Tart VM slots are occupied/);
+    assert.match(provisionMac, /rmdir "\$SLOT_DIR"/);
+    assert.doesNotMatch(provisionMac, /Apple's macOS SLA permits.*warn/);
+  });
+
+  it("validates every timeout and capacity value before arithmetic", () => {
+    for (const name of [
+      "RC_BOOT_TIMEOUT_S",
+      "RC_MAC_ATTEST_TIMEOUT_S",
+      "RC_MAC_MAX_CONCURRENT_VMS",
+    ]) {
+      assert.match(provisionMac, new RegExp(`require_positive_integer ${name}`));
+    }
+    assert.match(provisionMac, /require_nonnegative_integer RC_JOB_TIMEOUT_S/);
+  });
+});
+
+describe("provision-docker.sh isolation contract", () => {
+  it("uses a prewarmed immutable image with CPU, memory and process limits", () => {
+    assert.match(provisionDocker, /--pull=never/);
+    assert.match(provisionDocker, /--cpus "\$RC_VCPUS"/);
+    assert.match(provisionDocker, /--memory "\$\{RC_MEMORY_MIB\}m"/);
+    assert.match(provisionDocker, /--pids-limit 4096/);
+    assert.match(provisionDocker, /--user runner/);
+  });
+
+  it("passes JIT through a FIFO, never argv, host env, or a regular file", () => {
+    assert.match(provisionDocker, /mkfifo "\$WORKDIR\/runner\.env"/);
+    assert.match(provisionDocker, /--env-file "\$WORKDIR\/runner\.env"/);
+    assert.doesNotMatch(provisionDocker, /export ACTIONS_RUNNER_INPUT_JITCONFIG/);
+    assert.doesNotMatch(provisionDocker, /--env ACTIONS_RUNNER_INPUT_JITCONFIG/);
+  });
+
+  it("never exposes the Docker socket or a host bind mount", () => {
+    assert.doesNotMatch(provisionDocker, /docker\.sock|--privileged|--volume|-v \/|type=bind/);
+    assert.match(provisionDocker, /type=volume,src=\$CACHE_VOLUME,dst=\/runner-cache\/pnpm/);
+  });
+});
 
 describe("provision-win.ps1 exit codes", () => {
   // Regression: the guest script ended with `return $LASTEXITCODE` while

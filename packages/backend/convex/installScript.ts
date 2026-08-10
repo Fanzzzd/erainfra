@@ -230,8 +230,10 @@ write_meta() {
 
 if [ "$MACHINE_OS" = 'mac' ]; then
   CPUS=$(sysctl -n hw.ncpu)
+  MEMORY_MIB=$(( $(sysctl -n hw.memsize) / 1048576 ))
 else
   CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || printf '1')
+  MEMORY_MIB=$(awk '/MemTotal/{printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null || printf '0')
 fi
 HOST_NAME=$(hostname -s 2>/dev/null || hostname)
 MACHINE_NAME=$NAME
@@ -243,7 +245,7 @@ PREVIOUS_VERSION=$(meta_field AGENT_VERSION)
 mkdir -p "$RC_HOME" "$BIN_DIR"
 TMP_DIR=$(mktemp -d "$RC_HOME/install.XXXXXX")
 
-printf '✅ Detected %s %s with %s CPUs (%s).\n' "$MACHINE_OS" "$MACHINE_ARCH" "$CPUS" "$MACHINE_NAME"
+printf '✅ Detected %s %s with %s CPUs and %s MiB memory (%s).\n' "$MACHINE_OS" "$MACHINE_ARCH" "$CPUS" "$MEMORY_MIB" "$MACHINE_NAME"
 
 NODE_BIN=""
 if command -v node >/dev/null 2>&1; then
@@ -356,6 +358,10 @@ mkdir -p "$STAGE_DIR"
 tar -xzf "$ARCHIVE" -C "$STAGE_DIR" --strip-components=1
 [ -f "$STAGE_DIR/dist/index.js" ] || fail 'The agent archive is missing dist/index.js'
 [ -f "$STAGE_DIR/package-lock.json" ] || fail 'The agent archive is missing package-lock.json'
+if [ "$MACHINE_OS" = 'linux' ]; then
+  [ -x "$STAGE_DIR/runtime/linux-$MACHINE_ARCH/runner-center-runtime" ] ||
+    fail "The agent archive is missing the Linux $MACHINE_ARCH Firecracker runtime"
+fi
 chmod +x "$STAGE_DIR"/provisioners/*.sh
 if [ -f "$ENV_BACKUP" ]; then
   cp "$ENV_BACKUP" "$STAGE_DIR/.env"
@@ -381,13 +387,14 @@ fi
 
 if [ "$UPDATE" -eq 0 ]; then
   printf '✅ Registering this machine.\n'
-  REQUEST_BODY=$(REGISTRATION_TOKEN="$TOKEN" MACHINE_NAME="$MACHINE_NAME" MACHINE_OS="$MACHINE_OS" MACHINE_ARCH="$MACHINE_ARCH" MACHINE_CPUS="$CPUS" MACHINE_LABELS="$LABELS" MACHINE_SLOTS="$SLOTS" "$NODE_BIN" -e '
+  REQUEST_BODY=$(REGISTRATION_TOKEN="$TOKEN" MACHINE_NAME="$MACHINE_NAME" MACHINE_OS="$MACHINE_OS" MACHINE_ARCH="$MACHINE_ARCH" MACHINE_CPUS="$CPUS" MACHINE_MEMORY_MIB="$MEMORY_MIB" MACHINE_LABELS="$LABELS" MACHINE_SLOTS="$SLOTS" "$NODE_BIN" -e '
 const payload = {
   registrationToken: process.env.REGISTRATION_TOKEN,
   name: process.env.MACHINE_NAME,
   os: process.env.MACHINE_OS,
   arch: process.env.MACHINE_ARCH,
   cpus: Number(process.env.MACHINE_CPUS),
+  memoryMiB: Number(process.env.MACHINE_MEMORY_MIB),
 };
 if (process.env.MACHINE_LABELS) {
   payload.labels = process.env.MACHINE_LABELS.split(",").map((label) => label.trim()).filter(Boolean);
@@ -441,6 +448,14 @@ AGENT_DIR="$RC_HOME/agent"
 set -a
 . "$AGENT_DIR/.env"
 set +a
+if [ "$(uname -s)" = 'Linux' ]; then
+  case "$(uname -m)" in
+    x86_64|amd64) runtime_arch='x86_64' ;;
+    arm64|aarch64) runtime_arch='arm64' ;;
+    *) printf 'Unsupported runtime architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+  esac
+  export RC_RUNTIME_BINARY="$AGENT_DIR/runtime/linux-$runtime_arch/runner-center-runtime"
+fi
 NODE_BIN=$(grep '^NODE_BIN=' "$RC_HOME/install-meta" | cut -d= -f2-)
 exec "$NODE_BIN" "$AGENT_DIR/dist/index.js"
 START_AGENT
@@ -524,7 +539,7 @@ is_running() {
 }
 
 usage() {
-  printf '%s\n' 'Usage: rc status | logs [-f] | restart | stop | update [--version vX.Y.Z] | uninstall'
+  printf '%s\n' 'Usage: rc status | doctor | logs [-f] | restart | stop | update [--version vX.Y.Z] | uninstall'
 }
 
 command='status'
@@ -537,6 +552,45 @@ case "$command" in
     last_line=$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)
     printf 'Machine: %s\nAgent: %s\nStatus: %s\n' "$machine" "$version" "$state"
     if [ -n "$last_line" ]; then printf 'Last log: %s\n' "$last_line"; fi
+    ;;
+  doctor)
+    printf 'Host: %s %s\n' "$(uname -s)" "$(uname -m)"
+    printf 'Agent: %s\n' "$(field AGENT_VERSION)"
+    if [ "$(uname -s)" = 'Linux' ]; then
+      case "$(uname -m)" in
+        x86_64|amd64) runtime_arch='x86_64' ;;
+        arm64|aarch64) runtime_arch='arm64' ;;
+        *) printf 'FAIL unsupported Linux architecture\n' >&2; exit 1 ;;
+      esac
+      runtime="$RC_HOME/agent/runtime/linux-$runtime_arch/runner-center-runtime"
+      usable=0
+      if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        printf 'OK Docker is ready for trusted-only Linux Profiles.\n'
+        usable=1
+      else
+        printf 'WARN Docker is unavailable to this user.\n' >&2
+      fi
+      if "$runtime" preflight; then
+        printf 'OK the privileged runtime reports Firecracker, KVM, devmapper, kernel and CNI ready.\n'
+        usable=1
+      else
+        printf 'WARN the privileged Firecracker runtime is unavailable or incomplete.\n' >&2
+        printf 'Use a dedicated LVM thin-pool device; never place it on the root filesystem.\n' >&2
+      fi
+      if [ "$usable" -eq 0 ]; then exit 1; fi
+    elif [ "$(uname -s)" = 'Darwin' ]; then
+      tart_bin=$(printenv TART || true)
+      if [ -z "$tart_bin" ]; then tart_bin=/opt/homebrew/bin/tart; fi
+      if [ ! -x "$tart_bin" ]; then
+        printf 'FAIL Tart is not installed at %s.\n' "$tart_bin" >&2
+        exit 1
+      fi
+      "$tart_bin" --version
+      printf 'OK Tart is ready; Profile readiness also verifies each immutable image.\n'
+    else
+      printf 'FAIL unsupported host OS\n' >&2
+      exit 1
+    fi
     ;;
   logs)
     follow=''

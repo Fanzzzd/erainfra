@@ -176,6 +176,11 @@ function publishRelease(sandbox: Sandbox, release: AgentRelease, marker: string)
   writeFileSync(path.join(stage, "package.json"), `{"version":"${release.version}"}\n`);
   writeFileSync(path.join(stage, "package-lock.json"), '{"lockfileVersion":3}\n');
   writeFileSync(path.join(stage, "provisioners", "provision-linux.sh"), "#!/usr/bin/env bash\n");
+  for (const architecture of ["x86_64", "arm64"]) {
+    const runtime = path.join(stage, "runtime", `linux-${architecture}`, "runner-center-runtime");
+    mkdirSync(path.dirname(runtime), { recursive: true });
+    writeExecutable(runtime, "#!/usr/bin/env bash\nexit 0\n");
+  }
 
   const assetName = `runner-center-agent-${release.version}.tar.gz`;
   const archivePath = path.join(sandbox.fixtures, assetName);
@@ -288,6 +293,17 @@ describe("install", () => {
     expect(readFileSync(path.join(sandbox.rcHome, "agent", ".env"), "utf8")).toMatch(
       new RegExp(`MACHINE_TOKEN=${MACHINE_TOKEN}`),
     );
+    for (const architecture of ["x86_64", "arm64"]) {
+      const runtime = path.join(
+        sandbox.rcHome,
+        "agent",
+        "runtime",
+        `linux-${architecture}`,
+        "runner-center-runtime",
+      );
+      expect(existsSync(runtime)).toBeTruthy();
+      expect(statSync(runtime).mode & 0o111).not.toBe(0);
+    }
   });
 
   it("installs dependencies from the release lockfile with npm ci", () => {
@@ -475,6 +491,13 @@ describe("rendered script", () => {
   it("writes systemd agent output to the connection log", () => {
     expect(script).toMatch(/StandardOutput=append:\$LOG_FILE/);
     expect(script).toMatch(/StandardError=append:\$LOG_FILE/);
+  });
+
+  it("accepts either trusted Docker or isolated Firecracker on Linux", () => {
+    expect(script).toMatch(/docker info/);
+    expect(script).toMatch(/trusted-only Linux Profiles/);
+    expect(script).toMatch(/"\$runtime" preflight/);
+    expect(script).toMatch(/if \[ "\$usable" -eq 0 \]; then exit 1; fi/);
   });
 
   it("carries the release this deployment pins", () => {

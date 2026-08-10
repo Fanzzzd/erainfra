@@ -263,7 +263,20 @@ export const recoverLostDeliveries = internalAction({
           });
           // Cursor pagination: the next page is named in the `link` header, not
           // by a page number.
-          return { items: response.data, nextCursor: parseNextCursor(response.headers.link) };
+          const items = response.data.map((delivery) => {
+            const id = Number(delivery.id);
+            if (!Number.isSafeInteger(id)) {
+              throw new Error(`GitHub returned an unsafe delivery id: ${String(delivery.id)}`);
+            }
+            return {
+              id,
+              guid: delivery.guid,
+              delivered_at: delivery.delivered_at,
+              status_code: delivery.status_code,
+              event: delivery.event,
+            };
+          });
+          return { items, nextCursor: parseNextCursor(response.headers.link) };
         },
         redeliver: async (githubDeliveryId: number) => {
           await octokit.request("POST /app/hook/deliveries/{delivery_id}/attempts", {

@@ -27,7 +27,9 @@ function byPath(a: string, b: string) {
 }
 
 function modeFor(relativePath: string) {
-  return relativePath.endsWith(".sh") ? EXECUTABLE_MODE : FILE_MODE;
+  return relativePath.endsWith(".sh") || relativePath.endsWith("runner-center-runtime")
+    ? EXECUTABLE_MODE
+    : FILE_MODE;
 }
 
 function listFiles(directory: string, prefix: string, filter: (name: string) => boolean) {
@@ -67,7 +69,7 @@ function withDirectories(files: readonly TarEntry[]) {
  * Read the files that belong in the archive, in a fixed order and with modes
  * from policy rather than from the working tree.
  */
-export function collectAgentFiles(agentDir: string): TarEntry[] {
+export function collectAgentFiles(agentDir: string, runtimeDir?: string): TarEntry[] {
   const relativePaths = [
     ...ROOT_FILES,
     ...listFiles(path.join(agentDir, "dist"), "dist", (name) => name.endsWith(".js")),
@@ -78,13 +80,24 @@ export function collectAgentFiles(agentDir: string): TarEntry[] {
     throw new Error(`${agentDir}/dist/index.js is missing; build the agent first`);
   }
 
-  return withDirectories(
-    relativePaths.map((relativePath) => ({
-      path: `${ARCHIVE_ROOT}/${relativePath}`,
-      mode: modeFor(relativePath),
-      data: readFileSync(path.join(agentDir, relativePath)),
-    })),
-  );
+  const files = relativePaths.map((relativePath) => ({
+    path: `${ARCHIVE_ROOT}/${relativePath}`,
+    mode: modeFor(relativePath),
+    data: readFileSync(path.join(agentDir, relativePath)),
+  }));
+
+  if (runtimeDir !== undefined) {
+    for (const platform of ["linux-x86_64", "linux-arm64"]) {
+      const relativePath = `runtime/${platform}/runner-center-runtime`;
+      files.push({
+        path: `${ARCHIVE_ROOT}/${relativePath}`,
+        mode: modeFor(relativePath),
+        data: readFileSync(path.join(runtimeDir, platform, "runner-center-runtime")),
+      });
+    }
+  }
+
+  return withDirectories(files);
 }
 
 export function sha256Hex(data: Uint8Array) {
@@ -124,9 +137,15 @@ function readVersion(packageJsonPath: string) {
 export function readProductVersion(repoRoot: string) {
   const rootVersion = readVersion(path.join(repoRoot, "package.json"));
   const agentVersion = readVersion(path.join(repoRoot, "apps", "agent", "package.json"));
-  if (rootVersion !== agentVersion) {
+  const controllerVersion = readVersion(path.join(repoRoot, "apps", "controller", "package.json"));
+  const runtimeVersion = readVersion(path.join(repoRoot, "apps", "runtime", "package.json"));
+  if (
+    rootVersion !== agentVersion ||
+    rootVersion !== controllerVersion ||
+    rootVersion !== runtimeVersion
+  ) {
     throw new Error(
-      `Version drift: package.json is ${rootVersion} but apps/agent/package.json is ${agentVersion}`,
+      `Version drift: root=${rootVersion} agent=${agentVersion} controller=${controllerVersion} runtime=${runtimeVersion}`,
     );
   }
   return rootVersion;

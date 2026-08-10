@@ -1,0 +1,19 @@
+[Unit]
+Description=Runner Center ephemeral GitHub runner
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/runner-center-guest
+Restart=on-failure
+RestartSec=2s
+StartLimitIntervalSec=30s
+StartLimitBurst=5
+Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
+Environment=RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+
+[Install]
+WantedBy=multi-user.target

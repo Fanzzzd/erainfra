@@ -1,6 +1,6 @@
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { createRootRoute, Link, Navigate, Outlet, useLocation } from "@tanstack/react-router";
-import { ListChecks, LogOut, Server } from "lucide-react";
+import { Activity, FlaskConical, ListChecks, LogOut, Server } from "lucide-react";
 
 export const Route = createRootRoute({ component: RootComponent });
 
@@ -64,8 +64,20 @@ function RootComponent() {
             <NavLabel>Machines</NavLabel>
           </Link>
           <Link
+            to="/attempts"
+            aria-label="Runs"
+            className={navItemClass}
+            activeProps={{
+              className:
+                "bg-white/[0.07] text-zinc-100 before:absolute before:-left-[7px] before:h-5 before:w-0.5 before:rounded-full before:bg-emerald-400",
+            }}
+          >
+            <Activity className="size-[17px]" />
+            <NavLabel>Runs</NavLabel>
+          </Link>
+          <Link
             to="/jobs"
-            aria-label="Jobs"
+            aria-label="Legacy jobs"
             className={navItemClass}
             activeProps={{
               className:
@@ -73,7 +85,19 @@ function RootComponent() {
             }}
           >
             <ListChecks className="size-[17px]" />
-            <NavLabel>Jobs</NavLabel>
+            <NavLabel>Legacy jobs</NavLabel>
+          </Link>
+          <Link
+            to="/experiments"
+            aria-label="Experiments"
+            className={navItemClass}
+            activeProps={{
+              className:
+                "bg-white/[0.07] text-zinc-100 before:absolute before:-left-[7px] before:h-5 before:w-0.5 before:rounded-full before:bg-emerald-400",
+            }}
+          >
+            <FlaskConical className="size-[17px]" />
+            <NavLabel>Experiments</NavLabel>
           </Link>
         </nav>
 

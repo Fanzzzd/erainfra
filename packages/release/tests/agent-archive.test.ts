@@ -46,6 +46,17 @@ function agentFixture(overrides: Record<string, string | null> = {}) {
   return root;
 }
 
+function runtimeFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "rc-runtime-"));
+  workspaces.push(root);
+  for (const platform of ["linux-x86_64", "linux-arm64"]) {
+    const target = path.join(root, platform, "runner-center-runtime");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, `runtime for ${platform}\n`);
+  }
+  return root;
+}
+
 describe("collectAgentFiles", () => {
   it("ships the runtime, the lockfile, and the provisioners, and nothing else", () => {
     const entries = collectAgentFiles(agentFixture());
@@ -79,6 +90,19 @@ describe("collectAgentFiles", () => {
   it("refuses to package an agent that has not been built", () => {
     const root = agentFixture({ "dist/index.js": null });
     assert.throws(() => collectAgentFiles(root), /dist\/index\.js is missing/);
+  });
+
+  it("can include both immutable Linux runtime binaries", () => {
+    const entries = collectAgentFiles(agentFixture(), runtimeFixture());
+    const runtimeEntries = entries.filter((entry) => entry.path.includes("/runtime/"));
+    assert.deepEqual(
+      runtimeEntries.filter((entry) => !entry.path.endsWith("/")).map((entry) => entry.path),
+      [
+        "agent/runtime/linux-arm64/runner-center-runtime",
+        "agent/runtime/linux-x86_64/runner-center-runtime",
+      ],
+    );
+    assert.ok(runtimeEntries.every((entry) => entry.mode === 0o755));
   });
 });
 
@@ -132,6 +156,10 @@ describe("readProductVersion", () => {
       path.join(root, "apps", "agent", "package.json"),
       `{"version":"${agentVersion}"}`,
     );
+    for (const app of ["controller", "runtime"]) {
+      mkdirSync(path.join(root, "apps", app), { recursive: true });
+      writeFileSync(path.join(root, "apps", app, "package.json"), `{"version":"${rootVersion}"}`);
+    }
     return root;
   }
 

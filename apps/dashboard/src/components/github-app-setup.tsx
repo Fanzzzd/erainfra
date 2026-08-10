@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { CircleCheck, ExternalLink, Github, KeyRound, TriangleAlert } from "lucide-react";
+import { CircleCheck, ExternalLink, GitPullRequest, KeyRound, TriangleAlert } from "lucide-react";
 import { api } from "@runner-center/backend/api";
 import {
   DISCONNECT_CONFIRMATION,
@@ -308,7 +308,7 @@ export function GithubAppSetup() {
               />
             </div>
             <Button onClick={() => void createApp()} disabled={submitting} className="shrink-0">
-              <Github />
+              <GitPullRequest />
               {submitting ? "Redirecting…" : "Create GitHub App"}
             </Button>
           </div>

@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 export const PROVISIONERS = fileURLToPath(new URL("../../provisioners/", import.meta.url));
 export const PROVISION_MAC = join(PROVISIONERS, "provision-mac.sh");
 export const PROVISION_LINUX = join(PROVISIONERS, "provision-linux.sh");
+export const PROVISION_DOCKER = join(PROVISIONERS, "provision-docker.sh");
 export const PROVISION_WIN = join(PROVISIONERS, "provision-win.ps1");
 
 /** A JIT configuration that is valid base64 and unmistakable in any output. */
@@ -207,6 +208,14 @@ exec node -e 'const c=require("crypto"),f=require("fs");const p=process.argv[1];
 ${logArgv}
 case "$1" in
   run)
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--env-file" ]; then
+        cat "$a" > "$RC_STDIN_DIR/docker-env"
+        break
+      fi
+      prev="$a"
+    done
     # Stand in for a running container: exit as soon as \`docker stop\`/\`rm\`
     # marks it stopped, the way a real client would.
     i=0

@@ -60,6 +60,7 @@ VM_CLONED=0
 WATCHDOG_PID=""
 JOB_PID=""
 TIMED_OUT=0
+SLOT_DIR=""
 
 log() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -101,6 +102,11 @@ cleanup() {
 
   if [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ]; then
     rm -rf "$WORKDIR" 2>/dev/null || true
+  fi
+
+  if [ -n "$SLOT_DIR" ]; then
+    rm -f "$SLOT_DIR/pid" 2>/dev/null || true
+    rmdir "$SLOT_DIR" 2>/dev/null || true
   fi
 
   if [ "$TIMED_OUT" = "1" ]; then
@@ -200,9 +206,59 @@ require_on_path() {
   fi
 }
 
+require_positive_integer() {
+  local name="$1" value="$2"
+  case "$value" in
+    "" | *[!0-9]* | 0) die "$name must be a positive integer; got '$value'." ;;
+  esac
+}
+
+require_nonnegative_integer() {
+  local name="$1" value="$2"
+  case "$value" in
+    "" | *[!0-9]*) die "$name must be a non-negative integer; got '$value'." ;;
+  esac
+}
+
+# mkdir is the portable atomic lock available on macOS. The backend also caps
+# Worker slots, but this host-side boundary prevents a second Agent process or
+# an operator mistake from exceeding the configured Tart guest allowance.
+acquire_tart_slot() {
+  local root="$RC_HOME/tart-slots" slot=1 candidate owner
+  mkdir -p "$root"
+  chmod 700 "$root"
+  while [ "$slot" -le "$MAX_CONCURRENT_VMS" ]; do
+    candidate="$root/slot-$slot"
+    if mkdir "$candidate" 2>/dev/null; then
+      printf '%s\n' "$$" >"$candidate/pid"
+      SLOT_DIR="$candidate"
+      return 0
+    fi
+    owner="$(cat "$candidate/pid" 2>/dev/null || true)"
+    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+      rm -f "$candidate/pid" 2>/dev/null || true
+      rmdir "$candidate" 2>/dev/null || true
+      if mkdir "$candidate" 2>/dev/null; then
+        printf '%s\n' "$$" >"$candidate/pid"
+        SLOT_DIR="$candidate"
+        return 0
+      fi
+    fi
+    slot=$((slot + 1))
+  done
+  die "All $MAX_CONCURRENT_VMS Tart VM slots are occupied; wait for a guest to finish."
+}
+
 # Everything that can be checked before a VM is cloned, so failures cost
 # seconds instead of a full boot cycle.
 preflight() {
+  require_positive_integer RC_BOOT_TIMEOUT_S "$BOOT_TIMEOUT_S"
+  # Zero is useful for local harnesses and explicitly disables the watchdog;
+  # production Agents always pass their bounded Profile timeout.
+  require_nonnegative_integer RC_JOB_TIMEOUT_S "$JOB_TIMEOUT_S"
+  require_positive_integer RC_MAC_ATTEST_TIMEOUT_S "$ATTEST_TIMEOUT_S"
+  require_positive_integer RC_MAC_MAX_CONCURRENT_VMS "$MAX_CONCURRENT_VMS"
+
   case "$RUNNER_NAME" in
     *[!A-Za-z0-9._-]* | "")
       die "RUNNER_NAME must match [A-Za-z0-9._-]+ because it becomes the Tart VM name; got '$RUNNER_NAME'."
@@ -232,7 +288,7 @@ preflight() {
   running="$("$TART" list --format json 2>/dev/null |
     grep -c '"Running"[[:space:]]*:[[:space:]]*true' || true)"
   if [ "$running" -ge "$MAX_CONCURRENT_VMS" ]; then
-    warn "$running Tart VMs are already running. Apple's macOS SLA permits at most two macOS guests per Apple-branded host; lower the machine's slot count or raise RC_MAC_MAX_CONCURRENT_VMS if this host is licensed differently."
+    die "$running Tart VMs are already running; the configured allowance is $MAX_CONCURRENT_VMS."
   fi
 
   if ! printf '%s\n' "$vm_names" | grep -qxF "$IMAGE"; then
@@ -577,7 +633,14 @@ start_watchdog() {
 
   local parent=$$ marker="$WORKDIR/timed-out"
   (
-    sleep "$JOB_TIMEOUT_S"
+    # A single long `sleep` becomes an orphan when this subshell is killed and
+    # can keep the Agent's output pipes open until the whole timeout elapses.
+    # One-second ticks bound cleanup latency without leaving a six-hour child.
+    local remaining="$JOB_TIMEOUT_S"
+    while [ "$remaining" -gt 0 ]; do
+      sleep 1
+      remaining=$((remaining - 1))
+    done
     : >"$marker"
     kill -TERM "$parent" 2>/dev/null || true
   ) &
@@ -655,6 +718,7 @@ main() {
   fi
 
   preflight
+  acquire_tart_slot
   ensure_runner_tarball
 
   start_vm

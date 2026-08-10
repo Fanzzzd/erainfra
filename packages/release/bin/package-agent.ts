@@ -32,7 +32,10 @@ function parseOutDirectory(argv: readonly string[]) {
 
 const outDirectory = parseOutDirectory(process.argv.slice(2));
 const version = readProductVersion(repoRoot);
-const entries = collectAgentFiles(path.join(repoRoot, "apps", "agent"));
+const entries = collectAgentFiles(
+  path.join(repoRoot, "apps", "agent"),
+  path.join(repoRoot, "apps", "runtime", "dist", "release"),
+);
 const { archive, sha256 } = buildAgentArchive(entries);
 
 const name = archiveName(version);

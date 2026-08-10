@@ -3,9 +3,9 @@
   "extends": "@runner-center/typescript-config/react.json",
   "compilerOptions": {
     "allowJs": false,
-    "baseUrl": ".",
+    "types": ["node", "vite/client"],
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]
