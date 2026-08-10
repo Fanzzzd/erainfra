@@ -482,12 +482,27 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 			if err := l.machine.StopVMM(); err != nil {
 				cleanupErrors = append(cleanupErrors, fmt.Errorf("stop Firecracker VM: %w", err))
 			}
+			// The SDK returns the guest's network resources -- the veth pair, the
+			// tap device and the host-local address reservation -- from the
+			// goroutine that reaps the VMM, on the VM's own context. Cancelling
+			// that context before the process is gone aborts the release and leaks
+			// an address out of the guest subnet, so wait for the exit first. The
+			// error here is the VMM's own exit status, which is a signal after
+			// StopVMM and therefore expected; only failing to exit matters.
+			exitContext, cancelExit := context.WithTimeout(context.WithoutCancel(ctx), vmmExitTimeout)
+			if err := l.machine.Wait(exitContext); errors.Is(err, context.DeadlineExceeded) {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf(
+					"Firecracker VM did not exit within %s of being stopped", vmmExitTimeout,
+				))
+			}
+			cancelExit()
 		}
 		l.cancelVMM()
 		if err := l.console.Close(); err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("close console log: %w", err))
 		}
-		if err := l.releaseLease(ctx); err != nil && !errdefs.IsNotFound(err) {
+		leaseContext := namespaces.WithNamespace(ctx, l.namespace)
+		if err := l.releaseLease(leaseContext); err != nil && !errdefs.IsNotFound(err) {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("release containerd lease: %w", err))
 		}
 		if err := l.client.Close(); err != nil {
