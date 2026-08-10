@@ -63,6 +63,7 @@ RUNTIME_BINARY=''
 DATA_DEVICE=''
 META_DEVICE=''
 FILE_POOL_GIB=''
+POOL_DIR=''
 WORKER_USER=''
 EGRESS_MODE=''
 EGRESS_ALLOW=''
@@ -99,7 +100,7 @@ usage() {
 Usage:
   provision-firecracker-host.sh --runtime-binary PATH
                                 (--data-device DEV --meta-device DEV
-                                 | --file-backed-pool GIB)
+                                 | --file-backed-pool GIB [--pool-dir PATH])
                                 [--worker-user NAME]
                                 [--network-subnet CIDR]
                                 [--egress-mode public|allowlist]
@@ -116,10 +117,13 @@ Usage:
                        are destroyed.
   --meta-device        Dedicated block device for thin-pool metadata. Its
                        contents are destroyed. 1 GiB is ample.
-  --file-backed-pool   Evaluation only: back the thin-pool with sparse files on
-                       the root filesystem instead of dedicated devices. Never
-                       use this in production; a full root filesystem then fails
-                       every running job at once.
+  --file-backed-pool   Evaluation only: back the thin-pool with sparse files
+                       instead of dedicated devices. Never use this in
+                       production; a full backing filesystem then fails every
+                       running job at once.
+  --pool-dir           Directory holding those sparse files. Defaults to
+                       /var/lib/runner-center. Point it at a roomy data
+                       filesystem when the root filesystem is nearly full.
   --worker-user        Unprivileged account running the Runner Center Worker.
                        It is added to the runner-center group so it can reach
                        the runtime socket. Log out and back in afterwards.
@@ -132,6 +136,7 @@ while [ "$#" -gt 0 ]; do
     --data-device) [ "$#" -ge 2 ] || fail "$1 requires a value"; DATA_DEVICE=$2; shift 2 ;;
     --meta-device) [ "$#" -ge 2 ] || fail "$1 requires a value"; META_DEVICE=$2; shift 2 ;;
     --file-backed-pool) [ "$#" -ge 2 ] || fail "$1 requires a value"; FILE_POOL_GIB=$2; shift 2 ;;
+    --pool-dir) [ "$#" -ge 2 ] || fail "$1 requires a value"; POOL_DIR=$2; shift 2 ;;
     --worker-user) [ "$#" -ge 2 ] || fail "$1 requires a value"; WORKER_USER=$2; shift 2 ;;
     --network-subnet) [ "$#" -ge 2 ] || fail "$1 requires a value"; NETWORK_SUBNET=$2; shift 2 ;;
     --egress-mode) [ "$#" -ge 2 ] || fail "$1 requires a value"; EGRESS_MODE=$2; shift 2 ;;
@@ -183,20 +188,30 @@ uninstall() {
 
   step 'Removing the thin-pool'
   dmsetup remove "$THIN_POOL" >/dev/null 2>&1 || true
-  for loop in $(losetup -j "$RC_STATE_DIR/thinpool-data.img" 2>/dev/null | cut -d: -f1); do
-    losetup -d "$loop" || true
-  done
-  for loop in $(losetup -j "$RC_STATE_DIR/thinpool-meta.img" 2>/dev/null | cut -d: -f1); do
-    losetup -d "$loop" || true
+  # The images may live outside the state directory, so take their real paths
+  # from the configuration this script wrote rather than assuming the default.
+  pool_data_image="$RC_STATE_DIR/thinpool-data.img"
+  pool_meta_image="$RC_STATE_DIR/thinpool-meta.img"
+  if [ -f "$RC_ETC_DIR/thinpool.env" ]; then
+    # shellcheck disable=SC1091
+    . "$RC_ETC_DIR/thinpool.env"
+    [ -z "${RC_POOL_DATA_IMAGE:-}" ] || pool_data_image=$RC_POOL_DATA_IMAGE
+    [ -z "${RC_POOL_META_IMAGE:-}" ] || pool_meta_image=$RC_POOL_META_IMAGE
+  fi
+  for image in "$pool_data_image" "$pool_meta_image"; do
+    for loop in $(losetup -j "$image" 2>/dev/null | cut -d: -f1); do
+      losetup -d "$loop" || true
+    done
   done
 
   step 'Removing installed files'
   rm -rf "$RC_CNI_BIN_DIR" "$RC_LIB_DIR"
   rm -f /usr/local/bin/firecracker "$RC_ETC_DIR/thinpool.env" "$RC_RUNTIME_ENV"
   printf '\n'
-  note "Left in place on purpose: $RC_STATE_DIR (thin-pool images, guest kernels,"
-  note 'containerd content) and the runner-center group. Remove them by hand once'
-  note 'you are sure nothing else needs them:'
+  note "Left in place on purpose: $RC_STATE_DIR (guest kernels, containerd"
+  note 'content), the thin-pool images and the runner-center group. Remove them by'
+  note 'hand once you are sure nothing else needs them:'
+  note "  sudo rm -f $pool_data_image $pool_meta_image"
   note "  sudo rm -rf $RC_STATE_DIR && sudo groupdel $RC_GROUP"
   exit 0
 }
@@ -207,6 +222,18 @@ fi
 
 [ -n "$RUNTIME_BINARY" ] || { usage >&2; fail '--runtime-binary is required'; }
 [ -x "$RUNTIME_BINARY" ] || fail "$RUNTIME_BINARY is not an executable file"
+# df needs a path that exists. The pool directory is created later, so measure
+# the filesystem that will actually hold it by walking up to its first existing
+# ancestor.
+free_kib() {
+  path=$1
+  while [ ! -d "$path" ] && [ "$path" != '/' ]; do
+    path=$(dirname "$path")
+  done
+  df -Pk "$path" | awk 'NR == 2 { print $4 }'
+}
+
+POOL_IMAGE_DIR="$RC_STATE_DIR"
 if [ -n "$FILE_POOL_GIB" ]; then
   [ -z "$DATA_DEVICE$META_DEVICE" ] ||
     fail '--file-backed-pool cannot be combined with dedicated devices'
@@ -216,7 +243,25 @@ if [ -n "$FILE_POOL_GIB" ]; then
   # Readiness requires 8 GiB of headroom before accepting an Attempt, so a pool
   # much smaller than this could never become ready.
   [ "$FILE_POOL_GIB" -ge 32 ] || fail '--file-backed-pool needs at least 32 GiB'
+  if [ -n "$POOL_DIR" ]; then
+    case "$POOL_DIR" in
+      /*) ;;
+      *) fail '--pool-dir must be an absolute path' ;;
+    esac
+    POOL_IMAGE_DIR=$POOL_DIR
+  fi
+  # The images are sparse, so this space is consumed as jobs write rather than
+  # up front. Refusing a filesystem that cannot hold the full pool is still
+  # right: exhausting it later fails every running job at once, and does so at
+  # an arbitrary moment rather than during provisioning.
+  pool_needed_kib=$(( (FILE_POOL_GIB + 2) * 1024 * 1024 ))
+  pool_free_kib=$(free_kib "$POOL_IMAGE_DIR")
+  [ "$pool_free_kib" -ge "$pool_needed_kib" ] || fail "$(
+    printf '%s holds %d GiB free but a %d GiB pool needs %d GiB. Use --pool-dir to place it on a larger filesystem, or ask for a smaller pool.' \
+      "$POOL_IMAGE_DIR" "$((pool_free_kib / 1024 / 1024))" "$FILE_POOL_GIB" "$((pool_needed_kib / 1024 / 1024))"
+  )"
 else
+  [ -z "$POOL_DIR" ] || fail '--pool-dir only applies to --file-backed-pool'
   [ -n "$DATA_DEVICE" ] && [ -n "$META_DEVICE" ] ||
     fail 'provide --data-device and --meta-device, or --file-backed-pool GIB for an evaluation host'
   [ -b "$DATA_DEVICE" ] || fail "$DATA_DEVICE is not a block device"
@@ -341,16 +386,17 @@ install -o root -g root -m 0755 "$RUNTIME_BINARY" "$RC_LIB_DIR/runner-center-run
 note "$("$RC_LIB_DIR/runner-center-runtime" version)"
 
 if [ -n "$FILE_POOL_GIB" ]; then
+  install -d -m 0700 "$POOL_IMAGE_DIR"
   cat > "$RC_ETC_DIR/thinpool.env" <<POOLENV
 RC_THIN_POOL=$THIN_POOL
 RC_POOL_BACKING=file
-RC_POOL_DATA_IMAGE=$RC_STATE_DIR/thinpool-data.img
-RC_POOL_META_IMAGE=$RC_STATE_DIR/thinpool-meta.img
+RC_POOL_DATA_IMAGE=$POOL_IMAGE_DIR/thinpool-data.img
+RC_POOL_META_IMAGE=$POOL_IMAGE_DIR/thinpool-meta.img
 RC_POOL_DATA_GIB=$FILE_POOL_GIB
 POOLENV
   printf '\n'
-  note 'WARNING: this pool is backed by sparse files on the root filesystem.'
-  note 'It is an evaluation configuration. A full root filesystem will fail every'
+  note "WARNING: this pool is backed by sparse files under $POOL_IMAGE_DIR."
+  note 'It is an evaluation configuration. Filling that filesystem will fail every'
   note 'running job at once. Move to dedicated devices before production use.'
 else
   cat > "$RC_ETC_DIR/thinpool.env" <<POOLENV
@@ -375,6 +421,7 @@ if dmsetup info "$RC_THIN_POOL" >/dev/null 2>&1; then
 fi
 
 if [ "$RC_POOL_BACKING" = 'file' ]; then
+  install -d -m 0700 "$(dirname "$RC_POOL_DATA_IMAGE")" "$(dirname "$RC_POOL_META_IMAGE")"
   if [ ! -f "$RC_POOL_DATA_IMAGE" ]; then
     truncate -s "${RC_POOL_DATA_GIB}G" "$RC_POOL_DATA_IMAGE"
   fi
