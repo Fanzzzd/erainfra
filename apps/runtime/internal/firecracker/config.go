@@ -53,7 +53,10 @@ func DefaultConfig() Config {
 		CNIBinDir:      "/opt/runner-center/cni/bin",
 		WorkDir:        "/var/lib/runner-center/attempts",
 		ThinPoolName:   "runner-center-thinpool",
-		MinPoolFreeMiB: 20 * 1024,
+		// One Attempt's worth of copy-on-write growth, matching the reserve the
+		// control plane applies per running guest. A Worker that cannot hold one
+		// more root should decline work rather than fail a job mid-run.
+		MinPoolFreeMiB: 8 * 1024,
 	}
 }
 

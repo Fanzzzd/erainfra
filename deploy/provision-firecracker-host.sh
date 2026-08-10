@@ -213,7 +213,9 @@ if [ -n "$FILE_POOL_GIB" ]; then
   case "$FILE_POOL_GIB" in
     ''|*[!0-9]*) fail '--file-backed-pool takes a whole number of GiB' ;;
   esac
-  [ "$FILE_POOL_GIB" -ge 20 ] || fail '--file-backed-pool needs at least 20 GiB'
+  # Readiness requires 8 GiB of headroom before accepting an Attempt, so a pool
+  # much smaller than this could never become ready.
+  [ "$FILE_POOL_GIB" -ge 32 ] || fail '--file-backed-pool needs at least 32 GiB'
 else
   [ -n "$DATA_DEVICE" ] && [ -n "$META_DEVICE" ] ||
     fail 'provide --data-device and --meta-device, or --file-backed-pool GIB for an evaluation host'

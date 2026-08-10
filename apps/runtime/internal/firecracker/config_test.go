@@ -71,3 +71,17 @@ func TestConfigAcceptsDedicatedAttemptDirectories(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultPoolHeadroomIsReachableForTheSmallestSupportedPool(t *testing.T) {
+	// The provisioner's smallest evaluation pool is 32 GiB. A default headroom
+	// requirement larger than that pool could never be satisfied, so the Worker
+	// would install cleanly and then never become ready.
+	const smallestSupportedPoolMiB = 32 * 1024
+	headroom := DefaultConfig().MinPoolFreeMiB
+	if headroom <= 0 || headroom >= smallestSupportedPoolMiB {
+		t.Fatalf(
+			"default headroom %d MiB cannot be met by the smallest supported %d MiB pool",
+			headroom, smallestSupportedPoolMiB,
+		)
+	}
+}
