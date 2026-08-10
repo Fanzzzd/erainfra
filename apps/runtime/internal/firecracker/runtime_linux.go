@@ -208,17 +208,22 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 		return
 	}
 	defer client.Close()
-	response, err := client.IntrospectionService().Plugins(ctx, []string{
-		"type==io.containerd.snapshotter.v1",
-		"id==" + r.config.Snapshotter,
-	})
+	response, err := client.IntrospectionService().Plugins(ctx, snapshotterFilter(r.config.Snapshotter))
 	if err != nil {
 		report.Fail(executor.CheckSnapshotter, fmt.Errorf("query containerd snapshotter: %w", err))
 		return
 	}
-	if len(response.Plugins) != 1 || response.Plugins[0].InitErr != nil {
+	if len(response.Plugins) != 1 {
 		report.Fail(executor.CheckSnapshotter, fmt.Errorf(
-			"containerd snapshotter %q is not ready", r.config.Snapshotter,
+			"containerd reported %d plugins for snapshotter %q, want exactly one",
+			len(response.Plugins), r.config.Snapshotter,
+		))
+		return
+	}
+	if initErr := response.Plugins[0].InitErr; initErr != nil {
+		report.Fail(executor.CheckSnapshotter, fmt.Errorf(
+			"containerd snapshotter %q failed to initialise: %s",
+			r.config.Snapshotter, initErr.GetMessage(),
 		))
 		return
 	}
@@ -277,7 +282,9 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	leaseOwned := true
 	defer func() {
 		if returnedError != nil && leaseOwned {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// containerdContext, not a fresh Background: deleting a lease is a
+			// namespaced call and fails outright without one.
+			cleanupContext, cancel := context.WithTimeout(containerdContext, 10*time.Second)
 			defer cancel()
 			_ = releaseLease(cleanupContext)
 		}
@@ -374,15 +381,15 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		},
 	}
 	machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.NewSetMetadataHandler(metadata))
-	if err := machine.Start(ctx); err != nil {
-		cancelVMM()
-		return nil, fmt.Errorf("start Firecracker VM: %w", err)
+	if err := startMachine(ctx, machine, vmmContext, cancelVMM); err != nil {
+		return nil, err
 	}
 
 	leaseOwned = false
 	return &machineLease{
 		machine:      machine,
 		client:       client,
+		namespace:    r.config.ContainerdNamespace,
 		releaseLease: releaseLease,
 		cancelVMM:    cancelVMM,
 		console:      console,
@@ -392,9 +399,47 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	}, nil
 }
 
+// startMachine boots the guest, bounded by the caller's boot deadline but tied
+// for its lifetime to the VM's own context.
+//
+// The distinction is the whole point. firecracker-go-sdk starts a goroutine
+// that SIGTERMs the VMM as soon as the context passed to Machine.Start is done,
+// so handing it the caller's boot context destroys every guest the instant boot
+// succeeds and the caller stops enforcing the boot deadline. The boot deadline
+// therefore has to bound the call rather than the guest: on a boot that never
+// completes, cancelling the VM's own context is what tears the VMM down.
+func startMachine(
+	ctx context.Context,
+	machine *fc.Machine,
+	vmmContext context.Context,
+	cancelVMM context.CancelFunc,
+) error {
+	started := make(chan error, 1)
+	go func() { started <- machine.Start(vmmContext) }()
+	select {
+	case err := <-started:
+		if err != nil {
+			cancelVMM()
+			return fmt.Errorf("start Firecracker VM: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		cancelVMM()
+		<-started
+		return fmt.Errorf("start Firecracker VM: %w", ctx.Err())
+	}
+}
+
+// vmmExitTimeout bounds how long cleanup waits for a stopped VMM to actually
+// go away before it gives up and reports the guest as not cleanly destroyed.
+const vmmExitTimeout = 30 * time.Second
+
 type machineLease struct {
-	machine      *fc.Machine
-	client       *containerd.Client
+	machine *fc.Machine
+	client  *containerd.Client
+	// namespace is carried because releasing a lease is a namespaced containerd
+	// call and cleanup runs on a context the caller supplied.
+	namespace    string
 	releaseLease func(context.Context) error
 	cancelVMM    context.CancelFunc
 	console      *os.File

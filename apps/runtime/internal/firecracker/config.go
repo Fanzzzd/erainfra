@@ -49,10 +49,10 @@ func DefaultConfig() Config {
 		NftBinary:           "nft",
 		// Runner Center owns these directories so a host that also runs Docker or
 		// Kubernetes CNI keeps its own plugins and network definitions untouched.
-		CNIConfigDir:   "/etc/runner-center/cni/net.d",
-		CNIBinDir:      "/opt/runner-center/cni/bin",
-		WorkDir:        "/var/lib/runner-center/attempts",
-		ThinPoolName:   "runner-center-thinpool",
+		CNIConfigDir: "/etc/runner-center/cni/net.d",
+		CNIBinDir:    "/opt/runner-center/cni/bin",
+		WorkDir:      "/var/lib/runner-center/attempts",
+		ThinPoolName: "runner-center-thinpool",
 		// One Attempt's worth of copy-on-write growth, matching the reserve the
 		// control plane applies per running guest. A Worker that cannot hold one
 		// more root should decline work rather than fail a job mid-run.
@@ -101,4 +101,20 @@ func (c Config) Validate() error {
 // ConflistPath is the file the CNI runtime reads for this Profile's network.
 func (c Config) ConflistPath() string {
 	return filepath.Join(c.CNIConfigDir, c.Network.ConflistFileName())
+}
+
+// SnapshotterPluginType is containerd's plugin type for snapshotters.
+const SnapshotterPluginType = "io.containerd.snapshotter.v1"
+
+// snapshotterFilter selects exactly one containerd snapshotter plugin.
+//
+// It must stay a single filter string. containerd parses a slice of filters
+// with filters.ParseAll, which combines them with Any, so passing "type==..."
+// and "id==..." as separate entries asks for every snapshotter the daemon
+// loaded *or* anything with that id -- on a real host that is overlayfs,
+// native, blockfile and more. Comma-separated selectors inside one string are
+// the conjunction this check needs: containerd's own grammar documents that
+// all selectors in one filter must match.
+func snapshotterFilter(name string) []string {
+	return []string{"type==" + SnapshotterPluginType + ",id==" + name}
 }
