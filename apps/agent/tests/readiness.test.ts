@@ -59,6 +59,28 @@ describe("prepareProfile", () => {
     assert.equal(result.cacheScope, "immutable-image");
   });
 
+  it("does not require a digest where nothing else does", async () => {
+    // Tightening Tart here would take a working macOS Profile offline as a
+    // side effect of a Linux isolation change. TART points at a binary that
+    // cannot exist so the check fails on the binary, not on the reference,
+    // without this test ever pulling a real image.
+    process.env.TART = "/nonexistent/tart";
+    try {
+      const result = await prepareProfile({
+        profile: "rc-mac",
+        executor: "tart",
+        imageRelease: "ghcr.io/cirruslabs/macos-tahoe-base:latest",
+        vcpus: 2,
+        memoryMiB: 4096,
+      });
+      assert.equal(result.state, "failed");
+      assert.doesNotMatch(result.state === "failed" ? result.error : "", /sha256 digest/);
+      assert.ok(result.checks.some((check) => check.name === "tart-binary" && !check.passed));
+    } finally {
+      delete process.env.TART;
+    }
+  });
+
   it("keeps Hyper-V unready and says why", async () => {
     const result = await prepareProfile({
       profile: "rc-win",
