@@ -23,6 +23,7 @@ const (
 	actionCache    = "/opt/action-cache"
 	runnerUsername = "runner"
 	runnerGroup    = "docker"
+	consoleDevice  = "/dev/console"
 )
 
 func main() {
@@ -32,6 +33,25 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// reportResult hands an Experiment's exit code back to the host.
+//
+// It writes to the guest console rather than to stdout on purpose. This process
+// is a systemd service, so its stdout is the guest journal, which never leaves
+// the VM; the host reads the Attempt's result off the serial console. Only the
+// authenticated marker goes this way, so a CI job's output is not forced
+// through an emulated serial port.
+func reportResult(token string, exitCode int) error {
+	console, err := os.OpenFile(consoleDevice, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open guest console: %w", err)
+	}
+	defer console.Close()
+	if _, err := fmt.Fprintf(console, "\x1eRUNNER_CENTER_RESULT:%s:%d\n", token, exitCode); err != nil {
+		return fmt.Errorf("report Experiment result: %w", err)
+	}
+	return nil
 }
 
 func run(ctx context.Context) error {
@@ -117,7 +137,9 @@ func run(ctx context.Context) error {
 				exitCode = exitError.ExitCode()
 			}
 		}
-		fmt.Printf("\x1eRUNNER_CENTER_RESULT:%s:%d\n", metadata.ResultToken, exitCode)
+		if reportErr := reportResult(metadata.ResultToken, exitCode); reportErr != nil {
+			return reportErr
+		}
 	}
 	if metadata.ShutdownOnExit {
 		poweroff := exec.Command("systemctl", "poweroff", "--no-block")
