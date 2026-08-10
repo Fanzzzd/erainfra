@@ -503,6 +503,13 @@ describe("rendered script", () => {
     expect(script).not.toMatch(/grep -Fq 'Runner Center agent connected'/);
   });
 
+  it("does not let an early launchd match fail status under pipefail", () => {
+    expect(script).toMatch(
+      /launchctl print "gui\/\$UID\/center\.runner\.agent" 2>\/dev\/null \| grep 'state = running' >\/dev\/null/,
+    );
+    expect(script).not.toMatch(/launchctl print[^\n]+grep -q 'state = running'/);
+  });
+
   it("accepts either trusted Docker or isolated Firecracker on Linux", () => {
     expect(script).toMatch(/docker info/);
     expect(script).toMatch(/trusted-only Linux Profiles/);
