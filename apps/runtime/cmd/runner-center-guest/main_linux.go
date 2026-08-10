@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"os/user"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/Fanzzzd/runner-center/apps/runtime/internal/guest"
@@ -24,6 +25,11 @@ const (
 	runnerUsername = "runner"
 	runnerGroup    = "docker"
 	consoleDevice  = "/dev/console"
+	hostsFile      = "/etc/hosts"
+	// publishedResolvers is where the kernel records the resolvers it was given
+	// by the ip= boot argument, already in resolv.conf syntax.
+	publishedResolvers = "/proc/net/pnp"
+	resolvConf         = "/etc/resolv.conf"
 )
 
 func main() {
@@ -33,6 +39,79 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// resolverConfig turns what the kernel published into a resolv.conf.
+//
+// A container image carries an empty /etc/resolv.conf, and a Firecracker guest
+// runs no DHCP client, so without this nothing in the job can resolve a name --
+// not github.com, not a registry, not the package mirror. The resolvers are
+// already inside the VM: the Profile's network policy names them, CNI puts them
+// in its DNS section, and firecracker-go-sdk turns that into the kernel's ip=
+// boot argument, which the kernel records at /proc/net/pnp. Copying them from
+// there keeps the Profile the single source of truth rather than baking
+// resolvers into the image.
+func resolverConfig(published []byte) (string, error) {
+	var directives []string
+	for _, line := range strings.Split(string(published), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "nameserver", "domain", "search":
+			directives = append(directives, strings.Join(fields, " "))
+		}
+	}
+	if len(directives) == 0 {
+		return "", errors.New(
+			"the guest kernel published no resolver, so the Profile's nameservers never reached this VM",
+		)
+	}
+	return strings.Join(directives, "\n") + "\n", nil
+}
+
+func configureResolver() error {
+	published, err := os.ReadFile(publishedResolvers)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", publishedResolvers, err)
+	}
+	config, err := resolverConfig(published)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(resolvConf, []byte(config), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", resolvConf, err)
+	}
+	return nil
+}
+
+// publishHostname makes the name this VM just took resolvable inside it.
+//
+// Setting the hostname without a matching /etc/hosts entry leaves every
+// name-resolving tool in the job looking the Attempt's own name up over the
+// network: sudo prints "unable to resolve host" on each invocation and waits
+// for a real DNS round trip first, on a machine whose whole point is to be
+// short-lived. 127.0.1.1 is the address Debian and Ubuntu reserve for exactly
+// this.
+func publishHostname(name string) error {
+	hosts, err := os.ReadFile(hostsFile)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", hostsFile, err)
+	}
+	for _, line := range strings.Fields(string(hosts)) {
+		if line == name {
+			return nil
+		}
+	}
+	if len(hosts) > 0 && !strings.HasSuffix(string(hosts), "\n") {
+		hosts = append(hosts, '\n')
+	}
+	hosts = append(hosts, fmt.Sprintf("127.0.1.1\t%s\n", name)...)
+	if err := os.WriteFile(hostsFile, hosts, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", hostsFile, err)
+	}
+	return nil
 }
 
 // reportResult hands an Experiment's exit code back to the host.
@@ -61,6 +140,12 @@ func run(ctx context.Context) error {
 	}
 	if err := syscall.Sethostname([]byte(metadata.RunnerName)); err != nil {
 		return fmt.Errorf("set hostname: %w", err)
+	}
+	if err := publishHostname(metadata.RunnerName); err != nil {
+		return err
+	}
+	if err := configureResolver(); err != nil {
+		return err
 	}
 
 	runnerUser, err := user.Lookup(runnerUsername)
@@ -142,9 +227,16 @@ func run(ctx context.Context) error {
 		}
 	}
 	if metadata.ShutdownOnExit {
-		poweroff := exec.Command("systemctl", "poweroff", "--no-block")
-		if poweroffErr := poweroff.Run(); poweroffErr != nil {
-			return fmt.Errorf("power off after runner exit: %w", poweroffErr)
+		// Reset, not power off. Firecracker exposes no power management device,
+		// so a guest that asks to power off runs the whole shutdown sequence and
+		// then sits at "reboot: System halted" with the VMM still alive -- the
+		// Attempt only ends when its job timeout expires, hours later. A reset is
+		// what the VMM listens for: with reboot=k on the command line the kernel
+		// pulses the i8042 reset line, Firecracker sees it and exits. systemd
+		// still stops every unit and unmounts the root first.
+		reset := exec.Command("systemctl", "reboot", "--no-block")
+		if resetErr := reset.Run(); resetErr != nil {
+			return fmt.Errorf("reset the microVM after runner exit: %w", resetErr)
 		}
 	}
 	if metadata.Kind == "experiment" {
