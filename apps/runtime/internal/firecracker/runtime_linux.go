@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/runner-center/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/runner-center/apps/runtime/internal/netpolicy"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/leases"
 	"github.com/containerd/containerd/namespaces"
@@ -69,31 +70,142 @@ func New(config Config) (*Runtime, error) {
 	return &Runtime{config: config}, nil
 }
 
-func (r *Runtime) Preflight(ctx context.Context) error {
-	if _, err := exec.LookPath(r.config.BinaryPath); err != nil {
-		return fmt.Errorf("find Firecracker binary: %w", err)
-	}
-	if err := readableRegularFile(r.config.KernelImagePath); err != nil {
-		return fmt.Errorf("kernel image: %w", err)
-	}
-	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("open /dev/kvm read-write: %w", err)
-	}
-	_ = kvm.Close()
-	for _, plugin := range []string{"bridge", "firewall", "host-local", "tc-redirect-tap"} {
-		path := filepath.Join(r.config.CNIBinDir, plugin)
-		if err := executableRegularFile(path); err != nil {
-			return fmt.Errorf("CNI plugin %s: %w", plugin, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(r.config.CNIConfigDir, "10-"+r.config.CNIName+".conflist")); err != nil {
-		return fmt.Errorf("CNI configuration: %w", err)
+// Preflight proves every prerequisite the isolation boundary depends on, and
+// reports each one separately.
+//
+// It deliberately does not stop at the first failure: an operator provisioning
+// a host wants the whole list, and the control plane needs to name the exact
+// broken check in the dashboard. The network policy is checked by content
+// rather than by existence — a conflist file that is present but no longer
+// denies host, RFC1918 and east-west traffic is the failure mode that matters.
+func (r *Runtime) Preflight(ctx context.Context) (executor.Report, error) {
+	report := executor.Report{
+		Isolation: executor.IsolationFirecracker,
+		Boundary:  executor.BoundaryGuestKernel,
+		Network: executor.Network{
+			PolicyName:          r.config.Network.Name,
+			Subnet:              r.config.Network.Subnet,
+			EgressMode:          string(r.config.Network.EgressMode),
+			AllowedDestinations: r.config.Network.AllowedDestinations,
+		},
+		// Nothing writable outlives an Attempt: the root is a per-Attempt
+		// copy-on-write snapshot and no host path is mounted into the guest.
+		Cache: executor.Cache{
+			Scope:          "immutable-image",
+			SharedWritable: false,
+			Detail: "Warm state comes from the digest-pinned Image Release. " +
+				"No host directory, volume or device is shared between Attempts.",
+		},
 	}
 
+	if path, err := exec.LookPath(r.config.BinaryPath); err != nil {
+		report.Fail(executor.CheckBinary, fmt.Errorf("find Firecracker binary: %w", err))
+	} else {
+		report.Pass(executor.CheckBinary, path)
+	}
+	if err := readableRegularFile(r.config.KernelImagePath); err != nil {
+		report.Fail(executor.CheckKernelImage, fmt.Errorf("kernel image: %w", err))
+	} else {
+		report.Pass(executor.CheckKernelImage, r.config.KernelImagePath)
+	}
+	if err := netpolicy.VerifyKernelArgs(r.config.KernelArgs); err != nil {
+		report.Fail(executor.CheckKernelArgs, err)
+	} else {
+		report.Pass(executor.CheckKernelArgs, r.config.KernelArgs)
+	}
+
+	kvmUsable := false
+	if kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0); err != nil {
+		report.Fail(executor.CheckKVM, fmt.Errorf("open /dev/kvm read-write: %w", err))
+	} else {
+		_ = kvm.Close()
+		kvmUsable = true
+		report.Pass(executor.CheckKVM, "/dev/kvm is readable and writable")
+	}
+	report.Hardware = hostHardware(kvmUsable)
+
+	var missingPlugins []string
+	for _, plugin := range netpolicy.RequiredPlugins() {
+		if err := executableRegularFile(filepath.Join(r.config.CNIBinDir, plugin)); err != nil {
+			missingPlugins = append(missingPlugins, plugin)
+		}
+	}
+	if len(missingPlugins) > 0 {
+		report.Fail(executor.CheckCNIPlugins, fmt.Errorf(
+			"CNI plugins missing from %s: %s",
+			r.config.CNIBinDir,
+			strings.Join(missingPlugins, ", "),
+		))
+	} else {
+		report.Pass(executor.CheckCNIPlugins, r.config.CNIBinDir)
+	}
+
+	conflist, err := os.ReadFile(r.config.ConflistPath())
+	switch {
+	case err != nil:
+		report.Fail(executor.CheckCNIConfig, fmt.Errorf("read CNI configuration: %w", err))
+	default:
+		if verifyErr := r.config.Network.VerifyConflist(conflist); verifyErr != nil {
+			report.Fail(executor.CheckCNIConfig, verifyErr)
+		} else {
+			report.Pass(executor.CheckCNIConfig, r.config.ConflistPath())
+		}
+	}
+
+	live, err := netpolicy.ReadLiveTable(ctx, r.config.NftBinary)
+	switch {
+	case err != nil:
+		report.Fail(executor.CheckNetPolicy, err)
+	default:
+		if verifyErr := r.config.Network.VerifyNftables(live); verifyErr != nil {
+			report.Fail(executor.CheckNetPolicy, verifyErr)
+		} else {
+			report.Pass(executor.CheckNetPolicy, fmt.Sprintf(
+				"host, RFC1918 and east-west traffic denied for %s with %s egress",
+				r.config.Network.Subnet,
+				r.config.Network.EgressMode,
+			))
+		}
+	}
+
+	r.checkSnapshotter(ctx, &report)
+
+	storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
+	report.Storage = storage
+	switch {
+	case err != nil:
+		report.Fail(executor.CheckStorage, err)
+	case storage.PoolFreeMiB < r.config.MinPoolFreeMiB:
+		report.Fail(executor.CheckStorage, fmt.Errorf(
+			"thin-pool %q has %d MiB free but this Worker requires %d MiB before accepting an Attempt",
+			r.config.ThinPoolName, storage.PoolFreeMiB, r.config.MinPoolFreeMiB,
+		))
+	default:
+		report.Pass(executor.CheckStorage, fmt.Sprintf(
+			"%d MiB free of %d MiB in thin-pool %q",
+			storage.PoolFreeMiB, storage.PoolTotalMiB, r.config.ThinPoolName,
+		))
+	}
+
+	if report.Cache.SharedWritable {
+		report.Fail(executor.CheckCache, errors.New(
+			"this Profile shares writable storage between Attempts, which is a cross-job path",
+		))
+	} else {
+		report.Pass(executor.CheckCache, report.Cache.Detail)
+	}
+
+	if !report.Ready() {
+		return report, errors.New(report.FailureSummary())
+	}
+	return report, nil
+}
+
+func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report) {
 	client, err := containerd.New(r.config.ContainerdAddress, containerd.WithTimeout(5*time.Second))
 	if err != nil {
-		return fmt.Errorf("connect to containerd: %w", err)
+		report.Fail(executor.CheckSnapshotter, fmt.Errorf("connect to containerd: %w", err))
+		return
 	}
 	defer client.Close()
 	response, err := client.IntrospectionService().Plugins(ctx, []string{
@@ -101,12 +213,16 @@ func (r *Runtime) Preflight(ctx context.Context) error {
 		"id==" + r.config.Snapshotter,
 	})
 	if err != nil {
-		return fmt.Errorf("query containerd snapshotter: %w", err)
+		report.Fail(executor.CheckSnapshotter, fmt.Errorf("query containerd snapshotter: %w", err))
+		return
 	}
 	if len(response.Plugins) != 1 || response.Plugins[0].InitErr != nil {
-		return fmt.Errorf("containerd snapshotter %q is not ready", r.config.Snapshotter)
+		report.Fail(executor.CheckSnapshotter, fmt.Errorf(
+			"containerd snapshotter %q is not ready", r.config.Snapshotter,
+		))
+		return
 	}
-	return nil
+	report.Pass(executor.CheckSnapshotter, r.config.Snapshotter+" at "+r.config.ContainerdAddress)
 }
 
 func (r *Runtime) PrepareImage(ctx context.Context, imageRelease string) error {
@@ -127,7 +243,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if err := spec.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid Attempt: %w", err)
 	}
-	if err := r.Preflight(ctx); err != nil {
+	if _, err := r.Preflight(ctx); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(r.config.WorkDir, 0o700); err != nil {
@@ -228,7 +344,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		NetworkInterfaces: []fc.NetworkInterface{{
 			AllowMMDS: true,
 			CNIConfiguration: &fc.CNIConfiguration{
-				NetworkName: r.config.CNIName,
+				NetworkName: r.config.Network.Name,
 				IfName:      "eth0",
 				ConfDir:     r.config.CNIConfigDir,
 				BinPath:     []string{r.config.CNIBinDir},
