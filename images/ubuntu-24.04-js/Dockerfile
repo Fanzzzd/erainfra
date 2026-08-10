@@ -84,8 +84,8 @@ RUN install -d \
     --output /opt/action-cache/pnpm_action-setup/0977fd99725f1db4007ccb2928dbb4e90d06cc86.tar.gz \
     https://api.github.com/repos/pnpm/action-setup/tarball/0977fd99725f1db4007ccb2928dbb4e90d06cc86 \
   && curl --fail --location --retry 5 \
-    --output /opt/action-cache/actions_setup-node/820762786026740c76f36085b0efc47a31fe5020.tar.gz \
-    https://api.github.com/repos/actions/setup-node/tarball/820762786026740c76f36085b0efc47a31fe5020 \
+    --output /opt/action-cache/actions_setup-node/e51e5fe84fc33b4c73ebe40526b2694712b5b858.tar.gz \
+    https://api.github.com/repos/actions/setup-node/tarball/e51e5fe84fc33b4c73ebe40526b2694712b5b858 \
   && curl --fail --location --retry 5 \
     --output /opt/action-cache/actions_setup-go/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e.tar.gz \
     https://api.github.com/repos/actions/setup-go/tarball/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e \
@@ -94,8 +94,8 @@ RUN install -d \
     /opt/action-cache/actions_checkout/3d3c42e5aac5ba805825da76410c181273ba90b1.tar.gz \
     bbd7997a5a866c067a856d7d4b67c5f77cc4ff125cfba458e01922714017b05f \
     /opt/action-cache/pnpm_action-setup/0977fd99725f1db4007ccb2928dbb4e90d06cc86.tar.gz \
-    188334b94098a2418b97bfc9bdca36a42eb49e883082a3cb253921396c227b6b \
-    /opt/action-cache/actions_setup-node/820762786026740c76f36085b0efc47a31fe5020.tar.gz \
+    e38c0daec76eaa37bd045c403e54bb8923209512e094b25caac12b1427cc94fe \
+    /opt/action-cache/actions_setup-node/e51e5fe84fc33b4c73ebe40526b2694712b5b858.tar.gz \
     74c28703108155983aa31b9e375058a1e4ad8c19c5b7889dca7d95b1e3b0c4d9 \
     /opt/action-cache/actions_setup-go/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e.tar.gz \
     | sha256sum --check --strict \

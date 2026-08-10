@@ -1,0 +1,14 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/.github/workflows/ci.yml",
+        "$TURBO_ROOT$/apps/*/package.json",
+        "$TURBO_ROOT$/apps/runtime/cmd/runner-center-guest/main_linux.go",
+        "$TURBO_ROOT$/images/ubuntu-24.04-js/**"
+      ]
+    }
+  }
+}
