@@ -25,7 +25,7 @@
   "dependencies": {
     "@auth/core": "0.41.3",
     "@convex-dev/auth": "0.0.94",
-    "@convex-dev/static-hosting": "0.2.0",
+    "@convex-dev/static-hosting": "0.2.1",
     "convex": "catalog:",
     "octokit": "5.0.5"
   },
@@ -33,9 +33,9 @@
     "@edge-runtime/vm": "5.0.0",
     "@runner-center/typescript-config": "workspace:*",
     "@types/node": "catalog:",
-    "convex-test": "0.0.54",
+    "convex-test": "0.0.55",
     "typescript": "catalog:",
-    "vite": "8.1.5",
+    "vite": "8.2.1",
     "vitest": "4.1.10"
   }
 }

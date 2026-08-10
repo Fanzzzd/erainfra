@@ -7,9 +7,9 @@ packages:
 # directory on its own and install it with plain `npm install`, which does not
 # understand the `catalog:` or `workspace:` protocols.
 catalog:
-  "@types/node": 22.19.11
-  convex: 1.42.3
-  typescript: 5.9.3
+  "@types/node": 22.20.1
+  convex: 1.43.0
+  typescript: 7.0.2
 
 allowBuilds:
   esbuild: true

@@ -182,6 +182,7 @@ export const heartbeat = mutation({
     }
     await ctx.db.patch(machine._id, { lastSeen: Date.now() });
     await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
+    await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     return { os: machine.os, maxSlots: machine.maxSlots };
   },
 });

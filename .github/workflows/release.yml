@@ -30,6 +30,11 @@ jobs:
           # setup-node v7 auto-enables package-manager caching from package.json;
           # release jobs consume no mutable cache before publishing artifacts.
           package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # Release builds consume no mutable cache from lower-trust refs.
+          cache: false
 
       # Runner Center ships as one product, so the tag has to match the version
       # in the workspace root and in apps/agent exactly. Fail here rather than
@@ -38,8 +43,10 @@ jobs:
         run: |
           root=$(node -p "require('./package.json').version")
           agent=$(node -p "require('./apps/agent/package.json').version")
-          if [ "$root" != "$agent" ]; then
-            echo "Version drift: package.json is $root but apps/agent/package.json is $agent" >&2
+          controller=$(node -p "require('./apps/controller/package.json').version")
+          runtime=$(node -p "require('./apps/runtime/package.json').version")
+          if [ "$root" != "$agent" ] || [ "$root" != "$controller" ] || [ "$root" != "$runtime" ]; then
+            echo "Version drift: root=$root agent=$agent controller=$controller runtime=$runtime" >&2
             exit 1
           fi
           if [ "$GITHUB_REF" != "refs/tags/v$root" ]; then
@@ -75,6 +82,13 @@ jobs:
       - name: Build the agent release archive
         run: pnpm release:package
 
+      - name: Verify release binary identity
+        run: |
+          test "$(dist/release/runner-center-runtime-linux-x86_64 version)" = \
+            "runner-center-runtime $VERSION"
+          dist/release/runner-center-controller-linux-x86_64 version | \
+            grep -Fx "runner-center-controller $VERSION ($GITHUB_SHA)"
+
       - name: Verify the archive is reproducible
         run: |
           pnpm --filter @runner-center/release package-agent --out dist/release-recheck
@@ -93,13 +107,26 @@ jobs:
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/release/runner-center-agent-${{ env.VERSION }}.tar.gz
+          subject-path: |
+            dist/release/runner-center-agent-${{ env.VERSION }}.tar.gz
+            dist/release/runner-center-controller-linux-x86_64
+            dist/release/runner-center-controller-linux-arm64
+            dist/release/runner-center-controller-darwin-x86_64
+            dist/release/runner-center-controller-darwin-arm64
+            dist/release/runner-center-runtime-linux-x86_64
+            dist/release/runner-center-runtime-linux-arm64
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          prerelease=()
+          case "$VERSION" in
+            *-*) prerelease+=(--prerelease) ;;
+          esac
           sha256=$(cut -d ' ' -f 1 < "dist/release/runner-center-agent-$VERSION.tar.gz.sha256")
+          # Markdown code spans are intentionally literal in these format strings.
+          # shellcheck disable=SC2016
           {
             printf 'Agent archive for Runner Center %s.\n\n' "$VERSION"
             printf 'SHA-256 of `runner-center-agent-%s.tar.gz`:\n\n' "$VERSION"
@@ -112,5 +139,10 @@ jobs:
             --title "v$VERSION" \
             --notes-file release-notes.md \
             --verify-tag \
+            "${prerelease[@]}" \
             "dist/release/runner-center-agent-$VERSION.tar.gz" \
-            "dist/release/runner-center-agent-$VERSION.tar.gz.sha256"
+            "dist/release/runner-center-agent-$VERSION.tar.gz.sha256" \
+            dist/release/runner-center-controller-* \
+            dist/release/runner-center-runtime-* \
+            deploy/systemd/runner-center-runtime.service \
+            deploy/systemd/runner-center-controller@.service

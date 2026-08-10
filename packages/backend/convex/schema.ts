@@ -34,11 +34,38 @@ export default defineSchema({
     name: v.string(),
     os: v.union(v.literal("linux"), v.literal("mac"), v.literal("win")),
     labels: v.array(v.string()),
+    arch: v.optional(v.string()),
+    cpus: v.optional(v.number()),
+    memoryMiB: v.optional(v.number()),
+    slotPolicy: v.optional(v.union(v.literal("auto"), v.literal("fixed"))),
+    recommendedSlots: v.optional(v.number()),
     maxSlots: v.number(),
     usedSlots: v.number(),
     lastSeen: v.number(),
     token: v.string(),
   }).index("by_token", ["token"]),
+
+  // A Profile is the stable `runs-on` contract workflows target. Controllers
+  // publish the exact executor, immutable image, and resource envelope; Workers
+  // discover compatible Profiles from here and only advertise them after the
+  // image is prepared locally.
+  profiles: defineTable({
+    name: v.string(),
+    scaleSetName: v.string(),
+    executor: v.union(
+      v.literal("docker"),
+      v.literal("firecracker"),
+      v.literal("tart"),
+      v.literal("hyperv"),
+    ),
+    imageRelease: v.string(),
+    vcpus: v.number(),
+    memoryMiB: v.number(),
+    minRunners: v.number(),
+    maxRunners: v.number(),
+    state: v.union(v.literal("active"), v.literal("paused")),
+    updatedAt: v.number(),
+  }).index("by_name", ["name"]),
 
   registrationTokens: defineTable({
     token: v.string(),
@@ -212,6 +239,118 @@ export default defineSchema({
     .index("by_machine_status", ["machineId", "status"])
     .index("by_jobId", ["jobId"])
     .index("by_runnerName", ["runnerName"]),
+
+  // Scale-set-native execution records. Unlike the legacy `jobs` table, an
+  // Attempt exists before GitHub assigns a concrete job: the official listener
+  // asks for capacity, Runner Center prepares one ephemeral runner, and a later
+  // JobStarted message binds the GitHub metadata to it by runnerName.
+  attempts: defineTable({
+    profile: v.string(),
+    executor: v.union(
+      v.literal("docker"),
+      v.literal("firecracker"),
+      v.literal("tart"),
+      v.literal("hyperv"),
+    ),
+    imageRelease: v.string(),
+    vcpus: v.number(),
+    memoryMiB: v.number(),
+    runnerName: v.string(),
+    runnerId: v.number(),
+    state: v.union(
+      v.literal("pending"),
+      v.literal("preparing"),
+      v.literal("ready"),
+      v.literal("running"),
+      v.literal("completed"),
+      v.literal("cancelled"),
+      v.literal("failed"),
+    ),
+    machineId: v.optional(v.id("machines")),
+    // Single-use secret. It is removed atomically when a Worker claims the
+    // Attempt and is never returned by dashboard or controller queries.
+    jitConfig: v.optional(v.string()),
+    createdAt: v.number(),
+    claimedAt: v.optional(v.number()),
+    readyAt: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+    executorFinishedAt: v.optional(v.number()),
+    executorExitCode: v.optional(v.number()),
+    runnerRequestId: v.optional(v.number()),
+    repo: v.optional(v.string()),
+    owner: v.optional(v.string()),
+    jobId: v.optional(v.string()),
+    workflowRef: v.optional(v.string()),
+    displayName: v.optional(v.string()),
+    workflowRunId: v.optional(v.number()),
+    eventName: v.optional(v.string()),
+    queueTime: v.optional(v.number()),
+    assignedAt: v.optional(v.number()),
+    runnerAssignedAt: v.optional(v.number()),
+    result: v.optional(v.string()),
+    lastError: v.optional(v.string()),
+    cancelReason: v.optional(v.string()),
+    // Set when Runner Center settles an Attempt without a GitHub JobCompleted
+    // event. Its owning controller retries idempotent runner deletion, then
+    // acknowledges this tombstone.
+    runnerCleanupPending: v.optional(v.boolean()),
+  })
+    .index("by_runnerName", ["runnerName"])
+    .index("by_profile", ["profile"])
+    .index("by_machine_state", ["machineId", "state"]),
+
+  // Operator-authored, non-interactive workloads executed through the same
+  // Profile, isolation, readiness and capacity contract as CI Attempts.
+  experiments: defineTable({
+    name: v.string(),
+    profile: v.string(),
+    executor: v.literal("firecracker"),
+    imageRelease: v.string(),
+    vcpus: v.number(),
+    memoryMiB: v.number(),
+    command: v.array(v.string()),
+    timeoutSeconds: v.number(),
+    state: v.union(
+      v.literal("queued"),
+      v.literal("preparing"),
+      v.literal("running"),
+      v.literal("completed"),
+      v.literal("cancelled"),
+      v.literal("failed"),
+    ),
+    machineId: v.optional(v.id("machines")),
+    createdBy: v.string(),
+    createdAt: v.number(),
+    claimedAt: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+    exitCode: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_state", ["state"])
+    .index("by_machine_state", ["machineId", "state"]),
+
+  // A Worker is eligible for a Profile only after it has proved the exact
+  // executor and immutable Image Release locally. Online heartbeats alone are
+  // never enough to advertise capacity.
+  workerReadiness: defineTable({
+    machineId: v.id("machines"),
+    profile: v.string(),
+    executor: v.union(
+      v.literal("docker"),
+      v.literal("firecracker"),
+      v.literal("tart"),
+      v.literal("hyperv"),
+    ),
+    imageRelease: v.string(),
+    state: v.union(v.literal("preparing"), v.literal("ready"), v.literal("failed")),
+    checkedAt: v.number(),
+    preparedAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_machine_profile", ["machineId", "profile"])
+    .index("by_profile_state", ["profile", "state"]),
 
   // Work queue for deleting JIT runner registrations that were created on
   // GitHub but never consumed. Mutations cannot call GitHub, so they enqueue

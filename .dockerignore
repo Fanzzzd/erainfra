@@ -1,0 +1,15 @@
+.git
+.github
+.turbo
+**/.env
+**/.env.*
+**/node_modules
+**/dist
+apps/agent
+apps/controller
+apps/dashboard
+docs
+packages
+reference
+*.md
+pnpm-lock.yaml

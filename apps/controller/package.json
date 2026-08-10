@@ -1,0 +1,10 @@
+{
+  "name": "@runner-center/controller",
+  "version": "0.2.0-rc.1",
+  "private": true,
+  "scripts": {
+    "build": "mkdir -p dist && go build -o dist/runner-center-controller ./cmd/runner-center-controller",
+    "test": "go test ./...",
+    "typecheck": "go vet ./..."
+  }
+}

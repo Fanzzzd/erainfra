@@ -38,22 +38,10 @@ type RegistrationCommand = {
 
 const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
 
-const SUPPORTED_RUNS_ON_LABELS = [
-  {
-    os: "Linux",
-    labels: ["ubuntu-22.04", "ubuntu-24.04", "rc-linux"],
-  },
-  {
-    // macos-26 is omitted on purpose: Tahoe is preview-gated, so offering it
-    // here would advertise capacity a machine cannot take without opting in.
-    os: "macOS",
-    labels: ["macos-15", "rc-mac"],
-  },
-] as const;
-
 function MachinesPage() {
   const machines = useQuery(api.machines.list);
-  const jobs = useQuery(api.jobs.list);
+  const attempts = useQuery(api.attempts.list);
+  const profiles = useQuery(api.profiles.list);
   const createRegistrationToken = useMutation(api.machines.createRegistrationToken);
   const now = useNow();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -72,9 +60,10 @@ function MachinesPage() {
       totalMachines: list.length,
       usedSlots: list.reduce((total, machine) => total + machine.usedSlots, 0),
       totalSlots: list.reduce((total, machine) => total + machine.maxSlots, 0),
-      jobsToday: jobs?.filter((job) => job.queuedAt >= startOfToday.getTime()).length ?? 0,
+      runsToday:
+        attempts?.filter((attempt) => attempt.createdAt >= startOfToday.getTime()).length ?? 0,
     };
-  }, [jobs, machines, now]);
+  }, [attempts, machines, now]);
 
   const connectedMachine = useMemo(() => {
     if (registration === undefined || machines === undefined) return undefined;
@@ -285,53 +274,101 @@ function MachinesPage() {
           detail="Concurrent runner capacity"
         />
         <StatTile
-          label="Jobs today"
-          value={jobs === undefined ? "—" : String(summary.jobsToday)}
-          detail="Queued since local midnight"
+          label="Runs today"
+          value={attempts === undefined ? "—" : String(summary.runsToday)}
+          detail="Scale-set Attempts since midnight"
         />
       </div>
 
-      {/* Allowlist first: it must be set before the App is installed, or every
-          delivery the new installation sends is rejected. */}
-      <AllowlistWarning />
-      <GithubAppSetup />
-
       <section
-        className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5"
-        aria-labelledby="runs-on-labels-heading"
+        className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
+        aria-labelledby="profiles-heading"
       >
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-2 border-b border-white/[0.08] px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 id="runs-on-labels-heading" className="text-sm font-medium text-zinc-200">
-              Supported runs-on labels
+            <h2 id="profiles-heading" className="text-sm font-medium text-zinc-200">
+              Runner Profiles
             </h2>
             <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-              Image labels select the execution environment by host OS. Machines do not need to
-              register these labels.
-            </p>
-            <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-              Windows labels exist but are preview-gated: they match nothing until a machine is
-              onboarded by hand and given the <span className="font-mono">rc-preview</span> label.
+              Workflows target a Profile, never a machine. Compatible Workers discover and prewarm
+              its immutable image automatically.
             </p>
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:gap-5">
-            {SUPPORTED_RUNS_ON_LABELS.map((group) => (
-              <div key={group.os} className="flex items-center gap-2">
-                <span className="w-12 shrink-0 text-xs text-[#7c7c85]">{group.os}</span>
-                <div className="flex flex-wrap gap-1">
-                  {group.labels.map((label) => (
-                    <Badge key={label} variant="outline" className="font-mono text-zinc-300">
-                      {label}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          <code className="rounded-md border border-white/[0.08] bg-[#09090a] px-2.5 py-1.5 text-xs text-emerald-300">
+            runs-on: {profiles?.[0]?.name ?? "rc-linux-js"}
+          </code>
         </div>
-        <FallbackSnippet />
-        <InviteOperator />
+        <Table className="min-w-[900px]">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Profile / scale set</TableHead>
+              <TableHead>Executor</TableHead>
+              <TableHead>Resources</TableHead>
+              <TableHead>Ready Workers</TableHead>
+              <TableHead>Capacity</TableHead>
+              <TableHead>Image Release</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {profiles === undefined ? (
+              <TableRow>
+                <TableCell colSpan={6} className="h-24 text-center text-[#8a8a93]">
+                  Syncing Profiles…
+                </TableCell>
+              </TableRow>
+            ) : profiles.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="h-28 text-center text-[#8a8a93]">
+                  Start a scale-set controller to register its Profile.
+                </TableCell>
+              </TableRow>
+            ) : (
+              profiles.map((profile) => (
+                <TableRow key={profile._id}>
+                  <TableCell>
+                    <code className="text-xs text-zinc-100">{profile.name}</code>
+                    <p className="mt-0.5 text-[10px] text-[#7c7c85]">{profile.scaleSetName}</p>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className="font-mono text-zinc-400">
+                      {profile.executor}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="tabular-nums text-xs text-zinc-300">
+                    {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
+                  </TableCell>
+                  <TableCell className="tabular-nums text-xs text-zinc-300">
+                    {profile.readyWorkers}
+                  </TableCell>
+                  <TableCell className="tabular-nums text-xs text-zinc-300">
+                    {profile.freeSlots}/{profile.readySlots} free
+                  </TableCell>
+                  <TableCell>
+                    <code
+                      className="block max-w-[270px] truncate text-[10px] text-[#7c7c85]"
+                      title={profile.imageRelease}
+                    >
+                      {profile.imageRelease}
+                    </code>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
       </section>
+
+      <details className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5">
+        <summary className="cursor-pointer text-sm font-medium text-zinc-200">
+          Legacy webhook runner migration
+        </summary>
+        <div className="mt-4 space-y-4">
+          <AllowlistWarning />
+          <GithubAppSetup />
+        </div>
+      </details>
+
+      <InviteOperator />
 
       <section
         className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
@@ -358,10 +395,10 @@ function MachinesPage() {
               <TableHead className="w-[112px]">Status</TableHead>
               <TableHead className="w-[170px]">Machine</TableHead>
               <TableHead className="w-[90px]">OS</TableHead>
-              <TableHead className="w-[210px]">Labels</TableHead>
+              <TableHead className="w-[210px]">Ready Profiles</TableHead>
               <TableHead className="w-[130px]">Slots</TableHead>
               <TableHead className="w-[112px]">Last seen</TableHead>
-              <TableHead>Current jobs</TableHead>
+              <TableHead>Active runs</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -404,6 +441,13 @@ function MachinesPage() {
                     </TableCell>
                     <TableCell>
                       <div className="font-medium text-zinc-100">{machine.name}</div>
+                      {machine.arch && (
+                        <div className="mt-0.5 text-[10px] text-[#7c7c85]">
+                          {machine.arch}
+                          {machine.cpus && ` · ${machine.cpus} CPU`}
+                          {machine.memoryMiB && ` · ${formatMemory(machine.memoryMiB)}`}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="font-mono text-zinc-400">
@@ -411,7 +455,7 @@ function MachinesPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <LabelChips labels={machine.labels} />
+                      <ProfileReadiness readiness={machine.readiness} />
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
@@ -434,6 +478,12 @@ function MachinesPage() {
                           />
                         </div>
                       </div>
+                      {machine.recommendedSlots !== undefined && (
+                        <p className="mt-1 text-[10px] text-[#7c7c85]">
+                          {machine.slotPolicy === "auto" ? "auto" : "fixed"} · recommended{" "}
+                          {machine.recommendedSlots}
+                        </p>
+                      )}
                     </TableCell>
                     <TableCell>
                       <span
@@ -448,7 +498,11 @@ function MachinesPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <CurrentJobs jobs={machine.currentJobs} />
+                      <ActiveRuns
+                        attempts={machine.currentAttempts}
+                        experiments={machine.currentExperiments}
+                        legacyJobs={machine.currentJobs}
+                      />
                     </TableCell>
                   </TableRow>
                 );
@@ -543,35 +597,94 @@ function MachineStatus({ online }: { online: boolean }) {
   );
 }
 
-function LabelChips({ labels }: { labels: string[] }) {
-  if (labels.length === 0) return <span className="text-[#7c7c85]">—</span>;
+function ProfileReadiness({
+  readiness,
+}: {
+  readiness: Array<{
+    profile: string;
+    state: "preparing" | "ready" | "failed";
+    lastError?: string;
+  }>;
+}) {
+  if (readiness.length === 0) return <span className="text-[#7c7c85]">Discovering…</span>;
 
   return (
     <div className="flex max-w-[240px] flex-wrap gap-1">
-      {[...new Set(labels)].map((label) => (
-        <Badge key={label} variant="outline" className="font-mono text-zinc-400">
-          {label}
+      {readiness.map((entry) => (
+        <Badge
+          key={entry.profile}
+          variant="outline"
+          className={
+            entry.state === "ready"
+              ? "font-mono text-emerald-300"
+              : entry.state === "failed"
+                ? "font-mono text-red-300"
+                : "font-mono text-amber-300"
+          }
+          title={entry.lastError}
+        >
+          {entry.profile}
         </Badge>
       ))}
     </div>
   );
 }
 
-function CurrentJobs({
-  jobs,
+function ActiveRuns({
+  attempts,
+  experiments,
+  legacyJobs,
 }: {
-  jobs: Array<{
+  attempts: Array<{
+    _id: string;
+    profile: string;
+    state: "pending" | "preparing" | "ready" | "running";
+  }>;
+  experiments: Array<{
+    _id: string;
+    name: string;
+    state: "queued" | "preparing" | "running";
+  }>;
+  legacyJobs: Array<{
     _id: string;
     repo: string;
     workflowName: string;
     status: "assigned" | "running";
   }>;
 }) {
-  if (jobs.length === 0) return <span className="text-[#7c7c85]">—</span>;
+  if (attempts.length === 0 && experiments.length === 0 && legacyJobs.length === 0) {
+    return <span className="text-[#7c7c85]">—</span>;
+  }
 
   return (
     <div className="space-y-1.5">
-      {jobs.map((job) => (
+      {attempts.map((attempt) => (
+        <div key={attempt._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+          <span
+            className={`size-1.5 shrink-0 rounded-full ${
+              attempt.state === "running" ? "status-pulse bg-emerald-400" : "bg-amber-400"
+            }`}
+            aria-hidden="true"
+          />
+          <span className="max-w-40 truncate font-mono text-[12px] text-zinc-300">
+            {attempt.profile}
+          </span>
+          <span className="text-xs text-[#7c7c85]">{attempt.state}</span>
+        </div>
+      ))}
+      {experiments.map((experiment) => (
+        <div key={experiment._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+          <span
+            className={`size-1.5 shrink-0 rounded-full ${
+              experiment.state === "running" ? "status-pulse bg-sky-400" : "bg-amber-400"
+            }`}
+            aria-hidden="true"
+          />
+          <span className="max-w-40 truncate text-[12px] text-zinc-300">{experiment.name}</span>
+          <span className="text-xs text-[#7c7c85]">experiment</span>
+        </div>
+      ))}
+      {legacyJobs.map((job) => (
         <div key={job._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
           <span
             className={`size-1.5 shrink-0 rounded-full ${
@@ -586,6 +699,10 @@ function CurrentJobs({
       ))}
     </div>
   );
+}
+
+function formatMemory(memoryMiB: number) {
+  return memoryMiB % 1024 === 0 ? `${memoryMiB / 1024} GiB` : `${memoryMiB} MiB`;
 }
 
 /**
@@ -670,67 +787,6 @@ function InviteOperator() {
           {error}
         </p>
       )}
-    </details>
-  );
-}
-
-function FallbackSnippet() {
-  const [copied, setCopied] = useState(false);
-  const snippet = `jobs:
-  route:
-    runs-on: ubuntu-latest
-    outputs:
-      runs-on: \${{ steps.pick.outputs.runs-on }}
-    steps:
-      - id: pick
-        run: |
-          echo "runs-on=$(curl -sf --max-time 10 \\
-            '${convexSiteUrl()}/runs-on?labels=ubuntu-22.04&fallback=ubuntu-latest' \\
-            | jq -c '."runs-on"' || echo '"ubuntu-latest"')" >> "$GITHUB_OUTPUT"
-
-  build:
-    needs: route
-    runs-on: \${{ fromJSON(needs.route.outputs.runs-on) }}`;
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(snippet);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    } catch {
-      // Clipboard blocked: the snippet stays selectable below.
-    }
-  }
-
-  return (
-    <details className="mt-3 rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-xs text-[#8a8a93]">
-      <summary className="cursor-pointer select-none font-medium text-zinc-300">
-        GitHub-hosted fallback when the fleet is busy
-      </summary>
-      <p className="mt-3 leading-5">
-        A small routing job asks Runner Center whether a slot will be free. It routes to your fleet
-        when capacity is available and falls back to GitHub-hosted runners otherwise — including
-        when Runner Center itself is unreachable.
-      </p>
-      <div className="relative mt-2 rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
-        <pre className="overflow-x-auto font-mono text-xs leading-5 text-zinc-300">
-          <code>{snippet}</code>
-        </pre>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="absolute right-1.5 top-1.5 size-8"
-          aria-label="Copy fallback workflow snippet"
-          onClick={() => void copy()}
-        >
-          {copied ? <Check /> : <Clipboard />}
-        </Button>
-      </div>
-      <p className="mt-2 leading-5">
-        Swap <code className="text-zinc-300">labels</code> and{" "}
-        <code className="text-zinc-300">fallback</code> for the environment each workflow needs.
-      </p>
     </details>
   );
 }

@@ -45,32 +45,30 @@ export const run = internalMutation({
     const now = Date.now();
 
     // ponytail: full-table scans, fine for <100 machines
-    const [assignedJobs, runningJobs, queuedJobs, machines, commands] = await Promise.all([
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "assigned"))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "running"))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "queued"))
-        .collect(),
-      ctx.db.query("machines").collect(),
-      ctx.db.query("commands").collect(),
-    ]);
+    const [assignedJobs, runningJobs, queuedJobs, machines, commands, attempts, experiments] =
+      await Promise.all([
+        ctx.db
+          .query("jobs")
+          .withIndex("by_status", (q) => q.eq("status", "assigned"))
+          .collect(),
+        ctx.db
+          .query("jobs")
+          .withIndex("by_status", (q) => q.eq("status", "running"))
+          .collect(),
+        ctx.db
+          .query("jobs")
+          .withIndex("by_status", (q) => q.eq("status", "queued"))
+          .collect(),
+        ctx.db.query("machines").collect(),
+        ctx.db.query("commands").collect(),
+        ctx.db.query("attempts").collect(),
+        ctx.db.query("experiments").collect(),
+      ]);
 
     const machinesById = new Map(machines.map((machine) => [machine._id, machine]));
     const machineSlots = new Map(machines.map((machine) => [machine._id, machine.usedSlots]));
-    const activeJobsByMachine = new Map<string, number>();
     const commandsByJob = new Map<string, typeof commands>();
 
-    for (const job of [...assignedJobs, ...runningJobs]) {
-      if (job.machineId === undefined) continue;
-      activeJobsByMachine.set(job.machineId, (activeJobsByMachine.get(job.machineId) ?? 0) + 1);
-    }
     for (const command of commands) {
       // Retention: nothing reads finished commands, so drop them here.
       if (command.status === "finished") {
@@ -107,10 +105,6 @@ export const run = internalMutation({
         const usedSlots = Math.max(0, (machineSlots.get(machine._id) ?? machine.usedSlots) - 1);
         machineSlots.set(machine._id, usedSlots);
         await ctx.db.patch(machine._id, { usedSlots });
-        activeJobsByMachine.set(
-          machine._id,
-          Math.max(0, (activeJobsByMachine.get(machine._id) ?? 0) - 1),
-        );
       }
 
       // Same bounded-retry path as a provisioner failure: an agent that never
@@ -164,10 +158,6 @@ export const run = internalMutation({
         const usedSlots = Math.max(0, (machineSlots.get(machine._id) ?? machine.usedSlots) - 1);
         machineSlots.set(machine._id, usedSlots);
         await ctx.db.patch(machine._id, { usedSlots });
-        activeJobsByMachine.set(
-          machine._id,
-          Math.max(0, (activeJobsByMachine.get(machine._id) ?? 0) - 1),
-        );
       }
       abandoned += 1;
     }
@@ -182,6 +172,114 @@ export const run = internalMutation({
         nextAttemptAt: undefined,
       });
       expired += 1;
+    }
+
+    for (const attempt of attempts) {
+      if (
+        attempt.state === "completed" ||
+        attempt.state === "cancelled" ||
+        attempt.state === "failed"
+      ) {
+        continue;
+      }
+      if (attempt.machineId === undefined) {
+        if (now - attempt.createdAt > QUEUE_EXPIRED_MS) {
+          await ctx.db.patch(attempt._id, {
+            state: "cancelled",
+            jitConfig: undefined,
+            cancelReason: "No compatible Worker became ready within 24 hours",
+            finishedAt: now,
+            runnerCleanupPending: true,
+          });
+          expired += 1;
+        }
+        continue;
+      }
+      const machine = machinesById.get(attempt.machineId);
+      const offlineFor = machine === undefined ? Number.POSITIVE_INFINITY : now - machine.lastSeen;
+      if (attempt.state === "pending" && offlineFor > AGENT_OFFLINE_MS) {
+        await ctx.db.patch(attempt._id, { machineId: undefined });
+        requeued += 1;
+        continue;
+      }
+      const stuckPreparing =
+        (attempt.state === "preparing" || attempt.state === "ready") &&
+        now - (attempt.claimedAt ?? attempt.createdAt) > ASSIGNMENT_STUCK_MS;
+      const abandonedRunning = attempt.state === "running" && offlineFor > RUNNING_ABANDONED_MS;
+      if (
+        ((attempt.state === "preparing" || attempt.state === "ready") &&
+          offlineFor > AGENT_OFFLINE_MS) ||
+        stuckPreparing ||
+        abandonedRunning
+      ) {
+        await ctx.db.patch(attempt._id, {
+          state: "failed",
+          jitConfig: undefined,
+          finishedAt: now,
+          runnerCleanupPending: true,
+          lastError: abandonedRunning
+            ? "Worker stopped reporting during the GitHub job"
+            : stuckPreparing
+              ? "Executor did not become usable within 45 minutes"
+              : "Worker stopped reporting while preparing the runner",
+        });
+        abandoned += 1;
+      }
+    }
+
+    for (const experiment of experiments) {
+      if (
+        experiment.state === "completed" ||
+        experiment.state === "cancelled" ||
+        experiment.state === "failed"
+      ) {
+        continue;
+      }
+      if (experiment.machineId === undefined) {
+        if (now - experiment.createdAt > QUEUE_EXPIRED_MS) {
+          await ctx.db.patch(experiment._id, {
+            state: "failed",
+            finishedAt: now,
+            lastError: "No compatible Worker became ready within 24 hours",
+          });
+          expired += 1;
+        }
+        continue;
+      }
+      const machine = machinesById.get(experiment.machineId);
+      const offlineFor = machine === undefined ? Number.POSITIVE_INFINITY : now - machine.lastSeen;
+      if (experiment.state === "queued" && offlineFor > AGENT_OFFLINE_MS) {
+        await ctx.db.patch(experiment._id, { machineId: undefined });
+        requeued += 1;
+        continue;
+      }
+      const stuckPreparing =
+        experiment.state === "preparing" &&
+        now - (experiment.claimedAt ?? experiment.createdAt) > ASSIGNMENT_STUCK_MS;
+      const exceededDeadline =
+        experiment.state === "running" &&
+        now - (experiment.startedAt ?? experiment.claimedAt ?? experiment.createdAt) >
+          experiment.timeoutSeconds * 1_000 + 5 * 60_000;
+      const abandonedRunning = experiment.state === "running" && offlineFor > RUNNING_ABANDONED_MS;
+      if (
+        (experiment.state === "preparing" && offlineFor > AGENT_OFFLINE_MS) ||
+        stuckPreparing ||
+        exceededDeadline ||
+        abandonedRunning
+      ) {
+        await ctx.db.patch(experiment._id, {
+          state: "failed",
+          finishedAt: now,
+          lastError: exceededDeadline
+            ? "Experiment exceeded its timeout without exiting"
+            : abandonedRunning
+              ? "Worker stopped reporting during the Experiment"
+              : stuckPreparing
+                ? "Experiment executor did not start within 45 minutes"
+                : "Worker stopped reporting while preparing the Experiment",
+        });
+        abandoned += 1;
+      }
     }
 
     // Retention: expired registration tokens, settled deliveries, and
@@ -231,9 +329,45 @@ export const run = internalMutation({
       }
     }
 
+    // Recompute from durable active work after recovery. The old implementation
+    // counted only legacy Jobs and silently reset scale-set/Experiment slots to
+    // zero every minute.
+    const [currentJobs, currentAttempts, currentExperiments] = await Promise.all([
+      ctx.db.query("jobs").collect(),
+      ctx.db.query("attempts").collect(),
+      ctx.db.query("experiments").collect(),
+    ]);
+    const expectedByMachine = new Map<string, number>();
+    function count(machineId: string | undefined) {
+      if (machineId === undefined) return;
+      expectedByMachine.set(machineId, (expectedByMachine.get(machineId) ?? 0) + 1);
+    }
+    for (const job of currentJobs) {
+      if (job.status === "assigned" || job.status === "running") count(job.machineId);
+    }
+    for (const attempt of currentAttempts) {
+      if (
+        attempt.state === "pending" ||
+        attempt.state === "preparing" ||
+        attempt.state === "ready" ||
+        attempt.state === "running"
+      ) {
+        count(attempt.machineId);
+      }
+    }
+    for (const experiment of currentExperiments) {
+      if (
+        experiment.state === "queued" ||
+        experiment.state === "preparing" ||
+        experiment.state === "running"
+      ) {
+        count(experiment.machineId);
+      }
+    }
+
     let slotsRepaired = 0;
     for (const machine of machines) {
-      const expectedSlots = activeJobsByMachine.get(machine._id) ?? 0;
+      const expectedSlots = expectedByMachine.get(machine._id) ?? 0;
       const currentSlots = machineSlots.get(machine._id) ?? machine.usedSlots;
       if (currentSlots === expectedSlots) continue;
 
@@ -244,8 +378,9 @@ export const run = internalMutation({
 
     const deliveries = await ctx.runMutation(internal.webhooks.retryStalledDeliveries, { now });
 
-    if (requeued > 0) {
+    if (requeued > 0 || abandoned > 0 || expired > 0 || slotsRepaired > 0) {
       await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
+      await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     }
     const orphanedRunners = await ctx.db.query("runnerDeletions").take(1);
     if (orphanedRunners.length > 0) {

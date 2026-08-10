@@ -1,6 +1,6 @@
 {
   "name": "@runner-center/agent",
-  "version": "0.1.5",
+  "version": "0.2.0-rc.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,11 +10,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "convex": "1.42.3",
-    "execa": "10.0.0"
+    "convex": "1.43.0",
+    "execa": "10.0.1"
   },
   "devDependencies": {
-    "@types/node": "22.19.11",
-    "typescript": "5.9.3"
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2"
   }
 }

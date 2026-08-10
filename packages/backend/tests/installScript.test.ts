@@ -477,6 +477,13 @@ describe("rendered script", () => {
     expect(script).toMatch(/StandardError=append:\$LOG_FILE/);
   });
 
+  it("accepts either trusted Docker or isolated Firecracker on Linux", () => {
+    expect(script).toMatch(/docker info/);
+    expect(script).toMatch(/trusted-only Linux Profiles/);
+    expect(script).toMatch(/"\$runtime" preflight/);
+    expect(script).toMatch(/if \[ "\$usable" -eq 0 \]; then exit 1; fi/);
+  });
+
   it("carries the release this deployment pins", () => {
     expect(AGENT_RELEASE.version).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/);
     expect(AGENT_RELEASE.repo).toMatch(/^[\w.-]+\/[\w.-]+$/);
