@@ -23,7 +23,6 @@ case "$RC_PROFILE" in
     exit 2
     ;;
 esac
-CACHE_VOLUME="runner-center-${RC_PROFILE}-pnpm"
 digest="${IMAGE##*@sha256:}"
 if [ "$digest" = "$IMAGE" ] || [ "${#digest}" -ne 64 ]; then
   printf 'error: IMAGE must be pinned by sha256 digest.\n' >&2
@@ -105,17 +104,18 @@ chmod 600 "$WORKDIR/runner.env"
 ) &
 ENV_WRITER_PID=$!
 
-# Readiness already pulled this exact digest and initialized the Profile-local
-# pnpm volume. --pull=never prevents a job from changing its Image Release at
-# execution time. No host path or Docker socket enters the container. The one
-# writable cache is only allowed because Docker Profiles are trusted-only.
+# Readiness already pulled this exact digest, so --pull=never prevents a job
+# from changing its Image Release at execution time. No host path, volume or
+# Docker socket enters the container: nothing writable is shared between jobs,
+# and warm state comes only from the immutable Image Release. Cross-job
+# dependency caching belongs outside this boundary, in GitHub's own
+# repository-scoped and authenticated cache service.
 docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --cpus "$RC_VCPUS" \
   --memory "${RC_MEMORY_MIB}m" \
   --pids-limit 4096 \
   --user runner \
   --workdir /opt/runner \
-  --mount "type=volume,src=$CACHE_VOLUME,dst=/runner-cache/pnpm" \
   --env-file "$WORKDIR/runner.env" \
   --env ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1 \
   --env ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/action-cache \

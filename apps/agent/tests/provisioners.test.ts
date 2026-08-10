@@ -63,7 +63,14 @@ describe("provision-docker.sh isolation contract", () => {
 
   it("never exposes the Docker socket or a host bind mount", () => {
     assert.doesNotMatch(provisionDocker, /docker\.sock|--privileged|--volume|-v \/|type=bind/);
-    assert.match(provisionDocker, /type=volume,src=\$CACHE_VOLUME,dst=\/runner-cache\/pnpm/);
+  });
+
+  // A named volume shared by every job on a Profile is a cross-job cache
+  // poisoning path: one job writes a compromised package into the store and
+  // the next job installs it. Nothing writable may outlive a container.
+  it("shares no writable storage between jobs", () => {
+    assert.doesNotMatch(provisionDocker, /--mount|--volume|type=volume/);
+    assert.doesNotMatch(provisionDocker, /runner-cache/);
   });
 });
 
