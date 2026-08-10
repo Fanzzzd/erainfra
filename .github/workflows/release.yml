@@ -145,4 +145,5 @@ jobs:
             dist/release/runner-center-controller-* \
             dist/release/runner-center-runtime-* \
             deploy/systemd/runner-center-runtime.service \
-            deploy/systemd/runner-center-controller@.service
+            deploy/systemd/runner-center-controller@.service \
+            deploy/provision-firecracker-host.sh
