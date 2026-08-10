@@ -11,6 +11,7 @@ import {
   type MachineOs,
 } from "./provision.js";
 import { prepareProfile, type ProfileSpec } from "./readiness.js";
+import { clearReadinessSignal, publishReadinessSignal } from "./readiness-signal.js";
 
 type PendingCommand = { commandId: string; runnerName: string };
 type PendingCommandsResult = {
@@ -428,6 +429,7 @@ console.log(
 await heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), config.heartbeatMs);
 const readinessTimer = setInterval(() => void refreshProfiles(), 6 * 60 * 60_000);
+await publishReadinessSignal(process.env.RC_READY_FILE, process.env.RC_AGENT_VERSION);
 console.log(
   `Runner Center Worker connected to ${config.convexUrl}; discovering compatible Profiles`,
 );
@@ -444,6 +446,7 @@ async function shutdown(signal: string) {
   unsubscribeProfiles();
   for (const child of running.values()) child.kill();
   await Promise.allSettled(running.values());
+  await clearReadinessSignal(process.env.RC_READY_FILE);
   await client.close();
 }
 

@@ -77,14 +77,17 @@ export const reportHostFacts = mutation({
         : machine.os === "mac"
           ? Math.min(2, cpuSlots, memorySlots)
           : 1;
+    // Machines registered before slot policies existed are automatic. Only an
+    // explicit operator choice is fixed; the first v0.2 heartbeat persists the
+    // migrated policy so every later read is unambiguous.
+    const slotPolicy = machine.slotPolicy === "fixed" ? "fixed" : "auto";
     const maxSlots =
-      machine.slotPolicy === "auto"
-        ? Math.max(machine.usedSlots, recommendedSlots)
-        : machine.maxSlots;
+      slotPolicy === "auto" ? Math.max(machine.usedSlots, recommendedSlots) : machine.maxSlots;
     await ctx.db.patch(machine._id, {
       arch: args.arch.trim(),
       cpus: args.cpus,
       memoryMiB: args.memoryMiB,
+      slotPolicy,
       recommendedSlots,
       maxSlots,
     });

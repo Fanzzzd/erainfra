@@ -82,6 +82,63 @@ describe("readiness-gated Attempt scheduling", () => {
     ).toEqual({ maxSlots: 16, recommendedSlots: 16 });
   });
 
+  it("migrates legacy machines without a slot policy to automatic capacity", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await t.run(async (ctx) =>
+      ctx.db.insert("machines", {
+        name: "legacy-mac",
+        os: "mac",
+        labels: [],
+        maxSlots: 1,
+        usedSlots: 0,
+        lastSeen: Date.now(),
+        token: "token-legacy-mac",
+      }),
+    );
+
+    expect(
+      await t.mutation(api.workerApi.reportHostFacts, {
+        token: "token-legacy-mac",
+        arch: "arm64",
+        cpus: 16,
+        memoryMiB: 48 * 1_024,
+      }),
+    ).toEqual({ maxSlots: 2, recommendedSlots: 2 });
+    expect(await t.run(async (ctx) => ctx.db.get(machineId))).toMatchObject({
+      slotPolicy: "auto",
+      maxSlots: 2,
+    });
+  });
+
+  it("keeps an explicit fixed capacity while still reporting its recommendation", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await t.run(async (ctx) =>
+      ctx.db.insert("machines", {
+        name: "fixed-linux",
+        os: "linux",
+        labels: [],
+        slotPolicy: "fixed",
+        maxSlots: 3,
+        usedSlots: 0,
+        lastSeen: Date.now(),
+        token: "token-fixed-linux",
+      }),
+    );
+
+    expect(
+      await t.mutation(api.workerApi.reportHostFacts, {
+        token: "token-fixed-linux",
+        arch: "x64",
+        cpus: 64,
+        memoryMiB: 256 * 1_024,
+      }),
+    ).toEqual({ maxSlots: 3, recommendedSlots: 16 });
+    expect(await t.run(async (ctx) => ctx.db.get(machineId))).toMatchObject({
+      slotPolicy: "fixed",
+      maxSlots: 3,
+    });
+  });
+
   it("assigns only an online Worker ready for the exact Image Release", async () => {
     const t = convexTest(schema, modules);
     const machineId = await addWorker(t, "alpha");

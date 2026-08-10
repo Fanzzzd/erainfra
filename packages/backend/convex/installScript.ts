@@ -445,9 +445,14 @@ cat > "$START_SCRIPT" <<'START_AGENT'
 set -euo pipefail
 RC_HOME="$HOME/.runner-center"
 AGENT_DIR="$RC_HOME/agent"
+READY_FILE="$RC_HOME/agent.ready"
 set -a
 . "$AGENT_DIR/.env"
 set +a
+RC_AGENT_VERSION=$(grep '^AGENT_VERSION=' "$RC_HOME/install-meta" | cut -d= -f2-)
+export RC_AGENT_VERSION
+export RC_READY_FILE="$READY_FILE"
+rm -f "$READY_FILE"
 if [ "$(uname -s)" = 'Linux' ]; then
   case "$(uname -m)" in
     x86_64|amd64) runtime_arch='x86_64' ;;
@@ -745,12 +750,13 @@ UNIT
 esac
 
 : > "$LOG_FILE"
+rm -f "$RC_HOME/agent.ready"
 start_service
 
 printf '✅ Started the Runner Center agent with %s.\n' "$SERVICE_KIND"
 CONNECTED=0
 for second in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if grep -Fq 'Runner Center agent connected' "$LOG_FILE" 2>/dev/null; then
+  if [ "$(cat "$RC_HOME/agent.ready" 2>/dev/null || true)" = "$VERSION" ]; then
     CONNECTED=1
     break
   fi

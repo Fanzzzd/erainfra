@@ -480,7 +480,7 @@ function MachinesPage() {
                       </div>
                       {machine.recommendedSlots !== undefined && (
                         <p className="mt-1 text-[10px] text-[#7c7c85]">
-                          {machine.slotPolicy === "auto" ? "auto" : "fixed"} · recommended{" "}
+                          {machine.slotPolicy === "fixed" ? "fixed" : "auto"} · recommended{" "}
                           {machine.recommendedSlots}
                         </p>
                       )}
