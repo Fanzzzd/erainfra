@@ -10,7 +10,7 @@ import {
   type ExperimentExecution,
   type MachineOs,
 } from "./provision.js";
-import { prepareProfile, type ProfileSpec } from "./readiness.js";
+import { prepareProfile, type ReadinessFacts, type ProfileSpec } from "./readiness.js";
 import { clearReadinessSignal, publishReadinessSignal } from "./readiness-signal.js";
 
 type PendingCommand = { commandId: string; runnerName: string };
@@ -89,7 +89,7 @@ const reportReadiness = makeFunctionReference<
     imageRelease: string;
     state: "preparing" | "ready" | "failed";
     error?: string;
-  },
+  } & Partial<ReadinessFacts>,
   null
 >("workerApi:reportReadiness");
 const workerProfiles = makeFunctionReference<"query", { token: string }, ProfileSpec[]>(
@@ -394,7 +394,11 @@ async function refreshProfiles() {
           imageRelease: profile.imageRelease,
           ...readiness,
         });
-        console.log(`${profile.profile} readiness: ${readiness.state}`);
+        const failed = readiness.checks.filter((check) => !check.passed).map((c) => c.name);
+        console.log(
+          `${profile.profile} readiness: ${readiness.state} (${readiness.isolation}, ${readiness.boundary})` +
+            (failed.length > 0 ? `; failed: ${failed.join(", ")}` : ""),
+        );
       }
       if (!refreshAgain || shuttingDown) break;
     }

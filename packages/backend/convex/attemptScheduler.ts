@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
+import { hasSnapshotHeadroom } from "./isolation";
 
 const WORKER_OFFLINE_AFTER_MS = 120_000;
 const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
@@ -39,7 +40,12 @@ export const tryAssign = internalMutation({
         .map((profile) => [profile.name, profile]),
     );
     const machineById = new Map(machines.map((machine) => [machine._id, machine]));
-    const reservedByMachine = new Map<string, { vcpus: number; memoryMiB: number }>();
+    // `count` is what disk admission needs: copy-on-write growth is per running
+    // guest, not per vCPU.
+    const reservedByMachine = new Map<
+      string,
+      { vcpus: number; memoryMiB: number; count: number }
+    >();
     for (const attempt of attempts) {
       if (
         attempt.machineId === undefined ||
@@ -49,9 +55,14 @@ export const tryAssign = internalMutation({
       ) {
         continue;
       }
-      const reserved = reservedByMachine.get(attempt.machineId) ?? { vcpus: 0, memoryMiB: 0 };
+      const reserved = reservedByMachine.get(attempt.machineId) ?? {
+        vcpus: 0,
+        memoryMiB: 0,
+        count: 0,
+      };
       reserved.vcpus += attempt.vcpus;
       reserved.memoryMiB += attempt.memoryMiB;
+      reserved.count += 1;
       reservedByMachine.set(attempt.machineId, reserved);
     }
     for (const experiment of experiments) {
@@ -66,9 +77,11 @@ export const tryAssign = internalMutation({
       const reserved = reservedByMachine.get(experiment.machineId) ?? {
         vcpus: 0,
         memoryMiB: 0,
+        count: 0,
       };
       reserved.vcpus += experiment.vcpus;
       reserved.memoryMiB += experiment.memoryMiB;
+      reserved.count += 1;
       reservedByMachine.set(experiment.machineId, reserved);
     }
     const pending = [
@@ -103,15 +116,19 @@ export const tryAssign = internalMutation({
             readiness.state === "ready" &&
             now - readiness.checkedAt < READINESS_STALE_AFTER_MS,
         )
-        .map((readiness) => machineById.get(readiness.machineId))
+        .map((readiness) => ({ readiness, machine: machineById.get(readiness.machineId) }))
         .filter(
-          (machine): machine is NonNullable<typeof machine> =>
-            machine !== undefined &&
-            now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS &&
-            machine.usedSlots < machine.maxSlots,
+          (entry): entry is { readiness: typeof entry.readiness; machine: Doc<"machines"> } =>
+            entry.machine !== undefined &&
+            now - entry.machine.lastSeen < WORKER_OFFLINE_AFTER_MS &&
+            entry.machine.usedSlots < entry.machine.maxSlots,
         )
-        .map((machine) => {
-          const reserved = reservedByMachine.get(machine._id) ?? { vcpus: 0, memoryMiB: 0 };
+        .map(({ readiness, machine }) => {
+          const reserved = reservedByMachine.get(machine._id) ?? {
+            vcpus: 0,
+            memoryMiB: 0,
+            count: 0,
+          };
           const usableVCPUs =
             machine.cpus === undefined
               ? Number.POSITIVE_INFINITY
@@ -126,7 +143,8 @@ export const tryAssign = internalMutation({
                 : Math.floor(machine.memoryMiB * 0.9);
           if (
             reserved.vcpus + work.vcpus > usableVCPUs ||
-            reserved.memoryMiB + work.memoryMiB > usableMemoryMiB
+            reserved.memoryMiB + work.memoryMiB > usableMemoryMiB ||
+            !hasSnapshotHeadroom(readiness.storage, reserved.count)
           ) {
             return undefined;
           }
@@ -155,9 +173,14 @@ export const tryAssign = internalMutation({
       } else {
         await ctx.db.patch(item.work._id, { machineId: machine._id });
       }
-      const reserved = reservedByMachine.get(machine._id) ?? { vcpus: 0, memoryMiB: 0 };
+      const reserved = reservedByMachine.get(machine._id) ?? {
+        vcpus: 0,
+        memoryMiB: 0,
+        count: 0,
+      };
       reserved.vcpus += work.vcpus;
       reserved.memoryMiB += work.memoryMiB;
+      reserved.count += 1;
       reservedByMachine.set(machine._id, reserved);
       assigned += 1;
     }

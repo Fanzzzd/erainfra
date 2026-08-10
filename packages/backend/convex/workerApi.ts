@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { releaseAttemptSlot, releaseMachineSlot } from "./attemptScheduler";
+import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 
 const completedExecutorDrainMs = 30_000;
 
@@ -361,6 +362,7 @@ export const reportReadiness = mutation({
     imageRelease: v.string(),
     state: v.union(v.literal("preparing"), v.literal("ready"), v.literal("failed")),
     error: v.optional(v.string()),
+    ...readinessFactsValidator,
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -377,6 +379,9 @@ export const reportReadiness = mutation({
     ) {
       throw new ConvexError("Readiness does not match an active Profile contract");
     }
+    // A Worker measures its own host, so the control plane cannot re-run these
+    // checks. It can, and does, refuse a report that contradicts itself.
+    assertReadinessContract(args.state, args.executor, args);
     const existing = await ctx.db
       .query("workerReadiness")
       .withIndex("by_machine_profile", (q) =>
@@ -391,6 +396,14 @@ export const reportReadiness = mutation({
       checkedAt: Date.now(),
       preparedAt: args.state === "ready" ? Date.now() : undefined,
       lastError: args.error?.slice(0, 1_000),
+      isolation: args.isolation,
+      boundary: args.boundary,
+      checks: args.checks?.slice(0, 32),
+      cacheScope: args.cacheScope,
+      cacheSharedWritable: args.cacheSharedWritable,
+      hardware: args.hardware,
+      storage: args.storage,
+      network: args.network,
     };
     if (existing === null) {
       await ctx.db.insert("workerReadiness", { machineId: machine._id, ...patch });

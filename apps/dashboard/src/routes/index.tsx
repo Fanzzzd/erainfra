@@ -298,11 +298,11 @@ function MachinesPage() {
             runs-on: {profiles?.[0]?.name ?? "rc-linux-js"}
           </code>
         </div>
-        <Table className="min-w-[900px]">
+        <Table className="min-w-[980px]">
           <TableHeader>
             <TableRow>
               <TableHead>Profile / scale set</TableHead>
-              <TableHead>Executor</TableHead>
+              <TableHead>Isolation</TableHead>
               <TableHead>Resources</TableHead>
               <TableHead>Ready Workers</TableHead>
               <TableHead>Capacity</TableHead>
@@ -323,36 +323,7 @@ function MachinesPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              profiles.map((profile) => (
-                <TableRow key={profile._id}>
-                  <TableCell>
-                    <code className="text-xs text-zinc-100">{profile.name}</code>
-                    <p className="mt-0.5 text-[10px] text-[#7c7c85]">{profile.scaleSetName}</p>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="font-mono text-zinc-400">
-                      {profile.executor}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="tabular-nums text-xs text-zinc-300">
-                    {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
-                  </TableCell>
-                  <TableCell className="tabular-nums text-xs text-zinc-300">
-                    {profile.readyWorkers}
-                  </TableCell>
-                  <TableCell className="tabular-nums text-xs text-zinc-300">
-                    {profile.freeSlots}/{profile.readySlots} free
-                  </TableCell>
-                  <TableCell>
-                    <code
-                      className="block max-w-[270px] truncate text-[10px] text-[#7c7c85]"
-                      title={profile.imageRelease}
-                    >
-                      {profile.imageRelease}
-                    </code>
-                  </TableCell>
-                </TableRow>
-              ))
+              profiles.map((profile) => <ProfileRow key={profile._id} profile={profile} />)
             )}
           </TableBody>
         </Table>
@@ -697,6 +668,150 @@ function ActiveRuns({
           <span className="max-w-40 truncate text-xs text-[#7c7c85]">{job.workflowName}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+type ProfileSummary = (typeof api.profiles.list)["_returnType"][number];
+
+/**
+ * One Profile, plus the evidence behind its readiness.
+ *
+ * The isolation boundary is the fact a workflow author actually needs before
+ * pointing `runs-on` at a Profile, so it is a column rather than something to
+ * infer from the executor name. Expanding a row shows exactly which
+ * prerequisite each Worker proved, which is what turns "not ready" into an
+ * actionable message.
+ */
+function ProfileRow({ profile }: { profile: ProfileSummary }) {
+  const [expanded, setExpanded] = useState(false);
+  const guestKernel = profile.boundary === "guest-kernel";
+  const unhealthy = profile.workers.filter((worker) => worker.state !== "ready");
+
+  return (
+    <>
+      <TableRow
+        className="cursor-pointer"
+        onClick={() => setExpanded((open) => !open)}
+        aria-expanded={expanded}
+      >
+        <TableCell>
+          <code className="text-xs text-zinc-100">{profile.name}</code>
+          <p className="mt-0.5 text-[10px] text-[#7c7c85]">{profile.scaleSetName}</p>
+        </TableCell>
+        <TableCell>
+          <Badge
+            variant="outline"
+            className={guestKernel ? "text-emerald-300" : "text-amber-300"}
+            title={
+              guestKernel
+                ? "Each Job boots its own guest kernel. Safe for untrusted pull request code."
+                : "Every Job shares this host's kernel and Docker daemon. Trusted repositories only."
+            }
+          >
+            {guestKernel ? "guest kernel" : "shared kernel"}
+          </Badge>
+          <p className="mt-0.5 font-mono text-[10px] text-[#7c7c85]">
+            {profile.executor}
+            {profile.trustedOnly && " · trusted only"}
+          </p>
+        </TableCell>
+        <TableCell className="tabular-nums text-xs text-zinc-300">
+          {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
+        </TableCell>
+        <TableCell className="tabular-nums text-xs text-zinc-300">
+          {profile.readyWorkers}
+          {unhealthy.length > 0 && (
+            <span className="ml-1.5 text-[10px] text-amber-300">+{unhealthy.length} not ready</span>
+          )}
+        </TableCell>
+        <TableCell className="tabular-nums text-xs text-zinc-300">
+          {profile.freeSlots}/{profile.readySlots} free
+        </TableCell>
+        <TableCell>
+          <code
+            className="block max-w-[270px] truncate text-[10px] text-[#7c7c85]"
+            title={profile.imageRelease}
+          >
+            {profile.imageRelease}
+          </code>
+        </TableCell>
+      </TableRow>
+      {expanded && (
+        <TableRow>
+          <TableCell colSpan={6} className="bg-[#09090a] px-4 py-3">
+            {profile.workers.length === 0 ? (
+              <p className="text-xs text-[#8a8a93]">
+                No Worker has reported readiness for this Profile yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {profile.workers.map((worker) => (
+                  <WorkerReadiness key={worker.machineId} worker={worker} />
+                ))}
+              </div>
+            )}
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+}
+
+function WorkerReadiness({ worker }: { worker: ProfileSummary["workers"][number] }) {
+  const facts = [
+    worker.isolation,
+    worker.hardware?.cpuModel,
+    worker.hardware &&
+      `${worker.hardware.cpus ?? "?"} CPU · ${formatMemory(worker.hardware.memoryMiB ?? 0)}`,
+    worker.hardware?.kvm === true && `KVM (${worker.hardware.virtualization ?? "hardware"})`,
+    worker.storage?.poolFreeMiB !== undefined &&
+      `${worker.storage.snapshotter ?? "snapshotter"}: ${formatMemory(worker.storage.poolFreeMiB)} free of ${formatMemory(worker.storage.poolTotalMiB ?? 0)}`,
+    worker.network?.subnet && `network ${worker.network.subnet} · ${worker.network.egressMode}`,
+    worker.cacheScope &&
+      `cache ${worker.cacheScope}${worker.cacheSharedWritable ? " (shared writable)" : " (nothing shared)"}`,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+
+  return (
+    <div className="rounded-md border border-white/[0.08] px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <code className="text-xs text-zinc-100">{worker.machineName}</code>
+        <Badge
+          variant="outline"
+          className={worker.state === "ready" ? "text-emerald-300" : "text-amber-300"}
+        >
+          {worker.state}
+        </Badge>
+        {!worker.online && (
+          <Badge variant="outline" className="text-[#8a8a93]">
+            offline
+          </Badge>
+        )}
+        <span className="tabular-nums text-[10px] text-[#7c7c85]">
+          {worker.usedSlots}/{worker.maxSlots} slots used
+        </span>
+      </div>
+      {facts.length > 0 && (
+        <p className="mt-1.5 text-[10px] leading-4 text-[#8a8a93]">{facts.join(" · ")}</p>
+      )}
+      {worker.checks !== undefined && worker.checks.length > 0 && (
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {worker.checks.map((check) => (
+            <li key={check.name}>
+              <Badge
+                variant="outline"
+                className={check.passed ? "text-emerald-300" : "text-red-300"}
+                title={check.detail}
+              >
+                {check.passed ? "✓" : "✗"} {check.name}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+      {worker.lastError !== undefined && worker.lastError !== "" && (
+        <p className="mt-2 break-words text-[10px] leading-4 text-red-300">{worker.lastError}</p>
+      )}
     </div>
   );
 }

@@ -336,6 +336,13 @@ export default defineSchema({
   // A Worker is eligible for a Profile only after it has proved the exact
   // executor and immutable Image Release locally. Online heartbeats alone are
   // never enough to advertise capacity.
+  //
+  // The fields below `lastError` describe what the Worker actually proved:
+  // which isolation boundary it enforces, which named prerequisite failed, what
+  // hardware and storage it measured, and what — if anything — survives between
+  // Jobs. They are optional because rows written by an earlier deployment must
+  // keep validating; `boundary` being absent means "not yet reported", which
+  // readiness treats as unproven rather than as a guest kernel.
   workerReadiness: defineTable({
     machineId: v.id("machines"),
     profile: v.string(),
@@ -350,6 +357,45 @@ export default defineSchema({
     checkedAt: v.number(),
     preparedAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
+    isolation: v.optional(v.string()),
+    boundary: v.optional(v.union(v.literal("guest-kernel"), v.literal("shared-kernel"))),
+    checks: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          passed: v.boolean(),
+          detail: v.optional(v.string()),
+        }),
+      ),
+    ),
+    // The sharing domain of anything that outlives a Job, and whether two Jobs
+    // can write to it. A Profile that promises isolation must report false.
+    cacheScope: v.optional(v.string()),
+    cacheSharedWritable: v.optional(v.boolean()),
+    hardware: v.optional(
+      v.object({
+        arch: v.optional(v.string()),
+        cpus: v.optional(v.number()),
+        memoryMiB: v.optional(v.number()),
+        cpuModel: v.optional(v.string()),
+        virtualization: v.optional(v.string()),
+        kvm: v.optional(v.boolean()),
+      }),
+    ),
+    storage: v.optional(
+      v.object({
+        snapshotter: v.optional(v.string()),
+        poolTotalMiB: v.optional(v.number()),
+        poolFreeMiB: v.optional(v.number()),
+      }),
+    ),
+    network: v.optional(
+      v.object({
+        policyName: v.optional(v.string()),
+        subnet: v.optional(v.string()),
+        egressMode: v.optional(v.string()),
+      }),
+    ),
   })
     .index("by_machine_profile", ["machineId", "profile"])
     .index("by_profile_state", ["profile", "state"]),
