@@ -23,7 +23,18 @@ type fakeExecutor struct {
 	startedSpec    executor.Spec
 }
 
-func (f *fakeExecutor) Preflight(context.Context) error { return f.preflightError }
+func (f *fakeExecutor) Preflight(context.Context) (executor.Report, error) {
+	report := executor.Report{
+		Isolation: executor.IsolationFirecracker,
+		Boundary:  executor.BoundaryGuestKernel,
+	}
+	if f.preflightError != nil {
+		report.Fail(executor.CheckKVM, f.preflightError)
+		return report, f.preflightError
+	}
+	report.Pass(executor.CheckKVM, "fake")
+	return report, nil
+}
 
 func (f *fakeExecutor) PrepareImage(_ context.Context, image string) error {
 	f.preparedImage = image
@@ -101,8 +112,12 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	client := unixClient(t, runtime)
 	ctx := context.Background()
 
-	if err := client.Preflight(ctx); err != nil {
+	report, err := client.Preflight(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !report.Ready() || report.Boundary != executor.BoundaryGuestKernel {
+		t.Fatalf("the readiness report did not cross the socket intact: %+v", report)
 	}
 	image := testSpec().ImageRelease
 	if err := client.PrepareImage(ctx, image); err != nil {

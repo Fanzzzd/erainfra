@@ -26,6 +26,10 @@ LockPersonality=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LimitNOFILE=1048576
+# Explicit host-side process admission. A guest cannot exhaust host PIDs across
+# the VM boundary, but the runtime's own VMM and CNI processes are bounded here
+# so one Worker can never starve the machine.
+TasksMax=8192
 
 [Install]
 WantedBy=multi-user.target

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Fanzzzd/runner-center/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/runner-center/apps/runtime/internal/firecracker"
+	"github.com/Fanzzzd/runner-center/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/runner-center/apps/runtime/internal/runtimeapi"
 )
 
@@ -39,18 +40,30 @@ func main() {
 
 func run(ctx context.Context, args []string) (int, error) {
 	if len(args) != 1 {
-		return 2, errors.New("usage: runner-center-runtime version|serve|preflight|prepare|run|experiment")
+		return 2, errors.New(
+			"usage: runner-center-runtime " +
+				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|run|experiment",
+		)
 	}
 	if args[0] == "version" {
 		fmt.Printf("runner-center-runtime %s\n", version)
 		return 0, nil
+	}
+	// The provisioner renders both halves of the job network policy from the
+	// same build that later verifies them, so an installed host can never drift
+	// from what Preflight demands. Neither command needs the runtime socket.
+	if args[0] == "render-cni" || args[0] == "render-nftables" {
+		return renderNetwork(args[0])
+	}
+	if args[0] == "verify-network" {
+		return verifyNetwork(ctx)
 	}
 	if args[0] == "serve" {
 		runtime, err := firecracker.New(runtimeConfig())
 		if err != nil {
 			return 2, err
 		}
-		if err := runtime.Preflight(ctx); err != nil {
+		if _, err := runtime.Preflight(ctx); err != nil {
 			return 1, err
 		}
 		group := strings.TrimSpace(os.Getenv("RC_RUNTIME_GROUP"))
@@ -69,7 +82,13 @@ func run(ctx context.Context, args []string) (int, error) {
 
 	switch args[0] {
 	case "preflight":
-		if err := client.Preflight(ctx); err != nil {
+		report, err := client.Preflight(ctx)
+		// The Worker parses this document to publish readiness, so it is written
+		// to stdout whether or not every check passed.
+		if encodeErr := json.NewEncoder(os.Stdout).Encode(report); encodeErr != nil {
+			return 1, fmt.Errorf("write readiness report: %w", encodeErr)
+		}
+		if err != nil {
 			return 1, err
 		}
 		return 0, nil
@@ -192,6 +211,70 @@ func runExperiment(ctx context.Context, client *runtimeapi.Client) (int, error) 
 	return result.ExitCode, nil
 }
 
+func renderNetwork(command string) (int, error) {
+	config := runtimeConfig()
+	if err := config.Validate(); err != nil {
+		return 2, err
+	}
+	if command == "render-cni" {
+		document, err := config.Network.Conflist()
+		if err != nil {
+			return 1, err
+		}
+		if _, err := os.Stdout.Write(document); err != nil {
+			return 1, fmt.Errorf("write CNI configuration: %w", err)
+		}
+		return 0, nil
+	}
+	ruleset, err := config.Network.Nftables()
+	if err != nil {
+		return 1, err
+	}
+	if _, err := io.WriteString(os.Stdout, ruleset); err != nil {
+		return 1, fmt.Errorf("write nftables ruleset: %w", err)
+	}
+	return 0, nil
+}
+
+// verifyNetwork re-checks the installed job network policy against this build's
+// expectation without needing the privileged runtime to be running. An operator
+// uses it after any host firewall change; readiness enforces the same two
+// checks continuously.
+func verifyNetwork(ctx context.Context) (int, error) {
+	config := runtimeConfig()
+	if err := config.Validate(); err != nil {
+		return 2, err
+	}
+	var problems []error
+	conflist, err := os.ReadFile(config.ConflistPath())
+	switch {
+	case err != nil:
+		problems = append(problems, fmt.Errorf("read %s: %w", config.ConflistPath(), err))
+	default:
+		if verifyErr := config.Network.VerifyConflist(conflist); verifyErr != nil {
+			problems = append(problems, verifyErr)
+		} else {
+			fmt.Printf("ok    CNI configuration %s\n", config.ConflistPath())
+		}
+	}
+	live, err := netpolicy.ReadLiveTable(ctx, config.NftBinary)
+	switch {
+	case err != nil:
+		problems = append(problems, err)
+	default:
+		if verifyErr := config.Network.VerifyNftables(live); verifyErr != nil {
+			problems = append(problems, verifyErr)
+		} else {
+			fmt.Printf("ok    nftables table inet %s denies host, RFC1918 and east-west traffic for %s\n",
+				netpolicy.TableName, config.Network.Subnet)
+		}
+	}
+	if len(problems) > 0 {
+		return 1, errors.Join(problems...)
+	}
+	return 0, nil
+}
+
 func runtimeSocket() string {
 	if value := strings.TrimSpace(os.Getenv("RC_RUNTIME_SOCKET")); value != "" {
 		return value
@@ -212,11 +295,44 @@ func runtimeConfig() firecracker.Config {
 	setIfPresent(&config.ContainerdAddress, "RC_CONTAINERD_ADDRESS")
 	setIfPresent(&config.ContainerdNamespace, "RC_CONTAINERD_NAMESPACE")
 	setIfPresent(&config.Snapshotter, "RC_CONTAINERD_SNAPSHOTTER")
-	setIfPresent(&config.CNIName, "RC_CNI_NAME")
 	setIfPresent(&config.CNIConfigDir, "RC_CNI_CONFIG_DIR")
 	setIfPresent(&config.CNIBinDir, "RC_CNI_BIN_DIR")
 	setIfPresent(&config.WorkDir, "RC_RUNTIME_DIR")
+	setIfPresent(&config.NftBinary, "RC_NFT_BINARY")
+	setIfPresent(&config.ThinPoolName, "RC_THIN_POOL")
+	setIfPresent(&config.Network.Name, "RC_CNI_NAME")
+	setIfPresent(&config.Network.Subnet, "RC_NETWORK_SUBNET")
+	if value := strings.TrimSpace(os.Getenv("RC_EGRESS_MODE")); value != "" {
+		config.Network.EgressMode = netpolicy.EgressMode(value)
+	}
+	if value := commaSeparated("RC_EGRESS_ALLOW"); value != nil {
+		config.Network.AllowedDestinations = value
+	}
+	if value := commaSeparated("RC_NAMESERVERS"); value != nil {
+		config.Network.Nameservers = value
+	}
+	if value := strings.TrimSpace(os.Getenv("RC_MIN_POOL_FREE_MIB")); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			config.MinPoolFreeMiB = parsed
+		}
+	}
 	return config
+}
+
+// commaSeparated returns nil when the variable is unset, so an operator who
+// sets nothing keeps the built-in policy rather than an empty list.
+func commaSeparated(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	for _, value := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 func positiveInt64Env(name string) (int64, error) {

@@ -15,7 +15,9 @@ The design combines:
 
 Fireactions is the main Linux execution reference, not a second control plane. ARC remains the
 better choice when the whole fleet already runs Kubernetes. The decision and source comparison
-are in [ADR 0001](docs/adr/0001-use-scale-sets-with-platform-executors.md).
+are in [ADR 0001](docs/adr/0001-use-scale-sets-with-platform-executors.md); the isolation boundary,
+network policy and cache contract are in
+[ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md).
 
 ## Product contract
 
@@ -44,12 +46,34 @@ compatibility.
 | Windows             | Hyper-V                            | Preview only; not advertised ready by the Worker.                     |
 
 Both Linux executors use the new Profile and scale-set protocol. Docker deliberately has no host
-bind mounts, privileged mode, or Docker socket, but it shares the host kernel and the Docker daemon
-can inspect container state. Each Docker Profile also has one persistent named volume for pnpm's
-content-addressable store. This is why Docker Profiles are restricted to mutually trusted jobs and
-should map to one trust domain. Use Firecracker for untrusted code. The old `workflow_job` webhook
-scheduler remains temporarily for migration; the dashboard labels its Jobs view and GitHub App
-setup as legacy.
+bind mounts, privileged mode, Docker socket, or shared volume, but it shares the host kernel and
+the Docker daemon can inspect container state. That is why Docker Profiles are restricted to
+mutually trusted jobs and should map to one trust domain. Use Firecracker for untrusted code. The
+dashboard shows the real boundary -- `guest kernel` or `shared kernel` -- next to every Profile. The
+old `workflow_job` webhook scheduler remains temporarily for migration; the dashboard labels its
+Jobs view and GitHub App setup as legacy.
+
+### The job isolation contract
+
+For a Firecracker Profile, each Attempt gets:
+
+- a fresh guest kernel and a copy-on-write root prepared from the Image Release's chain ID; no host
+  path, socket, volume or device is shared, and the snapshot is discarded on exit;
+- a point-to-point job network whose policy is rendered and verified by the runtime itself. Traffic
+  to the host, to other guests, and to RFC1918, CGNAT, link-local and other special-purpose ranges
+  is dropped; an operator adds destinations explicitly, or switches a Profile to allowlist-only
+  egress. A Worker whose nftables table no longer matches its Profile stops being ready;
+- single-use JIT credentials over MMDSv2, never in argv, an image layer, a host environment or a
+  log;
+- teardown on success, failure, cancellation, timeout, Agent crash and controller reconciliation;
+- CPU, memory and thin-pool admission before the Attempt is placed, and one process-bounded runtime
+  service per host.
+
+Nothing writable survives a job on either Linux executor. Warm state comes from the immutable Image
+Release; cross-job dependency caching belongs to GitHub's own cache service, which is authenticated
+and scoped by repository, branch and key, and is reachable over allowed egress. See
+[ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md) for why Runner Center does not run a
+second cache service of its own.
 
 ## Develop locally
 
@@ -175,49 +199,51 @@ rc update
 
 For a trusted-only Docker Profile, Docker 28+ and enough local image storage are sufficient. The
 Worker pulls the exact manifest digest before becoming schedulable; jobs then use `--pull=never`,
-explicit CPU/memory/process limits, an unprivileged container user, and no host mounts. This is the
-fastest path to add an existing Linux machine without privileged host reconfiguration. Readiness
-also creates and labels the Profile's pnpm cache volume; remove that volume to force a cold cache.
+explicit CPU/memory/process limits, an unprivileged container user, and no host mounts or volumes.
+This is the fastest path to add an existing Linux machine without privileged host reconfiguration.
 
 For repositories that run fork PRs or other untrusted code, use Firecracker. It needs system-level
-provisioning. Before enrollment, provide:
+provisioning, and `deploy/provision-firecracker-host.sh` does all of it. The host must have Linux
+x64 or ARM64 with hardware virtualization and `/dev/kvm`, containerd 1.7+, `nft`, `dmsetup`, and a
+dedicated block device pair for the device-mapper thin-pool. The Worker Agent itself stays
+unprivileged: Firecracker, CNI and devmapper are owned by a separate root service.
 
-- Linux x64 or ARM64 with hardware virtualization and `/dev/kvm` available to root;
-- Firecracker;
-- containerd 1.7+ with the `devmapper` snapshotter;
-- a dedicated LVM thin-pool block device for devmapper (50 GiB minimum; do not reuse the root disk);
-- CNI `bridge`, `firewall`, `host-local`, and `tc-redirect-tap` plugins;
-- a kernel at `/var/lib/runner-center/kernels/vmlinux`;
-- IP forwarding and a `runner-center` CNI network;
-- enough non-root runtime storage for concurrent writable snapshots.
-
-The Worker Agent stays unprivileged. Firecracker, CNI, and devmapper are owned by a separate root
-service whose executable must live in a root-owned directory. After downloading the matching
-`runner-center-runtime-linux-<arch>` release asset and verifying its `.sha256` sidecar:
+Download the matching `runner-center-runtime-linux-<arch>` release asset, verify its `.sha256`
+sidecar, then:
 
 ```bash
-case "$(uname -m)" in
-  x86_64|amd64) runtime_arch=x86_64 ;;
-  arm64|aarch64) runtime_arch=arm64 ;;
-  *) exit 1 ;;
-esac
-sudo groupadd --force runner-center
-sudo usermod --append --groups runner-center "$USER"
-sudo install -D -o root -g root -m 0755 "runner-center-runtime-linux-$runtime_arch" \
-  /usr/local/lib/runner-center/runner-center-runtime
-sudo install -o root -g root -m 0644 deploy/systemd/runner-center-runtime.service \
-  /etc/systemd/system/runner-center-runtime.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now runner-center-runtime.service
+sudo deploy/provision-firecracker-host.sh \
+  --runtime-binary ./runner-center-runtime-linux-x86_64 \
+  --data-device /dev/nvme1n1 --meta-device /dev/nvme2n1 \
+  --worker-user "$USER"
 ```
 
-Log out and back in after the group change, then run `rc doctor`. The user-owned release binary is
-only a socket client; the systemd service never executes files from `~/.runner-center`.
+It installs a checksum-pinned Firecracker, the CNI plugins, a pinned guest kernel, the thin-pool, a
+containerd instance dedicated to Runner Center, the rendered job network policy, and the privileged
+runtime service, then runs readiness and prints the report. Everything lands under
+`/opt/runner-center`, `/etc/runner-center` and `/var/lib/runner-center`, so a host that also runs
+Docker or Kubernetes keeps its own containerd configuration, CNI directory and firewall tables.
+`sudo deploy/provision-firecracker-host.sh --uninstall` reverses it.
 
-`rc doctor` verifies the exact prerequisites the executor uses. Runner Center does not silently
-create or wipe a thin-pool device: selecting that device is an explicit operator storage decision.
-The official Fireactions installation guide is a compatible reference for Firecracker,
-containerd-devmapper, CNI, kernel, and sysctl setup.
+Useful flags: `--file-backed-pool GIB` (32 minimum) backs the thin-pool with sparse files for evaluation only
+(never in production: a full root filesystem then fails every running job at once);
+`--egress-mode allowlist` with `--egress-allow CIDR,CIDR` denies every destination a Profile has not
+declared; `--network-subnet` moves the guest range if it collides with the host's.
+
+Log out and back in after the group change, then run `rc doctor`. The user-owned release binary is
+only a socket client; the systemd service never executes files from `~/.runner-center`. Two operator
+commands are worth knowing:
+
+```bash
+# after any host firewall change, and whenever readiness reports job-network-policy
+sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
+# the full readiness report, one line per prerequisite
+/usr/local/lib/runner-center/runner-center-runtime preflight
+```
+
+Runner Center does not silently create or wipe a dedicated thin-pool device: selecting that device
+is an explicit operator storage decision, and the provisioner destroys only the devices you name.
+The official Fireactions installation guide remains a compatible reference for the same components.
 
 ### macOS Worker prerequisites
 
@@ -250,10 +276,11 @@ jobs:
 ```
 
 Node is already in the Image Release's toolcache, so `setup-node` validates/selects it without a
-network download. Be deliberate with GitHub-hosted dependency caches: self-hosted compute does not
-consume hosted Actions minutes, but `actions/cache` and artifacts still consume Actions storage and
-can be slower than a warm local image. Prefer immutable image prewarming and Turborepo Remote Cache;
-never share a writable dependency cache across untrusted repositories.
+network download. Nothing writable survives a job, so a dependency cache has to come from outside
+the guest: `actions/cache` is authenticated and scoped by repository, branch and key, and a remote
+build cache such as Turborepo's works the same way. Both consume Actions storage and can be slower
+than a warm immutable image, so prefer prewarming the Image Release for anything that changes
+rarely. A Profile on allowlist-only egress needs its cache endpoint declared with `--egress-allow`.
 
 ## Experiments
 
@@ -272,6 +299,9 @@ control channel; weakening the CI image with SSH would make both products less s
 ## Security and operations
 
 - Every CI Attempt gets a fresh VM and single-use JIT registration.
+- The job network policy is rendered and verified by the same runtime build that enforces it; a
+  Worker whose live nftables table drifts from its Profile stops being ready.
+- No host path, socket, volume or device is shared with a job, and nothing writable outlives one.
 - Image and product releases are immutable and checksum/provenance verified.
 - The Linux guest obtains workload metadata through MMDSv2; it has no host SSH path.
 - Worker cancellation terminates the complete executor process group and destroys VM state.
@@ -303,7 +333,8 @@ overwritten; a correction is a new version.
 ```text
 apps/agent       Worker daemon and Tart/legacy provisioners
 apps/controller  official scale-set listener adapter
-apps/runtime     Firecracker host runtime and guest bootstrap
+apps/runtime     Firecracker host runtime, job network policy, and guest bootstrap
+deploy           host provisioner and systemd units
 apps/dashboard   React dashboard
 packages/backend Convex control plane
 packages/release deterministic release packager

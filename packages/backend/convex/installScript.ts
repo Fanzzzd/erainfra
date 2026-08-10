@@ -577,12 +577,17 @@ case "$command" in
       else
         printf 'WARN Docker is unavailable to this user.\n' >&2
       fi
-      if "$runtime" preflight; then
-        printf 'OK the privileged runtime reports Firecracker, KVM, devmapper, kernel and CNI ready.\n'
+      # preflight writes its readiness document to stdout and the summary of any
+      # failed check to stderr, so capturing stdout keeps doctor readable while
+      # still showing an operator exactly which prerequisite is broken.
+      if "$runtime" preflight >/dev/null; then
+        printf 'OK the privileged runtime reports Firecracker, KVM, devmapper, kernel, CNI and the job network policy ready.\n'
         usable=1
       else
         printf 'WARN the privileged Firecracker runtime is unavailable or incomplete.\n' >&2
-        printf 'Use a dedicated LVM thin-pool device; never place it on the root filesystem.\n' >&2
+        printf 'Re-run deploy/provision-firecracker-host.sh, or verify the network policy alone with:\n' >&2
+        printf '  sudo /usr/local/lib/runner-center/runner-center-runtime verify-network\n' >&2
+        printf 'Use a dedicated thin-pool device; never place it on the root filesystem.\n' >&2
       fi
       if [ "$usable" -eq 0 ]; then exit 1; fi
     elif [ "$(uname -s)" = 'Darwin' ]; then

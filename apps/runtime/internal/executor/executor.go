@@ -81,7 +81,11 @@ type Lease interface {
 }
 
 type Executor interface {
-	Preflight(ctx context.Context) error
+	// Preflight returns the full readiness Report even when it fails, so the
+	// control plane can show which prerequisite is broken rather than only that
+	// something is. A non-nil error always accompanies a Report that is not
+	// Ready.
+	Preflight(ctx context.Context) (Report, error)
 	PrepareImage(ctx context.Context, imageRelease string) error
 	Start(ctx context.Context, spec Spec) (Lease, error)
 }

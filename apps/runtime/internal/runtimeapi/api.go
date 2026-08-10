@@ -42,6 +42,14 @@ type prepareRequest struct {
 	ImageRelease string `json:"imageRelease"`
 }
 
+// preflightResponse always carries the full readiness Report, including when a
+// check failed: "not ready, and here is exactly which prerequisite is broken"
+// is an answer the Worker forwards to the control plane, not a protocol error.
+type preflightResponse struct {
+	Report executor.Report `json:"report"`
+	Error  string          `json:"error,omitempty"`
+}
+
 type Client struct {
 	httpClient *http.Client
 }
@@ -61,8 +69,15 @@ func NewClient(socketPath string) (*Client, error) {
 	}}, nil
 }
 
-func (c *Client) Preflight(ctx context.Context) error {
-	return c.do(ctx, "/v1/preflight", struct{}{}, nil)
+func (c *Client) Preflight(ctx context.Context) (executor.Report, error) {
+	var response preflightResponse
+	if err := c.do(ctx, "/v1/preflight", struct{}{}, &response); err != nil {
+		return executor.Report{}, err
+	}
+	if response.Error != "" {
+		return response.Report, errors.New(response.Error)
+	}
+	return response.Report, nil
 }
 
 func (c *Client) PrepareImage(ctx context.Context, imageRelease string) error {
@@ -225,11 +240,12 @@ func Serve(
 func handler(runtime executor.Executor) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/preflight", func(response http.ResponseWriter, request *http.Request) {
-		if err := runtime.Preflight(request.Context()); err != nil {
-			writeError(response, err)
-			return
+		report, err := runtime.Preflight(request.Context())
+		payload := preflightResponse{Report: report}
+		if err != nil {
+			payload.Error = err.Error()
 		}
-		writeJSON(response, http.StatusOK, resultResponse{ExitCode: 0})
+		writeJSON(response, http.StatusOK, payload)
 	})
 	mux.HandleFunc("POST /v1/prepare", func(response http.ResponseWriter, request *http.Request) {
 		var input prepareRequest
@@ -315,7 +331,7 @@ func writeError(response http.ResponseWriter, err error) {
 	writeJSON(response, http.StatusBadRequest, resultResponse{ExitCode: 1, Error: err.Error()})
 }
 
-func writeJSON(response http.ResponseWriter, status int, value resultResponse) {
+func writeJSON(response http.ResponseWriter, status int, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(value)
