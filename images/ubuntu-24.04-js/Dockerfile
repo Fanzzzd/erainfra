@@ -122,9 +122,9 @@ RUN case "$TARGETARCH" in \
   && ln -s "$node_dir/bin/npx" /usr/local/bin/npx \
   && npm install --global --prefix /usr/local "pnpm@${PNPM_VERSION}" \
   && install -d -o runner -g docker /home/runner/.config/pnpm /runner-cache/pnpm \
-  && printf 'storeDir: /runner-cache/pnpm\nverifyStoreIntegrity: true\n' \
-    > /home/runner/.config/pnpm/config.yaml \
-  && chown runner:docker /home/runner/.config/pnpm/config.yaml \
+  && printf 'store-dir=/runner-cache/pnpm\nverify-store-integrity=true\n' \
+    > /home/runner/.config/pnpm/rc \
+  && chown runner:docker /home/runner/.config/pnpm/rc \
   && node --version \
   && pnpm --version \
   && chown -R runner:docker /opt/hostedtoolcache

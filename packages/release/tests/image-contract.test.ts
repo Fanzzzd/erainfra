@@ -49,7 +49,9 @@ describe("Linux Image Release action cache", () => {
   });
 
   it("puts pnpm in the Profile-local trusted cache mount", () => {
-    assert.match(dockerfile, /storeDir: \/runner-cache\/pnpm/);
-    assert.match(dockerfile, /verifyStoreIntegrity: true/);
+    assert.match(dockerfile, /store-dir=\/runner-cache\/pnpm/);
+    assert.match(dockerfile, /verify-store-integrity=true/);
+    assert.match(dockerfile, /> \/home\/runner\/\.config\/pnpm\/rc/);
+    assert.doesNotMatch(dockerfile, /config\.yaml/);
   });
 });
