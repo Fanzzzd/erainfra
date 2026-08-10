@@ -64,7 +64,7 @@ WATCHDOG_PID=""
 ENV_WRITER_PID=""
 
 # Invoked indirectly by the EXIT trap installed immediately below.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   local code=$?
   trap - EXIT
