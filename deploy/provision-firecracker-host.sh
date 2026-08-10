@@ -206,7 +206,15 @@ uninstall() {
 
   step 'Removing installed files'
   rm -rf "$RC_CNI_BIN_DIR" "$RC_LIB_DIR"
-  rm -f /usr/local/bin/firecracker "$RC_ETC_DIR/thinpool.env" "$RC_RUNTIME_ENV"
+  rm -f /usr/local/bin/firecracker "$RC_ETC_DIR/thinpool.env" "$RC_RUNTIME_ENV" \
+    "$RC_ETC_DIR/containerd.toml"
+  # Take the private directory trees with them, rather than leaving a skeleton
+  # of empty directories behind. rmdir, not rm -rf: anything an operator put
+  # here that this script did not write stays, and says so by the directory
+  # surviving.
+  for directory in /opt/runner-center/cni /opt/runner-center "$RC_ETC_DIR/cni" "$RC_ETC_DIR"; do
+    rmdir "$directory" 2>/dev/null || true
+  done
   printf '\n'
   note "Left in place on purpose: $RC_STATE_DIR (guest kernels, containerd"
   note 'content), the thin-pool images and the runner-center group. Remove them by'
