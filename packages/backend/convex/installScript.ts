@@ -534,7 +534,9 @@ start_agent() {
 
 is_running() {
   case "$(service_kind)" in
-    launchd) launchctl print "gui/$UID/center.runner.agent" 2>/dev/null | grep -q 'state = running' ;;
+    # grep -q closes the pipe as soon as it matches, which makes launchctl
+    # exit 141 under pipefail and reports a live service as stopped.
+    launchd) launchctl print "gui/$UID/center.runner.agent" 2>/dev/null | grep 'state = running' >/dev/null ;;
     systemd) systemctl --user is-active --quiet runner-center-agent.service ;;
     nohup)
       [ -f "$PID_FILE" ] && pid=$(grep -E '^[0-9]+$' "$PID_FILE" || true) && [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
