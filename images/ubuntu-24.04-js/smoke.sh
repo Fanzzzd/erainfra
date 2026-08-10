@@ -3,6 +3,11 @@ set -euo pipefail
 
 test -x /opt/runner/run.sh
 test -x /usr/local/bin/runner-center-guest
+# The guest kernel execs /sbin/init directly; a container that only has systemd
+# under /usr/lib panics on boot before anything else in this file matters.
+test -x /sbin/init
+# The guest kernel has no nf_tables, so dockerd must speak legacy xtables.
+update-alternatives --query iptables | grep -Fxq 'Value: /usr/sbin/iptables-legacy'
 test -r /opt/action-cache/actions_checkout/3d3c42e5aac5ba805825da76410c181273ba90b1.tar.gz
 test -r /opt/action-cache/pnpm_action-setup/0977fd99725f1db4007ccb2928dbb4e90d06cc86.tar.gz
 test -r /opt/action-cache/actions_setup-node/e51e5fe84fc33b4c73ebe40526b2694712b5b858.tar.gz

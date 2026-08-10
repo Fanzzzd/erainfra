@@ -38,6 +38,7 @@ RUN apt-get update \
     pkg-config \
     sudo \
     systemd \
+    systemd-sysv \
     udev \
     unzip \
     wget \
@@ -45,6 +46,22 @@ RUN apt-get update \
     zip \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 24.04 points iptables at the nft backend, which needs CONFIG_NF_TABLES
+# in the *guest* kernel. The kernel series the provisioner pins does not have
+# it: firecracker v1.13.0's microvm-kernel-ci-<arch>-6.1.config, which built the
+# 6.1.141 guest kernel, carries `# CONFIG_NF_TABLES is not set` while every
+# legacy xtables option this needs is compiled in. Left on nft, dockerd dies at
+# boot with "Failed to initialize nft: Protocol not supported" and takes the
+# runner service with it. This is the guest's own alternative and has no bearing
+# on the host's.
+#
+# Newer series do set CONFIG_NF_TABLES, so revisit this together with
+# GUEST_KERNEL_SERIES in deploy/provision-firecracker-host.sh -- smoke.sh
+# asserts the alternative, so a kernel bump that makes this unnecessary will
+# show up there rather than silently.
+RUN update-alternatives --set iptables /usr/sbin/iptables-legacy \
+  && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 
 RUN getent group docker >/dev/null || groupadd --system docker \
   && useradd --create-home --uid 1001 --gid docker --shell /bin/bash runner \
