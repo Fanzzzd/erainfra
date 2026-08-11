@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { execa } from "execa";
 
 export type ProfileSpec = {
@@ -116,26 +119,78 @@ export function parseRuntimeReport(stdout: string): RuntimeReport {
   }
 }
 
+/**
+ * Docker's architecture name for this host, in the vocabulary
+ * `docker image inspect` reports (GOARCH), not Node's.
+ */
+const NODE_TO_IMAGE_ARCH: Record<string, string> = {
+  x64: "amd64",
+  ia32: "386",
+  arm64: "arm64",
+  arm: "arm",
+};
+
+/**
+ * Why this host must not run this image, or null when the architectures
+ * match.
+ *
+ * `docker pull` of a wrong-architecture image succeeds with only a warning,
+ * and the job then either crawls under qemu emulation or dies at run time —
+ * long after the scheduler committed to this Worker. Readiness is where the
+ * mismatch has to surface (#9).
+ */
+export function architectureMismatch(hostArch: string, imageArch: string): string | null {
+  const wanted = NODE_TO_IMAGE_ARCH[hostArch] ?? hostArch;
+  if (imageArch === wanted) return null;
+  return `this Worker is ${wanted} but the Image Release is built for ${imageArch}; the job would run under emulation or not at all`;
+}
+
 async function prepareDocker(profile: ProfileSpec): Promise<ReadinessResult> {
   const checks: ReadinessCheck[] = [];
+  const fail = (name: string, detail: string): ReadinessResult => {
+    checks.push({ name, passed: false, detail });
+    return { state: "failed", error: detail, ...dockerFacts(checks) };
+  };
   try {
     const info = await execa("docker", ["info", "--format", "{{.ServerVersion}}"], {
       timeout: 30_000,
     });
     checks.push({ name: "docker-daemon", passed: true, detail: info.stdout.trim() });
-    await execa("docker", ["pull", profile.imageRelease], { timeout: 60 * 60_000 });
-    await execa("docker", ["image", "inspect", profile.imageRelease], { timeout: 30_000 });
-    checks.push({ name: "image-release", passed: true, detail: profile.imageRelease });
-    return { state: "ready", ...dockerFacts(checks) };
   } catch (error) {
-    const detail = message(error);
-    checks.push({
-      name: checks.length === 0 ? "docker-daemon" : "image-release",
-      passed: false,
-      detail,
-    });
-    return { state: "failed", error: detail, ...dockerFacts(checks) };
+    return fail("docker-daemon", message(error));
   }
+  // provision-docker.sh allocates its per-job scratch directory under
+  // ${TMPDIR:-/tmp}, which os.tmpdir() resolves identically. Proving it
+  // writable here moves that failure from job time to readiness (#9).
+  try {
+    const scratch = await mkdtemp(join(tmpdir(), "rc-preflight-"));
+    await rm(scratch, { recursive: true, force: true });
+    checks.push({ name: "scratch-directory", passed: true, detail: tmpdir() });
+  } catch (error) {
+    return fail(
+      "scratch-directory",
+      `cannot create a job scratch directory under ${tmpdir()}: ${message(error)}`,
+    );
+  }
+  let imageArch = "";
+  try {
+    await execa("docker", ["pull", profile.imageRelease], { timeout: 60 * 60_000 });
+    const inspected = await execa(
+      "docker",
+      ["image", "inspect", "--format", "{{.Architecture}}", profile.imageRelease],
+      { timeout: 30_000 },
+    );
+    imageArch = inspected.stdout.trim();
+    checks.push({ name: "image-release", passed: true, detail: profile.imageRelease });
+  } catch (error) {
+    return fail("image-release", message(error));
+  }
+  const mismatch = architectureMismatch(process.arch, imageArch);
+  if (mismatch !== null) {
+    return fail("image-architecture", mismatch);
+  }
+  checks.push({ name: "image-architecture", passed: true, detail: imageArch });
+  return { state: "ready", ...dockerFacts(checks) };
 }
 
 async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult> {
