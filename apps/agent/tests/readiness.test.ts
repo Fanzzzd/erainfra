@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseRuntimeReport, prepareProfile } from "../readiness.ts";
+import { architectureMismatch, parseRuntimeReport, prepareProfile } from "../readiness.ts";
 
 const DIGEST = `@sha256:${"a".repeat(64)}`;
 
@@ -91,5 +91,24 @@ describe("prepareProfile", () => {
     });
     assert.equal(result.state, "failed");
     assert.ok(result.checks.some((check) => check.name === "hyperv-validation" && !check.passed));
+  });
+});
+
+describe("architectureMismatch", () => {
+  it("accepts a matching architecture in either vocabulary", () => {
+    // Node says x64/arm64; docker image inspect says amd64/arm64.
+    assert.equal(architectureMismatch("x64", "amd64"), null);
+    assert.equal(architectureMismatch("arm64", "arm64"), null);
+    // An architecture Node has no alias for still matches itself.
+    assert.equal(architectureMismatch("riscv64", "riscv64"), null);
+  });
+
+  it("names both sides of a mismatch", () => {
+    // docker pull of a wrong-architecture image succeeds with a warning and
+    // the job fails at run time; readiness is where this must surface.
+    const mismatch = architectureMismatch("arm64", "amd64");
+    assert.ok(mismatch !== null);
+    assert.match(mismatch, /arm64/);
+    assert.match(mismatch, /amd64/);
   });
 });
