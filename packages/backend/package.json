@@ -11,6 +11,7 @@
     "./dataModel": {
       "types": "./convex/_generated/dataModel.d.ts"
     },
+    "./authPolicy": "./convex/authPolicy.ts",
     "./catalog": "./convex/catalog.ts",
     "./githubAppConfig": "./convex/githubAppConfig.ts"
   },

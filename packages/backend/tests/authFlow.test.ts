@@ -1,6 +1,13 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { api } from "../convex/_generated/api";
+import {
+  INVALID_CREDENTIALS,
+  isPasswordRequirementsError,
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_REQUIREMENTS,
+  validatePasswordRequirements,
+} from "../convex/authPolicy.ts";
 import { SIGNUP_REFUSED } from "../convex/bootstrap.ts";
 import schema from "../convex/schema";
 
@@ -46,16 +53,38 @@ function harness() {
   return convexTest(schema, modules);
 }
 
-async function signUp(t: ReturnType<typeof harness>, email: string, signupGrant?: string) {
+async function signUp(
+  t: ReturnType<typeof harness>,
+  email: string,
+  signupGrant?: string,
+  password: string = PASSWORD,
+) {
   return await t.action(api.auth.signIn, {
     provider: "password",
     params: {
       email,
-      password: PASSWORD,
+      password,
       flow: "signUp",
       ...(signupGrant === undefined ? {} : { signupGrant }),
     },
   });
+}
+
+async function signInAttempt(t: ReturnType<typeof harness>, email: string, password: string) {
+  return await t.action(api.auth.signIn, {
+    provider: "password",
+    params: { email, password, flow: "signIn" },
+  });
+}
+
+/** The message a refused call actually hands back, for comparing refusals. */
+async function refusalMessage(call: Promise<unknown>) {
+  try {
+    await call;
+  } catch (caught) {
+    return caught instanceof Error ? caught.message : String(caught);
+  }
+  throw new Error("expected the call to be refused, but it succeeded");
 }
 
 async function claimGrant(t: ReturnType<typeof harness>) {
@@ -176,5 +205,103 @@ describe("password sign-up, end to end", () => {
     }
     // Nothing in the refusal distinguishes the three causes from each other.
     expect(new Set(messages).size).toBe(1);
+  });
+});
+
+describe("validatePasswordRequirements", () => {
+  it("refuses anything under the floor and accepts the floor itself", () => {
+    expect(() => validatePasswordRequirements("a".repeat(MIN_PASSWORD_LENGTH - 1))).toThrow(
+      PASSWORD_REQUIREMENTS,
+    );
+    expect(() => validatePasswordRequirements("")).toThrow(PASSWORD_REQUIREMENTS);
+    expect(() => validatePasswordRequirements("a".repeat(MIN_PASSWORD_LENGTH))).not.toThrow();
+  });
+
+  it("recognises its own refusal and nothing else", () => {
+    expect(isPasswordRequirementsError(new Error(PASSWORD_REQUIREMENTS))).toBe(true);
+    expect(isPasswordRequirementsError(new Error(INVALID_CREDENTIALS))).toBe(false);
+    expect(isPasswordRequirementsError(PASSWORD_REQUIREMENTS)).toBe(false);
+  });
+});
+
+describe("password policy, end to end", () => {
+  it("refuses a sign-up under the floor even with a valid grant", async () => {
+    const t = harness();
+    const grant = await claimGrant(t);
+    const message = await refusalMessage(
+      signUp(t, "admin@example.com", grant, "a".repeat(MIN_PASSWORD_LENGTH - 1)),
+    );
+
+    expect(message).toContain(PASSWORD_REQUIREMENTS);
+    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    expect(users).toHaveLength(0);
+  });
+
+  // The password is validated before the account lookup, so a refused password
+  // must not cost the operator their one-shot grant.
+  it("leaves the grant usable after a password the policy refused", async () => {
+    const t = harness();
+    const grant = await claimGrant(t);
+    await expect(signUp(t, "admin@example.com", grant, "short")).rejects.toThrow();
+
+    await signUp(t, "admin@example.com", grant);
+    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    expect(users).toHaveLength(1);
+  });
+
+  it("accepts a password exactly at the floor", async () => {
+    const t = harness();
+    await signUp(t, "admin@example.com", await claimGrant(t), "a".repeat(MIN_PASSWORD_LENGTH));
+
+    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    expect(users).toHaveLength(1);
+  });
+
+  // Raising the floor must not lock out an account created under the old one.
+  // If the rule ran on sign-in, a short password would be refused as a policy
+  // violation before any account was looked up; it is refused as a credential.
+  it("does not apply the floor to sign-in", async () => {
+    const t = harness();
+    await signUp(t, "admin@example.com", await claimGrant(t));
+
+    const message = await refusalMessage(signInAttempt(t, "admin@example.com", "short"));
+    expect(message).toContain(INVALID_CREDENTIALS);
+    expect(message).not.toContain(PASSWORD_REQUIREMENTS);
+  });
+});
+
+describe("credential failures do not reveal whether an email exists", () => {
+  it("answers a wrong password and an unknown address identically", async () => {
+    const t = harness();
+    await signUp(t, "admin@example.com", await claimGrant(t));
+
+    const wrongPassword = await refusalMessage(
+      signInAttempt(t, "admin@example.com", "not-the-password"),
+    );
+    const unknownAddress = await refusalMessage(
+      signInAttempt(t, "nobody@example.com", "not-the-password"),
+    );
+
+    expect(wrongPassword).toContain(INVALID_CREDENTIALS);
+    expect(wrongPassword).toBe(unknownAddress);
+    expect(wrongPassword).not.toContain("admin@example.com");
+  });
+
+  // The worse of the two oracles: reaching it needs no grant, so before this an
+  // unauthenticated caller could enumerate accounts through the sign-up path.
+  it("answers an already-registered address and a new one identically", async () => {
+    const t = harness();
+    await signUp(t, "admin@example.com", await claimGrant(t));
+
+    const existing = await refusalMessage(
+      signUp(t, "admin@example.com", undefined, "another-long-password"),
+    );
+    const unknown = await refusalMessage(
+      signUp(t, "nobody@example.com", undefined, "another-long-password"),
+    );
+
+    expect(existing).toContain(SIGNUP_REFUSED);
+    expect(existing).toBe(unknown);
+    expect(existing).not.toContain("admin@example.com");
   });
 });
