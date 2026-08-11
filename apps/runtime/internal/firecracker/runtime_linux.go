@@ -54,6 +54,11 @@ func (r *Runtime) Recover(ctx context.Context) error {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("delete lease %s: %w", lease.ID, err))
 		}
 	}
+	// With every lease gone, no guest can be running, so every address
+	// reservation, iptables rule and netns left behind is reclaimable (#24).
+	if err := r.reclaimNetwork(ctx); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
 	if err := os.RemoveAll(r.config.WorkDir); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove abandoned runtime directories: %w", err))
 	}
@@ -169,6 +174,7 @@ func (r *Runtime) Preflight(ctx context.Context) (executor.Report, error) {
 	}
 
 	r.checkSnapshotter(ctx, &report)
+	r.checkAddressReservations(ctx, &report)
 
 	storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
 	report.Storage = storage
@@ -228,6 +234,57 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 		return
 	}
 	report.Pass(executor.CheckSnapshotter, r.config.Snapshotter+" at "+r.config.ContainerdAddress)
+}
+
+// checkAddressReservations fails readiness when host-local holds more guest
+// addresses than there are live Attempt leases.
+//
+// A reservation is created only while its Attempt's lease is held and is
+// normally released before the lease, so reservations can never legitimately
+// outnumber leases. When they do, teardown has started leaking network state
+// (#24); failing closed stops the Worker from accepting work while the drift
+// grows, and restarting the runtime — which runs Recover under the
+// single-daemon lock — reclaims everything.
+func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor.Report) {
+	reservations, err := readReservations(
+		reservationDir(netpolicy.CNIDataDir, r.config.Network.Name),
+	)
+	if err != nil {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list guest address reservations: %w", err))
+		return
+	}
+	if len(reservations) == 0 {
+		report.Pass(executor.CheckCNIReservations, "no guest addresses reserved")
+		return
+	}
+	client, err := containerd.New(r.config.ContainerdAddress, containerd.WithTimeout(5*time.Second))
+	if err != nil {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf("connect to containerd: %w", err))
+		return
+	}
+	defer client.Close()
+	all, err := client.LeasesService().List(namespaces.WithNamespace(ctx, r.config.ContainerdNamespace))
+	if err != nil {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list containerd leases: %w", err))
+		return
+	}
+	activeAttempts := 0
+	for _, lease := range all {
+		if strings.HasPrefix(lease.ID, "runner-center/attempts/") {
+			activeAttempts++
+		}
+	}
+	if len(reservations) > activeAttempts {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf(
+			"%d guest addresses reserved for %d running Attempts; teardown is leaking network state — restart runner-center-runtime to reclaim it",
+			len(reservations), activeAttempts,
+		))
+		return
+	}
+	report.Pass(executor.CheckCNIReservations, fmt.Sprintf(
+		"%d guest addresses reserved for %d running Attempts",
+		len(reservations), activeAttempts,
+	))
 }
 
 func (r *Runtime) PrepareImage(ctx context.Context, imageRelease string) error {
@@ -352,7 +409,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 			AllowMMDS: true,
 			CNIConfiguration: &fc.CNIConfiguration{
 				NetworkName: r.config.Network.Name,
-				IfName:      "eth0",
+				IfName:      guestInterfaceName,
 				ConfDir:     r.config.CNIConfigDir,
 				BinPath:     []string{r.config.CNIBinDir},
 			},
