@@ -35,6 +35,10 @@ const (
 	CheckSnapshotter = "containerd-snapshotter"
 	CheckStorage     = "snapshot-storage-headroom"
 	CheckCache       = "cache-isolation"
+	// CheckCNIReservations detects leaked guest addresses: every host-local
+	// reservation must belong to a live Attempt lease, or the network state is
+	// drifting and a restart (which runs Recover) is needed.
+	CheckCNIReservations = "cni-address-reservations"
 )
 
 // Check is one named, independently reportable readiness condition.
