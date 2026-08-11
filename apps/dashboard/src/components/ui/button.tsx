@@ -1,22 +1,22 @@
-import * as React from "react";
+import type * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-emerald-400/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0b] disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-colors duration-150 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default:
-          "border border-emerald-300/20 bg-emerald-400 text-emerald-950 hover:bg-emerald-300",
-        destructive: "border border-red-400/20 bg-red-500 text-white hover:bg-red-400",
-        outline:
-          "border border-white/[0.12] bg-transparent text-zinc-200 hover:bg-white/[0.05] hover:text-white",
+        default: "border border-primary/25 bg-primary text-primary-foreground hover:bg-primary/90",
+        destructive:
+          "border border-destructive/25 bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        outline: "border border-input bg-transparent text-secondary-foreground hover:bg-accent",
         secondary:
-          "border border-white/[0.08] bg-white/[0.06] text-zinc-200 hover:bg-white/[0.09] hover:text-white",
-        ghost: "border border-transparent text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-100",
-        link: "text-emerald-300 underline-offset-4 hover:underline",
+          "border border-border bg-secondary text-secondary-foreground hover:bg-accent hover:text-accent-foreground",
+        ghost:
+          "border border-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
         default: "h-9 px-3.5",

@@ -3,7 +3,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Activity } from "lucide-react";
 import { api } from "@runner-center/backend/api";
+import { EmptyState } from "@/components/empty-state";
+import { PageHeader } from "@/components/page-header";
+import { LiveBadge } from "@/components/status";
+import { TableRowsSkeleton } from "@/components/table-skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -12,6 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNow } from "@/hooks/use-now";
 import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -60,38 +66,27 @@ function AttemptsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-[-0.025em] text-zinc-50">Runs</h1>
-          <p className="mt-1.5 text-sm text-[#8a8a93]">
-            One durable Attempt for every isolated scale-set execution.
-          </p>
-        </div>
-        <span className="flex h-8 shrink-0 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.025] px-2.5 text-xs text-zinc-400">
-          <span className="status-pulse size-1.5 rounded-full bg-emerald-400" />
-          Live updates
-        </span>
-      </div>
+      <PageHeader
+        title="Runs"
+        description="One durable Attempt for every isolated scale-set execution."
+      >
+        <LiveBadge />
+      </PageHeader>
 
-      <div className="flex w-fit items-center gap-1 rounded-lg border border-white/[0.08] bg-[#0d0d0f] p-1">
-        {filters.map((item) => (
-          <button
-            key={item.value}
-            type="button"
-            aria-pressed={filter === item.value}
-            className={cn(
-              "flex h-7 items-center gap-2 rounded-full px-2.5 text-xs font-medium text-[#8a8a93] outline-none transition-colors hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-400/80",
-              filter === item.value && "bg-white/[0.08] text-zinc-100",
-            )}
-            onClick={() => setFilter(item.value)}
-          >
-            {item.label}
-            <span className="tabular-nums text-[10px] text-[#7c7c85]">{counts[item.value]}</span>
-          </button>
-        ))}
-      </div>
+      <Tabs value={filter} onValueChange={(value) => setFilter(value as Filter)}>
+        <TabsList aria-label="Filter runs by state">
+          {filters.map((item) => (
+            <TabsTrigger key={item.value} value={item.value}>
+              {item.label}
+              <span className="tabular-nums text-[10px] text-subtle-foreground">
+                {counts[item.value]}
+              </span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
-      <section className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]">
+      <Card className="overflow-hidden">
         <Table className="min-w-[1050px]">
           <TableHeader>
             <TableRow>
@@ -106,23 +101,19 @@ function AttemptsPage() {
           </TableHeader>
           <TableBody>
             {visible === undefined ? (
-              <TableRow>
-                <TableCell colSpan={7} className="h-36 text-center text-[#8a8a93]">
-                  Syncing Attempts…
-                </TableCell>
-              </TableRow>
+              <TableRowsSkeleton columns={7} rows={4} />
             ) : visible.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={7} className="h-64 text-center">
-                  <div className="mx-auto flex max-w-sm flex-col items-center">
-                    <div className="grid size-9 place-items-center rounded-md border border-white/[0.08] bg-white/[0.025] text-[#8a8a93]">
-                      <Activity className="size-4" />
-                    </div>
-                    <p className="mt-4 text-sm font-medium text-zinc-200">No matching runs</p>
-                    <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-                      Jobs targeting an active Runner Center Profile will appear here.
-                    </p>
-                  </div>
+                <TableCell colSpan={7} className="p-0">
+                  <EmptyState
+                    icon={Activity}
+                    title={counts.all === 0 ? "No runs yet" : `No ${filter} runs`}
+                    description={
+                      counts.all === 0
+                        ? "Jobs targeting an active Runner Center Profile will appear here."
+                        : "Every run is still there — try another state filter."
+                    }
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -134,40 +125,42 @@ function AttemptsPage() {
                     <TableCell>
                       <AttemptBadge state={attempt.state} />
                       {attempt.result && (
-                        <p className="mt-1 pl-2 text-[10px] text-[#7c7c85]">{attempt.result}</p>
+                        <p className="mt-1 text-[10px] text-subtle-foreground">{attempt.result}</p>
                       )}
                     </TableCell>
                     <TableCell>
-                      <code className="text-xs text-zinc-200">{attempt.profile}</code>
+                      <code className="text-xs text-secondary-foreground">{attempt.profile}</code>
                     </TableCell>
                     <TableCell>
-                      <p className="max-w-[190px] truncate font-mono text-xs text-zinc-200">
+                      <p className="max-w-[190px] truncate font-mono text-xs text-secondary-foreground">
                         {attempt.repo ?? "Waiting for GitHub"}
                       </p>
                       <p
                         className={cn(
-                          "mt-0.5 max-w-[190px] truncate text-[10px] text-[#7c7c85]",
-                          detail && "text-red-300/75",
+                          "mt-0.5 max-w-[190px] truncate text-[10px]",
+                          detail ? "text-destructive" : "text-subtle-foreground",
                         )}
                         title={detail ?? attempt.displayName}
                       >
                         {detail ?? attempt.displayName ?? attempt.runnerName}
                       </p>
                     </TableCell>
-                    <TableCell className="text-xs text-zinc-300">
-                      {attempt.machineName ?? "Unassigned"}
+                    <TableCell className="text-xs text-secondary-foreground">
+                      {attempt.machineName ?? (
+                        <span className="text-subtle-foreground">Unassigned</span>
+                      )}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className="font-mono text-zinc-400">
+                      <Badge variant="outline" className="font-mono">
                         {attempt.executor}
                       </Badge>
                     </TableCell>
-                    <TableCell className="tabular-nums whitespace-nowrap text-xs text-zinc-400">
+                    <TableCell className="tabular-nums whitespace-nowrap text-xs text-muted-foreground">
                       {attempt.startedAt === undefined
                         ? `queued ${formatDuration(end - attempt.createdAt)}`
                         : `ran ${formatDuration(end - attempt.startedAt)}`}
                       <p
-                        className="mt-0.5 text-[10px] text-[#7c7c85]"
+                        className="mt-0.5 text-[10px] text-subtle-foreground"
                         title={formatAbsoluteTime(attempt.createdAt)}
                       >
                         {formatRelativeTime(attempt.createdAt, now)}
@@ -175,7 +168,7 @@ function AttemptsPage() {
                     </TableCell>
                     <TableCell>
                       <code
-                        className="block max-w-[280px] truncate text-[10px] text-[#7c7c85]"
+                        className="block max-w-[280px] truncate text-[10px] text-subtle-foreground"
                         title={attempt.imageRelease}
                       >
                         {attempt.imageRelease}
@@ -187,21 +180,23 @@ function AttemptsPage() {
             )}
           </TableBody>
         </Table>
-      </section>
+      </Card>
     </div>
   );
 }
 
 function AttemptBadge({ state }: { state: AttemptState }) {
-  const tone =
+  const variant =
     state === "completed"
-      ? "bg-emerald-400/10 text-emerald-300"
+      ? "success"
       : state === "failed" || state === "cancelled"
-        ? "bg-red-400/10 text-red-300"
+        ? "destructive"
         : state === "running"
-          ? "bg-sky-400/10 text-sky-300"
-          : "bg-amber-400/10 text-amber-300";
+          ? "info"
+          : "warning";
   return (
-    <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[11px]", tone)}>{state}</span>
+    <Badge variant={variant} className="capitalize">
+      {state}
+    </Badge>
   );
 }
