@@ -62,11 +62,12 @@ async function publishBenchmark(
   name: string,
   values: { cpu: number; network: number; disk?: number },
 ) {
-  return t.mutation(api.workerApi.reportBenchmark, {
+  const measuredAt = Date.now();
+  const result = await t.mutation(api.workerApi.reportBenchmark, {
     token: `token-${name}`,
     report: {
       version: 1,
-      measuredAt: Date.now(),
+      measuredAt,
       durationMs: 1_000,
       sampleSize: 1,
       cpuSha256MiBps: values.cpu,
@@ -92,6 +93,7 @@ async function publishBenchmark(
       errors: [],
     },
   });
+  return { ...result, measuredAt };
 }
 
 describe("readiness-gated Attempt scheduling", () => {
@@ -518,9 +520,12 @@ describe("readiness-gated Attempt scheduling", () => {
       }),
     );
 
-    expect(await publishBenchmark(t, "large", { cpu: 1_500, network: 100, disk: 1 })).toMatchObject(
-      { maxSlots: 4, recommendedSlots: 4 },
-    );
+    const reported = await publishBenchmark(t, "large", {
+      cpu: 1_500,
+      network: 100,
+      disk: 1,
+    });
+    expect(reported).toMatchObject({ maxSlots: 4, recommendedSlots: 4 });
     expect(await t.run(async (ctx) => ctx.db.get(machineId))).toMatchObject({
       resourceRecommendedSlots: 16,
       recommendedSlots: 4,
@@ -530,11 +535,12 @@ describe("readiness-gated Attempt scheduling", () => {
     const [machine, evidence] = await t.run(async (ctx) =>
       Promise.all([ctx.db.get(machineId), ctx.db.query("benchmarkEvidence").unique()]),
     );
+    if (evidence === null) throw new Error("missing benchmark evidence");
     expect(machine?.benchmark).toEqual({
-      measuredAt: evidence?.benchmark.measuredAt,
-      scores: evidence?.benchmark.scores,
+      measuredAt: reported.measuredAt,
+      scores: { cpu: 100, memory: 47, disk: 0, network: 100, balanced: 62 },
     });
-    expect(evidence?.benchmark).toMatchObject({
+    expect(evidence.benchmark).toMatchObject({
       diskWriteMiBps: 1,
       diskReadMiBps: 1,
       packageLinkOpsPerSec: 1,

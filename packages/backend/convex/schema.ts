@@ -335,7 +335,9 @@ export default defineSchema({
     attemptId: v.id("attempts"),
     jitConfig: v.string(),
     createdAt: v.number(),
-  }).index("by_attempt", ["attemptId"]),
+  })
+    .index("by_attempt", ["attemptId"])
+    .index("by_createdAt", ["createdAt"]),
 
   // Operator-authored, non-interactive workloads executed through the same
   // Profile, isolation, readiness and capacity contract as CI Attempts.

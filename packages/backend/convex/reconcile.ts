@@ -228,13 +228,6 @@ export const run = internalMutation({
     }
 
     for (const attempt of attempts) {
-      if (
-        attempt.state === "completed" ||
-        attempt.state === "cancelled" ||
-        attempt.state === "failed"
-      ) {
-        continue;
-      }
       if (attempt.machineId === undefined) {
         if (now - attempt.createdAt > QUEUE_EXPIRED_MS) {
           await deleteAttemptSecret(ctx, attempt._id);
@@ -283,13 +276,6 @@ export const run = internalMutation({
     }
 
     for (const experiment of experiments) {
-      if (
-        experiment.state === "completed" ||
-        experiment.state === "cancelled" ||
-        experiment.state === "failed"
-      ) {
-        continue;
-      }
       if (experiment.machineId === undefined) {
         if (now - experiment.createdAt > QUEUE_EXPIRED_MS) {
           await ctx.db.patch(experiment._id, {
@@ -345,11 +331,11 @@ export const run = internalMutation({
         .withIndex("by_createdAt", (query) =>
           query.lte("createdAt", now - REGISTRATION_TOKEN_RETENTION_MS),
         )
-        .collect(),
+        .take(200),
       ctx.db
         .query("registrationTokens")
         .withIndex("by_usedAt", (query) => query.gt("usedAt", 0))
-        .collect(),
+        .take(200),
     ]);
     for (const registrationId of new Set(
       [...expiredRegistrations, ...usedRegistrations].map((registration) => registration._id),

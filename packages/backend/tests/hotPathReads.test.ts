@@ -8,8 +8,8 @@ describe("hot-path database reads", () => {
   it("does not collect an entire table without an index", () => {
     const unboundedReads = hotPathModules.flatMap((moduleName) => {
       const source = readFileSync(new URL(`../convex/${moduleName}`, import.meta.url), "utf8");
-      return [...source.matchAll(/\.query\("([^"]+)"\)\s*\.collect\(\)/g)].map(
-        (match) => `${moduleName}:${match[1]}`,
+      return [...source.matchAll(/\.query\((["'])([^"']+)\1\)\s*\.collect\(\)/g)].map(
+        (match) => `${moduleName}:${match[2]}`,
       );
     });
 
