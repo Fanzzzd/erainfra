@@ -155,12 +155,19 @@ describe("workerApi.reportReadiness", () => {
       network: { policyName: "runner-center", subnet: "10.241.0.0/16", egressMode: "public" },
     });
 
-    const row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
-    expect(row?.boundary).toBe("guest-kernel");
-    expect(row?.cacheSharedWritable).toBe(false);
-    expect(row?.hardware?.kvm).toBe(true);
-    expect(row?.network?.subnet).toBe("10.241.0.0/16");
-    expect(row?.checks?.map((check) => check.name)).toContain("job-network-policy");
+    const [row, evidence] = await t.run(async (ctx) =>
+      Promise.all([
+        ctx.db.query("workerReadiness").unique(),
+        ctx.db.query("readinessEvidence").unique(),
+      ]),
+    );
+    expect(row?.boundary).toBeUndefined();
+    expect(row?.storage).toEqual({ poolTotalMiB: 51_200, poolFreeMiB: 40_960 });
+    expect(evidence?.boundary).toBe("guest-kernel");
+    expect(evidence?.cacheSharedWritable).toBe(false);
+    expect(evidence?.hardware?.kvm).toBe(true);
+    expect(evidence?.network?.subnet).toBe("10.241.0.0/16");
+    expect(evidence?.checks?.map((check) => check.name)).toContain("job-network-policy");
   });
 
   it("refuses readiness whose own checks failed", async () => {
@@ -236,6 +243,63 @@ describe("workerApi.reportReadiness", () => {
     expect(row?.boundary).toBeUndefined();
   });
 
+  it("serves one-cycle legacy evidence and compacts it on the next report", async () => {
+    const t = convexTest(schema, modules);
+    await worker(t, "token-legacy");
+    const machine = await t.run(async (ctx) => ctx.db.query("machines").unique());
+    if (machine === null) throw new Error("missing machine");
+    const checkedAt = Date.now() - 1_000;
+    await t.run(async (ctx) =>
+      ctx.db.insert("workerReadiness", {
+        machineId: machine._id,
+        profile: "rc-linux-js",
+        executor: "firecracker",
+        imageRelease: IMAGE,
+        state: "ready",
+        checkedAt,
+        preparedAt: checkedAt,
+        statusDetail: "legacy detail",
+        boundary: "guest-kernel",
+        checks: [{ name: "kvm-device", passed: true }],
+        storage: { snapshotter: "devmapper", poolFreeMiB: 32_768 },
+      }),
+    );
+
+    const [legacyProfile] = await t
+      .withIdentity({ subject: "operator" })
+      .query(api.profiles.list, {});
+    expect(legacyProfile?.workers[0]).toMatchObject({
+      statusDetail: "legacy detail",
+      boundary: "guest-kernel",
+      storage: { snapshotter: "devmapper", poolFreeMiB: 32_768 },
+    });
+
+    await t.mutation(api.workerApi.reportReadiness, {
+      token: "token-legacy",
+      profile: "rc-linux-js",
+      executor: "firecracker",
+      imageRelease: IMAGE,
+      state: "ready",
+      statusDetail: "new evidence detail",
+      ...FIRECRACKER_FACTS,
+      storage: { snapshotter: "devmapper", poolFreeMiB: 24_576 },
+    });
+    const [hot, evidence] = await t.run(async (ctx) =>
+      Promise.all([
+        ctx.db.query("workerReadiness").unique(),
+        ctx.db.query("readinessEvidence").unique(),
+      ]),
+    );
+    expect(hot).toMatchObject({ storage: { poolFreeMiB: 24_576 } });
+    expect(hot?.statusDetail).toBeUndefined();
+    expect(hot?.boundary).toBeUndefined();
+    expect(evidence).toMatchObject({
+      statusDetail: "new evidence detail",
+      boundary: "guest-kernel",
+      storage: { snapshotter: "devmapper", poolFreeMiB: 24_576 },
+    });
+  });
+
   it("distinguishes a first failure from a regression of previously ready capacity", async () => {
     const t = convexTest(schema, modules);
     await worker(t, "token-state");
@@ -284,9 +348,12 @@ describe("workerApi.reportReadiness", () => {
       }),
     ).toEqual({ state: "degraded" });
     row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
+    const evidence = await t.run(async (ctx) => ctx.db.query("readinessEvidence").unique());
     expect(row).toMatchObject({
       state: "degraded",
       preparedAt,
+    });
+    expect(evidence).toMatchObject({
       statusDetail: "retrying in five minutes",
       lastError: "network policy changed",
     });
@@ -321,8 +388,14 @@ describe("workerApi.reportReadiness", () => {
         ...FIRECRACKER_FACTS,
       }),
     ).toEqual({ state: "ready" });
-    const row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
-    expect(row).toMatchObject({ state: "ready", statusDetail: "capacity restored" });
-    expect(row?.lastError).toBeUndefined();
+    const [row, evidence] = await t.run(async (ctx) =>
+      Promise.all([
+        ctx.db.query("workerReadiness").unique(),
+        ctx.db.query("readinessEvidence").unique(),
+      ]),
+    );
+    expect(row).toMatchObject({ state: "ready" });
+    expect(evidence).toMatchObject({ statusDetail: "capacity restored" });
+    expect(evidence?.lastError).toBeUndefined();
   });
 });

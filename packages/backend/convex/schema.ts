@@ -1,7 +1,11 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { fitPolicyValidator, storedBenchmarkValidator } from "./benchmark";
+import {
+  benchmarkSummaryValidator,
+  fitPolicyValidator,
+  storedBenchmarkValidator,
+} from "./benchmark";
 
 export default defineSchema({
   ...authTables,
@@ -42,12 +46,18 @@ export default defineSchema({
     configuredSlots: v.optional(v.number()),
     resourceRecommendedSlots: v.optional(v.number()),
     recommendedSlots: v.optional(v.number()),
-    benchmark: v.optional(storedBenchmarkValidator),
+    // No migration: the next benchmark report writes the compact summary and
+    // its evidence row. The legacy full report remains accepted for one Agent
+    // refresh cycle so a mixed deployment keeps validating throughout rollout.
+    benchmark: v.optional(v.union(benchmarkSummaryValidator, storedBenchmarkValidator)),
     maxSlots: v.number(),
     usedSlots: v.number(),
     lastSeen: v.number(),
     token: v.string(),
-  }).index("by_token", ["token"]),
+  })
+    .index("by_token", ["token"])
+    .index("by_lastSeen", ["lastSeen"])
+    .index("by_usedSlots", ["usedSlots"]),
 
   // A Profile is the stable `runs-on` contract workflows target. Controllers
   // publish the exact executor, immutable image, and resource envelope; Workers
@@ -70,13 +80,18 @@ export default defineSchema({
     maxRunners: v.number(),
     state: v.union(v.literal("active"), v.literal("paused")),
     updatedAt: v.number(),
-  }).index("by_name", ["name"]),
+  })
+    .index("by_name", ["name"])
+    .index("by_state", ["state"]),
 
   registrationTokens: defineTable({
     token: v.string(),
     createdAt: v.number(),
     usedAt: v.optional(v.number()),
-  }).index("by_token", ["token"]),
+  })
+    .index("by_token", ["token"])
+    .index("by_createdAt", ["createdAt"])
+    .index("by_usedAt", ["usedAt"]),
 
   // Credentials produced by the GitHub App Manifest flow. Convex environment
   // variables are read-only at runtime, so the callback cannot write back to
@@ -137,7 +152,8 @@ export default defineSchema({
     settledAt: v.optional(v.number()),
   })
     .index("by_deliveryId", ["deliveryId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_status_receivedAt", ["status", "receivedAt"]),
 
   // One row per delivery GUID we have asked GitHub to redeliver. Some
   // deliveries can never be accepted — a payload parseWorkflowJob rejects, a
@@ -166,7 +182,8 @@ export default defineSchema({
     lastError: v.optional(v.string()),
   })
     .index("by_guid", ["guid"])
-    .index("by_state", ["state"]),
+    .index("by_state", ["state"])
+    .index("by_state_lastRequestedAt", ["state", "lastRequestedAt"]),
 
   // Singleton run record for the recovery cron: the watermark it scans from and
   // the circuit breaker that stops it from hammering GitHub — or its own
@@ -220,6 +237,7 @@ export default defineSchema({
     lastFailedMachineId: v.optional(v.id("machines")),
   })
     .index("by_status", ["status"])
+    .index("by_status_queuedAt", ["status", "queuedAt"])
     .index("by_ghJobId", ["ghJobId"]),
 
   commands: defineTable({
@@ -242,6 +260,7 @@ export default defineSchema({
     exitCode: v.optional(v.number()),
   })
     .index("by_machine_status", ["machineId", "status"])
+    .index("by_status", ["status"])
     .index("by_jobId", ["jobId"])
     .index("by_runnerName", ["runnerName"]),
 
@@ -273,8 +292,9 @@ export default defineSchema({
     ),
     machineId: v.optional(v.id("machines")),
     selectionReason: v.optional(v.string()),
-    // Single-use secret. It is removed atomically when a Worker claims the
-    // Attempt and is never returned by dashboard or controller queries.
+    // Legacy-cycle compatibility only. New Attempts put this single-use value
+    // in attemptSecrets; claim/terminal paths still tolerate and erase an
+    // inline value written immediately before this schema reaches an Agent.
     jitConfig: v.optional(v.string()),
     createdAt: v.number(),
     claimedAt: v.optional(v.number()),
@@ -306,7 +326,16 @@ export default defineSchema({
   })
     .index("by_runnerName", ["runnerName"])
     .index("by_profile", ["profile"])
+    .index("by_state", ["state"])
     .index("by_machine_state", ["machineId", "state"]),
+
+  // Credentials are deliberately absent from every scheduler/reconcile scan.
+  // A Worker point-reads this row exactly once while claiming its Attempt.
+  attemptSecrets: defineTable({
+    attemptId: v.id("attempts"),
+    jitConfig: v.string(),
+    createdAt: v.number(),
+  }).index("by_attempt", ["attemptId"]),
 
   // Operator-authored, non-interactive workloads executed through the same
   // Profile, isolation, readiness and capacity contract as CI Attempts.
@@ -368,6 +397,9 @@ export default defineSchema({
     ),
     checkedAt: v.number(),
     preparedAt: v.optional(v.number()),
+    // No migration: these optional evidence fields stay in the validator for
+    // one Agent refresh cycle. reportReadiness writes the new evidence row and
+    // removes them from this hot row on the Worker's next report.
     statusDetail: v.optional(v.string()),
     lastError: v.optional(v.string()),
     isolation: v.optional(v.string()),
@@ -412,6 +444,63 @@ export default defineSchema({
   })
     .index("by_machine_profile", ["machineId", "profile"])
     .index("by_profile_state", ["profile", "state"]),
+
+  readinessEvidence: defineTable({
+    machineId: v.id("machines"),
+    profile: v.string(),
+    executor: v.union(
+      v.literal("docker"),
+      v.literal("firecracker"),
+      v.literal("tart"),
+      v.literal("hyperv"),
+    ),
+    imageRelease: v.string(),
+    checkedAt: v.number(),
+    statusDetail: v.optional(v.string()),
+    lastError: v.optional(v.string()),
+    isolation: v.optional(v.string()),
+    boundary: v.optional(v.union(v.literal("guest-kernel"), v.literal("shared-kernel"))),
+    checks: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          passed: v.boolean(),
+          detail: v.optional(v.string()),
+        }),
+      ),
+    ),
+    cacheScope: v.optional(v.string()),
+    cacheSharedWritable: v.optional(v.boolean()),
+    hardware: v.optional(
+      v.object({
+        arch: v.optional(v.string()),
+        cpus: v.optional(v.number()),
+        memoryMiB: v.optional(v.number()),
+        cpuModel: v.optional(v.string()),
+        virtualization: v.optional(v.string()),
+        kvm: v.optional(v.boolean()),
+      }),
+    ),
+    storage: v.optional(
+      v.object({
+        snapshotter: v.optional(v.string()),
+        poolTotalMiB: v.optional(v.number()),
+        poolFreeMiB: v.optional(v.number()),
+      }),
+    ),
+    network: v.optional(
+      v.object({
+        policyName: v.optional(v.string()),
+        subnet: v.optional(v.string()),
+        egressMode: v.optional(v.string()),
+      }),
+    ),
+  }).index("by_machine_profile", ["machineId", "profile"]),
+
+  benchmarkEvidence: defineTable({
+    machineId: v.id("machines"),
+    benchmark: storedBenchmarkValidator,
+  }).index("by_machine", ["machineId"]),
 
   // Work queue for deleting JIT runner registrations that were created on
   // GitHub but never consumed. Mutations cannot call GitHub, so they enqueue

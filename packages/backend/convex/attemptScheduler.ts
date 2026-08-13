@@ -6,6 +6,8 @@ import { hasSnapshotHeadroom } from "./isolation";
 
 const WORKER_OFFLINE_AFTER_MS = 120_000;
 const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
+const RESERVED_ATTEMPT_STATES = ["preparing", "ready", "running"] as const;
+const RESERVED_EXPERIMENT_STATES = ["preparing", "running"] as const;
 
 export async function releaseMachineSlot(
   ctx: MutationCtx,
@@ -28,19 +30,53 @@ export const tryAssign = internalMutation({
   returns: v.number(),
   handler: async (ctx) => {
     const now = Date.now();
-    const [attempts, experiments, readinessRows, machines, profiles] = await Promise.all([
-      ctx.db.query("attempts").collect(),
-      ctx.db.query("experiments").collect(),
-      ctx.db.query("workerReadiness").collect(),
-      ctx.db.query("machines").collect(),
-      ctx.db.query("profiles").collect(),
+    const [pendingAttempts, queuedExperiments] = await Promise.all([
+      ctx.db
+        .query("attempts")
+        .withIndex("by_state", (query) => query.eq("state", "pending"))
+        .collect(),
+      ctx.db
+        .query("experiments")
+        .withIndex("by_state", (query) => query.eq("state", "queued"))
+        .collect(),
     ]);
-    const activeProfileByName = new Map(
-      profiles
-        .filter((profile) => profile.state === "active")
-        .map((profile) => [profile.name, profile]),
-    );
+    if (
+      !pendingAttempts.some((attempt) => attempt.machineId === undefined) &&
+      !queuedExperiments.some((experiment) => experiment.machineId === undefined)
+    ) {
+      return 0;
+    }
+    const [attemptRanges, experimentRanges, machines, profiles] = await Promise.all([
+      Promise.all(
+        RESERVED_ATTEMPT_STATES.map((state) =>
+          ctx.db
+            .query("attempts")
+            .withIndex("by_state", (query) => query.eq("state", state))
+            .collect(),
+        ),
+      ),
+      Promise.all(
+        RESERVED_EXPERIMENT_STATES.map((state) =>
+          ctx.db
+            .query("experiments")
+            .withIndex("by_state", (query) => query.eq("state", state))
+            .collect(),
+        ),
+      ),
+      ctx.db
+        .query("machines")
+        .withIndex("by_lastSeen", (query) => query.gt("lastSeen", now - WORKER_OFFLINE_AFTER_MS))
+        .collect(),
+      ctx.db
+        .query("profiles")
+        .withIndex("by_state", (query) => query.eq("state", "active"))
+        .collect(),
+    ]);
+    const attempts = [...pendingAttempts, ...attemptRanges.flat()];
+    const experiments = [...queuedExperiments, ...experimentRanges.flat()];
+    const activeProfileByName = new Map(profiles.map((profile) => [profile.name, profile]));
     const machineById = new Map(machines.map((machine) => [machine._id, machine]));
+    const readinessByProfile = new Map<string, Doc<"workerReadiness">[]>();
     // `count` is what disk admission needs: copy-on-write growth is per running
     // guest, not per vCPU.
     const reservedByMachine = new Map<
@@ -109,13 +145,21 @@ export const tryAssign = internalMutation({
     for (const item of pending) {
       const work = item.work;
       const fitPolicy: FitPolicy = activeProfileByName.get(work.profile)?.fitPolicy ?? "balanced";
+      let readinessRows = readinessByProfile.get(work.profile);
+      if (readinessRows === undefined) {
+        readinessRows = await ctx.db
+          .query("workerReadiness")
+          .withIndex("by_profile_state", (query) =>
+            query.eq("profile", work.profile).eq("state", "ready"),
+          )
+          .collect();
+        readinessByProfile.set(work.profile, readinessRows);
+      }
       const candidates = readinessRows
         .filter(
           (readiness) =>
-            readiness.profile === work.profile &&
             readiness.executor === work.executor &&
             readiness.imageRelease === work.imageRelease &&
-            readiness.state === "ready" &&
             now - readiness.checkedAt < READINESS_STALE_AFTER_MS,
         )
         .map((readiness) => ({ readiness, machine: machineById.get(readiness.machineId) }))

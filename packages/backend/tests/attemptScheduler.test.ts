@@ -253,6 +253,7 @@ describe("readiness-gated Attempt scheduling", () => {
       }),
     ).toBeNull();
     expect((await t.run(async (ctx) => ctx.db.get(attempt._id)))?.jitConfig).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
 
     await t.mutation(api.workerApi.reportAttempt, {
       token: "token-alpha",
@@ -261,6 +262,42 @@ describe("readiness-gated Attempt scheduling", () => {
     });
     expect((await t.run(async (ctx) => ctx.db.get(attempt._id)))?.state).toBe("failed");
     expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
+  });
+
+  it("claims one-cycle legacy inline JIT and erases it", async () => {
+    const t = convexTest(schema, modules);
+    await addWorker(t, "alpha");
+    await createAttempt(t);
+    const attempt = await t.run(async (ctx) => ctx.db.query("attempts").unique());
+    const secret = await t.run(async (ctx) => ctx.db.query("attemptSecrets").unique());
+    if (attempt === null || secret === null) throw new Error("missing attempt secret");
+    await t.run(async (ctx) => {
+      await ctx.db.delete(secret._id);
+      await ctx.db.patch(attempt._id, { jitConfig: "legacy-inline-secret" });
+    });
+
+    expect(
+      await t.mutation(api.workerApi.claimAttempt, {
+        token: "token-alpha",
+        attemptId: attempt._id,
+      }),
+    ).toMatchObject({ jitConfig: "legacy-inline-secret" });
+    expect((await t.run(async (ctx) => ctx.db.get(attempt._id)))?.jitConfig).toBeUndefined();
+  });
+
+  it("deletes an unclaimed secret when the Worker terminally reports the Attempt", async () => {
+    const t = convexTest(schema, modules);
+    await addWorker(t, "alpha");
+    await createAttempt(t);
+    const attempt = await t.run(async (ctx) => ctx.db.query("attempts").unique());
+    if (attempt === null) throw new Error("missing attempt");
+
+    await t.mutation(api.workerApi.reportAttempt, {
+      token: "token-alpha",
+      attemptId: attempt._id,
+      exitCode: 1,
+    });
+    expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
   });
 
   it("settles a clean executor exit even if GitHub's completion message is lost", async () => {
@@ -362,6 +399,62 @@ describe("readiness-gated Attempt scheduling", () => {
     expect(new Set(attempts.map((attempt) => attempt.machineId))).toEqual(new Set([alpha, beta]));
   });
 
+  it("keeps the pre-index scheduler decision fixture byte-identical", async () => {
+    const t = convexTest(schema, modules);
+    const alpha = await addWorker(t, "alpha", 2);
+    await addWorker(t, "beta", 2);
+    await addWorker(t, "gamma", 2);
+    await publishBenchmark(t, "alpha", { cpu: 100, network: 1 });
+    await publishBenchmark(t, "beta", { cpu: 1_500, network: 100 });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(alpha, { usedSlots: 1 });
+      await ctx.db.insert("attempts", {
+        ...CONTRACT,
+        runnerName: "existing-alpha",
+        runnerId: 90,
+        state: "running",
+        machineId: alpha,
+        createdAt: Date.now() - 1_000,
+      });
+    });
+
+    await createAttempt(t, "runner-a");
+    await createAttempt(t, "runner-b");
+    await createAttempt(t, "runner-c");
+
+    const machines = await t.run(async (ctx) => ctx.db.query("machines").collect());
+    const machineNames = new Map(machines.map((machine) => [machine._id, machine.name]));
+    const decisions = (await t.run(async (ctx) => ctx.db.query("attempts").collect()))
+      .filter((attempt) => attempt.runnerName.startsWith("runner-"))
+      .toSorted((left, right) => left.runnerName.localeCompare(right.runnerName))
+      .map((attempt) => ({
+        runnerName: attempt.runnerName,
+        machine: attempt.machineId === undefined ? undefined : machineNames.get(attempt.machineId),
+        selectionReason: attempt.selectionReason,
+      }));
+
+    expect(decisions).toEqual([
+      {
+        runnerName: "runner-a",
+        machine: "beta",
+        selectionReason:
+          "hard compatibility passed; pressure=0.000; balanced benchmark=74/100 (fresh); eligible=2",
+      },
+      {
+        runnerName: "runner-b",
+        machine: "gamma",
+        selectionReason:
+          "hard compatibility passed; pressure=0.000; balanced benchmark=50/100 (missing); eligible=1",
+      },
+      {
+        runnerName: "runner-c",
+        machine: "gamma",
+        selectionReason:
+          "hard compatibility passed; pressure=0.500; balanced benchmark=50/100 (missing); eligible=1",
+      },
+    ]);
+  });
+
   it.each([
     { fitPolicy: "cpu" as const, expected: "beta" },
     { fitPolicy: "network" as const, expected: "alpha" },
@@ -434,10 +527,43 @@ describe("readiness-gated Attempt scheduling", () => {
       maxSlots: 4,
       usedSlots: 8,
     });
+    const [machine, evidence] = await t.run(async (ctx) =>
+      Promise.all([ctx.db.get(machineId), ctx.db.query("benchmarkEvidence").unique()]),
+    );
+    expect(machine?.benchmark).toEqual({
+      measuredAt: evidence?.benchmark.measuredAt,
+      scores: evidence?.benchmark.scores,
+    });
+    expect(evidence?.benchmark).toMatchObject({
+      diskWriteMiBps: 1,
+      diskReadMiBps: 1,
+      packageLinkOpsPerSec: 1,
+    });
     await createAttempt(t);
     expect(
       (await t.run(async (ctx) => ctx.db.query("attempts").unique()))?.machineId,
     ).toBeUndefined();
+  });
+
+  it("uses a one-cycle legacy inline benchmark when host facts refresh", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "legacy-benchmark", 16);
+    await publishBenchmark(t, "legacy-benchmark", { cpu: 1_500, network: 100, disk: 1 });
+    const evidence = await t.run(async (ctx) => ctx.db.query("benchmarkEvidence").unique());
+    if (evidence === null) throw new Error("missing benchmark evidence");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(machineId, { benchmark: evidence.benchmark });
+      await ctx.db.delete(evidence._id);
+    });
+
+    expect(
+      await t.mutation(api.workerApi.reportHostFacts, {
+        token: "token-legacy-benchmark",
+        arch: "x64",
+        cpus: 64,
+        memoryMiB: 256 * 1_024,
+      }),
+    ).toEqual({ maxSlots: 4, recommendedSlots: 4 });
   });
 
   it("does not overcommit the host resource envelope even when slots remain", async () => {
