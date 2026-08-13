@@ -1,7 +1,12 @@
-# Runner Center
+# EraInfra
 
-Runner Center is a small self-hosted GitHub Actions platform for owned Linux and Apple Silicon
-machines. Workflows target a stable Profile such as `rc-linux-js`; they never name a host.
+EraInfra (formerly Runner Center) is the infrastructure arm of the Era family, alongside
+[EraDB](https://github.com/Fanzzzd/eradb) and EraOS. Today it is a small self-hosted GitHub
+Actions platform for owned Linux and Apple Silicon machines; workflows target a stable Profile
+such as `rc-linux-js` and never name a host. The [`portless/`](portless/) directory carries the
+imported portless project — deploy-to-your-own-machines over an iroh mesh with no public IP —
+which EraInfra absorbs so one product can both run CI and manage the machines it runs on
+(integration tracked in the repository issues).
 
 The design combines:
 

@@ -10,7 +10,14 @@
     "builtin": true,
     "es2024": true
   },
-  "ignorePatterns": ["**/_generated/**", "**/routeTree.gen.ts", "**/.tanstack/**"],
+  "ignorePatterns": [
+    "**/_generated/**",
+    "**/routeTree.gen.ts",
+    "**/.tanstack/**",
+    // Imported as-is from Fanzzzd/portless (archived); keeps its own conventions
+    // until it is integrated into the workspace.
+    "portless/**"
+  ],
   "rules": {
     "import/no-cycle": "error",
     "import/no-unassigned-import": ["error", { "allow": ["**/*.css"] }],

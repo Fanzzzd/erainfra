@@ -1,0 +1,42 @@
+---
+title: Environment variables
+description: Per-app secrets, encrypted at rest, injected at deploy — never on the command line.
+---
+
+Give an app config and secrets (`DATABASE_URL`, API keys, …) and portless injects them into the
+container on every deploy. Values are **encrypted at rest** on the hub and never appear in process
+listings, logs, or the dashboard.
+
+## Set a variable
+
+From the dashboard's **Environment** tab, or the API:
+
+```bash
+env.set  app=myapp  vars='{"DATABASE_URL":"postgres://…","API_KEY":"sk-…"}'
+```
+
+Keys must be valid env names (`^[A-Za-z_][A-Za-z0-9_]*$`). On the next deploy they're injected into
+the container. Redeploy to apply changes to a running app.
+
+```bash
+env.list   app=myapp     # keys only — values are masked, never returned
+env.unset  app=myapp  key=API_KEY
+```
+
+`PORT` is set by portless (the port your app listens on and that the platform publishes); a `PORT` you
+set yourself is overridden.
+
+## How it stays secret
+
+- **Encrypted at rest** with AES-256-GCM, a fresh nonce per value. The key is yours —
+  `PORTLESS_SECRET_KEY` (64 hex chars) or a `0600` key file the hub generates on first run. Nothing
+  leaves the hub.
+- **Never on the command line.** Secrets travel to the node over the encrypted control channel and are
+  written to a `0600` env-file that's deleted right after the container starts — so they never show in
+  `ps`, `docker inspect` args, or deploy output.
+- `env.list` returns **keys only**; values are masked.
+
+## Self-hosted
+
+Keep the encryption key on the hub (or in your own secrets manager) and your variables never touch a
+third party.
