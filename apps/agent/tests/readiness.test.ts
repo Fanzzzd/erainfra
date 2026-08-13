@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { architectureMismatch, parseRuntimeReport, prepareProfile } from "../readiness.ts";
+import {
+  architectureMismatch,
+  HEALTHY_READINESS_REFRESH_MS,
+  parseRuntimeReport,
+  prepareProfile,
+  readinessRefreshDelay,
+  UNHEALTHY_READINESS_REFRESH_MS,
+} from "../readiness.ts";
 
 const DIGEST = `@sha256:${"a".repeat(64)}`;
 
@@ -110,5 +117,18 @@ describe("architectureMismatch", () => {
     assert.ok(mismatch !== null);
     assert.match(mismatch, /arm64/);
     assert.match(mismatch, /amd64/);
+  });
+});
+
+describe("readiness refresh cadence", () => {
+  it("keeps ready Profiles on the low-frequency refresh", () => {
+    assert.equal(readinessRefreshDelay([]), HEALTHY_READINESS_REFRESH_MS);
+    assert.equal(readinessRefreshDelay(["ready", "preparing"]), HEALTHY_READINESS_REFRESH_MS);
+  });
+
+  it("rechecks failed and degraded capacity within five minutes", () => {
+    assert.equal(readinessRefreshDelay(["ready", "failed"]), UNHEALTHY_READINESS_REFRESH_MS);
+    assert.equal(readinessRefreshDelay(["degraded"]), UNHEALTHY_READINESS_REFRESH_MS);
+    assert.ok(UNHEALTHY_READINESS_REFRESH_MS < HEALTHY_READINESS_REFRESH_MS);
   });
 });

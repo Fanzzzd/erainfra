@@ -44,6 +44,23 @@ export type ReadinessFacts = {
 export type ReadinessResult = ({ state: "ready" } | { state: "failed"; error: string }) &
   ReadinessFacts;
 
+export type PublishedReadinessState = "preparing" | "ready" | "degraded" | "failed";
+
+/** Healthy images are refreshed sparingly; broken capacity retries promptly. */
+export const HEALTHY_READINESS_REFRESH_MS = 6 * 60 * 60_000;
+export const UNHEALTHY_READINESS_REFRESH_MS = 5 * 60_000;
+
+/**
+ * The Worker retries every failed/degraded Profile on a materially shorter
+ * cadence. Missing Profiles use the healthy cadence rather than spinning.
+ */
+export function readinessRefreshDelay(states: Iterable<PublishedReadinessState>) {
+  for (const state of states) {
+    if (state === "failed" || state === "degraded") return UNHEALTHY_READINESS_REFRESH_MS;
+  }
+  return HEALTHY_READINESS_REFRESH_MS;
+}
+
 /**
  * The privileged runtime's readiness document. It is produced by the same build
  * that enforces the boundary, so the Worker only transports it.

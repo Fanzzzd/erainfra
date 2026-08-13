@@ -169,6 +169,30 @@ describe("readiness-gated Attempt scheduling", () => {
     expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
   });
 
+  it("never schedules degraded capacity even when every hard contract still matches", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "alpha");
+    await t.run(async (ctx) => {
+      const readiness = await ctx.db
+        .query("workerReadiness")
+        .withIndex("by_machine_profile", (query) =>
+          query.eq("machineId", machineId).eq("profile", CONTRACT.profile),
+        )
+        .unique();
+      if (readiness === null) throw new Error("missing readiness");
+      await ctx.db.patch(readiness._id, {
+        state: "degraded",
+        lastError: "a recheck failed",
+      });
+    });
+
+    await createAttempt(t);
+
+    const [attempt] = await t.run(async (ctx) => ctx.db.query("attempts").collect());
+    expect(attempt?.machineId).toBeUndefined();
+    expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
+  });
+
   it("claims JIT once and frees capacity after executor failure", async () => {
     const t = convexTest(schema, modules);
     const machineId = await addWorker(t, "alpha");
