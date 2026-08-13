@@ -47,6 +47,8 @@ PORTLESS_HUB_BASE=https://$HUB_HOST
 PORTLESS_REGISTRY=127.0.0.1:$REG_PORT
 TMPDIR=/data
 EOF
+  # Multi-node? Name the agent co-located with the registry so deploys wire remote nodes to it
+  # over the mesh automatically: echo PORTLESS_REGISTRY_NODE=<node> >> $ENVDIR/hub.env
   log "hub env written → $ENVDIR/hub.env"
 else
   log "reusing existing $ENVDIR/hub.env"

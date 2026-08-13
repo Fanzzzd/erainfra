@@ -9,3 +9,4 @@ bin/
 .turbo/
 deploy/portless.env
 deploy/state/
+.pnpm-store/

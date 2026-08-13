@@ -26,6 +26,8 @@ portless deploy                               # deploy the current directory →
 portless apps                                 # what's running, where, with URLs
 portless logs my-app                          # container logs
 portless env my-app set DATABASE_URL=...      # encrypted secrets
+portless link gpu-box:8080 web-box            # reach gpu-box:8080 from web-box at 127.0.0.1:8080
+                                              #   (P2P mesh, no tunnel; persisted + self-healing)
 ```
 
 AI agents get the same capabilities, typed, over MCP: `claude mcp add portless -- portless mcp`.

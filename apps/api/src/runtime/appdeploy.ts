@@ -6,6 +6,7 @@
 // reports through the DeploymentStore, which the CLI/dashboard poll.
 import { agentGateway, type AgentGateway } from './agents.ts';
 import { appStore, type AppLink, type ServiceDeploy } from './apps.ts';
+import { linkStore, type MeshLink } from './links.ts';
 import { routeStore } from './routes.ts';
 import { secretStore } from './secrets.ts';
 import { portAllocator } from './ports.ts';
@@ -100,30 +101,57 @@ export function planDeploy(spec: AppSpec, opts: Pick<DeployOpts, 'defaultNode' |
   return { placed, links };
 }
 
-// (Re-)establish an app's mesh links: share on the provider (→ ticket, hub-internal), connect on the
-// consumer. Idempotent — the agent replaces same-name links. Used after deploy, after failover, and
-// by the boot-time re-establish sweep (agent restarts lose their dumbpipe sidecars).
+// Establish ONE mesh link: share on the provider (→ ticket, hub-internal), connect on the consumer.
+// Idempotent — the agent replaces same-name links. Throws with a reason on failure. The ticket is a
+// capability to reach the service; it never leaves the hub.
+export async function establishLink(l: MeshLink, gw: Gw = agentGateway): Promise<void> {
+  const connected = new Set(gw.list().map((a) => a.id));
+  if (!connected.has(l.provider) || !connected.has(l.consumer)) throw new Error('node offline');
+  const share = await gw.send(l.provider, { cmd: 'meshShare', name: l.name, port: l.providerPort }, 60_000);
+  if (!share.ok || !share.output) throw new Error(share.error ?? 'no ticket');
+  const conn = await gw.send(l.consumer, { cmd: 'meshConnect', name: l.name, ticket: share.output.trim(), port: l.localPort }, 60_000);
+  if (!conn.ok) throw new Error(conn.error ?? 'connect failed');
+}
+
+// (Re-)establish an app's mesh links. Used after deploy, after failover, and by the boot-time
+// re-establish sweep (agent restarts lose their dumbpipe sidecars).
 export async function ensureAppLinks(app: string, gw: Gw = agentGateway): Promise<Array<{ name: string; ok: boolean; error?: string }>> {
   const dep = appStore.get(app);
   if (!dep?.links?.length) return [];
-  const connected = new Set(gw.list().map((a) => a.id));
   const results: Array<{ name: string; ok: boolean; error?: string }> = [];
   for (const l of dep.links) {
-    if (!connected.has(l.provider) || !connected.has(l.consumer)) {
-      results.push({ name: l.name, ok: false, error: 'node offline' });
-      continue;
-    }
     try {
-      const share = await gw.send(l.provider, { cmd: 'meshShare', name: l.name, port: l.providerPort }, 60_000);
-      if (!share.ok || !share.output) throw new Error(share.error ?? 'no ticket');
-      const conn = await gw.send(l.consumer, { cmd: 'meshConnect', name: l.name, ticket: share.output.trim(), port: l.localPort }, 60_000);
-      if (!conn.ok) throw new Error(conn.error ?? 'connect failed');
+      await establishLink(l, gw);
       results.push({ name: l.name, ok: true });
     } catch (e) {
       results.push({ name: l.name, ok: false, error: (e as Error).message });
     }
   }
   return results;
+}
+
+// The registry lives on ONE box (the hub host, PORTLESS_REGISTRY_NODE names its agent). Every other
+// node that builds (push) or deploys (pull) reaches it at the SAME loopback address over a mesh
+// link — docker trusts 127.0.0.1:* as insecure registries, so no daemon config anywhere. Links are
+// persisted: the healer keeps them alive across agent restarts, so later pulls (failover, restarts)
+// keep working without a deploy in flight.
+export async function ensureRegistryLinks(nodes: Iterable<string>, registry: string, gw: Gw = agentGateway): Promise<string | null> {
+  const registryNode = process.env.PORTLESS_REGISTRY_NODE;
+  if (!registryNode) return null; // unset = single-box setup (registry locally reachable); nothing to wire
+  const port = Number(registry.split(':').pop());
+  const remote = [...new Set(nodes)].filter((n) => n !== registryNode);
+  if (!remote.length) return null;
+  if (!port) return `cannot parse a port out of PORTLESS_REGISTRY="${registry}"`;
+  for (const node of remote) {
+    const link: MeshLink = { name: `registry-${node}`.slice(0, 63), provider: registryNode, providerPort: port, consumer: node, localPort: port, createdBy: 'deploy' };
+    try {
+      await establishLink(link, gw);
+      linkStore.set(link);
+    } catch (e) {
+      return `registry link to ${node}: ${(e as Error).message}`;
+    }
+  }
+  return null;
 }
 
 // Merge a service's stored plain env with live secrets. Secrets win over spec env; PORT wins over
@@ -165,9 +193,15 @@ export async function runDeploy(deployId: string, source: DeploySource, opts: De
     for (const n of new Set(placed.map((p) => p.node))) if (!connected.has(n)) return fail('deploying', `node "${n}" is not connected`);
     if (!connected.has(opts.buildNode)) return fail('building', `build node "${opts.buildNode}" is not connected`);
 
+    // 2.5 Registry over the mesh: any node that builds (push) or runs (pull) needs 127.0.0.1-access
+    // to the registry BEFORE we spend minutes building.
+    const toBuild = placed.filter((p) => p.spec.build !== undefined);
+    const registryUsers = [...placed.map((p) => p.node), ...(toBuild.length ? [opts.buildNode] : [])];
+    const regErr = await ensureRegistryLinks(registryUsers, opts.registry, gw);
+    if (regErr) return fail('linking', regErr);
+
     // 3. Build every `build:` service on the build node (sequential: one docker daemon, and ordered
     // logs beat a marginal speedup).
-    const toBuild = placed.filter((p) => p.spec.build !== undefined);
     for (const [i, p] of toBuild.entries()) {
       deployments.update(deployId, { stage: 'building', detail: `building ${p.spec.name} (${i + 1}/${toBuild.length})` });
       const tag = p.image.slice(opts.registry.length + 1); // planDeploy composed image as `${registry}/${tag}`
@@ -276,6 +310,9 @@ export function installLinkHealer(gw: Gw = agentGateway, everyMs = 60_000): void
     for (const { app, links } of appStore.list()) {
       if (links?.length) await ensureAppLinks(app, gw).catch(() => {});
     }
+    // Standalone links (portless link / registry auto-links) heal the same way. Offline nodes are
+    // skipped (establishLink throws 'node offline'), retried next sweep.
+    for (const l of linkStore.list()) await establishLink(l, gw).catch(() => {});
   };
   setTimeout(sweep, 10_000).unref(); // first pass shortly after boot, once agents have re-dialed
   setInterval(sweep, everyMs).unref();

@@ -5,7 +5,8 @@ import { agentGateway } from './runtime/agents.ts';
 import { dataGateway } from './runtime/dataplane.ts';
 import { gitProjects, startGitDeploy, startUploadDeploy } from './runtime/gitdeploy.ts';
 import { deployments } from './runtime/deployments.ts';
-import { removeApp } from './runtime/appdeploy.ts';
+import { removeApp, establishLink } from './runtime/appdeploy.ts';
+import { linkStore } from './runtime/links.ts';
 import { githubAppConfig } from './runtime/github.ts';
 import { secretStore } from './runtime/secrets.ts';
 import { routeStore } from './runtime/routes.ts';
@@ -190,6 +191,63 @@ export const appRouter = router({
           recordOp(ctx, { action: 'agents.run', target: input.agentId, outcome: 'failure' });
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
         }
+      }),
+  }),
+
+  // Standalone mesh links: reach <provider-node>:<port> from <consumer-node> at 127.0.0.1:<localPort>,
+  // node-to-node over iroh (dumbpipe) — no public IP, no tunnel, no per-app spec. Links are persisted
+  // and healed across agent/hub restarts (installLinkHealer). This is the user-facing "machine+port"
+  // internal wiring; app-declared `needs:` links live with their app instead.
+  mesh: router({
+    list: requirePermission('app.read').query(() => {
+      const connected = new Set(agentGateway.list().map((a) => a.id));
+      return linkStore.list().map((l) => ({ ...l, online: connected.has(l.provider) && connected.has(l.consumer) }));
+    }),
+
+    link: requirePermission('app.deploy')
+      .input(
+        z.object({
+          name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'lowercase alphanumeric + dashes').optional(),
+          provider: z.string().min(1), // node that HAS the service
+          providerPort: z.number().int().min(1).max(65535),
+          consumer: z.string().min(1), // node that WANTS the service
+          localPort: z.number().int().min(1).max(65535).optional(), // default: same as providerPort
+          confirm: z.boolean().default(false),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to create a mesh link' });
+        const localPort = input.localPort ?? input.providerPort;
+        const name = input.name ?? `${input.provider}-${input.providerPort}-${input.consumer}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 63);
+        // Re-linking an existing name re-points it — the agents replace same-name links, so this is
+        // also the manual heal ("run it again").
+        const link = { name, provider: input.provider, providerPort: input.providerPort, consumer: input.consumer, localPort, createdBy: 'user' as const };
+        requireDurableAudit(ctx, 'mesh.link', `${name}: ${input.provider}:${input.providerPort} → ${input.consumer}:${localPort}`);
+        try {
+          await establishLink(link);
+          linkStore.set(link);
+          const op = recordOp(ctx, { action: 'mesh.link', target: name, outcome: 'success' });
+          return { ok: true, name, address: `127.0.0.1:${localPort}`, containerAddress: `host.docker.internal:${localPort}`, ...op };
+        } catch (e) {
+          recordOp(ctx, { action: 'mesh.link', target: name, outcome: 'failure' });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (e as Error).message });
+        }
+      }),
+
+    unlink: requirePermission('app.deploy')
+      .input(z.object({ name: z.string().min(1).max(63), confirm: z.boolean().default(false) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to remove a mesh link' });
+        const link = linkStore.get(input.name);
+        if (!link) throw new TRPCError({ code: 'NOT_FOUND', message: `no such link: ${input.name}` });
+        requireDurableAudit(ctx, 'mesh.unlink', input.name);
+        // Best-effort teardown on both ends (a node may be offline); the store forgets it either way,
+        // so the healer stops resurrecting it.
+        await agentGateway.send(link.provider, { cmd: 'meshDrop', name: link.name }, 30_000).catch(() => {});
+        await agentGateway.send(link.consumer, { cmd: 'meshDrop', name: link.name }, 30_000).catch(() => {});
+        linkStore.delete(link.name);
+        const op = recordOp(ctx, { action: 'mesh.unlink', target: input.name, outcome: 'success' });
+        return { ok: true, ...op };
       }),
   }),
 

@@ -20,7 +20,14 @@ daemon config**.
 
 ```bash
 curl -fsSL https://<hub>/registry.sh | sh -s -- up 5000     # downloads zot, runs it on 127.0.0.1:5000
-curl -fsSL https://<hub>/mesh-node.sh | sh -s -- share 5000 # → a registry TICKET for the other boxes
+```
+
+**Enrolled nodes need no tickets** — the platform wires the store over the mesh for you:
+
+```bash
+portless link <store-node>:5000 <build-node>    # surface the store at 127.0.0.1:5000 there
+# or fully automatic: set PORTLESS_REGISTRY_NODE=<store-node> on the hub, and every deploy
+# wires build/deploy nodes to the registry itself (links persist + self-heal).
 ```
 
 To back it with **your S3** instead of local disk, set these before `up` (creds from the AWS env):
@@ -35,9 +42,10 @@ curl -fsSL https://<hub>/registry.sh | sh -s -- up 5000
 ## 2. Build + push (on the capable build box)
 
 ```bash
-# point at the store over the mesh, then build+push:
-curl -fsSL https://<hub>/mesh-node.sh | sh -s -- connect <registry-ticket> 5000
+# enrolled node: the mesh link above already surfaced the store at 127.0.0.1:5000. Just ship:
 curl -fsSL https://<hub>/image.sh     | sh -s -- ship ./myapp myapp:v1
+# (un-enrolled box? run dumbpipe by hand: `dumbpipe listen-tcp --host 127.0.0.1:5000` on the store,
+#  `dumbpipe connect-tcp --addr 127.0.0.1:5000 <ticket>` here.)
 ```
 
 `ship` **auto-detects** how to build, then pushes:
