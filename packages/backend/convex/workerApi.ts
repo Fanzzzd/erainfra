@@ -3,16 +3,20 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { releaseAttemptSlot, releaseMachineSlot } from "./attemptScheduler";
+import { deleteAttemptSecret } from "./attemptSecrets";
 import {
   benchmarkRecommendedSlots,
   benchmarkReportValidator,
   benchmarkScoresValidator,
+  isStoredBenchmark,
   normalizeBenchmark,
   resourceRecommendedSlots,
 } from "./benchmark";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 
 const completedExecutorDrainMs = 30_000;
+const liveAttemptStates = ["pending", "preparing", "ready", "running"] as const;
+const liveExperimentStates = ["queued", "preparing", "running"] as const;
 
 const executorValidator = v.union(
   v.literal("docker"),
@@ -47,8 +51,13 @@ export const profiles = query({
       machine.os === "linux"
         ? new Set(["docker", "firecracker"])
         : new Set([machine.os === "mac" ? "tart" : "hyperv"]);
-    return (await ctx.db.query("profiles").collect())
-      .filter((profile) => profile.state === "active" && compatibleExecutors.has(profile.executor))
+    return (
+      await ctx.db
+        .query("profiles")
+        .withIndex("by_state", (q) => q.eq("state", "active"))
+        .collect()
+    )
+      .filter((profile) => compatibleExecutors.has(profile.executor))
       .toSorted((left, right) => left.name.localeCompare(right.name))
       .map((profile) => ({
         profile: profile.name,
@@ -81,7 +90,15 @@ export const reportHostFacts = mutation({
     const machine = await machineForToken(ctx, args.token);
     const now = Date.now();
     const resourceSlots = resourceRecommendedSlots(machine.os, args.cpus, args.memoryMiB);
-    const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, machine.benchmark, now);
+    const evidence = await ctx.db
+      .query("benchmarkEvidence")
+      .withIndex("by_machine", (q) => q.eq("machineId", machine._id))
+      .unique();
+    // During the no-migration rollout, a machine may have either a legacy full
+    // inline benchmark or the new summary + evidence shape.
+    const benchmark =
+      evidence?.benchmark ?? (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined);
+    const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, benchmark, now);
     // Machines registered before slot policies existed are automatic. Only an
     // explicit operator choice is fixed; the first v0.2 heartbeat persists the
     // migrated policy so every later read is unambiguous.
@@ -131,8 +148,19 @@ export const reportBenchmark = mutation({
       slotPolicy === "fixed" ? (machine.configuredSlots ?? machine.maxSlots) : undefined;
     const maxSlots =
       slotPolicy === "auto" ? recommendedSlots : (configuredSlots ?? machine.maxSlots);
+    const existingEvidence = await ctx.db
+      .query("benchmarkEvidence")
+      .withIndex("by_machine", (q) => q.eq("machineId", machine._id))
+      .unique();
+    if (existingEvidence === null) {
+      await ctx.db.insert("benchmarkEvidence", { machineId: machine._id, benchmark });
+    } else {
+      await ctx.db.patch(existingEvidence._id, { benchmark });
+    }
     await ctx.db.patch(machine._id, {
-      benchmark,
+      // Write the compact hot shape on the next report; the schema still
+      // accepts an old full report for one refresh cycle, so no migration runs.
+      benchmark: { measuredAt: benchmark.measuredAt, scores: benchmark.scores },
       slotPolicy,
       configuredSlots,
       resourceRecommendedSlots: resourceSlots,
@@ -158,13 +186,20 @@ export const pendingAttempts = query({
   }),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    const attempts = await ctx.db.query("attempts").collect();
-    const owned = attempts.filter((attempt) => attempt.machineId === machine._id);
+    const ranges = await Promise.all(
+      [...liveAttemptStates, "completed" as const].map((state) =>
+        ctx.db
+          .query("attempts")
+          .withIndex("by_machine_state", (q) => q.eq("machineId", machine._id).eq("state", state))
+          .collect(),
+      ),
+    );
+    const owned = ranges.flat();
     const now = Date.now();
     return {
       maxSlots: machine.maxSlots,
       attempts: owned
-        .filter((attempt) => attempt.state === "pending" && attempt.jitConfig !== undefined)
+        .filter((attempt) => attempt.state === "pending")
         .map((attempt) => ({ attemptId: attempt._id, runnerName: attempt.runnerName })),
       liveAttemptIds: owned
         .filter(
@@ -197,8 +232,15 @@ export const pendingExperiments = query({
   }),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    const experiments = await ctx.db.query("experiments").collect();
-    const owned = experiments.filter((experiment) => experiment.machineId === machine._id);
+    const ranges = await Promise.all(
+      liveExperimentStates.map((state) =>
+        ctx.db
+          .query("experiments")
+          .withIndex("by_machine_state", (q) => q.eq("machineId", machine._id).eq("state", state))
+          .collect(),
+      ),
+    );
+    const owned = ranges.flat();
     return {
       maxSlots: machine.maxSlots,
       experiments: owned
@@ -324,15 +366,18 @@ export const claimAttempt = mutation({
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
     const attempt = await ctx.db.get(args.attemptId);
-    if (
-      attempt === null ||
-      attempt.machineId !== machine._id ||
-      attempt.state !== "pending" ||
-      attempt.jitConfig === undefined
-    ) {
+    if (attempt === null || attempt.machineId !== machine._id || attempt.state !== "pending") {
       return null;
     }
-    const jitConfig = attempt.jitConfig;
+    // This is the only read of the new secret row. The mutation returns the
+    // value and deletes it atomically, so a second claim cannot recover it.
+    const secret = await ctx.db
+      .query("attemptSecrets")
+      .withIndex("by_attempt", (q) => q.eq("attemptId", attempt._id))
+      .unique();
+    const jitConfig = secret?.jitConfig ?? attempt.jitConfig;
+    if (jitConfig === undefined) return null;
+    if (secret !== null) await ctx.db.delete(secret._id);
     await ctx.db.patch(attempt._id, {
       state: "preparing",
       claimedAt: Date.now(),
@@ -382,12 +427,19 @@ export const reportAttempt = mutation({
       attempt.state === "cancelled" ||
       attempt.state === "failed"
     ) {
-      await ctx.db.patch(attempt._id, { executorFinishedAt, executorExitCode: args.exitCode });
+      await deleteAttemptSecret(ctx, attempt._id);
+      await ctx.db.patch(attempt._id, {
+        jitConfig: undefined,
+        executorFinishedAt,
+        executorExitCode: args.exitCode,
+      });
       return true;
     }
     await releaseAttemptSlot(ctx, attempt);
+    await deleteAttemptSecret(ctx, attempt._id);
     await ctx.db.patch(attempt._id, {
       state: args.exitCode === 0 ? "completed" : "failed",
+      jitConfig: undefined,
       executorFinishedAt,
       executorExitCode: args.exitCode,
       finishedAt: executorFinishedAt,
@@ -441,6 +493,12 @@ export const reportReadiness = mutation({
         q.eq("machineId", machine._id).eq("profile", args.profile),
       )
       .unique();
+    const existingEvidence = await ctx.db
+      .query("readinessEvidence")
+      .withIndex("by_machine_profile", (q) =>
+        q.eq("machineId", machine._id).eq("profile", args.profile),
+      )
+      .unique();
     const checkedAt = Date.now();
     const sameContract =
       existing !== null &&
@@ -453,13 +511,44 @@ export const reportReadiness = mutation({
     // failure is "failed" because there is no successful baseline to regress.
     const state: Doc<"workerReadiness">["state"] =
       args.state === "failed" && preparedAt !== undefined ? "degraded" : args.state;
-    const patch: Omit<Doc<"workerReadiness">, "_id" | "_creationTime" | "machineId"> = {
+    const patch = {
       profile: args.profile,
       executor: args.executor,
       imageRelease: args.imageRelease,
       state,
       checkedAt,
       preparedAt,
+      // Scheduling needs only numeric capacity facts. The next report removes
+      // legacy evidence fields from this hot row; older rows remain readable
+      // for one cycle and dashboard queries fall back to them below.
+      storage:
+        args.storage === undefined
+          ? undefined
+          : {
+              poolTotalMiB: args.storage.poolTotalMiB,
+              poolFreeMiB: args.storage.poolFreeMiB,
+            },
+      statusDetail: undefined,
+      lastError: undefined,
+      isolation: undefined,
+      boundary: undefined,
+      checks: undefined,
+      cacheScope: undefined,
+      cacheSharedWritable: undefined,
+      hardware: undefined,
+      network: undefined,
+    };
+    if (existing === null) {
+      await ctx.db.insert("workerReadiness", { machineId: machine._id, ...patch });
+    } else {
+      await ctx.db.patch(existing._id, patch);
+    }
+    const evidence = {
+      machineId: machine._id,
+      profile: args.profile,
+      executor: args.executor,
+      imageRelease: args.imageRelease,
+      checkedAt,
       statusDetail: args.statusDetail?.slice(0, 1_000),
       lastError: args.error?.slice(0, 1_000),
       isolation: args.isolation,
@@ -471,10 +560,10 @@ export const reportReadiness = mutation({
       storage: args.storage,
       network: args.network,
     };
-    if (existing === null) {
-      await ctx.db.insert("workerReadiness", { machineId: machine._id, ...patch });
+    if (existingEvidence === null) {
+      await ctx.db.insert("readinessEvidence", evidence);
     } else {
-      await ctx.db.patch(existing._id, patch);
+      await ctx.db.patch(existingEvidence._id, evidence);
     }
     if (args.state === "ready") {
       await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});

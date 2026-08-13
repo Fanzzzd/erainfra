@@ -93,12 +93,16 @@ export const list = query({
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
     const now = Date.now();
-    const [profiles, readiness, machines] = await Promise.all([
+    const [profiles, readiness, evidenceRows, machines] = await Promise.all([
       ctx.db.query("profiles").collect(),
       ctx.db.query("workerReadiness").collect(),
+      ctx.db.query("readinessEvidence").collect(),
       ctx.db.query("machines").collect(),
     ]);
     const machineById = new Map(machines.map((machine) => [machine._id, machine]));
+    const evidenceByKey = new Map(
+      evidenceRows.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
+    );
     return profiles
       .toSorted((left, right) => left.name.localeCompare(right.name))
       .map((profile) => {
@@ -123,6 +127,10 @@ export const list = query({
         const workerDetail = rows.flatMap((row) => {
           const machine = machineById.get(row.machineId);
           if (machine === undefined) return [];
+          const evidence = evidenceByKey.get(`${row.machineId}:${row.profile}`);
+          // Evidence must describe this exact hot report. Until the next Agent
+          // refresh creates it, fall back to the legacy inline fields.
+          const currentEvidence = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
           return [
             {
               machineId: row.machineId,
@@ -130,19 +138,19 @@ export const list = query({
               state: row.state,
               checkedAt: row.checkedAt,
               preparedAt: row.preparedAt,
-              statusDetail: row.statusDetail,
+              statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
               online: now - machine.lastSeen < 120_000,
               maxSlots: machine.maxSlots,
               usedSlots: machine.usedSlots,
-              isolation: row.isolation,
-              boundary: row.boundary,
-              cacheScope: row.cacheScope,
-              cacheSharedWritable: row.cacheSharedWritable,
-              checks: row.checks,
-              hardware: row.hardware,
-              storage: row.storage,
-              network: row.network,
-              lastError: row.lastError,
+              isolation: currentEvidence?.isolation ?? row.isolation,
+              boundary: currentEvidence?.boundary ?? row.boundary,
+              cacheScope: currentEvidence?.cacheScope ?? row.cacheScope,
+              cacheSharedWritable: currentEvidence?.cacheSharedWritable ?? row.cacheSharedWritable,
+              checks: currentEvidence?.checks ?? row.checks,
+              hardware: currentEvidence?.hardware ?? row.hardware,
+              storage: currentEvidence?.storage ?? row.storage,
+              network: currentEvidence?.network ?? row.network,
+              lastError: currentEvidence?.lastError ?? row.lastError,
             },
           ];
         });

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { storedBenchmarkValidator } from "./benchmark";
+import { isStoredBenchmark, storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
@@ -97,27 +97,46 @@ export const list = query({
   returns: v.array(machineListItemValidator),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    const [machines, assignedJobs, runningJobs, attempts, experiments, readiness] =
-      await Promise.all([
-        ctx.db.query("machines").collect(),
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "assigned"))
-          .collect(),
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "running"))
-          .collect(),
-        ctx.db.query("attempts").collect(),
-        ctx.db.query("experiments").collect(),
-        ctx.db.query("workerReadiness").collect(),
-      ]);
+    const [
+      machines,
+      assignedJobs,
+      runningJobs,
+      attempts,
+      experiments,
+      readiness,
+      readinessEvidence,
+      benchmarkEvidence,
+    ] = await Promise.all([
+      ctx.db.query("machines").collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "assigned"))
+        .collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "running"))
+        .collect(),
+      ctx.db.query("attempts").collect(),
+      ctx.db.query("experiments").collect(),
+      ctx.db.query("workerReadiness").collect(),
+      ctx.db.query("readinessEvidence").collect(),
+      ctx.db.query("benchmarkEvidence").collect(),
+    ]);
 
     const activeJobs = [...assignedJobs, ...runningJobs];
+    const readinessEvidenceByKey = new Map(
+      readinessEvidence.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
+    );
+    const benchmarkEvidenceByMachine = new Map(
+      benchmarkEvidence.map((evidence) => [evidence.machineId, evidence.benchmark]),
+    );
     return machines
       .toSorted((a, b) => a.name.localeCompare(b.name))
       .map(({ token: _token, ...machine }) => ({
         ...machine,
+        benchmark:
+          benchmarkEvidenceByMachine.get(machine._id) ??
+          (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined),
         currentJobs: activeJobs
           .filter((job) => job.machineId === machine._id)
           .map((job) => ({
@@ -156,16 +175,22 @@ export const list = query({
         readiness: readiness
           .filter((entry) => entry.machineId === machine._id)
           .toSorted((left, right) => left.profile.localeCompare(right.profile))
-          .map((entry) => ({
-            profile: entry.profile,
-            executor: entry.executor,
-            imageRelease: entry.imageRelease,
-            state: entry.state,
-            checkedAt: entry.checkedAt,
-            preparedAt: entry.preparedAt,
-            statusDetail: entry.statusDetail,
-            lastError: entry.lastError,
-          })),
+          .map((entry) => {
+            const evidence = readinessEvidenceByKey.get(`${entry.machineId}:${entry.profile}`);
+            const currentEvidence = evidence?.checkedAt === entry.checkedAt ? evidence : undefined;
+            return {
+              profile: entry.profile,
+              executor: entry.executor,
+              imageRelease: entry.imageRelease,
+              state: entry.state,
+              checkedAt: entry.checkedAt,
+              preparedAt: entry.preparedAt,
+              // Legacy hot rows are the one-cycle fallback until their next
+              // readiness report creates a matching evidence document.
+              statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
+              lastError: currentEvidence?.lastError ?? entry.lastError,
+            };
+          }),
       }));
   },
 });

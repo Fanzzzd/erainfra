@@ -51,8 +51,15 @@ describe("scale-set Attempt protocol", () => {
         state: "pending",
       }),
     ]);
-    const [stored] = await t.run(async (ctx) => ctx.db.query("attempts").collect());
-    expect(stored?.jitConfig).toBe("single-use-secret");
+    const [stored, secrets] = await t.run(async (ctx) =>
+      Promise.all([ctx.db.query("attempts").unique(), ctx.db.query("attemptSecrets").collect()]),
+    );
+    expect(stored?.jitConfig).toBeUndefined();
+    expect(secrets).toHaveLength(1);
+    expect(secrets[0]).toMatchObject({
+      attemptId: stored?._id,
+      jitConfig: "single-use-secret",
+    });
   });
 
   it("rejects a runner name collision across registrations", async () => {
@@ -129,6 +136,7 @@ describe("scale-set Attempt protocol", () => {
       finishedAt: 400,
     });
     expect(stored?.jitConfig).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
     expect(
       await t.query(internal.controllerApi.listActiveAttempts, {
         profile: "rc-linux-js",
@@ -154,6 +162,7 @@ describe("scale-set Attempt protocol", () => {
     const [cancelled] = await t.run(async (ctx) => ctx.db.query("attempts").collect());
     expect(cancelled).toMatchObject({ state: "cancelled", cancelReason: "scale down" });
     expect(cancelled?.jitConfig).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
 
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
@@ -181,6 +190,30 @@ describe("scale-set Attempt protocol", () => {
         reason: "scale down",
       }),
     ).rejects.toThrow(/cannot be removed/);
+  });
+
+  it("deletes the secret when reconciliation times out an unassigned Attempt", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await t.mutation(internal.controllerApi.createAttempt, {
+      ...CONTRACT,
+      profile: "rc-linux-js",
+      runnerName: "expired",
+      runnerId: 99,
+      encodedJITConfig: "expired-secret",
+    });
+    await t.run(async (ctx) => {
+      const attempt = await ctx.db.query("attempts").unique();
+      if (attempt === null) throw new Error("missing attempt");
+      await ctx.db.patch(attempt._id, { createdAt: Date.now() - 25 * 60 * 60_000 });
+    });
+
+    await t.mutation(internal.reconcile.run, {});
+    expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
+    expect(await t.run(async (ctx) => ctx.db.query("attempts").unique())).toMatchObject({
+      state: "cancelled",
+      cancelReason: "No compatible Worker became ready within 24 hours",
+    });
   });
 
   it("exposes and idempotently acknowledges runner cleanup tombstones", async () => {

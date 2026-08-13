@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
+import { deleteAttemptSecret } from "./attemptSecrets";
 import { decideAttemptOutcome } from "./retry";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";
 
@@ -23,6 +24,9 @@ export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
 // Settled recovery rows are diagnostics, kept on the same clock as the
 // deliveries they describe.
 const RECOVERY_RETENTION_MS = DELIVERY_RETENTION_MS;
+const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
+const ACTIVE_EXPERIMENT_STATES = ["queued", "preparing", "running"] as const;
+const ACTIVE_COMMAND_STATES = ["pending", "claimed", "cancelled"] as const;
 
 export const run = internalMutation({
   args: {},
@@ -44,37 +48,86 @@ export const run = internalMutation({
   }> => {
     const now = Date.now();
 
-    // ponytail: full-table scans, fine for <100 machines
-    const [assignedJobs, runningJobs, queuedJobs, machines, commands, attempts, experiments] =
-      await Promise.all([
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "assigned"))
-          .collect(),
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "running"))
-          .collect(),
-        ctx.db
-          .query("jobs")
-          .withIndex("by_status", (q) => q.eq("status", "queued"))
-          .collect(),
-        ctx.db.query("machines").collect(),
-        ctx.db.query("commands").collect(),
-        ctx.db.query("attempts").collect(),
-        ctx.db.query("experiments").collect(),
-      ]);
+    const [
+      assignedJobs,
+      runningJobs,
+      queuedJobs,
+      commandRanges,
+      finishedCommands,
+      attemptRanges,
+      experimentRanges,
+    ] = await Promise.all([
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "assigned"))
+        .collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "running"))
+        .collect(),
+      ctx.db
+        .query("jobs")
+        .withIndex("by_status", (q) => q.eq("status", "queued"))
+        .collect(),
+      Promise.all(
+        ACTIVE_COMMAND_STATES.map((status) =>
+          ctx.db
+            .query("commands")
+            .withIndex("by_status", (query) => query.eq("status", status))
+            .collect(),
+        ),
+      ),
+      ctx.db
+        .query("commands")
+        .withIndex("by_status", (query) => query.eq("status", "finished"))
+        .take(200),
+      Promise.all(
+        ACTIVE_ATTEMPT_STATES.map((state) =>
+          ctx.db
+            .query("attempts")
+            .withIndex("by_state", (query) => query.eq("state", state))
+            .collect(),
+        ),
+      ),
+      Promise.all(
+        ACTIVE_EXPERIMENT_STATES.map((state) =>
+          ctx.db
+            .query("experiments")
+            .withIndex("by_state", (query) => query.eq("state", state))
+            .collect(),
+        ),
+      ),
+    ]);
 
-    const machinesById = new Map(machines.map((machine) => [machine._id, machine]));
+    const commands = commandRanges.flat();
+    const attempts = attemptRanges.flat();
+    const experiments = experimentRanges.flat();
+    const referencedMachineIds = new Set(
+      [...assignedJobs, ...runningJobs, ...queuedJobs, ...attempts, ...experiments].flatMap(
+        (row) => (row.machineId === undefined ? [] : [row.machineId]),
+      ),
+    );
+    const [referencedMachines, machinesWithSlots] = await Promise.all([
+      Promise.all([...referencedMachineIds].map((machineId) => ctx.db.get(machineId))),
+      ctx.db
+        .query("machines")
+        .withIndex("by_usedSlots", (query) => query.gt("usedSlots", 0))
+        .collect(),
+    ]);
+    const machinesById = new Map(
+      [...referencedMachines.filter((machine) => machine !== null), ...machinesWithSlots].map(
+        (machine) => [machine._id, machine],
+      ),
+    );
+    const machines = [...machinesById.values()];
+
     const machineSlots = new Map(machines.map((machine) => [machine._id, machine.usedSlots]));
     const commandsByJob = new Map<string, typeof commands>();
 
+    for (const command of finishedCommands) {
+      await ctx.db.delete(command._id);
+    }
     for (const command of commands) {
-      // Retention: nothing reads finished commands, so drop them here.
-      if (command.status === "finished") {
-        await ctx.db.delete(command._id);
-        continue;
-      }
       const jobCommands = commandsByJob.get(command.jobId) ?? [];
       jobCommands.push(command);
       commandsByJob.set(command.jobId, jobCommands);
@@ -175,15 +228,9 @@ export const run = internalMutation({
     }
 
     for (const attempt of attempts) {
-      if (
-        attempt.state === "completed" ||
-        attempt.state === "cancelled" ||
-        attempt.state === "failed"
-      ) {
-        continue;
-      }
       if (attempt.machineId === undefined) {
         if (now - attempt.createdAt > QUEUE_EXPIRED_MS) {
+          await deleteAttemptSecret(ctx, attempt._id);
           await ctx.db.patch(attempt._id, {
             state: "cancelled",
             jitConfig: undefined,
@@ -212,6 +259,7 @@ export const run = internalMutation({
         stuckPreparing ||
         abandonedRunning
       ) {
+        await deleteAttemptSecret(ctx, attempt._id);
         await ctx.db.patch(attempt._id, {
           state: "failed",
           jitConfig: undefined,
@@ -228,13 +276,6 @@ export const run = internalMutation({
     }
 
     for (const experiment of experiments) {
-      if (
-        experiment.state === "completed" ||
-        experiment.state === "cancelled" ||
-        experiment.state === "failed"
-      ) {
-        continue;
-      }
       if (experiment.machineId === undefined) {
         if (now - experiment.createdAt > QUEUE_EXPIRED_MS) {
           await ctx.db.patch(experiment._id, {
@@ -284,18 +325,29 @@ export const run = internalMutation({
 
     // Retention: expired registration tokens, settled deliveries, and
     // month-old finished jobs.
-    for (const registration of await ctx.db.query("registrationTokens").collect()) {
-      if (
-        registration.usedAt !== undefined ||
-        now - registration.createdAt >= REGISTRATION_TOKEN_RETENTION_MS
-      ) {
-        await ctx.db.delete(registration._id);
-      }
+    const [expiredRegistrations, usedRegistrations] = await Promise.all([
+      ctx.db
+        .query("registrationTokens")
+        .withIndex("by_createdAt", (query) =>
+          query.lte("createdAt", now - REGISTRATION_TOKEN_RETENTION_MS),
+        )
+        .take(200),
+      ctx.db
+        .query("registrationTokens")
+        .withIndex("by_usedAt", (query) => query.gt("usedAt", 0))
+        .take(200),
+    ]);
+    for (const registrationId of new Set(
+      [...expiredRegistrations, ...usedRegistrations].map((registration) => registration._id),
+    )) {
+      await ctx.db.delete(registrationId);
     }
     for (const status of ["processed", "rejected", "failed"] as const) {
       const settled = await ctx.db
         .query("webhookDeliveries")
-        .withIndex("by_status", (q) => q.eq("status", status))
+        .withIndex("by_status_receivedAt", (q) =>
+          q.eq("status", status).lte("receivedAt", now - DELIVERY_RETENTION_MS),
+        )
         .order("asc")
         .take(200);
       for (const delivery of settled) {
@@ -307,7 +359,9 @@ export const run = internalMutation({
     for (const recoveryState of ["recovered", "abandoned"] as const) {
       const settled = await ctx.db
         .query("webhookRecovery")
-        .withIndex("by_state", (q) => q.eq("state", recoveryState))
+        .withIndex("by_state_lastRequestedAt", (q) =>
+          q.eq("state", recoveryState).lte("lastRequestedAt", now - RECOVERY_RETENTION_MS),
+        )
         .order("asc")
         .take(200);
       for (const row of settled) {
@@ -319,7 +373,9 @@ export const run = internalMutation({
     for (const status of ["done", "failed"] as const) {
       const finishedJobs = await ctx.db
         .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", status))
+        .withIndex("by_status_queuedAt", (q) =>
+          q.eq("status", status).lte("queuedAt", now - FINISHED_JOB_RETENTION_MS),
+        )
         .order("asc")
         .take(100);
       for (const job of finishedJobs) {
@@ -332,38 +388,43 @@ export const run = internalMutation({
     // Recompute from durable active work after recovery. The old implementation
     // counted only legacy Jobs and silently reset scale-set/Experiment slots to
     // zero every minute.
-    const [currentJobs, currentAttempts, currentExperiments] = await Promise.all([
-      ctx.db.query("jobs").collect(),
-      ctx.db.query("attempts").collect(),
-      ctx.db.query("experiments").collect(),
+    const [currentJobRanges, currentAttemptRanges, currentExperimentRanges] = await Promise.all([
+      Promise.all(
+        (["assigned", "running"] as const).map((status) =>
+          ctx.db
+            .query("jobs")
+            .withIndex("by_status", (query) => query.eq("status", status))
+            .collect(),
+        ),
+      ),
+      Promise.all(
+        ACTIVE_ATTEMPT_STATES.map((state) =>
+          ctx.db
+            .query("attempts")
+            .withIndex("by_state", (query) => query.eq("state", state))
+            .collect(),
+        ),
+      ),
+      Promise.all(
+        ACTIVE_EXPERIMENT_STATES.map((state) =>
+          ctx.db
+            .query("experiments")
+            .withIndex("by_state", (query) => query.eq("state", state))
+            .collect(),
+        ),
+      ),
     ]);
+    const currentJobs = currentJobRanges.flat();
+    const currentAttempts = currentAttemptRanges.flat();
+    const currentExperiments = currentExperimentRanges.flat();
     const expectedByMachine = new Map<string, number>();
     function count(machineId: string | undefined) {
       if (machineId === undefined) return;
       expectedByMachine.set(machineId, (expectedByMachine.get(machineId) ?? 0) + 1);
     }
-    for (const job of currentJobs) {
-      if (job.status === "assigned" || job.status === "running") count(job.machineId);
-    }
-    for (const attempt of currentAttempts) {
-      if (
-        attempt.state === "pending" ||
-        attempt.state === "preparing" ||
-        attempt.state === "ready" ||
-        attempt.state === "running"
-      ) {
-        count(attempt.machineId);
-      }
-    }
-    for (const experiment of currentExperiments) {
-      if (
-        experiment.state === "queued" ||
-        experiment.state === "preparing" ||
-        experiment.state === "running"
-      ) {
-        count(experiment.machineId);
-      }
-    }
+    for (const job of currentJobs) count(job.machineId);
+    for (const attempt of currentAttempts) count(attempt.machineId);
+    for (const experiment of currentExperiments) count(experiment.machineId);
 
     let slotsRepaired = 0;
     for (const machine of machines) {

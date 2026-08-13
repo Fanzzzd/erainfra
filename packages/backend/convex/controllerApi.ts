@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { releaseAttemptSlot } from "./attemptScheduler";
+import { deleteAttemptSecret } from "./attemptSecrets";
 import { fitPolicyValidator } from "./benchmark";
 
 const activeAttemptState = v.union(
@@ -176,7 +177,7 @@ export const createAttempt = internalMutation({
       }
       throw new ConvexError("Runner name already belongs to another Attempt");
     }
-    await ctx.db.insert("attempts", {
+    const attemptId = await ctx.db.insert("attempts", {
       profile: args.profile,
       executor: args.executor,
       imageRelease: args.imageRelease,
@@ -185,6 +186,10 @@ export const createAttempt = internalMutation({
       runnerName: args.runnerName,
       runnerId: args.runnerId,
       state: "pending",
+      createdAt: Date.now(),
+    });
+    await ctx.db.insert("attemptSecrets", {
+      attemptId,
       jitConfig: args.encodedJITConfig,
       createdAt: Date.now(),
     });
@@ -212,6 +217,7 @@ export const cancelAttempt = internalMutation({
       throw new ConvexError("A running Attempt cannot be removed by a scale-down reconciliation");
     }
     await releaseAttemptSlot(ctx, attempt);
+    await deleteAttemptSecret(ctx, attempt._id);
     await ctx.db.patch(attempt._id, {
       state: "cancelled",
       jitConfig: undefined,
@@ -292,6 +298,7 @@ export const markJobCompleted = internalMutation({
     if (!terminalStates.has(attempt.state)) {
       await releaseAttemptSlot(ctx, attempt);
     }
+    await deleteAttemptSecret(ctx, attempt._id);
     await ctx.db.patch(attempt._id, {
       state: "completed",
       jitConfig: undefined,

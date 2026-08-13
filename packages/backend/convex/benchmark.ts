@@ -44,6 +44,11 @@ export const benchmarkScoresValidator = v.object({
   balanced: v.number(),
 });
 
+export const benchmarkSummaryValidator = v.object({
+  measuredAt: v.number(),
+  scores: benchmarkScoresValidator,
+});
+
 export const storedBenchmarkValidator = v.object({
   version: v.number(),
   measuredAt: v.number(),
@@ -94,6 +99,14 @@ export type StoredBenchmark = BenchmarkReport & {
     balanced: number;
   };
 };
+
+export type BenchmarkSummary = Pick<StoredBenchmark, "measuredAt" | "scores">;
+
+export function isStoredBenchmark(
+  benchmark: BenchmarkSummary | StoredBenchmark | undefined,
+): benchmark is StoredBenchmark {
+  return benchmark !== undefined && "reportedAt" in benchmark;
+}
 
 function boundedNumber(value: number | undefined, name: string, minimum: number, maximum: number) {
   if (value !== undefined && (!Number.isFinite(value) || value < minimum || value > maximum)) {
@@ -229,7 +242,7 @@ export function normalizeBenchmark(report: BenchmarkReport, reportedAt: number):
 }
 
 export function benchmarkScore(
-  benchmark: StoredBenchmark | undefined,
+  benchmark: BenchmarkSummary | undefined,
   policy: FitPolicy,
   now: number,
 ) {
