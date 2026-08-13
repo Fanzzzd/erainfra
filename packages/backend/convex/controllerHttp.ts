@@ -74,6 +74,11 @@ export function parseRegisterProfile(payload: unknown) {
     !immutableImagePattern.test(payload.imageRelease.trim()) ||
     !safePositiveInteger(payload.vcpus) ||
     !safePositiveInteger(payload.memoryMiB) ||
+    (payload.fitPolicy !== undefined &&
+      payload.fitPolicy !== "balanced" &&
+      payload.fitPolicy !== "cpu" &&
+      payload.fitPolicy !== "network" &&
+      payload.fitPolicy !== "io") ||
     typeof payload.minRunners !== "number" ||
     !Number.isSafeInteger(payload.minRunners) ||
     payload.minRunners < 0 ||
@@ -89,6 +94,7 @@ export function parseRegisterProfile(payload: unknown) {
     imageRelease: payload.imageRelease.trim(),
     vcpus: payload.vcpus,
     memoryMiB: payload.memoryMiB,
+    fitPolicy: (payload.fitPolicy ?? "balanced") as "balanced" | "cpu" | "network" | "io",
     minRunners: payload.minRunners,
     maxRunners: payload.maxRunners,
   };

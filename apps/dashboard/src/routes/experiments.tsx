@@ -253,9 +253,11 @@ function ExperimentsPage() {
                       </code>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {experiment.machineName ?? (
-                        <span className="text-subtle-foreground">Unassigned</span>
-                      )}
+                      <span title={experiment.selectionReason}>
+                        {experiment.machineName ?? (
+                          <span className="text-subtle-foreground">Unassigned</span>
+                        )}
+                      </span>
                     </TableCell>
                     <TableCell className="tabular-nums text-xs text-muted-foreground">
                       {experiment.startedAt === undefined

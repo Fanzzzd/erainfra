@@ -452,6 +452,7 @@ set +a
 RC_AGENT_VERSION=$(grep '^AGENT_VERSION=' "$RC_HOME/install-meta" | cut -d= -f2-)
 export RC_AGENT_VERSION
 export RC_READY_FILE="$READY_FILE"
+export RC_BENCHMARK_DIR="$RC_HOME/benchmarks"
 rm -f "$READY_FILE"
 if [ "$(uname -s)" = 'Linux' ]; then
   case "$(uname -m)" in
@@ -546,7 +547,7 @@ is_running() {
 }
 
 usage() {
-  printf '%s\n' 'Usage: rc status | doctor | logs [-f] | restart | stop | update [--version vX.Y.Z] | uninstall'
+  printf '%s\n' 'Usage: rc status | doctor | benchmark | logs [-f] | restart | stop | update [--version vX.Y.Z] | uninstall'
 }
 
 command='status'
@@ -603,6 +604,16 @@ case "$command" in
       printf 'FAIL unsupported host OS\n' >&2
       exit 1
     fi
+    ;;
+  benchmark)
+    AGENT_DIR="$RC_HOME/agent"
+    NODE_BIN=$(field NODE_BIN)
+    [ -n "$NODE_BIN" ] || { printf '%s\n' 'Node.js metadata is missing.' >&2; exit 1; }
+    set -a
+    . "$AGENT_DIR/.env"
+    set +a
+    export RC_BENCHMARK_DIR="$RC_HOME/benchmarks"
+    exec "$NODE_BIN" "$AGENT_DIR/dist/benchmark-cli.js"
     ;;
   logs)
     follow=''

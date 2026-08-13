@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
@@ -17,7 +18,10 @@ const machineListItemValidator = v.object({
   cpus: v.optional(v.number()),
   memoryMiB: v.optional(v.number()),
   slotPolicy: v.optional(v.union(v.literal("auto"), v.literal("fixed"))),
+  configuredSlots: v.optional(v.number()),
+  resourceRecommendedSlots: v.optional(v.number()),
   recommendedSlots: v.optional(v.number()),
+  benchmark: v.optional(storedBenchmarkValidator),
   maxSlots: v.number(),
   usedSlots: v.number(),
   lastSeen: v.number(),
@@ -276,6 +280,8 @@ export const registerAgent = internalMutation({
       cpus: args.cpus,
       memoryMiB: args.memoryMiB,
       slotPolicy: args.maxSlots === undefined ? "auto" : "fixed",
+      configuredSlots: args.maxSlots,
+      resourceRecommendedSlots: defaultSlots,
       recommendedSlots: defaultSlots,
       maxSlots,
       usedSlots: 0,

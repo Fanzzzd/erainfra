@@ -35,6 +35,8 @@ describe("admin.setMachineMaxSlots", () => {
     expect(await readMachine(t, machineId)).toMatchObject({
       name: "ubuntu0",
       maxSlots: 4,
+      configuredSlots: 4,
+      slotPolicy: "fixed",
       usedSlots: 0,
     });
   });

@@ -41,6 +41,7 @@ type ProfileSpec struct {
 	ImageRelease string `json:"imageRelease"`
 	VCPUs        int64  `json:"vcpus"`
 	MemoryMiB    int64  `json:"memoryMiB"`
+	FitPolicy    string `json:"fitPolicy"`
 	MinRunners   int    `json:"minRunners"`
 	MaxRunners   int    `json:"maxRunners"`
 }

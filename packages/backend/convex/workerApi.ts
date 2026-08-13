@@ -3,6 +3,13 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { releaseAttemptSlot, releaseMachineSlot } from "./attemptScheduler";
+import {
+  benchmarkRecommendedSlots,
+  benchmarkReportValidator,
+  benchmarkScoresValidator,
+  normalizeBenchmark,
+  resourceRecommendedSlots,
+} from "./benchmark";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 
 const completedExecutorDrainMs = 30_000;
@@ -72,30 +79,68 @@ export const reportHostFacts = mutation({
       throw new ConvexError("Invalid Worker host facts");
     }
     const machine = await machineForToken(ctx, args.token);
-    const cpuSlots = Math.max(1, Math.floor(args.cpus / 4));
-    const memorySlots = Math.max(1, Math.floor(args.memoryMiB / 8_192));
-    const recommendedSlots =
-      machine.os === "linux"
-        ? Math.min(16, cpuSlots, memorySlots)
-        : machine.os === "mac"
-          ? Math.min(2, cpuSlots, memorySlots)
-          : 1;
+    const now = Date.now();
+    const resourceSlots = resourceRecommendedSlots(machine.os, args.cpus, args.memoryMiB);
+    const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, machine.benchmark, now);
     // Machines registered before slot policies existed are automatic. Only an
     // explicit operator choice is fixed; the first v0.2 heartbeat persists the
     // migrated policy so every later read is unambiguous.
     const slotPolicy = machine.slotPolicy === "fixed" ? "fixed" : "auto";
-    const maxSlots =
-      slotPolicy === "auto" ? Math.max(machine.usedSlots, recommendedSlots) : machine.maxSlots;
+    const configuredSlots =
+      slotPolicy === "fixed" ? (machine.configuredSlots ?? machine.maxSlots) : undefined;
+    // A lower automatic recommendation drains naturally: existing work keeps
+    // running even when usedSlots is temporarily above maxSlots, while both
+    // schedulers stop backfilling until the Worker is under the new ceiling.
+    const maxSlots = slotPolicy === "auto" ? recommendedSlots : machine.maxSlots;
     await ctx.db.patch(machine._id, {
       arch: args.arch.trim(),
       cpus: args.cpus,
       memoryMiB: args.memoryMiB,
       slotPolicy,
+      configuredSlots,
+      resourceRecommendedSlots: resourceSlots,
       recommendedSlots,
       maxSlots,
     });
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     return { maxSlots, recommendedSlots };
+  },
+});
+
+export const reportBenchmark = mutation({
+  args: {
+    token: v.string(),
+    report: benchmarkReportValidator,
+  },
+  returns: v.object({
+    maxSlots: v.number(),
+    recommendedSlots: v.number(),
+    scores: benchmarkScoresValidator,
+  }),
+  handler: async (ctx, args) => {
+    const machine = await machineForToken(ctx, args.token);
+    const now = Date.now();
+    const benchmark = normalizeBenchmark(args.report, now);
+    const resourceSlots =
+      machine.cpus !== undefined && machine.memoryMiB !== undefined
+        ? resourceRecommendedSlots(machine.os, machine.cpus, machine.memoryMiB)
+        : (machine.resourceRecommendedSlots ?? machine.recommendedSlots ?? machine.maxSlots);
+    const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, benchmark, now);
+    const slotPolicy = machine.slotPolicy === "fixed" ? "fixed" : "auto";
+    const configuredSlots =
+      slotPolicy === "fixed" ? (machine.configuredSlots ?? machine.maxSlots) : undefined;
+    const maxSlots =
+      slotPolicy === "auto" ? recommendedSlots : (configuredSlots ?? machine.maxSlots);
+    await ctx.db.patch(machine._id, {
+      benchmark,
+      slotPolicy,
+      configuredSlots,
+      resourceRecommendedSlots: resourceSlots,
+      recommendedSlots,
+      maxSlots,
+    });
+    await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+    return { maxSlots, recommendedSlots, scores: benchmark.scores };
   },
 });
 

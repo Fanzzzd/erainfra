@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { releaseAttemptSlot } from "./attemptScheduler";
+import { fitPolicyValidator } from "./benchmark";
 
 const activeAttemptState = v.union(
   v.literal("pending"),
@@ -25,6 +26,7 @@ export const registerProfile = internalMutation({
     imageRelease: v.string(),
     vcpus: v.number(),
     memoryMiB: v.number(),
+    fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
   },
@@ -34,7 +36,12 @@ export const registerProfile = internalMutation({
       .query("profiles")
       .withIndex("by_name", (q) => q.eq("name", args.name))
       .unique();
-    const value = { ...args, state: "active" as const, updatedAt: Date.now() };
+    const value = {
+      ...args,
+      fitPolicy: args.fitPolicy ?? "balanced",
+      state: "active" as const,
+      updatedAt: Date.now(),
+    };
     if (existing === null) {
       await ctx.db.insert("profiles", value);
     } else {

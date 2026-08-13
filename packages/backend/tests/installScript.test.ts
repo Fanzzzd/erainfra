@@ -509,6 +509,12 @@ describe("rendered script", () => {
     expect(script).toMatch(/dashboard readiness detail/);
   });
 
+  it("installs the on-demand benchmark against the Worker runtime volume", () => {
+    expect(script).toMatch(/rc status \| doctor \| benchmark/);
+    expect(script).toMatch(/RC_BENCHMARK_DIR="\$RC_HOME\/benchmarks"/);
+    expect(script).toMatch(/dist\/benchmark-cli\.js/);
+  });
+
   it("does not let an early launchd match fail status under pipefail", () => {
     expect(script).toMatch(
       /launchctl print "gui\/\$UID\/center\.runner\.agent" 2>\/dev\/null \| grep 'state = running' >\/dev\/null/,

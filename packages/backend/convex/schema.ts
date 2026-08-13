@@ -1,6 +1,7 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { fitPolicyValidator, storedBenchmarkValidator } from "./benchmark";
 
 export default defineSchema({
   ...authTables,
@@ -38,7 +39,10 @@ export default defineSchema({
     cpus: v.optional(v.number()),
     memoryMiB: v.optional(v.number()),
     slotPolicy: v.optional(v.union(v.literal("auto"), v.literal("fixed"))),
+    configuredSlots: v.optional(v.number()),
+    resourceRecommendedSlots: v.optional(v.number()),
     recommendedSlots: v.optional(v.number()),
+    benchmark: v.optional(storedBenchmarkValidator),
     maxSlots: v.number(),
     usedSlots: v.number(),
     lastSeen: v.number(),
@@ -61,6 +65,7 @@ export default defineSchema({
     imageRelease: v.string(),
     vcpus: v.number(),
     memoryMiB: v.number(),
+    fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
     state: v.union(v.literal("active"), v.literal("paused")),
@@ -267,6 +272,7 @@ export default defineSchema({
       v.literal("failed"),
     ),
     machineId: v.optional(v.id("machines")),
+    selectionReason: v.optional(v.string()),
     // Single-use secret. It is removed atomically when a Worker claims the
     // Attempt and is never returned by dashboard or controller queries.
     jitConfig: v.optional(v.string()),
@@ -322,6 +328,7 @@ export default defineSchema({
       v.literal("failed"),
     ),
     machineId: v.optional(v.id("machines")),
+    selectionReason: v.optional(v.string()),
     createdBy: v.string(),
     createdAt: v.number(),
     claimedAt: v.optional(v.number()),
