@@ -469,8 +469,20 @@ function MachinesPage() {
                       </div>
                       {machine.recommendedSlots !== undefined && (
                         <p className="mt-1 text-[10px] text-subtle-foreground">
-                          {machine.slotPolicy === "fixed" ? "fixed" : "auto"} · recommended{" "}
-                          {machine.recommendedSlots}
+                          {machine.slotPolicy === "fixed" ? "fixed" : "auto"} · configured{" "}
+                          {machine.configuredSlots ?? "auto"} · resource{" "}
+                          {machine.resourceRecommendedSlots ?? machine.recommendedSlots} ·
+                          recommended {machine.recommendedSlots} · effective {machine.maxSlots}
+                        </p>
+                      )}
+                      {machine.benchmark && (
+                        <p
+                          className="mt-1 text-[10px] text-subtle-foreground"
+                          title={`CPU ${machine.benchmark.cpuSha256MiBps?.toFixed(0) ?? "n/a"} MiB/s · memory ${machine.benchmark.memoryCopyMiBps?.toFixed(0) ?? "n/a"} MiB/s · disk ${machine.benchmark.diskWriteMiBps?.toFixed(0) ?? "n/a"}/${machine.benchmark.diskReadMiBps?.toFixed(0) ?? "n/a"} MiB/s · fsync ${machine.benchmark.diskFsyncLatencyMs?.toFixed(1) ?? "n/a"} ms · package-link ${machine.benchmark.packageLinkOpsPerSec?.toFixed(0) ?? "n/a"} files/s · ${machine.benchmark.network.map((observation) => `${observation.target} ${observation.ttfbMs?.toFixed(0) ?? "n/a"} ms/${observation.throughputMbps?.toFixed(1) ?? "n/a"} Mbps`).join(" · ")} · measured ${formatAbsoluteTime(machine.benchmark.measuredAt)} · ${machine.benchmark.confidence}${machine.benchmark.errors.length > 0 ? ` · ${machine.benchmark.errors.join("; ")}` : ""}`}
+                        >
+                          benchmark {machine.benchmark.scores.balanced}/100 · CPU{" "}
+                          {machine.benchmark.scores.cpu} · I/O {machine.benchmark.scores.disk} · net{" "}
+                          {machine.benchmark.scores.network}
                         </p>
                       )}
                     </TableCell>
@@ -786,6 +798,9 @@ function ProfileRow({ profile, now }: { profile: ProfileSummary; now: number }) 
         </TableCell>
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
+          <p className="mt-0.5 text-[10px] text-subtle-foreground">
+            {profile.fitPolicy} benchmark fit
+          </p>
         </TableCell>
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.readyWorkers}

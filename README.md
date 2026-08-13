@@ -29,12 +29,13 @@ network policy and cache contract are in
 | Attempt       | One durable, isolated GitHub runner lifecycle. Retry creates a new Attempt.                |
 | Experiment    | Operator-authored, time-bounded command using the same Profile and capacity as CI.         |
 
-Scheduling first requires an exact ready Profile/Image Release match, then admits work within both
-the Worker slot limit and a 90% CPU/memory envelope. Linux automatic capacity is conservatively
-bounded at 16 slots, macOS at two Tart VMs, and Windows at one. A fixed `--slots` override remains
-available for operators. Benchmark-based ranking is tracked in
-[issue #6](https://github.com/Fanzzzd/runner-center/issues/6); missing scores never bypass hard
-compatibility.
+Scheduling first requires an exact ready Profile/Image Release match, then admits work within the
+Worker slot limit, a 90% CPU/memory envelope, and snapshot-storage headroom. Among candidates with
+equal resource pressure, a Profile's `balanced`, `cpu`, `network`, or `io` fit policy ranks fresh
+Worker benchmarks. Missing or seven-day-stale observations score neutrally and never exclude a
+Worker. Linux automatic capacity is bounded at 16 slots, macOS at two Tart VMs, and Windows at one;
+measured bottlenecks can reduce that resource ceiling, while a fixed `--slots` override remains the
+operator's explicit effective capacity.
 
 ## Support status
 
@@ -153,6 +154,7 @@ export RC_EXECUTOR=docker # bootstrap trusted CI; promote to firecracker after h
 export RC_IMAGE_RELEASE=ghcr.io/OWNER/runner-center-ubuntu-24.04-js@sha256:<digest>
 export RC_VCPUS=4
 export RC_MEMORY_MIB=8192
+export RC_FIT_POLICY=balanced # balanced, cpu, network, or io
 export RC_MIN_RUNNERS=0
 export RC_MAX_RUNNERS=16
 
@@ -196,10 +198,19 @@ Useful commands:
 ```bash
 rc status
 rc doctor
+rc benchmark
 rc logs -f
 rc restart
 rc update
 ```
+
+The Worker runs a bounded benchmark at enrollment and daily while idle: SHA-256 CPU throughput,
+memory copy throughput, write/read/fsync plus a 512-file package-link fan-out on
+`~/.runner-center/benchmarks`, and unauthenticated
+GitHub/GHCR/npm latency and throughput. It downloads at most 1 MiB per target, uses no job slot or
+credentials, and reports raw observations plus measurement metadata. `rc benchmark` reruns and
+publishes the same transparent measurements on demand. The dashboard shows raw results, normalized
+scores, configured/resource/recommended/effective slots, and each assigned run's selection reason.
 
 ### Linux Worker prerequisites
 

@@ -54,6 +54,7 @@ func run() error {
 		ImageRelease: cfg.ImageRelease,
 		VCPUs:        cfg.VCPUs,
 		MemoryMiB:    cfg.MemoryMiB,
+		FitPolicy:    cfg.FitPolicy,
 		MinRunners:   cfg.MinRunners,
 		MaxRunners:   cfg.MaxRunners,
 	}); err != nil {
@@ -125,6 +126,7 @@ func run() error {
 		"scaleSet", cfg.ScaleSetName,
 		"scaleSetID", scaleSet.ID,
 		"maxRunners", cfg.MaxRunners,
+		"fitPolicy", cfg.FitPolicy,
 	)
 	if err := scaleSetListener.Run(ctx, scaler); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("run GitHub scale-set listener: %w", err)

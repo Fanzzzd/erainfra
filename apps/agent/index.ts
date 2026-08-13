@@ -1,6 +1,12 @@
 import { arch, cpus, totalmem } from "node:os";
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
+import {
+  BENCHMARK_REFRESH_MS,
+  BENCHMARK_RETRY_MS,
+  runWorkerBenchmark,
+  type BenchmarkReport,
+} from "./benchmark.js";
 import { config } from "./config.js";
 import {
   spawnAttempt,
@@ -109,6 +115,15 @@ const reportHostFacts = makeFunctionReference<
   { token: string; arch: string; cpus: number; memoryMiB: number },
   { maxSlots: number; recommendedSlots: number }
 >("workerApi:reportHostFacts");
+const reportBenchmark = makeFunctionReference<
+  "mutation",
+  { token: string; report: BenchmarkReport },
+  {
+    maxSlots: number;
+    recommendedSlots: number;
+    scores: { cpu: number; memory: number; disk: number; network: number; balanced: number };
+  }
+>("workerApi:reportBenchmark");
 const pendingExperiments = makeFunctionReference<
   "query",
   { token: string },
@@ -137,6 +152,46 @@ const running = new Map<string, ReturnType<typeof spawnProvisioner>>();
 let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
+let benchmarkTimer: ReturnType<typeof setTimeout> | undefined;
+let benchmarking = false;
+
+function scheduleBenchmark(delayMs: number) {
+  if (shuttingDown) return;
+  if (benchmarkTimer !== undefined) clearTimeout(benchmarkTimer);
+  benchmarkTimer = setTimeout(() => void refreshBenchmark(), delayMs);
+}
+
+async function refreshBenchmark() {
+  if (shuttingDown || benchmarking) return;
+  // Measurement never reserves a job slot. The automatic pass also waits for
+  // an idle Worker so its own load cannot distort a live workload.
+  if (active > 0 || running.size > 0 || queue.length > 0) {
+    scheduleBenchmark(BENCHMARK_RETRY_MS);
+    return;
+  }
+  benchmarking = true;
+  try {
+    console.log("Worker benchmark: measuring CPU, memory, local disk, GitHub, GHCR, and npm");
+    const report = await runWorkerBenchmark();
+    const result = await client.mutation(reportBenchmark, {
+      token: config.machineToken,
+      report,
+    });
+    maxSlots = result.maxSlots;
+    console.log(
+      `Worker benchmark: balanced ${result.scores.balanced}/100; ` +
+        `capacity ${result.maxSlots} effective, ${result.recommendedSlots} recommended` +
+        (report.errors.length > 0 ? `; partial: ${report.errors.join("; ")}` : ""),
+    );
+    pump();
+    scheduleBenchmark(BENCHMARK_REFRESH_MS);
+  } catch (error) {
+    console.error("Worker benchmark failed", error);
+    scheduleBenchmark(BENCHMARK_RETRY_MS);
+  } finally {
+    benchmarking = false;
+  }
+}
 
 function workKey(kind: WorkItem["kind"], id: string) {
   return `${kind}:${id}`;
@@ -475,6 +530,7 @@ await publishReadinessSignal(process.env.RC_READY_FILE, process.env.RC_AGENT_VER
 console.log(
   `Runner Center Worker connected to ${config.convexUrl}; discovering compatible Profiles`,
 );
+void refreshBenchmark();
 
 async function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -482,6 +538,7 @@ async function shutdown(signal: string) {
   console.log(`Received ${signal}; stopping Worker`);
   clearInterval(heartbeatTimer);
   if (readinessTimer !== undefined) clearTimeout(readinessTimer);
+  if (benchmarkTimer !== undefined) clearTimeout(benchmarkTimer);
   unsubscribeCommands();
   unsubscribeAttempts();
   unsubscribeExperiments();

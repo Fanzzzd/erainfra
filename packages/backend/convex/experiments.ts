@@ -108,6 +108,7 @@ export const list = query({
       timeoutSeconds: v.number(),
       state: stateValidator,
       machineName: v.optional(v.string()),
+      selectionReason: v.optional(v.string()),
       createdAt: v.number(),
       startedAt: v.optional(v.number()),
       finishedAt: v.optional(v.number()),
@@ -132,6 +133,7 @@ export const list = query({
       state: experiment.state,
       machineName:
         experiment.machineId === undefined ? undefined : machineNames.get(experiment.machineId),
+      selectionReason: experiment.selectionReason,
       createdAt: experiment.createdAt,
       startedAt: experiment.startedAt,
       finishedAt: experiment.finishedAt,

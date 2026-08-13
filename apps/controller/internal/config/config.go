@@ -21,6 +21,7 @@ type Config struct {
 	ImageRelease    string
 	VCPUs           int64
 	MemoryMiB       int64
+	FitPolicy       string
 	ScaleSetName    string
 	Labels          []string
 	RunnerGroup     string
@@ -44,7 +45,11 @@ func Load() (Config, error) {
 		MaxRunners:      1,
 		VCPUs:           2,
 		MemoryMiB:       4096,
+		FitPolicy:       "balanced",
 		LogLevel:        slog.LevelInfo,
+	}
+	if value := strings.ToLower(strings.TrimSpace(os.Getenv("RC_FIT_POLICY"))); value != "" {
+		config.FitPolicy = value
 	}
 	if config.ScaleSetName == "" {
 		config.ScaleSetName = config.Profile
@@ -156,6 +161,9 @@ func (c Config) Validate() error {
 	}
 	if c.VCPUs < 1 || c.MemoryMiB < 512 {
 		return errors.New("RC_VCPUS must be positive and RC_MEMORY_MIB must be at least 512")
+	}
+	if c.FitPolicy != "balanced" && c.FitPolicy != "cpu" && c.FitPolicy != "network" && c.FitPolicy != "io" {
+		return errors.New("RC_FIT_POLICY must be balanced, cpu, network, or io")
 	}
 	if matched, _ := regexp.MatchString(`@sha256:[0-9a-f]{64}$`, c.ImageRelease); !matched {
 		return errors.New("RC_IMAGE_RELEASE must be immutable and end in @sha256:<64 hex characters>")

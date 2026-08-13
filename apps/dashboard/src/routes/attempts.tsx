@@ -146,9 +146,11 @@ function AttemptsPage() {
                       </p>
                     </TableCell>
                     <TableCell className="text-xs text-secondary-foreground">
-                      {attempt.machineName ?? (
-                        <span className="text-subtle-foreground">Unassigned</span>
-                      )}
+                      <span title={attempt.selectionReason}>
+                        {attempt.machineName ?? (
+                          <span className="text-subtle-foreground">Unassigned</span>
+                        )}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="font-mono">

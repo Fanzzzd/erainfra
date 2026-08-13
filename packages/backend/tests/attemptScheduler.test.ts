@@ -57,6 +57,43 @@ async function createAttempt(t: Harness, runnerName = "runner-a") {
   await t.mutation(internal.attemptScheduler.tryAssign, {});
 }
 
+async function publishBenchmark(
+  t: Harness,
+  name: string,
+  values: { cpu: number; network: number; disk?: number },
+) {
+  return t.mutation(api.workerApi.reportBenchmark, {
+    token: `token-${name}`,
+    report: {
+      version: 1,
+      measuredAt: Date.now(),
+      durationMs: 1_000,
+      sampleSize: 1,
+      cpuSha256MiBps: values.cpu,
+      memoryCopyMiBps: 10_000,
+      diskWriteMiBps: values.disk ?? 500,
+      diskReadMiBps: values.disk ?? 500,
+      diskFsyncLatencyMs: values.disk === 1 ? 100 : 5,
+      packageLinkOpsPerSec: values.disk === 1 ? 1 : 5_000,
+      network: [
+        {
+          target: "github",
+          ttfbMs: values.network >= 50 ? 50 : 1_400,
+          throughputMbps: values.network,
+          bytes: 1_024,
+        },
+        {
+          target: "ghcr",
+          ttfbMs: values.network >= 50 ? 50 : 1_400,
+          throughputMbps: values.network,
+          bytes: 1_024,
+        },
+      ],
+      errors: [],
+    },
+  });
+}
+
 describe("readiness-gated Attempt scheduling", () => {
   it("derives bounded automatic capacity from live host resources", async () => {
     const t = convexTest(schema, modules);
@@ -323,6 +360,84 @@ describe("readiness-gated Attempt scheduling", () => {
 
     const attempts = await t.run(async (ctx) => ctx.db.query("attempts").collect());
     expect(new Set(attempts.map((attempt) => attempt.machineId))).toEqual(new Set([alpha, beta]));
+  });
+
+  it.each([
+    { fitPolicy: "cpu" as const, expected: "beta" },
+    { fitPolicy: "network" as const, expected: "alpha" },
+  ])(
+    "uses $fitPolicy score only as an equal-pressure tie-break",
+    async ({ fitPolicy, expected }) => {
+      const t = convexTest(schema, modules);
+      const alpha = await addWorker(t, "alpha");
+      const beta = await addWorker(t, "beta");
+      const profile = await t.run(async (ctx) => ctx.db.query("profiles").unique());
+      if (profile === null) throw new Error("missing profile");
+      await t.run(async (ctx) => ctx.db.patch(profile._id, { fitPolicy }));
+      await publishBenchmark(t, "alpha", { cpu: 100, network: 100 });
+      await publishBenchmark(t, "beta", { cpu: 1_500, network: 1 });
+
+      await createAttempt(t);
+
+      const attempt = await t.run(async (ctx) => ctx.db.query("attempts").unique());
+      expect(attempt?.machineId).toBe(expected === "alpha" ? alpha : beta);
+      expect(attempt?.selectionReason).toContain(`${fitPolicy} benchmark=`);
+      expect(attempt?.selectionReason).toContain("hard compatibility passed");
+    },
+  );
+
+  it("keeps missing benchmark scores eligible with neutral, observable ranking", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "unmeasured");
+
+    await createAttempt(t);
+
+    const attempt = await t.run(async (ctx) => ctx.db.query("attempts").unique());
+    expect(attempt?.machineId).toBe(machineId);
+    expect(attempt?.selectionReason).toContain("benchmark=50/100 (missing)");
+  });
+
+  it("does not let a faster but busier Worker bypass resource-pressure spreading", async () => {
+    const t = convexTest(schema, modules);
+    const alpha = await addWorker(t, "alpha", 2);
+    const beta = await addWorker(t, "beta", 2);
+    await publishBenchmark(t, "alpha", { cpu: 1_500, network: 100 });
+    await publishBenchmark(t, "beta", { cpu: 100, network: 1 });
+    await t.run(async (ctx) => ctx.db.patch(alpha, { usedSlots: 1 }));
+
+    await createAttempt(t);
+
+    expect((await t.run(async (ctx) => ctx.db.query("attempts").unique()))?.machineId).toBe(beta);
+  });
+
+  it("reduces automatic capacity after a weak measured storage result", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "large", 16);
+    await t.run(async (ctx) =>
+      ctx.db.patch(machineId, {
+        arch: "x64",
+        cpus: 64,
+        memoryMiB: 256 * 1_024,
+        slotPolicy: "auto",
+        resourceRecommendedSlots: 16,
+        recommendedSlots: 16,
+        usedSlots: 8,
+      }),
+    );
+
+    expect(await publishBenchmark(t, "large", { cpu: 1_500, network: 100, disk: 1 })).toMatchObject(
+      { maxSlots: 4, recommendedSlots: 4 },
+    );
+    expect(await t.run(async (ctx) => ctx.db.get(machineId))).toMatchObject({
+      resourceRecommendedSlots: 16,
+      recommendedSlots: 4,
+      maxSlots: 4,
+      usedSlots: 8,
+    });
+    await createAttempt(t);
+    expect(
+      (await t.run(async (ctx) => ctx.db.query("attempts").unique()))?.machineId,
+    ).toBeUndefined();
   });
 
   it("does not overcommit the host resource envelope even when slots remain", async () => {

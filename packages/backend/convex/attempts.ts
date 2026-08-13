@@ -28,6 +28,7 @@ export const list = query({
       runnerName: v.string(),
       state: stateValidator,
       machineName: v.optional(v.string()),
+      selectionReason: v.optional(v.string()),
       repo: v.optional(v.string()),
       displayName: v.optional(v.string()),
       workflowRunId: v.optional(v.number()),
@@ -55,6 +56,7 @@ export const list = query({
       state: attempt.state,
       machineName:
         attempt.machineId === undefined ? undefined : machineNames.get(attempt.machineId),
+      selectionReason: attempt.selectionReason,
       repo: attempt.repo,
       displayName: attempt.displayName,
       workflowRunId: attempt.workflowRunId,

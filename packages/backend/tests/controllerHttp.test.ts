@@ -35,7 +35,20 @@ describe("controller payloads", () => {
         minRunners: 0,
         maxRunners: 4,
       }),
-    ).not.toBeNull();
+    ).toMatchObject({ fitPolicy: "balanced" });
+    expect(
+      parseRegisterProfile({
+        name: "rc-linux-cpu",
+        scaleSetName: "rc-linux-cpu",
+        executor: "firecracker",
+        imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+        vcpus: 8,
+        memoryMiB: 8192,
+        fitPolicy: "cpu",
+        minRunners: 0,
+        maxRunners: 4,
+      }),
+    ).toMatchObject({ fitPolicy: "cpu" });
     expect(
       parseRegisterProfile({
         name: "rc-linux-trusted",
@@ -56,6 +69,19 @@ describe("controller payloads", () => {
         imageRelease: "ghcr.io/fanzzzd/runner:latest",
         vcpus: 2,
         memoryMiB: 4096,
+        minRunners: 0,
+        maxRunners: 4,
+      }),
+    ).toBeNull();
+    expect(
+      parseRegisterProfile({
+        name: "rc-linux-js",
+        scaleSetName: "rc-linux-js",
+        executor: "firecracker",
+        imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+        fitPolicy: "fastest",
         minRunners: 0,
         maxRunners: 4,
       }),

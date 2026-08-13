@@ -7,6 +7,7 @@ import {
   readinessCheckValidator,
 } from "./isolation";
 import { query } from "./_generated/server";
+import { fitPolicyValidator } from "./benchmark";
 
 const executorValidator = v.union(
   v.literal("docker"),
@@ -26,6 +27,7 @@ export const list = query({
       imageRelease: v.string(),
       vcpus: v.number(),
       memoryMiB: v.number(),
+      fitPolicy: fitPolicyValidator,
       minRunners: v.number(),
       maxRunners: v.number(),
       state: v.union(v.literal("active"), v.literal("paused")),
@@ -157,6 +159,7 @@ export const list = query({
           imageRelease: profile.imageRelease,
           vcpus: profile.vcpus,
           memoryMiB: profile.memoryMiB,
+          fitPolicy: profile.fitPolicy ?? "balanced",
           minRunners: profile.minRunners,
           maxRunners: profile.maxRunners,
           state: profile.state,

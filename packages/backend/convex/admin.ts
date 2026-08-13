@@ -31,7 +31,11 @@ export const setMachineMaxSlots = internalMutation({
         `maxSlots cannot be lower than the machine's ${machine.usedSlots} active slot(s)`,
       );
     }
-    await ctx.db.patch(machine._id, { maxSlots: args.maxSlots });
+    await ctx.db.patch(machine._id, {
+      slotPolicy: "fixed",
+      configuredSlots: args.maxSlots,
+      maxSlots: args.maxSlots,
+    });
     await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
     return null;
   },

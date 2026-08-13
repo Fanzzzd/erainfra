@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
+import { benchmarkScore, type FitPolicy } from "./benchmark";
 import { hasSnapshotHeadroom } from "./isolation";
 
 const WORKER_OFFLINE_AFTER_MS = 120_000;
@@ -107,6 +108,7 @@ export const tryAssign = internalMutation({
 
     for (const item of pending) {
       const work = item.work;
+      const fitPolicy: FitPolicy = activeProfileByName.get(work.profile)?.fitPolicy ?? "balanced";
       const candidates = readinessRows
         .filter(
           (readiness) =>
@@ -153,25 +155,35 @@ export const tryAssign = internalMutation({
             machine.memoryMiB === undefined ? 0 : reserved.memoryMiB / usableMemoryMiB,
             machine.usedSlots / machine.maxSlots,
           );
-          return { machine, resourcePressure };
+          return {
+            machine,
+            resourcePressure,
+            benchmark: benchmarkScore(machine.benchmark, fitPolicy, now),
+          };
         })
         .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
-        // Spread work before filling one host. Name is the deterministic tie-break.
+        // Spread work before filling one host. Benchmark only ranks candidates
+        // at equal pressure; name remains the deterministic final tie-break.
         .toSorted(
           (left, right) =>
             left.resourcePressure - right.resourcePressure ||
+            right.benchmark.score - left.benchmark.score ||
             left.machine.name.localeCompare(right.machine.name),
         );
       const candidate = candidates[0];
       if (candidate === undefined) continue;
       const { machine } = candidate;
+      const selectionReason =
+        `hard compatibility passed; pressure=${candidate.resourcePressure.toFixed(3)}; ` +
+        `${fitPolicy} benchmark=${candidate.benchmark.score}/100 (${candidate.benchmark.source}); ` +
+        `eligible=${candidates.length}`;
 
       await ctx.db.patch(machine._id, { usedSlots: machine.usedSlots + 1 });
       machine.usedSlots += 1;
       if (item.kind === "attempt") {
-        await ctx.db.patch(item.work._id, { machineId: machine._id });
+        await ctx.db.patch(item.work._id, { machineId: machine._id, selectionReason });
       } else {
-        await ctx.db.patch(item.work._id, { machineId: machine._id });
+        await ctx.db.patch(item.work._id, { machineId: machine._id, selectionReason });
       }
       const reserved = reservedByMachine.get(machine._id) ?? {
         vcpus: 0,
