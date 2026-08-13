@@ -23,14 +23,18 @@ jobs:
           # Not privileged: a privileged container would hold CAP_SYS_ADMIN.
           cap=$(awk '/^CapEff:/ { print "0x" $2 }' /proc/self/status)
           [ $(( cap & (1 << 21) )) -eq 0 ]
+          # Read the mount table once; an unreadable table fails the canary
+          # instead of silently passing the probes below.
+          mounts=$(cat /proc/self/mountinfo)
+          [ -n "$mounts" ]
           # No Docker control socket is reachable at any mounted path.
-          ! grep -q 'docker\.sock' /proc/self/mountinfo
+          ! grep -q 'docker\.sock' <<<"$mounts"
           # No host bind mounts or shared volumes: apart from the root
           # filesystem, the only disk-backed mounts a clean executor carries
           # are Docker's standard /etc file trio.
-          unexpected=$(awk '{ for (i = 7; i <= NF; i++) if ($i == "-") { print $(i + 1), $5; break } }' /proc/self/mountinfo \
+          unexpected=$(awk '{ for (i = 7; i <= NF; i++) if ($i == "-") { print $(i + 1), $5; break } }' <<<"$mounts" \
             | awk '$1 ~ /^(ext[234]|xfs|btrfs|zfs)$/ { print $2 }' \
-            | grep -vE '^/(etc/(hosts|hostname|resolv\.conf))?$' || true)
+            | { grep -vE '^/(etc/(hosts|hostname|resolv\.conf))?$' || true; })
           [ -z "$unexpected" ] || { echo "unexpected host mounts: $unexpected"; exit 1; }
           # Scratch space is writable.
           probe=$(mktemp -d) && touch "$probe/ok" && rm -rf "$probe"
