@@ -70,6 +70,9 @@ unaffected either way.
 
 ## 5. Agent pin
 
-This deploy also moves the served agent pin to rc.4 (`agentRelease.ts`). Installed agents
-update only when they next check, verify the archive against the pinned sha256, and swap
-atomically; a failed verification leaves the current install untouched.
+This deploy also moves the served agent pin to rc.4 (`agentRelease.ts`). Installed agents do
+not self-update: run `rc update` on each Worker. The installer fetches the release this
+deployment pins, verifies the archive against the pinned sha256, and swaps atomically; a
+failed verification leaves the current install untouched. Until a Worker is updated, its
+jobs run with the previous agent's provisioning behaviour — the canary makes that drift
+visible instead of letting it pass.
