@@ -1,0 +1,29 @@
+name: smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily canary: proves the whole product path (scale-set listener ->
+    # Attempt -> scheduler -> agent -> ephemeral executor -> teardown) still
+    # works, independent of anyone's session. A red run here means the fleet
+    # or control plane lost capability.
+    - cron: "17 2 * * *"
+
+jobs:
+  smoke:
+    runs-on: rc-e2e
+    timeout-minutes: 10
+    steps:
+      - name: Assert the executor contract
+        run: |
+          set -euo pipefail
+          echo "runner=$RUNNER_NAME arch=$(uname -m) kernel=$(uname -r)"
+          # Ephemeral: every job starts in an empty workspace.
+          [ -z "$(ls -A "$GITHUB_WORKSPACE")" ]
+          # The host Docker socket is not mounted into the job.
+          [ ! -e /var/run/docker.sock ]
+          # Scratch space is writable.
+          probe=$(mktemp -d) && touch "$probe/ok" && rm -rf "$probe"
+          # Egress works; actions/checkout and tool downloads depend on it.
+          curl -fsS -o /dev/null https://api.github.com
+          echo "smoke OK"
