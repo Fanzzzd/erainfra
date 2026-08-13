@@ -215,54 +215,58 @@ function LoginPage() {
                         />
                       </div>
                     )}
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor={`${fieldId}-${value}-email`}>Email</Label>
+                      <Input
+                        id={`${fieldId}-${value}-email`}
+                        name="email"
+                        type="email"
+                        autoComplete="username"
+                        placeholder="you@example.com"
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label htmlFor={`${fieldId}-${value}-password`}>Password</Label>
+                      <div className="relative">
+                        <Input
+                          id={`${fieldId}-${value}-password`}
+                          name="password"
+                          type={revealPassword ? "text" : "password"}
+                          autoComplete={value === "signIn" ? "current-password" : "new-password"}
+                          className="pr-10"
+                          // Only on the sign-up flows: an account created before this
+                          // rule existed must still be able to sign in.
+                          {...(value === "signIn" ? {} : { minLength: MIN_PASSWORD_LENGTH })}
+                          required
+                        />
+                        <button
+                          type="button"
+                          aria-label={revealPassword ? "Hide password" : "Show password"}
+                          aria-pressed={revealPassword}
+                          aria-controls={`${fieldId}-${value}-password`}
+                          className="absolute right-1 top-1 grid size-8 place-items-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+                          onClick={() => setRevealPassword((shown) => !shown)}
+                        >
+                          {revealPassword ? (
+                            <EyeOff className="size-4" />
+                          ) : (
+                            <Eye className="size-4" />
+                          )}
+                        </button>
+                      </div>
+                      {value !== "signIn" && (
+                        <p className="text-[11px] leading-4 text-muted-foreground">
+                          At least {MIN_PASSWORD_LENGTH} characters. This account can read every
+                          machine token and GitHub credential on the deployment.
+                        </p>
+                      )}
+                    </div>
                   </TabsContent>
                 ))}
               </Tabs>
-
-              <div className="space-y-1.5">
-                <Label htmlFor={`${fieldId}-email`}>Email</Label>
-                <Input
-                  id={`${fieldId}-email`}
-                  name="email"
-                  type="email"
-                  autoComplete="username"
-                  placeholder="you@example.com"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor={`${fieldId}-password`}>Password</Label>
-                <div className="relative">
-                  <Input
-                    id={`${fieldId}-password`}
-                    name="password"
-                    type={revealPassword ? "text" : "password"}
-                    autoComplete={isSignUp ? "new-password" : "current-password"}
-                    className="pr-10"
-                    // Only on the sign-up flows: an account created before this
-                    // rule existed must still be able to sign in.
-                    {...(isSignUp ? { minLength: MIN_PASSWORD_LENGTH } : {})}
-                    required
-                  />
-                  <button
-                    type="button"
-                    aria-label={revealPassword ? "Hide password" : "Show password"}
-                    aria-pressed={revealPassword}
-                    aria-controls={`${fieldId}-password`}
-                    className="absolute right-1 top-1 grid size-8 place-items-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
-                    onClick={() => setRevealPassword((shown) => !shown)}
-                  >
-                    {revealPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
-                </div>
-                {isSignUp && (
-                  <p className="text-[11px] leading-4 text-muted-foreground">
-                    At least {MIN_PASSWORD_LENGTH} characters. This account can read every machine
-                    token and GitHub credential on the deployment.
-                  </p>
-                )}
-              </div>
             </fieldset>
 
             <Button className="w-full" type="submit" disabled={submitting}>
