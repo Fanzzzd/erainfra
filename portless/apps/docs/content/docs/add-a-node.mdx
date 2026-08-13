@@ -1,0 +1,53 @@
+---
+title: Add a node
+description: Bring any Linux, macOS, or Windows box onto your mesh with one command.
+---
+
+Portless runs your apps on **nodes** — any Linux, macOS, or Windows box, even behind NAT with no public IP. A node runs the **agent**, which dials *out* to your hub over an encrypted WebSocket and waits for deploy commands. No inbound ports, no public IP.
+
+## One command
+
+Run this **on the box you want to add** (you need shell access to it once — see [Why one command](#why-one-command)).
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://your-hub.example.com/agent.sh | sh -s -- --token YOUR_TOKEN
+```
+
+### Windows (PowerShell)
+
+```powershell
+& ([scriptblock]::Create((irm https://your-hub.example.com/agent.ps1))) -Token YOUR_TOKEN -Install
+```
+
+That's it. The script detects the platform, downloads the matching agent binary from your hub, and connects. Within a second the node appears in your dashboard, ready to deploy to.
+
+- `--token` / `-Token`: an owner or operator token from your hub — it authorizes the agent to run deploys.
+- `--name` / `-Name` (optional): a label for the node; defaults to the box's hostname.
+- Windows `-Install`: registers a scheduled task so the agent reconnects after every reboot. Omit it to just run in the current window.
+- The hub URL is baked into the script when your hub serves it, so you normally don't pass `--hub`. If you fetched the script from elsewhere (e.g. Vercel), pass `--hub wss://your-hub.example.com/agent`.
+
+## Prerequisite: build the agent binaries (once, on the hub)
+
+The hub serves the agent binaries itself — self-hosted, no Docker Hub, no third-party release host. Build them once:
+
+```bash
+sh deploy/build-agents.sh   # cross-compiles every platform into deploy/bin/
+```
+
+## Why one command
+
+You can't bring a machine onto a network you've never had access to — *something* has to run on it first. Every node-based system works this way: Tailscale's `tailscale up`, Fly/Railway/Coolify install scripts, Kubernetes' `kubeadm join`. Portless keeps it to a single command and self-hosts the binary, so there's nothing extra to trust.
+
+After the agent runs once, everything else — deploys, restarts, logs, removal — is driven remotely from the hub. You never touch the box again.
+
+## Locked-down Windows boxes
+
+Some Windows Servers block all remote management: no SSH or WinRM, and **UAC remote-token filtering** strips admin rights from network logons for non-built-in admin accounts — so `psexec`, `wmiexec`, and remote SMB to admin shares all fail with `rpc_s_access_denied`. That is correct, expected security, not a bug.
+
+On such a box, run the one command in an **RDP or console session** once (an interactive logon gets a full token). It's the same one-liner, just typed at the box. After that the agent reconnects on its own and you manage it remotely like any other node.
+
+## Build, store, deploy
+
+Once a node is enrolled, build an image on a capable box, push it to your own registry, and deploy it to the node — see the build/deploy split in the repo's `deploy/IMAGES.md`.

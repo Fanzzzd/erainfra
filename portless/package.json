@@ -1,0 +1,21 @@
+{
+  "name": "portless",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test && cd agents/node-agent && go test ./...",
+    "api:dev": "node --experimental-strip-types apps/api/src/server.ts",
+    "web:dev": "cd apps/web && vite"
+  },
+  "devDependencies": {
+    "turbo": "2.9.18"
+  }
+}

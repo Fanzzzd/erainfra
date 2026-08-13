@@ -1,0 +1,3 @@
+{
+  "pages": ["index", "add-a-node", "deploy-from-github", "environment-variables", "wildcard-domains", "backups-and-failover"]
+}
