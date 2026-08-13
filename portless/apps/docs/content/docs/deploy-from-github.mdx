@@ -1,0 +1,70 @@
+---
+title: Deploy from GitHub
+description: Connect a GitHub repo and ship on every push — the Vercel flow, self-hosted.
+---
+
+Bind a GitHub repo to portless and every push builds and deploys automatically — same flow as Vercel,
+but on your own machines. Portless uses a **GitHub App** (yours, not a third-party service): you
+install it on the repos you choose, and it delivers push webhooks plus short-lived tokens to clone
+private repos. No personal access tokens to rotate.
+
+On a push, portless clones the commit on a **build node**, builds it (Dockerfile or Nixpacks — no
+Dockerfile needed), pushes the image to your registry, and deploys it on a **deploy node**.
+
+## 1. Create the GitHub App (once)
+
+GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App**:
+
+- **Webhook URL**: `https://your-hub.example.com/webhook/github`
+- **Webhook secret**: generate a random string — you'll give it to portless too.
+- **Permissions** → Repository: **Contents: Read-only** and **Metadata: Read-only**.
+- **Subscribe to events**: **Push**.
+- Create the app, then **Generate a private key** (downloads a `.pem`).
+
+Note the **App ID** and keep the `.pem`.
+
+## 2. Point portless at the app
+
+Set these on the hub (the box running the portless API), then restart it:
+
+```bash
+export PORTLESS_GH_APP_ID=123456
+export PORTLESS_GH_APP_KEY_FILE=/path/to/app-private-key.pem   # or PORTLESS_GH_APP_KEY='-----BEGIN...'
+export PORTLESS_GH_WEBHOOK_SECRET=the-secret-from-step-1
+export PORTLESS_HUB_BASE=https://your-hub.example.com          # where build nodes fetch image.sh
+export PORTLESS_REGISTRY=127.0.0.1:5000                        # your image store (over the mesh)
+```
+
+## 3. Install the app + bind a repo
+
+Install the app on the repo you want to deploy (GitHub → the app → **Install**, pick the repo). Then
+bind it in portless — point it at a [build node and a deploy node](/docs/add-a-node) you've enrolled:
+
+```bash
+# (dashboard: Import Git repo; or via the API)
+git.bind  repo=you/app  branch=main  buildNode=builder  deployNode=web1  name=app  port=8080
+```
+
+`port` is the port your app listens on (`PORT` is injected and published).
+
+## 4. Push
+
+```bash
+git push origin main
+```
+
+GitHub calls the webhook, portless clones the commit, builds it, pushes the image, and deploys it.
+That's the whole loop — push, and it's live. Trigger a redeploy by hand any time with **git.deployNow**
+(the dashboard's "Redeploy" button).
+
+## How it stays self-hosted
+
+- The app and its key are **yours** — GitHub is only where your code lives, not a new dependency.
+- The agent binaries, the image registry, and the build all run on **your** machines (no Docker Hub).
+- Private repos are cloned with a token that **expires in ~1 hour**, minted per deploy and never stored
+  or logged (clone errors are scrubbed of it).
+
+## Public repos
+
+No app needed for a public repo — bind it and use **git.deployNow** (or add the webhook manually). The
+clone runs tokenless.
