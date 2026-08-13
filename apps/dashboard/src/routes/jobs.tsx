@@ -3,7 +3,14 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Inbox, ListChecks, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api } from "@runner-center/backend/api";
+import { EmptyState } from "@/components/empty-state";
+import { PageHeader } from "@/components/page-header";
+import { LiveBadge, StatusDot } from "@/components/status";
+import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -12,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNow } from "@/hooks/use-now";
 import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -62,60 +70,43 @@ function JobsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-[-0.025em] text-zinc-50">Jobs</h1>
-          <p className="mt-1.5 text-sm text-[#8a8a93]">
-            Track workflow queues, assignments, and runner outcomes in real time.
-          </p>
-        </div>
-        <span className="flex h-8 shrink-0 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.025] px-2.5 text-xs text-zinc-400">
-          <span className="status-pulse size-1.5 rounded-full bg-emerald-400" />
-          Live updates
-        </span>
-      </div>
+      <PageHeader
+        title="Legacy jobs"
+        description="Workflow jobs delivered by webhook to per-repository runners — the path scale-set Profiles replace."
+      >
+        <LiveBadge />
+      </PageHeader>
 
       <IntakeHealth now={now} />
 
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-        <div
-          className="flex w-fit items-center gap-1 rounded-lg border border-white/[0.08] bg-[#0d0d0f] p-1"
-          aria-label="Filter jobs"
-        >
-          {filters.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              aria-pressed={filter === item.value}
-              className={cn(
-                "flex h-7 items-center gap-2 rounded-full px-2.5 text-xs font-medium text-[#8a8a93] outline-none transition-colors duration-150 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-400/80",
-                filter === item.value && "bg-white/[0.08] text-zinc-100",
-              )}
-              onClick={() => setFilter(item.value)}
-            >
-              {item.label}
-              <span className="tabular-nums text-[10px] text-[#7c7c85]">{counts[item.value]}</span>
-            </button>
-          ))}
-        </div>
-        <span className="text-xs text-[#7c7c85]">Newest first</span>
+        <Tabs value={filter} onValueChange={(value) => setFilter(value as JobFilter)}>
+          <TabsList aria-label="Filter jobs by status">
+            {filters.map((item) => (
+              <TabsTrigger key={item.value} value={item.value}>
+                {item.label}
+                <span className="tabular-nums text-[10px] text-subtle-foreground">
+                  {counts[item.value]}
+                </span>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <span className="text-xs text-subtle-foreground">Newest first</span>
       </div>
 
-      <section
-        className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
-        aria-labelledby="jobs-heading"
-      >
-        <div className="flex h-12 items-center gap-2.5 border-b border-white/[0.08] px-4">
-          <h2 id="jobs-heading" className="text-sm font-medium text-zinc-200">
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b">
+          <CardTitle className="flex items-center gap-2.5">
             Job history
-          </h2>
-          {visibleJobs !== undefined && (
-            <span className="tabular-nums text-xs text-[#7c7c85]">
-              {visibleJobs.length}
-              {filter !== "all" && ` of ${counts.all}`}
-            </span>
-          )}
-        </div>
+            {visibleJobs !== undefined && (
+              <span className="tabular-nums text-xs font-normal text-subtle-foreground">
+                {visibleJobs.length}
+                {filter !== "all" && ` of ${counts.all}`}
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
 
         <Table className="min-w-[1180px]">
           <TableHeader>
@@ -132,27 +123,19 @@ function JobsPage() {
           </TableHeader>
           <TableBody>
             {visibleJobs === undefined ? (
-              <TableRow>
-                <TableCell colSpan={8} className="h-36 text-center text-[#8a8a93]">
-                  Syncing jobs…
-                </TableCell>
-              </TableRow>
+              <TableRowsSkeleton columns={8} rows={4} />
             ) : visibleJobs.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={8} className="h-64 text-center">
-                  <div className="mx-auto flex max-w-sm flex-col items-center">
-                    <div className="grid size-9 place-items-center rounded-md border border-white/[0.08] bg-white/[0.025] text-[#8a8a93]">
-                      <ListChecks className="size-4" />
-                    </div>
-                    <p className="mt-4 text-sm font-medium text-zinc-200">
-                      {counts.all === 0 ? "No jobs received" : `No ${filter} jobs`}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-                      {counts.all === 0
+                <TableCell colSpan={8} className="p-0">
+                  <EmptyState
+                    icon={ListChecks}
+                    title={counts.all === 0 ? "No jobs received" : `No ${filter} jobs`}
+                    description={
+                      counts.all === 0
                         ? "Workflow jobs requesting self-hosted runners will appear here."
-                        : "Try another status filter."}
-                    </p>
-                  </div>
+                        : "Every job is still there — try another status filter."
+                    }
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -170,25 +153,25 @@ function JobsPage() {
                       <TableCell>
                         <JobStatusBadge status={job.status} />
                         {job.conclusion && job.status === "failed" && (
-                          <div className="mt-1 pl-2 text-[10px] text-[#7c7c85]">
+                          <div className="mt-1 text-[10px] text-subtle-foreground">
                             {job.conclusion}
                           </div>
                         )}
                       </TableCell>
                       <TableCell>
                         <div
-                          className="max-w-[190px] truncate font-mono text-[12px] text-zinc-200"
+                          className="max-w-[190px] truncate font-mono text-[12px] text-secondary-foreground"
                           title={job.repo}
                         >
                           {job.repo}
                         </div>
-                        <div className="tabular-nums mt-0.5 font-mono text-[10px] text-[#7c7c85]">
+                        <div className="tabular-nums mt-0.5 font-mono text-[10px] text-subtle-foreground">
                           #{job.ghJobId}
                         </div>
                       </TableCell>
                       <TableCell>
                         <div
-                          className="max-w-[180px] truncate text-zinc-300"
+                          className="max-w-[180px] truncate text-secondary-foreground"
                           title={job.workflowName}
                         >
                           {job.workflowName}
@@ -197,13 +180,13 @@ function JobsPage() {
                       <TableCell>
                         {job.machineName ? (
                           <span
-                            className="inline-block max-w-[160px] truncate align-middle text-zinc-300"
+                            className="inline-block max-w-[160px] truncate align-middle text-secondary-foreground"
                             title={job.runnerName}
                           >
                             {job.machineName}
                           </span>
                         ) : (
-                          <span className="text-[#7c7c85]">Unassigned</span>
+                          <span className="text-subtle-foreground">Unassigned</span>
                         )}
                       </TableCell>
                       <TableCell>
@@ -218,18 +201,18 @@ function JobsPage() {
                       <TableCell>
                         <LabelChips labels={job.labels} />
                       </TableCell>
-                      <TableCell className="tabular-nums whitespace-nowrap text-xs text-zinc-400">
+                      <TableCell className="tabular-nums whitespace-nowrap text-xs text-muted-foreground">
                         queued {formatDuration(queueEnd - job.queuedAt)}
                         {job.startedAt !== undefined && (
                           <>
-                            <span className="px-1.5 text-[#7c7c85]">·</span>
+                            <span className="px-1.5 text-subtle-foreground">·</span>
                             ran {formatDuration(runEnd - job.startedAt)}
                           </>
                         )}
                       </TableCell>
                       <TableCell>
                         <span
-                          className="tabular-nums whitespace-nowrap text-xs text-[#8a8a93]"
+                          className="tabular-nums whitespace-nowrap text-xs text-muted-foreground"
                           title={formatAbsoluteTime(job.queuedAt)}
                         >
                           {formatRelativeTime(job.queuedAt, now)}
@@ -240,11 +223,11 @@ function JobsPage() {
                       <TableRow className="hover:bg-transparent">
                         <TableCell colSpan={8} className="pt-0">
                           <p
-                            className="max-w-4xl text-xs leading-5 text-red-300/80"
+                            className="max-w-4xl text-xs leading-5 text-destructive"
                             title={job.lastError}
                           >
                             <span className="sr-only">Last error: </span>
-                            <span aria-hidden="true" className="pr-1.5 text-[#7c7c85]">
+                            <span aria-hidden="true" className="pr-1.5 text-subtle-foreground">
                               ↳
                             </span>
                             {job.lastError}
@@ -258,7 +241,7 @@ function JobsPage() {
             )}
           </TableBody>
         </Table>
-      </section>
+      </Card>
     </div>
   );
 }
@@ -281,22 +264,24 @@ function AttemptCell({
   now: number;
 }) {
   const count = attempts ?? 0;
-  if (count === 0) return <span className="text-[#7c7c85]">—</span>;
+  if (count === 0) return <span className="text-subtle-foreground">—</span>;
 
   const gaveUp = status === "failed" && conclusion === "provision-failed";
   const retryDue = status === "queued" && nextAttemptAt !== undefined && nextAttemptAt > now;
 
   return (
     <div className="space-y-1">
-      <span className="tabular-nums whitespace-nowrap text-xs text-zinc-300">attempt {count}</span>
+      <span className="tabular-nums whitespace-nowrap text-xs text-secondary-foreground">
+        attempt {count}
+      </span>
       {gaveUp && (
-        <div className="whitespace-nowrap text-[10px] font-medium text-red-300">
+        <div className="whitespace-nowrap text-[10px] font-medium text-destructive">
           gave up after {count}
         </div>
       )}
       {retryDue && (
         <div
-          className="tabular-nums whitespace-nowrap text-[10px] text-amber-300"
+          className="tabular-nums whitespace-nowrap text-[10px] text-warning"
           title={formatAbsoluteTime(nextAttemptAt)}
         >
           retry in {formatDuration(nextAttemptAt - now)}
@@ -318,25 +303,24 @@ function IntakeHealth({ now }: { now: number }) {
   const app = useQuery(api.githubApp.status);
 
   return (
-    <section
-      className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
-      aria-labelledby="intake-health-heading"
-    >
-      <div className="flex h-12 items-center gap-2.5 border-b border-white/[0.08] px-4">
-        <h2 id="intake-health-heading" className="text-sm font-medium text-zinc-200">
-          Intake health
-        </h2>
-        {failures !== undefined && failures.length > 0 && (
-          <span className="tabular-nums text-xs text-red-300">{failures.length} rejected</span>
-        )}
-      </div>
+    <Card>
+      <CardHeader className="border-b">
+        <CardTitle>Intake health</CardTitle>
+        <CardAction>
+          {failures !== undefined && failures.length > 0 && (
+            <span className="tabular-nums text-xs text-destructive">
+              {failures.length} rejected
+            </span>
+          )}
+        </CardAction>
+      </CardHeader>
 
-      <div className="space-y-4 px-4 py-3.5">
+      <CardContent className="space-y-4 pt-4">
         <RepositoryPolicyCard policy={policy} />
         <DeliveryRecoveryCard recovery={recovery} source={app?.source} now={now} />
         <RejectedDeliveries failures={failures} now={now} />
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -356,11 +340,11 @@ type RecoveryStatus = {
 };
 
 const RECOVERY_OUTCOME: Record<RecoveryStatus["lastOutcome"], { label: string; tone: string }> = {
-  pending: { label: "starting", tone: "text-[#8a8a93]" },
-  ok: { label: "healthy", tone: "text-emerald-300" },
-  "skipped-no-app": { label: "unavailable", tone: "text-amber-300" },
-  "skipped-backoff": { label: "backing off", tone: "text-amber-300" },
-  error: { label: "failing", tone: "text-red-300" },
+  pending: { label: "starting", tone: "text-muted-foreground" },
+  ok: { label: "healthy", tone: "text-success" },
+  "skipped-no-app": { label: "unavailable", tone: "text-warning" },
+  "skipped-backoff": { label: "backing off", tone: "text-warning" },
+  error: { label: "failing", tone: "text-destructive" },
 };
 
 /**
@@ -378,25 +362,27 @@ function DeliveryRecoveryCard({
   now: number;
 }) {
   if (recovery === undefined || source === undefined) {
-    return <p className="text-xs text-[#8a8a93]">Checking delivery recovery…</p>;
+    return <Skeleton className="h-16 w-full" />;
   }
 
   // The /app/hook endpoints need a JWT signed by an App private key, so this is
   // one capability the legacy PAT structurally cannot have.
   if (source === "pat" || source === "none") {
     return (
-      <div className="flex gap-3 rounded-md border border-amber-400/20 bg-amber-400/[0.06] p-3">
-        <RotateCcw className="mt-0.5 size-4 shrink-0 text-amber-300" aria-hidden="true" />
-        <p className="text-xs leading-5 text-amber-200">
-          <span className="font-medium">Lost deliveries are not being recovered.</span> GitHub does
-          not retry a webhook it failed to deliver, and asking it to redeliver one requires a GitHub
-          App.{" "}
-          <Link to="/" className="underline underline-offset-2 hover:text-amber-100">
-            Connect an App
-          </Link>{" "}
-          to turn this on.
-        </p>
-      </div>
+      <Alert variant="warning">
+        <RotateCcw />
+        <AlertTitle>Lost deliveries are not being recovered</AlertTitle>
+        <AlertDescription>
+          <p>
+            GitHub does not retry a webhook it failed to deliver, and asking it to redeliver one
+            requires a GitHub App.{" "}
+            <Link to="/" className="underline underline-offset-2 hover:text-warning-foreground">
+              Connect an App
+            </Link>{" "}
+            to turn this on.
+          </p>
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -404,16 +390,16 @@ function DeliveryRecoveryCard({
   const backingOff = recovery !== null && recovery.nextRunAt > now;
 
   return (
-    <div className="rounded-md border border-white/[0.08] bg-white/[0.02] p-3">
+    <div className="rounded-md border border-border bg-muted p-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="inline-flex items-center gap-2 text-xs font-medium text-zinc-300">
-          <RotateCcw className="size-4 text-[#7c7c85]" aria-hidden="true" />
+        <span className="inline-flex items-center gap-2 text-xs font-medium text-secondary-foreground">
+          <RotateCcw className="size-4 text-subtle-foreground" aria-hidden="true" />
           Delivery recovery
         </span>
         <span className={cn("text-xs font-medium", outcome.tone)}>{outcome.label}</span>
         {recovery !== null && (
           <span
-            className="tabular-nums text-xs text-[#7c7c85]"
+            className="tabular-nums text-xs text-subtle-foreground"
             title={formatAbsoluteTime(recovery.lastRunAt)}
           >
             last run {formatRelativeTime(recovery.lastRunAt, now)}
@@ -422,28 +408,28 @@ function DeliveryRecoveryCard({
       </div>
 
       {recovery === null ? (
-        <p className="mt-2 text-xs leading-5 text-[#8a8a93]">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           The recovery scan has not run yet. It checks GitHub for failed deliveries every five
           minutes.
         </p>
       ) : (
         <>
-          <p className="tabular-nums mt-2 text-xs leading-5 text-[#8a8a93]">
+          <p className="tabular-nums mt-2 text-xs leading-5 text-muted-foreground">
             Last scan saw {recovery.listed} deliveries, {recovery.missing} of them never received,
             and asked GitHub to redeliver {recovery.requested}.
           </p>
-          <p className="tabular-nums mt-1 text-xs leading-5 text-[#8a8a93]">
+          <p className="tabular-nums mt-1 text-xs leading-5 text-muted-foreground">
             {recovery.outstanding} awaiting redelivery
-            <span className="px-1.5 text-[#7c7c85]">·</span>
-            <span className="text-emerald-300">{recovery.recovered} recovered</span>
-            <span className="px-1.5 text-[#7c7c85]">·</span>
-            <span className={recovery.abandoned > 0 ? "text-red-300" : undefined}>
+            <span className="px-1.5 text-subtle-foreground">·</span>
+            <span className="text-success">{recovery.recovered} recovered</span>
+            <span className="px-1.5 text-subtle-foreground">·</span>
+            <span className={recovery.abandoned > 0 ? "text-destructive" : undefined}>
               {recovery.abandoned} given up on
             </span>
           </p>
           {backingOff && (
             <p
-              className="tabular-nums mt-1 text-xs text-amber-300"
+              className="tabular-nums mt-1 text-xs text-warning"
               title={formatAbsoluteTime(recovery.nextRunAt)}
             >
               Backing off after {recovery.consecutiveFailures} failed{" "}
@@ -452,9 +438,9 @@ function DeliveryRecoveryCard({
             </p>
           )}
           {recovery.lastError !== undefined && (
-            <p className="mt-1 text-xs leading-5 text-red-300/80">
+            <p className="mt-1 text-xs leading-5 text-destructive">
               <span className="sr-only">Last error: </span>
-              <span aria-hidden="true" className="pr-1.5 text-[#7c7c85]">
+              <span aria-hidden="true" className="pr-1.5 text-subtle-foreground">
                 ↳
               </span>
               {recovery.lastError}
@@ -475,51 +461,48 @@ type RepositoryPolicy = {
 
 function RepositoryPolicyCard({ policy }: { policy: RepositoryPolicy | undefined }) {
   if (policy === undefined) {
-    return <p className="text-xs text-[#8a8a93]">Checking repository policy…</p>;
+    return <Skeleton className="h-16 w-full" />;
   }
 
   if (!policy.configured) {
     return (
-      <div
-        role="alert"
-        className="flex gap-3 rounded-md border border-red-400/20 bg-red-400/[0.07] p-3"
-      >
-        <ShieldAlert className="mt-0.5 size-4 shrink-0 text-red-300" aria-hidden="true" />
-        <div className="text-xs leading-5 text-red-200">
-          <p className="font-medium">No repositories are allowed yet</p>
-          <p className="mt-1 text-red-200/80">
-            <code className="text-red-100">ALLOWED_REPOS</code> is unset, so every incoming workflow
-            job is rejected and no job is created. Set it before installing the GitHub App:
+      <Alert variant="destructive">
+        <ShieldAlert />
+        <AlertTitle>No repositories are allowed yet</AlertTitle>
+        <AlertDescription>
+          <p>
+            <code>ALLOWED_REPOS</code> is unset, so every incoming workflow job is rejected and no
+            job is created. Set it before installing the GitHub App:
           </p>
-          <pre className="mt-2 overflow-x-auto rounded border border-red-400/15 bg-black/30 p-2 font-mono text-[11px] text-red-100">
+          <pre className="mt-1 w-full overflow-x-auto rounded border border-destructive/15 bg-black/30 p-2 font-mono text-[11px]">
             <code>pnpm convex env set ALLOWED_REPOS &apos;owner/repo&apos;</code>
           </pre>
-        </div>
-      </div>
+        </AlertDescription>
+      </Alert>
     );
   }
 
   return (
-    <div className="rounded-md border border-white/[0.08] bg-white/[0.02] p-3">
+    <div className="rounded-md border border-border bg-muted p-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="inline-flex items-center gap-2 text-xs font-medium text-emerald-300">
+        <span className="inline-flex items-center gap-2 text-xs font-medium text-success">
           <ShieldCheck className="size-4" aria-hidden="true" />
           Accepting workflow jobs from
         </span>
         <div className="flex flex-wrap gap-1">
           {policy.allowedRepos.map((pattern) => (
-            <Badge key={pattern} variant="outline" className="font-mono text-zinc-300">
+            <Badge key={pattern} variant="secondary" className="font-mono">
               {pattern}
             </Badge>
           ))}
         </div>
       </div>
-      <p className="mt-2 text-xs leading-5 text-[#8a8a93]">
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">
         Public repositories are{" "}
         {policy.allowPublicRepos ? (
-          <span className="text-amber-300">allowed</span>
+          <span className="text-warning">allowed</span>
         ) : (
-          <span className="text-zinc-300">blocked</span>
+          <span className="text-secondary-foreground">blocked</span>
         )}
         {policy.allowPublicRepos
           ? " — a fork can run untrusted code on your runner hosts."
@@ -527,7 +510,7 @@ function RepositoryPolicyCard({ policy }: { policy: RepositoryPolicy | undefined
         {policy.allowsAllRepos && (
           <>
             {" "}
-            <span className="text-amber-300">
+            <span className="text-warning">
               The <code>*</code> pattern accepts every repository the App is installed on.
             </span>
           </>
@@ -557,20 +540,20 @@ function RejectedDeliveries({
   now: number;
 }) {
   if (failures === undefined) {
-    return <p className="text-xs text-[#8a8a93]">Checking webhook deliveries…</p>;
+    return <Skeleton className="h-4 w-72 max-w-full" />;
   }
 
   if (failures.length === 0) {
     return (
-      <p className="flex items-center gap-2 text-xs text-[#8a8a93]">
-        <Inbox className="size-4 text-[#7c7c85]" aria-hidden="true" />
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Inbox className="size-4 text-subtle-foreground" aria-hidden="true" />
         No webhook deliveries have been rejected or abandoned.
       </p>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-md border border-white/[0.08]">
+    <div className="overflow-hidden rounded-md border border-border">
       <Table className="min-w-[900px]">
         <TableHeader>
           <TableRow>
@@ -587,21 +570,13 @@ function RejectedDeliveries({
           {failures.map((delivery) => (
             <TableRow key={delivery._id}>
               <TableCell>
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "font-medium",
-                    delivery.status === "rejected"
-                      ? "border-amber-400/20 bg-amber-400/[0.08] text-amber-300"
-                      : "border-red-400/20 bg-red-400/[0.08] text-red-300",
-                  )}
-                >
+                <Badge variant={delivery.status === "rejected" ? "warning" : "destructive"}>
                   {delivery.status}
                 </Badge>
               </TableCell>
               <TableCell>
                 <span
-                  className="inline-block max-w-[190px] truncate align-middle font-mono text-[12px] text-zinc-200"
+                  className="inline-block max-w-[190px] truncate align-middle font-mono text-[12px] text-secondary-foreground"
                   title={delivery.repo}
                 >
                   {delivery.repo ?? "—"}
@@ -609,7 +584,7 @@ function RejectedDeliveries({
               </TableCell>
               <TableCell>
                 <span
-                  className="inline-block max-w-[150px] truncate align-middle font-mono text-[10px] text-[#7c7c85]"
+                  className="inline-block max-w-[150px] truncate align-middle font-mono text-[10px] text-subtle-foreground"
                   title={`${delivery.event} · ${delivery.deliveryId}`}
                 >
                   {delivery.deliveryId}
@@ -617,7 +592,7 @@ function RejectedDeliveries({
               </TableCell>
               <TableCell>
                 <span
-                  className="tabular-nums whitespace-nowrap text-xs text-[#8a8a93]"
+                  className="tabular-nums whitespace-nowrap text-xs text-muted-foreground"
                   title={formatAbsoluteTime(delivery.receivedAt)}
                 >
                   {formatRelativeTime(delivery.receivedAt, now)}
@@ -625,7 +600,7 @@ function RejectedDeliveries({
               </TableCell>
               <TableCell>
                 <span
-                  className="tabular-nums whitespace-nowrap text-xs text-[#8a8a93]"
+                  className="tabular-nums whitespace-nowrap text-xs text-muted-foreground"
                   title={
                     delivery.settledAt === undefined
                       ? "Not settled"
@@ -637,11 +612,14 @@ function RejectedDeliveries({
                     : formatRelativeTime(delivery.settledAt, now)}
                 </span>
               </TableCell>
-              <TableCell className="tabular-nums text-xs text-zinc-400">
+              <TableCell className="tabular-nums text-xs text-muted-foreground">
                 {delivery.attempts}
               </TableCell>
               <TableCell>
-                <p className="max-w-2xl text-xs leading-5 text-zinc-400" title={delivery.lastError}>
+                <p
+                  className="max-w-2xl text-xs leading-5 text-muted-foreground"
+                  title={delivery.lastError}
+                >
                   {delivery.lastError ?? "—"}
                 </p>
               </TableCell>
@@ -653,42 +631,34 @@ function RejectedDeliveries({
   );
 }
 
-function JobStatusBadge({ status }: { status: JobStatus }) {
-  const styles: Record<JobStatus, string> = {
-    queued: "border-amber-400/20 bg-amber-400/[0.08] text-amber-300",
-    assigned: "border-amber-400/20 bg-amber-400/[0.08] text-amber-300",
-    running: "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300",
-    done: "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300",
-    failed: "border-red-400/20 bg-red-400/[0.08] text-red-300",
-  };
-  const dotStyles: Record<JobStatus, string> = {
-    queued: "bg-amber-400",
-    assigned: "bg-amber-400",
-    running: "status-pulse bg-emerald-400",
-    done: "bg-emerald-400",
-    failed: "bg-red-400",
-  };
+const JOB_STATUS_TONE: Record<JobStatus, { variant: "success" | "warning" | "destructive" }> = {
+  queued: { variant: "warning" },
+  assigned: { variant: "warning" },
+  running: { variant: "success" },
+  done: { variant: "success" },
+  failed: { variant: "destructive" },
+};
 
+function JobStatusBadge({ status }: { status: JobStatus }) {
+  const { variant } = JOB_STATUS_TONE[status];
   return (
-    <span
-      className={cn(
-        "inline-flex h-6 items-center gap-2 rounded-md border px-2 text-xs font-medium capitalize",
-        styles[status],
-      )}
-    >
-      <span className={cn("size-1.5 rounded-full", dotStyles[status])} aria-hidden="true" />
+    <Badge variant={variant} className="h-6 gap-2 px-2 capitalize">
+      <StatusDot
+        tone={variant === "success" ? "success" : variant === "warning" ? "warning" : "destructive"}
+        live={status === "running"}
+      />
       {status}
-    </span>
+    </Badge>
   );
 }
 
 function LabelChips({ labels }: { labels: string[] }) {
-  if (labels.length === 0) return <span className="text-[#7c7c85]">—</span>;
+  if (labels.length === 0) return <span className="text-subtle-foreground">—</span>;
 
   return (
     <div className="flex max-w-[220px] flex-wrap gap-1">
       {[...new Set(labels)].map((label) => (
-        <Badge key={label} variant="outline" className="font-mono text-zinc-400">
+        <Badge key={label} variant="outline" className="font-mono">
           {label}
         </Badge>
       ))}

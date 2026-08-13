@@ -1,11 +1,36 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
-import { Check, Clipboard, Plus, Server, ShieldAlert } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  CircleCheck,
+  CircleX,
+  Clipboard,
+  Plus,
+  Server,
+  ShieldAlert,
+  ShieldCheck,
+  UserPlus,
+} from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@runner-center/backend/api";
+import { EmptyState } from "@/components/empty-state";
 import { GithubAppSetup } from "@/components/github-app-setup";
+import { PageHeader } from "@/components/page-header";
+import { StatusDot } from "@/components/status";
+import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +40,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -23,9 +50,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: MachinesPage });
 
@@ -102,10 +131,11 @@ function MachinesPage() {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      setError(undefined);
       window.setTimeout(() => setCopied(false), 1_500);
     } catch {
-      setError("Clipboard access was blocked. Select and copy the command manually.");
+      toast.error("Clipboard access was blocked", {
+        description: "Select the command above and copy it manually.",
+      });
     }
   }
 
@@ -125,14 +155,13 @@ function MachinesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-        <PageHeading
-          title="Machines"
-          description="Manage connected runner hosts, capacity, and active assignments."
-        />
+      <PageHeader
+        title="Machines"
+        description="Manage connected runner hosts, capacity, and active assignments."
+      >
         <Dialog open={dialogOpen} onOpenChange={changeDialog}>
           <DialogTrigger asChild>
-            <Button className="shrink-0">
+            <Button>
               <Plus />
               Add machine
             </Button>
@@ -146,10 +175,10 @@ function MachinesPage() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4 py-2">
+            <div className="space-y-4 py-1">
               {submitting && (
-                <div className="flex items-center gap-3 rounded-md border border-white/[0.08] bg-white/[0.025] px-4 py-5 text-sm text-zinc-300">
-                  <span className="status-pulse size-2 rounded-full bg-emerald-400" />
+                <div className="flex items-center gap-3 rounded-md border border-border bg-muted px-4 py-5 text-sm text-secondary-foreground">
+                  <StatusDot tone="success" live />
                   Creating a short-lived registration command…
                 </div>
               )}
@@ -158,16 +187,16 @@ function MachinesPage() {
                 <>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-zinc-200">
+                      <span className="text-sm font-medium text-secondary-foreground">
                         Run on the new machine
                       </span>
-                      <span className="text-[11px] text-amber-300">
+                      <span className="text-[11px] text-warning">
                         Expires in {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))}{" "}
                         min
                       </span>
                     </div>
-                    <div className="relative rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
-                      <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-zinc-300">
+                    <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
+                      <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
                         <code>{registration.command}</code>
                       </pre>
                       <Button
@@ -181,56 +210,60 @@ function MachinesPage() {
                         {copied ? <Check /> : <Clipboard />}
                       </Button>
                     </div>
-                    <p className="text-xs leading-5 text-[#8a8a93]">
+                    <p className="text-xs leading-5 text-muted-foreground">
                       The registration token expires in 15 minutes and can be used once.
                     </p>
                   </div>
 
                   {connectedMachine ? (
-                    <div className="flex gap-3 rounded-md border border-emerald-400/20 bg-emerald-400/[0.07] p-3 text-sm text-emerald-200">
-                      <Check className="mt-0.5 size-4 shrink-0" />
-                      <div>
-                        <p className="font-medium">{connectedMachine.name} connected</p>
-                        <p className="mt-0.5 text-xs text-emerald-200/70">
-                          The machine is registered and will report online after its first
-                          heartbeat.
-                        </p>
-                      </div>
-                    </div>
+                    <Alert variant="success">
+                      <Check />
+                      <AlertTitle>{connectedMachine.name} connected</AlertTitle>
+                      <AlertDescription>
+                        The machine is registered and will report online after its first heartbeat.
+                      </AlertDescription>
+                    </Alert>
                   ) : now >= registration.expiresAt ? (
-                    <div className="rounded-md border border-amber-400/20 bg-amber-400/[0.07] p-3 text-xs leading-5 text-amber-200">
-                      This command has expired. Generate a new command before installing.
-                    </div>
+                    <Alert variant="warning">
+                      <AlertTitle>This command has expired</AlertTitle>
+                      <AlertDescription>Generate a new command before installing.</AlertDescription>
+                    </Alert>
                   ) : (
-                    <div className="flex items-center gap-3 rounded-md border border-white/[0.08] bg-white/[0.025] p-3 text-sm text-zinc-300">
-                      <span className="status-pulse size-2 rounded-full bg-emerald-400" />
+                    <div className="flex items-center gap-3 rounded-md border border-border bg-muted p-3 text-sm text-secondary-foreground">
+                      <StatusDot tone="success" live />
                       Waiting for machine…
                     </div>
                   )}
 
-                  <details className="rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-xs text-[#8a8a93]">
-                    <summary className="cursor-pointer select-none font-medium text-zinc-300">
+                  <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
                       Advanced options
                     </summary>
                     <div className="mt-3 space-y-2 leading-5">
                       <p>
-                        Append <code className="text-zinc-300">--name build-linux-01</code> to
+                        Append{" "}
+                        <code className="text-secondary-foreground">--name build-linux-01</code> to
                         override the hostname.
                       </p>
                       <p>
-                        Append <code className="text-zinc-300">--labels gpu,docker</code> for
+                        Append{" "}
+                        <code className="text-secondary-foreground">--labels gpu,docker</code> for
                         machine capability labels.
                       </p>
                       <p>
-                        Append <code className="text-zinc-300">--slots 2</code> to override detected
-                        concurrency.
+                        Append <code className="text-secondary-foreground">--slots 2</code> to
+                        override detected concurrency.
                       </p>
                     </div>
                   </details>
                 </>
               )}
 
-              {error && <ErrorMessage>{error}</ErrorMessage>}
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
             </div>
 
             <DialogFooter>
@@ -255,71 +288,68 @@ function MachinesPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
+      </PageHeader>
+
+      <AllowlistWarning />
 
       <div className="grid gap-3 sm:grid-cols-3">
         <StatTile
           label="Machines online"
-          value={machines === undefined ? "—" : `${summary.online}/${summary.totalMachines}`}
+          value={machines === undefined ? undefined : `${summary.online}/${summary.totalMachines}`}
           detail={
             machines === undefined
               ? "Loading fleet"
               : `${summary.totalMachines} registered ${summary.totalMachines === 1 ? "host" : "hosts"}`
           }
-          indicator="online"
+          live
         />
         <StatTile
           label="Slots in use"
-          value={machines === undefined ? "—" : `${summary.usedSlots}/${summary.totalSlots}`}
+          value={machines === undefined ? undefined : `${summary.usedSlots}/${summary.totalSlots}`}
           detail="Concurrent runner capacity"
         />
         <StatTile
           label="Runs today"
-          value={attempts === undefined ? "—" : String(summary.runsToday)}
+          value={attempts === undefined ? undefined : String(summary.runsToday)}
           detail="Scale-set Attempts since midnight"
         />
       </div>
 
-      <section
-        className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
-        aria-labelledby="profiles-heading"
-      >
-        <div className="flex flex-col gap-2 border-b border-white/[0.08] px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 id="profiles-heading" className="text-sm font-medium text-zinc-200">
-              Runner Profiles
-            </h2>
-            <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-              Workflows target a Profile, never a machine. Compatible Workers discover and prewarm
-              its immutable image automatically.
-            </p>
-          </div>
-          <code className="rounded-md border border-white/[0.08] bg-[#09090a] px-2.5 py-1.5 text-xs text-emerald-300">
-            runs-on: {profiles?.[0]?.name ?? "rc-linux-js"}
-          </code>
-        </div>
-        <Table className="min-w-[980px]">
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b">
+          <CardTitle>Runner Profiles</CardTitle>
+          <CardDescription>
+            Workflows target a Profile, never a machine. Compatible Workers discover and prewarm its
+            immutable image automatically.
+          </CardDescription>
+          <CardAction>
+            <code className="rounded-md border border-border bg-sunken px-2.5 py-1.5 text-xs text-primary">
+              runs-on: {profiles?.[0]?.name ?? "rc-linux-js"}
+            </code>
+          </CardAction>
+        </CardHeader>
+        <Table className="min-w-[1000px]">
           <TableHeader>
             <TableRow>
-              <TableHead>Profile / scale set</TableHead>
-              <TableHead>Isolation</TableHead>
-              <TableHead>Resources</TableHead>
-              <TableHead>Ready Workers</TableHead>
-              <TableHead>Capacity</TableHead>
+              <TableHead className="w-[240px]">Profile / scale set</TableHead>
+              <TableHead className="w-[190px]">Isolation boundary</TableHead>
+              <TableHead className="w-[150px]">Resources</TableHead>
+              <TableHead className="w-[150px]">Ready Workers</TableHead>
+              <TableHead className="w-[130px]">Capacity</TableHead>
               <TableHead>Image Release</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {profiles === undefined ? (
-              <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-[#8a8a93]">
-                  Syncing Profiles…
-                </TableCell>
-              </TableRow>
+              <TableRowsSkeleton columns={6} rows={2} />
             ) : profiles.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="h-28 text-center text-[#8a8a93]">
-                  Start a scale-set controller to register its Profile.
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={6} className="p-0">
+                  <EmptyState
+                    icon={ShieldCheck}
+                    title="No Profiles registered"
+                    description="Start a scale-set controller to register its Profile and the isolation boundary it can promise."
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -327,38 +357,28 @@ function MachinesPage() {
             )}
           </TableBody>
         </Table>
-      </section>
+      </Card>
 
-      <details className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5">
-        <summary className="cursor-pointer text-sm font-medium text-zinc-200">
-          Legacy webhook runner migration
-        </summary>
-        <div className="mt-4 space-y-4">
-          <AllowlistWarning />
-          <GithubAppSetup />
-        </div>
-      </details>
-
-      <InviteOperator />
-
-      <section
-        className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#0d0d0f]"
-        aria-labelledby="fleet-heading"
-      >
-        <div className="flex h-12 items-center justify-between border-b border-white/[0.08] px-4">
-          <div className="flex items-center gap-2.5">
-            <h2 id="fleet-heading" className="text-sm font-medium text-zinc-200">
-              Registered fleet
-            </h2>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b">
+          <CardTitle className="flex items-center gap-2.5">
+            Registered fleet
             {machineCount !== undefined && (
-              <span className="tabular-nums text-xs text-[#7c7c85]">{machineCount}</span>
+              <span className="tabular-nums text-xs font-normal text-subtle-foreground">
+                {machineCount}
+              </span>
             )}
-          </div>
-          <span className="flex items-center gap-2 text-xs text-[#8a8a93]">
-            <span className="status-pulse size-1.5 rounded-full bg-emerald-400" />
-            Live
-          </span>
-        </div>
+          </CardTitle>
+          <CardDescription>
+            Every host that holds a machine credential, and what it is running right now.
+          </CardDescription>
+          <CardAction>
+            <span className="flex items-center gap-2 text-xs text-muted-foreground">
+              <StatusDot tone="success" live />
+              Live
+            </span>
+          </CardAction>
+        </CardHeader>
 
         <Table className="min-w-[1040px]">
           <TableHeader>
@@ -374,27 +394,20 @@ function MachinesPage() {
           </TableHeader>
           <TableBody>
             {machines === undefined ? (
-              <TableRow>
-                <TableCell colSpan={7} className="h-36 text-center text-[#8a8a93]">
-                  Syncing fleet…
-                </TableCell>
-              </TableRow>
+              <TableRowsSkeleton columns={7} rows={3} />
             ) : machines.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={7} className="h-64 text-center">
-                  <div className="mx-auto flex max-w-xs flex-col items-center">
-                    <div className="grid size-9 place-items-center rounded-md border border-white/[0.08] bg-white/[0.025] text-[#8a8a93]">
-                      <Server className="size-4" />
-                    </div>
-                    <p className="mt-4 text-sm font-medium text-zinc-200">No machines registered</p>
-                    <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
-                      Add a host to make capacity available to the scheduler.
-                    </p>
-                    <Button className="mt-4" size="sm" onClick={() => changeDialog(true)}>
+                <TableCell colSpan={7} className="p-0">
+                  <EmptyState
+                    icon={Server}
+                    title="No machines registered"
+                    description="Add a host to make capacity available to the scheduler."
+                  >
+                    <Button size="sm" onClick={() => changeDialog(true)}>
                       <Plus />
                       Add machine
                     </Button>
-                  </div>
+                  </EmptyState>
                 </TableCell>
               </TableRow>
             ) : (
@@ -411,9 +424,9 @@ function MachinesPage() {
                       <MachineStatus online={online} />
                     </TableCell>
                     <TableCell>
-                      <div className="font-medium text-zinc-100">{machine.name}</div>
+                      <div className="font-medium text-foreground">{machine.name}</div>
                       {machine.arch && (
-                        <div className="mt-0.5 text-[10px] text-[#7c7c85]">
+                        <div className="mt-0.5 text-[10px] text-subtle-foreground">
                           {machine.arch}
                           {machine.cpus && ` · ${machine.cpus} CPU`}
                           {machine.memoryMiB && ` · ${formatMemory(machine.memoryMiB)}`}
@@ -421,7 +434,7 @@ function MachinesPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className="font-mono text-zinc-400">
+                      <Badge variant="outline" className="font-mono">
                         {formatOs(machine.os)}
                       </Badge>
                     </TableCell>
@@ -430,11 +443,11 @@ function MachinesPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <span className="tabular-nums w-7 text-zinc-300">
+                        <span className="tabular-nums w-7 text-secondary-foreground">
                           {machine.usedSlots}/{machine.maxSlots}
                         </span>
                         <div
-                          className="h-1 w-12 overflow-hidden rounded-full bg-white/[0.08]"
+                          className="h-1 w-12 overflow-hidden rounded-full bg-accent"
                           role="progressbar"
                           aria-label={`${machine.usedSlots} of ${machine.maxSlots} slots in use`}
                           aria-valuemin={0}
@@ -442,15 +455,18 @@ function MachinesPage() {
                           aria-valuenow={machine.usedSlots}
                         >
                           <div
-                            className={`h-full rounded-full transition-[width] duration-150 ${
-                              machine.usedSlots >= machine.maxSlots ? "bg-amber-400" : "bg-zinc-400"
-                            }`}
+                            className={cn(
+                              "h-full rounded-full transition-[width] duration-150",
+                              machine.usedSlots >= machine.maxSlots
+                                ? "bg-warning"
+                                : "bg-muted-foreground",
+                            )}
                             style={{ width: `${slotPercent}%` }}
                           />
                         </div>
                       </div>
                       {machine.recommendedSlots !== undefined && (
-                        <p className="mt-1 text-[10px] text-[#7c7c85]">
+                        <p className="mt-1 text-[10px] text-subtle-foreground">
                           {machine.slotPolicy === "fixed" ? "fixed" : "auto"} · recommended{" "}
                           {machine.recommendedSlots}
                         </p>
@@ -458,7 +474,7 @@ function MachinesPage() {
                     </TableCell>
                     <TableCell>
                       <span
-                        className="tabular-nums whitespace-nowrap text-zinc-400"
+                        className="tabular-nums whitespace-nowrap text-muted-foreground"
                         title={
                           machine.lastSeen > 0
                             ? formatAbsoluteTime(machine.lastSeen)
@@ -481,7 +497,22 @@ function MachinesPage() {
             )}
           </TableBody>
         </Table>
-      </section>
+      </Card>
+
+      <InviteOperator />
+
+      <Card>
+        <CardContent className="px-0 pb-0">
+          <details className="group">
+            <summary className="cursor-pointer select-none px-4 py-3.5 text-sm font-medium text-secondary-foreground">
+              Legacy webhook runner migration
+            </summary>
+            <div className="space-y-4 border-t border-border px-4 py-4">
+              <GithubAppSetup />
+            </div>
+          </details>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -497,31 +528,19 @@ function AllowlistWarning() {
   if (policy === undefined || policy.configured) return null;
 
   return (
-    <div
-      role="alert"
-      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-red-400/20 bg-red-400/[0.07] px-4 py-3 text-xs leading-5 text-red-200"
-    >
-      <span className="inline-flex items-center gap-2 font-medium">
-        <ShieldAlert className="size-4 shrink-0" aria-hidden="true" />
-        No repositories are allowed yet
-      </span>
-      <span className="text-red-200/80">
-        <code className="text-red-100">ALLOWED_REPOS</code> is unset, so every workflow job is
-        rejected. Set it before installing the GitHub App.
-      </span>
-      <Link to="/jobs" className="ml-auto shrink-0 underline underline-offset-2 hover:text-red-100">
-        See rejected deliveries
-      </Link>
-    </div>
-  );
-}
-
-function PageHeading({ title, description }: { title: string; description: string }) {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold tracking-[-0.025em] text-zinc-50">{title}</h1>
-      <p className="mt-1.5 text-sm text-[#8a8a93]">{description}</p>
-    </div>
+    <Alert variant="destructive">
+      <ShieldAlert />
+      <AlertTitle>No repositories are allowed yet</AlertTitle>
+      <AlertDescription>
+        <p>
+          <code>ALLOWED_REPOS</code> is unset, so every workflow job is rejected. Set it before
+          installing the GitHub App.
+        </p>
+        <Link to="/jobs" className="underline underline-offset-2 hover:text-destructive-foreground">
+          See rejected deliveries
+        </Link>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -529,40 +548,42 @@ function StatTile({
   label,
   value,
   detail,
-  indicator,
+  live = false,
 }: {
   label: string;
-  value: string;
+  value: string | undefined;
   detail: string;
-  indicator?: "online";
+  live?: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5">
-      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[#8a8a93]">
-        {indicator === "online" && (
-          <span className="status-pulse size-1.5 rounded-full bg-emerald-400" />
-        )}
+    <Card className="px-4 py-3.5">
+      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+        {live && <StatusDot tone="success" live />}
         {label}
       </div>
       <div className="mt-2 flex items-baseline justify-between gap-3">
-        <span className="tabular-nums text-xl font-semibold tracking-tight text-zinc-100">
-          {value}
-        </span>
-        <span className="truncate text-[11px] text-[#7c7c85]">{detail}</span>
+        {value === undefined ? (
+          <Skeleton className="h-6 w-16" />
+        ) : (
+          <span className="tabular-nums text-xl font-semibold tracking-tight text-foreground">
+            {value}
+          </span>
+        )}
+        <span className="truncate text-[11px] text-subtle-foreground">{detail}</span>
       </div>
-    </div>
+    </Card>
   );
 }
 
 function MachineStatus({ online }: { online: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-2 ${online ? "text-emerald-300" : "text-[#8a8a93]"}`}
+      className={cn(
+        "inline-flex items-center gap-2",
+        online ? "text-success" : "text-muted-foreground",
+      )}
     >
-      <span
-        className={`size-1.5 rounded-full ${online ? "status-pulse bg-emerald-400" : "bg-zinc-500"}`}
-        aria-hidden="true"
-      />
+      <StatusDot tone={online ? "success" : "muted"} live={online} />
       {online ? "Online" : "Offline"}
     </span>
   );
@@ -577,26 +598,38 @@ function ProfileReadiness({
     lastError?: string;
   }>;
 }) {
-  if (readiness.length === 0) return <span className="text-[#7c7c85]">Discovering…</span>;
+  if (readiness.length === 0) return <span className="text-subtle-foreground">Discovering…</span>;
 
   return (
     <div className="flex max-w-[240px] flex-wrap gap-1">
-      {readiness.map((entry) => (
-        <Badge
-          key={entry.profile}
-          variant="outline"
-          className={
-            entry.state === "ready"
-              ? "font-mono text-emerald-300"
-              : entry.state === "failed"
-                ? "font-mono text-red-300"
-                : "font-mono text-amber-300"
-          }
-          title={entry.lastError}
-        >
-          {entry.profile}
-        </Badge>
-      ))}
+      {readiness.map((entry) => {
+        const badge = (
+          <Badge
+            variant={
+              entry.state === "ready"
+                ? "success"
+                : entry.state === "failed"
+                  ? "destructive"
+                  : "warning"
+            }
+            className="font-mono"
+          >
+            {entry.profile}
+          </Badge>
+        );
+
+        if (entry.lastError === undefined || entry.lastError === "")
+          return <div key={entry.profile}>{badge}</div>;
+
+        return (
+          <Tooltip key={entry.profile}>
+            <TooltipTrigger asChild>
+              <div>{badge}</div>
+            </TooltipTrigger>
+            <TooltipContent side="top">{entry.lastError}</TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }
@@ -624,48 +657,48 @@ function ActiveRuns({
   }>;
 }) {
   if (attempts.length === 0 && experiments.length === 0 && legacyJobs.length === 0) {
-    return <span className="text-[#7c7c85]">—</span>;
+    return <span className="text-subtle-foreground">—</span>;
   }
 
   return (
     <div className="space-y-1.5">
       {attempts.map((attempt) => (
         <div key={attempt._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${
-              attempt.state === "running" ? "status-pulse bg-emerald-400" : "bg-amber-400"
-            }`}
-            aria-hidden="true"
+          <StatusDot
+            tone={attempt.state === "running" ? "success" : "warning"}
+            live={attempt.state === "running"}
           />
-          <span className="max-w-40 truncate font-mono text-[12px] text-zinc-300">
+          <span className="max-w-40 truncate font-mono text-[12px] text-secondary-foreground">
             {attempt.profile}
           </span>
-          <span className="text-xs text-[#7c7c85]">{attempt.state}</span>
+          <span className="text-xs text-subtle-foreground">{attempt.state}</span>
         </div>
       ))}
       {experiments.map((experiment) => (
         <div key={experiment._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${
-              experiment.state === "running" ? "status-pulse bg-sky-400" : "bg-amber-400"
-            }`}
-            aria-hidden="true"
+          <StatusDot
+            tone={experiment.state === "running" ? "info" : "warning"}
+            live={experiment.state === "running"}
           />
-          <span className="max-w-40 truncate text-[12px] text-zinc-300">{experiment.name}</span>
-          <span className="text-xs text-[#7c7c85]">experiment</span>
+          <span className="max-w-40 truncate text-[12px] text-secondary-foreground">
+            {experiment.name}
+          </span>
+          <span className="text-xs text-subtle-foreground">experiment</span>
         </div>
       ))}
       {legacyJobs.map((job) => (
         <div key={job._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${
-              job.status === "running" ? "status-pulse bg-emerald-400" : "bg-amber-400"
-            }`}
-            aria-hidden="true"
+          <StatusDot
+            tone={job.status === "running" ? "success" : "warning"}
+            live={job.status === "running"}
           />
           <span className="sr-only">{job.status}: </span>
-          <span className="max-w-40 truncate font-mono text-[12px] text-zinc-300">{job.repo}</span>
-          <span className="max-w-40 truncate text-xs text-[#7c7c85]">{job.workflowName}</span>
+          <span className="max-w-40 truncate font-mono text-[12px] text-secondary-foreground">
+            {job.repo}
+          </span>
+          <span className="max-w-40 truncate text-xs text-subtle-foreground">
+            {job.workflowName}
+          </span>
         </div>
       ))}
     </div>
@@ -673,6 +706,18 @@ function ActiveRuns({
 }
 
 type ProfileSummary = (typeof api.profiles.list)["_returnType"][number];
+
+const BOUNDARY_COPY = {
+  "guest-kernel": {
+    label: "guest kernel",
+    tooltip: "Each Job boots its own guest kernel. Safe for untrusted pull request code.",
+  },
+  "shared-kernel": {
+    label: "shared kernel",
+    tooltip:
+      "Every Job shares this host's kernel and Docker daemon. Trusted repositories only — one Job's kernel exploit is every other Job's problem.",
+  },
+} as const;
 
 /**
  * One Profile, plus the evidence behind its readiness.
@@ -685,52 +730,72 @@ type ProfileSummary = (typeof api.profiles.list)["_returnType"][number];
  */
 function ProfileRow({ profile }: { profile: ProfileSummary }) {
   const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
   const guestKernel = profile.boundary === "guest-kernel";
+  const boundary = BOUNDARY_COPY[profile.boundary];
   const unhealthy = profile.workers.filter((worker) => worker.state !== "ready");
 
   return (
     <>
-      <TableRow
-        className="cursor-pointer"
-        onClick={() => setExpanded((open) => !open)}
-        aria-expanded={expanded}
-      >
+      <TableRow className="cursor-pointer" onClick={() => setExpanded((open) => !open)}>
         <TableCell>
-          <code className="text-xs text-zinc-100">{profile.name}</code>
-          <p className="mt-0.5 text-[10px] text-[#7c7c85]">{profile.scaleSetName}</p>
+          <div className="flex items-start gap-2">
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={panelId}
+              className="mt-px grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+              onClick={(event) => {
+                event.stopPropagation();
+                setExpanded((open) => !open);
+              }}
+            >
+              <ChevronRight
+                className={cn(
+                  "size-3.5 transition-transform duration-150",
+                  expanded && "rotate-90",
+                )}
+              />
+              <span className="sr-only">
+                {expanded ? "Hide" : "Show"} Worker readiness for {profile.name}
+              </span>
+            </button>
+            <div className="min-w-0">
+              <code className="text-xs text-foreground">{profile.name}</code>
+              <p className="mt-0.5 text-[10px] text-subtle-foreground">{profile.scaleSetName}</p>
+            </div>
+          </div>
         </TableCell>
         <TableCell>
-          <Badge
-            variant="outline"
-            className={guestKernel ? "text-emerald-300" : "text-amber-300"}
-            title={
-              guestKernel
-                ? "Each Job boots its own guest kernel. Safe for untrusted pull request code."
-                : "Every Job shares this host's kernel and Docker daemon. Trusted repositories only."
-            }
-          >
-            {guestKernel ? "guest kernel" : "shared kernel"}
-          </Badge>
-          <p className="mt-0.5 font-mono text-[10px] text-[#7c7c85]">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant={guestKernel ? "success" : "warning"} className="text-[11px]">
+                {guestKernel ? <ShieldCheck /> : <ShieldAlert />}
+                {boundary.label}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent side="top">{boundary.tooltip}</TooltipContent>
+          </Tooltip>
+          <p className="mt-1 font-mono text-[10px] text-subtle-foreground">
             {profile.executor}
             {profile.trustedOnly && " · trusted only"}
           </p>
         </TableCell>
-        <TableCell className="tabular-nums text-xs text-zinc-300">
+        <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
         </TableCell>
-        <TableCell className="tabular-nums text-xs text-zinc-300">
+        <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.readyWorkers}
           {unhealthy.length > 0 && (
-            <span className="ml-1.5 text-[10px] text-amber-300">+{unhealthy.length} not ready</span>
+            <span className="ml-1.5 text-[10px] text-warning">+{unhealthy.length} not ready</span>
           )}
         </TableCell>
-        <TableCell className="tabular-nums text-xs text-zinc-300">
+        <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.freeSlots}/{profile.readySlots} free
         </TableCell>
         <TableCell>
           <code
-            className="block max-w-[270px] truncate text-[10px] text-[#7c7c85]"
+            className="block max-w-[270px] truncate text-[10px] text-subtle-foreground"
             title={profile.imageRelease}
           >
             {profile.imageRelease}
@@ -738,14 +803,14 @@ function ProfileRow({ profile }: { profile: ProfileSummary }) {
         </TableCell>
       </TableRow>
       {expanded && (
-        <TableRow>
-          <TableCell colSpan={6} className="bg-[#09090a] px-4 py-3">
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={6} id={panelId} className="bg-sunken px-4 py-3.5">
             {profile.workers.length === 0 ? (
-              <p className="text-xs text-[#8a8a93]">
+              <p className="text-xs text-muted-foreground">
                 No Worker has reported readiness for this Profile yet.
               </p>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 {profile.workers.map((worker) => (
                   <WorkerReadiness key={worker.machineId} worker={worker} />
                 ))}
@@ -758,59 +823,142 @@ function ProfileRow({ profile }: { profile: ProfileSummary }) {
   );
 }
 
+type Fact = { label: string; value: string; tone?: "warning" };
+
+function workerFacts(worker: ProfileSummary["workers"][number]): Fact[] {
+  const facts: Fact[] = [];
+  if (worker.isolation) facts.push({ label: "Isolation", value: worker.isolation });
+
+  const hardware = worker.hardware;
+  if (hardware) {
+    const shape = [
+      hardware.cpus === undefined ? undefined : `${hardware.cpus} CPU`,
+      hardware.memoryMiB === undefined ? undefined : formatMemory(hardware.memoryMiB),
+      hardware.kvm === true ? `KVM (${hardware.virtualization ?? "hardware"})` : undefined,
+    ].filter((part): part is string => part !== undefined);
+    if (hardware.cpuModel !== undefined) facts.push({ label: "CPU", value: hardware.cpuModel });
+    if (shape.length > 0) facts.push({ label: "Hardware", value: shape.join(" · ") });
+  }
+
+  const storage = worker.storage;
+  if (storage?.poolFreeMiB !== undefined) {
+    facts.push({
+      label: "Storage",
+      value: `${storage.snapshotter ?? "snapshotter"} · ${formatMemory(storage.poolFreeMiB)} free of ${formatMemory(storage.poolTotalMiB ?? 0)}`,
+    });
+  }
+
+  const network = worker.network;
+  if (network?.subnet !== undefined) {
+    facts.push({
+      label: "Network",
+      value: [network.subnet, network.egressMode, network.policyName]
+        .filter((part): part is string => part !== undefined && part.length > 0)
+        .join(" · "),
+    });
+  }
+
+  if (worker.cacheScope) {
+    facts.push({
+      label: "Cache",
+      // A writable cache shared between Jobs is a cross-job path, so it is
+      // never just a fact: it is the reason a Worker cannot be trusted ready.
+      value: `${worker.cacheScope} · ${worker.cacheSharedWritable ? "shared writable" : "nothing shared"}`,
+      ...(worker.cacheSharedWritable === true ? { tone: "warning" as const } : {}),
+    });
+  }
+
+  return facts;
+}
+
+/**
+ * The evidence layer under a Profile: what this Worker proved, then the host
+ * facts it measured. Checks come first and stay legible on their own — a named
+ * check with its detail is the difference between "not ready" and a fix.
+ */
 function WorkerReadiness({ worker }: { worker: ProfileSummary["workers"][number] }) {
-  const facts = [
-    worker.isolation,
-    worker.hardware?.cpuModel,
-    worker.hardware &&
-      `${worker.hardware.cpus ?? "?"} CPU · ${formatMemory(worker.hardware.memoryMiB ?? 0)}`,
-    worker.hardware?.kvm === true && `KVM (${worker.hardware.virtualization ?? "hardware"})`,
-    worker.storage?.poolFreeMiB !== undefined &&
-      `${worker.storage.snapshotter ?? "snapshotter"}: ${formatMemory(worker.storage.poolFreeMiB)} free of ${formatMemory(worker.storage.poolTotalMiB ?? 0)}`,
-    worker.network?.subnet && `network ${worker.network.subnet} · ${worker.network.egressMode}`,
-    worker.cacheScope &&
-      `cache ${worker.cacheScope}${worker.cacheSharedWritable ? " (shared writable)" : " (nothing shared)"}`,
-  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const facts = workerFacts(worker);
+  const checks = worker.checks ?? [];
 
   return (
-    <div className="rounded-md border border-white/[0.08] px-3 py-2.5">
+    <div className="rounded-md border border-border bg-card px-3 py-3">
       <div className="flex flex-wrap items-center gap-2">
-        <code className="text-xs text-zinc-100">{worker.machineName}</code>
+        <code className="text-xs text-foreground">{worker.machineName}</code>
         <Badge
-          variant="outline"
-          className={worker.state === "ready" ? "text-emerald-300" : "text-amber-300"}
+          variant={
+            worker.state === "ready"
+              ? "success"
+              : worker.state === "failed"
+                ? "destructive"
+                : "warning"
+          }
         >
           {worker.state}
         </Badge>
-        {!worker.online && (
-          <Badge variant="outline" className="text-[#8a8a93]">
-            offline
-          </Badge>
-        )}
-        <span className="tabular-nums text-[10px] text-[#7c7c85]">
+        {!worker.online && <Badge variant="outline">offline</Badge>}
+        <span className="tabular-nums ml-auto text-[10px] text-subtle-foreground">
           {worker.usedSlots}/{worker.maxSlots} slots used
         </span>
       </div>
-      {facts.length > 0 && (
-        <p className="mt-1.5 text-[10px] leading-4 text-[#8a8a93]">{facts.join(" · ")}</p>
-      )}
-      {worker.checks !== undefined && worker.checks.length > 0 && (
-        <ul className="mt-2 flex flex-wrap gap-1.5">
-          {worker.checks.map((check) => (
-            <li key={check.name}>
-              <Badge
-                variant="outline"
-                className={check.passed ? "text-emerald-300" : "text-red-300"}
-                title={check.detail}
-              >
-                {check.passed ? "✓" : "✗"} {check.name}
-              </Badge>
+
+      {checks.length > 0 && (
+        <ul className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
+          {checks.map((check) => (
+            <li key={check.name} className="flex items-start gap-2">
+              {check.passed ? (
+                <CircleCheck className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
+              ) : (
+                <CircleX className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden="true" />
+              )}
+              <span className="min-w-0">
+                <span className="sr-only">{check.passed ? "Passed: " : "Failed: "}</span>
+                <span
+                  className={cn(
+                    "font-mono text-[11px] leading-4",
+                    check.passed ? "text-secondary-foreground" : "text-destructive",
+                  )}
+                >
+                  {check.name}
+                </span>
+                {check.detail !== undefined && check.detail !== "" && (
+                  <span className="block break-words text-[10px] leading-4 text-muted-foreground">
+                    {check.detail}
+                  </span>
+                )}
+              </span>
             </li>
           ))}
         </ul>
       )}
+
+      {facts.length > 0 && (
+        <>
+          <Separator className="my-2.5" />
+          <dl className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
+            {facts.map((fact) => (
+              <div key={fact.label} className="min-w-0">
+                <dt className="text-[10px] uppercase tracking-[0.08em] text-subtle-foreground">
+                  {fact.label}
+                </dt>
+                <dd
+                  className={cn(
+                    "break-words text-[11px] leading-4",
+                    fact.tone === "warning" ? "text-warning" : "text-muted-foreground",
+                  )}
+                >
+                  {fact.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      )}
+
       {worker.lastError !== undefined && worker.lastError !== "" && (
-        <p className="mt-2 break-words text-[10px] leading-4 text-red-300">{worker.lastError}</p>
+        <p className="mt-2.5 break-words text-[11px] leading-4 text-destructive">
+          <span className="sr-only">Last error: </span>
+          {worker.lastError}
+        </p>
       )}
     </div>
   );
@@ -852,68 +1000,64 @@ function InviteOperator() {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1_500);
     } catch {
-      // Clipboard blocked: the invitation stays selectable below.
+      toast.error("Clipboard access was blocked", {
+        description: "Select the invitation above and copy it manually.",
+      });
     }
   }
 
   return (
-    <details className="mt-3 rounded-md border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-xs text-[#8a8a93]">
-      <summary className="cursor-pointer select-none font-medium text-zinc-300">
-        Invite another operator
-      </summary>
-      <p className="mt-3 leading-5">
-        Sign-up is closed. An invitation is the only way to add an account after the first one. It
-        is single-use, expires in ten minutes, and is shown here once — send it over a channel you
-        trust.
-      </p>
+    <Card>
+      <CardContent className="px-0 pb-0">
+        <details>
+          <summary className="cursor-pointer select-none px-4 py-3.5 text-sm font-medium text-secondary-foreground">
+            Invite another operator
+          </summary>
+          <div className="space-y-3 border-t border-border px-4 py-4 text-xs text-muted-foreground">
+            <p className="leading-5">
+              Sign-up is closed. An invitation is the only way to add an account after the first
+              one. It is single-use, expires in ten minutes, and is shown here once — send it over a
+              channel you trust.
+            </p>
 
-      {grant === undefined ? (
-        <Button type="button" className="mt-3" disabled={pending} onClick={() => void generate()}>
-          {pending ? "Please wait…" : "Create an invitation"}
-          {!pending && <Plus />}
-        </Button>
-      ) : (
-        <div className="relative mt-3 rounded-md border border-white/[0.08] bg-[#09090a] p-3 pr-11">
-          <code className="block break-all font-mono text-xs leading-5 text-zinc-300">
-            {grant.token}
-          </code>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-1.5 top-1.5 size-8"
-            aria-label="Copy invitation"
-            onClick={() => void copy()}
-          >
-            {copied ? <Check /> : <Clipboard />}
-          </Button>
-        </div>
-      )}
+            {grant === undefined ? (
+              <Button type="button" disabled={pending} onClick={() => void generate()}>
+                {pending ? "Please wait…" : "Create an invitation"}
+                {!pending && <UserPlus />}
+              </Button>
+            ) : (
+              <>
+                <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
+                  <code className="block break-all font-mono text-xs leading-5 text-secondary-foreground">
+                    {grant.token}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1.5 top-1.5 size-8"
+                    aria-label="Copy invitation"
+                    onClick={() => void copy()}
+                  >
+                    {copied ? <Check /> : <Clipboard />}
+                  </Button>
+                </div>
+                <p className="leading-5">
+                  Expires {formatAbsoluteTime(grant.expiresAt)}. The recipient enters it on the
+                  sign-in page under “Accept an invitation”.
+                </p>
+              </>
+            )}
 
-      {grant !== undefined && (
-        <p className="mt-2 leading-5">
-          Expires {formatAbsoluteTime(grant.expiresAt)}. The recipient enters it on the sign-in page
-          under “Accept an invitation”.
-        </p>
-      )}
-
-      {error !== undefined && (
-        <p role="alert" className="mt-2 leading-5 text-red-300">
-          {error}
-        </p>
-      )}
-    </details>
-  );
-}
-
-function ErrorMessage({ children }: { children: ReactNode }) {
-  return (
-    <p
-      role="alert"
-      className="rounded-md border border-red-400/20 bg-red-400/[0.07] px-3 py-2 text-xs leading-5 text-red-300"
-    >
-      {children}
-    </p>
+            {error !== undefined && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        </details>
+      </CardContent>
+    </Card>
   );
 }
 

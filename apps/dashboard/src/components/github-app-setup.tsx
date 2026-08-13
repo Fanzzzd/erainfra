@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { CircleCheck, ExternalLink, GitPullRequest, KeyRound, TriangleAlert } from "lucide-react";
 import { api } from "@runner-center/backend/api";
@@ -6,9 +6,13 @@ import {
   DISCONNECT_CONFIRMATION,
   LEGACY_REMOVAL_COMMANDS,
 } from "@runner-center/backend/githubAppConfig";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { convexSiteUrl } from "@/lib/convex-site";
+import { cn } from "@/lib/utils";
 
 const CALLBACK_ERRORS: Record<string, string> = {
   missing_code: "GitHub did not return a registration code. Start the flow again.",
@@ -62,11 +66,10 @@ const SOURCE_NOTE: Record<string, string> = {
 function Panel({ tone, children }: { tone: "neutral" | "warn"; children: ReactNode }) {
   return (
     <section
-      className={
-        tone === "warn"
-          ? "rounded-lg border border-amber-400/[0.25] bg-amber-400/[0.04] px-4 py-4"
-          : "rounded-lg border border-white/[0.08] bg-[#0d0d0f] px-4 py-3.5"
-      }
+      className={cn(
+        "rounded-lg border px-4 py-3.5",
+        tone === "warn" ? "border-warning/25 bg-warning/[0.04]" : "border-border bg-card",
+      )}
       aria-labelledby="github-app-heading"
     >
       {children}
@@ -89,32 +92,30 @@ function CutoverWarning({
   patConfigured: boolean;
 }) {
   return (
-    <div
-      role="status"
-      className="mt-3 border-t border-white/[0.08] pt-3 text-xs leading-5 text-amber-200"
-    >
+    <div role="status" className="mt-3 border-t border-border pt-3 text-xs leading-5 text-warning">
       <p className="flex items-start gap-2 font-medium">
         <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
         Finish the cut-over: legacy credentials are still accepted
       </p>
-      <p className="mt-1.5 text-amber-200/80">
+      <p className="mt-1.5 opacity-85">
         {webhookSecretConfigured && (
           <>
-            <code className="text-amber-100">GITHUB_WEBHOOK_SECRET</code> is still set, so it
-            remains a valid signing key for <code className="text-amber-100">/github/webhook</code>{" "}
-            — anyone holding it, including whoever configured the repository webhooks you are
-            retiring, can submit deliveries this deployment trusts.{" "}
+            <code className="text-warning-foreground">GITHUB_WEBHOOK_SECRET</code> is still set, so
+            it remains a valid signing key for{" "}
+            <code className="text-warning-foreground">/github/webhook</code> — anyone holding it,
+            including whoever configured the repository webhooks you are retiring, can submit
+            deliveries this deployment trusts.{" "}
           </>
         )}
         {patConfigured && (
           <>
-            <code className="text-amber-100">GITHUB_PAT</code> is still set and still serves jobs
-            that arrive without an App installation ID.{" "}
+            <code className="text-warning-foreground">GITHUB_PAT</code> is still set and still
+            serves jobs that arrive without an App installation ID.{" "}
           </>
         )}
         Retire the per-repository webhooks and let in-flight jobs finish first, then remove them:
       </p>
-      <pre className="mt-2 overflow-x-auto rounded-md border border-white/[0.08] bg-[#09090a] p-2.5 font-mono text-[11px] leading-5 text-zinc-300">
+      <pre className="mt-2 overflow-x-auto rounded-md border border-border bg-sunken p-2.5 font-mono text-[11px] leading-5 text-secondary-foreground">
         <code>{LEGACY_REMOVAL_COMMANDS.join("\n")}</code>
       </pre>
     </div>
@@ -138,10 +139,10 @@ function DisconnectConfirm({
     <div
       role="alertdialog"
       aria-label="Confirm disconnect"
-      className="mt-3 rounded-md border border-red-400/25 bg-red-400/[0.06] px-3 py-3 text-xs leading-5 text-red-200"
+      className="mt-3 rounded-md border border-destructive/25 bg-destructive/[0.06] px-3 py-3 text-xs leading-5 text-destructive"
     >
       <p className="font-medium">Disconnect this GitHub App?</p>
-      <ul className="mt-1.5 list-disc space-y-1 pl-4 text-red-200/85">
+      <ul className="mt-1.5 list-disc space-y-1 pl-4 opacity-85">
         <li>
           This only forgets the credentials stored here. The App and every installation stay on
           GitHub, and it keeps sending webhooks.
@@ -171,6 +172,7 @@ export function GithubAppSetup() {
   const beginSetup = useMutation(api.githubApp.beginSetup);
   const disconnect = useMutation(api.githubApp.disconnect);
   const callbackResult = useCallbackResult();
+  const orgFieldId = useId();
   const [org, setOrg] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
@@ -218,16 +220,16 @@ export function GithubAppSetup() {
       <Panel tone="neutral">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-2.5">
-            <CircleCheck className="mt-0.5 size-4 shrink-0 text-emerald-400" />
+            <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" />
             <div className="min-w-0">
-              <h2 id="github-app-heading" className="text-sm font-medium text-zinc-200">
+              <h2 id="github-app-heading" className="text-sm font-medium text-secondary-foreground">
                 GitHub App connected
               </h2>
-              <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 {app.name} · app ID {app.appId} · client ID{" "}
-                <code className="font-mono text-[#a1a1aa]">{app.clientId}</code>
+                <code className="font-mono">{app.clientId}</code>
               </p>
-              <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 Webhook and JIT runner credentials are stored in this deployment and never leave it.
               </p>
             </div>
@@ -251,9 +253,12 @@ export function GithubAppSetup() {
           </div>
         </div>
         {callbackResult?.ok === true && (
-          <p className="mt-3 border-t border-white/[0.08] pt-3 text-xs text-emerald-300">
-            App created. Install it on the repositories Runner Center should serve.
-          </p>
+          <>
+            <Separator className="my-3" />
+            <p className="text-xs text-success">
+              App created. Install it on the repositories Runner Center should serve.
+            </p>
+          </>
         )}
         {status.legacy.cutoverIncomplete && (
           <CutoverWarning
@@ -268,7 +273,11 @@ export function GithubAppSetup() {
             onConfirm={() => void confirmDisconnect()}
           />
         )}
-        {error !== undefined && <p className="mt-3 text-xs text-red-300">{error}</p>}
+        {error !== undefined && (
+          <Alert variant="destructive" className="mt-3">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
       </Panel>
     );
   }
@@ -278,32 +287,31 @@ export function GithubAppSetup() {
     <Panel tone={status.configured ? "neutral" : "warn"}>
       <div className="flex items-start gap-2.5">
         {status.configured ? (
-          <KeyRound className="mt-0.5 size-4 shrink-0 text-[#8a8a93]" />
+          <KeyRound className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         ) : (
-          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-400" />
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
         )}
         <div className="min-w-0 flex-1">
-          <h2 id="github-app-heading" className="text-sm font-medium text-zinc-200">
+          <h2 id="github-app-heading" className="text-sm font-medium text-secondary-foreground">
             {status.configured ? "Connect a GitHub App" : "Connect GitHub"}
           </h2>
-          <p className="mt-1 text-xs leading-5 text-[#8a8a93]">
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
             Runner Center registers the App for you: one click sets up the webhook, the minimum
             permissions, and the private key. No app form to fill in and no environment variables to
             copy.
           </p>
-          {note !== undefined && <p className="mt-2 text-xs leading-5 text-[#8a8a93]">{note}</p>}
+          {note !== undefined && (
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">{note}</p>
+          )}
 
           <div className="mt-3.5 flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="w-full sm:max-w-xs">
-              <label htmlFor="github-org" className="block text-xs text-[#8a8a93]">
-                Organization (optional)
-              </label>
+            <div className="w-full space-y-1.5 sm:max-w-xs">
+              <Label htmlFor={orgFieldId}>Organization (optional)</Label>
               <Input
-                id="github-org"
+                id={orgFieldId}
                 value={org}
                 onChange={(event) => setOrg(event.target.value)}
                 placeholder="Leave empty for your personal account"
-                className="mt-1.5"
                 autoComplete="off"
               />
             </div>
@@ -314,9 +322,15 @@ export function GithubAppSetup() {
           </div>
 
           {callbackResult?.ok === false && (
-            <p className="mt-3 text-xs text-red-300">{callbackResult.message}</p>
+            <Alert variant="destructive" className="mt-3">
+              <AlertDescription>{callbackResult.message}</AlertDescription>
+            </Alert>
           )}
-          {error !== undefined && <p className="mt-3 text-xs text-red-300">{error}</p>}
+          {error !== undefined && (
+            <Alert variant="destructive" className="mt-3">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
         </div>
       </div>
     </Panel>
