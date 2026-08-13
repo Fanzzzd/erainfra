@@ -55,7 +55,7 @@ pnpm deploy
 
 ## 4. Roll back
 
-Convex deploys are code swaps; data written in between stays. The new code only *adds*
+Convex deploys are code swaps; data written in between stays. The new code only _adds_
 optional fields and one table, so the previous code reads post-deploy data correctly — with
 one exception: Attempts created by the new code keep credentials in `attemptSecrets`, which
 old code cannot claim.
