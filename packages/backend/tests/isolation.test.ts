@@ -235,4 +235,94 @@ describe("workerApi.reportReadiness", () => {
     expect(row?.state).toBe("ready");
     expect(row?.boundary).toBeUndefined();
   });
+
+  it("distinguishes a first failure from a regression of previously ready capacity", async () => {
+    const t = convexTest(schema, modules);
+    await worker(t, "token-state");
+    const contract = {
+      token: "token-state",
+      profile: "rc-linux-js",
+      executor: "firecracker" as const,
+      imageRelease: IMAGE,
+    };
+
+    expect(
+      await t.mutation(api.workerApi.reportReadiness, {
+        ...contract,
+        state: "failed",
+        error: "KVM is unavailable",
+        checks: [{ name: "kvm-device", passed: false, detail: "no /dev/kvm" }],
+      }),
+    ).toEqual({ state: "failed" });
+    let row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
+    expect(row?.preparedAt).toBeUndefined();
+
+    expect(
+      await t.mutation(api.workerApi.reportReadiness, {
+        ...contract,
+        state: "ready",
+        statusDetail: "all checks passed",
+        ...FIRECRACKER_FACTS,
+      }),
+    ).toEqual({ state: "ready" });
+    row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
+    const preparedAt = row?.preparedAt;
+    expect(preparedAt).toEqual(expect.any(Number));
+
+    await t.mutation(api.workerApi.reportReadiness, {
+      ...contract,
+      state: "preparing",
+      statusDetail: "rechecking the immutable image",
+    });
+    expect(
+      await t.mutation(api.workerApi.reportReadiness, {
+        ...contract,
+        state: "failed",
+        statusDetail: "retrying in five minutes",
+        error: "network policy changed",
+        checks: [{ name: "job-network-policy", passed: false, detail: "table changed" }],
+      }),
+    ).toEqual({ state: "degraded" });
+    row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
+    expect(row).toMatchObject({
+      state: "degraded",
+      preparedAt,
+      statusDetail: "retrying in five minutes",
+      lastError: "network policy changed",
+    });
+  });
+
+  it("recovers degraded capacity only after all checks pass again", async () => {
+    const t = convexTest(schema, modules);
+    await worker(t, "token-recovery");
+    const contract = {
+      token: "token-recovery",
+      profile: "rc-linux-js",
+      executor: "firecracker" as const,
+      imageRelease: IMAGE,
+    };
+    await t.mutation(api.workerApi.reportReadiness, {
+      ...contract,
+      state: "ready",
+      ...FIRECRACKER_FACTS,
+    });
+    await t.mutation(api.workerApi.reportReadiness, {
+      ...contract,
+      state: "failed",
+      error: "thin-pool pressure",
+      checks: [{ name: "snapshot-storage-headroom", passed: false }],
+    });
+
+    expect(
+      await t.mutation(api.workerApi.reportReadiness, {
+        ...contract,
+        state: "ready",
+        statusDetail: "capacity restored",
+        ...FIRECRACKER_FACTS,
+      }),
+    ).toEqual({ state: "ready" });
+    const row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
+    expect(row).toMatchObject({ state: "ready", statusDetail: "capacity restored" });
+    expect(row?.lastError).toBeUndefined();
+  });
 });

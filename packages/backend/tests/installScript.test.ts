@@ -503,6 +503,12 @@ describe("rendered script", () => {
     expect(script).not.toMatch(/grep -Fq 'Runner Center agent connected'/);
   });
 
+  it("tells the operator where background Profile warm-up is progressing", () => {
+    expect(script).toMatch(/Profiles are prewarming in the background/);
+    expect(script).toMatch(/rc logs -f/);
+    expect(script).toMatch(/dashboard readiness detail/);
+  });
+
   it("does not let an early launchd match fail status under pipefail", () => {
     expect(script).toMatch(
       /launchctl print "gui\/\$UID\/center\.runner\.agent" 2>\/dev\/null \| grep 'state = running' >\/dev\/null/,

@@ -353,7 +353,9 @@ function MachinesPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              profiles.map((profile) => <ProfileRow key={profile._id} profile={profile} />)
+              profiles.map((profile) => (
+                <ProfileRow key={profile._id} profile={profile} now={now} />
+              ))
             )}
           </TableBody>
         </Table>
@@ -594,7 +596,8 @@ function ProfileReadiness({
 }: {
   readiness: Array<{
     profile: string;
-    state: "preparing" | "ready" | "failed";
+    state: "preparing" | "ready" | "degraded" | "failed";
+    statusDetail?: string;
     lastError?: string;
   }>;
 }) {
@@ -618,15 +621,15 @@ function ProfileReadiness({
           </Badge>
         );
 
-        if (entry.lastError === undefined || entry.lastError === "")
-          return <div key={entry.profile}>{badge}</div>;
+        const detail = entry.lastError || entry.statusDetail;
+        if (detail === undefined || detail === "") return <div key={entry.profile}>{badge}</div>;
 
         return (
           <Tooltip key={entry.profile}>
             <TooltipTrigger asChild>
               <div>{badge}</div>
             </TooltipTrigger>
-            <TooltipContent side="top">{entry.lastError}</TooltipContent>
+            <TooltipContent side="top">{detail}</TooltipContent>
           </Tooltip>
         );
       })}
@@ -728,7 +731,7 @@ const BOUNDARY_COPY = {
  * prerequisite each Worker proved, which is what turns "not ready" into an
  * actionable message.
  */
-function ProfileRow({ profile }: { profile: ProfileSummary }) {
+function ProfileRow({ profile, now }: { profile: ProfileSummary; now: number }) {
   const [expanded, setExpanded] = useState(false);
   const panelId = useId();
   const guestKernel = profile.boundary === "guest-kernel";
@@ -812,7 +815,7 @@ function ProfileRow({ profile }: { profile: ProfileSummary }) {
             ) : (
               <div className="space-y-2.5">
                 {profile.workers.map((worker) => (
-                  <WorkerReadiness key={worker.machineId} worker={worker} />
+                  <WorkerReadiness key={worker.machineId} worker={worker} now={now} />
                 ))}
               </div>
             )}
@@ -876,7 +879,13 @@ function workerFacts(worker: ProfileSummary["workers"][number]): Fact[] {
  * facts it measured. Checks come first and stay legible on their own — a named
  * check with its detail is the difference between "not ready" and a fix.
  */
-function WorkerReadiness({ worker }: { worker: ProfileSummary["workers"][number] }) {
+function WorkerReadiness({
+  worker,
+  now,
+}: {
+  worker: ProfileSummary["workers"][number];
+  now: number;
+}) {
   const facts = workerFacts(worker);
   const checks = worker.checks ?? [];
 
@@ -899,6 +908,20 @@ function WorkerReadiness({ worker }: { worker: ProfileSummary["workers"][number]
         <span className="tabular-nums ml-auto text-[10px] text-subtle-foreground">
           {worker.usedSlots}/{worker.maxSlots} slots used
         </span>
+      </div>
+
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] leading-4 text-subtle-foreground">
+        {worker.statusDetail !== undefined && worker.statusDetail !== "" && (
+          <span>{worker.statusDetail}</span>
+        )}
+        <span title={formatAbsoluteTime(worker.checkedAt)}>
+          checked {formatRelativeTime(worker.checkedAt, now)}
+        </span>
+        {worker.preparedAt !== undefined && (
+          <span title={formatAbsoluteTime(worker.preparedAt)}>
+            last ready {formatRelativeTime(worker.preparedAt, now)}
+          </span>
+        )}
       </div>
 
       {checks.length > 0 && (

@@ -185,6 +185,12 @@ From **Machines → Add machine**, run the generated command on a Linux or macOS
 4. starts the Worker, which discovers Profiles and prewarms their exact Image Releases;
 5. advertises readiness only after the executor and image pass local checks.
 
+The installer reports that prewarming continues in the background and points to `rc logs -f` and
+the dashboard for live detail. A Profile that has never passed its exact executor/image contract is
+`failed`; one that passed before but fails a later check is `degraded`. Both states withdraw that
+Profile from scheduling. Failed and degraded checks retry every five minutes, while healthy
+capacity keeps the six-hour verification cadence; the dashboard retains the last successful time.
+
 Useful commands:
 
 ```bash

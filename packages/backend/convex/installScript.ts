@@ -785,6 +785,8 @@ if [ "$CONNECTED" -ne 1 ]; then
 fi
 
 printf '✅ Runner Center %s is connected. Dashboard: %s\n' "$VERSION" "$SITE_URL"
+printf '⏳ Compatible Profiles are prewarming in the background; cold capacity is not schedulable.\n'
+printf '   Follow live progress with "rc logs -f" or in the dashboard readiness detail.\n'
 `;
 
 export function renderInstallScript(siteUrl: string, release: AgentRelease) {

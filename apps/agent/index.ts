@@ -10,7 +10,15 @@ import {
   type ExperimentExecution,
   type MachineOs,
 } from "./provision.js";
-import { prepareProfile, type ReadinessFacts, type ProfileSpec } from "./readiness.js";
+import {
+  HEALTHY_READINESS_REFRESH_MS,
+  readinessRefreshDelay,
+  UNHEALTHY_READINESS_REFRESH_MS,
+  prepareProfile,
+  type PublishedReadinessState,
+  type ReadinessFacts,
+  type ProfileSpec,
+} from "./readiness.js";
 import { clearReadinessSignal, publishReadinessSignal } from "./readiness-signal.js";
 
 type PendingCommand = { commandId: string; runnerName: string };
@@ -88,9 +96,10 @@ const reportReadiness = makeFunctionReference<
     executor: "docker" | "firecracker" | "tart" | "hyperv";
     imageRelease: string;
     state: "preparing" | "ready" | "failed";
+    statusDetail?: string;
     error?: string;
   } & Partial<ReadinessFacts>,
-  null
+  { state: PublishedReadinessState }
 >("workerApi:reportReadiness");
 const workerProfiles = makeFunctionReference<"query", { token: string }, ProfileSpec[]>(
   "workerApi:profiles",
@@ -371,41 +380,71 @@ async function heartbeat() {
 let refreshingProfiles = false;
 let discoveredProfiles: ProfileSpec[] = [];
 let refreshAgain = false;
+let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleReadinessRefresh(delayMs: number) {
+  if (shuttingDown) return;
+  if (readinessTimer !== undefined) clearTimeout(readinessTimer);
+  readinessTimer = setTimeout(() => void refreshProfiles(), delayMs);
+}
+
 async function refreshProfiles() {
-  if (refreshingProfiles || shuttingDown) return;
+  if (shuttingDown) return;
+  if (refreshingProfiles) {
+    refreshAgain = true;
+    return;
+  }
   refreshingProfiles = true;
+  if (readinessTimer !== undefined) {
+    clearTimeout(readinessTimer);
+    readinessTimer = undefined;
+  }
+  let nextRefreshMs = HEALTHY_READINESS_REFRESH_MS;
   try {
     while (true) {
       refreshAgain = false;
       const profiles = discoveredProfiles;
+      const states: PublishedReadinessState[] = [];
       for (const profile of profiles) {
+        const preparingDetail = `Checking ${profile.executor} and prewarming ${profile.imageRelease}`;
+        console.log(`${profile.profile} readiness: preparing; ${preparingDetail}`);
         await client.mutation(reportReadiness, {
           token: config.machineToken,
           profile: profile.profile,
           executor: profile.executor,
           imageRelease: profile.imageRelease,
           state: "preparing",
+          statusDetail: preparingDetail,
         });
         const readiness = await prepareProfile(profile);
-        await client.mutation(reportReadiness, {
+        const statusDetail =
+          readiness.state === "ready"
+            ? `Prepared the immutable Image Release and passed ${readiness.checks.length} readiness check(s)`
+            : "Readiness check failed; retrying in five minutes";
+        const reported = await client.mutation(reportReadiness, {
           token: config.machineToken,
           profile: profile.profile,
           executor: profile.executor,
           imageRelease: profile.imageRelease,
+          statusDetail,
           ...readiness,
         });
+        states.push(reported.state);
         const failed = readiness.checks.filter((check) => !check.passed).map((c) => c.name);
         console.log(
-          `${profile.profile} readiness: ${readiness.state} (${readiness.isolation}, ${readiness.boundary})` +
+          `${profile.profile} readiness: ${reported.state} (${readiness.isolation}, ${readiness.boundary})` +
             (failed.length > 0 ? `; failed: ${failed.join(", ")}` : ""),
         );
       }
+      nextRefreshMs = readinessRefreshDelay(states);
       if (!refreshAgain || shuttingDown) break;
     }
   } catch (error) {
     console.error("Refreshing Profile readiness failed", error);
+    nextRefreshMs = UNHEALTHY_READINESS_REFRESH_MS;
   } finally {
     refreshingProfiles = false;
+    scheduleReadinessRefresh(nextRefreshMs);
   }
 }
 
@@ -432,7 +471,6 @@ console.log(
 );
 await heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), config.heartbeatMs);
-const readinessTimer = setInterval(() => void refreshProfiles(), 6 * 60 * 60_000);
 await publishReadinessSignal(process.env.RC_READY_FILE, process.env.RC_AGENT_VERSION);
 console.log(
   `Runner Center Worker connected to ${config.convexUrl}; discovering compatible Profiles`,
@@ -443,7 +481,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   console.log(`Received ${signal}; stopping Worker`);
   clearInterval(heartbeatTimer);
-  clearInterval(readinessTimer);
+  if (readinessTimer !== undefined) clearTimeout(readinessTimer);
   unsubscribeCommands();
   unsubscribeAttempts();
   unsubscribeExperiments();

@@ -361,10 +361,18 @@ export const reportReadiness = mutation({
     executor: executorValidator,
     imageRelease: v.string(),
     state: v.union(v.literal("preparing"), v.literal("ready"), v.literal("failed")),
+    statusDetail: v.optional(v.string()),
     error: v.optional(v.string()),
     ...readinessFactsValidator,
   },
-  returns: v.null(),
+  returns: v.object({
+    state: v.union(
+      v.literal("preparing"),
+      v.literal("ready"),
+      v.literal("degraded"),
+      v.literal("failed"),
+    ),
+  }),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
     const profile = await ctx.db
@@ -388,13 +396,26 @@ export const reportReadiness = mutation({
         q.eq("machineId", machine._id).eq("profile", args.profile),
       )
       .unique();
+    const checkedAt = Date.now();
+    const sameContract =
+      existing !== null &&
+      existing.executor === args.executor &&
+      existing.imageRelease === args.imageRelease;
+    const preparedAt =
+      args.state === "ready" ? checkedAt : sameContract ? existing.preparedAt : undefined;
+    // "Degraded" means this exact contract once passed and no longer does. It
+    // remains fail-closed: the scheduler admits only state="ready". A first
+    // failure is "failed" because there is no successful baseline to regress.
+    const state: Doc<"workerReadiness">["state"] =
+      args.state === "failed" && preparedAt !== undefined ? "degraded" : args.state;
     const patch: Omit<Doc<"workerReadiness">, "_id" | "_creationTime" | "machineId"> = {
       profile: args.profile,
       executor: args.executor,
       imageRelease: args.imageRelease,
-      state: args.state,
-      checkedAt: Date.now(),
-      preparedAt: args.state === "ready" ? Date.now() : undefined,
+      state,
+      checkedAt,
+      preparedAt,
+      statusDetail: args.statusDetail?.slice(0, 1_000),
       lastError: args.error?.slice(0, 1_000),
       isolation: args.isolation,
       boundary: args.boundary,
@@ -413,6 +434,6 @@ export const reportReadiness = mutation({
     if (args.state === "ready") {
       await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     }
-    return null;
+    return { state };
   },
 });
