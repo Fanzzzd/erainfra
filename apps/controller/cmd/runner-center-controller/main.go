@@ -54,6 +54,7 @@ func run() error {
 		ImageRelease: cfg.ImageRelease,
 		VCPUs:        cfg.VCPUs,
 		MemoryMiB:    cfg.MemoryMiB,
+		WarmPool:     cfg.WarmPool,
 		FitPolicy:    cfg.FitPolicy,
 		MinRunners:   cfg.MinRunners,
 		MaxRunners:   cfg.MaxRunners,

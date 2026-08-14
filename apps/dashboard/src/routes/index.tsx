@@ -798,6 +798,7 @@ function ProfileRow({ profile, now }: { profile: ProfileSummary; now: number }) 
         </TableCell>
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
+          {profile.warmPool > 0 && ` · ${profile.warmPool} warm`}
           <p className="mt-0.5 text-[10px] text-subtle-foreground">
             {profile.fitPolicy} benchmark fit
           </p>

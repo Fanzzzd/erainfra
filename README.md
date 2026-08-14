@@ -179,6 +179,7 @@ export RC_EXECUTOR=docker # bootstrap trusted CI; promote to firecracker after h
 export RC_IMAGE_RELEASE=ghcr.io/OWNER/runner-center-ubuntu-24.04-js@sha256:<digest>
 export RC_VCPUS=4
 export RC_MEMORY_MIB=8192
+export RC_WARM_POOL=2 # Firecracker only; 0 disables resident warm capacity
 export RC_FIT_POLICY=balanced # balanced, cpu, network, or io
 export RC_MIN_RUNNERS=0
 export RC_MAX_RUNNERS=16
@@ -190,6 +191,13 @@ export RC_GITHUB_APP_PRIVATE_KEY_FILE=/etc/runner-center/github-app.pem
 
 runner-center-controller
 ```
+
+`RC_WARM_POOL` is an explicit Firecracker-only performance opt-in. Its target
+counts both parked and currently claimed single-use microVMs, and each one
+reserves a Worker slot, vCPUs, memory, a CNI address, and devmapper headroom.
+Start small and validate it on the issue #17 KVM host using
+[ADR 0003](docs/adr/0003-warm-microvm-capacity.md); Docker, Tart, and Hyper-V
+Profiles must leave it at zero.
 
 Use a process supervisor such as systemd with `Restart=always`, a private `EnvironmentFile`, and a
 dedicated unprivileged service account. Controller releases are static Linux/macOS x64/ARM64

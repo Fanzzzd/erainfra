@@ -29,6 +29,7 @@ import (
 
 type Runtime struct {
 	config Config
+	pool   *warmPoolManager
 
 	recoveryMu sync.Mutex
 	activeMu   sync.Mutex
@@ -47,7 +48,10 @@ func (r *Runtime) Recover(ctx context.Context) error {
 // is still serving here, so it first stops each in-process orphaned VM and then
 // removes only that orphan's lease, network state, and work directory.
 func (r *Runtime) RecoverOrphans(ctx context.Context, liveAttemptIDs []string) error {
-	return r.recover(ctx, newRecoveryPolicy(liveAttemptIDs))
+	return errors.Join(
+		r.pool.RecoverOrphans(ctx, liveAttemptIDs),
+		r.recover(ctx, newRecoveryPolicy(liveAttemptIDs)),
+	)
 }
 
 func (r *Runtime) recover(ctx context.Context, policy recoveryPolicy) error {
@@ -129,7 +133,9 @@ func New(config Config) (*Runtime, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid Firecracker configuration: %w", err)
 	}
-	return &Runtime{config: config, active: make(map[string]*machineLease)}, nil
+	runtime := &Runtime{config: config, active: make(map[string]*machineLease)}
+	runtime.pool = newWarmPoolManager(runtime.newWarmSlot)
+	return runtime, nil
 }
 
 func (r *Runtime) activeLeases() map[string]*machineLease {
@@ -349,38 +355,66 @@ func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list containerd leases: %w", err))
 		return
 	}
-	activeAttempts := 0
+	activeGuests := 0
 	for _, lease := range all {
-		if strings.HasPrefix(lease.ID, "runner-center/attempts/") {
-			activeAttempts++
+		if strings.HasPrefix(lease.ID, "runner-center/attempts/") ||
+			strings.HasPrefix(lease.ID, "runner-center/warm/") {
+			activeGuests++
 		}
 	}
-	if len(reservations) > activeAttempts {
+	if len(reservations) > activeGuests {
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf(
-			"%d guest addresses reserved for %d running Attempts; teardown is leaking network state — restart the Worker or runner-center-runtime to reclaim it",
-			len(reservations), activeAttempts,
+			"%d guest addresses reserved for %d running microVMs; teardown is leaking network state — restart the Worker or runner-center-runtime to reclaim it",
+			len(reservations), activeGuests,
 		))
 		return
 	}
 	report.Pass(executor.CheckCNIReservations, fmt.Sprintf(
-		"%d guest addresses reserved for %d running Attempts",
-		len(reservations), activeAttempts,
+		"%d guest addresses reserved for %d running microVMs",
+		len(reservations), activeGuests,
 	))
 }
 
-func (r *Runtime) PrepareImage(ctx context.Context, imageRelease string) error {
-	if err := validateImageRelease(imageRelease); err != nil {
-		return err
+func (r *Runtime) PrepareProfile(
+	ctx context.Context,
+	profile executor.Profile,
+) (executor.WarmPoolStatus, error) {
+	if err := profile.Validate(); err != nil {
+		return executor.WarmPoolStatus{}, err
+	}
+	if _, err := r.Preflight(ctx); err != nil {
+		return executor.WarmPoolStatus{}, err
 	}
 	client, err := containerd.New(r.config.ContainerdAddress)
 	if err != nil {
-		return fmt.Errorf("connect to containerd: %w", err)
+		return executor.WarmPoolStatus{}, fmt.Errorf("connect to containerd: %w", err)
 	}
 	defer client.Close()
-	ctx = namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
-	_, err = ensureImage(ctx, client, r.config.Snapshotter, imageRelease)
-	return err
+	containerdContext := namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
+	if _, err = ensureImage(containerdContext, client, r.config.Snapshotter, profile.ImageRelease); err != nil {
+		return executor.WarmPoolStatus{}, err
+	}
+	if profile.WarmPool > 0 {
+		storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
+		if err != nil {
+			return executor.WarmPoolStatus{}, err
+		}
+		required := int64(r.pool.totalTargetWith(profile)) * r.config.MinPoolFreeMiB
+		if storage.PoolFreeMiB < required {
+			return executor.WarmPoolStatus{}, fmt.Errorf(
+				"warm pools require %d MiB thin-pool headroom but %d MiB is free",
+				required, storage.PoolFreeMiB,
+			)
+		}
+	}
+	return r.pool.Configure(ctx, profile)
 }
+
+func (r *Runtime) RemoveProfile(ctx context.Context, profile string) error {
+	return r.pool.Remove(ctx, strings.TrimSpace(profile))
+}
+
+func (r *Runtime) Shutdown(ctx context.Context) error { return r.pool.Shutdown(ctx) }
 
 func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lease, returnedError error) {
 	if err := spec.Validate(); err != nil {
@@ -389,10 +423,37 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if _, err := r.Preflight(ctx); err != nil {
 		return nil, err
 	}
+	lease, err := r.pool.Claim(ctx, spec)
+	if err == nil {
+		return lease, nil
+	}
+	if !errors.Is(err, errWarmPoolMiss) {
+		return nil, err
+	}
+	return r.bootVM(ctx, vmDefinition{
+		id:          spec.AttemptID,
+		attemptID:   spec.AttemptID,
+		leaseID:     "runner-center/attempts/" + spec.AttemptID,
+		profile:     executor.Profile{Name: spec.Profile, ImageRelease: spec.ImageRelease, VCPUs: spec.VCPUs, MemoryMiB: spec.MemoryMiB},
+		metadata:    metadataFor(spec),
+		resultToken: spec.ResultToken,
+	})
+}
+
+type vmDefinition struct {
+	id          string
+	attemptID   string
+	leaseID     string
+	profile     executor.Profile
+	metadata    map[string]any
+	resultToken string
+}
+
+func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machineLease, returnedError error) {
 	if err := os.MkdirAll(r.config.WorkDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create runtime directory: %w", err)
 	}
-	workDir, err := os.MkdirTemp(r.config.WorkDir, spec.AttemptID+"-")
+	workDir, err := os.MkdirTemp(r.config.WorkDir, definition.id+"-")
 	if err != nil {
 		return nil, fmt.Errorf("create Attempt directory: %w", err)
 	}
@@ -412,8 +473,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		}
 	}()
 	containerdContext := namespaces.WithNamespace(context.Background(), r.config.ContainerdNamespace)
-	leaseID := "runner-center/attempts/" + spec.AttemptID
-	leaseContext, releaseLease, err := client.WithLease(containerdContext, leases.WithID(leaseID))
+	leaseContext, releaseLease, err := client.WithLease(containerdContext, leases.WithID(definition.leaseID))
 	if err != nil {
 		return nil, fmt.Errorf("create containerd lease: %w", err)
 	}
@@ -428,7 +488,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		}
 	}()
 
-	image, err := ensureImage(leaseContext, client, r.config.Snapshotter, spec.ImageRelease)
+	image, err := ensureImage(leaseContext, client, r.config.Snapshotter, definition.profile.ImageRelease)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +496,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if err != nil {
 		return nil, fmt.Errorf("read image root filesystem: %w", err)
 	}
-	snapshotKey := "runner-center-" + spec.AttemptID
+	snapshotKey := "runner-center-" + definition.id
 	snapshotter := client.SnapshotService(r.config.Snapshotter)
 	if _, err := snapshotter.Prepare(leaseContext, snapshotKey, identity.ChainID(rootFS).String()); err != nil {
 		return nil, fmt.Errorf("prepare writable root snapshot: %w", err)
@@ -472,13 +532,13 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	logger.SetLevel(logrus.PanicLevel)
 
 	machine, err := fc.NewMachine(vmmContext, fc.Config{
-		VMID:            spec.AttemptID,
+		VMID:            definition.id,
 		SocketPath:      filepath.Join(workDir, "firecracker.sock"),
 		KernelImagePath: r.config.KernelImagePath,
 		KernelArgs:      r.config.KernelArgs,
 		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  fc.Int64(spec.VCPUs),
-			MemSizeMib: fc.Int64(spec.MemoryMiB),
+			VcpuCount:  fc.Int64(definition.profile.VCPUs),
+			MemSizeMib: fc.Int64(definition.profile.MemoryMiB),
 		},
 		Drives: []models.Drive{{
 			DriveID:      fc.String("rootfs"),
@@ -504,21 +564,9 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		cancelVMM()
 		return nil, fmt.Errorf("create Firecracker VM: %w", err)
 	}
-	metadata := map[string]any{
-		"latest": map[string]any{
-			"meta-data": map[string]any{
-				"runner-center": map[string]any{
-					"kind":               spec.Kind,
-					"runner_name":        spec.RunnerName,
-					"runner_jit_config":  spec.JITConfig,
-					"experiment_command": spec.Command,
-					"result_token":       spec.ResultToken,
-					"shutdown_on_exit":   true,
-				},
-			},
-		},
+	if definition.metadata != nil {
+		machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.NewSetMetadataHandler(definition.metadata))
 	}
-	machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.NewSetMetadataHandler(metadata))
 	if err := startMachine(ctx, machine, vmmContext, cancelVMM); err != nil {
 		return nil, err
 	}
@@ -532,13 +580,122 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		console:      console,
 		consolePath:  consolePath,
 		workDir:      workDir,
-		resultToken:  spec.ResultToken,
+		resultToken:  definition.resultToken,
 	}
-	lease.onCleanup = func() { r.forgetLease(spec.AttemptID, lease) }
-	r.rememberLease(spec.AttemptID, lease)
+	if definition.attemptID != "" {
+		lease.onCleanup = func() { r.forgetLease(definition.attemptID, lease) }
+		r.rememberLease(definition.attemptID, lease)
+	}
 	leaseOwned = false
 	return lease, nil
 }
+
+func metadataFor(spec executor.Spec) map[string]any {
+	return map[string]any{
+		"latest": map[string]any{
+			"meta-data": map[string]any{
+				"runner-center": map[string]any{
+					"kind":               spec.Kind,
+					"runner_name":        spec.RunnerName,
+					"runner_jit_config":  spec.JITConfig,
+					"experiment_command": spec.Command,
+					"result_token":       spec.ResultToken,
+					"shutdown_on_exit":   true,
+				},
+			},
+		},
+	}
+}
+
+type firecrackerWarmSlot struct {
+	lease   *machineLease
+	done    chan error
+	mu      sync.Mutex
+	claimed bool
+	exited  bool
+}
+
+const warmBootTimeout = 15 * time.Minute
+
+func (r *Runtime) newWarmSlot(
+	ctx context.Context,
+	profile executor.Profile,
+	id uint64,
+) (warmSlot, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, warmBootTimeout)
+		defer cancel()
+	}
+	vmID := fmt.Sprintf("warm-%d", id)
+	lease, err := r.bootVM(ctx, vmDefinition{
+		id:      vmID,
+		leaseID: "runner-center/warm/" + vmID,
+		profile: profile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := waitForConsoleMarker(ctx, lease.consolePath, warmReadyMarker); err != nil {
+		_ = lease.Cancel(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	slot := &firecrackerWarmSlot{lease: lease, done: make(chan error, 1)}
+	go func() {
+		err := lease.machine.Wait(context.Background())
+		claimed := slot.markExited()
+		// An idle VM has no foreground waiter to release its root, network,
+		// lease, and work directory. A claimed VM does: leave its console in
+		// place so machineLease.Wait can parse an Experiment result before the
+		// normal single-use teardown removes it.
+		if !claimed {
+			err = errors.Join(err, lease.cleanup(context.Background(), false))
+		}
+		slot.done <- err
+		close(slot.done)
+	}()
+	return slot, nil
+}
+
+func (s *firecrackerWarmSlot) Claim(
+	ctx context.Context,
+	spec executor.Spec,
+) (executor.Lease, error) {
+	if err := s.reserveClaim(); err != nil {
+		return nil, err
+	}
+	metadata := metadataFor(spec)
+	if err := s.lease.machine.SetMetadata(ctx, metadata); err != nil {
+		return nil, err
+	}
+	// Drop the host-side reference immediately after the one MMDS write.
+	metadata["latest"].(map[string]any)["meta-data"].(map[string]any)["runner-center"].(map[string]any)["runner_jit_config"] = ""
+	s.lease.resultToken = spec.ResultToken
+	return s.lease, nil
+}
+
+func (s *firecrackerWarmSlot) reserveClaim() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.exited {
+		return errors.New("parked microVM exited before metadata injection")
+	}
+	if s.claimed {
+		return errors.New("parked microVM was already claimed")
+	}
+	s.claimed = true
+	return nil
+}
+
+func (s *firecrackerWarmSlot) markExited() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exited = true
+	return s.claimed
+}
+
+func (s *firecrackerWarmSlot) Close(ctx context.Context) error { return s.lease.Cancel(ctx) }
+func (s *firecrackerWarmSlot) Done() <-chan error              { return s.done }
 
 // startMachine boots the guest, bounded by the caller's boot deadline but tied
 // for its lifetime to the VM's own context.

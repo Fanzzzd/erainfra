@@ -28,6 +28,45 @@ type Spec struct {
 	ResultToken  string
 }
 
+// Profile is the runtime-owned capacity contract for one immutable Image
+// Release. WarmPool is explicit and defaults to zero.
+type Profile struct {
+	Name         string `json:"name"`
+	ImageRelease string `json:"imageRelease"`
+	VCPUs        int64  `json:"vcpus"`
+	MemoryMiB    int64  `json:"memoryMiB"`
+	WarmPool     int    `json:"warmPool"`
+}
+
+func (p Profile) Validate() error {
+	if strings.TrimSpace(p.Name) == "" {
+		return errors.New("profile is required")
+	}
+	if !digestImage.MatchString(p.ImageRelease) {
+		return errors.New("image release must be pinned by sha256 digest")
+	}
+	if p.VCPUs < 1 || p.VCPUs > 64 {
+		return errors.New("vCPUs must be between 1 and 64")
+	}
+	if p.MemoryMiB < 512 || p.MemoryMiB > 262_144 {
+		return errors.New("memory must be between 512 and 262144 MiB")
+	}
+	if p.WarmPool < 0 || p.WarmPool > 16 {
+		return errors.New("warm pool must be between 0 and 16")
+	}
+	return nil
+}
+
+// WarmPoolStatus is resident capacity, so Target is always Parked + Claimed
+// for a healthy pool.
+type WarmPoolStatus struct {
+	Target  int    `json:"target"`
+	Parked  int    `json:"parked"`
+	Claimed int    `json:"claimed"`
+	Healthy bool   `json:"healthy"`
+	Detail  string `json:"detail,omitempty"`
+}
+
 func (s Spec) Validate() error {
 	if !safeIdentity.MatchString(s.AttemptID) {
 		return errors.New("attempt ID must be a safe 1-128 character identity")
@@ -86,6 +125,8 @@ type Executor interface {
 	// something is. A non-nil error always accompanies a Report that is not
 	// Ready.
 	Preflight(ctx context.Context) (Report, error)
-	PrepareImage(ctx context.Context, imageRelease string) error
+	PrepareProfile(ctx context.Context, profile Profile) (WarmPoolStatus, error)
+	RemoveProfile(ctx context.Context, profile string) error
+	Shutdown(ctx context.Context) error
 	Start(ctx context.Context, spec Spec) (Lease, error)
 }

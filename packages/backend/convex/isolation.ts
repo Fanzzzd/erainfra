@@ -65,6 +65,7 @@ export const readinessFactsValidator = {
       egressMode: v.optional(v.string()),
     }),
   ),
+  warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
 };
 
 export type ReadinessFacts = {
@@ -75,6 +76,7 @@ export type ReadinessFacts = {
   cacheSharedWritable?: boolean;
   hardware?: { cpus?: number; memoryMiB?: number; kvm?: boolean };
   storage?: { poolFreeMiB?: number };
+  warmPool?: { target: number; parked: number; claimed: number };
 };
 
 /**
@@ -113,6 +115,18 @@ export function assertReadinessContract(
       "A Worker sharing writable storage between Jobs cannot be ready: that is a cross-job path",
     );
   }
+  if (facts.warmPool !== undefined) {
+    const { target, parked, claimed } = facts.warmPool;
+    if (
+      ![target, parked, claimed].every(Number.isSafeInteger) ||
+      target < 0 ||
+      parked < 0 ||
+      claimed < 0 ||
+      parked + claimed !== target
+    ) {
+      throw new ConvexError("A ready warm pool must report target = parked + claimed");
+    }
+  }
 }
 
 /**
@@ -143,4 +157,14 @@ export function hasSnapshotHeadroom(
   const free = storage?.poolFreeMiB;
   if (free === undefined) return true;
   return free >= reserveMiB * (concurrentAttempts + 1);
+}
+
+export function hasSnapshotHeadroomForGuests(
+  storage: { poolFreeMiB?: number } | undefined,
+  guests: number,
+  reserveMiB: number = SNAPSHOT_RESERVE_MIB,
+) {
+  const free = storage?.poolFreeMiB;
+  if (free === undefined) return true;
+  return free >= reserveMiB * guests;
 }

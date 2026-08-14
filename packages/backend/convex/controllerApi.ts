@@ -28,6 +28,7 @@ export const registerProfile = internalMutation({
     imageRelease: v.string(),
     vcpus: v.number(),
     memoryMiB: v.number(),
+    warmPool: v.optional(v.number()),
     fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
@@ -41,6 +42,7 @@ export const registerProfile = internalMutation({
     const value = {
       ...args,
       fitPolicy: args.fitPolicy ?? "balanced",
+      warmPool: args.warmPool ?? 0,
       state: "active" as const,
       updatedAt: Date.now(),
     };

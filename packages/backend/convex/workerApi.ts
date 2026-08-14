@@ -31,6 +31,7 @@ const profileSpecValidator = v.object({
   imageRelease: v.string(),
   vcpus: v.number(),
   memoryMiB: v.number(),
+  warmPool: v.number(),
 });
 
 async function machineForToken(ctx: QueryCtx | MutationCtx, token: string) {
@@ -65,6 +66,7 @@ export const profiles = query({
         imageRelease: profile.imageRelease,
         vcpus: profile.vcpus,
         memoryMiB: profile.memoryMiB,
+        warmPool: profile.warmPool ?? 0,
       }));
   },
 });
@@ -457,6 +459,8 @@ export const reportReadiness = mutation({
     profile: v.string(),
     executor: executorValidator,
     imageRelease: v.string(),
+    vcpus: v.optional(v.number()),
+    memoryMiB: v.optional(v.number()),
     state: v.union(v.literal("preparing"), v.literal("ready"), v.literal("failed")),
     statusDetail: v.optional(v.string()),
     error: v.optional(v.string()),
@@ -480,7 +484,12 @@ export const reportReadiness = mutation({
       profile === null ||
       profile.state !== "active" ||
       profile.executor !== args.executor ||
-      profile.imageRelease !== args.imageRelease
+      profile.imageRelease !== args.imageRelease ||
+      (args.vcpus !== undefined && args.vcpus !== profile.vcpus) ||
+      (args.memoryMiB !== undefined && args.memoryMiB !== profile.memoryMiB) ||
+      ((profile.warmPool ?? 0) > 0 && (args.vcpus === undefined || args.memoryMiB === undefined)) ||
+      (args.warmPool !== undefined && args.warmPool.target !== (profile.warmPool ?? 0)) ||
+      (args.state === "ready" && (profile.warmPool ?? 0) > 0 && args.warmPool === undefined)
     ) {
       throw new ConvexError("Readiness does not match an active Profile contract");
     }
@@ -503,7 +512,10 @@ export const reportReadiness = mutation({
     const sameContract =
       existing !== null &&
       existing.executor === args.executor &&
-      existing.imageRelease === args.imageRelease;
+      existing.imageRelease === args.imageRelease &&
+      (existing.vcpus ?? profile.vcpus) === profile.vcpus &&
+      (existing.memoryMiB ?? profile.memoryMiB) === profile.memoryMiB &&
+      (existing.warmPool?.target ?? 0) === (profile.warmPool ?? 0);
     const preparedAt =
       args.state === "ready" ? checkedAt : sameContract ? existing.preparedAt : undefined;
     // "Degraded" means this exact contract once passed and no longer does. It
@@ -515,6 +527,8 @@ export const reportReadiness = mutation({
       profile: args.profile,
       executor: args.executor,
       imageRelease: args.imageRelease,
+      vcpus: args.vcpus,
+      memoryMiB: args.memoryMiB,
       state,
       checkedAt,
       preparedAt,
@@ -528,6 +542,7 @@ export const reportReadiness = mutation({
               poolTotalMiB: args.storage.poolTotalMiB,
               poolFreeMiB: args.storage.poolFreeMiB,
             },
+      warmPool: args.warmPool ?? (sameContract ? existing?.warmPool : undefined),
       statusDetail: undefined,
       lastError: undefined,
       isolation: undefined,
@@ -548,6 +563,8 @@ export const reportReadiness = mutation({
       profile: args.profile,
       executor: args.executor,
       imageRelease: args.imageRelease,
+      vcpus: args.vcpus,
+      memoryMiB: args.memoryMiB,
       checkedAt,
       statusDetail: args.statusDetail?.slice(0, 1_000),
       lastError: args.error?.slice(0, 1_000),
@@ -559,6 +576,7 @@ export const reportReadiness = mutation({
       hardware: args.hardware,
       storage: args.storage,
       network: args.network,
+      warmPool: args.warmPool,
     };
     if (existingEvidence === null) {
       await ctx.db.insert("readinessEvidence", evidence);

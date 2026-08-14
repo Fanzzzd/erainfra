@@ -17,11 +17,12 @@ import (
 )
 
 type fakeExecutor struct {
-	preflightError error
-	preparedImage  string
-	recoveredIDs   []string
-	lease          *fakeLease
-	startedSpec    executor.Spec
+	preflightError  error
+	preparedProfile executor.Profile
+	removedProfile  string
+	recoveredIDs    []string
+	lease           *fakeLease
+	startedSpec     executor.Spec
 }
 
 func (f *fakeExecutor) Preflight(context.Context) (executor.Report, error) {
@@ -37,10 +38,20 @@ func (f *fakeExecutor) Preflight(context.Context) (executor.Report, error) {
 	return report, nil
 }
 
-func (f *fakeExecutor) PrepareImage(_ context.Context, image string) error {
-	f.preparedImage = image
+func (f *fakeExecutor) PrepareProfile(
+	_ context.Context,
+	profile executor.Profile,
+) (executor.WarmPoolStatus, error) {
+	f.preparedProfile = profile
+	return executor.WarmPoolStatus{Target: profile.WarmPool, Parked: profile.WarmPool, Healthy: true}, nil
+}
+
+func (f *fakeExecutor) RemoveProfile(_ context.Context, profile string) error {
+	f.removedProfile = profile
 	return nil
 }
+
+func (*fakeExecutor) Shutdown(context.Context) error { return nil }
 
 func (f *fakeExecutor) Start(_ context.Context, spec executor.Spec) (executor.Lease, error) {
 	f.startedSpec = spec
@@ -125,8 +136,17 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	if !report.Ready() || report.Boundary != executor.BoundaryGuestKernel {
 		t.Fatalf("the readiness report did not cross the socket intact: %+v", report)
 	}
-	image := testSpec().ImageRelease
-	if err := client.PrepareImage(ctx, image); err != nil {
+	profile := executor.Profile{
+		Name: "rc-linux-js", ImageRelease: testSpec().ImageRelease, VCPUs: 2, MemoryMiB: 4096, WarmPool: 2,
+	}
+	status, err := client.PrepareProfile(ctx, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Target != 2 || status.Parked != 2 || !status.Healthy {
+		t.Fatalf("warm pool status did not cross the socket: %+v", status)
+	}
+	if err := client.RemoveProfile(ctx, profile.Name); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.RecoverOrphans(ctx, []string{"attempt-live", "experiment-live"}); err != nil {
@@ -136,8 +156,8 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ExitCode != 17 || runtime.preparedImage != image {
-		t.Fatalf("unexpected result=%+v prepared=%q", result, runtime.preparedImage)
+	if result.ExitCode != 17 || runtime.preparedProfile != profile || runtime.removedProfile != profile.Name {
+		t.Fatalf("unexpected result=%+v prepared=%+v removed=%q", result, runtime.preparedProfile, runtime.removedProfile)
 	}
 	if runtime.startedSpec.JITConfig != "secret-jit" {
 		t.Fatal("runtime did not receive JIT input through the request body")

@@ -39,7 +39,16 @@ type resultResponse struct {
 }
 
 type prepareRequest struct {
-	ImageRelease string `json:"imageRelease"`
+	Profile executor.Profile `json:"profile"`
+}
+
+type prepareResponse struct {
+	WarmPool executor.WarmPoolStatus `json:"warmPool"`
+	Error    string                  `json:"error,omitempty"`
+}
+
+type removeProfileRequest struct {
+	Profile string `json:"profile"`
 }
 
 type recoverRequest struct {
@@ -84,8 +93,22 @@ func (c *Client) Preflight(ctx context.Context) (executor.Report, error) {
 	return response.Report, nil
 }
 
-func (c *Client) PrepareImage(ctx context.Context, imageRelease string) error {
-	return c.do(ctx, "/v1/prepare", prepareRequest{ImageRelease: imageRelease}, nil)
+func (c *Client) PrepareProfile(
+	ctx context.Context,
+	profile executor.Profile,
+) (executor.WarmPoolStatus, error) {
+	var response prepareResponse
+	if err := c.do(ctx, "/v1/prepare", prepareRequest{Profile: profile}, &response); err != nil {
+		return executor.WarmPoolStatus{}, err
+	}
+	if response.Error != "" {
+		return response.WarmPool, errors.New(response.Error)
+	}
+	return response.WarmPool, nil
+}
+
+func (c *Client) RemoveProfile(ctx context.Context, profile string) error {
+	return c.do(ctx, "/v1/profiles/remove", removeProfileRequest{Profile: profile}, nil)
 }
 
 // RecoverOrphans blocks until the privileged runtime has reconciled its local
@@ -209,6 +232,11 @@ func Serve(
 		_ = listener.Close()
 		_ = os.Remove(socketPath)
 	}()
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = runtime.Shutdown(shutdownContext)
+	}()
 	if groupName != "" {
 		group, err := user.LookupGroup(groupName)
 		if err != nil {
@@ -263,11 +291,28 @@ func handler(runtime executor.Executor) http.Handler {
 			writeError(response, err)
 			return
 		}
-		if err := runtime.PrepareImage(request.Context(), input.ImageRelease); err != nil {
+		status, err := runtime.PrepareProfile(request.Context(), input.Profile)
+		payload := prepareResponse{WarmPool: status}
+		if err != nil {
+			payload.Error = err.Error()
+		}
+		writeJSON(response, http.StatusOK, payload)
+	})
+	mux.HandleFunc("POST /v1/profiles/remove", func(response http.ResponseWriter, request *http.Request) {
+		var input removeProfileRequest
+		if err := decodeRequest(request, &input); err != nil {
 			writeError(response, err)
 			return
 		}
-		writeJSON(response, http.StatusOK, resultResponse{ExitCode: 0})
+		if strings.TrimSpace(input.Profile) == "" {
+			writeError(response, errors.New("profile is required"))
+			return
+		}
+		if err := runtime.RemoveProfile(request.Context(), input.Profile); err != nil {
+			writeError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, resultResponse{})
 	})
 	mux.HandleFunc("POST /v1/recover", func(response http.ResponseWriter, request *http.Request) {
 		var input recoverRequest
