@@ -4,6 +4,7 @@ import {
   benchmarkRecommendedSlots,
   benchmarkScore,
   normalizeBenchmark,
+  resourceRecommendedSlots,
 } from "../convex/benchmark";
 
 const NOW = 1_786_300_000_000;
@@ -76,5 +77,12 @@ describe("worker benchmark policy", () => {
       NOW,
     );
     expect(benchmarkRecommendedSlots(16, weakDisk, NOW)).toBe(4);
+  });
+
+  it("uses the shared resource policy with and without memory discovery", () => {
+    expect(resourceRecommendedSlots("linux", 64, 256 * 1_024)).toBe(16);
+    expect(resourceRecommendedSlots("linux", 32, undefined)).toBe(8);
+    expect(resourceRecommendedSlots("mac", 32, undefined)).toBe(2);
+    expect(resourceRecommendedSlots("win", 32, undefined)).toBe(1);
   });
 });

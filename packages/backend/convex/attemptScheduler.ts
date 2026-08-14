@@ -3,8 +3,8 @@ import type { Doc } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
 import { hasSnapshotHeadroom } from "./isolation";
+import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
-const WORKER_OFFLINE_AFTER_MS = 120_000;
 const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
 const RESERVED_ATTEMPT_STATES = ["preparing", "ready", "running"] as const;
 const RESERVED_EXPERIMENT_STATES = ["preparing", "running"] as const;

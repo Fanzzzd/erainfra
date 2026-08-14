@@ -1,10 +1,13 @@
 import { v } from "convex/values";
-import { isStoredBenchmark, storedBenchmarkValidator } from "./benchmark";
+import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
+const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
+const ACTIVE_EXPERIMENT_STATES = ["queued", "preparing", "running"] as const;
 
 const osValidator = v.union(v.literal("linux"), v.literal("mac"), v.literal("win"));
 
@@ -101,8 +104,8 @@ export const list = query({
       machines,
       assignedJobs,
       runningJobs,
-      attempts,
-      experiments,
+      attemptRanges,
+      experimentRanges,
       readiness,
       readinessEvidence,
       benchmarkEvidence,
@@ -116,14 +119,30 @@ export const list = query({
         .query("jobs")
         .withIndex("by_status", (q) => q.eq("status", "running"))
         .collect(),
-      ctx.db.query("attempts").collect(),
-      ctx.db.query("experiments").collect(),
+      Promise.all(
+        ACTIVE_ATTEMPT_STATES.map((state) =>
+          ctx.db
+            .query("attempts")
+            .withIndex("by_state", (q) => q.eq("state", state))
+            .collect(),
+        ),
+      ),
+      Promise.all(
+        ACTIVE_EXPERIMENT_STATES.map((state) =>
+          ctx.db
+            .query("experiments")
+            .withIndex("by_state", (q) => q.eq("state", state))
+            .collect(),
+        ),
+      ),
       ctx.db.query("workerReadiness").collect(),
       ctx.db.query("readinessEvidence").collect(),
       ctx.db.query("benchmarkEvidence").collect(),
     ]);
 
     const activeJobs = [...assignedJobs, ...runningJobs];
+    const attempts = attemptRanges.flat();
+    const experiments = experimentRanges.flat();
     const readinessEvidenceByKey = new Map(
       readinessEvidence.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
     );
@@ -263,26 +282,20 @@ export const registerAgent = internalMutation({
       return { ok: false as const, status: 410, error: "Registration token has expired" };
     }
 
-    const existingNames = new Set(
-      (await ctx.db.query("machines").collect()).map((machine) => machine.name),
-    );
     const baseName = sanitizeMachineName(args.name);
     let name = baseName;
     let suffix = 2;
-    while (existingNames.has(name)) {
+    while (
+      (await ctx.db
+        .query("machines")
+        .withIndex("by_name", (q) => q.eq("name", name))
+        .first()) !== null
+    ) {
       name = `${baseName}-${suffix}`;
       suffix += 1;
     }
 
-    const cpuSlots = Math.max(1, Math.floor(args.cpus / 4));
-    const memorySlots =
-      args.memoryMiB === undefined ? cpuSlots : Math.max(1, Math.floor(args.memoryMiB / 8_192));
-    const defaultSlots =
-      args.os === "linux"
-        ? Math.min(16, cpuSlots, memorySlots)
-        : args.os === "mac"
-          ? Math.min(2, cpuSlots, memorySlots)
-          : 1;
+    const defaultSlots = resourceRecommendedSlots(args.os, args.cpus, args.memoryMiB);
     const maxSlots = args.maxSlots ?? defaultSlots;
     const labels = [...new Set((args.labels ?? []).map((label) => label.trim()).filter(Boolean))];
 
@@ -327,7 +340,10 @@ export const hasCapacity = internalQuery({
   handler: async (ctx, args) => {
     const now = Date.now();
     const [machines, queuedJobs] = await Promise.all([
-      ctx.db.query("machines").collect(),
+      ctx.db
+        .query("machines")
+        .withIndex("by_lastSeen", (q) => q.gt("lastSeen", now - WORKER_OFFLINE_AFTER_MS))
+        .collect(),
       ctx.db
         .query("jobs")
         .withIndex("by_status", (q) => q.eq("status", "queued"))
@@ -335,9 +351,7 @@ export const hasCapacity = internalQuery({
     ]);
 
     const eligibleMachines = machines.filter(
-      (machine) =>
-        now - machine.lastSeen < 120_000 &&
-        selectImageForMachine(args.labels, machine) !== undefined,
+      (machine) => selectImageForMachine(args.labels, machine) !== undefined,
     );
     const freeSlots = eligibleMachines.reduce(
       (total, machine) => total + Math.max(0, machine.maxSlots - machine.usedSlots),

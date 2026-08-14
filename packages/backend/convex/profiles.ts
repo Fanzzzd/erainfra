@@ -8,6 +8,7 @@ import {
 } from "./isolation";
 import { query } from "./_generated/server";
 import { fitPolicyValidator } from "./benchmark";
+import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const executorValidator = v.union(
   v.literal("docker"),
@@ -122,7 +123,7 @@ export const list = query({
           .map((row) => machineById.get(row.machineId))
           .filter(
             (machine): machine is NonNullable<typeof machine> =>
-              machine !== undefined && now - machine.lastSeen < 120_000,
+              machine !== undefined && now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
           );
         const workerDetail = rows.flatMap((row) => {
           const machine = machineById.get(row.machineId);
@@ -139,7 +140,7 @@ export const list = query({
               checkedAt: row.checkedAt,
               preparedAt: row.preparedAt,
               statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
-              online: now - machine.lastSeen < 120_000,
+              online: now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
               maxSlots: machine.maxSlots,
               usedSlots: machine.usedSlots,
               isolation: currentEvidence?.isolation ?? row.isolation,

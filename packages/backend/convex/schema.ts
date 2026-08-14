@@ -55,6 +55,7 @@ export default defineSchema({
     lastSeen: v.number(),
     token: v.string(),
   })
+    .index("by_name", ["name"])
     .index("by_token", ["token"])
     .index("by_lastSeen", ["lastSeen"])
     .index("by_usedSlots", ["usedSlots"]),
@@ -326,7 +327,10 @@ export default defineSchema({
   })
     .index("by_runnerName", ["runnerName"])
     .index("by_profile", ["profile"])
+    .index("by_profile_state", ["profile", "state"])
+    .index("by_profile_cleanupPending", ["profile", "runnerCleanupPending"])
     .index("by_state", ["state"])
+    .index("by_state_cleanupPending_finishedAt", ["state", "runnerCleanupPending", "finishedAt"])
     .index("by_machine_state", ["machineId", "state"]),
 
   // Credentials are deliberately absent from every scheduler/reconcile scan.
@@ -369,6 +373,7 @@ export default defineSchema({
     lastError: v.optional(v.string()),
   })
     .index("by_state", ["state"])
+    .index("by_state_finishedAt", ["state", "finishedAt"])
     .index("by_machine_state", ["machineId", "state"]),
 
   // A Worker is eligible for a Profile only after it has proved the exact
