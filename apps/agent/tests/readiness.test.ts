@@ -69,7 +69,7 @@ describe("prepareProfile", () => {
   it("reports an unpinned Tart image as a failed readiness check", async () => {
     // The binary check still runs, but the mutable tag is never pulled.
     const previousTart = process.env.TART;
-    process.env.TART = "/bin/echo";
+    process.env.TART = process.execPath;
     try {
       const result = await prepareProfile({
         profile: "rc-mac",
@@ -81,7 +81,7 @@ describe("prepareProfile", () => {
       assert.equal(result.state, "failed");
       assert.match(result.state === "failed" ? result.error : "", /sha256 digest/);
       assert.deepEqual(result.checks, [
-        { name: "tart-binary", passed: true, detail: "--version" },
+        { name: "tart-binary", passed: true, detail: process.version },
         {
           name: "image-release",
           passed: false,
