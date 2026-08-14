@@ -248,19 +248,30 @@ function failureOf(facts: ReadinessFacts, stderr: string) {
 }
 
 export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessResult> {
-  // Both Linux executors already refuse a mutable reference — the Firecracker
-  // Spec and provision-docker.sh each reject one — so failing here only moves
-  // that rejection from job time to readiness. Tart is deliberately excluded:
-  // nothing in its path requires a digest today, and tightening it would take a
-  // working macOS Profile offline as a side effect of this change.
-  const requiresDigest = profile.executor === "docker" || profile.executor === "firecracker";
+  // Every OCI/Tart executor promises an immutable Image Release. Production
+  // Tart catalog labels are already digest-pinned; the only floating catalog
+  // image is preview-gated. Report an unpinned reference as structured evidence
+  // rather than throwing, so a previously healthy contract becomes degraded
+  // server-side and operators see the exact failed check.
+  const requiresDigest =
+    profile.executor === "docker" ||
+    profile.executor === "firecracker" ||
+    profile.executor === "tart";
   if (requiresDigest && !IMAGE_DIGEST.test(profile.imageRelease)) {
     const detail = `Image Release ${profile.imageRelease} is not pinned by sha256 digest`;
     const check: ReadinessCheck = { name: "image-release", passed: false, detail };
     const facts =
       profile.executor === "docker"
         ? dockerFacts([check])
-        : { ...runtimeFacts({}), checks: [check] };
+        : profile.executor === "tart"
+          ? {
+              isolation: "tart-vm",
+              boundary: "guest-kernel" as const,
+              checks: [check],
+              cacheScope: "immutable-image",
+              cacheSharedWritable: false,
+            }
+          : { ...runtimeFacts({}), checks: [check] };
     return { state: "failed", error: detail, ...facts };
   }
   switch (profile.executor) {

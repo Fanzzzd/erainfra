@@ -40,7 +40,9 @@ equal resource pressure, a Profile's `balanced`, `cpu`, `network`, or `io` fit p
 Worker benchmarks. Missing or seven-day-stale observations score neutrally and never exclude a
 Worker. Linux automatic capacity is bounded at 16 slots, macOS at two Tart VMs, and Windows at one;
 measured bottlenecks can reduce that resource ceiling, while a fixed `--slots` override remains the
-operator's explicit effective capacity.
+operator's explicit effective capacity. The 90% envelope deliberately uses a full host dimension
+when its total CPU or memory is no greater than one work item's request: an exactly sized small host
+can run one item instead of becoming unusable, while an undersized host still fails admission.
 
 ## Support status
 
@@ -216,6 +218,9 @@ GitHub/GHCR/npm latency and throughput. It downloads at most 1 MiB per target, u
 credentials, and reports raw observations plus measurement metadata. `rc benchmark` reruns and
 publishes the same transparent measurements on demand. The dashboard shows raw results, normalized
 scores, configured/resource/recommended/effective slots, and each assigned run's selection reason.
+For automatic capacity, a fresh benchmark reduces the resource slot ceiling to
+`max(1, floor(resource slots × (0.25 + 0.75 × weakest measured score / 100)))`; at seven days old it
+is stale and no longer affects slot reduction or candidate ranking.
 
 ### Linux Worker prerequisites
 
@@ -278,7 +283,11 @@ brew install cirruslabs/cli/tart cirruslabs/cli/sshpass
 The Worker pulls the digest-pinned Tart base before it reports ready. Every job clones it with
 copy-on-write, pins the attested guest SSH host key, streams a checksum-verified runner tarball into
 the guest, and deletes the VM on exit, timeout, signal, or cancellation. The default two-slot limit
-matches Apple's macOS virtualization license constraint.
+matches Apple's macOS virtualization license constraint. Host-key pinning prefers out-of-band
+attestation over Tart's guest-agent vsock; if that channel does not answer and this Image Release has
+no earlier pin, the first connection uses trust on first use (`accept-new`) and saves the presented
+key, so later runs are strict. That fallback exposes only the first boot to a local attacker on the
+Tart bridge and is not used when an earlier pin is available.
 
 ## Target a Profile from GitHub Actions
 
@@ -306,6 +315,16 @@ build cache such as Turborepo's works the same way. Both consume Actions storage
 than a warm immutable image, so prefer prewarming the Image Release for anything that changes
 rarely. A Profile on allowlist-only egress needs its cache endpoint declared with `--egress-allow`.
 
+## Legacy webhook delivery recovery
+
+The legacy `workflow_job` path repairs both kinds of delivery loss. Minute reconciliation calls
+`retryStalledDeliveries` for deliveries that reached Convex but remained pending, retrying them with
+a bounded attempt count before marking them failed. A separate five-minute GitHub App scan covers
+events that never reached Convex: it lists recent failed App deliveries, deduplicates them by their
+stable delivery GUID, records bounded retry/backoff state in `webhookRecovery`, and asks GitHub to
+redeliver only missing, still-useful events. The dashboard exposes the latest scan and any recovered
+or abandoned delivery; deployments using only a legacy PAT cannot run the App-level scan.
+
 ## Experiments
 
 The **Experiments** page runs a shell command in the selected Linux Profile. An Experiment:
@@ -318,7 +337,10 @@ The **Experiments** page runs a shell command in the selected Linux Profile. An 
 - is reconciled after Worker loss and cannot keep a slot stuck indefinitely.
 
 This is intentionally non-interactive. Interactive workspaces need a separate image and audited
-control channel; weakening the CI image with SSH would make both products less safe.
+control channel; weakening the CI image with SSH would make both products less safe. The current
+Experiment image grants the `runner` user passwordless sudo, so Experiment authors are trusted with
+root inside their disposable guest. The same image under the shared-kernel Docker executor is only
+for mutually trusted jobs in one trust domain; use Firecracker for untrusted workloads.
 
 ## Security and operations
 

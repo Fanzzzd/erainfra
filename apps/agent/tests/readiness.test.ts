@@ -66,17 +66,41 @@ describe("prepareProfile", () => {
     assert.equal(result.cacheScope, "immutable-image");
   });
 
-  it("does not require a digest where nothing else does", async () => {
-    // Tightening Tart here would take a working macOS Profile offline as a
-    // side effect of a Linux isolation change. TART points at a binary that
-    // cannot exist so the check fails on the binary, not on the reference,
-    // without this test ever pulling a real image.
+  it("reports an unpinned Tart image as a failed readiness check", async () => {
+    // The digest contract is checked before Tart can pull a mutable tag.
     process.env.TART = "/nonexistent/tart";
     try {
       const result = await prepareProfile({
         profile: "rc-mac",
         executor: "tart",
         imageRelease: "ghcr.io/cirruslabs/macos-tahoe-base:latest",
+        vcpus: 2,
+        memoryMiB: 4096,
+      });
+      assert.equal(result.state, "failed");
+      assert.match(result.state === "failed" ? result.error : "", /sha256 digest/);
+      assert.deepEqual(result.checks, [
+        {
+          name: "image-release",
+          passed: false,
+          detail:
+            "Image Release ghcr.io/cirruslabs/macos-tahoe-base:latest is not pinned by sha256 digest",
+        },
+      ]);
+      assert.equal(result.isolation, "tart-vm");
+      assert.equal(result.boundary, "guest-kernel");
+    } finally {
+      delete process.env.TART;
+    }
+  });
+
+  it("lets a digest-pinned Tart image continue to host preflight", async () => {
+    process.env.TART = "/nonexistent/tart";
+    try {
+      const result = await prepareProfile({
+        profile: "rc-mac",
+        executor: "tart",
+        imageRelease: `ghcr.io/cirruslabs/macos-sequoia-base${DIGEST}`,
         vcpus: 2,
         memoryMiB: 4096,
       });
