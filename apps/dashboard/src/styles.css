@@ -4,7 +4,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /**
- * Runner Center is a dark-only operations console: `index.html` sets
+ * EraInfra is a dark-only operations console: `index.html` sets
  * `class="dark"` and `color-scheme: dark`, and there is no light theme to
  * switch to. The palette therefore lives on `:root` rather than under `.dark`,
  * so a component renders correctly even if that class is ever dropped, while

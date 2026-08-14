@@ -527,9 +527,7 @@ console.log(
 await heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), config.heartbeatMs);
 await publishReadinessSignal(process.env.RC_READY_FILE, process.env.RC_AGENT_VERSION);
-console.log(
-  `Runner Center Worker connected to ${config.convexUrl}; discovering compatible Profiles`,
-);
+console.log(`EraInfra Worker connected to ${config.convexUrl}; discovering compatible Profiles`);
 void refreshBenchmark();
 
 async function shutdown(signal: string) {

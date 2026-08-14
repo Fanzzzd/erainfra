@@ -1,5 +1,5 @@
 // Package controller adapts GitHub's official runner scale-set listener to the
-// Runner Center Fleet. GitHub protocol concerns stop at this package.
+// EraInfra Fleet. GitHub protocol concerns stop at this package.
 package controller
 
 import (
@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )

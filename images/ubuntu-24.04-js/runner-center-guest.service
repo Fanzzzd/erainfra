@@ -1,5 +1,5 @@
 [Unit]
-Description=Runner Center ephemeral GitHub runner
+Description=EraInfra ephemeral GitHub runner
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service

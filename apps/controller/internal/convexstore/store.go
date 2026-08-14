@@ -1,4 +1,4 @@
-// Package convexstore implements the Fleet boundary over Runner Center's
+// Package convexstore implements the Fleet boundary over EraInfra's
 // authenticated Convex HTTP API.
 package convexstore
 
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
 )
 
 const maxResponseBytes = 1 << 20

@@ -29,7 +29,7 @@ function LoadingScreen() {
     <div className="grid min-h-screen place-items-center bg-background">
       <div className="flex items-center gap-3 text-sm text-muted-foreground" role="status">
         <span className="status-pulse size-2 rounded-full bg-primary" />
-        Connecting to Runner Center
+        Connecting to EraInfra
       </div>
     </div>
   );
@@ -92,13 +92,13 @@ function RootComponent() {
             <TooltipTrigger asChild>
               <Link
                 to="/"
-                aria-label="Runner Center"
+                aria-label="EraInfra"
                 className="grid size-9 place-items-center rounded-md border border-border bg-secondary font-mono text-[11px] font-semibold tracking-[-0.04em] text-foreground outline-none transition-colors duration-150 hover:border-input focus-visible:ring-[3px] focus-visible:ring-ring/40"
               >
-                RC
+                EI
               </Link>
             </TooltipTrigger>
-            <TooltipContent side="right">Runner Center</TooltipContent>
+            <TooltipContent side="right">EraInfra</TooltipContent>
           </Tooltip>
 
           <nav className="mt-6 flex flex-col gap-1.5" aria-label="Primary navigation">

@@ -1,6 +1,6 @@
 # EraInfra
 
-EraInfra (formerly Runner Center) is the infrastructure arm of the Era family, alongside
+EraInfra is the infrastructure arm of the Era family, alongside
 [EraDB](https://github.com/Fanzzzd/eradb) and EraOS. Today it is a small self-hosted GitHub
 Actions platform for owned Linux and Apple Silicon machines; workflows target a stable Profile
 such as `rc-linux-js` and never name a host. The [`portless/`](portless/) directory carries the
@@ -78,7 +78,7 @@ For a Firecracker Profile, each Attempt gets:
 Nothing writable survives a job on either Linux executor. Warm state comes from the immutable Image
 Release; cross-job dependency caching belongs to GitHub's own cache service, which is authenticated
 and scoped by repository, branch and key, and is reachable over allowed egress. See
-[ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md) for why Runner Center does not run a
+[ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md) for why EraInfra does not run a
 second cache service of its own.
 
 ## Develop locally
@@ -241,7 +241,7 @@ sudo deploy/provision-firecracker-host.sh \
 ```
 
 It installs a checksum-pinned Firecracker, the CNI plugins, a pinned guest kernel, the thin-pool, a
-containerd instance dedicated to Runner Center, the rendered job network policy, and the privileged
+containerd instance dedicated to EraInfra, the rendered job network policy, and the privileged
 runtime service, then runs readiness and prints the report. Everything lands under
 `/opt/runner-center`, `/etc/runner-center` and `/var/lib/runner-center`, so a host that also runs
 Docker or Kubernetes keeps its own containerd configuration, CNI directory and firewall tables.
@@ -265,7 +265,7 @@ sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
 /usr/local/lib/runner-center/runner-center-runtime preflight
 ```
 
-Runner Center does not silently create or wipe a dedicated thin-pool device: selecting that device
+EraInfra does not silently create or wipe a dedicated thin-pool device: selecting that device
 is an explicit operator storage decision, and the provisioner destroys only the devices you name.
 The official Fireactions installation guide remains a compatible reference for the same components.
 
@@ -340,11 +340,11 @@ pull requests on machines that hold persistent credentials.
 
 ## Releases
 
-Runner Center is one product version: root, Agent, Controller, and Runtime versions must match.
+EraInfra is one product version: root, Agent, Controller, and Runtime versions must match.
 Tagging `v<version>` runs the release workflow, revalidates the repository, rebuilds the agent archive
 twice byte-for-byte, checks the deployment pin, attests the artifacts, and publishes:
 
-- `runner-center-agent-<version>.tar.gz` plus SHA-256;
+- `erainfra-agent-<version>.tar.gz` plus SHA-256;
 - Controller binaries and SHA-256 sidecars for Linux/macOS x64/ARM64;
 - Runtime binaries and SHA-256 sidecars for Linux x64/ARM64, plus the runtime and controller
   systemd units.

@@ -17,5 +17,5 @@ if (!URL.canParse(config.convexUrl)) {
 }
 
 if (!/^[0-9a-f]{32}$/i.test(config.machineToken)) {
-  throw new Error("MACHINE_TOKEN must be the 32-character token from Runner Center");
+  throw new Error("MACHINE_TOKEN must be the 32-character token from EraInfra");
 }

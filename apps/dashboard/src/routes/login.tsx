@@ -1,11 +1,11 @@
 import { type FormEvent, useId, useState } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { api } from "@runner-center/backend/api";
+import { api } from "@erainfra/backend/api";
 import {
   INVALID_CREDENTIALS,
   MIN_PASSWORD_LENGTH,
   PASSWORD_REQUIREMENTS,
-} from "@runner-center/backend/authPolicy";
+} from "@erainfra/backend/authPolicy";
 import { createFileRoute } from "@tanstack/react-router";
 import { useConvex } from "convex/react";
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
@@ -150,9 +150,9 @@ function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center">
           <div className="grid size-10 place-items-center rounded-md border border-border bg-secondary font-mono text-xs font-semibold tracking-[-0.04em] text-foreground">
-            RC
+            EI
           </div>
-          <span className="mt-3 text-sm font-medium text-secondary-foreground">Runner Center</span>
+          <span className="mt-3 text-sm font-medium text-secondary-foreground">EraInfra</span>
         </div>
 
         <section

@@ -24,7 +24,7 @@ function agentFixture(overrides: Record<string, string | null> = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "rc-agent-"));
   workspaces.push(root);
   const files: Record<string, string | null> = {
-    "package.json": '{"name":"@runner-center/agent","version":"1.2.3"}\n',
+    "package.json": '{"name":"@erainfra/agent","version":"1.2.3"}\n',
     "package-lock.json": '{"lockfileVersion":3}\n',
     "tsconfig.json": "{}\n",
     "index.ts": "// source, not shipped\n",
@@ -137,12 +137,12 @@ describe("buildAgentArchive", () => {
 
 describe("release naming", () => {
   it("names the asset after the product version", () => {
-    assert.equal(archiveName("1.2.3"), "runner-center-agent-1.2.3.tar.gz");
+    assert.equal(archiveName("1.2.3"), "erainfra-agent-1.2.3.tar.gz");
   });
 
   it("writes a checksum line that sha256sum and shasum can verify", () => {
-    const line = checksumLine("a".repeat(64), "runner-center-agent-1.2.3.tar.gz");
-    assert.equal(line, `${"a".repeat(64)}  runner-center-agent-1.2.3.tar.gz\n`);
+    const line = checksumLine("a".repeat(64), "erainfra-agent-1.2.3.tar.gz");
+    assert.equal(line, `${"a".repeat(64)}  erainfra-agent-1.2.3.tar.gz\n`);
   });
 });
 

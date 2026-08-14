@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/config"
-	rccontroller "github.com/Fanzzzd/runner-center/apps/controller/internal/controller"
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/convexstore"
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/fleet"
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/githubscale"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/config"
+	rccontroller "github.com/Fanzzzd/EraInfra/apps/controller/internal/controller"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/convexstore"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/githubscale"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )
@@ -154,7 +154,7 @@ func newGitHubClient(cfg config.Config) (*scaleset.Client, error) {
 
 func systemInfo(scaleSetID int) scaleset.SystemInfo {
 	return scaleset.SystemInfo{
-		System:     "runner-center",
+		System:     "erainfra",
 		Subsystem:  "scale-set-controller",
 		Version:    version,
 		CommitSHA:  commitSHA,

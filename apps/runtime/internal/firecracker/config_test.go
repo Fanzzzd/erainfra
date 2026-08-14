@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/netpolicy"
 )
 
 func TestConfigRejectsKernelArgumentsThatBypassTheNetworkPolicy(t *testing.T) {
@@ -31,7 +31,7 @@ func TestDefaultConfigOwnsItsOwnCNIAndContainerdPaths(t *testing.T) {
 	config := DefaultConfig()
 	// A Worker frequently also runs Docker or Kubernetes networking. Sharing
 	// /opt/cni/bin or the system containerd socket would let an unrelated
-	// component redefine the network Runner Center just verified.
+	// component redefine the network EraInfra just verified.
 	for name, value := range map[string]string{
 		"CNI binary directory": config.CNIBinDir,
 		"CNI config directory": config.CNIConfigDir,

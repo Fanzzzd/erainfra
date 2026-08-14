@@ -105,7 +105,7 @@ export function sha256Hex(data: Uint8Array) {
 }
 
 export function archiveName(version: string) {
-  return `runner-center-agent-${version}.tar.gz`;
+  return `erainfra-agent-${version}.tar.gz`;
 }
 
 /** The `<hash>  <name>` line format that `sha256sum -c` and `shasum -c` read. */
@@ -131,7 +131,7 @@ function readVersion(packageJsonPath: string) {
 }
 
 /**
- * Runner Center ships as one product, so the workspace root and the agent carry
+ * EraInfra ships as one product, so the workspace root and the agent carry
  * the same version and a release tag is `v<version>`.
  */
 export function readProductVersion(repoRoot: string) {

@@ -266,7 +266,7 @@ export default defineSchema({
 
   // Scale-set-native execution records. Unlike the legacy `jobs` table, an
   // Attempt exists before GitHub assigns a concrete job: the official listener
-  // asks for capacity, Runner Center prepares one ephemeral runner, and a later
+  // asks for capacity, EraInfra prepares one ephemeral runner, and a later
   // JobStarted message binds the GitHub metadata to it by runnerName.
   attempts: defineTable({
     profile: v.string(),
@@ -319,7 +319,7 @@ export default defineSchema({
     result: v.optional(v.string()),
     lastError: v.optional(v.string()),
     cancelReason: v.optional(v.string()),
-    // Set when Runner Center settles an Attempt without a GitHub JobCompleted
+    // Set when EraInfra settles an Attempt without a GitHub JobCompleted
     // event. Its owning controller retries idempotent runner deletion, then
     // acknowledges this tombstone.
     runnerCleanupPending: v.optional(v.boolean()),

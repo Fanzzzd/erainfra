@@ -1,4 +1,4 @@
-# runner-center — self-hosted GitHub Actions runner control plane on Convex
+# EraInfra — self-hosted GitHub Actions runner control plane on Convex
 
 Open-source. Machines have NO public IP: they connect OUT to Convex via WebSocket
 subscription. GitHub webhooks hit Convex HTTP actions (public). Convex is the
@@ -8,13 +8,13 @@ environment, destroyed after.
 ## Monorepo layout (pnpm workspace, Node 22, TypeScript everywhere)
 
 ```
-runner-center/
+EraInfra/
 ├── package.json            # thin workspace root: turbo, oxlint, oxfmt
 ├── turbo.json              # task graph: build, typecheck, codegen, dev, deploy
 ├── pnpm-workspace.yaml     # packages: ["apps/*", "packages/*"] + dependency catalog
 ├── .oxlintrc.json          # oxlint config (linting)
 ├── .oxfmtrc.json           # oxfmt config (formatting)
-├── packages/backend/       # @runner-center/backend — the Convex deployment
+├── packages/backend/       # @erainfra/backend — the Convex deployment
 │   ├── convex.json
 │   ├── .env.local          # CONVEX_DEPLOYMENT (untracked)
 │   ├── scripts/            # print-install-script.ts
@@ -29,7 +29,7 @@ runner-center/
 │       └── agentApi.ts     # agent-facing: pendingCommands query, claim/report mutations, heartbeat
 ├── packages/typescript-config/  # shared tsconfig presets: base, node, react
 ├── apps/dashboard/         # Vite + React 19 + TanStack Router + shadcn/ui + convex/react
-│                           # imports the API via `@runner-center/backend/api`
+│                           # imports the API via `@erainfra/backend/api`
 └── apps/agent/             # Node daemon: ConvexClient subscription + execa → provisioner
     │                       # standalone on purpose: installed by machines with plain
     │                       # `npm install`, so no workspace:/catalog: protocols here
@@ -169,7 +169,7 @@ GITHUB_WEBHOOK_SECRET, GITHUB_PAT (classic, repo scope, must be repo admin).
   MIT license file.
 - Do NOT invent packages; use: convex, @convex-dev/auth, @auth/core, octokit
   (or @octokit/request), execa, @tanstack/react-router, tailwindcss, shadcn deps.
-- Do NOT touch anything outside /Users/fanzhende/code/personal/runner-center.
+- Do NOT touch anything outside the repository checkout.
 
 ```
 

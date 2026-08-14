@@ -3,7 +3,7 @@ import type { AgentRelease } from "./agentRelease";
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail
 
-SITE_URL='__RUNNER_CENTER_SITE_URL__'
+SITE_URL='__ERAINFRA_SITE_URL__'
 AGENT_REPO='__AGENT_REPO__'
 PINNED_VERSION='__AGENT_VERSION__'
 PINNED_SHA256='__AGENT_SHA256__'
@@ -308,7 +308,7 @@ NPM_BIN="$NODE_BIN_DIR/npm"
 [ -x "$NPM_BIN" ] || fail "npm was not found next to $NODE_BIN"
 
 if [ "$UPDATE" -eq 1 ] && [ ! -f "$ENV_FILE" ]; then
-  fail 'No existing Runner Center registration was found; use a dashboard install command first'
+  fail 'No existing EraInfra registration was found; use a dashboard install command first'
 fi
 
 ENV_BACKUP="$TMP_DIR/agent.env"
@@ -320,18 +320,23 @@ VERSION=$PINNED_VERSION
 if [ -n "$VERSION_ARG" ]; then
   VERSION=$VERSION_ARG
 fi
-[ -n "$VERSION" ] || fail 'This Runner Center deployment pins no agent version; redeploy the backend'
+[ -n "$VERSION" ] || fail 'This EraInfra deployment pins no agent version; redeploy the backend'
 if [ -n "$VERSION_ARG" ] && [ "$VERSION" != "$PINNED_VERSION" ] && [ -z "$SHA_ARG" ]; then
   fail 'Updating to a release other than the deployment pin requires --sha256 with an independently verified digest'
 fi
 
-ASSET="runner-center-agent-$VERSION.tar.gz"
+ASSET="erainfra-agent-$VERSION.tar.gz"
 RELEASE_URL="https://github.com/$AGENT_REPO/releases/download/v$VERSION"
 ARCHIVE="$TMP_DIR/$ASSET"
 
-printf '✅ Downloading the Runner Center agent %s release.\n' "$VERSION"
-curl -fsSL "$RELEASE_URL/$ASSET" -o "$ARCHIVE" ||
-  fail "Could not download $ASSET from release v$VERSION of $AGENT_REPO"
+printf '✅ Downloading the EraInfra agent %s release.\n' "$VERSION"
+if ! curl -fsL "$RELEASE_URL/$ASSET" -o "$ARCHIVE"; then
+  # Pre-rename releases keep their published asset names forever.
+  ASSET="runner-center-agent-$VERSION.tar.gz"
+  ARCHIVE="$TMP_DIR/$ASSET"
+  curl -fsSL "$RELEASE_URL/$ASSET" -o "$ARCHIVE" ||
+    fail "Could not download $ASSET from release v$VERSION of $AGENT_REPO"
+fi
 
 EXPECTED_SHA=$SHA_ARG
 CHECKSUM_SOURCE='the checksum passed on the command line'
@@ -348,8 +353,8 @@ ACTUAL_SHA=$(sha256_file "$ARCHIVE")
   fail "Agent archive checksum verification failed: expected $EXPECTED_SHA but got $ACTUAL_SHA"
 if [ -n "$PINNED_SHA256" ] && [ "$VERSION" = "$PINNED_VERSION" ]; then
   [ "$ACTUAL_SHA" = "$PINNED_SHA256" ] ||
-    fail "Agent archive does not match the checksum pinned by this Runner Center deployment"
-  CHECKSUM_SOURCE='the checksum pinned by this Runner Center deployment'
+    fail "Agent archive does not match the checksum pinned by this EraInfra deployment"
+  CHECKSUM_SOURCE='the checksum pinned by this EraInfra deployment'
 fi
 printf '✅ Verified the agent archive against %s.\n' "$CHECKSUM_SOURCE"
 
@@ -404,7 +409,7 @@ process.stdout.write(JSON.stringify(payload));
 ')
   RESPONSE_FILE="$TMP_DIR/register.json"
   if ! HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' -H 'Content-Type: application/json' --data "$REQUEST_BODY" "$SITE_URL/agents/register"); then
-    fail 'Could not reach the Runner Center registration endpoint'
+    fail 'Could not reach the EraInfra registration endpoint'
   fi
   if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
     SERVER_MESSAGE=$("$NODE_BIN" -e '
@@ -527,7 +532,7 @@ start_agent() {
       printf '%s\n' "$!" > "$PID_FILE"
       ;;
     *)
-      printf '%s\n' 'Runner Center service metadata is missing. Run update from the dashboard install URL.' >&2
+      printf '%s\n' 'EraInfra service metadata is missing. Run update from the dashboard install URL.' >&2
       exit 1
       ;;
   esac
@@ -627,15 +632,15 @@ case "$command" in
     ;;
   restart)
     start_agent
-    printf '%s\n' 'Runner Center agent restarted.'
+    printf '%s\n' 'EraInfra agent restarted.'
     ;;
   stop)
     stop_agent
-    printf '%s\n' 'Runner Center agent stopped.'
+    printf '%s\n' 'EraInfra agent stopped.'
     ;;
   update)
     site=$(field SITE_URL)
-    [ -n "$site" ] || { printf '%s\n' 'Runner Center site URL is missing.' >&2; exit 1; }
+    [ -n "$site" ] || { printf '%s\n' 'EraInfra site URL is missing.' >&2; exit 1; }
     if [ "$#" -gt 1 ]; then
       shift
       curl -fsSL "$site/install" | bash -s -- --update "$@"
@@ -668,7 +673,7 @@ case "$command" in
       fi
     done
     rm -rf "$RC_HOME"
-    printf '%s\n' 'Runner Center was removed. Delete the machine from the dashboard to remove its registration.'
+    printf '%s\n' 'EraInfra was removed. Delete the machine from the dashboard to remove its registration.'
     ;;
   -h|--help|help)
     usage
@@ -695,7 +700,7 @@ if ! grep -Fq "$PATH_LINE" "$SHELL_RC"; then
   printf '\n%s\n' "$PATH_LINE" >> "$SHELL_RC"
   printf '✅ Added %s to %s.\n' "$BIN_DIR" "$SHELL_RC"
 else
-  printf '✅ Runner Center CLI is already on PATH in %s.\n' "$SHELL_RC"
+  printf '✅ EraInfra CLI is already on PATH in %s.\n' "$SHELL_RC"
 fi
 
 if [ "$MACHINE_OS" = 'mac' ]; then
@@ -740,7 +745,7 @@ PLIST
     mkdir -p "$HOME/.config/systemd/user"
     cat > "$UNIT" <<UNIT
 [Unit]
-Description=Runner Center agent
+Description=EraInfra agent
 After=network-online.target
 Wants=network-online.target
 
@@ -771,7 +776,7 @@ esac
 rm -f "$RC_HOME/agent.ready"
 start_service
 
-printf '✅ Started the Runner Center agent with %s.\n' "$SERVICE_KIND"
+printf '✅ Started the EraInfra agent with %s.\n' "$SERVICE_KIND"
 CONNECTED=0
 for second in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   if [ "$(cat "$RC_HOME/agent.ready" 2>/dev/null || true)" = "$VERSION" ]; then
@@ -795,13 +800,13 @@ if [ "$CONNECTED" -ne 1 ]; then
   fail 'Agent did not connect within 20 seconds; check ~/.runner-center/agent.log'
 fi
 
-printf '✅ Runner Center %s is connected. Dashboard: %s\n' "$VERSION" "$SITE_URL"
+printf '✅ EraInfra %s is connected. Dashboard: %s\n' "$VERSION" "$SITE_URL"
 printf '⏳ Compatible Profiles are prewarming in the background; cold capacity is not schedulable.\n'
 printf '   Follow live progress with "rc logs -f" or in the dashboard readiness detail.\n'
 `;
 
 export function renderInstallScript(siteUrl: string, release: AgentRelease) {
-  return INSTALL_SCRIPT.replaceAll("__RUNNER_CENTER_SITE_URL__", siteUrl.replace(/\/+$/, ""))
+  return INSTALL_SCRIPT.replaceAll("__ERAINFRA_SITE_URL__", siteUrl.replace(/\/+$/, ""))
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256);

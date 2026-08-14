@@ -1,4 +1,4 @@
-module github.com/Fanzzzd/runner-center
+module github.com/Fanzzzd/EraInfra
 
 go 1.25.3
 

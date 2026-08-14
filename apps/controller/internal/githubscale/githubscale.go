@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	rccontroller "github.com/Fanzzzd/runner-center/apps/controller/internal/controller"
+	rccontroller "github.com/Fanzzzd/EraInfra/apps/controller/internal/controller"
 	"github.com/actions/scaleset"
 )
 

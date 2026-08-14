@@ -34,9 +34,9 @@ Download the runtime asset for the release you are running and verify it against
 sidecar before it touches the host:
 
 ```bash
-version=v0.3.0            # the Runner Center release you are deploying
+version=v0.3.0            # the EraInfra release you are deploying
 arch=x86_64               # or arm64
-base="https://github.com/Fanzzzd/runner-center/releases/download/$version"
+base="https://github.com/Fanzzzd/EraInfra/releases/download/$version"
 curl -fsSLO "$base/runner-center-runtime-linux-$arch"
 curl -fsSLO "$base/runner-center-runtime-linux-$arch.sha256"
 sha256sum -c "runner-center-runtime-linux-$arch.sha256"

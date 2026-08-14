@@ -134,7 +134,7 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 			}
 			if entry.Rule.Comment == "" {
 				return fmt.Errorf(
-					"chain %q contains a rule Runner Center did not install; "+
+					"chain %q contains a rule EraInfra did not install; "+
 						"an unmanaged rule can widen the job network boundary",
 					entry.Rule.Chain,
 				)

@@ -1,4 +1,4 @@
-# Build a Runner Center parent VHDX from a Windows installation ISO. PREVIEW.
+# Build an EraInfra parent VHDX from a Windows installation ISO. PREVIEW.
 #
 # Applies the chosen edition straight out of install.wim with DISM instead of
 # running a full interactive setup, seeds an unattend.xml that creates the guest

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/netpolicy"
 )
 
 type Config struct {
@@ -56,7 +56,7 @@ func DefaultConfig() Config {
 		Snapshotter:         "devmapper",
 		Network:             netpolicy.DefaultPolicy("runner-center"),
 		NftBinary:           "nft",
-		// Runner Center owns these directories so a host that also runs Docker or
+		// EraInfra owns these directories so a host that also runs Docker or
 		// Kubernetes CNI keeps its own plugins and network definitions untouched.
 		CNIConfigDir: "/etc/runner-center/cni/net.d",
 		CNIBinDir:    "/opt/runner-center/cni/bin",
