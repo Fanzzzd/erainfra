@@ -1,12 +1,27 @@
 # EraInfra
 
-EraInfra is the infrastructure arm of the Era family, alongside
-[EraDB](https://github.com/Fanzzzd/eradb) and EraOS. Today it is a small self-hosted GitHub
-Actions platform for owned Linux and Apple Silicon machines; workflows target a stable Profile
-such as `rc-linux-js` and never name a host. The [`portless/`](portless/) directory carries the
-imported portless project — deploy-to-your-own-machines over an iroh mesh with no public IP —
-which EraInfra absorbs so one product can both run CI and manage the machines it runs on
-(integration tracked in the repository issues).
+Run GitHub Actions on your own machines — each job in its own microVM, scheduled by a control
+plane that needs no public IP anywhere.
+
+EraInfra turns Linux and Apple Silicon machines you already own into a self-hosted CI fleet.
+Workflows target a stable **Profile** such as `rc-linux-js` and never name a host: the platform
+decides which Worker runs each job, prepares an isolated environment for exactly that job, and
+destroys it afterwards. Machines dial out to the control plane, so a Worker behind NAT, a home
+router, or a corporate firewall participates like any other.
+
+**Why it holds up:**
+
+- **A hardware boundary per job.** Untrusted Linux jobs get a fresh Firecracker microVM — its
+  own guest kernel, copy-on-write root, point-to-point network, and single-use credentials —
+  torn down on every exit path, including Worker crashes.
+- **Verified, not assumed.** The isolation boundary is checked by the runtime itself: a Worker
+  whose network policy drifts from its Profile stops being ready, and a daily canary exercises
+  the whole path from scale-set listener to teardown.
+- **Immutable by construction.** Images are pinned by digest, the agent release is pinned by
+  checksum, and nothing writable survives a job. Warm state comes from prewarmed images, not
+  shared caches.
+- **Drop-in adoption.** `runs-on: <profile>` is the entire workflow change, with an optional
+  fallback to GitHub-hosted runners when the fleet has no capacity.
 
 The design combines:
 

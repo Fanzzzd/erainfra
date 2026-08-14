@@ -1,4 +1,4 @@
-module github.com/Fanzzzd/EraInfra
+module github.com/Fanzzzd/erainfra
 
 go 1.25.3
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 )
 
@@ -260,7 +260,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 			RepositoryName:  "EraInfra",
 			OwnerName:       "Fanzzzd",
 			JobID:           "job-1",
-			JobWorkflowRef:  "Fanzzzd/EraInfra/.github/workflows/ci.yml@refs/heads/main",
+			JobWorkflowRef:  "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
 			JobDisplayName:  "check",
 			WorkflowRunID:   99,
 			EventName:       "pull_request",

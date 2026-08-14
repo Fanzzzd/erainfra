@@ -100,7 +100,7 @@ describe("scale-set Attempt protocol", () => {
       repository: "EraInfra",
       owner: "Fanzzzd",
       jobId: "job-1",
-      workflowRef: "Fanzzzd/EraInfra/.github/workflows/ci.yml@refs/heads/main",
+      workflowRef: "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
       displayName: "check",
       workflowRunId: 99,
       eventName: "pull_request",

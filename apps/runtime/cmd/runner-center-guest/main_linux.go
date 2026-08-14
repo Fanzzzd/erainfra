@@ -14,7 +14,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/guest"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 )
 
 const (
