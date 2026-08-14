@@ -8,6 +8,7 @@ import {
   type BenchmarkReport,
 } from "./benchmark.js";
 import { config } from "./config.js";
+import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
   spawnAttempt,
   spawnExperiment,
@@ -152,8 +153,15 @@ const running = new Map<string, ReturnType<typeof spawnProvisioner>>();
 let active = 0;
 let maxSlots = 1;
 let shuttingDown = false;
+let acceptingWork = false;
 let benchmarkTimer: ReturnType<typeof setTimeout> | undefined;
 let benchmarking = false;
+let latestLiveAttemptIds = new Set<string>();
+let latestLiveExperimentIds = new Set<string>();
+let recoveryRevision = 0;
+let completedRecoveryRevision = 0;
+let recoveringRuntime = false;
+let recoveryRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleBenchmark(delayMs: number) {
   if (shuttingDown) return;
@@ -363,8 +371,57 @@ function enqueue(item: WorkItem) {
   queue.push(item);
 }
 
+function liveFirecrackerIds() {
+  return new Set([...latestLiveAttemptIds, ...latestLiveExperimentIds]);
+}
+
+function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  return left.size === right.size && [...left].every((id) => right.has(id));
+}
+
+function requestRuntimeRecovery() {
+  recoveryRevision += 1;
+  void drainRuntimeRecovery();
+}
+
+async function drainRuntimeRecovery() {
+  if (shuttingDown || recoveringRuntime) return;
+  recoveringRuntime = true;
+  if (recoveryRetryTimer !== undefined) {
+    clearTimeout(recoveryRetryTimer);
+    recoveryRetryTimer = undefined;
+  }
+  try {
+    while (completedRecoveryRevision < recoveryRevision) {
+      if (shuttingDown) break;
+      const targetRevision = recoveryRevision;
+      try {
+        await recoverFirecrackerOrphans(discoveredProfiles, liveFirecrackerIds());
+        completedRecoveryRevision = targetRevision;
+      } catch (error) {
+        console.error("Firecracker orphan recovery failed; claims remain paused", error);
+        recoveryRetryTimer = setTimeout(() => {
+          recoveryRetryTimer = undefined;
+          void drainRuntimeRecovery();
+        }, 30_000);
+        break;
+      }
+    }
+  } finally {
+    recoveringRuntime = false;
+    pump();
+  }
+}
+
 function pump() {
-  if (shuttingDown) return;
+  if (
+    shuttingDown ||
+    !acceptingWork ||
+    recoveringRuntime ||
+    completedRecoveryRevision < recoveryRevision
+  ) {
+    return;
+  }
   while (active < maxSlots && queue.length > 0) {
     const item = queue.shift();
     if (item === undefined) break;
@@ -375,52 +432,6 @@ function pump() {
     });
   }
 }
-
-const unsubscribeCommands = client.onUpdate(
-  pendingCommands,
-  { token: config.machineToken },
-  (result) => {
-    maxSlots = result.maxSlots;
-    reconcileWithServer("command", result.liveCommandIds);
-    for (const command of result.commands) {
-      enqueue({ kind: "command", id: command.commandId, runnerName: command.runnerName });
-    }
-    pump();
-  },
-  (error) => console.error("Legacy command subscription failed", error),
-);
-
-const unsubscribeAttempts = client.onUpdate(
-  pendingAttempts,
-  { token: config.machineToken },
-  (result) => {
-    maxSlots = result.maxSlots;
-    reconcileWithServer("attempt", result.liveAttemptIds);
-    for (const attempt of result.attempts) {
-      enqueue({ kind: "attempt", id: attempt.attemptId, runnerName: attempt.runnerName });
-    }
-    pump();
-  },
-  (error) => console.error("Attempt subscription failed", error),
-);
-
-const unsubscribeExperiments = client.onUpdate(
-  pendingExperiments,
-  { token: config.machineToken },
-  (result) => {
-    maxSlots = result.maxSlots;
-    reconcileWithServer("experiment", result.liveExperimentIds);
-    for (const experiment of result.experiments) {
-      enqueue({
-        kind: "experiment",
-        id: experiment.experimentId,
-        runnerName: experiment.name,
-      });
-    }
-    pump();
-  },
-  (error) => console.error("Experiment subscription failed", error),
-);
 
 async function heartbeat() {
   try {
@@ -503,16 +514,15 @@ async function refreshProfiles() {
   }
 }
 
-const unsubscribeProfiles = client.onUpdate(
-  workerProfiles,
-  { token: config.machineToken },
-  (profiles) => {
-    discoveredProfiles = profiles;
-    if (refreshingProfiles) refreshAgain = true;
-    void refreshProfiles();
-  },
-  (error) => console.error("Profile discovery failed", error),
-);
+const [initialProfiles, initialAttempts, initialExperiments] = await Promise.all([
+  client.query(workerProfiles, { token: config.machineToken }),
+  client.query(pendingAttempts, { token: config.machineToken }),
+  client.query(pendingExperiments, { token: config.machineToken }),
+]);
+discoveredProfiles = initialProfiles;
+latestLiveAttemptIds = new Set(initialAttempts.liveAttemptIds);
+latestLiveExperimentIds = new Set(initialExperiments.liveExperimentIds);
+await recoverFirecrackerOrphans(discoveredProfiles, liveFirecrackerIds());
 
 const hostCapacity = await client.mutation(reportHostFacts, {
   token: config.machineToken,
@@ -528,6 +538,73 @@ await heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), config.heartbeatMs);
 await publishReadinessSignal(process.env.RC_READY_FILE, process.env.RC_AGENT_VERSION);
 console.log(`EraInfra Worker connected to ${config.convexUrl}; discovering compatible Profiles`);
+acceptingWork = true;
+
+const unsubscribeCommands = client.onUpdate(
+  pendingCommands,
+  { token: config.machineToken },
+  (result) => {
+    maxSlots = result.maxSlots;
+    reconcileWithServer("command", result.liveCommandIds);
+    for (const command of result.commands) {
+      enqueue({ kind: "command", id: command.commandId, runnerName: command.runnerName });
+    }
+    pump();
+  },
+  (error) => console.error("Legacy command subscription failed", error),
+);
+
+const unsubscribeAttempts = client.onUpdate(
+  pendingAttempts,
+  { token: config.machineToken },
+  (result) => {
+    maxSlots = result.maxSlots;
+    const nextLiveAttemptIds = new Set(result.liveAttemptIds);
+    const liveSetChanged = !sameIds(latestLiveAttemptIds, nextLiveAttemptIds);
+    latestLiveAttemptIds = nextLiveAttemptIds;
+    reconcileWithServer("attempt", result.liveAttemptIds);
+    for (const attempt of result.attempts) {
+      enqueue({ kind: "attempt", id: attempt.attemptId, runnerName: attempt.runnerName });
+    }
+    if (liveSetChanged) requestRuntimeRecovery();
+    else pump();
+  },
+  (error) => console.error("Attempt subscription failed", error),
+);
+
+const unsubscribeExperiments = client.onUpdate(
+  pendingExperiments,
+  { token: config.machineToken },
+  (result) => {
+    maxSlots = result.maxSlots;
+    const nextLiveExperimentIds = new Set(result.liveExperimentIds);
+    const liveSetChanged = !sameIds(latestLiveExperimentIds, nextLiveExperimentIds);
+    latestLiveExperimentIds = nextLiveExperimentIds;
+    reconcileWithServer("experiment", result.liveExperimentIds);
+    for (const experiment of result.experiments) {
+      enqueue({
+        kind: "experiment",
+        id: experiment.experimentId,
+        runnerName: experiment.name,
+      });
+    }
+    if (liveSetChanged) requestRuntimeRecovery();
+    else pump();
+  },
+  (error) => console.error("Experiment subscription failed", error),
+);
+
+const unsubscribeProfiles = client.onUpdate(
+  workerProfiles,
+  { token: config.machineToken },
+  (profiles) => {
+    discoveredProfiles = profiles;
+    if (refreshingProfiles) refreshAgain = true;
+    void refreshProfiles();
+  },
+  (error) => console.error("Profile discovery failed", error),
+);
+
 void refreshBenchmark();
 
 async function shutdown(signal: string) {
@@ -537,6 +614,7 @@ async function shutdown(signal: string) {
   clearInterval(heartbeatTimer);
   if (readinessTimer !== undefined) clearTimeout(readinessTimer);
   if (benchmarkTimer !== undefined) clearTimeout(benchmarkTimer);
+  if (recoveryRetryTimer !== undefined) clearTimeout(recoveryRetryTimer);
   unsubscribeCommands();
   unsubscribeAttempts();
   unsubscribeExperiments();

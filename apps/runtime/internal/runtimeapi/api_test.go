@@ -19,6 +19,7 @@ import (
 type fakeExecutor struct {
 	preflightError error
 	preparedImage  string
+	recoveredIDs   []string
 	lease          *fakeLease
 	startedSpec    executor.Spec
 }
@@ -47,6 +48,11 @@ func (f *fakeExecutor) Start(_ context.Context, spec executor.Spec) (executor.Le
 		return nil, errors.New("no fake lease configured")
 	}
 	return f.lease, nil
+}
+
+func (f *fakeExecutor) RecoverOrphans(_ context.Context, liveAttemptIDs []string) error {
+	f.recoveredIDs = append([]string(nil), liveAttemptIDs...)
+	return nil
 }
 
 type fakeLease struct {
@@ -123,6 +129,9 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	if err := client.PrepareImage(ctx, image); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.RecoverOrphans(ctx, []string{"attempt-live", "experiment-live"}); err != nil {
+		t.Fatal(err)
+	}
 	result, err := client.Execute(ctx, testSpec(), time.Second, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +141,9 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	}
 	if runtime.startedSpec.JITConfig != "secret-jit" {
 		t.Fatal("runtime did not receive JIT input through the request body")
+	}
+	if got := strings.Join(runtime.recoveredIDs, ","); got != "attempt-live,experiment-live" {
+		t.Fatalf("runtime received the wrong live set: %q", got)
 	}
 }
 

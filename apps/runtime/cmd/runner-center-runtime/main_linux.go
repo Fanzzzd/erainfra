@@ -25,6 +25,7 @@ import (
 
 const maxJITBytes = 1 << 20
 const maxExperimentBytes = 16 << 10
+const maxRecoveryBytes = 2 << 20
 
 var version = "dev"
 
@@ -42,7 +43,7 @@ func run(ctx context.Context, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, errors.New(
 			"usage: runner-center-runtime " +
-				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|run|experiment",
+				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|recover|run|experiment",
 		)
 	}
 	if args[0] == "version" {
@@ -101,6 +102,8 @@ func run(ctx context.Context, args []string) (int, error) {
 			return 1, err
 		}
 		return 0, nil
+	case "recover":
+		return recoverOrphans(ctx, client)
 	case "run":
 		return runAttempt(ctx, client)
 	case "experiment":
@@ -108,6 +111,24 @@ func run(ctx context.Context, args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func recoverOrphans(ctx context.Context, client *runtimeapi.Client) (int, error) {
+	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxRecoveryBytes+1))
+	if err != nil {
+		return 2, fmt.Errorf("read live Attempt IDs: %w", err)
+	}
+	if len(payload) > maxRecoveryBytes {
+		return 2, errors.New("live Attempt IDs exceed 2 MiB")
+	}
+	var liveAttemptIDs []string
+	if err := json.Unmarshal(payload, &liveAttemptIDs); err != nil {
+		return 2, errors.New("live Attempt IDs must be a JSON array of strings")
+	}
+	if err := client.RecoverOrphans(ctx, liveAttemptIDs); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
 func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {

@@ -29,38 +29,95 @@ import (
 
 type Runtime struct {
 	config Config
+
+	recoveryMu sync.Mutex
+	activeMu   sync.Mutex
+	active     map[string]*machineLease
 }
 
 // Recover removes leases and private work directories left by a runtime process
 // that was killed before its normal per-Attempt cleanup completed. Serve calls
 // it while holding the single-daemon lock, before accepting new work.
 func (r *Runtime) Recover(ctx context.Context) error {
+	return r.recover(ctx, newRecoveryPolicy(nil))
+}
+
+// RecoverOrphans reconciles privileged Firecracker state with the control
+// plane's authoritative live set. Unlike service-start recovery, the runtime
+// is still serving here, so it first stops each in-process orphaned VM and then
+// removes only that orphan's lease, network state, and work directory.
+func (r *Runtime) RecoverOrphans(ctx context.Context, liveAttemptIDs []string) error {
+	return r.recover(ctx, newRecoveryPolicy(liveAttemptIDs))
+}
+
+func (r *Runtime) recover(ctx context.Context, policy recoveryPolicy) error {
+	r.recoveryMu.Lock()
+	defer r.recoveryMu.Unlock()
+
+	var cleanupErrors []error
+	type cancellationResult struct {
+		attemptID string
+		err       error
+	}
+	active := r.activeLeases()
+	results := make(chan cancellationResult, len(active))
+	var cancellations sync.WaitGroup
+	for attemptID, lease := range active {
+		if !policy.recoverAttempt(attemptID) {
+			continue
+		}
+		cancellations.Add(1)
+		go func() {
+			defer cancellations.Done()
+			results <- cancellationResult{attemptID: attemptID, err: lease.Cancel(ctx)}
+		}()
+	}
+	cancellations.Wait()
+	close(results)
+	for result := range results {
+		if result.err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf(
+				"stop orphaned Attempt %s: %w", result.attemptID, result.err,
+			))
+		}
+	}
+
 	client, err := containerd.New(r.config.ContainerdAddress)
 	if err != nil {
-		return fmt.Errorf("connect to containerd: %w", err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("connect to containerd: %w", err))
+		return errors.Join(cleanupErrors...)
 	}
 	defer client.Close()
 	ctx = namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
 	all, err := client.LeasesService().List(ctx)
 	if err != nil {
-		return fmt.Errorf("list containerd leases: %w", err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("list containerd leases: %w", err))
+		return errors.Join(cleanupErrors...)
 	}
-	var cleanupErrors []error
 	for _, lease := range all {
-		if !strings.HasPrefix(lease.ID, "runner-center/attempts/") {
+		if !policy.recoverLease(lease.ID) {
 			continue
 		}
 		if err := client.LeasesService().Delete(ctx, lease, leases.SynchronousDelete); err != nil && !errdefs.IsNotFound(err) {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("delete lease %s: %w", lease.ID, err))
 		}
 	}
-	// With every lease gone, no guest can be running, so every address
-	// reservation, iptables rule and netns left behind is reclaimable (#24).
-	if err := r.reclaimNetwork(ctx); err != nil {
+	if err := r.reclaimNetwork(ctx, policy); err != nil {
 		cleanupErrors = append(cleanupErrors, err)
 	}
-	if err := os.RemoveAll(r.config.WorkDir); err != nil {
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove abandoned runtime directories: %w", err))
+	entries, err := os.ReadDir(r.config.WorkDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("list runtime directories: %w", err))
+	}
+	for _, entry := range entries {
+		if !policy.recoverWorkDir(entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(r.config.WorkDir, entry.Name())); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf(
+				"remove abandoned runtime directory %s: %w", entry.Name(), err,
+			))
+		}
 	}
 	if err := os.MkdirAll(r.config.WorkDir, 0o700); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("recreate runtime directory: %w", err))
@@ -72,7 +129,31 @@ func New(config Config) (*Runtime, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid Firecracker configuration: %w", err)
 	}
-	return &Runtime{config: config}, nil
+	return &Runtime{config: config, active: make(map[string]*machineLease)}, nil
+}
+
+func (r *Runtime) activeLeases() map[string]*machineLease {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	active := make(map[string]*machineLease, len(r.active))
+	for attemptID, lease := range r.active {
+		active[attemptID] = lease
+	}
+	return active
+}
+
+func (r *Runtime) rememberLease(attemptID string, lease *machineLease) {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	r.active[attemptID] = lease
+}
+
+func (r *Runtime) forgetLease(attemptID string, lease *machineLease) {
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	if r.active[attemptID] == lease {
+		delete(r.active, attemptID)
+	}
 }
 
 // Preflight proves every prerequisite the isolation boundary depends on, and
@@ -243,8 +324,8 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 // normally released before the lease, so reservations can never legitimately
 // outnumber leases. When they do, teardown has started leaking network state
 // (#24); failing closed stops the Worker from accepting work while the drift
-// grows, and restarting the runtime — which runs Recover under the
-// single-daemon lock — reclaims everything.
+// grows. Runtime-service startup reclaims everything under the single-daemon
+// lock, while Agent reconciliation selectively reclaims server-orphaned state.
 func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor.Report) {
 	reservations, err := readReservations(
 		reservationDir(netpolicy.CNIDataDir, r.config.Network.Name),
@@ -276,7 +357,7 @@ func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor
 	}
 	if len(reservations) > activeAttempts {
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf(
-			"%d guest addresses reserved for %d running Attempts; teardown is leaking network state — restart runner-center-runtime to reclaim it",
+			"%d guest addresses reserved for %d running Attempts; teardown is leaking network state — restart the Worker or runner-center-runtime to reclaim it",
 			len(reservations), activeAttempts,
 		))
 		return
@@ -442,8 +523,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		return nil, err
 	}
 
-	leaseOwned = false
-	return &machineLease{
+	lease := &machineLease{
 		machine:      machine,
 		client:       client,
 		namespace:    r.config.ContainerdNamespace,
@@ -453,7 +533,11 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 		consolePath:  consolePath,
 		workDir:      workDir,
 		resultToken:  spec.ResultToken,
-	}, nil
+	}
+	lease.onCleanup = func() { r.forgetLease(spec.AttemptID, lease) }
+	r.rememberLease(spec.AttemptID, lease)
+	leaseOwned = false
+	return lease, nil
 }
 
 // startMachine boots the guest, bounded by the caller's boot deadline but tied
@@ -503,6 +587,7 @@ type machineLease struct {
 	consolePath  string
 	workDir      string
 	resultToken  string
+	onCleanup    func()
 	cleanupOnce  sync.Once
 	cleanupError error
 }
@@ -569,6 +654,9 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove Attempt directory: %w", err))
 		}
 		l.cleanupError = errors.Join(cleanupErrors...)
+		if l.onCleanup != nil {
+			l.onCleanup()
+		}
 	})
 	return l.cleanupError
 }
