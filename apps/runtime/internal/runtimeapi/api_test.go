@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 )
 
 type fakeExecutor struct {

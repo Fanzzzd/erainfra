@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 )
 
 const maxResponseBytes = 1 << 20

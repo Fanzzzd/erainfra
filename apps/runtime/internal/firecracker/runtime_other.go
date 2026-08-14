@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 )
 
 var errUnsupported = errors.New("Firecracker executor requires Linux with KVM")

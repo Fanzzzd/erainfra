@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/config"
-	rccontroller "github.com/Fanzzzd/EraInfra/apps/controller/internal/controller"
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/convexstore"
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/githubscale"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/config"
+	rccontroller "github.com/Fanzzzd/erainfra/apps/controller/internal/controller"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/convexstore"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubscale"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )

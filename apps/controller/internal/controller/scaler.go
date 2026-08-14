@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )

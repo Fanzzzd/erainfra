@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 )
 
 func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {

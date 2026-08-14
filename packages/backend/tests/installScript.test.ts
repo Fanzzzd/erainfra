@@ -553,7 +553,7 @@ describe("rendered script", () => {
 
   it("carries the release this deployment pins", () => {
     expect(AGENT_RELEASE.version).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/);
-    expect(AGENT_RELEASE.repo).toBe("Fanzzzd/EraInfra");
+    expect(AGENT_RELEASE.repo).toBe("Fanzzzd/erainfra");
     expect(
       AGENT_RELEASE.sha256 === "" || /^[0-9a-f]{64}$/.test(AGENT_RELEASE.sha256),
       "sha256 must be empty or a 64-character lowercase digest",

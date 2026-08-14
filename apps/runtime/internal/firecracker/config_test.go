@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 )
 
 func TestConfigRejectsKernelArgumentsThatBypassTheNetworkPolicy(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/containernetworking/cni/libcni"
 	"golang.org/x/sys/unix"
 )
