@@ -14,12 +14,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// reclaimNetwork releases every guest address reservation left in this
-// Profile's network, together with the iptables rules and network namespace
-// each one carried.
+// reclaimNetwork releases each orphaned guest address reservation, together
+// with the iptables rules and network namespace it carried.
 //
-// Only Recover may call it: it assumes no guest is running, which Recover
-// guarantees by holding the single-daemon lock after destroying every lease.
+// Only recovery may call it: the policy preserves reservations owned by a
+// server-live guest, and recovery stops every selected in-process VM first.
 // The release normally happens inside firecracker-go-sdk's teardown, which
 // never runs when systemd kills the runtime's control group, so a restarted
 // Worker would otherwise lose one address from the guest subnet per Attempt
@@ -31,7 +30,7 @@ import (
 // rules, and host-local frees the address. Files are removed by hand only as
 // the backstop when a DEL fails, because a stale rule is bounded clutter but
 // a stale reservation is a permanently lost address.
-func (r *Runtime) reclaimNetwork(ctx context.Context) error {
+func (r *Runtime) reclaimNetwork(ctx context.Context, policy recoveryPolicy) error {
 	reservations, err := readReservations(
 		reservationDir(netpolicy.CNIDataDir, r.config.Network.Name),
 	)
@@ -49,6 +48,9 @@ func (r *Runtime) reclaimNetwork(ctx context.Context) error {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("load CNI network for recovery: %w", err))
 	}
 	for _, reservation := range reservations {
+		if !policy.recoverAttempt(reservation.ContainerID) {
+			continue
+		}
 		if networkConf != nil && reservation.ContainerID != "" {
 			cacheDir := filepath.Join(cniCacheRoot, reservation.ContainerID)
 			plugin := libcni.NewCNIConfigWithCacheDir([]string{r.config.CNIBinDir}, cacheDir, nil)
@@ -67,8 +69,8 @@ func (r *Runtime) reclaimNetwork(ctx context.Context) error {
 			}
 			removeNetNS(filepath.Join(netNSDir, reservation.ContainerID))
 		}
-		// Whatever the plugins managed, the reservation itself must not
-		// survive recovery: no guest is running, so no reservation is owned.
+		// Whatever the plugins managed, an orphan's reservation itself must
+		// not survive recovery. Ownerless reservation files are orphans too.
 		if err := os.Remove(reservation.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf(
 				"remove stale address reservation %s: %w", reservation.IP, err,
