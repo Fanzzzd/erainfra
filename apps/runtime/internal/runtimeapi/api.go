@@ -42,6 +42,10 @@ type prepareRequest struct {
 	ImageRelease string `json:"imageRelease"`
 }
 
+type recoverRequest struct {
+	LiveAttemptIDs []string `json:"liveAttemptIds"`
+}
+
 // preflightResponse always carries the full readiness Report, including when a
 // check failed: "not ready, and here is exactly which prerequisite is broken"
 // is an answer the Worker forwards to the control plane, not a protocol error.
@@ -82,6 +86,12 @@ func (c *Client) Preflight(ctx context.Context) (executor.Report, error) {
 
 func (c *Client) PrepareImage(ctx context.Context, imageRelease string) error {
 	return c.do(ctx, "/v1/prepare", prepareRequest{ImageRelease: imageRelease}, nil)
+}
+
+// RecoverOrphans blocks until the privileged runtime has reconciled its local
+// Firecracker state with the control plane's authoritative live set.
+func (c *Client) RecoverOrphans(ctx context.Context, liveAttemptIDs []string) error {
+	return c.do(ctx, "/v1/recover", recoverRequest{LiveAttemptIDs: liveAttemptIDs}, nil)
 }
 
 func (c *Client) Execute(
@@ -254,6 +264,25 @@ func handler(runtime executor.Executor) http.Handler {
 			return
 		}
 		if err := runtime.PrepareImage(request.Context(), input.ImageRelease); err != nil {
+			writeError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, resultResponse{ExitCode: 0})
+	})
+	mux.HandleFunc("POST /v1/recover", func(response http.ResponseWriter, request *http.Request) {
+		var input recoverRequest
+		if err := decodeRequest(request, &input); err != nil {
+			writeError(response, err)
+			return
+		}
+		recovery, ok := runtime.(interface {
+			RecoverOrphans(context.Context, []string) error
+		})
+		if !ok {
+			writeError(response, errors.New("runtime does not support orphan recovery"))
+			return
+		}
+		if err := recovery.RecoverOrphans(request.Context(), input.LiveAttemptIDs); err != nil {
 			writeError(response, err)
 			return
 		}

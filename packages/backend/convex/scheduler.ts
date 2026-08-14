@@ -4,6 +4,7 @@ import { internalMutation } from "./_generated/server";
 import { selectImageForMachine } from "./catalog";
 import { decideAttemptOutcome, summarizeError } from "./retry";
 import { discardCommand } from "./runners";
+import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 export const tryAssign = internalMutation({
   args: {},
@@ -15,7 +16,10 @@ export const tryAssign = internalMutation({
         .query("jobs")
         .withIndex("by_status", (q) => q.eq("status", "queued"))
         .collect(),
-      ctx.db.query("machines").collect(),
+      ctx.db
+        .query("machines")
+        .withIndex("by_lastSeen", (query) => query.gt("lastSeen", now - WORKER_OFFLINE_AFTER_MS))
+        .collect(),
     ]);
 
     const eligibleJobs = queuedJobs
@@ -37,7 +41,7 @@ export const tryAssign = internalMutation({
       let fallbackEntry: ReturnType<typeof selectImageForMachine>;
 
       for (const machine of machines) {
-        if (machine.usedSlots >= machine.doc.maxSlots || now - machine.doc.lastSeen >= 120_000) {
+        if (machine.usedSlots >= machine.doc.maxSlots) {
           continue;
         }
         const entry = selectImageForMachine(job.labels, machine.doc);

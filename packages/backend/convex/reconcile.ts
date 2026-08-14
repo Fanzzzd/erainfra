@@ -4,8 +4,8 @@ import { internalMutation } from "./_generated/server";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import { decideAttemptOutcome } from "./retry";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";
+import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
-const AGENT_OFFLINE_MS = 120_000;
 // Measured from the moment the agent claimed the command, not from when it was
 // created: a cold `docker pull` or a first `tart clone` legitimately takes many
 // minutes, and tearing that down mid-flight provisions a second runner for a
@@ -15,6 +15,11 @@ const RUNNING_ABANDONED_MS = 10 * 60_000;
 const QUEUE_EXPIRED_MS = 24 * 60 * 60_000;
 const REGISTRATION_TOKEN_RETENTION_MS = 60 * 60_000;
 const FINISHED_JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
+// The dashboard shows only the newest 200 Attempts and 100 Experiments. Keep
+// terminal work for the same 30-day diagnostic window as finished Jobs, then
+// delete it in bounded batches; pending runner-cleanup tombstones are retained
+// until their controller acknowledges them.
+export const TERMINAL_WORK_RETENTION_MS = FINISHED_JOB_RETENTION_MS;
 // Must stay strictly greater than recovery.RECOVERY_WINDOW_MS — asserted in
 // tests/recovery.test.ts. These rows are what tells the recovery scan a
 // delivery already arrived. If one expired while GitHub could still list its
@@ -27,6 +32,8 @@ const RECOVERY_RETENTION_MS = DELIVERY_RETENTION_MS;
 const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 const ACTIVE_EXPERIMENT_STATES = ["queued", "preparing", "running"] as const;
 const ACTIVE_COMMAND_STATES = ["pending", "claimed", "cancelled"] as const;
+const TERMINAL_ATTEMPT_STATES = ["completed", "cancelled", "failed"] as const;
+const TERMINAL_EXPERIMENT_STATES = ["completed", "cancelled", "failed"] as const;
 
 export const run = internalMutation({
   args: {},
@@ -139,7 +146,8 @@ export const run = internalMutation({
 
     for (const job of assignedJobs) {
       const machine = job.machineId === undefined ? undefined : machinesById.get(job.machineId);
-      const agentOffline = machine === undefined || now - machine.lastSeen > AGENT_OFFLINE_MS;
+      const agentOffline =
+        machine === undefined || now - machine.lastSeen > WORKER_OFFLINE_AFTER_MS;
       const currentCommands = (commandsByJob.get(job._id) ?? []).filter(
         (command) => command.runnerName === job.runnerName && command.machineId === job.machineId,
       );
@@ -244,7 +252,7 @@ export const run = internalMutation({
       }
       const machine = machinesById.get(attempt.machineId);
       const offlineFor = machine === undefined ? Number.POSITIVE_INFINITY : now - machine.lastSeen;
-      if (attempt.state === "pending" && offlineFor > AGENT_OFFLINE_MS) {
+      if (attempt.state === "pending" && offlineFor > WORKER_OFFLINE_AFTER_MS) {
         await ctx.db.patch(attempt._id, { machineId: undefined });
         requeued += 1;
         continue;
@@ -255,7 +263,7 @@ export const run = internalMutation({
       const abandonedRunning = attempt.state === "running" && offlineFor > RUNNING_ABANDONED_MS;
       if (
         ((attempt.state === "preparing" || attempt.state === "ready") &&
-          offlineFor > AGENT_OFFLINE_MS) ||
+          offlineFor > WORKER_OFFLINE_AFTER_MS) ||
         stuckPreparing ||
         abandonedRunning
       ) {
@@ -289,7 +297,7 @@ export const run = internalMutation({
       }
       const machine = machinesById.get(experiment.machineId);
       const offlineFor = machine === undefined ? Number.POSITIVE_INFINITY : now - machine.lastSeen;
-      if (experiment.state === "queued" && offlineFor > AGENT_OFFLINE_MS) {
+      if (experiment.state === "queued" && offlineFor > WORKER_OFFLINE_AFTER_MS) {
         await ctx.db.patch(experiment._id, { machineId: undefined });
         requeued += 1;
         continue;
@@ -303,7 +311,7 @@ export const run = internalMutation({
           experiment.timeoutSeconds * 1_000 + 5 * 60_000;
       const abandonedRunning = experiment.state === "running" && offlineFor > RUNNING_ABANDONED_MS;
       if (
-        (experiment.state === "preparing" && offlineFor > AGENT_OFFLINE_MS) ||
+        (experiment.state === "preparing" && offlineFor > WORKER_OFFLINE_AFTER_MS) ||
         stuckPreparing ||
         exceededDeadline ||
         abandonedRunning
@@ -324,7 +332,7 @@ export const run = internalMutation({
     }
 
     // Retention: expired registration tokens, settled deliveries, and
-    // month-old finished jobs.
+    // month-old finished work.
     const [expiredRegistrations, usedRegistrations] = await Promise.all([
       ctx.db
         .query("registrationTokens")
@@ -382,6 +390,67 @@ export const run = internalMutation({
         if (now - (job.finishedAt ?? job._creationTime) >= FINISHED_JOB_RETENTION_MS) {
           await ctx.db.delete(job._id);
         }
+      }
+    }
+    for (const state of TERMINAL_ATTEMPT_STATES) {
+      const [finished, legacyWithoutFinishedAt] = await Promise.all([
+        ctx.db
+          .query("attempts")
+          .withIndex("by_state_cleanupPending_finishedAt", (query) =>
+            query
+              .eq("state", state)
+              .eq("runnerCleanupPending", undefined)
+              .gt("finishedAt", 0)
+              .lte("finishedAt", now - TERMINAL_WORK_RETENTION_MS),
+          )
+          .order("asc")
+          .take(100),
+        ctx.db
+          .query("attempts")
+          .withIndex("by_state_cleanupPending_finishedAt", (query) =>
+            query
+              .eq("state", state)
+              .eq("runnerCleanupPending", undefined)
+              .eq("finishedAt", undefined),
+          )
+          .order("asc")
+          .take(100),
+      ]);
+      const staleLegacy = legacyWithoutFinishedAt.filter(
+        (attempt) => now - attempt.createdAt >= TERMINAL_WORK_RETENTION_MS,
+      );
+      for (const attempt of [...finished, ...staleLegacy]) {
+        await deleteAttemptSecret(ctx, attempt._id);
+        await ctx.db.delete(attempt._id);
+      }
+    }
+    for (const state of TERMINAL_EXPERIMENT_STATES) {
+      const [finished, legacyWithoutFinishedAt] = await Promise.all([
+        ctx.db
+          .query("experiments")
+          .withIndex("by_state_finishedAt", (query) =>
+            query
+              .eq("state", state)
+              .gt("finishedAt", 0)
+              .lte("finishedAt", now - TERMINAL_WORK_RETENTION_MS),
+          )
+          .order("asc")
+          .take(100),
+        ctx.db
+          .query("experiments")
+          .withIndex("by_state_finishedAt", (query) =>
+            query.eq("state", state).eq("finishedAt", undefined),
+          )
+          .order("asc")
+          .take(100),
+      ]);
+      for (const experiment of [
+        ...finished,
+        ...legacyWithoutFinishedAt.filter(
+          (row) => now - row.createdAt >= TERMINAL_WORK_RETENTION_MS,
+        ),
+      ]) {
+        await ctx.db.delete(experiment._id);
       }
     }
 

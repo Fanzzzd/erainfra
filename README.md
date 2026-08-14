@@ -73,7 +73,10 @@ For a Firecracker Profile, each Attempt gets:
   egress. A Worker whose nftables table no longer matches its Profile stops being ready;
 - single-use JIT credentials over MMDSv2, never in argv, an image layer, a host environment or a
   log;
-- teardown on success, failure, cancellation, timeout, Agent crash and controller reconciliation;
+- teardown on success, failure, cancellation, timeout, and controller reconciliation. After an Agent
+  crash, its service supervisor restarts it and startup recovery reconciles the privileged runtime
+  before the Worker advertises readiness or accepts replacement work. If that supervisor is disabled
+  and the Agent never restarts, a guest can remain alive until its job or runtime timeout exits it;
 - CPU, memory and thin-pool admission before the Attempt is placed, and one process-bounded runtime
   service per host.
 
