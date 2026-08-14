@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Inbox, ListChecks, RotateCcw, ShieldAlert, ShieldCheck } from "lucide-react";
-import { api } from "@runner-center/backend/api";
+import { api } from "@erainfra/backend/api";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { LiveBadge, StatusDot } from "@/components/status";

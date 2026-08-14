@@ -1,5 +1,5 @@
 {
-  "name": "@runner-center/agent",
+  "name": "@erainfra/agent",
   "version": "0.2.0-rc.4",
   "private": true,
   "type": "module",

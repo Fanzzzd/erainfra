@@ -182,7 +182,7 @@ function publishRelease(sandbox: Sandbox, release: AgentRelease, marker: string)
     writeExecutable(runtime, "#!/usr/bin/env bash\nexit 0\n");
   }
 
-  const assetName = `runner-center-agent-${release.version}.tar.gz`;
+  const assetName = `erainfra-agent-${release.version}.tar.gz`;
   const archivePath = path.join(sandbox.fixtures, assetName);
   const tar = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(stage), "agent"]);
   expect(tar.status, tar.stderr?.toString()).toBe(0);
@@ -285,7 +285,7 @@ describe("install", () => {
 
     const requested = readLog(sandbox.curlLog);
     expect(requested).toMatch(
-      /https:\/\/github\.com\/runner-center-tests\/runner-center\/releases\/download\/v1\.4\.2\/runner-center-agent-1\.4\.2\.tar\.gz$/m,
+      /https:\/\/github\.com\/runner-center-tests\/runner-center\/releases\/download\/v1\.4\.2\/erainfra-agent-1\.4\.2\.tar\.gz$/m,
     );
     expect(requested).not.toMatch(/archive\/refs\/heads/);
     expect(agentMarker(sandbox)).toBe("// new agent");
@@ -350,10 +350,8 @@ describe("update", () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const requested = readLog(sandbox.curlLog);
-    expect(requested).toMatch(
-      /releases\/download\/v1\.3\.0\/runner-center-agent-1\.3\.0\.tar\.gz$/m,
-    );
-    expect(requested).not.toMatch(/runner-center-agent-1\.4\.2/);
+    expect(requested).toMatch(/releases\/download\/v1\.3\.0\/erainfra-agent-1\.3\.0\.tar\.gz$/m);
+    expect(requested).not.toMatch(/erainfra-agent-1\.4\.2/);
     expect(agentMarker(sandbox)).toBe("// older agent");
     expect(metaField(sandbox, "AGENT_VERSION")).toBe("1.3.0");
   });
@@ -397,7 +395,7 @@ describe("update", () => {
 
     const result = run(sandbox, ["--update"]);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/No existing Runner Center registration/);
+    expect(result.stderr).toMatch(/No existing EraInfra registration/);
   });
 
   it("rejects a version that is not a release version", () => {
@@ -412,7 +410,7 @@ describe("checksum verification", () => {
   it("stops before touching the running agent when the archive does not match", () => {
     const sandbox = createSandbox(CURRENT);
     const published = publishRelease(sandbox, CURRENT, "tampered agent");
-    writeFileSync(published.checksumPath, `${"0".repeat(64)}  runner-center-agent-1.4.2.tar.gz\n`);
+    writeFileSync(published.checksumPath, `${"0".repeat(64)}  erainfra-agent-1.4.2.tar.gz\n`);
     seedExistingInstall(sandbox, "1.3.0", "older agent");
 
     const result = run(sandbox, ["--update"]);
@@ -430,7 +428,7 @@ describe("checksum verification", () => {
 
     const result = run(sandbox, ["--update"]);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/pinned by this Runner Center deployment/);
+    expect(result.stderr).toMatch(/pinned by this EraInfra deployment/);
     expect(agentMarker(sandbox)).toBe("// older agent");
   });
 
@@ -500,7 +498,7 @@ describe("rendered script", () => {
     expect(script).toMatch(/rm -f "\$RC_HOME\/agent\.ready"/);
     expect(script).toMatch(/cat "\$RC_HOME\/agent\.ready"/);
     expect(script).toMatch(/= "\$VERSION"/);
-    expect(script).not.toMatch(/grep -Fq 'Runner Center agent connected'/);
+    expect(script).not.toMatch(/grep -Fq 'EraInfra agent connected'/);
   });
 
   it("tells the operator where background Profile warm-up is progressing", () => {
@@ -531,7 +529,7 @@ describe("rendered script", () => {
 
   it("carries the release this deployment pins", () => {
     expect(AGENT_RELEASE.version).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/);
-    expect(AGENT_RELEASE.repo).toMatch(/^[\w.-]+\/[\w.-]+$/);
+    expect(AGENT_RELEASE.repo).toBe("Fanzzzd/EraInfra");
     expect(
       AGENT_RELEASE.sha256 === "" || /^[0-9a-f]{64}$/.test(AGENT_RELEASE.sha256),
       "sha256 must be empty or a 64-character lowercase digest",
@@ -552,7 +550,7 @@ describe("rendered SITE_URL", () => {
 
   it("leaves no unsubstituted placeholder behind", () => {
     const script = renderInstallScript("https://example.convex.site", AGENT_RELEASE);
-    expect(script.includes("__RUNNER_CENTER_SITE_URL__")).toBe(false);
+    expect(script.includes("__ERAINFRA_SITE_URL__")).toBe(false);
   });
 
   it("receives a bare origin from resolveSiteUrl, with no path or trailing slash", () => {

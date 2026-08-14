@@ -3,15 +3,15 @@ export type AgentRelease = {
   repo: string;
   /** Product version, without the leading `v` of the git tag. */
   version: string;
-  /** SHA-256 of `runner-center-agent-<version>.tar.gz`. */
+  /** SHA-256 of `erainfra-agent-<version>.tar.gz`. */
   sha256: string;
 };
 
 /**
  * The agent build this deployment installs.
  *
- * Runner Center ships as one product: tagging `v<version>` publishes an
- * immutable `runner-center-agent-<version>.tar.gz` asset, and machines install
+ * EraInfra ships as one product: tagging `v<version>` publishes an immutable
+ * `erainfra-agent-<version>.tar.gz` asset, and machines install
  * exactly that asset. Nothing tracks a branch, so a machine installed today and
  * a machine installed next month run identical bytes.
  *
@@ -25,7 +25,7 @@ export type AgentRelease = {
  * rejected.
  */
 export const AGENT_RELEASE: AgentRelease = {
-  repo: "Fanzzzd/runner-center",
+  repo: "Fanzzzd/EraInfra",
   version: "0.2.0-rc.4",
   sha256: "cfe2b79e87f48042820a080b18ea1a57cde69a3ce495c3e2744df7277a031cdf",
 };

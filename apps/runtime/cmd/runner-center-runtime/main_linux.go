@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/executor"
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/firecracker"
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/netpolicy"
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/runtimeapi"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/firecracker"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/runtimeapi"
 )
 
 const maxJITBytes = 1 << 20

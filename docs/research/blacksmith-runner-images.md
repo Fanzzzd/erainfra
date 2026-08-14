@@ -140,11 +140,11 @@ Assessment: mature control plane, but image compatibility remains your job.
 
 Assessment: active and directly usable, but it is its own image family, not GitHub-hosted parity.
 
-For Runner Center specifically, the execution implementation is more valuable than the standalone controller:
+For EraInfra specifically, the execution implementation is more valuable than the standalone controller:
 
 - It already turns an OCI image into a writable devmapper snapshot, boots it as a Firecracker microVM, injects one JIT configuration over MMDS, and cleans up the VM and GitHub runner:
   - https://github.com/hostinger/fireactions/blob/v2.0.5/server/pool.go
-- Pools maintain a fixed desired `replicas` count rather than consuming GitHub scale-set queue statistics. That is simple for a single host, but it duplicates Runner Center's Fleet scheduler and keeps idle VMs registered:
+- Pools maintain a fixed desired `replicas` count rather than consuming GitHub scale-set queue statistics. That is simple for a single host, but it duplicates EraInfra's Fleet scheduler and keeps idle VMs registered:
   - https://github.com/hostinger/fireactions/blob/v2.0.5/docs/user-guide/concepts.md
 - Installation requires root, KVM, CNI networking, and a dedicated block device used by a hard-coded containerd devmapper snapshotter:
   - https://github.com/hostinger/fireactions/blob/v2.0.5/docs/user-guide/installation.md
@@ -154,7 +154,7 @@ For Runner Center specifically, the execution implementation is more valuable th
 - Fireactions lists Hostinger as its only public production adopter:
   - https://github.com/hostinger/fireactions/blob/v2.0.5/ADOPTERS.md
 
-Assessment: use or upstream its Firecracker runtime behind Runner Center's executor interface; do not install the current server and image unchanged as the whole product.
+Assessment: use or upstream its Firecracker runtime behind EraInfra's executor interface; do not install the current server and image unchanged as the whole product.
 
 #### Cirun
 
@@ -225,7 +225,7 @@ That last point is an inference from the official sources above: GitHub's offici
 
 Do not force one image to serve two different promises. Use two explicit tiers:
 
-1. **Production profile now:** a small, digest-pinned Runner Center image based on GitHub's official minimal runner image, with an explicit tested dependency contract (including `libatomic1`). Give it a Runner Center label such as `rc-linux` or `rc-ubuntu-2404-minimal`; do not advertise it as GitHub-hosted-compatible. Pre-pull and smoke-test it before the machine advertises the label.
+1. **Production profile now:** a small, digest-pinned EraInfra image based on GitHub's official minimal runner image, with an explicit tested dependency contract (including `libatomic1`). Give it an EraInfra label such as `rc-linux` or `rc-ubuntu-2404-minimal`; do not advertise it as GitHub-hosted-compatible. Pre-pull and smoke-test it before the machine advertises the label.
 2. **Hosted-compatible tier later:** a Firecracker microVM backend with copy-on-write VM images built from a pinned `actions/runner-images` revision, following Blacksmith's architecture and RunsOn's upstream-lock/provenance pattern. Only this tier should claim GitHub-hosted parity.
 
 Why this split:

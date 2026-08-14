@@ -1,4 +1,4 @@
-name: CI
+name: EraInfra CI
 
 on:
   pull_request:

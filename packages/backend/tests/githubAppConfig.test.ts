@@ -374,7 +374,7 @@ describe("parseManifestConversion", () => {
   const valid = {
     id: 42,
     slug: "runner-center-abc",
-    name: "Runner Center",
+    name: "EraInfra",
     client_id: "Iv1.abc123",
     client_secret: "should-be-ignored",
     pem: "-----BEGIN RSA PRIVATE KEY-----",
@@ -387,7 +387,7 @@ describe("parseManifestConversion", () => {
       appId: 42,
       clientId: "Iv1.abc123",
       slug: "runner-center-abc",
-      name: "Runner Center",
+      name: "EraInfra",
       privateKey: "-----BEGIN RSA PRIVATE KEY-----",
       webhookSecret: "whsec",
       htmlUrl: "https://github.com/apps/runner-center-abc",
@@ -427,7 +427,7 @@ describe("toAppSummary", () => {
     appId: 42,
     clientId: "Iv1.abc123",
     slug: "runner-center-abc",
-    name: "Runner Center",
+    name: "EraInfra",
     privateKey: "-----BEGIN RSA PRIVATE KEY-----super-secret",
     webhookSecret: "whsec-super-secret",
     htmlUrl: "https://github.com/apps/runner-center-abc",
@@ -455,6 +455,6 @@ describe("toAppSummary", () => {
     const summary = toAppSummary(stored);
     expect(summary.appId).toBe(42);
     expect(summary.clientId).toBe("Iv1.abc123");
-    expect(summary.name).toBe("Runner Center");
+    expect(summary.name).toBe("EraInfra");
   });
 });

@@ -1,7 +1,7 @@
 [Unit]
-Description=Runner Center privileged Firecracker runtime
-Documentation=https://github.com/Fanzzzd/runner-center
-# The Runner Center runtime talks to its own containerd, not whatever else the
+Description=EraInfra privileged Firecracker runtime
+Documentation=https://github.com/Fanzzzd/EraInfra
+# The EraInfra runtime talks to its own containerd, not whatever else the
 # host runs. Naming the host's containerd.service here would start the runtime
 # before its snapshotter exists on a Docker host, and refuse to start at all on
 # a host that has no unit by that name.

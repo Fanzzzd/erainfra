@@ -2,7 +2,7 @@ import { type FormEvent, useId, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { FlaskConical, Square } from "lucide-react";
-import { api } from "@runner-center/backend/api";
+import { api } from "@erainfra/backend/api";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { LiveBadge } from "@/components/status";

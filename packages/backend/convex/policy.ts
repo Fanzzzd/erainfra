@@ -2,7 +2,7 @@
 //
 // GitHub's own guidance is that self-hosted runners should only be used with
 // private repositories, because a fork of a public repository can run attacker
-// controlled code on the runner host by opening a pull request. Runner Center
+// controlled code on the runner host by opening a pull request. EraInfra
 // therefore fails closed: nothing is accepted until an operator names the
 // repositories, and a public repository additionally needs an explicit opt-in.
 

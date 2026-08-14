@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Activity } from "lucide-react";
-import { api } from "@runner-center/backend/api";
+import { api } from "@erainfra/backend/api";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { LiveBadge } from "@/components/status";
@@ -110,7 +110,7 @@ function AttemptsPage() {
                     title={counts.all === 0 ? "No runs yet" : `No ${filter} runs`}
                     description={
                       counts.all === 0
-                        ? "Jobs targeting an active Runner Center Profile will appear here."
+                        ? "Jobs targeting an active EraInfra Profile will appear here."
                         : "Every run is still there — try another state filter."
                     }
                   />

@@ -77,7 +77,7 @@ importers:
       '@radix-ui/react-tooltip':
         specifier: 1.2.16
         version: 1.2.16(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@runner-center/backend':
+      '@erainfra/backend':
         specifier: workspace:*
         version: link:../../packages/backend
       '@tanstack/react-router':
@@ -108,7 +108,7 @@ importers:
         specifier: 3.6.0
         version: 3.6.0
     devDependencies:
-      '@runner-center/typescript-config':
+      '@erainfra/typescript-config':
         specifier: workspace:*
         version: link:../../packages/typescript-config
       '@tailwindcss/vite':
@@ -165,7 +165,7 @@ importers:
       '@edge-runtime/vm':
         specifier: 5.0.0
         version: 5.0.0
-      '@runner-center/typescript-config':
+      '@erainfra/typescript-config':
         specifier: workspace:*
         version: link:../typescript-config
       '@types/node':
@@ -186,7 +186,7 @@ importers:
 
   packages/release:
     devDependencies:
-      '@runner-center/typescript-config':
+      '@erainfra/typescript-config':
         specifier: workspace:*
         version: link:../typescript-config
       '@types/node':

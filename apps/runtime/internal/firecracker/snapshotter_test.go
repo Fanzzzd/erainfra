@@ -9,7 +9,7 @@ import (
 
 // containerd's introspection service builds its matcher with
 // filters.ParseAll(req.Filters...) and evaluates each plugin through this
-// adaptor. Reproducing both here tests the filter Runner Center actually sends
+// adaptor. Reproducing both here tests the filter EraInfra actually sends
 // against the parser that will receive it, rather than against a guess about
 // its grammar.
 func matchPlugins(t *testing.T, filter []string, plugins []*api.Plugin) []*api.Plugin {

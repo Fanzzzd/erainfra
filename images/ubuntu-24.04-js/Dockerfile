@@ -160,8 +160,8 @@ RUN chmod 0755 /usr/local/bin/runner-center-guest /usr/local/lib/runner-center/s
   && rm -f /var/lib/dbus/machine-id \
   && /usr/local/lib/runner-center/smoke.sh
 
-LABEL org.opencontainers.image.source="https://github.com/Fanzzzd/runner-center" \
-  org.opencontainers.image.description="Runner Center minimal Ubuntu 24.04 JavaScript Firecracker profile" \
+LABEL org.opencontainers.image.source="https://github.com/Fanzzzd/EraInfra" \
+  org.opencontainers.image.description="EraInfra minimal Ubuntu 24.04 JavaScript Firecracker profile" \
   org.opencontainers.image.licenses="Apache-2.0"
 
 STOPSIGNAL SIGRTMIN+3

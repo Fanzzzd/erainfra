@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a Linux host so it can run Runner Center's strong-isolation
+# Provision a Linux host so it can run EraInfra's strong-isolation
 # executor: one ephemeral Firecracker microVM per job, on a copy-on-write root,
 # behind a verified job network policy.
 #
@@ -124,7 +124,7 @@ Usage:
   --pool-dir           Directory holding those sparse files. Defaults to
                        /var/lib/runner-center. Point it at a roomy data
                        filesystem when the root filesystem is nearly full.
-  --worker-user        Unprivileged account running the Runner Center Worker.
+  --worker-user        Unprivileged account running the EraInfra Worker.
                        It is added to the runner-center group so it can reach
                        the runtime socket. Log out and back in afterwards.
 USAGE
@@ -174,7 +174,7 @@ download_verified() {
 }
 
 uninstall() {
-  step 'Stopping and removing Runner Center services'
+  step 'Stopping and removing EraInfra services'
   for unit in "$RUNTIME_UNIT" "$CONTAINERD_UNIT" "$THINPOOL_UNIT"; do
     systemctl disable --now "$unit" >/dev/null 2>&1 || true
     rm -f "/etc/systemd/system/$unit"
@@ -418,7 +418,7 @@ chmod 0600 "$RC_ETC_DIR/thinpool.env"
 
 cat > "$RC_LIB_DIR/thinpool-setup.sh" <<'THINPOOL'
 #!/usr/bin/env bash
-# Bring up the Runner Center device-mapper thin-pool. Idempotent: it is a
+# Bring up the EraInfra device-mapper thin-pool. Idempotent: it is a
 # systemd oneshot that must survive reboots and repeated provisioning runs.
 set -euo pipefail
 
@@ -462,8 +462,8 @@ chmod 0755 "$RC_LIB_DIR/thinpool-setup.sh"
 
 cat > "/etc/systemd/system/$THINPOOL_UNIT" <<UNIT
 [Unit]
-Description=Runner Center device-mapper thin-pool
-Documentation=https://github.com/Fanzzzd/runner-center
+Description=EraInfra device-mapper thin-pool
+Documentation=https://github.com/Fanzzzd/EraInfra
 DefaultDependencies=no
 After=local-fs.target
 Before=$CONTAINERD_UNIT
@@ -500,8 +500,8 @@ chmod 0600 "$RC_ETC_DIR/containerd.toml"
 
 cat > "/etc/systemd/system/$CONTAINERD_UNIT" <<UNIT
 [Unit]
-Description=Runner Center containerd (devmapper snapshotter)
-Documentation=https://github.com/Fanzzzd/runner-center
+Description=EraInfra containerd (devmapper snapshotter)
+Documentation=https://github.com/Fanzzzd/EraInfra
 After=network.target $THINPOOL_UNIT
 Requires=$THINPOOL_UNIT
 
@@ -593,7 +593,7 @@ fi
 step 'Verifying readiness'
 sleep 2
 if "$RC_LIB_DIR/runner-center-runtime" preflight; then
-  printf '\n✅ This host can run Runner Center Firecracker Profiles.\n'
+  printf '\n✅ This host can run EraInfra Firecracker Profiles.\n'
 else
   printf '\n❌ Readiness failed. The report above names every broken check.\n' >&2
   printf '   journalctl -u %s -n 50 --no-pager\n' "$RUNTIME_UNIT" >&2

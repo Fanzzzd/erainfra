@@ -1,4 +1,4 @@
-name: Release
+name: EraInfra release
 
 # Tagging `v<version>` publishes the agent archive machines install. Nothing
 # else creates releases, and no release is ever overwritten.
@@ -36,7 +36,7 @@ jobs:
           # Release builds consume no mutable cache from lower-trust refs.
           cache: false
 
-      # Runner Center ships as one product, so the tag has to match the version
+      # EraInfra ships as one product, so the tag has to match the version
       # in the workspace root and in apps/agent exactly. Fail here rather than
       # publish an asset whose embedded package.json disagrees with its name.
       - name: Verify the tag matches both package versions
@@ -91,10 +91,10 @@ jobs:
 
       - name: Verify the archive is reproducible
         run: |
-          pnpm --filter @runner-center/release package-agent --out dist/release-recheck
-          cmp "dist/release/runner-center-agent-$VERSION.tar.gz" \
-            "dist/release-recheck/runner-center-agent-$VERSION.tar.gz"
-          actual=$(cut -d ' ' -f 1 < "dist/release/runner-center-agent-$VERSION.tar.gz.sha256")
+          pnpm --filter @erainfra/release package-agent --out dist/release-recheck
+          cmp "dist/release/erainfra-agent-$VERSION.tar.gz" \
+            "dist/release-recheck/erainfra-agent-$VERSION.tar.gz"
+          actual=$(cut -d ' ' -f 1 < "dist/release/erainfra-agent-$VERSION.tar.gz.sha256")
           if [ "$actual" != "$PINNED_SHA256" ]; then
             echo "Archive checksum $actual does not match deployment pin $PINNED_SHA256" >&2
             exit 1
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist/release/runner-center-agent-${{ env.VERSION }}.tar.gz
+            dist/release/erainfra-agent-${{ env.VERSION }}.tar.gz
             dist/release/runner-center-controller-linux-x86_64
             dist/release/runner-center-controller-linux-arm64
             dist/release/runner-center-controller-darwin-x86_64
@@ -124,12 +124,12 @@ jobs:
           case "$VERSION" in
             *-*) prerelease+=(--prerelease) ;;
           esac
-          sha256=$(cut -d ' ' -f 1 < "dist/release/runner-center-agent-$VERSION.tar.gz.sha256")
+          sha256=$(cut -d ' ' -f 1 < "dist/release/erainfra-agent-$VERSION.tar.gz.sha256")
           # Markdown code spans are intentionally literal in these format strings.
           # shellcheck disable=SC2016
           {
-            printf 'Agent archive for Runner Center %s.\n\n' "$VERSION"
-            printf 'SHA-256 of `runner-center-agent-%s.tar.gz`:\n\n' "$VERSION"
+            printf 'Agent archive for EraInfra %s.\n\n' "$VERSION"
+            printf 'SHA-256 of `erainfra-agent-%s.tar.gz`:\n\n' "$VERSION"
             printf '    %s\n\n' "$sha256"
             printf 'The release commit already pins these bytes in `AGENT_RELEASE`.\n'
             printf 'Roll the fleet forward with `pnpm deploy` after this workflow succeeds.\n'
@@ -140,8 +140,8 @@ jobs:
             --notes-file release-notes.md \
             --verify-tag \
             "${prerelease[@]}" \
-            "dist/release/runner-center-agent-$VERSION.tar.gz" \
-            "dist/release/runner-center-agent-$VERSION.tar.gz.sha256" \
+            "dist/release/erainfra-agent-$VERSION.tar.gz" \
+            "dist/release/erainfra-agent-$VERSION.tar.gz.sha256" \
             dist/release/runner-center-controller-* \
             dist/release/runner-center-runtime-* \
             deploy/systemd/runner-center-runtime.service \

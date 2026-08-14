@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/executor"
-	"github.com/Fanzzzd/runner-center/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/EraInfra/apps/runtime/internal/netpolicy"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/leases"
 	"github.com/containerd/containerd/namespaces"

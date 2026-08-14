@@ -14,7 +14,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@runner-center/backend/api";
+import { api } from "@erainfra/backend/api";
 import { EmptyState } from "@/components/empty-state";
 import { GithubAppSetup } from "@/components/github-app-setup";
 import { PageHeader } from "@/components/page-header";
@@ -170,8 +170,8 @@ function MachinesPage() {
             <DialogHeader>
               <DialogTitle>Add machine</DialogTitle>
               <DialogDescription>
-                Run one command on a macOS or Linux host. Runner Center installs, registers, and
-                starts the agent for you.
+                Run one command on a macOS or Linux host. EraInfra installs, registers, and starts
+                the agent for you.
               </DialogDescription>
             </DialogHeader>
 

@@ -88,7 +88,7 @@ type JobCompleted struct {
 	FinishedAt      time.Time `json:"finishedAt"`
 }
 
-// Store is the deep boundary between GitHub demand and Runner Center's durable
+// Store is the deep boundary between GitHub demand and EraInfra's durable
 // scheduler. It deliberately says nothing about Convex, Firecracker, or Tart.
 type Store interface {
 	RegisterProfile(ctx context.Context, profile ProfileSpec) error

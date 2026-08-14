@@ -24,7 +24,7 @@ import (
 	"strings"
 )
 
-// TableName is the nftables table the policy owns. Runner Center never edits a
+// TableName is the nftables table the policy owns. EraInfra never edits a
 // table it does not own, so a host can keep running Docker or Kubernetes
 // networking beside it.
 const TableName = "runner-center"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "extends": "@runner-center/typescript-config/react.json",
+  "extends": "@erainfra/typescript-config/react.json",
   "compilerOptions": {
     "allowJs": false,
     "types": ["node", "vite/client"],

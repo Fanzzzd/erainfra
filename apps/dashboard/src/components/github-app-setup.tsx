@@ -1,11 +1,11 @@
 import { type ReactNode, useEffect, useId, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { CircleCheck, ExternalLink, GitPullRequest, KeyRound, TriangleAlert } from "lucide-react";
-import { api } from "@runner-center/backend/api";
+import { api } from "@erainfra/backend/api";
 import {
   DISCONNECT_CONFIRMATION,
   LEGACY_REMOVAL_COMMANDS,
-} from "@runner-center/backend/githubAppConfig";
+} from "@erainfra/backend/githubAppConfig";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -256,7 +256,7 @@ export function GithubAppSetup() {
           <>
             <Separator className="my-3" />
             <p className="text-xs text-success">
-              App created. Install it on the repositories Runner Center should serve.
+              App created. Install it on the repositories EraInfra should serve.
             </p>
           </>
         )}
@@ -296,7 +296,7 @@ export function GithubAppSetup() {
             {status.configured ? "Connect a GitHub App" : "Connect GitHub"}
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Runner Center registers the App for you: one click sets up the webhook, the minimum
+            EraInfra registers the App for you: one click sets up the webhook, the minimum
             permissions, and the private key. No app form to fill in and no environment variables to
             copy.
           </p>

@@ -26,7 +26,7 @@ const (
 
 // A cniReservation is one address file written by the host-local IPAM plugin
 // under the network's data directory: the file is named after the allocated
-// IP and its first line is the owning container ID — for Runner Center, the
+// IP and its first line is the owning container ID — for EraInfra, the
 // Attempt ID.
 type cniReservation struct {
 	IP          string

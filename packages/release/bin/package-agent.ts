@@ -3,7 +3,7 @@
  *
  * Usage: pnpm release:package [--out <directory>]
  *
- * Run `pnpm --filter @runner-center/agent build` first: this script packages
+ * Run `pnpm --filter @erainfra/agent build` first: this script packages
  * `apps/agent/dist`, it does not compile it.
  */
 import { mkdirSync, writeFileSync } from "node:fs";

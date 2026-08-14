@@ -303,7 +303,7 @@ func TestVerifyNftablesFailsClosed(t *testing.T) {
 			t.Fatalf("encode: %v", err)
 		}
 		if err := policy.VerifyNftables(tampered); err == nil {
-			t.Fatal("a rule Runner Center did not install must fail readiness")
+			t.Fatal("a rule EraInfra did not install must fail readiness")
 		}
 	})
 

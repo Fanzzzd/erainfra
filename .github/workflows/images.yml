@@ -1,4 +1,4 @@
-name: Runner images
+name: EraInfra runner images
 
 on:
   push:

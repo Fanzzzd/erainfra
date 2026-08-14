@@ -6,7 +6,7 @@
 
 export const SETUP_STATE_TTL_MS = 15 * 60 * 1_000;
 
-// The minimum GitHub App permissions Runner Center actually uses:
+// The minimum GitHub App permissions EraInfra actually uses:
 //
 // - administration: write — POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig
 //   to create a JIT runner, and DELETE /repos/{owner}/{repo}/actions/runners/{id}
@@ -314,7 +314,7 @@ export function resolveSiteUrl(rawSiteUrl: string | undefined): SiteUrlResult {
 
 export function buildManifest(siteUrl: string) {
   return {
-    name: "Runner Center",
+    name: "EraInfra",
     url: siteUrl,
     hook_attributes: { url: `${siteUrl}/github/webhook`, active: true },
     redirect_url: `${siteUrl}/github/app/callback`,
@@ -386,7 +386,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Validate GitHub's app-manifest conversion response.
  *
- * `client_secret` is intentionally not read or stored: Runner Center performs no
+ * `client_secret` is intentionally not read or stored: EraInfra performs no
  * OAuth user flow, so keeping it would be a liability with no use.
  */
 export function parseManifestConversion(payload: unknown): ManifestCredentials | null {

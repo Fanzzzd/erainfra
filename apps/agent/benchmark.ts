@@ -160,7 +160,7 @@ async function measureNetwork(
       headers: {
         Accept: "application/json",
         Range: `bytes=0-${NETWORK_BYTE_LIMIT - 1}`,
-        "User-Agent": "runner-center-agent-benchmark/1",
+        "User-Agent": "erainfra-agent-benchmark/1",
       },
       signal: AbortSignal.timeout(5_000),
     });

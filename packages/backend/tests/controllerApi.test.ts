@@ -97,10 +97,10 @@ describe("scale-set Attempt protocol", () => {
       profile: "rc-linux-js",
       runnerName: "runner-a",
       runnerRequestId: "7",
-      repository: "runner-center",
+      repository: "EraInfra",
       owner: "Fanzzzd",
       jobId: "job-1",
-      workflowRef: "Fanzzzd/runner-center/.github/workflows/ci.yml@refs/heads/main",
+      workflowRef: "Fanzzzd/EraInfra/.github/workflows/ci.yml@refs/heads/main",
       displayName: "check",
       workflowRunId: 99,
       eventName: "pull_request",
@@ -130,7 +130,7 @@ describe("scale-set Attempt protocol", () => {
     const [stored] = await t.run(async (ctx) => ctx.db.query("attempts").collect());
     expect(stored).toMatchObject({
       state: "completed",
-      repo: "runner-center",
+      repo: "EraInfra",
       jobId: "job-1",
       result: "succeeded",
       finishedAt: 400,

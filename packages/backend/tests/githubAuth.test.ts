@@ -101,7 +101,7 @@ async function storeApp(t: ReturnType<typeof setup>) {
       appId: STORED.appId,
       clientId: "Iv1.abc123",
       slug: "runner-center-test",
-      name: "Runner Center Test",
+      name: "EraInfra Test",
       privateKey: STORED.privateKey,
       webhookSecret: "whsec",
       htmlUrl: "https://github.com/apps/runner-center-test",

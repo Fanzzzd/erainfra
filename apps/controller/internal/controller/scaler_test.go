@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/runner-center/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/EraInfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 )
 
@@ -257,10 +257,10 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 		RunnerName: "rc-linux-js-a",
 		JobMessageBase: scaleset.JobMessageBase{
 			RunnerRequestID: 7,
-			RepositoryName:  "runner-center",
+			RepositoryName:  "EraInfra",
 			OwnerName:       "Fanzzzd",
 			JobID:           "job-1",
-			JobWorkflowRef:  "Fanzzzd/runner-center/.github/workflows/ci.yml@refs/heads/main",
+			JobWorkflowRef:  "Fanzzzd/EraInfra/.github/workflows/ci.yml@refs/heads/main",
 			JobDisplayName:  "check",
 			WorkflowRunID:   99,
 			EventName:       "pull_request",
@@ -283,7 +283,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(store.started) != 1 || store.started[0].Repository != "runner-center" {
+	if len(store.started) != 1 || store.started[0].Repository != "EraInfra" {
 		t.Fatalf("started events = %#v", store.started)
 	}
 	if len(store.completed) != 1 || store.completed[0].FinishedAt != finishedAt {
