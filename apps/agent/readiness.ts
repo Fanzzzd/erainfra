@@ -248,11 +248,9 @@ function failureOf(facts: ReadinessFacts, stderr: string) {
 }
 
 export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessResult> {
-  // Both Linux executors already refuse a mutable reference — the Firecracker
-  // Spec and provision-docker.sh each reject one — so failing here only moves
-  // that rejection from job time to readiness. Tart is deliberately excluded:
-  // nothing in its path requires a digest today, and tightening it would take a
-  // working macOS Profile offline as a side effect of this change.
+  // Both Linux executors already refuse a mutable reference at job time, so
+  // failing here moves that rejection to readiness. Tart performs the same
+  // check in its branch so it can still report the independent binary check.
   const requiresDigest = profile.executor === "docker" || profile.executor === "firecracker";
   if (requiresDigest && !IMAGE_DIGEST.test(profile.imageRelease)) {
     const detail = `Image Release ${profile.imageRelease} is not pinned by sha256 digest`;
@@ -260,7 +258,15 @@ export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessRes
     const facts =
       profile.executor === "docker"
         ? dockerFacts([check])
-        : { ...runtimeFacts({}), checks: [check] };
+        : profile.executor === "tart"
+          ? {
+              isolation: "tart-vm",
+              boundary: "guest-kernel" as const,
+              checks: [check],
+              cacheScope: "immutable-image",
+              cacheSharedWritable: false,
+            }
+          : { ...runtimeFacts({}), checks: [check] };
     return { state: "failed", error: detail, ...facts };
   }
   switch (profile.executor) {
@@ -278,20 +284,31 @@ export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessRes
         cacheScope: "immutable-image",
         cacheSharedWritable: false,
       });
+      const digestError = IMAGE_DIGEST.test(profile.imageRelease)
+        ? undefined
+        : `Image Release ${profile.imageRelease} is not pinned by sha256 digest`;
       try {
         const version = await execa(binary, ["--version"], { timeout: 30_000 });
         checks.push({ name: "tart-binary", passed: true, detail: version.stdout.trim() });
+      } catch (error) {
+        const detail = message(error);
+        checks.push({ name: "tart-binary", passed: false, detail });
+      }
+      if (digestError !== undefined) {
+        checks.push({ name: "image-release", passed: false, detail: digestError });
+      }
+      if (checks.some((check) => !check.passed)) {
+        const currentFacts = facts();
+        return { state: "failed", error: failureOf(currentFacts, ""), ...currentFacts };
+      }
+      try {
         // A digest reference makes this an idempotent prewarm, not an update.
         await execa(binary, ["pull", profile.imageRelease], { timeout: 2 * 60 * 60_000 });
         checks.push({ name: "image-release", passed: true, detail: profile.imageRelease });
         return { state: "ready", ...facts() };
       } catch (error) {
         const detail = message(error);
-        checks.push({
-          name: checks.length === 0 ? "tart-binary" : "image-release",
-          passed: false,
-          detail,
-        });
+        checks.push({ name: "image-release", passed: false, detail });
         return { state: "failed", error: detail, ...facts() };
       }
     }

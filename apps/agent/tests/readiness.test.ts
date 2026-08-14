@@ -66,12 +66,10 @@ describe("prepareProfile", () => {
     assert.equal(result.cacheScope, "immutable-image");
   });
 
-  it("does not require a digest where nothing else does", async () => {
-    // Tightening Tart here would take a working macOS Profile offline as a
-    // side effect of a Linux isolation change. TART points at a binary that
-    // cannot exist so the check fails on the binary, not on the reference,
-    // without this test ever pulling a real image.
-    process.env.TART = "/nonexistent/tart";
+  it("reports an unpinned Tart image as a failed readiness check", async () => {
+    // The binary check still runs, but the mutable tag is never pulled.
+    const previousTart = process.env.TART;
+    process.env.TART = process.execPath;
     try {
       const result = await prepareProfile({
         profile: "rc-mac",
@@ -81,10 +79,41 @@ describe("prepareProfile", () => {
         memoryMiB: 4096,
       });
       assert.equal(result.state, "failed");
+      assert.match(result.state === "failed" ? result.error : "", /sha256 digest/);
+      assert.deepEqual(result.checks, [
+        { name: "tart-binary", passed: true, detail: process.version },
+        {
+          name: "image-release",
+          passed: false,
+          detail:
+            "Image Release ghcr.io/cirruslabs/macos-tahoe-base:latest is not pinned by sha256 digest",
+        },
+      ]);
+      assert.equal(result.isolation, "tart-vm");
+      assert.equal(result.boundary, "guest-kernel");
+    } finally {
+      if (previousTart === undefined) delete process.env.TART;
+      else process.env.TART = previousTart;
+    }
+  });
+
+  it("lets a digest-pinned Tart image continue to host preflight", async () => {
+    const previousTart = process.env.TART;
+    process.env.TART = "/nonexistent/tart";
+    try {
+      const result = await prepareProfile({
+        profile: "rc-mac",
+        executor: "tart",
+        imageRelease: `ghcr.io/cirruslabs/macos-sequoia-base${DIGEST}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+      });
+      assert.equal(result.state, "failed");
       assert.doesNotMatch(result.state === "failed" ? result.error : "", /sha256 digest/);
       assert.ok(result.checks.some((check) => check.name === "tart-binary" && !check.passed));
     } finally {
-      delete process.env.TART;
+      if (previousTart === undefined) delete process.env.TART;
+      else process.env.TART = previousTart;
     }
   });
 

@@ -87,3 +87,13 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/runner-center-ubuntu-24.04-js
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+      - name: Report immutable manifest digest
+        env:
+          IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/runner-center-ubuntu-24.04-js
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## Published Image Release"
+            echo
+            echo "\`${IMAGE_NAME}@${IMAGE_DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
