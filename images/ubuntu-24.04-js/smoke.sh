@@ -18,7 +18,7 @@ command -v docker >/dev/null
 command -v node >/dev/null
 command -v npm >/dev/null
 command -v pnpm >/dev/null
-ldconfig -p | grep -Fq 'libatomic.so.1'
+ldconfig -p | grep -F 'libatomic.so.1' >/dev/null
 node --version | grep -Fxq 'v22.23.2'
 pnpm --version | grep -Fxq '11.21.0'
 test "$(sudo -u runner HOME=/home/runner pnpm config get store-dir)" = '/runner-cache/pnpm'
