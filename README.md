@@ -287,7 +287,10 @@ matches Apple's macOS virtualization license constraint. Host-key pinning prefer
 attestation over Tart's guest-agent vsock; if that channel does not answer and this Image Release has
 no earlier pin, the first connection uses trust on first use (`accept-new`) and saves the presented
 key, so later runs are strict. That fallback exposes only the first boot to a local attacker on the
-Tart bridge and is not used when an earlier pin is available.
+Tart bridge and is not used when an earlier pin is available. An attacker present on that first boot
+can poison the persisted pin, and later strict checks do not authenticate it; verify the file under
+`~/.runner-center/known_hosts.d` through a trusted guest console or working vsock, and if it is wrong,
+restore attestation, remove the pin, and rerun the job to enroll the attested key.
 
 ## Target a Profile from GitHub Actions
 
@@ -317,13 +320,13 @@ rarely. A Profile on allowlist-only egress needs its cache endpoint declared wit
 
 ## Legacy webhook delivery recovery
 
-The legacy `workflow_job` path repairs both kinds of delivery loss. Minute reconciliation calls
-`retryStalledDeliveries` for deliveries that reached Convex but remained pending, retrying them with
-a bounded attempt count before marking them failed. A separate five-minute GitHub App scan covers
-events that never reached Convex: it lists recent failed App deliveries, deduplicates them by their
-stable delivery GUID, records bounded retry/backoff state in `webhookRecovery`, and asks GitHub to
-redeliver only missing, still-useful events. The dashboard exposes the latest scan and any recovered
-or abandoned delivery; deployments using only a legacy PAT cannot run the App-level scan.
+Minute reconciliation calls `retryStalledDeliveries` for deliveries that reached Convex but remained
+pending, retrying them with a bounded attempt count before marking them failed. GitHub App
+deployments also repair events that never reached Convex with a separate five-minute scan: it lists
+recent failed App deliveries, deduplicates them by their stable delivery GUID, records bounded
+retry/backoff state in `webhookRecovery`, and asks GitHub to redeliver only missing, still-useful
+events. The dashboard exposes the latest scan and any recovered or abandoned delivery; deployments
+using only a legacy PAT can retry received rows but cannot recover events that never arrived.
 
 ## Experiments
 

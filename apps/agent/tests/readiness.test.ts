@@ -67,8 +67,9 @@ describe("prepareProfile", () => {
   });
 
   it("reports an unpinned Tart image as a failed readiness check", async () => {
-    // The digest contract is checked before Tart can pull a mutable tag.
-    process.env.TART = "/nonexistent/tart";
+    // The binary check still runs, but the mutable tag is never pulled.
+    const previousTart = process.env.TART;
+    process.env.TART = "/bin/echo";
     try {
       const result = await prepareProfile({
         profile: "rc-mac",
@@ -80,6 +81,7 @@ describe("prepareProfile", () => {
       assert.equal(result.state, "failed");
       assert.match(result.state === "failed" ? result.error : "", /sha256 digest/);
       assert.deepEqual(result.checks, [
+        { name: "tart-binary", passed: true, detail: "--version" },
         {
           name: "image-release",
           passed: false,
@@ -90,11 +92,13 @@ describe("prepareProfile", () => {
       assert.equal(result.isolation, "tart-vm");
       assert.equal(result.boundary, "guest-kernel");
     } finally {
-      delete process.env.TART;
+      if (previousTart === undefined) delete process.env.TART;
+      else process.env.TART = previousTart;
     }
   });
 
   it("lets a digest-pinned Tart image continue to host preflight", async () => {
+    const previousTart = process.env.TART;
     process.env.TART = "/nonexistent/tart";
     try {
       const result = await prepareProfile({
@@ -108,7 +112,8 @@ describe("prepareProfile", () => {
       assert.doesNotMatch(result.state === "failed" ? result.error : "", /sha256 digest/);
       assert.ok(result.checks.some((check) => check.name === "tart-binary" && !check.passed));
     } finally {
-      delete process.env.TART;
+      if (previousTart === undefined) delete process.env.TART;
+      else process.env.TART = previousTart;
     }
   });
 

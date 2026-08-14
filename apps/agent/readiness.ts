@@ -248,15 +248,10 @@ function failureOf(facts: ReadinessFacts, stderr: string) {
 }
 
 export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessResult> {
-  // Every OCI/Tart executor promises an immutable Image Release. Production
-  // Tart catalog labels are already digest-pinned; the only floating catalog
-  // image is preview-gated. Report an unpinned reference as structured evidence
-  // rather than throwing, so a previously healthy contract becomes degraded
-  // server-side and operators see the exact failed check.
-  const requiresDigest =
-    profile.executor === "docker" ||
-    profile.executor === "firecracker" ||
-    profile.executor === "tart";
+  // Both Linux executors already refuse a mutable reference at job time, so
+  // failing here moves that rejection to readiness. Tart performs the same
+  // check in its branch so it can still report the independent binary check.
+  const requiresDigest = profile.executor === "docker" || profile.executor === "firecracker";
   if (requiresDigest && !IMAGE_DIGEST.test(profile.imageRelease)) {
     const detail = `Image Release ${profile.imageRelease} is not pinned by sha256 digest`;
     const check: ReadinessCheck = { name: "image-release", passed: false, detail };
@@ -289,20 +284,31 @@ export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessRes
         cacheScope: "immutable-image",
         cacheSharedWritable: false,
       });
+      const digestError = IMAGE_DIGEST.test(profile.imageRelease)
+        ? undefined
+        : `Image Release ${profile.imageRelease} is not pinned by sha256 digest`;
       try {
         const version = await execa(binary, ["--version"], { timeout: 30_000 });
         checks.push({ name: "tart-binary", passed: true, detail: version.stdout.trim() });
+      } catch (error) {
+        const detail = message(error);
+        checks.push({ name: "tart-binary", passed: false, detail });
+      }
+      if (digestError !== undefined) {
+        checks.push({ name: "image-release", passed: false, detail: digestError });
+      }
+      if (checks.some((check) => !check.passed)) {
+        const currentFacts = facts();
+        return { state: "failed", error: failureOf(currentFacts, ""), ...currentFacts };
+      }
+      try {
         // A digest reference makes this an idempotent prewarm, not an update.
         await execa(binary, ["pull", profile.imageRelease], { timeout: 2 * 60 * 60_000 });
         checks.push({ name: "image-release", passed: true, detail: profile.imageRelease });
         return { state: "ready", ...facts() };
       } catch (error) {
         const detail = message(error);
-        checks.push({
-          name: checks.length === 0 ? "tart-binary" : "image-release",
-          passed: false,
-          detail,
-        });
+        checks.push({ name: "image-release", passed: false, detail });
         return { state: "failed", error: detail, ...facts() };
       }
     }
