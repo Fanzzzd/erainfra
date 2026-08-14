@@ -13,6 +13,7 @@ const activeAttemptState = v.union(
 );
 
 const terminalStates = new Set(["completed", "cancelled", "failed"]);
+const activeAttemptStates = ["pending", "preparing", "ready", "running"] as const;
 
 export const registerProfile = internalMutation({
   args: {
@@ -63,24 +64,23 @@ export const listActiveAttempts = internalQuery({
     }),
   ),
   handler: async (ctx, args) => {
-    const attempts = await ctx.db
-      .query("attempts")
-      .withIndex("by_profile", (query) => query.eq("profile", args.profile))
-      .collect();
-    return attempts
-      .filter(
-        (
-          attempt,
-        ): attempt is typeof attempt & {
-          state: "pending" | "preparing" | "ready" | "running";
-        } => !terminalStates.has(attempt.state),
-      )
-      .map(({ runnerName, runnerId, state, createdAt }) => ({
-        runnerName,
-        runnerId,
-        state,
-        createdAt,
-      }));
+    const ranges = await Promise.all(
+      activeAttemptStates.map(async (state) => {
+        const attempts = await ctx.db
+          .query("attempts")
+          .withIndex("by_profile_state", (query) =>
+            query.eq("profile", args.profile).eq("state", state),
+          )
+          .collect();
+        return attempts.map(({ runnerName, runnerId, createdAt }) => ({
+          runnerName,
+          runnerId,
+          state,
+          createdAt,
+        }));
+      }),
+    );
+    return ranges.flat();
   },
 });
 
@@ -95,11 +95,11 @@ export const listRunnerCleanups = internalQuery({
   handler: async (ctx, args) => {
     const attempts = await ctx.db
       .query("attempts")
-      .withIndex("by_profile", (query) => query.eq("profile", args.profile))
+      .withIndex("by_profile_cleanupPending", (query) =>
+        query.eq("profile", args.profile).eq("runnerCleanupPending", true),
+      )
       .collect();
-    return attempts
-      .filter((attempt) => attempt.runnerCleanupPending === true)
-      .map(({ runnerName, runnerId }) => ({ runnerName, runnerId }));
+    return attempts.map(({ runnerName, runnerId }) => ({ runnerName, runnerId }));
   },
 });
 

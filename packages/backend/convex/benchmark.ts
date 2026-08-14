@@ -266,10 +266,11 @@ export function benchmarkScore(
 export function resourceRecommendedSlots(
   os: "linux" | "mac" | "win",
   cpus: number,
-  memoryMiB: number,
+  memoryMiB?: number,
 ) {
   const cpuSlots = Math.max(1, Math.floor(cpus / 4));
-  const memorySlots = Math.max(1, Math.floor(memoryMiB / 8_192));
+  const memorySlots =
+    memoryMiB === undefined ? cpuSlots : Math.max(1, Math.floor(memoryMiB / 8_192));
   return os === "linux"
     ? Math.min(16, cpuSlots, memorySlots)
     : os === "mac"
