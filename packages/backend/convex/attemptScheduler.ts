@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
-import { hasSnapshotHeadroom } from "./isolation";
+import { hasSnapshotHeadroomForGuests } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
@@ -72,11 +72,28 @@ export const tryAssign = internalMutation({
         .withIndex("by_state", (query) => query.eq("state", "active"))
         .collect(),
     ]);
+    const readinessStates = ["preparing", "ready", "degraded", "failed"] as const;
+    const allReadiness = (
+      await Promise.all(
+        profiles.flatMap((profile) =>
+          readinessStates.map((state) =>
+            ctx.db
+              .query("workerReadiness")
+              .withIndex("by_profile_state", (query) =>
+                query.eq("profile", profile.name).eq("state", state),
+              )
+              .collect(),
+          ),
+        ),
+      )
+    ).flat();
     const attempts = [...pendingAttempts, ...attemptRanges.flat()];
     const experiments = [...queuedExperiments, ...experimentRanges.flat()];
     const activeProfileByName = new Map(profiles.map((profile) => [profile.name, profile]));
     const machineById = new Map(machines.map((machine) => [machine._id, machine]));
     const readinessByProfile = new Map<string, Doc<"workerReadiness">[]>();
+    const activeByMachineProfile = new Map<string, number>();
+    const idleWarmByMachineProfile = new Map<string, number>();
     // `count` is what disk admission needs: copy-on-write growth is per running
     // guest, not per vCPU.
     const reservedByMachine = new Map<
@@ -101,6 +118,8 @@ export const tryAssign = internalMutation({
       reserved.memoryMiB += attempt.memoryMiB;
       reserved.count += 1;
       reservedByMachine.set(attempt.machineId, reserved);
+      const key = `${attempt.machineId}:${attempt.profile}`;
+      activeByMachineProfile.set(key, (activeByMachineProfile.get(key) ?? 0) + 1);
     }
     for (const experiment of experiments) {
       if (
@@ -120,6 +139,35 @@ export const tryAssign = internalMutation({
       reserved.memoryMiB += experiment.memoryMiB;
       reserved.count += 1;
       reservedByMachine.set(experiment.machineId, reserved);
+      const key = `${experiment.machineId}:${experiment.profile}`;
+      activeByMachineProfile.set(key, (activeByMachineProfile.get(key) ?? 0) + 1);
+    }
+    for (const readiness of allReadiness) {
+      if (readiness.warmPool === undefined || !machineById.has(readiness.machineId)) continue;
+      const profile = activeProfileByName.get(readiness.profile);
+      if (
+        profile === undefined ||
+        profile.executor !== readiness.executor ||
+        profile.imageRelease !== readiness.imageRelease ||
+        (readiness.vcpus !== undefined && readiness.vcpus !== profile.vcpus) ||
+        (readiness.memoryMiB !== undefined && readiness.memoryMiB !== profile.memoryMiB) ||
+        (readiness.warmPool?.target ?? 0) !== (profile.warmPool ?? 0)
+      )
+        continue;
+      const target = readiness.warmPool.parked + readiness.warmPool.claimed;
+      const key = `${readiness.machineId}:${readiness.profile}`;
+      const idle = Math.max(0, target - (activeByMachineProfile.get(key) ?? 0));
+      if (idle === 0) continue;
+      idleWarmByMachineProfile.set(key, idle);
+      const reserved = reservedByMachine.get(readiness.machineId) ?? {
+        vcpus: 0,
+        memoryMiB: 0,
+        count: 0,
+      };
+      reserved.vcpus += idle * profile.vcpus;
+      reserved.memoryMiB += idle * profile.memoryMiB;
+      reserved.count += idle;
+      reservedByMachine.set(readiness.machineId, reserved);
     }
     const pending = [
       ...attempts
@@ -165,9 +213,7 @@ export const tryAssign = internalMutation({
         .map((readiness) => ({ readiness, machine: machineById.get(readiness.machineId) }))
         .filter(
           (entry): entry is { readiness: typeof entry.readiness; machine: Doc<"machines"> } =>
-            entry.machine !== undefined &&
-            now - entry.machine.lastSeen < WORKER_OFFLINE_AFTER_MS &&
-            entry.machine.usedSlots < entry.machine.maxSlots,
+            entry.machine !== undefined && now - entry.machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
         )
         .map(({ readiness, machine }) => {
           const reserved = reservedByMachine.get(machine._id) ?? {
@@ -187,20 +233,28 @@ export const tryAssign = internalMutation({
               : machine.memoryMiB <= work.memoryMiB
                 ? machine.memoryMiB
                 : Math.floor(machine.memoryMiB * 0.9);
+          const warmKey = `${machine._id}:${work.profile}`;
+          const usesWarm = (idleWarmByMachineProfile.get(warmKey) ?? 0) > 0;
+          const additionalVCPUs = usesWarm ? 0 : work.vcpus;
+          const additionalMemoryMiB = usesWarm ? 0 : work.memoryMiB;
+          const additionalGuests = usesWarm ? 0 : 1;
+          const occupiedGuests = Math.max(reserved.count, machine.usedSlots);
           if (
-            reserved.vcpus + work.vcpus > usableVCPUs ||
-            reserved.memoryMiB + work.memoryMiB > usableMemoryMiB ||
-            !hasSnapshotHeadroom(readiness.storage, reserved.count)
+            occupiedGuests + additionalGuests > machine.maxSlots ||
+            reserved.vcpus + additionalVCPUs > usableVCPUs ||
+            reserved.memoryMiB + additionalMemoryMiB > usableMemoryMiB ||
+            !hasSnapshotHeadroomForGuests(readiness.storage, occupiedGuests + additionalGuests)
           ) {
             return undefined;
           }
           const resourcePressure = Math.max(
             machine.cpus === undefined ? 0 : reserved.vcpus / usableVCPUs,
             machine.memoryMiB === undefined ? 0 : reserved.memoryMiB / usableMemoryMiB,
-            machine.usedSlots / machine.maxSlots,
+            occupiedGuests / machine.maxSlots,
           );
           return {
             machine,
+            usesWarm,
             resourcePressure,
             benchmark: benchmarkScore(machine.benchmark, fitPolicy, now),
           };
@@ -216,7 +270,7 @@ export const tryAssign = internalMutation({
         );
       const candidate = candidates[0];
       if (candidate === undefined) continue;
-      const { machine } = candidate;
+      const { machine, usesWarm } = candidate;
       const selectionReason =
         `hard compatibility passed; pressure=${candidate.resourcePressure.toFixed(3)}; ` +
         `${fitPolicy} benchmark=${candidate.benchmark.score}/100 (${candidate.benchmark.source}); ` +
@@ -234,9 +288,14 @@ export const tryAssign = internalMutation({
         memoryMiB: 0,
         count: 0,
       };
-      reserved.vcpus += work.vcpus;
-      reserved.memoryMiB += work.memoryMiB;
-      reserved.count += 1;
+      const warmKey = `${machine._id}:${work.profile}`;
+      if (usesWarm) {
+        idleWarmByMachineProfile.set(warmKey, (idleWarmByMachineProfile.get(warmKey) ?? 1) - 1);
+      } else {
+        reserved.vcpus += work.vcpus;
+        reserved.memoryMiB += work.memoryMiB;
+        reserved.count += 1;
+      }
       reservedByMachine.set(machine._id, reserved);
       assigned += 1;
     }

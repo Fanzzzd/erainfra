@@ -15,7 +15,7 @@ const CONTRACT = {
   memoryMiB: 4096,
 };
 
-async function addWorker(t: Harness, name: string, maxSlots = 1) {
+async function addWorker(t: Harness, name: string, maxSlots = 1, warmPool = 0) {
   await t.mutation(internal.controllerApi.registerProfile, {
     name: CONTRACT.profile,
     scaleSetName: CONTRACT.profile,
@@ -23,6 +23,7 @@ async function addWorker(t: Harness, name: string, maxSlots = 1) {
     imageRelease: CONTRACT.imageRelease,
     vcpus: CONTRACT.vcpus,
     memoryMiB: CONTRACT.memoryMiB,
+    warmPool,
     minRunners: 0,
     maxRunners: 4,
   });
@@ -42,7 +43,10 @@ async function addWorker(t: Harness, name: string, maxSlots = 1) {
     profile: CONTRACT.profile,
     executor: CONTRACT.executor,
     imageRelease: CONTRACT.imageRelease,
+    vcpus: CONTRACT.vcpus,
+    memoryMiB: CONTRACT.memoryMiB,
     state: "ready",
+    warmPool: { target: warmPool, parked: warmPool, claimed: 0 },
   });
   return machineId;
 }
@@ -97,6 +101,58 @@ async function publishBenchmark(
 }
 
 describe("readiness-gated Attempt scheduling", () => {
+  it("transfers parked capacity to matching Attempts without double-counting", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "warm", 2, 2);
+    await createAttempt(t, "runner-a");
+    await createAttempt(t, "runner-b");
+    await createAttempt(t, "runner-c");
+
+    const attempts = await t.run(async (ctx) => ctx.db.query("attempts").collect());
+    expect(attempts.filter((attempt) => attempt.machineId === machineId)).toHaveLength(2);
+    expect(attempts.filter((attempt) => attempt.machineId === undefined)).toHaveLength(1);
+  });
+
+  it("reserves parked slots against unrelated Profile work", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "warm", 2, 2);
+    const other = { ...CONTRACT, profile: "rc-linux-other" };
+    await t.mutation(internal.controllerApi.registerProfile, {
+      name: other.profile,
+      scaleSetName: other.profile,
+      executor: other.executor,
+      imageRelease: other.imageRelease,
+      vcpus: other.vcpus,
+      memoryMiB: other.memoryMiB,
+      warmPool: 0,
+      minRunners: 0,
+      maxRunners: 4,
+    });
+    await t.mutation(api.workerApi.reportReadiness, {
+      token: "token-warm",
+      profile: other.profile,
+      executor: other.executor,
+      imageRelease: other.imageRelease,
+      state: "ready",
+      warmPool: { target: 0, parked: 0, claimed: 0 },
+    });
+    await t.mutation(internal.controllerApi.createAttempt, {
+      ...other,
+      runnerName: "runner-other",
+      runnerId: 99,
+      encodedJITConfig: "secret-other",
+    });
+    await t.mutation(internal.attemptScheduler.tryAssign, {});
+
+    const attempt = await t.run(async (ctx) =>
+      ctx.db
+        .query("attempts")
+        .withIndex("by_runnerName", (q) => q.eq("runnerName", "runner-other"))
+        .unique(),
+    );
+    expect(attempt?.machineId).toBeUndefined();
+    expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
+  });
   it("derives bounded automatic capacity from live host resources", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) =>

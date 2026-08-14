@@ -58,6 +58,12 @@ function optionalPositiveInteger(value: unknown): value is number | undefined {
   return value === undefined || safePositiveInteger(value);
 }
 
+function optionalNonnegativeInteger(value: unknown): value is number | undefined {
+  return (
+    value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+  );
+}
+
 const immutableImagePattern = /@sha256:[0-9a-f]{64}$/;
 
 export function parseRegisterProfile(payload: unknown) {
@@ -74,6 +80,11 @@ export function parseRegisterProfile(payload: unknown) {
     !immutableImagePattern.test(payload.imageRelease.trim()) ||
     !safePositiveInteger(payload.vcpus) ||
     !safePositiveInteger(payload.memoryMiB) ||
+    !optionalNonnegativeInteger(payload.warmPool) ||
+    (typeof payload.warmPool === "number" && payload.warmPool > 16) ||
+    (typeof payload.warmPool === "number" &&
+      payload.warmPool > 0 &&
+      payload.executor !== "firecracker") ||
     (payload.fitPolicy !== undefined &&
       payload.fitPolicy !== "balanced" &&
       payload.fitPolicy !== "cpu" &&
@@ -83,7 +94,8 @@ export function parseRegisterProfile(payload: unknown) {
     !Number.isSafeInteger(payload.minRunners) ||
     payload.minRunners < 0 ||
     !safePositiveInteger(payload.maxRunners) ||
-    payload.minRunners > payload.maxRunners
+    payload.minRunners > payload.maxRunners ||
+    (typeof payload.warmPool === "number" && payload.warmPool > payload.maxRunners)
   ) {
     return null;
   }
@@ -94,6 +106,7 @@ export function parseRegisterProfile(payload: unknown) {
     imageRelease: payload.imageRelease.trim(),
     vcpus: payload.vcpus,
     memoryMiB: payload.memoryMiB,
+    warmPool: payload.warmPool ?? 0,
     fitPolicy: (payload.fitPolicy ?? "balanced") as "balanced" | "cpu" | "network" | "io",
     minRunners: payload.minRunners,
     maxRunners: payload.maxRunners,

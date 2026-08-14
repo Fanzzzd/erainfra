@@ -4,9 +4,12 @@ import {
   architectureMismatch,
   HEALTHY_READINESS_REFRESH_MS,
   parseRuntimeReport,
+  parseWarmPoolStatus,
   prepareProfile,
   readinessRefreshDelay,
   UNHEALTHY_READINESS_REFRESH_MS,
+  WARM_POOL_READINESS_REFRESH_MS,
+  warmPoolCapacityError,
 } from "../readiness.ts";
 
 const DIGEST = `@sha256:${"a".repeat(64)}`;
@@ -149,6 +152,33 @@ describe("architectureMismatch", () => {
   });
 });
 
+describe("warm pool readiness", () => {
+  it("parses only non-negative integral pool accounting", () => {
+    assert.deepEqual(parseWarmPoolStatus('{"target":2,"parked":1,"claimed":1,"healthy":true}'), {
+      target: 2,
+      parked: 1,
+      claimed: 1,
+    });
+    assert.equal(parseWarmPoolStatus('{"target":2,"parked":-1,"claimed":3}'), undefined);
+    assert.equal(parseWarmPoolStatus("not JSON"), undefined);
+  });
+
+  it("rejects aggregate slot, CPU, and memory overcommit", () => {
+    const profile = {
+      profile: "warm",
+      executor: "firecracker" as const,
+      imageRelease: `ghcr.io/example/image${DIGEST}`,
+      vcpus: 2,
+      memoryMiB: 4096,
+      warmPool: 2,
+    };
+    assert.match(warmPoolCapacityError([profile], 1, 8, 32_768) ?? "", /slots/);
+    assert.match(warmPoolCapacityError([profile], 2, 2, 32_768) ?? "", /vCPUs/);
+    assert.match(warmPoolCapacityError([profile], 2, 8, 4_096) ?? "", /MiB/);
+    assert.equal(warmPoolCapacityError([profile], 2, 8, 32_768), undefined);
+  });
+});
+
 describe("readiness refresh cadence", () => {
   it("keeps ready Profiles on the low-frequency refresh", () => {
     assert.equal(readinessRefreshDelay([]), HEALTHY_READINESS_REFRESH_MS);
@@ -159,5 +189,9 @@ describe("readiness refresh cadence", () => {
     assert.equal(readinessRefreshDelay(["ready", "failed"]), UNHEALTHY_READINESS_REFRESH_MS);
     assert.equal(readinessRefreshDelay(["degraded"]), UNHEALTHY_READINESS_REFRESH_MS);
     assert.ok(UNHEALTHY_READINESS_REFRESH_MS < HEALTHY_READINESS_REFRESH_MS);
+  });
+
+  it("polls healthy warm pools every minute", () => {
+    assert.equal(readinessRefreshDelay(["ready"], true), WARM_POOL_READINESS_REFRESH_MS);
   });
 });

@@ -76,6 +76,7 @@ export default defineSchema({
     imageRelease: v.string(),
     vcpus: v.number(),
     memoryMiB: v.number(),
+    warmPool: v.optional(v.number()),
     fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
@@ -396,6 +397,8 @@ export default defineSchema({
       v.literal("hyperv"),
     ),
     imageRelease: v.string(),
+    vcpus: v.optional(v.number()),
+    memoryMiB: v.optional(v.number()),
     state: v.union(
       v.literal("preparing"),
       v.literal("ready"),
@@ -404,6 +407,7 @@ export default defineSchema({
     ),
     checkedAt: v.number(),
     preparedAt: v.optional(v.number()),
+    warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
     // No migration: these optional evidence fields stay in the validator for
     // one Agent refresh cycle. reportReadiness writes the new evidence row and
     // removes them from this hot row on the Worker's next report.
@@ -462,7 +466,10 @@ export default defineSchema({
       v.literal("hyperv"),
     ),
     imageRelease: v.string(),
+    vcpus: v.optional(v.number()),
+    memoryMiB: v.optional(v.number()),
     checkedAt: v.number(),
+    warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
     statusDetail: v.optional(v.string()),
     lastError: v.optional(v.string()),
     isolation: v.optional(v.string()),

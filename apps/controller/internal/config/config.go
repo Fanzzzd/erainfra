@@ -21,6 +21,7 @@ type Config struct {
 	ImageRelease    string
 	VCPUs           int64
 	MemoryMiB       int64
+	WarmPool        int
 	FitPolicy       string
 	ScaleSetName    string
 	Labels          []string
@@ -46,6 +47,7 @@ func Load() (Config, error) {
 		VCPUs:           2,
 		MemoryMiB:       4096,
 		FitPolicy:       "balanced",
+		WarmPool:        0,
 		LogLevel:        slog.LevelInfo,
 	}
 	if value := strings.ToLower(strings.TrimSpace(os.Getenv("RC_FIT_POLICY"))); value != "" {
@@ -102,6 +104,12 @@ func Load() (Config, error) {
 		config.MemoryMiB, err = strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return Config{}, fmt.Errorf("RC_MEMORY_MIB must be an integer: %w", err)
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("RC_WARM_POOL")); value != "" {
+		config.WarmPool, err = strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("RC_WARM_POOL must be an integer: %w", err)
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("RC_LOG_LEVEL"))) {
@@ -161,6 +169,12 @@ func (c Config) Validate() error {
 	}
 	if c.VCPUs < 1 || c.MemoryMiB < 512 {
 		return errors.New("RC_VCPUS must be positive and RC_MEMORY_MIB must be at least 512")
+	}
+	if c.WarmPool < 0 || c.WarmPool > 16 || c.WarmPool > c.MaxRunners {
+		return errors.New("RC_WARM_POOL must be between 0 and 16 and no greater than RC_MAX_RUNNERS")
+	}
+	if c.WarmPool > 0 && c.Executor != "firecracker" {
+		return errors.New("RC_WARM_POOL is supported only by the firecracker executor")
 	}
 	if c.FitPolicy != "balanced" && c.FitPolicy != "cpu" && c.FitPolicy != "network" && c.FitPolicy != "io" {
 		return errors.New("RC_FIT_POLICY must be balanced, cpu, network, or io")

@@ -9,6 +9,7 @@ export type ProfileSpec = {
   imageRelease: string;
   vcpus: number;
   memoryMiB: number;
+  warmPool?: number;
 };
 
 /** One named prerequisite the Worker proved, or failed to prove, locally. */
@@ -39,6 +40,7 @@ export type ReadinessFacts = {
   };
   storage?: { snapshotter?: string; poolTotalMiB?: number; poolFreeMiB?: number };
   network?: { policyName?: string; subnet?: string; egressMode?: string };
+  warmPool?: { target: number; parked: number; claimed: number };
 };
 
 export type ReadinessResult = ({ state: "ready" } | { state: "failed"; error: string }) &
@@ -49,16 +51,20 @@ export type PublishedReadinessState = "preparing" | "ready" | "degraded" | "fail
 /** Healthy images are refreshed sparingly; broken capacity retries promptly. */
 export const HEALTHY_READINESS_REFRESH_MS = 6 * 60 * 60_000;
 export const UNHEALTHY_READINESS_REFRESH_MS = 5 * 60_000;
+export const WARM_POOL_READINESS_REFRESH_MS = 60_000;
 
 /**
  * The Worker retries every failed/degraded Profile on a materially shorter
  * cadence. Missing Profiles use the healthy cadence rather than spinning.
  */
-export function readinessRefreshDelay(states: Iterable<PublishedReadinessState>) {
+export function readinessRefreshDelay(
+  states: Iterable<PublishedReadinessState>,
+  hasWarmPool = false,
+) {
   for (const state of states) {
     if (state === "failed" || state === "degraded") return UNHEALTHY_READINESS_REFRESH_MS;
   }
-  return HEALTHY_READINESS_REFRESH_MS;
+  return hasWarmPool ? WARM_POOL_READINESS_REFRESH_MS : HEALTHY_READINESS_REFRESH_MS;
 }
 
 /**
@@ -220,12 +226,40 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
       const facts = runtimeFacts(report, preflight.stderr.trim() || "preflight failed");
       return { state: "failed", error: failureOf(facts, preflight.stderr), ...facts };
     }
-    await execa(binary, ["prepare"], {
-      env: { ...process.env, RC_IMAGE_RELEASE: profile.imageRelease },
+    const prepared = await execa(binary, ["prepare"], {
+      env: {
+        ...process.env,
+        RC_PROFILE: profile.profile,
+        RC_IMAGE_RELEASE: profile.imageRelease,
+        RC_VCPUS: String(profile.vcpus),
+        RC_MEMORY_MIB: String(profile.memoryMiB),
+        RC_WARM_POOL: String(profile.warmPool ?? 0),
+      },
       timeout: 60 * 60_000,
+      reject: false,
     });
     const facts = runtimeFacts(report);
     facts.checks.push({ name: "image-release", passed: true, detail: profile.imageRelease });
+    const warmPool = parseWarmPoolStatus(prepared.stdout);
+    if (
+      prepared.exitCode !== 0 ||
+      warmPool === undefined ||
+      warmPool.target !== (profile.warmPool ?? 0) ||
+      warmPool.parked + warmPool.claimed !== warmPool.target
+    ) {
+      const detail =
+        prepared.stderr.trim() ||
+        `warm pool owns ${warmPool === undefined ? "an unknown number" : warmPool.parked + warmPool.claimed} of ${profile.warmPool ?? 0} microVMs`;
+      facts.checks.push({ name: "warm-pool", passed: false, detail });
+      if (warmPool !== undefined) facts.warmPool = warmPool;
+      return { state: "failed", error: detail, ...facts };
+    }
+    facts.warmPool = warmPool;
+    facts.checks.push({
+      name: "warm-pool",
+      passed: true,
+      detail: `${warmPool.parked} parked and ${warmPool.claimed} claimed of ${warmPool.target}`,
+    });
     return { state: "ready", ...facts };
   } catch (error) {
     const detail = message(error);
@@ -235,6 +269,59 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
     }
     return { state: "failed", error: detail, ...facts };
   }
+}
+
+export function parseWarmPoolStatus(
+  stdout: string,
+): { target: number; parked: number; claimed: number } | undefined {
+  try {
+    const parsed: unknown = JSON.parse(stdout.trim());
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("target" in parsed) ||
+      !("parked" in parsed) ||
+      !("claimed" in parsed)
+    )
+      return undefined;
+    const { target, parked, claimed } = parsed as Record<string, unknown>;
+    if (
+      ![target, parked, claimed].every(
+        (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+      )
+    ) {
+      return undefined;
+    }
+    return { target: target as number, parked: parked as number, claimed: claimed as number };
+  } catch {
+    return undefined;
+  }
+}
+
+export function warmPoolCapacityError(
+  profiles: ProfileSpec[],
+  maxSlots: number,
+  hostCPUs: number,
+  hostMemoryMiB: number,
+): string | undefined {
+  const warm = profiles.filter(
+    (profile) => profile.executor === "firecracker" && (profile.warmPool ?? 0) > 0,
+  );
+  const slots = warm.reduce((total, profile) => total + (profile.warmPool ?? 0), 0);
+  const vcpus = warm.reduce((total, profile) => total + (profile.warmPool ?? 0) * profile.vcpus, 0);
+  const memoryMiB = warm.reduce(
+    (total, profile) => total + (profile.warmPool ?? 0) * profile.memoryMiB,
+    0,
+  );
+  const usableCPUs = Math.max(1, Math.floor(hostCPUs * 0.9));
+  const usableMemoryMiB = Math.max(512, Math.floor(hostMemoryMiB * 0.9));
+  if (slots > maxSlots)
+    return `warm pools require ${slots} slots but this Worker admits ${maxSlots}`;
+  if (vcpus > usableCPUs)
+    return `warm pools require ${vcpus} vCPUs but this Worker reserves ${usableCPUs}`;
+  if (memoryMiB > usableMemoryMiB)
+    return `warm pools require ${memoryMiB} MiB but this Worker reserves ${usableMemoryMiB} MiB`;
+  return undefined;
 }
 
 function failureOf(facts: ReadinessFacts, stderr: string) {
@@ -325,4 +412,12 @@ export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessRes
       };
     }
   }
+}
+
+export async function removePreparedFirecrackerProfile(profile: string) {
+  const binary = process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime";
+  await execa(binary, ["remove-profile"], {
+    env: { ...process.env, RC_PROFILE: profile },
+    timeout: 60_000,
+  });
 }

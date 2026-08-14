@@ -1,11 +1,14 @@
 package guest
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMetadataClientUsesMMDSv2WithoutLeakingJIT(t *testing.T) {
@@ -43,6 +46,19 @@ func TestMetadataClientUsesMMDSv2WithoutLeakingJIT(t *testing.T) {
 	}
 	if strings.Contains(errString(err), secret) {
 		t.Fatal("JIT leaked into an error")
+	}
+}
+
+func TestMetadataClientWaitsForClaimUntilContextEnds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		http.Error(response, "not claimed", http.StatusNotFound)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	_, err := NewMetadataClient(server.URL, server.Client()).Fetch(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Fetch error = %v, want context deadline", err)
 	}
 }
 

@@ -43,7 +43,7 @@ func run(ctx context.Context, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, errors.New(
 			"usage: runner-center-runtime " +
-				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|recover|run|experiment",
+				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment",
 		)
 	}
 	if args[0] == "version" {
@@ -94,11 +94,24 @@ func run(ctx context.Context, args []string) (int, error) {
 		}
 		return 0, nil
 	case "prepare":
-		image := strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE"))
-		if image == "" {
-			return 2, errors.New("RC_IMAGE_RELEASE is required")
+		profile, err := profileEnv()
+		if err != nil {
+			return 2, err
 		}
-		if err := client.PrepareImage(ctx, image); err != nil {
+		status, err := client.PrepareProfile(ctx, profile)
+		if encodeErr := json.NewEncoder(os.Stdout).Encode(status); encodeErr != nil {
+			return 1, fmt.Errorf("write warm pool status: %w", encodeErr)
+		}
+		if err != nil {
+			return 1, err
+		}
+		return 0, nil
+	case "remove-profile":
+		profile := strings.TrimSpace(os.Getenv("RC_PROFILE"))
+		if profile == "" {
+			return 2, errors.New("RC_PROFILE is required")
+		}
+		if err := client.RemoveProfile(ctx, profile); err != nil {
 			return 1, err
 		}
 		return 0, nil
@@ -129,6 +142,32 @@ func recoverOrphans(ctx context.Context, client *runtimeapi.Client) (int, error)
 		return 1, err
 	}
 	return 0, nil
+}
+
+func profileEnv() (executor.Profile, error) {
+	vCPUs, err := positiveInt64Env("RC_VCPUS")
+	if err != nil {
+		return executor.Profile{}, err
+	}
+	memoryMiB, err := positiveInt64Env("RC_MEMORY_MIB")
+	if err != nil {
+		return executor.Profile{}, err
+	}
+	warmPool, err := nonnegativeIntEnv("RC_WARM_POOL")
+	if err != nil {
+		return executor.Profile{}, err
+	}
+	profile := executor.Profile{
+		Name:         strings.TrimSpace(os.Getenv("RC_PROFILE")),
+		ImageRelease: strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
+		VCPUs:        vCPUs,
+		MemoryMiB:    memoryMiB,
+		WarmPool:     warmPool,
+	}
+	if err := profile.Validate(); err != nil {
+		return executor.Profile{}, err
+	}
+	return profile, nil
 }
 
 func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
@@ -361,6 +400,18 @@ func positiveInt64Env(name string) (int64, error) {
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+func nonnegativeIntEnv(name string) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
 	}
 	return parsed, nil
 }

@@ -27,7 +27,13 @@ func (*Runtime) Preflight(context.Context) (executor.Report, error) {
 	}, errUnsupported
 }
 
-func (*Runtime) PrepareImage(context.Context, string) error { return errUnsupported }
+func (*Runtime) PrepareProfile(context.Context, executor.Profile) (executor.WarmPoolStatus, error) {
+	return executor.WarmPoolStatus{}, errUnsupported
+}
+
+func (*Runtime) RemoveProfile(context.Context, string) error { return errUnsupported }
+
+func (*Runtime) Shutdown(context.Context) error { return nil }
 
 func (*Runtime) Start(context.Context, executor.Spec) (executor.Lease, error) {
 	return nil, errUnsupported

@@ -35,7 +35,33 @@ describe("controller payloads", () => {
         minRunners: 0,
         maxRunners: 4,
       }),
-    ).toMatchObject({ fitPolicy: "balanced" });
+    ).toMatchObject({ fitPolicy: "balanced", warmPool: 0 });
+    expect(
+      parseRegisterProfile({
+        name: "rc-linux-warm",
+        scaleSetName: "rc-linux-warm",
+        executor: "firecracker",
+        imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+        warmPool: 2,
+        minRunners: 0,
+        maxRunners: 4,
+      }),
+    ).toMatchObject({ warmPool: 2 });
+    expect(
+      parseRegisterProfile({
+        name: "rc-linux-invalid-warm",
+        scaleSetName: "rc-linux-invalid-warm",
+        executor: "docker",
+        imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+        warmPool: 2,
+        minRunners: 0,
+        maxRunners: 4,
+      }),
+    ).toBeNull();
     expect(
       parseRegisterProfile({
         name: "rc-linux-cpu",

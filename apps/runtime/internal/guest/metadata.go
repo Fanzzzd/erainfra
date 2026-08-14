@@ -56,14 +56,12 @@ func NewMetadataClient(baseURL string, client *http.Client) *MetadataClient {
 }
 
 func (c *MetadataClient) Fetch(ctx context.Context) (Metadata, error) {
-	var lastError error
 	delay := 250 * time.Millisecond
-	for attempt := 0; attempt < 10; attempt++ {
+	for {
 		metadata, err := c.fetchOnce(ctx)
 		if err == nil {
 			return metadata, nil
 		}
-		lastError = err
 		select {
 		case <-ctx.Done():
 			return Metadata{}, ctx.Err()
@@ -71,7 +69,6 @@ func (c *MetadataClient) Fetch(ctx context.Context) (Metadata, error) {
 		}
 		delay = min(3*time.Second, delay*2)
 	}
-	return Metadata{}, fmt.Errorf("fetch MMDS metadata after retries: %w", lastError)
 }
 
 func (c *MetadataClient) fetchOnce(ctx context.Context) (Metadata, error) {

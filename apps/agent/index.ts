@@ -22,6 +22,8 @@ import {
   readinessRefreshDelay,
   UNHEALTHY_READINESS_REFRESH_MS,
   prepareProfile,
+  removePreparedFirecrackerProfile,
+  warmPoolCapacityError,
   type PublishedReadinessState,
   type ReadinessFacts,
   type ProfileSpec,
@@ -102,6 +104,8 @@ const reportReadiness = makeFunctionReference<
     profile: string;
     executor: "docker" | "firecracker" | "tart" | "hyperv";
     imageRelease: string;
+    vcpus?: number;
+    memoryMiB?: number;
     state: "preparing" | "ready" | "failed";
     statusDetail?: string;
     error?: string;
@@ -447,6 +451,7 @@ let refreshingProfiles = false;
 let discoveredProfiles: ProfileSpec[] = [];
 let refreshAgain = false;
 let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+const preparedFirecrackerProfiles = new Set<string>();
 
 function scheduleReadinessRefresh(delayMs: number) {
   if (shuttingDown) return;
@@ -470,6 +475,22 @@ async function refreshProfiles() {
     while (true) {
       refreshAgain = false;
       const profiles = discoveredProfiles;
+      const currentFirecracker = new Set(
+        profiles
+          .filter((profile) => profile.executor === "firecracker")
+          .map((profile) => profile.profile),
+      );
+      for (const profile of preparedFirecrackerProfiles) {
+        if (currentFirecracker.has(profile)) continue;
+        await removePreparedFirecrackerProfile(profile);
+        preparedFirecrackerProfiles.delete(profile);
+      }
+      const poolCapacityError = warmPoolCapacityError(
+        profiles,
+        maxSlots,
+        cpus().length,
+        Math.floor(totalmem() / 1024 / 1024),
+      );
       const states: PublishedReadinessState[] = [];
       for (const profile of profiles) {
         const preparingDetail = `Checking ${profile.executor} and prewarming ${profile.imageRelease}`;
@@ -479,10 +500,29 @@ async function refreshProfiles() {
           profile: profile.profile,
           executor: profile.executor,
           imageRelease: profile.imageRelease,
+          vcpus: profile.vcpus,
+          memoryMiB: profile.memoryMiB,
           state: "preparing",
           statusDetail: preparingDetail,
         });
-        const readiness = await prepareProfile(profile);
+        const blockedByPoolCapacity =
+          poolCapacityError !== undefined &&
+          profile.executor === "firecracker" &&
+          (profile.warmPool ?? 0) > 0;
+        const readiness = blockedByPoolCapacity
+          ? {
+              state: "failed" as const,
+              error: poolCapacityError,
+              isolation: "firecracker-microvm",
+              boundary: "guest-kernel" as const,
+              checks: [{ name: "warm-pool-capacity", passed: false, detail: poolCapacityError }],
+              cacheScope: "immutable-image",
+              cacheSharedWritable: false,
+            }
+          : await prepareProfile(profile);
+        if (profile.executor === "firecracker" && !blockedByPoolCapacity) {
+          preparedFirecrackerProfiles.add(profile.profile);
+        }
         const statusDetail =
           readiness.state === "ready"
             ? `Prepared the immutable Image Release and passed ${readiness.checks.length} readiness check(s)`
@@ -492,6 +532,8 @@ async function refreshProfiles() {
           profile: profile.profile,
           executor: profile.executor,
           imageRelease: profile.imageRelease,
+          vcpus: profile.vcpus,
+          memoryMiB: profile.memoryMiB,
           statusDetail,
           ...readiness,
         });
@@ -502,7 +544,12 @@ async function refreshProfiles() {
             (failed.length > 0 ? `; failed: ${failed.join(", ")}` : ""),
         );
       }
-      nextRefreshMs = readinessRefreshDelay(states);
+      nextRefreshMs = readinessRefreshDelay(
+        states,
+        profiles.some(
+          (profile) => profile.executor === "firecracker" && (profile.warmPool ?? 0) > 0,
+        ),
+      );
       if (!refreshAgain || shuttingDown) break;
     }
   } catch (error) {

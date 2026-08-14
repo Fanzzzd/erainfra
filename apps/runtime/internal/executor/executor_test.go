@@ -38,3 +38,20 @@ func TestSpecRequiresImmutableSafeInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProfileWarmPoolIsExplicitAndBounded(t *testing.T) {
+	profile := Profile{
+		Name:         "rc-linux-js",
+		ImageRelease: "ghcr.io/fanzzzd/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		VCPUs:        2,
+		MemoryMiB:    4096,
+		WarmPool:     2,
+	}
+	if err := profile.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	profile.WarmPool = 17
+	if err := profile.Validate(); err == nil {
+		t.Fatal("oversized warm pool was accepted")
+	}
+}

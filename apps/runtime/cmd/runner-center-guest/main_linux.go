@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -30,6 +31,7 @@ const (
 	// by the ip= boot argument, already in resolv.conf syntax.
 	publishedResolvers = "/proc/net/pnp"
 	resolvConf         = "/etc/resolv.conf"
+	warmReadyMarker    = "\x1eRUNNER_CENTER_WARM_READY\n"
 )
 
 func main() {
@@ -133,7 +135,25 @@ func reportResult(token string, exitCode int) error {
 	return nil
 }
 
+func reportWarmReady() error {
+	console, err := os.OpenFile(consoleDevice, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open guest console: %w", err)
+	}
+	defer console.Close()
+	if _, err := io.WriteString(console, warmReadyMarker); err != nil {
+		return fmt.Errorf("report warm readiness: %w", err)
+	}
+	return nil
+}
+
 func run(ctx context.Context) error {
+	if err := configureResolver(); err != nil {
+		return err
+	}
+	if err := reportWarmReady(); err != nil {
+		return err
+	}
 	metadata, err := guest.NewMetadataClient(mmdsURL, nil).Fetch(ctx)
 	if err != nil {
 		return err
@@ -142,9 +162,6 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("set hostname: %w", err)
 	}
 	if err := publishHostname(metadata.RunnerName); err != nil {
-		return err
-	}
-	if err := configureResolver(); err != nil {
 		return err
 	}
 
