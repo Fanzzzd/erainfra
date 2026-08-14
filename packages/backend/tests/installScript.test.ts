@@ -168,7 +168,12 @@ function route(sandbox: Sandbox, url: string, filePath: string, status = 200) {
 }
 
 /** Build a release archive shaped like the real one, plus its checksum sidecar. */
-function publishRelease(sandbox: Sandbox, release: AgentRelease, marker: string) {
+function publishRelease(
+  sandbox: Sandbox,
+  release: AgentRelease,
+  marker: string,
+  assetPrefix: "erainfra-agent" | "runner-center-agent" = "erainfra-agent",
+) {
   const stage = path.join(sandbox.fixtures, `stage-${release.version}`, "agent");
   mkdirSync(path.join(stage, "dist"), { recursive: true });
   mkdirSync(path.join(stage, "provisioners"), { recursive: true });
@@ -182,7 +187,7 @@ function publishRelease(sandbox: Sandbox, release: AgentRelease, marker: string)
     writeExecutable(runtime, "#!/usr/bin/env bash\nexit 0\n");
   }
 
-  const assetName = `erainfra-agent-${release.version}.tar.gz`;
+  const assetName = `${assetPrefix}-${release.version}.tar.gz`;
   const archivePath = path.join(sandbox.fixtures, assetName);
   const tar = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(stage), "agent"]);
   expect(tar.status, tar.stderr?.toString()).toBe(0);
@@ -305,6 +310,25 @@ describe("install", () => {
       expect(existsSync(runtime)).toBeTruthy();
       expect(statSync(runtime).mode & 0o111).not.toBe(0);
     }
+  });
+
+  it("falls back to the permanent legacy asset name for pre-rename releases", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishRelease(sandbox, CURRENT, "legacy-named agent", "runner-center-agent");
+    publishRegistration(sandbox);
+
+    const result = run(sandbox, ["--token", "rcreg_test", "--name", "test-machine"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const requested = readLog(sandbox.curlLog);
+    expect(requested).toMatch(
+      /releases\/download\/v1\.4\.2\/erainfra-agent-1\.4\.2\.tar\.gz\n.*releases\/download\/v1\.4\.2\/runner-center-agent-1\.4\.2\.tar\.gz$/m,
+    );
+    expect(requested).toMatch(
+      /releases\/download\/v1\.4\.2\/runner-center-agent-1\.4\.2\.tar\.gz\.sha256$/m,
+    );
+    expect(requested).not.toMatch(/erainfra-agent-1\.4\.2\.tar\.gz\.sha256/);
+    expect(agentMarker(sandbox)).toBe("// legacy-named agent");
   });
 
   it("installs dependencies from the release lockfile with npm ci", () => {

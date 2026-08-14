@@ -330,8 +330,13 @@ RELEASE_URL="https://github.com/$AGENT_REPO/releases/download/v$VERSION"
 ARCHIVE="$TMP_DIR/$ASSET"
 
 printf '✅ Downloading the EraInfra agent %s release.\n' "$VERSION"
-curl -fsSL "$RELEASE_URL/$ASSET" -o "$ARCHIVE" ||
-  fail "Could not download $ASSET from release v$VERSION of $AGENT_REPO"
+if ! curl -fsL "$RELEASE_URL/$ASSET" -o "$ARCHIVE"; then
+  # Pre-rename releases keep their published asset names forever.
+  ASSET="runner-center-agent-$VERSION.tar.gz"
+  ARCHIVE="$TMP_DIR/$ASSET"
+  curl -fsSL "$RELEASE_URL/$ASSET" -o "$ARCHIVE" ||
+    fail "Could not download $ASSET from release v$VERSION of $AGENT_REPO"
+fi
 
 EXPECTED_SHA=$SHA_ARG
 CHECKSUM_SOURCE='the checksum passed on the command line'
