@@ -94,6 +94,15 @@ function assertLockfileDeclaresTheSameVersion(agentDir: string) {
     };
   const manifest = read("package.json");
   const lockfile = read("package-lock.json");
+  // Anchor on a version that actually exists. Comparing the lockfile against an absent manifest
+  // version is `undefined !== undefined` — false — so all three fields missing would agree with
+  // each other and pack an archive that declares no version anywhere. That is the same
+  // cannot-tell-read-as-agreement this function exists to stop, so it has to hold on both sides.
+  if (typeof manifest.version !== "string" || manifest.version === "") {
+    throw new Error(
+      `package.json in ${agentDir} declares no version; the archive is named after it`,
+    );
+  }
   // npm writes the version twice — top level and packages[""] — and they drift independently.
   for (const [where, found] of [
     ["version", lockfile.version],

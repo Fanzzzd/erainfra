@@ -130,6 +130,18 @@ describe("collectAgentFiles", () => {
     assert.throws(() => collectAgentFiles(root), /package-lock\.json version is undefined/);
   });
 
+  // The same rule, applied to the side the comparison anchors on. With every version field
+  // missing, `found !== manifest.version` is `undefined !== undefined` — false — so all three
+  // absences would agree with each other and pack an archive declaring no version anywhere.
+  // An equality check cannot distinguish "they match" from "there is nothing to match".
+  it("refuses a manifest that declares no version, rather than agreeing with an absent one", () => {
+    const root = agentFixture({
+      "package.json": '{"name":"@erainfra/agent"}\n',
+      "package-lock.json": '{"lockfileVersion":3}\n',
+    });
+    assert.throws(() => collectAgentFiles(root), /package\.json .* declares no version/);
+  });
+
   it("can include both immutable Linux runtime binaries", () => {
     const entries = collectAgentFiles(agentFixture(), runtimeFixture());
     const runtimeEntries = entries.filter((entry) => entry.path.includes("/runtime/"));
