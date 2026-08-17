@@ -134,6 +134,42 @@ jobs:
             echo "identical  $asset  $(cut -d ' ' -f 1 < "dist/release/$asset.sha256")"
           done
 
+      # `cmp` proves a build is reproducible. It says nothing about which platform the bytes target,
+      # so a transposed GOOS or GOARCH would publish a perfectly reproducible Linux binary under a
+      # macOS name and the first thing to notice would be `Exec format error` on a customer's Node.
+      #
+      # Read the toolchain's own record rather than sniffing magic bytes: GOOS distinguishes darwin
+      # from linux from windows exactly, where an ELF header only says "not Mach-O, not PE". The two
+      # cannot disagree — the build info lives in the same file as the header — and a file that is
+      # not a Go executable at all fails `go version -m` outright, which fails this step.
+      - name: Every Go asset targets the platform its name claims
+        run: |
+          for asset in dist/release/*; do
+            case "$asset" in *.sha256 | *.tar.gz) continue ;; esac
+            name=${asset##*/}
+            stem=${name%.exe}
+            cpu=${stem##*-}
+            os=${stem%-*}
+            os=${os##*-}
+            case "$cpu" in
+              x86_64) arch=amd64 ;;
+              arm64) arch=arm64 ;;
+              *) echo "$name: asset name does not end in a CPU this release publishes" >&2; exit 1 ;;
+            esac
+            case "$os" in
+              linux | darwin | windows) ;;
+              *) echo "$name: asset name does not carry an OS this release publishes" >&2; exit 1 ;;
+            esac
+            built=$(go version -m "$asset" |
+              awk '$1 == "build" && ($2 ~ /^GOOS=/ || $2 ~ /^GOARCH=/) { print $2 }' | sort | tr '\n' ' ')
+            declared="GOARCH=$arch GOOS=$os "
+            if [ "$built" != "$declared" ]; then
+              echo "$name is named for $declared but the toolchain recorded $built" >&2
+              exit 1
+            fi
+            printf 'platform  %s  %s\n' "$name" "$declared"
+          done
+
       # This binary runs as root on customer Nodes. Assert on the shipped bytes rather than on
       # go.mod: go.mod is the whole platform's now and says nothing about what this binary linked,
       # so a helper that innocently imported an apps/controller package would widen the dependency
@@ -150,21 +186,23 @@ jobs:
         working-directory: apps/action-runner-agent
         run: npm ci --omit=dev --no-audit --no-fund
 
+      # Attest everything this release publishes, by glob rather than by list. A hand-maintained list
+      # is how an asset ends up published but unattested: the previous one named the twelve binaries
+      # and silently omitted the eleven `.sha256` sidecars that `gh release create` uploads beside
+      # them. `dist/release` holds exactly the built set — build-go-assets wipes and refills it with
+      # 11 binaries and their sidecars, then package-agent adds the archive and its sidecar — so a
+      # future asset is covered the day it is built rather than the day someone remembers.
+      #
+      # The three `deploy/` files are listed because they are verbatim repo files rather than build
+      # output, and a customer who downloads `provision-firecracker-host.sh` from the release page
+      # and runs it as root has the same need for provenance as one who downloads a binary.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist/release/erainfra-agent-${{ env.VERSION }}.tar.gz
-            dist/release/runner-center-controller-linux-x86_64
-            dist/release/runner-center-controller-linux-arm64
-            dist/release/runner-center-controller-darwin-x86_64
-            dist/release/runner-center-controller-darwin-arm64
-            dist/release/runner-center-runtime-linux-x86_64
-            dist/release/runner-center-runtime-linux-arm64
-            dist/release/infra-agent-linux-x86_64
-            dist/release/infra-agent-linux-arm64
-            dist/release/infra-agent-darwin-x86_64
-            dist/release/infra-agent-darwin-arm64
-            dist/release/infra-agent-windows-x86_64.exe
+            dist/release/*
+            deploy/systemd/runner-center-runtime.service
+            deploy/systemd/runner-center-controller@.service
+            deploy/provision-firecracker-host.sh
 
       - name: Publish the release
         env:
@@ -203,3 +241,17 @@ jobs:
             deploy/systemd/runner-center-runtime.service \
             deploy/systemd/runner-center-controller@.service \
             deploy/provision-firecracker-host.sh
+
+      # rc.5 published seventeen assets while this workflow built, cross-compiled and tested five
+      # Infra Agent binaries it never uploaded — the gap ADR 0004 named. Nothing asserted the count,
+      # so nothing noticed for a whole release. Compare what was built against what was published
+      # rather than against a constant nobody would maintain: a glob above that matches nothing then
+      # fails here instead of shipping a quietly smaller release.
+      - name: Every built asset reached the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          built=$(find dist/release -type f | wc -l | tr -d ' ')
+          published=$(gh release view "v$VERSION" --json assets --jq '.assets | length')
+          echo "built $built in dist/release; published $published (expected built + 3 repo files)"
+          test "$published" -eq "$((built + 3))"
