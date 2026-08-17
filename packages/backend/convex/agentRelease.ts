@@ -34,18 +34,25 @@ export type AgentRelease = {
  * rejected.
  *
  * `infraAgent` is the same pin for the Node side, and the trust root that replaces the Infra
- * Agent's unverified download. It is empty here because no published release carries those
- * binaries yet: the first tag cut after they are built in CI is what fills it in, generated from
- * the sidecars with `pnpm --filter @erainfra/backend print-infra-agent-pin` rather than typed by
- * hand, and the release workflow refuses to publish a tag whose pin disagrees with the bytes it
- * just built. Until then the installer refuses `--role node` rather than installing something it
- * cannot check.
+ * Agent's unverified download. v0.2.0-rc.6 is the first release to publish those binaries, so it
+ * is the first to carry the pin: the five digests are generated from the sidecars with
+ * `pnpm --filter @erainfra/backend print-infra-agent-pin` rather than typed by hand, and the
+ * release workflow refuses to publish a tag whose pin disagrees with the bytes it just built.
+ * Every target `INFRA_AGENT_TARGETS` names has to be covered — a pin missing one platform would
+ * leave that platform installing bytes nothing vouches for, so the tag gate rejects a partial map
+ * rather than an empty one.
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.5",
-  sha256: "ea39b72d559c81f9e74864472f92f736b49184d4f992db1b56249bb7bc31c1f1",
-  infraAgent: {},
+  version: "0.2.0-rc.6",
+  sha256: "31cff17937a97bb3710b98fdf0926a76ea81f7f00566432eb4e9d2fd5adf2b90",
+  infraAgent: {
+    "linux-x86_64": "7d5e6d2e840a30648beea4cb7770babba6dbb93c573db4a81ad56fac551c3c91",
+    "linux-arm64": "eeb17644552d23215fc35a9d28814fbca849d11cd7661ddb7002e30976e809cb",
+    "darwin-x86_64": "6a479c1646a128b63810861291ae8a6c682ac5da3858e7cc9c5495f9b99b6750",
+    "darwin-arm64": "d5aacfd934cb834eb3553b7f892a2d12fafdf6b8acddfbbf8d871354aedbb2fb",
+    "windows-x86_64": "5dc14f2fac1a944690c69f3ece8a71c3791bdf165e189cba60a7136ddeb8e5d3",
+  },
 };
 
 /** The targets a release publishes an Infra Agent binary for, and `infraAgent` must cover. */
