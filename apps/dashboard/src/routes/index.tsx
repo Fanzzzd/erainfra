@@ -50,6 +50,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
@@ -67,6 +68,13 @@ type RegistrationCommand = {
 
 const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
 
+/**
+ * The two kinds of machine this platform runs on (CONTEXT.md). One flow onboards both: the role is
+ * a flag on the installer, not a different script, and both roles verify what they downloaded
+ * against a checksum this deployment pins.
+ */
+type MachineRole = "worker" | "node";
+
 function MachinesPage() {
   const machines = useQuery(api.machines.list);
   const attempts = useQuery(api.attempts.list);
@@ -74,10 +82,11 @@ function MachinesPage() {
   const createRegistrationToken = useMutation(api.machines.createRegistrationToken);
   const now = useNow();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [role, setRole] = useState<MachineRole>("worker");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [registration, setRegistration] = useState<RegistrationCommand>();
-  const [copied, setCopied] = useState(false);
+  const [copiedCommand, setCopiedCommand] = useState<string>();
 
   const summary = useMemo(() => {
     const list = machines ?? [];
@@ -107,7 +116,7 @@ function MachinesPage() {
     setSubmitting(true);
     setError(undefined);
     setRegistration(undefined);
-    setCopied(false);
+    setCopiedCommand(undefined);
 
     try {
       const result = await createRegistrationToken({});
@@ -130,8 +139,8 @@ function MachinesPage() {
   async function copyCommand(value: string) {
     try {
       await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
+      setCopiedCommand(value);
+      window.setTimeout(() => setCopiedCommand(undefined), 1_500);
     } catch {
       toast.error("Clipboard access was blocked", {
         description: "Select the command above and copy it manually.",
@@ -142,12 +151,22 @@ function MachinesPage() {
   function changeDialog(open: boolean) {
     setDialogOpen(open);
     if (open) {
-      void beginRegistration();
+      if (role === "worker") void beginRegistration();
     } else {
       setRegistration(undefined);
       setError(undefined);
-      setCopied(false);
+      setCopiedCommand(undefined);
       setSubmitting(false);
+    }
+  }
+
+  // A Node's enrollment token is issued by the Hub it reports to, not by this control plane, so
+  // switching to that role neither needs nor spends a registration token.
+  function changeRole(next: MachineRole) {
+    setRole(next);
+    setCopiedCommand(undefined);
+    if (next === "worker" && registration === undefined && !submitting) {
+      void beginRegistration();
     }
   }
 
@@ -170,107 +189,125 @@ function MachinesPage() {
             <DialogHeader>
               <DialogTitle>Add machine</DialogTitle>
               <DialogDescription>
-                Run one command on a macOS or Linux host. EraInfra installs, registers, and starts
-                the agent for you.
+                Run one command on the new host. The installer verifies what it downloads against a
+                checksum this deployment pins, and refuses to install on a mismatch.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4 py-1">
-              {submitting && (
-                <div className="flex items-center gap-3 rounded-md border border-border bg-muted px-4 py-5 text-sm text-secondary-foreground">
-                  <StatusDot tone="success" live />
-                  Creating a short-lived registration command…
-                </div>
-              )}
+            {/* Each trigger's aria-controls names a panel, so both panels have to exist: a tab list
+                whose triggers point at nothing announces controls that are not there. */}
+            <Tabs value={role} onValueChange={(value) => changeRole(value as MachineRole)}>
+              <TabsList>
+                <TabsTrigger value="worker">Worker · runs CI jobs</TabsTrigger>
+                <TabsTrigger value="node">Node · runs deployed Apps</TabsTrigger>
+              </TabsList>
 
-              {registration && (
-                <>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-secondary-foreground">
-                        Run on the new machine
-                      </span>
-                      <span className="text-[11px] text-warning">
-                        Expires in {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))}{" "}
-                        min
-                      </span>
-                    </div>
-                    <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-                      <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
-                        <code>{registration.command}</code>
-                      </pre>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-1.5 top-1.5 size-8"
-                        aria-label="Copy install command"
-                        onClick={() => void copyCommand(registration.command)}
-                      >
-                        {copied ? <Check /> : <Clipboard />}
-                      </Button>
-                    </div>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      The registration token expires in 15 minutes and can be used once.
-                    </p>
-                  </div>
+              <TabsContent value="node">
+                <AddNodeInstructions onCopy={copyCommand} copied={copiedCommand} />
+              </TabsContent>
 
-                  {connectedMachine ? (
-                    <Alert variant="success">
-                      <Check />
-                      <AlertTitle>{connectedMachine.name} connected</AlertTitle>
-                      <AlertDescription>
-                        The machine is registered and will report online after its first heartbeat.
-                      </AlertDescription>
-                    </Alert>
-                  ) : now >= registration.expiresAt ? (
-                    <Alert variant="warning">
-                      <AlertTitle>This command has expired</AlertTitle>
-                      <AlertDescription>Generate a new command before installing.</AlertDescription>
-                    </Alert>
-                  ) : (
-                    <div className="flex items-center gap-3 rounded-md border border-border bg-muted p-3 text-sm text-secondary-foreground">
+              <TabsContent value="worker">
+                <div className="space-y-4 py-1">
+                  {submitting && (
+                    <div className="flex items-center gap-3 rounded-md border border-border bg-muted px-4 py-5 text-sm text-secondary-foreground">
                       <StatusDot tone="success" live />
-                      Waiting for machine…
+                      Creating a short-lived registration command…
                     </div>
                   )}
 
-                  <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-                    <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
-                      Advanced options
-                    </summary>
-                    <div className="mt-3 space-y-2 leading-5">
-                      <p>
-                        Append{" "}
-                        <code className="text-secondary-foreground">--name build-linux-01</code> to
-                        override the hostname.
-                      </p>
-                      <p>
-                        Append{" "}
-                        <code className="text-secondary-foreground">--labels gpu,docker</code> for
-                        machine capability labels.
-                      </p>
-                      <p>
-                        Append <code className="text-secondary-foreground">--slots 2</code> to
-                        override detected concurrency.
-                      </p>
-                    </div>
-                  </details>
-                </>
-              )}
+                  {registration && (
+                    <>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-medium text-secondary-foreground">
+                            Run on the new machine
+                          </span>
+                          <span className="text-[11px] text-warning">
+                            Expires in{" "}
+                            {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))} min
+                          </span>
+                        </div>
+                        <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
+                          <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
+                            <code>{registration.command}</code>
+                          </pre>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="absolute right-1.5 top-1.5 size-8"
+                            aria-label="Copy install command"
+                            onClick={() => void copyCommand(registration.command)}
+                          >
+                            {copiedCommand === registration.command ? <Check /> : <Clipboard />}
+                          </Button>
+                        </div>
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          The registration token expires in 15 minutes and can be used once.
+                        </p>
+                      </div>
 
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-            </div>
+                      {connectedMachine ? (
+                        <Alert variant="success">
+                          <Check />
+                          <AlertTitle>{connectedMachine.name} connected</AlertTitle>
+                          <AlertDescription>
+                            The machine is registered and will report online after its first
+                            heartbeat.
+                          </AlertDescription>
+                        </Alert>
+                      ) : now >= registration.expiresAt ? (
+                        <Alert variant="warning">
+                          <AlertTitle>This command has expired</AlertTitle>
+                          <AlertDescription>
+                            Generate a new command before installing.
+                          </AlertDescription>
+                        </Alert>
+                      ) : (
+                        <div className="flex items-center gap-3 rounded-md border border-border bg-muted p-3 text-sm text-secondary-foreground">
+                          <StatusDot tone="success" live />
+                          Waiting for machine…
+                        </div>
+                      )}
+
+                      <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
+                          Advanced options
+                        </summary>
+                        <div className="mt-3 space-y-2 leading-5">
+                          <p>
+                            Append{" "}
+                            <code className="text-secondary-foreground">--name build-linux-01</code>{" "}
+                            to override the hostname.
+                          </p>
+                          <p>
+                            Append{" "}
+                            <code className="text-secondary-foreground">--labels gpu,docker</code>{" "}
+                            for machine capability labels.
+                          </p>
+                          <p>
+                            Append <code className="text-secondary-foreground">--slots 2</code> to
+                            override detected concurrency.
+                          </p>
+                        </div>
+                      </details>
+                    </>
+                  )}
+
+                  {error && (
+                    <Alert variant="destructive">
+                      <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => changeDialog(false)}>
-                {connectedMachine ? "Done" : "Cancel"}
+                {connectedMachine && role === "worker" ? "Done" : "Cancel"}
               </Button>
-              {(error || (registration && now >= registration.expiresAt)) && (
+              {role === "worker" && (error || (registration && now >= registration.expiresAt)) && (
                 <Button
                   type="button"
                   onClick={() => void beginRegistration()}
@@ -279,12 +316,15 @@ function MachinesPage() {
                   Generate new command
                 </Button>
               )}
-              {registration && !connectedMachine && now < registration.expiresAt && (
-                <Button type="button" onClick={() => void copyCommand(registration.command)}>
-                  {copied ? <Check /> : <Clipboard />}
-                  {copied ? "Copied" : "Copy command"}
-                </Button>
-              )}
+              {role === "worker" &&
+                registration &&
+                !connectedMachine &&
+                now < registration.expiresAt && (
+                  <Button type="button" onClick={() => void copyCommand(registration.command)}>
+                    {copiedCommand === registration.command ? <Check /> : <Clipboard />}
+                    {copiedCommand === registration.command ? "Copied" : "Copy command"}
+                  </Button>
+                )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -527,6 +567,92 @@ function MachinesPage() {
           </details>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * Onboarding a Node, in the same dialog as onboarding a Worker — this absorbs the Hub dashboard's
+ * separate node-add flow, which handed out `curl <hub>/agent.sh | sh` and installed a binary with
+ * no integrity check of any kind.
+ *
+ * Two differences from the Worker flow, both inherent rather than incidental: a Node reports to the
+ * customer's own Hub rather than to this control plane, so the URL and the enrollment token are the
+ * operator's to fill in and there is no short-lived token to mint here; and this control plane never
+ * learns that the Node connected, because the Hub is what it connects to.
+ */
+function AddNodeInstructions({
+  copied,
+  onCopy,
+}: {
+  copied: string | undefined;
+  onCopy: (value: string) => Promise<void>;
+}) {
+  const site = convexSiteUrl();
+  const commands = [
+    {
+      label: "Linux or macOS",
+      value: `curl -fsSL ${site}/install | sudo bash -s -- --role node --hub wss://HUB/agent --token HUB_TOKEN`,
+    },
+    {
+      label: "Windows",
+      value: `& ([scriptblock]::Create((irm ${site}/install.ps1))) -Hub wss://HUB/agent -Token HUB_TOKEN -Install`,
+    },
+  ];
+
+  return (
+    <div className="space-y-4 py-1">
+      {commands.map((command) => (
+        <div key={command.label} className="space-y-2">
+          <span className="text-sm font-medium text-secondary-foreground">{command.label}</span>
+          <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
+            <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
+              <code>{command.value}</code>
+            </pre>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-1.5 top-1.5 size-8"
+              aria-label={`Copy the ${command.label} install command`}
+              onClick={() => void onCopy(command.value)}
+            >
+              {copied === command.value ? <Check /> : <Clipboard />}
+            </Button>
+          </div>
+        </div>
+      ))}
+
+      <p className="text-xs leading-5 text-muted-foreground">
+        Replace <code className="text-secondary-foreground">HUB</code> with the host this Node
+        reports to and <code className="text-secondary-foreground">HUB_TOKEN</code> with an
+        enrollment token from that Hub. This deployment serves the installer and the checksum; the
+        binary itself comes from the release, and the install stops if the two disagree.
+      </p>
+
+      <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
+          Air-gapped, or serving the binary from your own Hub
+        </summary>
+        <div className="mt-3 space-y-2 leading-5">
+          <p>
+            Append{" "}
+            <code className="text-secondary-foreground">--source https://HUB/agent-bin/…</code> to
+            take the bytes from your Hub instead of the release, or{" "}
+            <code className="text-secondary-foreground">--source file:///path/to/infra-agent</code>{" "}
+            to take them off local disk.
+          </p>
+          <p>
+            Verification is identical either way: the digest arrives with this script over TLS from
+            this deployment, so where the bytes come from does not have to be trusted.
+          </p>
+          <p>
+            Append <code className="text-secondary-foreground">--name node-01</code> to override the
+            hostname, or <code className="text-secondary-foreground">--no-docker</code> to skip the
+            container-runtime install.
+          </p>
+        </div>
+      </details>
     </div>
   );
 }

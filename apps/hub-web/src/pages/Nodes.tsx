@@ -22,7 +22,10 @@ function since(iso: string): string {
 }
 
 // Nodes = the agent machines currently connected to this hub over the agent websocket. They're what
-// git/upload deploys build and run on. Enroll one by running the agent install script with a token.
+// git/upload deploys build and run on. Enrolling one is no longer a flow of its own: the platform
+// dashboard's Machines → Add machine onboards both machine kinds, and its installer verifies the
+// agent binary against a checksum the control plane pins before anything is installed. This page
+// shows what is connected; ADR 0006 is why it no longer hands out an install command.
 export function Nodes() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
 
@@ -60,13 +63,14 @@ export function Nodes() {
             <Server className="text-muted-foreground mx-auto mb-2 size-8" />
             <CardTitle>No nodes connected</CardTitle>
             <CardDescription>
-              Enroll a machine as an agent so portless can build and run your apps on it.
+              Enroll a machine as a Node so this hub can build and run your apps on it.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex justify-center">
-            <pre className="bg-muted overflow-auto rounded-md p-4 text-xs leading-relaxed">
-              curl &lt;hub&gt;/agent.sh | sh -s -- --token &lt;token&gt;
-            </pre>
+          <CardContent className="text-muted-foreground mx-auto max-w-md text-center text-sm">
+            Add one from the EraInfra dashboard — <strong>Machines → Add machine → Node</strong>. It
+            generates the command to run on the new box, with this hub&rsquo;s URL and an enrollment
+            token; the installer checks the agent binary against the checksum the control plane pins
+            and refuses to install anything else.
           </CardContent>
         </Card>
       ) : (
