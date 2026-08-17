@@ -1,10 +1,10 @@
 /**
- * Builds the release archive for `apps/agent`.
+ * Builds the release archive for `apps/action-runner-agent`.
  *
  * Usage: pnpm release:package [--out <directory>]
  *
  * Run `pnpm --filter @erainfra/agent build` first: this script packages
- * `apps/agent/dist`, it does not compile it.
+ * `apps/action-runner-agent/dist`, it does not compile it.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -33,7 +33,7 @@ function parseOutDirectory(argv: readonly string[]) {
 const outDirectory = parseOutDirectory(process.argv.slice(2));
 const version = readProductVersion(repoRoot);
 const entries = collectAgentFiles(
-  path.join(repoRoot, "apps", "agent"),
+  path.join(repoRoot, "apps", "action-runner-agent"),
   path.join(repoRoot, "apps", "runtime", "dist", "release"),
 );
 const { archive, sha256 } = buildAgentArchive(entries);

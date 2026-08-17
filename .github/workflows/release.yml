@@ -36,13 +36,14 @@ jobs:
           # Release builds consume no mutable cache from lower-trust refs.
           cache: false
 
-      # EraInfra ships as one product, so the tag has to match the version
-      # in the workspace root and in apps/agent exactly. Fail here rather than
-      # publish an asset whose embedded package.json disagrees with its name.
+      # EraInfra ships as one product, so the tag has to match the version in
+      # the workspace root and in apps/action-runner-agent exactly. Fail here
+      # rather than publish an asset whose embedded package.json disagrees with
+      # its name.
       - name: Verify the tag matches both package versions
         run: |
           root=$(node -p "require('./package.json').version")
-          agent=$(node -p "require('./apps/agent/package.json').version")
+          agent=$(node -p "require('./apps/action-runner-agent/package.json').version")
           controller=$(node -p "require('./apps/controller/package.json').version")
           runtime=$(node -p "require('./apps/runtime/package.json').version")
           if [ "$root" != "$agent" ] || [ "$root" != "$controller" ] || [ "$root" != "$runtime" ]; then
@@ -130,7 +131,7 @@ jobs:
 
       # Exactly the command a machine runs during install.
       - name: Verify the agent lockfile installs cleanly
-        working-directory: apps/agent
+        working-directory: apps/action-runner-agent
         run: npm ci --omit=dev --no-audit --no-fund
 
       # Portless pins pnpm independently from the EraInfra root. Switch only

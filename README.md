@@ -410,14 +410,14 @@ overwritten; a correction is a new version.
 ## Repository layout
 
 ```text
-apps/agent       Worker daemon and Tart/legacy provisioners
-apps/controller  official scale-set listener adapter
-apps/runtime     Firecracker host runtime, job network policy, and guest bootstrap
-deploy           host provisioner and systemd units
-apps/dashboard   React dashboard
-packages/backend Convex control plane
-packages/release deterministic release packager
-images           immutable Profile image definitions
+apps/action-runner-agent  Worker daemon and Tart/legacy provisioners
+apps/controller           official scale-set listener adapter
+apps/runtime              Firecracker host runtime, job network policy, and guest bootstrap
+deploy                    host provisioner and systemd units
+apps/dashboard            React dashboard
+packages/backend          Convex control plane
+packages/release          deterministic release packager
+images                    immutable Profile image definitions
 ```
 
 Contributions are welcome. Keep platform lifecycle logic behind the executor boundary, preserve

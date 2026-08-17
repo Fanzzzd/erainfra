@@ -1,5 +1,6 @@
 /**
- * Packs `apps/agent` into the immutable archive that runner machines download.
+ * Packs `apps/action-runner-agent` into the immutable archive that runner
+ * machines download.
  *
  * The archive carries the compiled daemon, the provisioners, and the npm
  * lockfile, so a machine only has to run `npm ci --omit=dev` — it never needs a
@@ -10,7 +11,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createTarGz, type TarEntry } from "./tar.ts";
 
-/** Every archive path lives under this directory, stripped on extraction. */
+/**
+ * Every archive path lives under this directory, stripped on extraction.
+ *
+ * A literal, deliberately not derived from the source directory: machines in
+ * the field extract to it and the installer resolves `$AGENT_DIR` from it, so
+ * renaming `apps/agent` to `apps/action-runner-agent` left it alone.
+ */
 export const ARCHIVE_ROOT = "agent";
 
 const DIRECTORY_MODE = 0o755;
@@ -104,6 +111,11 @@ export function sha256Hex(data: Uint8Array) {
   return createHash("sha256").update(data).digest("hex");
 }
 
+/**
+ * The published asset name, also a literal: it is what every install script
+ * already downloads, so it rides the `runner-center` → `erainfra` migration
+ * rather than the `apps/action-runner-agent` directory rename.
+ */
 export function archiveName(version: string) {
   return `erainfra-agent-${version}.tar.gz`;
 }
@@ -136,7 +148,9 @@ function readVersion(packageJsonPath: string) {
  */
 export function readProductVersion(repoRoot: string) {
   const rootVersion = readVersion(path.join(repoRoot, "package.json"));
-  const agentVersion = readVersion(path.join(repoRoot, "apps", "agent", "package.json"));
+  const agentVersion = readVersion(
+    path.join(repoRoot, "apps", "action-runner-agent", "package.json"),
+  );
   const controllerVersion = readVersion(path.join(repoRoot, "apps", "controller", "package.json"));
   const runtimeVersion = readVersion(path.join(repoRoot, "apps", "runtime", "package.json"));
   if (
