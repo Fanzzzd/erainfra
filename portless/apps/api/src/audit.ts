@@ -1,7 +1,7 @@
-import type { DatabaseSync } from 'node:sqlite';
-import { db } from './db.ts';
+import type { DatabaseSync } from "node:sqlite";
+import { db } from "./db.ts";
 
-export type AuditOutcome = 'allow' | 'deny' | 'success' | 'failure' | 'attempt';
+export type AuditOutcome = "allow" | "deny" | "success" | "failure" | "attempt";
 
 export interface AuditEntry {
   id: string;
@@ -15,7 +15,7 @@ export interface AuditEntry {
 }
 
 export interface AuditLog {
-  record(entry: Omit<AuditEntry, 'id' | 'at'>): AuditEntry;
+  record(entry: Omit<AuditEntry, "id" | "at">): AuditEntry;
   list(limit?: number): AuditEntry[];
   // Was the most recent record() durably persisted? Lets dangerous-op handlers surface an
   // audit gap to the caller instead of silently returning success.
@@ -27,7 +27,7 @@ export class InMemoryAuditLog implements AuditLog {
   private entries: AuditEntry[] = [];
   private seq = 0;
 
-  record(entry: Omit<AuditEntry, 'id' | 'at'>): AuditEntry {
+  record(entry: Omit<AuditEntry, "id" | "at">): AuditEntry {
     const full: AuditEntry = { id: `a-${++this.seq}`, at: new Date().toISOString(), ...entry };
     this.entries.push(full);
     return full;
@@ -56,19 +56,33 @@ export class SqliteAuditLog implements AuditLog {
     this.d = d;
   }
 
-  record(entry: Omit<AuditEntry, 'id' | 'at'>): AuditEntry {
+  record(entry: Omit<AuditEntry, "id" | "at">): AuditEntry {
     const at = new Date().toISOString();
     try {
-      const r = this.d.prepare('INSERT INTO audit (at, actor, action, target, outcome, dry_run, meta) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(at, entry.actor, entry.action, entry.target ?? null, entry.outcome, entry.dryRun ? 1 : 0, entry.meta ? JSON.stringify(entry.meta) : null);
+      const r = this.d
+        .prepare(
+          "INSERT INTO audit (at, actor, action, target, outcome, dry_run, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          at,
+          entry.actor,
+          entry.action,
+          entry.target ?? null,
+          entry.outcome,
+          entry.dryRun ? 1 : 0,
+          entry.meta ? JSON.stringify(entry.meta) : null,
+        );
       this.durable = true;
       return { id: `a-${r.lastInsertRowid}`, at, ...entry };
     } catch (e) {
       // Never block the request on a write hiccup, but a swallowed failure would mean a dangerous
       // op "succeeds" with no durable trail — so make it LOUD and remember it.
       this.durable = false;
-      console.error(`[audit] FAILED to persist (${entry.action} ${entry.target ?? ''}):`, (e as Error).message);
-      return { id: 'a-unpersisted', at, ...entry };
+      console.error(
+        `[audit] FAILED to persist (${entry.action} ${entry.target ?? ""}):`,
+        (e as Error).message,
+      );
+      return { id: "a-unpersisted", at, ...entry };
     }
   }
 
@@ -77,7 +91,9 @@ export class SqliteAuditLog implements AuditLog {
   }
 
   list(limit = 100): AuditEntry[] {
-    const rows = this.d.prepare('SELECT * FROM audit ORDER BY seq DESC LIMIT ?').all(limit) as unknown as Array<Record<string, unknown>>;
+    const rows = this.d
+      .prepare("SELECT * FROM audit ORDER BY seq DESC LIMIT ?")
+      .all(limit) as unknown as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       id: `a-${r.seq}`,
       at: String(r.at),

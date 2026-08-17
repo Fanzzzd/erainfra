@@ -1,7 +1,7 @@
-import { initTRPC, TRPCError } from '@trpc/server';
-import type { Principal } from './auth.ts';
-import type { AuditLog } from './audit.ts';
-import { can, type Permission } from './rbac.ts';
+import { initTRPC, TRPCError } from "@trpc/server";
+import type { Principal } from "./auth.ts";
+import type { AuditLog } from "./audit.ts";
+import { can, type Permission } from "./rbac.ts";
 
 export interface Context {
   principal: Principal | null;
@@ -15,7 +15,7 @@ export const publicProcedure = t.procedure;
 export const createCallerFactory = t.createCallerFactory;
 
 const authedProcedure = t.procedure.use(({ ctx, next }) => {
-  if (!ctx.principal) throw new TRPCError({ code: 'UNAUTHORIZED' });
+  if (!ctx.principal) throw new TRPCError({ code: "UNAUTHORIZED" });
   return next({ ctx: { ...ctx, principal: ctx.principal } });
 });
 
@@ -26,10 +26,10 @@ export function requirePermission(permission: Permission) {
       ctx.audit.record({
         actor: ctx.principal.id,
         action: path,
-        outcome: 'deny',
+        outcome: "deny",
         meta: { permission },
       });
-      throw new TRPCError({ code: 'FORBIDDEN', message: `missing permission: ${permission}` });
+      throw new TRPCError({ code: "FORBIDDEN", message: `missing permission: ${permission}` });
     }
     return next();
   });

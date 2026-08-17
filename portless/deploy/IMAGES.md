@@ -49,6 +49,7 @@ curl -fsSL https://<hub>/image.sh     | sh -s -- ship ./myapp myapp:v1
 ```
 
 `ship` **auto-detects** how to build, then pushes:
+
 - a `Dockerfile` in the context → `docker build`;
 - no Dockerfile → **Nixpacks** (a single prebuilt binary that detects Node/Python/Go/Rust/… and
   generates the build itself — the "drag in source, no Dockerfile needed" Railway trick).
@@ -76,9 +77,9 @@ container — far lighter than building one — so it doesn't need the build too
 - **macOS / Docker Desktop build box (gotchas, Linux build boxes are unaffected):**
   - Port **5000 is taken by AirPlay Receiver** (ControlCenter) on macOS — it'll silently intercept the
     registry. Use another port: `registry.sh up 5005` and `PORTLESS_REGISTRY=127.0.0.1:5005`.
-  - Docker Desktop runs the daemon **in a VM**, so a *host-binary* zot on `127.0.0.1` isn't reachable
+  - Docker Desktop runs the daemon **in a VM**, so a _host-binary_ zot on `127.0.0.1` isn't reachable
     from the daemon for push/pull. Either run the store **as a container** (`docker run -d -p
-    5005:5000 registry:2` — its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
+5005:5000 registry:2` — its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
     for both push and pull and stays auto-insecure/HTTP), or push to `host.docker.internal:5005` after
     adding it to the daemon's `insecure-registries`. On a native Linux build box the host-binary zot on
     `127.0.0.1:5000` just works — dockerd shares the host loopback.

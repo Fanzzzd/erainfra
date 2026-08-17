@@ -1,7 +1,7 @@
-import type { Role } from './rbac.ts';
-import { userStore, type UserStore } from './runtime/users.ts';
-import { sessionStore, type SessionStore } from './runtime/sessions.ts';
-import { apiTokenStore, type ApiTokenStore } from './runtime/apitokens.ts';
+import type { Role } from "./rbac.ts";
+import { userStore, type UserStore } from "./runtime/users.ts";
+import { sessionStore, type SessionStore } from "./runtime/sessions.ts";
+import { apiTokenStore, type ApiTokenStore } from "./runtime/apitokens.ts";
 
 export interface Principal {
   id: string;
@@ -32,8 +32,8 @@ export function devTokenStore(): StaticTokenStore {
   const fromEnv = process.env.PORTLESS_DEV_TOKENS;
   if (fromEnv) return new StaticTokenStore(JSON.parse(fromEnv));
   return new StaticTokenStore({
-    'owner-dev-token': { id: 'u-owner', name: 'Dev Owner', roles: ['owner'] },
-    'viewer-dev-token': { id: 'u-viewer', name: 'Dev Viewer', roles: ['viewer'] },
+    "owner-dev-token": { id: "u-owner", name: "Dev Owner", roles: ["owner"] },
+    "viewer-dev-token": { id: "u-viewer", name: "Dev Viewer", roles: ["viewer"] },
   });
 }
 
@@ -42,23 +42,29 @@ export function devTokenStore(): StaticTokenStore {
 // exist only when explicitly supplied via PORTLESS_DEV_TOKENS or opted into with PORTLESS_DEV_AUTH=1.
 // Local dev (NODE_ENV unset) keeps them so the dashboard works out of the box.
 export function defaultTokenStore(): TokenStore {
-  if (process.env.PORTLESS_DEV_TOKENS) return new StaticTokenStore(JSON.parse(process.env.PORTLESS_DEV_TOKENS));
-  if (process.env.NODE_ENV === 'production' && process.env.PORTLESS_DEV_AUTH !== '1') {
+  if (process.env.PORTLESS_DEV_TOKENS)
+    return new StaticTokenStore(JSON.parse(process.env.PORTLESS_DEV_TOKENS));
+  if (process.env.NODE_ENV === "production" && process.env.PORTLESS_DEV_AUTH !== "1") {
     return new StaticTokenStore({});
   }
   return devTokenStore();
 }
 
-export const SESSION_COOKIE = 'portless_session';
+export const SESSION_COOKIE = "portless_session";
 
 export interface AuthStores {
-  users: Pick<UserStore, 'get'>;
-  sessions: Pick<SessionStore, 'resolve'>;
-  apiTokens: Pick<ApiTokenStore, 'resolve'>;
+  users: Pick<UserStore, "get">;
+  sessions: Pick<SessionStore, "resolve">;
+  apiTokens: Pick<ApiTokenStore, "resolve">;
   legacy: TokenStore;
 }
 
-export const defaultAuthStores = (legacy: TokenStore): AuthStores => ({ users: userStore, sessions: sessionStore, apiTokens: apiTokenStore, legacy });
+export const defaultAuthStores = (legacy: TokenStore): AuthStores => ({
+  users: userStore,
+  sessions: sessionStore,
+  apiTokens: apiTokenStore,
+  legacy,
+});
 
 // THE authentication decision for every request, in order:
 //   1. session cookie (the dashboard) → the logged-in user's identity
@@ -87,14 +93,14 @@ export function resolveRequestAuth(
 
 export function bearerToken(authorization: string | string[] | undefined): string | undefined {
   const header = Array.isArray(authorization) ? authorization[0] : authorization;
-  return header?.startsWith('Bearer ') ? header.slice(7) : undefined;
+  return header?.startsWith("Bearer ") ? header.slice(7) : undefined;
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
     if (eq > 0) out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
   }
   return out;
@@ -116,12 +122,16 @@ export class LoginRateLimiter {
       return { allowed: true, retryAfterSec: 0 };
     }
     if (f.count < MAX_FAILS) return { allowed: true, retryAfterSec: 0 };
-    return { allowed: false, retryAfterSec: Math.ceil((f.firstAt + WINDOW_MS - Date.now()) / 1000) };
+    return {
+      allowed: false,
+      retryAfterSec: Math.ceil((f.firstAt + WINDOW_MS - Date.now()) / 1000),
+    };
   }
 
   fail(key: string): void {
     const f = this.fails.get(key);
-    if (!f || Date.now() - f.firstAt > WINDOW_MS) this.fails.set(key, { count: 1, firstAt: Date.now() });
+    if (!f || Date.now() - f.firstAt > WINDOW_MS)
+      this.fails.set(key, { count: 1, firstAt: Date.now() });
     else f.count++;
   }
 

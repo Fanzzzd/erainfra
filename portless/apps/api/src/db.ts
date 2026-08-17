@@ -8,16 +8,16 @@
 // Tests get ':memory:' (hermetic, one fresh DB per process; unit tests can create their own via
 // createDb). On first boot against real state, the previous generation's JSON stores are imported
 // and the files renamed *.imported — a one-way, idempotent migration.
-import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
-const TEST = process.execArgv.includes('--test') || !!process.env.NODE_TEST_CONTEXT;
+const TEST = process.execArgv.includes("--test") || !!process.env.NODE_TEST_CONTEXT;
 
 // One state dir for everything durable (the DB, the secrets key). Under the hub container
 // TMPDIR=/data, so this lands on the persistent volume.
-export const stateDir = (): string => join(tmpdir(), 'portless-runtime');
+export const stateDir = (): string => join(tmpdir(), "portless-runtime");
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -58,25 +58,38 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_at ON audit(at DESC);
 `;
 
-export function createDb(file: string = TEST ? ':memory:' : (process.env.PORTLESS_DB_FILE ?? join(stateDir(), 'portless.db'))): DatabaseSync {
-  if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
+export function createDb(
+  file: string = TEST
+    ? ":memory:"
+    : (process.env.PORTLESS_DB_FILE ?? join(stateDir(), "portless.db")),
+): DatabaseSync {
+  if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   const d = new DatabaseSync(file);
-  if (file !== ':memory:') {
-    d.exec('PRAGMA journal_mode = WAL');
-    d.exec('PRAGMA busy_timeout = 5000');
-    d.exec('PRAGMA synchronous = NORMAL');
+  if (file !== ":memory:") {
+    d.exec("PRAGMA journal_mode = WAL");
+    d.exec("PRAGMA busy_timeout = 5000");
+    d.exec("PRAGMA synchronous = NORMAL");
   }
   d.exec(SCHEMA);
   // chat_fts needs the trigram tokenizer (substring + CJK search — unicode61 can't tokenize
   // Chinese at all). Rebuild the index once if an older definition exists; source of truth is
   // chat_messages, so this is cheap and lossless.
-  const ftsSql = (d.prepare("SELECT sql FROM sqlite_master WHERE name = 'chat_fts'").get() as { sql: string } | undefined)?.sql ?? '';
-  if (!ftsSql.includes('trigram')) {
-    d.exec('DROP TABLE IF EXISTS chat_fts');
-    d.exec("CREATE VIRTUAL TABLE chat_fts USING fts5(text, session_id UNINDEXED, seq UNINDEXED, tokenize='trigram')");
-    d.exec('INSERT INTO chat_fts (text, session_id, seq) SELECT text, session_id, seq FROM chat_messages');
+  const ftsSql =
+    (
+      d.prepare("SELECT sql FROM sqlite_master WHERE name = 'chat_fts'").get() as
+        | { sql: string }
+        | undefined
+    )?.sql ?? "";
+  if (!ftsSql.includes("trigram")) {
+    d.exec("DROP TABLE IF EXISTS chat_fts");
+    d.exec(
+      "CREATE VIRTUAL TABLE chat_fts USING fts5(text, session_id UNINDEXED, seq UNINDEXED, tokenize='trigram')",
+    );
+    d.exec(
+      "INSERT INTO chat_fts (text, session_id, seq) SELECT text, session_id, seq FROM chat_messages",
+    );
   }
-  if (file !== ':memory:') importLegacyJson(d, dirname(file));
+  if (file !== ":memory:") importLegacyJson(d, dirname(file));
   return d;
 }
 
@@ -89,7 +102,7 @@ function importLegacyJson(d: DatabaseSync, dir: string): void {
     const f = join(dir, name);
     if (!existsSync(f)) return undefined;
     try {
-      return JSON.parse(readFileSync(f, 'utf8'));
+      return JSON.parse(readFileSync(f, "utf8"));
     } catch (e) {
       console.error(`[db] skipping unreadable legacy ${name}:`, (e as Error).message);
       return undefined;
@@ -98,69 +111,160 @@ function importLegacyJson(d: DatabaseSync, dir: string): void {
   const finish = (name: string) => {
     const f = join(dir, name);
     if (existsSync(f)) {
-      try { renameSync(f, `${f}.imported`); } catch { /* leave it; meta guard prevents re-import */ }
+      try {
+        renameSync(f, `${f}.imported`);
+      } catch {
+        /* leave it; meta guard prevents re-import */
+      }
     }
   };
 
-  d.exec('BEGIN');
+  d.exec("BEGIN");
   try {
-    const users = (readJson('users.json') as { users?: Array<Record<string, unknown>> } | undefined)?.users ?? [];
+    const users =
+      (readJson("users.json") as { users?: Array<Record<string, unknown>> } | undefined)?.users ??
+      [];
     for (const u of users) {
-      d.prepare('INSERT OR IGNORE INTO users (id, email, name, roles, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(String(u.id), String(u.email), String(u.name), JSON.stringify(u.roles ?? []), String(u.passwordHash), String(u.createdAt));
+      d.prepare(
+        "INSERT OR IGNORE INTO users (id, email, name, roles, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run(
+        String(u.id),
+        String(u.email),
+        String(u.name),
+        JSON.stringify(u.roles ?? []),
+        String(u.passwordHash),
+        String(u.createdAt),
+      );
     }
-    const sessions = (readJson('sessions.json') as { sessions?: Array<Record<string, unknown>> } | undefined)?.sessions ?? [];
+    const sessions =
+      (readJson("sessions.json") as { sessions?: Array<Record<string, unknown>> } | undefined)
+        ?.sessions ?? [];
     for (const s of sessions) {
-      d.prepare('INSERT OR IGNORE INTO sessions (token_hash, id, user_id, created_at, expires_at, last_seen_at, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(String(s.tokenHash), String(s.id), String(s.userId), String(s.createdAt), String(s.expiresAt), String(s.lastSeenAt), s.userAgent == null ? null : String(s.userAgent));
+      d.prepare(
+        "INSERT OR IGNORE INTO sessions (token_hash, id, user_id, created_at, expires_at, last_seen_at, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        String(s.tokenHash),
+        String(s.id),
+        String(s.userId),
+        String(s.createdAt),
+        String(s.expiresAt),
+        String(s.lastSeenAt),
+        s.userAgent == null ? null : String(s.userAgent),
+      );
     }
-    const tokens = (readJson('apitokens.json') as { tokens?: Array<Record<string, unknown>> } | undefined)?.tokens ?? [];
+    const tokens =
+      (readJson("apitokens.json") as { tokens?: Array<Record<string, unknown>> } | undefined)
+        ?.tokens ?? [];
     for (const t of tokens) {
-      d.prepare('INSERT OR IGNORE INTO api_tokens (hash, id, name, prefix, roles, created_by, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(String(t.hash), String(t.id), String(t.name), String(t.prefix), JSON.stringify(t.roles ?? []), String(t.createdBy), String(t.createdAt), t.lastUsedAt == null ? null : String(t.lastUsedAt));
+      d.prepare(
+        "INSERT OR IGNORE INTO api_tokens (hash, id, name, prefix, roles, created_by, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        String(t.hash),
+        String(t.id),
+        String(t.name),
+        String(t.prefix),
+        JSON.stringify(t.roles ?? []),
+        String(t.createdBy),
+        String(t.createdAt),
+        t.lastUsedAt == null ? null : String(t.lastUsedAt),
+      );
     }
-    const routes = (readJson('routes.json') ?? {}) as Record<string, { node?: unknown; image?: unknown; port?: unknown }>;
+    const routes = (readJson("routes.json") ?? {}) as Record<
+      string,
+      { node?: unknown; image?: unknown; port?: unknown }
+    >;
     for (const [app, r] of Object.entries(routes)) {
-      if (r?.node) d.prepare('INSERT OR IGNORE INTO routes (app, node, image, port) VALUES (?, ?, ?, ?)').run(app, String(r.node), String(r.image ?? ''), Number(r.port ?? 0));
+      if (r?.node)
+        d.prepare("INSERT OR IGNORE INTO routes (app, node, image, port) VALUES (?, ?, ?, ?)").run(
+          app,
+          String(r.node),
+          String(r.image ?? ""),
+          Number(r.port ?? 0),
+        );
     }
-    const apps = (readJson('apps.json') ?? {}) as Record<string, { node?: unknown }>;
+    const apps = (readJson("apps.json") ?? {}) as Record<string, { node?: unknown }>;
     for (const [app, a] of Object.entries(apps)) {
-      if (a?.node) d.prepare('INSERT OR IGNORE INTO apps (app, node, doc) VALUES (?, ?, ?)').run(app, String(a.node), JSON.stringify(a));
+      if (a?.node)
+        d.prepare("INSERT OR IGNORE INTO apps (app, node, doc) VALUES (?, ?, ?)").run(
+          app,
+          String(a.node),
+          JSON.stringify(a),
+        );
     }
-    const ports = (readJson('ports.json') ?? {}) as Record<string, number>;
+    const ports = (readJson("ports.json") ?? {}) as Record<string, number>;
     for (const [k, port] of Object.entries(ports)) {
-      const sep = k.indexOf('|');
-      if (sep > 0 && Number.isInteger(port)) d.prepare('INSERT OR IGNORE INTO ports (node, key, port) VALUES (?, ?, ?)').run(k.slice(0, sep), k.slice(sep + 1), port);
+      const sep = k.indexOf("|");
+      if (sep > 0 && Number.isInteger(port))
+        d.prepare("INSERT OR IGNORE INTO ports (node, key, port) VALUES (?, ?, ?)").run(
+          k.slice(0, sep),
+          k.slice(sep + 1),
+          port,
+        );
     }
-    const secrets = (readJson('secrets.json') ?? {}) as Record<string, Record<string, string>>;
+    const secrets = (readJson("secrets.json") ?? {}) as Record<string, Record<string, string>>;
     for (const [app, kv] of Object.entries(secrets)) {
-      for (const [key, blob] of Object.entries(kv ?? {})) d.prepare('INSERT OR IGNORE INTO secrets (app, key, blob) VALUES (?, ?, ?)').run(app, key, String(blob));
+      for (const [key, blob] of Object.entries(kv ?? {}))
+        d.prepare("INSERT OR IGNORE INTO secrets (app, key, blob) VALUES (?, ?, ?)").run(
+          app,
+          key,
+          String(blob),
+        );
     }
-    const bindings = (readJson('git-projects.json') as { bindings?: Array<Record<string, unknown>> } | undefined)?.bindings ?? [];
+    const bindings =
+      (readJson("git-projects.json") as { bindings?: Array<Record<string, unknown>> } | undefined)
+        ?.bindings ?? [];
     for (const b of bindings) {
-      if (b?.id) d.prepare('INSERT OR IGNORE INTO git_bindings (id, doc) VALUES (?, ?)').run(String(b.id), JSON.stringify(b));
+      if (b?.id)
+        d.prepare("INSERT OR IGNORE INTO git_bindings (id, doc) VALUES (?, ?)").run(
+          String(b.id),
+          JSON.stringify(b),
+        );
     }
     // Audit trail (JSONL, append-only). Order preserved; the a-<n> ids restart from the new seq.
-    const auditFile = process.env.PORTLESS_AUDIT_FILE ?? join(dir, 'audit.jsonl');
+    const auditFile = process.env.PORTLESS_AUDIT_FILE ?? join(dir, "audit.jsonl");
     if (existsSync(auditFile)) {
-      for (const line of readFileSync(auditFile, 'utf8').split('\n')) {
+      for (const line of readFileSync(auditFile, "utf8").split("\n")) {
         if (!line.trim()) continue;
         try {
           const e = JSON.parse(line) as Record<string, unknown>;
-          d.prepare('INSERT INTO audit (at, actor, action, target, outcome, dry_run, meta) VALUES (?, ?, ?, ?, ?, ?, ?)')
-            .run(String(e.at), String(e.actor), String(e.action), e.target == null ? null : String(e.target), String(e.outcome), e.dryRun ? 1 : 0, e.meta ? JSON.stringify(e.meta) : null);
-        } catch { /* skip a corrupt line rather than lose the trail */ }
+          d.prepare(
+            "INSERT INTO audit (at, actor, action, target, outcome, dry_run, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          ).run(
+            String(e.at),
+            String(e.actor),
+            String(e.action),
+            e.target == null ? null : String(e.target),
+            String(e.outcome),
+            e.dryRun ? 1 : 0,
+            e.meta ? JSON.stringify(e.meta) : null,
+          );
+        } catch {
+          /* skip a corrupt line rather than lose the trail */
+        }
       }
     }
-    d.prepare("INSERT INTO meta (k, v) VALUES ('legacy_imported', ?)").run(new Date().toISOString());
-    d.exec('COMMIT');
+    d.prepare("INSERT INTO meta (k, v) VALUES ('legacy_imported', ?)").run(
+      new Date().toISOString(),
+    );
+    d.exec("COMMIT");
   } catch (e) {
-    d.exec('ROLLBACK');
-    console.error('[db] legacy import failed (starting empty):', (e as Error).message);
+    d.exec("ROLLBACK");
+    console.error("[db] legacy import failed (starting empty):", (e as Error).message);
     return;
   }
-  for (const f of ['users.json', 'sessions.json', 'apitokens.json', 'routes.json', 'apps.json', 'ports.json', 'secrets.json', 'git-projects.json', 'audit.jsonl']) finish(f);
-  console.log('[db] legacy JSON state imported into portless.db');
+  for (const f of [
+    "users.json",
+    "sessions.json",
+    "apitokens.json",
+    "routes.json",
+    "apps.json",
+    "ports.json",
+    "secrets.json",
+    "git-projects.json",
+    "audit.jsonl",
+  ])
+    finish(f);
+  console.log("[db] legacy JSON state imported into portless.db");
 }
 
 export const db = createDb();

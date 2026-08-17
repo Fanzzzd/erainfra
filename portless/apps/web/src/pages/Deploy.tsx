@@ -1,14 +1,39 @@
-import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
-import { ExternalLink, GitBranch, KeyRound, Plus, RefreshCw, Rocket, Trash2, Upload } from 'lucide-react';
-import { trpcQuery, trpcMutation, uploadSource, waitForDeploy, type AgentInfo, type EnvVar, type GitBinding, type RouteInfo } from '@/api';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
+import {
+  ExternalLink,
+  GitBranch,
+  KeyRound,
+  Plus,
+  RefreshCw,
+  Rocket,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import {
+  trpcQuery,
+  trpcMutation,
+  uploadSource,
+  waitForDeploy,
+  type AgentInfo,
+  type EnvVar,
+  type GitBinding,
+  type RouteInfo,
+} from "@/api";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogClose,
@@ -18,7 +43,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
 
 function since(iso: string): string {
   const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -30,7 +55,13 @@ function since(iso: string): string {
 
 // A node <select>, shared by both tabs and the bind dialog. When no node is connected it shows a
 // disabled hint so the user knows to enroll one before deploying.
-function NodeSelect(props: { id: string; value: string; agents: AgentInfo[]; disabled?: boolean; onChange: (v: string) => void }) {
+function NodeSelect(props: {
+  id: string;
+  value: string;
+  agents: AgentInfo[];
+  disabled?: boolean;
+  onChange: (v: string) => void;
+}) {
   return (
     <select
       id={props.id}
@@ -57,7 +88,7 @@ export function Deploy() {
 
   const refreshAgents = useCallback(async () => {
     try {
-      setAgents(await trpcQuery<AgentInfo[]>('agents.list'));
+      setAgents(await trpcQuery<AgentInfo[]>("agents.list"));
     } catch {
       // keep last good; global indicator covers hard offline
     }
@@ -73,7 +104,10 @@ export function Deploy() {
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold tracking-tight">Deploy</h2>
-        <p className="text-muted-foreground text-sm">Ship an app from a Git repo or by uploading source — portless builds and runs it on a node.</p>
+        <p className="text-muted-foreground text-sm">
+          Ship an app from a Git repo or by uploading source — portless builds and runs it on a
+          node.
+        </p>
       </div>
 
       <Tabs defaultValue="git">
@@ -106,7 +140,7 @@ function DeployedApps() {
 
   const refresh = useCallback(async () => {
     try {
-      setRoutes(await trpcQuery<RouteInfo[]>('routes.list'));
+      setRoutes(await trpcQuery<RouteInfo[]>("routes.list"));
     } catch {
       // keep last good
     }
@@ -122,7 +156,7 @@ function DeployedApps() {
     if (!confirm(`Remove ${app}? This stops its container and unroutes it.`)) return;
     setBusy(app);
     try {
-      await trpcMutation('routes.remove', { app, confirm: true });
+      await trpcMutation("routes.remove", { app, confirm: true });
       toast.success(`Removed ${app}`);
       refresh();
     } catch (e) {
@@ -155,21 +189,36 @@ function DeployedApps() {
                   <TableCell className="pl-6 font-medium">{r.app}</TableCell>
                   <TableCell>
                     {r.url ? (
-                      <a href={r.url} target="_blank" rel="noreferrer" className="text-primary inline-flex items-center gap-1 hover:underline">
-                        {r.url.replace(/^https?:\/\//, '')} <ExternalLink className="size-3" />
+                      <a
+                        href={r.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-primary inline-flex items-center gap-1 hover:underline"
+                      >
+                        {r.url.replace(/^https?:\/\//, "")} <ExternalLink className="size-3" />
                       </a>
                     ) : (
-                      <span className="text-muted-foreground text-xs">set PORTLESS_APP_DOMAIN for a URL</span>
+                      <span className="text-muted-foreground text-xs">
+                        set PORTLESS_APP_DOMAIN for a URL
+                      </span>
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">{r.node}</TableCell>
                   <TableCell>
-                    <Badge variant={r.online ? 'default' : 'destructive'}>{r.online ? 'online' : r.nodeConnected ? 'starting' : 'offline'}</Badge>
+                    <Badge variant={r.online ? "default" : "destructive"}>
+                      {r.online ? "online" : r.nodeConnected ? "starting" : "offline"}
+                    </Badge>
                   </TableCell>
                   <TableCell className="pr-6">
                     <div className="flex justify-end gap-1">
                       <EnvDialog app={r.app} />
-                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => remove(r.app)} disabled={busy === r.app}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => remove(r.app)}
+                        disabled={busy === r.app}
+                      >
                         <Trash2 /> Remove
                       </Button>
                     </div>
@@ -189,13 +238,13 @@ function DeployedApps() {
 function EnvDialog(props: { app: string }) {
   const [open, setOpen] = useState(false);
   const [vars, setVars] = useState<EnvVar[]>([]);
-  const [key, setKey] = useState('');
-  const [value, setValue] = useState('');
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      setVars(await trpcQuery<EnvVar[]>('env.list', { app: props.app }));
+      setVars(await trpcQuery<EnvVar[]>("env.list", { app: props.app }));
     } catch {
       // keep last good
     }
@@ -209,10 +258,10 @@ function EnvDialog(props: { app: string }) {
     if (!key) return;
     setBusy(true);
     try {
-      await trpcMutation('env.set', { app: props.app, vars: { [key]: value } });
+      await trpcMutation("env.set", { app: props.app, vars: { [key]: value } });
       toast.success(`Set ${key} — redeploy to apply`);
-      setKey('');
-      setValue('');
+      setKey("");
+      setValue("");
       refresh();
     } catch (e) {
       toast.error((e as Error).message);
@@ -224,7 +273,7 @@ function EnvDialog(props: { app: string }) {
   async function unset(k: string) {
     setBusy(true);
     try {
-      await trpcMutation('env.unset', { app: props.app, key: k });
+      await trpcMutation("env.unset", { app: props.app, key: k });
       toast.success(`Removed ${k} — redeploy to apply`);
       refresh();
     } catch (e) {
@@ -244,16 +293,31 @@ function EnvDialog(props: { app: string }) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Environment — {props.app}</DialogTitle>
-          <DialogDescription>Encrypted at rest, injected into the container on the next deploy. Values are never shown again.</DialogDescription>
+          <DialogDescription>
+            Encrypted at rest, injected into the container on the next deploy. Values are never
+            shown again.
+          </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 py-2">
           {vars.length > 0 && (
             <div className="rounded-md border">
               {vars.map((v) => (
-                <div key={v.key} className="flex items-center justify-between gap-2 border-b px-3 py-2 text-sm last:border-0">
+                <div
+                  key={v.key}
+                  className="flex items-center justify-between gap-2 border-b px-3 py-2 text-sm last:border-0"
+                >
                   <span className="font-mono">{v.key}</span>
-                  <span className="text-muted-foreground ml-auto font-mono text-xs">{v.preview}</span>
-                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => unset(v.key)} disabled={busy} aria-label={`Remove ${v.key}`}>
+                  <span className="text-muted-foreground ml-auto font-mono text-xs">
+                    {v.preview}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => unset(v.key)}
+                    disabled={busy}
+                    aria-label={`Remove ${v.key}`}
+                  >
                     <Trash2 />
                   </Button>
                 </div>
@@ -263,11 +327,22 @@ function EnvDialog(props: { app: string }) {
           <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
             <div className="grid gap-1">
               <Label htmlFor="env-key">Key</Label>
-              <Input id="env-key" placeholder="DATABASE_URL" value={key} onChange={(e) => setKey(e.target.value)} />
+              <Input
+                id="env-key"
+                placeholder="DATABASE_URL"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+              />
             </div>
             <div className="grid gap-1">
               <Label htmlFor="env-value">Value</Label>
-              <Input id="env-value" type="password" placeholder="secret" value={value} onChange={(e) => setValue(e.target.value)} />
+              <Input
+                id="env-value"
+                type="password"
+                placeholder="secret"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
             </div>
             <Button onClick={add} disabled={!key || busy}>
               <Plus /> Set
@@ -285,7 +360,7 @@ function GitTab(props: { agents: AgentInfo[] }) {
 
   const refresh = useCallback(async () => {
     try {
-      setBindings(await trpcQuery<GitBinding[]>('git.list'));
+      setBindings(await trpcQuery<GitBinding[]>("git.list"));
     } catch {
       // keep last good
     }
@@ -301,9 +376,15 @@ function GitTab(props: { agents: AgentInfo[] }) {
     setBusy(b.id);
     const t = toast.loading(`Deploying ${b.name}…`);
     try {
-      const { deployId } = await trpcMutation<{ deployId: string }>('git.deployNow', { id: b.id, confirm: true });
-      const d = await waitForDeploy(deployId, (p) => toast.loading(`${b.name}: ${p.detail}`, { id: t }));
-      if (d.stage === 'done') toast.success(`Deployed ${b.name}${d.urls[0] ? ` → ${d.urls[0]}` : ''}`, { id: t });
+      const { deployId } = await trpcMutation<{ deployId: string }>("git.deployNow", {
+        id: b.id,
+        confirm: true,
+      });
+      const d = await waitForDeploy(deployId, (p) =>
+        toast.loading(`${b.name}: ${p.detail}`, { id: t }),
+      );
+      if (d.stage === "done")
+        toast.success(`Deployed ${b.name}${d.urls[0] ? ` → ${d.urls[0]}` : ""}`, { id: t });
       else toast.error(`${b.name} failed: ${d.error ?? d.detail}`, { id: t });
       refresh();
     } catch (e) {
@@ -316,7 +397,7 @@ function GitTab(props: { agents: AgentInfo[] }) {
   async function unbind(b: GitBinding) {
     setBusy(b.id);
     try {
-      await trpcMutation('git.unbind', { id: b.id, confirm: true });
+      await trpcMutation("git.unbind", { id: b.id, confirm: true });
       toast.success(`Unbound ${b.repo}@${b.branch}`);
       refresh();
     } catch (e) {
@@ -340,7 +421,9 @@ function GitTab(props: { agents: AgentInfo[] }) {
           <CardHeader className="items-center text-center">
             <GitBranch className="text-muted-foreground mx-auto mb-2 size-8" />
             <CardTitle>No repos bound</CardTitle>
-            <CardDescription>Import a Git repo to deploy it on push (or with the Redeploy button).</CardDescription>
+            <CardDescription>
+              Import a Git repo to deploy it on push (or with the Redeploy button).
+            </CardDescription>
           </CardHeader>
         </Card>
       ) : (
@@ -372,10 +455,12 @@ function GitTab(props: { agents: AgentInfo[] }) {
                     <TableCell>
                       {b.lastStatus ? (
                         <span className="inline-flex items-center gap-2 text-sm">
-                          <Badge variant={b.lastStatus.ok ? 'default' : 'destructive'}>
-                            {b.lastStatus.ok ? 'ok' : `failed: ${b.lastStatus.stage}`}
+                          <Badge variant={b.lastStatus.ok ? "default" : "destructive"}>
+                            {b.lastStatus.ok ? "ok" : `failed: ${b.lastStatus.stage}`}
                           </Badge>
-                          <span className="text-muted-foreground tabular-nums">{since(b.lastStatus.at)} ago</span>
+                          <span className="text-muted-foreground tabular-nums">
+                            {since(b.lastStatus.at)} ago
+                          </span>
                         </span>
                       ) : (
                         <span className="text-muted-foreground">—</span>
@@ -383,7 +468,12 @@ function GitTab(props: { agents: AgentInfo[] }) {
                     </TableCell>
                     <TableCell className="pr-6">
                       <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => redeploy(b)} disabled={busy === b.id}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => redeploy(b)}
+                          disabled={busy === b.id}
+                        >
                           <Rocket /> Redeploy
                         </Button>
                         <Button
@@ -410,12 +500,12 @@ function GitTab(props: { agents: AgentInfo[] }) {
 
 function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
   const [open, setOpen] = useState(false);
-  const [repo, setRepo] = useState('');
-  const [branch, setBranch] = useState('main');
-  const [name, setName] = useState('');
-  const [port, setPort] = useState(''); // only needed when the repo has no portless.yaml
-  const [buildNode, setBuildNode] = useState('');
-  const [deployNode, setDeployNode] = useState('');
+  const [repo, setRepo] = useState("");
+  const [branch, setBranch] = useState("main");
+  const [name, setName] = useState("");
+  const [port, setPort] = useState(""); // only needed when the repo has no portless.yaml
+  const [buildNode, setBuildNode] = useState("");
+  const [deployNode, setDeployNode] = useState("");
   const [busy, setBusy] = useState(false);
 
   // Default both node selects to the first connected node.
@@ -427,16 +517,25 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
   }, [props.agents, buildNode, deployNode]);
 
   const noNodes = props.agents.length === 0;
-  const canSubmit = !!repo && !!branch && !!name && !!buildNode && !!deployNode && !noNodes && !busy;
+  const canSubmit =
+    !!repo && !!branch && !!name && !!buildNode && !!deployNode && !noNodes && !busy;
 
   async function bind() {
     setBusy(true);
     try {
-      await trpcMutation('git.bind', { repo, branch, buildNode, deployNode, name, ...(port ? { port: Number(port) } : {}), confirm: true });
+      await trpcMutation("git.bind", {
+        repo,
+        branch,
+        buildNode,
+        deployNode,
+        name,
+        ...(port ? { port: Number(port) } : {}),
+        confirm: true,
+      });
       toast.success(`Imported ${repo}@${branch}`);
       setOpen(false);
-      setRepo('');
-      setName('');
+      setRepo("");
+      setName("");
       props.onBound();
     } catch (e) {
       toast.error((e as Error).message);
@@ -455,35 +554,69 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Import a Git repo</DialogTitle>
-          <DialogDescription>Binds a repo+branch to build/deploy nodes. A GitHub push (or Redeploy) builds and ships it.</DialogDescription>
+          <DialogDescription>
+            Binds a repo+branch to build/deploy nodes. A GitHub push (or Redeploy) builds and ships
+            it.
+          </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-2">
           <div className="grid gap-2">
             <Label htmlFor="repo">Repo</Label>
-            <Input id="repo" placeholder="owner/name" value={repo} onChange={(e) => setRepo(e.target.value)} />
+            <Input
+              id="repo"
+              placeholder="owner/name"
+              value={repo}
+              onChange={(e) => setRepo(e.target.value)}
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label htmlFor="branch">Branch</Label>
-              <Input id="branch" placeholder="main" value={branch} onChange={(e) => setBranch(e.target.value)} />
+              <Input
+                id="branch"
+                placeholder="main"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+              />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="git-name">App name</Label>
-              <Input id="git-name" placeholder="my-app" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} />
+              <Input
+                id="git-name"
+                placeholder="my-app"
+                value={name}
+                onChange={(e) => setName(e.target.value.toLowerCase())}
+              />
             </div>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="git-port">Port (only if the repo has no portless.yaml)</Label>
-            <Input id="git-port" type="number" placeholder="from portless.yaml" value={port} onChange={(e) => setPort(e.target.value)} />
+            <Input
+              id="git-port"
+              type="number"
+              placeholder="from portless.yaml"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
               <Label htmlFor="git-build">Build node</Label>
-              <NodeSelect id="git-build" value={buildNode} agents={props.agents} onChange={setBuildNode} />
+              <NodeSelect
+                id="git-build"
+                value={buildNode}
+                agents={props.agents}
+                onChange={setBuildNode}
+              />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="git-deploy">Deploy node</Label>
-              <NodeSelect id="git-deploy" value={deployNode} agents={props.agents} onChange={setDeployNode} />
+              <NodeSelect
+                id="git-deploy"
+                value={deployNode}
+                agents={props.agents}
+                onChange={setDeployNode}
+              />
             </div>
           </div>
         </div>
@@ -492,7 +625,7 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
             <Button variant="outline">Cancel</Button>
           </DialogClose>
           <Button onClick={bind} disabled={!canSubmit}>
-            <Plus /> {busy ? 'Importing…' : 'Import'}
+            <Plus /> {busy ? "Importing…" : "Import"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -502,10 +635,10 @@ function BindDialog(props: { agents: AgentInfo[]; onBound: () => void }) {
 
 function UploadTab(props: { agents: AgentInfo[] }) {
   const [file, setFile] = useState<File | null>(null);
-  const [name, setName] = useState('');
-  const [port, setPort] = useState(''); // only needed when the source has no portless.yaml
-  const [buildNode, setBuildNode] = useState('');
-  const [deployNode, setDeployNode] = useState('');
+  const [name, setName] = useState("");
+  const [port, setPort] = useState(""); // only needed when the source has no portless.yaml
+  const [buildNode, setBuildNode] = useState("");
+  const [deployNode, setDeployNode] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -521,10 +654,10 @@ function UploadTab(props: { agents: AgentInfo[] }) {
   async function deploy() {
     if (!file) return;
     setBusy(true);
-    const t = toast.loading('Uploading…');
+    const t = toast.loading("Uploading…");
     try {
       const { buildId } = await uploadSource(file);
-      const { deployId } = await trpcMutation<{ deployId: string }>('upload.deploy', {
+      const { deployId } = await trpcMutation<{ deployId: string }>("upload.deploy", {
         buildId,
         app: name,
         ...(port ? { port: Number(port) } : {}),
@@ -532,8 +665,11 @@ function UploadTab(props: { agents: AgentInfo[] }) {
         node: deployNode,
         confirm: true,
       });
-      const d = await waitForDeploy(deployId, (p) => toast.loading(`${name}: ${p.detail}`, { id: t }));
-      if (d.stage === 'done') toast.success(`Deployed ${name}${d.urls[0] ? ` → ${d.urls[0]}` : ''}`, { id: t });
+      const d = await waitForDeploy(deployId, (p) =>
+        toast.loading(`${name}: ${p.detail}`, { id: t }),
+      );
+      if (d.stage === "done")
+        toast.success(`Deployed ${name}${d.urls[0] ? ` → ${d.urls[0]}` : ""}`, { id: t });
       else toast.error(`${name} failed: ${d.error ?? d.detail}`, { id: t });
     } catch (e) {
       toast.error((e as Error).message, { id: t });
@@ -546,7 +682,9 @@ function UploadTab(props: { agents: AgentInfo[] }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Upload source</CardTitle>
-        <CardDescription>Select a .tar.gz of your app. No Dockerfile needed — portless builds it with Nixpacks.</CardDescription>
+        <CardDescription>
+          Select a .tar.gz of your app. No Dockerfile needed — portless builds it with Nixpacks.
+        </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
         <div className="grid gap-2">
@@ -561,26 +699,47 @@ function UploadTab(props: { agents: AgentInfo[] }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="grid gap-2">
             <Label htmlFor="up-name">App name</Label>
-            <Input id="up-name" placeholder="my-app" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} />
+            <Input
+              id="up-name"
+              placeholder="my-app"
+              value={name}
+              onChange={(e) => setName(e.target.value.toLowerCase())}
+            />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="up-port">Port (only if no portless.yaml)</Label>
-            <Input id="up-port" type="number" placeholder="from portless.yaml" value={port} onChange={(e) => setPort(e.target.value)} />
+            <Input
+              id="up-port"
+              type="number"
+              placeholder="from portless.yaml"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+            />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div className="grid gap-2">
             <Label htmlFor="up-build">Build node</Label>
-            <NodeSelect id="up-build" value={buildNode} agents={props.agents} onChange={setBuildNode} />
+            <NodeSelect
+              id="up-build"
+              value={buildNode}
+              agents={props.agents}
+              onChange={setBuildNode}
+            />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="up-deploy">Deploy node</Label>
-            <NodeSelect id="up-deploy" value={deployNode} agents={props.agents} onChange={setDeployNode} />
+            <NodeSelect
+              id="up-deploy"
+              value={deployNode}
+              agents={props.agents}
+              onChange={setDeployNode}
+            />
           </div>
         </div>
         <div>
           <Button onClick={deploy} disabled={!canDeploy}>
-            <Rocket /> {busy ? 'Deploying…' : 'Deploy'}
+            <Rocket /> {busy ? "Deploying…" : "Deploy"}
           </Button>
         </div>
       </CardContent>

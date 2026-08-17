@@ -2,10 +2,14 @@
   "name": "portless",
   "version": "1.0.0",
   "description": "CLI for the portless private PaaS — deploy to your own machines, no public IP needed",
+  "bin": {
+    "portless": "./portless.mjs"
+  },
   "type": "module",
-  "bin": { "portless": "./portless.mjs" },
-  "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
