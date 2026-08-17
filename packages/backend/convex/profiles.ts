@@ -4,6 +4,7 @@ import {
   boundaryValidator,
   EXECUTOR_BOUNDARY,
   isTrustedOnly,
+  readinessAdmissionError,
   readinessCheckValidator,
 } from "./isolation";
 import { query } from "./_generated/server";
@@ -76,6 +77,7 @@ export const list = query({
           storage: v.optional(
             v.object({
               snapshotter: v.optional(v.string()),
+              poolName: v.optional(v.string()),
               poolTotalMiB: v.optional(v.number()),
               poolFreeMiB: v.optional(v.number()),
             }),
@@ -83,6 +85,7 @@ export const list = query({
           network: v.optional(
             v.object({
               policyName: v.optional(v.string()),
+              policyHash: v.optional(v.string()),
               subnet: v.optional(v.string()),
               egressMode: v.optional(v.string()),
             }),
@@ -119,7 +122,9 @@ export const list = query({
             (row) =>
               row.state === "ready" &&
               profile.state === "active" &&
-              now - row.checkedAt < 12 * 60 * 60_000,
+              now - row.checkedAt < 12 * 60 * 60_000 &&
+              readinessAdmissionError(row, evidenceByKey.get(`${row.machineId}:${row.profile}`)) ===
+                undefined,
           )
           .map((row) => machineById.get(row.machineId))
           .filter(
@@ -133,11 +138,17 @@ export const list = query({
           // Evidence must describe this exact hot report. Until the next Agent
           // refresh creates it, fall back to the legacy inline fields.
           const currentEvidence = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
+          const admissionError = readinessAdmissionError(row, evidence);
           return [
             {
               machineId: row.machineId,
               machineName: machine.name,
-              state: row.state,
+              state:
+                row.state === "ready" && admissionError !== undefined
+                  ? row.preparedAt === undefined
+                    ? ("failed" as const)
+                    : ("degraded" as const)
+                  : row.state,
               checkedAt: row.checkedAt,
               preparedAt: row.preparedAt,
               statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
@@ -152,7 +163,7 @@ export const list = query({
               hardware: currentEvidence?.hardware ?? row.hardware,
               storage: currentEvidence?.storage ?? row.storage,
               network: currentEvidence?.network ?? row.network,
-              lastError: currentEvidence?.lastError ?? row.lastError,
+              lastError: currentEvidence?.lastError ?? row.lastError ?? admissionError,
             },
           ];
         });

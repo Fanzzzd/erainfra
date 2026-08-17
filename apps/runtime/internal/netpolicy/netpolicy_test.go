@@ -2,9 +2,28 @@ package netpolicy
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestPolicyIdentityHashNamesTheExactContract(t *testing.T) {
+	policy := DefaultPolicy("runner-center")
+	hash := policy.IdentityHash()
+	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(hash) {
+		t.Fatalf("identity hash = %q, want a lowercase sha256 identity", hash)
+	}
+	if policy.IdentityHash() != hash {
+		t.Fatal("the same policy must have a stable identity")
+	}
+
+	changed := policy
+	changed.EgressMode = EgressAllowlist
+	changed.AllowedDestinations = []string{"1.1.1.1/32", "9.9.9.9/32"}
+	if changed.IdentityHash() == hash {
+		t.Fatal("a different egress contract must not reuse the policy identity")
+	}
+}
 
 func TestDefaultPolicyIsValid(t *testing.T) {
 	if err := DefaultPolicy("runner-center").Validate(); err != nil {

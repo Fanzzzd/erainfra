@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
-import { hasSnapshotHeadroomForGuests } from "./isolation";
+import { hasSnapshotHeadroomForGuests, readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
@@ -87,11 +87,28 @@ export const tryAssign = internalMutation({
         ),
       )
     ).flat();
+    const evidenceRows = (
+      await Promise.all(
+        allReadiness
+          .filter((readiness) => readiness.state === "ready")
+          .map((readiness) =>
+            ctx.db
+              .query("readinessEvidence")
+              .withIndex("by_machine_profile", (query) =>
+                query.eq("machineId", readiness.machineId).eq("profile", readiness.profile),
+              )
+              .unique(),
+          ),
+      )
+    ).filter((evidence): evidence is NonNullable<typeof evidence> => evidence !== null);
     const attempts = [...pendingAttempts, ...attemptRanges.flat()];
     const experiments = [...queuedExperiments, ...experimentRanges.flat()];
     const activeProfileByName = new Map(profiles.map((profile) => [profile.name, profile]));
     const machineById = new Map(machines.map((machine) => [machine._id, machine]));
     const readinessByProfile = new Map<string, Doc<"workerReadiness">[]>();
+    const evidenceByMachineProfile = new Map(
+      evidenceRows.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
+    );
     const activeByMachineProfile = new Map<string, number>();
     const idleWarmByMachineProfile = new Map<string, number>();
     // `count` is what disk admission needs: copy-on-write growth is per running
@@ -208,7 +225,11 @@ export const tryAssign = internalMutation({
           (readiness) =>
             readiness.executor === work.executor &&
             readiness.imageRelease === work.imageRelease &&
-            now - readiness.checkedAt < READINESS_STALE_AFTER_MS,
+            now - readiness.checkedAt < READINESS_STALE_AFTER_MS &&
+            readinessAdmissionError(
+              readiness,
+              evidenceByMachineProfile.get(`${readiness.machineId}:${readiness.profile}`),
+            ) === undefined,
         )
         .map((readiness) => ({ readiness, machine: machineById.get(readiness.machineId) }))
         .filter(

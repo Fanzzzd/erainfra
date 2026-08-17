@@ -176,6 +176,7 @@ func (r *Runtime) Preflight(ctx context.Context) (executor.Report, error) {
 		Boundary:  executor.BoundaryGuestKernel,
 		Network: executor.Network{
 			PolicyName:          r.config.Network.Name,
+			PolicyHash:          r.config.Network.IdentityHash(),
 			Subnet:              r.config.Network.Subnet,
 			EgressMode:          string(r.config.Network.EgressMode),
 			AllowedDestinations: r.config.Network.AllowedDestinations,

@@ -38,8 +38,13 @@ export type ReadinessFacts = {
     virtualization?: string;
     kvm?: boolean;
   };
-  storage?: { snapshotter?: string; poolTotalMiB?: number; poolFreeMiB?: number };
-  network?: { policyName?: string; subnet?: string; egressMode?: string };
+  storage?: {
+    snapshotter?: string;
+    poolName?: string;
+    poolTotalMiB?: number;
+    poolFreeMiB?: number;
+  };
+  network?: { policyName?: string; policyHash?: string; subnet?: string; egressMode?: string };
   warmPool?: { target: number; parked: number; claimed: number };
 };
 

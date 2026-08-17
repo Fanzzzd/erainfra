@@ -24,9 +24,10 @@ git log --oneline origin/main -3   # know exactly what you are deploying; note t
 pnpm check                          # green on the commit you deploy
 ```
 
-Confirm the canary is green: the `smoke` workflow in `rc-e2e-smoke` runs daily against the
-live fleet and on demand via workflow dispatch. A green run within 24 h means the current
-deployment schedules and tears down jobs correctly — your pre-deploy baseline.
+Confirm the EraInfra `smoke` workflow is green; it runs daily against the live fleet and on demand
+via workflow dispatch. A green run within 24 h means the current deployment created, claimed, and
+ran a job that passed the in-job executor probes. It does not observe post-job teardown or satisfy
+issue #17's Firecracker production gate.
 
 Pick a quiet window: running Attempts are not interrupted by a deploy, but scheduling
 decisions made mid-deploy land on whichever code version answers.
@@ -43,9 +44,9 @@ pnpm deploy
    checks (proves #27 against production data).
 2. **Workers stay ready.** Within one readiness cycle each Worker's row converges to the new
    compact shape. `rc logs -f` on a Worker shows `readiness: ready`, not schema errors.
-3. **Run the canary now** — trigger `smoke` in `rc-e2e-smoke` (workflow dispatch) and wait for
-   green. This exercises attempt creation → `attemptSecrets` → claim → teardown on the new
-   code with real GitHub traffic.
+3. **Run the canary now** — trigger EraInfra's `smoke` workflow (workflow dispatch) and wait for
+   green. This exercises attempt creation → `attemptSecrets` → claim → in-job executor probes on
+   the new code with real GitHub traffic; post-job teardown remains a separate check.
 4. **Bandwidth actually drops.** In the Convex dashboard's usage page, `tryAssign`,
    `pendingAttempts` and `reconcile.run` should fall from GB-scale to MB-scale within a day.
    If they do not, the range reads are not being hit — investigate before assuming success.

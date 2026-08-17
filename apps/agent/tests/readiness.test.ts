@@ -21,11 +21,18 @@ describe("parseRuntimeReport", () => {
         isolation: "firecracker-microvm",
         boundary: "guest-kernel",
         checks: [{ name: "kvm-device", passed: true, detail: "/dev/kvm" }],
+        storage: { snapshotter: "devmapper", poolName: "runner-center-thinpool" },
+        network: {
+          policyName: "runner-center",
+          policyHash: `sha256:${"b".repeat(64)}`,
+        },
         cache: { scope: "immutable-image", sharedWritable: false },
       }),
     );
     assert.equal(report.boundary, "guest-kernel");
     assert.equal(report.checks?.[0]?.name, "kvm-device");
+    assert.equal(report.storage?.poolName, "runner-center-thinpool");
+    assert.equal(report.network?.policyHash, `sha256:${"b".repeat(64)}`);
     assert.equal(report.cache?.sharedWritable, false);
   });
 

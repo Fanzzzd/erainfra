@@ -3,10 +3,10 @@ name: EraInfra smoke
 on:
   workflow_dispatch:
   schedule:
-    # Daily canary: proves the whole product path (scale-set listener ->
-    # Attempt -> scheduler -> agent -> ephemeral executor -> teardown) still
-    # works, independent of anyone's session. A red run here means the fleet
-    # or control plane lost capability.
+    # Daily canary: proves the live path from scale-set listener through an
+    # Attempt, scheduler, agent, and the executor's in-job contract. Post-job
+    # teardown and the Firecracker production gate require separate evidence.
+    # A red run here means the fleet or control plane lost capability.
     - cron: "17 2 * * *"
 
 jobs:
@@ -28,7 +28,10 @@ jobs:
           mounts=$(cat /proc/self/mountinfo)
           [ -n "$mounts" ]
           # No Docker control socket is reachable at any mounted path.
-          ! grep -q 'docker\.sock' <<<"$mounts"
+          if grep -q 'docker\.sock' <<<"$mounts"; then
+            echo "Docker control socket is mounted" >&2
+            exit 1
+          fi
           # No host bind mounts or shared volumes: apart from the root
           # filesystem, the only disk-backed mounts a clean executor carries
           # are Docker's standard /etc file trio and the read-only tini

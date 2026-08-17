@@ -6,6 +6,40 @@ import schema from "../convex/schema";
 const modules = import.meta.glob("../convex/**/*.ts");
 const OPERATOR = { subject: "operator", issuer: "https://example.test" };
 const IMAGE = `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`;
+const FIRECRACKER_FACTS = {
+  isolation: "firecracker-microvm",
+  boundary: "guest-kernel" as const,
+  checks: [
+    "firecracker-binary",
+    "guest-kernel-image",
+    "guest-kernel-arguments",
+    "kvm-device",
+    "cni-plugins",
+    "cni-network-configuration",
+    "job-network-policy",
+    "containerd-snapshotter",
+    "cni-address-reservations",
+    "snapshot-storage-headroom",
+    "cache-isolation",
+    "image-release",
+    "warm-pool",
+  ].map((name) => ({ name, passed: true })),
+  cacheScope: "immutable-image",
+  cacheSharedWritable: false,
+  hardware: { kvm: true },
+  storage: {
+    snapshotter: "devmapper",
+    poolName: "runner-center-thinpool",
+    poolTotalMiB: 51_200,
+    poolFreeMiB: 40_960,
+  },
+  network: {
+    policyName: "runner-center",
+    policyHash: `sha256:${"b".repeat(64)}`,
+    subnet: "10.241.0.0/16",
+    egressMode: "public",
+  },
+};
 
 async function setup(t: TestConvex<typeof schema>, maxSlots = 2) {
   await t.mutation(internal.controllerApi.registerProfile, {
@@ -36,7 +70,10 @@ async function setup(t: TestConvex<typeof schema>, maxSlots = 2) {
     profile: "rc-linux-js",
     executor: "firecracker",
     imageRelease: IMAGE,
+    vcpus: 2,
+    memoryMiB: 4096,
     state: "ready",
+    ...FIRECRACKER_FACTS,
   });
   return machineId;
 }
