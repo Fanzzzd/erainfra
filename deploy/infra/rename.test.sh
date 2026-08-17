@@ -16,13 +16,23 @@
 set -eu
 
 HERE=$(CDPATH= cd "$(dirname "$0")" && pwd)
-FAILED=0
-ok()   { printf '  \033[32mok\033[0m %s\n' "$*" >&2; }
-fail() { printf '\033[31mFAIL\033[0m %s\n' "$*" >&2; FAILED=$((FAILED + 1)); }
-eq()   { [ "$2" = "$3" ] && ok "$1" || fail "$1: got '$2', want '$3'"; }
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
+
+# Failures are recorded in a FILE, not a variable. Most of the cases below run inside ( … ) so that
+# each can set and unset environment variables without leaking into the next, and a subshell cannot
+# write back to its parent: `FAILED=$((FAILED + 1))` incremented a copy that was discarded on the
+# closing paren. The script then read 0, printed its green line and exited 0 with real assertions
+# failing — including "old name only → still sufficient", the one property this whole PR exists to
+# hold. A test that reports success while failing is worse than no test, so the counter has to live
+# somewhere the subshells share.
+FAILURES="$WORK/failures"
+: > "$FAILURES"
+ok()   { printf '  \033[32mok\033[0m %s\n' "$*" >&2; }
+fail() { printf '\033[31mFAIL\033[0m %s\n' "$*" >&2; printf '%s\n' "$*" >> "$FAILURES"; }
+eq()   { [ "$2" = "$3" ] && ok "$1" || fail "$1: got '$2', want '$3'"; }
+failed() { wc -l < "$FAILURES" | tr -d ' '; }
 
 # Lift dual_env / dual_prefix out of a script and into this shell, so what is under test is the
 # function the customer's machine actually runs. sed rather than sourcing the whole file: these
@@ -114,6 +124,7 @@ eval "$(extract registry.sh dual_prefix)"
 # ---------------------------------------------------------------------------------------------
 # The frozen identifiers these scripts still write. This is the negative half of the PR and the one
 # a reviewer most needs pinned: stage 1 renames NOTHING that a running system holds.
+before_frozen=$(failed)
 grep -q 'agent-bin/portless-agent-' "$HERE/agent.sh" ||
   fail "agent.sh no longer downloads the frozen agent-bin path"
 grep -q 'agent-bin/portless-agent-windows' "$HERE/agent.ps1" ||
@@ -132,14 +143,31 @@ grep -q 'portless-tunnel' "$HERE/hub.sh" ||
   fail "hub.sh no longer manages the portless-tunnel unit"
 grep -q 'portless-agent-\${os}-\${arch}' "$HERE/build-agents.sh" ||
   fail "build-agents.sh no longer produces the frozen binary names"
-ok "every frozen identifier these scripts write is still written unchanged"
+# Conditional, because a summary line that prints whatever the greps above found says the opposite
+# of what just happened.
+if [ "$(failed)" = "$before_frozen" ]; then
+  ok "every frozen identifier these scripts write is still written unchanged"
+fi
 
 # build-agents.sh must still emit all five targets under their frozen names.
 targets=$(sed -n 's/^for t in \(.*\); do$/\1/p' "$HERE/build-agents.sh")
 eq "build-agents.sh still cross-compiles five targets" "$(printf '%s' "$targets" | wc -w | tr -d ' ')" "5"
 
+FAILED=$(failed)
 [ "$FAILED" = 0 ] || {
   printf '\033[31mrename.test.sh: %s assertion(s) failed\033[0m\n' "$FAILED" >&2
   exit 1
 }
+
+# The counter is only trustworthy if a failure inside ( … ) reaches it, and that was exactly the
+# bug. Assert the mechanism rather than the absence of failures: record one from a subshell, check
+# it arrived, and put the file back. Without this, a future refactor that reintroduces a shell
+# variable would restore the silent pass and every assertion above would go back to being decorative.
+( fail "self-check: a failure raised inside a subshell must reach the counter" ) 2>/dev/null
+[ "$(failed)" = 1 ] || {
+  printf '\033[31mrename.test.sh: subshell failures are not being counted — every case above is vacuous\033[0m\n' >&2
+  exit 1
+}
+: > "$FAILURES"
+
 printf '\033[32m✅ rename.test.sh ok\033[0m — the installers read both names and rename nothing\n' >&2

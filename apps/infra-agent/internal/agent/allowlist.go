@@ -136,7 +136,9 @@ func systemctlBuilder(action, desc string) builder {
 		}
 		unit := args["unit"]
 		if !IsPortlessUnit(unit) {
-			return Command{}, fmt.Errorf("%w: systemctl %s restricted to portless-* units, got %q", ErrNotAllowed, action, unit)
+			// Names both managed prefixes: the matcher accepts erainfra-* now, and a diagnostic that
+			// names only the retired one sends the reader looking for a bug that is not there.
+			return Command{}, fmt.Errorf("%w: systemctl %s restricted to portless-* or erainfra-* units, got %q", ErrNotAllowed, action, unit)
 		}
 		return Command{Path: "systemctl", Argv: []string{"systemctl", action, unit}, Description: desc}, nil
 	}

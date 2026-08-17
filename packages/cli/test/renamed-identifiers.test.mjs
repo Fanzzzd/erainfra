@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "portless.mjs");
 
@@ -76,4 +78,48 @@ test("PORTLESS_HUB_URL still outranks PORTLESS_HUB, exactly as it did", () => {
     /127\.0\.0\.1:1\/url/,
     "the precedence between the two old names must not move",
   );
+});
+
+test("a renamed name outranks EVERY retired one, not just its own pair", () => {
+  // `renamedEnv(A_URL, B_URL) ?? renamedEnv(A, B)` reads as "prefer the new" and is not: the first
+  // call falls back inside its own pair, so PORTLESS_HUB_URL beat ERAINFRA_HUB and the CLI went to
+  // the retired hub while warning about a retired name it did not have to use. Preference is over
+  // the whole set, so this is the mixed case that pins it.
+  const { err } = run({
+    ERAINFRA_HUB: "http://127.0.0.1:1/new",
+    PORTLESS_HUB_URL: "http://127.0.0.1:1/url",
+    ERAINFRA_TOKEN: "t",
+  });
+  assert.match(err, /127\.0\.0\.1:1\/new/, "a retired name outranked a renamed one");
+  assert.doesNotMatch(err, /retired name/, "warned about a retired name it did not need to read");
+});
+
+test("a retired config file is still read once ~/.erainfra exists", () => {
+  // The stage that comes next creates ~/.erainfra. Choosing the config by DIRECTORY would then make
+  // every dev machine that has not re-logged-in report itself disconnected, with the credential
+  // sitting unread one directory over. Resolution is per file, so the box keeps working.
+  const home = mkdtempSync(join(tmpdir(), "cli-home-"));
+  mkdirSync(join(home, ".erainfra"), { recursive: true });
+  mkdirSync(join(home, ".portless"), { recursive: true });
+  writeFileSync(
+    join(home, ".portless", "config.json"),
+    JSON.stringify({ hub: "http://127.0.0.1:1/from-retired-file", token: "t" }),
+  );
+  const { err } = run({}, home);
+  assert.match(err, /from-retired-file/, "an empty ~/.erainfra hid an existing ~/.portless config");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("a renamed config file wins when both exist", () => {
+  const home = mkdtempSync(join(tmpdir(), "cli-home-"));
+  for (const [dir, hub] of [
+    [".erainfra", "http://127.0.0.1:1/from-renamed-file"],
+    [".portless", "http://127.0.0.1:1/from-retired-file"],
+  ]) {
+    mkdirSync(join(home, dir), { recursive: true });
+    writeFileSync(join(home, dir, "config.json"), JSON.stringify({ hub, token: "t" }));
+  }
+  const { err } = run({}, home);
+  assert.match(err, /from-renamed-file/);
+  rmSync(home, { recursive: true, force: true });
 });

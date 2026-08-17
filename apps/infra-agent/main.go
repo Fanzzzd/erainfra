@@ -68,7 +68,7 @@ func runConnect() {
 	docker := fs.String("docker", "docker", "container CLI (docker or podman)")
 	_ = fs.Parse(os.Args[2:])
 	if *hub == "" {
-		fmt.Fprintln(os.Stderr, "need --hub or PORTLESS_HUB (e.g. wss://hub.example.com/agent)")
+		fmt.Fprintln(os.Stderr, "need --hub or ERAINFRA_HUB (PORTLESS_HUB also still works; e.g. wss://hub.example.com/agent)")
 		os.Exit(2)
 	}
 	// One registry shared by the control runner (records app->port on deploy) and the data plane

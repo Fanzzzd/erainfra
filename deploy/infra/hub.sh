@@ -99,7 +99,10 @@ check_volume_rename
 check_container_rename() {
   for pair in 'portless-hub erainfra-hub' 'portless-registry erainfra-registry'; do
     old=${pair% *}; new=${pair#* }
-    docker inspect "$new" >/dev/null 2>&1 || continue
+    # `docker container inspect`, not `docker inspect`: the latter resolves images, volumes and
+    # networks too, so an erainfra-registry VOLUME would make this announce a container that does
+    # not exist and tell the operator to stop it. A rename check that cries wolf gets ignored.
+    docker container inspect "$new" >/dev/null 2>&1 || continue
     log "note: a container named $new exists; this script manages $old and will not touch it"
     log "      it still holds whatever ports it published — stop it before it collides"
   done

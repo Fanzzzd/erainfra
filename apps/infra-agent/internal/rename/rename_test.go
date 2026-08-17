@@ -28,6 +28,9 @@ func TestEnvPrefersTheNewNameSilently(t *testing.T) {
 func TestEnvAcceptsTheRetiredNameAndSaysSoOnce(t *testing.T) {
 	Reset()
 	t.Setenv("PORTLESS_HUB", "wss://old.example/agent")
+	// A developer with ERAINFRA_HUB exported would otherwise take the renamed branch, and this test
+	// would report on a path it never walked.
+	os_unset(t, "ERAINFRA_HUB")
 	// Read twice: connect() re-dials forever, so a warning that fired per read would fill a Node's
 	// journal on its own.
 	for i := 0; i < 3; i++ {

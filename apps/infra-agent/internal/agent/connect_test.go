@@ -301,6 +301,32 @@ func TestReadSpecReadsBothSpecFilenames(t *testing.T) {
 			files: map[string]string{"portless.yml": "old-yml: {}\n"},
 			want:  "old-yml: {}\n",
 		},
+		{
+			// The table said it covered both .yml spellings and only ever wrote the retired one.
+			name:  "the renamed .yml is read as well as the retired one",
+			files: map[string]string{"erainfra.yml": "new-yml: {}\n"},
+			want:  "new-yml: {}\n",
+		},
+		{
+			// A customer mid-migration has both in the repo. Whichever wins has to be the same one
+			// every time, or two deploys of an unchanged commit produce different apps.
+			name: "both names present: the renamed file wins",
+			files: map[string]string{
+				"erainfra.yaml": "new: {}\n",
+				"portless.yaml": "old: {}\n",
+			},
+			want: "new: {}\n",
+		},
+		{
+			// .yaml before .yml within each brand, and a renamed .yml still beats a retired .yaml —
+			// the ordering is by brand first, which is what makes the migration monotonic.
+			name: "the renamed .yml beats the retired .yaml",
+			files: map[string]string{
+				"erainfra.yml":  "new-yml: {}\n",
+				"portless.yaml": "old: {}\n",
+			},
+			want: "new-yml: {}\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -309,17 +335,11 @@ func TestReadSpecReadsBothSpecFilenames(t *testing.T) {
 					t.Fatalf("write %s: %v", name, err)
 				}
 			}
-			// ReadSpec fetches into a temp dir of its own; readConfined over a prepared checkout is
-			// the same search, without a network or a git binary in the test.
-			got := ""
-			for _, f := range []string{"erainfra.yaml", "erainfra.yml", "portless.yaml", "portless.yml"} {
-				body, err := readConfined(root, f)
-				if err != nil {
-					continue
-				}
-				got = string(body)
-				break
-			}
+			// The production search, not a copy of it. ReadSpec only adds fetching the source into
+			// a temp dir, which needs a network and a git binary; everything this test is about
+			// lives in specFromCheckout, so re-listing the candidates here would assert the test's
+			// own opinion of the order rather than the agent's.
+			got := specFromCheckout(root)
 			if got != tc.want {
 				t.Fatalf("spec = %q, want %q", got, tc.want)
 			}

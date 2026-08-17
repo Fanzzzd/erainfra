@@ -482,8 +482,15 @@ export function createApiServer(
     if (!/^(portless|erainfra)-agent-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/.test(file)) {
       return reply.code(400).type("text/plain").send("bad agent binary name\n");
     }
-    const frozen = file.replace(/^erainfra-agent-/, "portless-agent-");
-    const f = [join(agentBinDir, file), join(agentBinDir, frozen)].find((p) => existsSync(p));
+    // Both candidates from EITHER spelling, not just from the renamed one. A box installed before
+    // this release asks for portless-agent-<target> forever — that request is baked into an agent
+    // already on disk — so once a later release builds under the renamed name, resolving a retired
+    // request to the retired name alone is a 404 for exactly the machines this rollout protects.
+    // Serving is the permissive side of the migration: it answers both spellings from whichever
+    // single file exists.
+    const current = file.replace(/^portless-agent-/, "erainfra-agent-");
+    const retired = file.replace(/^erainfra-agent-/, "portless-agent-");
+    const f = [join(agentBinDir, current), join(agentBinDir, retired)].find((p) => existsSync(p));
     if (!f)
       return reply
         .code(404)

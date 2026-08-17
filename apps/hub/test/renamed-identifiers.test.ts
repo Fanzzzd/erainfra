@@ -176,11 +176,27 @@ test("the Hub serves the agent binary under BOTH names, from the one file on dis
   writeFileSync(join(binDir, "portless-agent-linux-amd64"), "ELF-ish bytes");
   const app = await withEnv({ ERAINFRA_AGENT_BIN_DIR: binDir }, async () => {
     const server = createApiServer();
-    for (const name of ["portless-agent-linux-amd64", "erainfra-agent-linux-amd64"]) {
-      const res = await server.inject({ method: "GET", url: `/agent-bin/${name}` });
-      assert.equal(res.statusCode, 200, `GET /agent-bin/${name} → ${res.statusCode}`);
-      assert.equal(res.body, "ELF-ish bytes", `/agent-bin/${name} served different bytes`);
-    }
+    const bothRoutes = async (bytes: string) => {
+      for (const name of ["portless-agent-linux-amd64", "erainfra-agent-linux-amd64"]) {
+        const res = await server.inject({ method: "GET", url: `/agent-bin/${name}` });
+        assert.equal(res.statusCode, 200, `GET /agent-bin/${name} → ${res.statusCode}`);
+        assert.equal(res.body, bytes, `/agent-bin/${name} served different bytes`);
+      }
+    };
+    await bothRoutes("ELF-ish bytes");
+
+    // The other direction, which is the one that bites later: a box installed before this release
+    // asks for portless-agent-<target> for the rest of its life, so when a release starts building
+    // under the renamed name, the retired route still has to find it. Testing only the file that
+    // exists today would let that 404 ship unnoticed.
+    rmSync(join(binDir, "portless-agent-linux-amd64"));
+    writeFileSync(join(binDir, "erainfra-agent-linux-amd64"), "renamed ELF-ish bytes");
+    await bothRoutes("renamed ELF-ish bytes");
+
+    // Both present: the renamed file wins, under either spelling, so the two routes never disagree
+    // about which bytes they are serving.
+    writeFileSync(join(binDir, "portless-agent-linux-amd64"), "ELF-ish bytes");
+    await bothRoutes("renamed ELF-ish bytes");
     // Neither name loosens the allowlist that keeps this route from being an arbitrary-file read.
     const bad = await server.inject({ method: "GET", url: "/agent-bin/hub.sh" });
     assert.equal(bad.statusCode, 400);
