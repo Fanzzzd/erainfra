@@ -74,6 +74,41 @@ describe("provision-docker.sh isolation contract", () => {
   });
 });
 
+describe("runner failure reporting", () => {
+  // Regression: every provisioner launched the runner through upstream's
+  // run.sh / run.cmd wrapper. Those wrappers drive a long-lived service, so
+  // run-helper maps "listener exited with a terminated error" onto exit 0 --
+  // stop, do not retry. On a one-shot ephemeral runner that turned every
+  // startup failure into a job the control plane recorded as exitCode 0.
+  const launchers = [
+    ["provision-linux.sh", provisionLinux, /\.\/bin\/Runner\.Listener run &/],
+    ["provision-docker.sh", provisionDocker, /\.\/bin\/Runner\.Listener run &/],
+    ["provision-mac.sh", provisionMac, /exec \.\/bin\/Runner\.Listener run/],
+    ["provision-win.ps1", provisionWin, /Join-Path \$RunnerRoot 'bin\\Runner\.Listener\.exe'/],
+  ] as const;
+
+  for (const [name, source, launch] of launchers) {
+    it(`${name} invokes the listener directly`, () => {
+      assert.match(source, launch);
+    });
+  }
+
+  it("launches no provisioner through the exit-code-swallowing wrappers", () => {
+    for (const [name, source] of launchers) {
+      for (const line of source.split("\n")) {
+        if (/^\s*#/.test(line)) continue;
+        assert.doesNotMatch(line, /(^|[\s'"/\\])run\.(sh|cmd)\b/, `${name}: ${line.trim()}`);
+      }
+    }
+  });
+
+  // The runner is unpacked and then launched, so the check that the archive
+  // was usable has to name the binary that is actually executed.
+  it("asserts the unpacked macOS runner ships the listener", () => {
+    assert.match(provisionMac, /if \[ ! -x "\\\$runner_dir\/bin\/Runner\.Listener" \]/);
+  });
+});
+
 describe("provision-win.ps1 exit codes", () => {
   // Regression: the guest script ended with `return $LASTEXITCODE` while
   // `& run.cmd` was also writing to the pipeline, so Invoke-Command handed back
@@ -84,7 +119,7 @@ describe("provision-win.ps1 exit codes", () => {
   });
 
   it("keeps runner output off the pipeline that carries the exit code", () => {
-    assert.match(provisionWin, /& \$runner 2>&1 \| ForEach-Object \{ Write-Host \$_ \}/);
+    assert.match(provisionWin, /& \$runner run 2>&1 \| ForEach-Object \{ Write-Host \$_ \}/);
   });
 
   it("selects the exit-code record by shape instead of by position", () => {

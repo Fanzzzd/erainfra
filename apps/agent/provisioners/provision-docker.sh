@@ -110,6 +110,11 @@ ENV_WRITER_PID=$!
 # and warm state comes only from the immutable Image Release. Cross-job
 # dependency caching belongs outside this boundary, in GitHub's own
 # repository-scoped and authenticated cache service.
+#
+# Not ./run.sh: it and run-helper.sh exist to drive a long-lived service, so
+# they map "listener exited with a terminated error" onto exit 0 -- stop, do
+# not retry. For a one-shot ephemeral runner that turns every startup failure
+# into a reported success. Invoke the listener directly and keep its own code.
 docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --cpus "$RC_VCPUS" \
   --memory "${RC_MEMORY_MIB}m" \
@@ -122,7 +127,7 @@ docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --env ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/action-cache \
   --env RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
   --env AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache \
-  "$IMAGE" ./run.sh &
+  "$IMAGE" ./bin/Runner.Listener run &
 DOCKER_PID=$!
 wait "$ENV_WRITER_PID"
 ENV_WRITER_PID=""

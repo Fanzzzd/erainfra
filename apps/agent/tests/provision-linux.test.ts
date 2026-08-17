@@ -38,7 +38,7 @@ describe("provision-linux.sh", () => {
     const envFlag = args.indexOf("--env");
     assert.notEqual(envFlag, -1);
     assert.equal(args[envFlag + 1], "ACTIONS_RUNNER_INPUT_JITCONFIG");
-    assert.equal(args.at(-1), "./run.sh");
+    assert.deepEqual(args.slice(-2), ["./bin/Runner.Listener", "run"]);
   });
 
   it("propagates the container exit code", async () => {

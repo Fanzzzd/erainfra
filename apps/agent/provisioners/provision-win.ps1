@@ -192,7 +192,12 @@ $guestScript = {
     # finish so the exit code can be reported instead of throwing.
     $ErrorActionPreference = 'Continue'
 
-    $runner = Join-Path $RunnerRoot 'run.cmd'
+    # Not run.cmd: it and run-helper.cmd exist to drive a long-lived service, so
+    # they map "listener exited with a terminated error" onto exit 0 -- stop, do
+    # not retry. For a one-shot ephemeral runner that turns every startup
+    # failure into a reported success. Call the listener directly and let its
+    # own exit code stand.
+    $runner = Join-Path $RunnerRoot 'bin\Runner.Listener.exe'
     if (-not (Test-Path -LiteralPath $runner)) {
         Write-Host "The image does not contain $runner"
         return [pscustomobject]@{ RcExitCode = 1 }
@@ -215,7 +220,7 @@ $guestScript = {
         # of the returned object collection, leaving one unambiguous exit-code
         # record. $LASTEXITCODE is captured immediately, before the finally block
         # below can run anything that would overwrite it.
-        & $runner 2>&1 | ForEach-Object { Write-Host $_ }
+        & $runner run 2>&1 | ForEach-Object { Write-Host $_ }
         $code = $LASTEXITCODE
         if ($null -eq $code) { $code = 1 }
         return [pscustomobject]@{ RcExitCode = [int] $code }
@@ -298,7 +303,7 @@ try {
     $chunk = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
     if ($chunk.Count -gt 0) { $returned += $chunk }
 
-    # `& run.cmd` writes to the pipeline as well, so pick the exit-code record
+    # The runner writes to the pipeline as well, so pick the exit-code record
     # out by shape rather than assuming it is the only thing that came back.
     $exitRecord = $returned |
         Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['RcExitCode'] } |
