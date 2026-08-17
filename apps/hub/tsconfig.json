@@ -1,16 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@erainfra/typescript-config/node.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
+    // The Hub is executed straight from source by `node --experimental-strip-types`
+    // (see package.json's `dev` and `test` scripts), so the 124 relative imports in
+    // src/ and test/ carry the `.ts` extension Node actually resolves. Without this
+    // the specifiers the runtime needs are the specifiers the compiler rejects.
     "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "types": ["node"],
-    "lib": ["ES2022"]
+    // Stricter than the shared base, and deliberately so: `--experimental-strip-types`
+    // erases types with no type checker in the loop, so anything left after erasure has
+    // to be a genuine runtime import. verbatimModuleSyntax is what makes tsc reject the
+    // type-only import that Node would otherwise turn into a missing-module crash.
+    "verbatimModuleSyntax": true
   },
   "include": ["src", "test"]
 }
