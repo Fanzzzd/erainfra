@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "../convex/_generated/api";
 import schema from "../convex/schema";
 import { parseWorkflowJob } from "../convex/http";
+import { DELIVERY_RETRY_AFTER_MS, MAX_DELIVERY_ATTEMPTS } from "../convex/webhooks";
 import { githubMock } from "./support/githubMock.ts";
 
 // The real `github` module is swapped out: convex-test executes scheduled
@@ -66,6 +67,23 @@ function jobs(t: Harness) {
 
 function deliveries(t: Harness) {
   return t.run(async (ctx) => ctx.db.query("webhookDeliveries").collect());
+}
+
+/** Record a delivery and leave it pending, as a processor that rolled back does. */
+async function stall(t: Harness) {
+  await t.mutation(internal.webhooks.recordDelivery, {
+    deliveryId: "stuck",
+    event: "workflow_job",
+    workflowJob: workflowJob(),
+  });
+  const [delivery] = await deliveries(t);
+  expect(delivery?.status).toBe("pending");
+  return delivery!.receivedAt;
+}
+
+/** One reconcile pass over the pending deliveries, at a chosen point on the clock. */
+function reconcilePass(t: Harness, now: number) {
+  return t.mutation(internal.webhooks.retryStalledDeliveries, { now });
 }
 
 beforeEach(() => {
@@ -230,24 +248,67 @@ describe("out-of-order delivery", () => {
 describe("stalled delivery recovery", () => {
   it("retries a pending delivery and gives up after the attempt budget", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.webhooks.recordDelivery, {
-      deliveryId: "stuck",
-      event: "workflow_job",
-      workflowJob: workflowJob(),
-    });
+    const receivedAt = await stall(t);
 
-    const receivedAt = (await deliveries(t))[0]!.receivedAt;
     // Too soon: nothing is retried yet.
-    let result = await t.mutation(internal.webhooks.retryStalledDeliveries, { now: receivedAt });
-    expect(result.retried).toBe(0);
+    expect((await reconcilePass(t, receivedAt)).retried).toBe(0);
 
-    const later = receivedAt + 120_000;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      result = await t.mutation(internal.webhooks.retryStalledDeliveries, { now: later });
+    for (let attempt = 1; attempt < MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+      const result = await reconcilePass(t, receivedAt + attempt * DELIVERY_RETRY_AFTER_MS);
       expect(result.retried).toBe(1);
     }
-    result = await t.mutation(internal.webhooks.retryStalledDeliveries, { now: later });
+    const result = await reconcilePass(
+      t,
+      receivedAt + MAX_DELIVERY_ATTEMPTS * DELIVERY_RETRY_AFTER_MS,
+    );
     expect(result.abandoned).toBe(1);
-    expect((await deliveries(t))[0]?.status).toBe("failed");
+    const [delivery] = await deliveries(t);
+    expect(delivery?.status).toBe("failed");
+    expect(delivery?.attempts).toBe(MAX_DELIVERY_ATTEMPTS);
+  });
+
+  it("does not retry again on the pass right after an attempt", async () => {
+    const t = convexTest(schema, modules);
+    const receivedAt = await stall(t);
+
+    expect((await reconcilePass(t, receivedAt + DELIVERY_RETRY_AFTER_MS - 1)).retried).toBe(0);
+    expect((await reconcilePass(t, receivedAt + DELIVERY_RETRY_AFTER_MS)).retried).toBe(1);
+    // The interval is spacing between attempts, not a one-off delay before the
+    // first: a pass a millisecond after that attempt must spend nothing.
+    expect((await reconcilePass(t, receivedAt + DELIVERY_RETRY_AFTER_MS + 1)).retried).toBe(0);
+    expect((await reconcilePass(t, receivedAt + 2 * DELIVERY_RETRY_AFTER_MS - 1)).retried).toBe(0);
+    expect((await reconcilePass(t, receivedAt + 2 * DELIVERY_RETRY_AFTER_MS)).retried).toBe(1);
+    expect((await deliveries(t))[0]?.attempts).toBe(2);
+  });
+
+  it("spends the attempt budget over the interval it names, not over reconcile ticks", async () => {
+    const t = convexTest(schema, modules);
+    const receivedAt = await stall(t);
+
+    // Reconcile's cadence is a runner-state choice and is free to change; the
+    // retry spacing must not follow it. Ticking four times as often as the retry
+    // interval must not consume the budget four times as fast.
+    const TICK_MS = DELIVERY_RETRY_AFTER_MS / 4;
+    const SPAN_MS = 2 * MAX_DELIVERY_ATTEMPTS * DELIVERY_RETRY_AFTER_MS;
+    let retried = 0;
+    let abandonedAfterMs: number | undefined;
+    for (let elapsed = TICK_MS; elapsed <= SPAN_MS; elapsed += TICK_MS) {
+      const result = await reconcilePass(t, receivedAt + elapsed);
+      retried += result.retried;
+      if (result.abandoned > 0) {
+        abandonedAfterMs = elapsed;
+        break;
+      }
+    }
+
+    // This is the defect stated as a number: gated on receivedAt alone, the
+    // first pass past the interval opens the gate and nothing closes it again,
+    // so the whole budget is spent by 120s — a quarter of the span it promises,
+    // and long before a transient failure has had a chance to clear.
+    expect(abandonedAfterMs).toBe(MAX_DELIVERY_ATTEMPTS * DELIVERY_RETRY_AFTER_MS);
+    expect(retried).toBe(MAX_DELIVERY_ATTEMPTS - 1);
+    const [delivery] = await deliveries(t);
+    expect(delivery?.status).toBe("failed");
+    expect(delivery?.attempts).toBe(MAX_DELIVERY_ATTEMPTS);
   });
 });
