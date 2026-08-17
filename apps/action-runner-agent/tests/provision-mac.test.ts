@@ -395,6 +395,51 @@ describe("provision-mac.sh VM lifecycle", () => {
     assert.equal(result.code, 124);
   });
 
+  // Teardown is the one path where an unbounded wait is never acceptable: its
+  // whole job is to make progress when the thing it is cleaning up will not.
+  // Both fakes below install `trap '' TERM` before sleeping, and an ignored
+  // disposition survives fork and exec, so nothing in them dies on SIGTERM --
+  // only SIGKILL ends them. Each case hung before the fix; see the PR body.
+  it("SIGKILLs a job that ignores SIGTERM rather than waiting it out", async () => {
+    const harness = newHarness();
+    const started = Date.now();
+    const result = await harness.run(PROVISION_MAC, {
+      // 30 stands in for "the rest of the job". Before the fix kill_job_group
+      // sent one TERM and then sat in `wait "$JOB_PID"` until the fake finished
+      // on its own, so the timeout the watchdog had just fired for bought
+      // nothing -- and on a real Worker the VM is deleted after that wait.
+      env: { RC_FAKE_RUNNER_SLEEP: "30", RC_FAKE_RUNNER_IGNORE_TERM: "1", RC_JOB_TIMEOUT_S: "2" },
+    });
+    const elapsed = Date.now() - started;
+
+    assert.equal(result.code, 124);
+    assert.match(result.stderr, /exceeded RC_JOB_TIMEOUT_S/);
+    assert.match(harness.argv(), /\tdelete\trc-test-runner/);
+    assert.ok(
+      elapsed < 15_000,
+      `teardown took ${elapsed}ms, so it outlived the job it was killing instead of escalating`,
+    );
+  });
+
+  it("deletes the VM even when the tart client ignores SIGTERM", async () => {
+    const harness = newHarness();
+    const started = Date.now();
+    const result = await harness.run(PROVISION_MAC, {
+      env: { RC_FAKE_TART_IGNORE_TERM: "1" },
+    });
+    const elapsed = Date.now() - started;
+
+    // The runner exited cleanly; only the `tart run` client refuses to. Before
+    // the fix `wait "$VM_PID"` never returned and the delete below it never
+    // ran, which is the leaked microVM and the leaked Profile slot.
+    assert.equal(result.code, 0);
+    assert.match(harness.argv(), /\tdelete\trc-test-runner/);
+    assert.ok(
+      elapsed < 15_000,
+      `teardown took ${elapsed}ms; deleting the VM must not wait on a process that will not die`,
+    );
+  });
+
   it("stops the VM before deleting it", async () => {
     const harness = newHarness();
     assert.equal((await harness.run(PROVISION_MAC)).code, 0);

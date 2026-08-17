@@ -313,16 +313,23 @@ try {
     }
     exit [int] $exitRecord.RcExitCode
 } finally {
+    # The VM goes first. Stop-Job blocks until the job has actually stopped, and
+    # a job running over PowerShell Direct into a wedged guest can make that
+    # wait indefinite -- which would leave the VM, its differencing disk and the
+    # Profile slot behind, precisely when teardown matters most. Stop-VM
+    # -TurnOff is a power cut and asks the guest for nothing, so nothing that
+    # can block belongs in front of it. The job and the session are torn down
+    # afterwards, against a guest that no longer exists, so they fail fast.
+    if (Get-VM -Name $runnerName -ErrorAction SilentlyContinue) {
+        Stop-VM -Name $runnerName -TurnOff -Force -ErrorAction SilentlyContinue
+        Remove-VM -Name $runnerName -Force -ErrorAction SilentlyContinue
+    }
     if ($null -ne $job) {
         Stop-Job -Job $job -ErrorAction SilentlyContinue
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
     }
     if ($null -ne $session) {
         Remove-PSSession -Session $session -ErrorAction SilentlyContinue
-    }
-    if (Get-VM -Name $runnerName -ErrorAction SilentlyContinue) {
-        Stop-VM -Name $runnerName -TurnOff -Force -ErrorAction SilentlyContinue
-        Remove-VM -Name $runnerName -Force -ErrorAction SilentlyContinue
     }
     # Removing the VM leaves the differencing child behind; the parent is untouched.
     Remove-Item -LiteralPath $vmDir -Recurse -Force -ErrorAction SilentlyContinue
