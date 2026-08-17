@@ -74,7 +74,10 @@ function New-RandomPassword([int] $Length = 24) {
     # of failures without needing escaping. Callers still escape it for XML.
     $alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_'
     $bytes = [byte[]]::new($Length)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    # RNGCryptoServiceProvider rather than RandomNumberGenerator::Fill, which
+    # does not exist on the .NET Framework that Windows PowerShell 5.1 runs on.
+    $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     return -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
 }
 
@@ -226,6 +229,10 @@ try {
     Remove-Item $zip -Force
     "installed actions runner $RcRunnerVersion ($actualSha)"
 
+    if (-not (Test-Path 'C:\actions-runner\run.cmd')) {
+        throw 'the runner archive did not contain run.cmd'
+    }
+
     Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1
 
     if ($RcDisableDefenderRealtime) {
@@ -358,9 +365,14 @@ try {
     # before blessing the image.
     Mount-VHD -Path $vhdxPath | Out-Null
     $vhdMounted = $true
-    $osDrive = (Get-DiskImage -ImagePath $vhdxPath | Get-Disk | Get-Partition |
+    # Get-VHD rather than Get-DiskImage: Hyper-V owns the disk once Mount-VHD
+    # has attached it, and Get-DiskImage does not resolve a Hyper-V-mounted VHDX.
+    $osDrive = (Get-VHD -Path $vhdxPath | Get-Disk | Get-Partition |
         Get-Volume | Where-Object { $_.FileSystemLabel -eq 'Windows' }).DriveLetter
-    $ok = Test-Path "${osDrive}:\rc-provision-complete"
+    if (-not $osDrive) { throw 'Could not resolve the OS volume of the built VHDX.' }
+    # The marker alone is not enough; require the runner the image exists to carry.
+    $ok = (Test-Path "${osDrive}:\rc-provision-complete") -and
+          (Test-Path "${osDrive}:\actions-runner\run.cmd")
     $unattendLeft = Test-Path "${osDrive}:\Windows\Panther\unattend.xml"
     $autoLogonLeft = Test-OfflineAutoLogonSecret $osDrive
     $transcript = if (Test-Path "${osDrive}:\rc-provision.log") { Get-Content "${osDrive}:\rc-provision.log" -Tail 30 } else { @() }

@@ -288,6 +288,51 @@ describe("build-image.ps1 operator input", () => {
   });
 });
 
+describe("build-image.ps1 Windows PowerShell 5.1 compatibility", () => {
+  // Regression: RandomNumberGenerator::Fill is .NET Core / .NET 5+ only, and
+  // New-RandomPassword is called unconditionally for the Administrator
+  // throwaway, so the builder threw on every stock Windows host, which runs
+  // Windows PowerShell 5.1 on the .NET Framework.
+  it("draws random bytes through an API that exists on the .NET Framework", () => {
+    assert.doesNotMatch(buildImage, /RandomNumberGenerator\]::Fill/);
+    assert.match(buildImage, /RNGCryptoServiceProvider\]::new\(\)/);
+  });
+
+  it("disposes the RNG even when GetBytes throws", () => {
+    assert.match(
+      buildImage,
+      /try \{ \$rng\.GetBytes\(\$bytes\) \} finally \{ \$rng\.Dispose\(\) \}/,
+    );
+  });
+});
+
+describe("build-image.ps1 bless guard", () => {
+  // Regression: the host read the finished disk back with Get-DiskImage, which
+  // does not resolve a VHDX that Hyper-V itself has mounted, and blessed the
+  // image on the completion marker alone.
+  it("resolves the mounted VHDX through Hyper-V, not Get-DiskImage", () => {
+    // Mount-/Dismount-DiskImage stay: those attach the installation ISO, which
+    // is a plain disk image. Only the VHDX read-back had to change.
+    assert.doesNotMatch(buildImage, /Get-DiskImage -ImagePath \$vhdxPath/);
+    assert.match(buildImage, /\$osDrive = \(Get-VHD -Path \$vhdxPath \| Get-Disk/);
+  });
+
+  it("refuses to bless when the OS volume cannot be resolved", () => {
+    assert.match(buildImage, /if \(-not \$osDrive\) \{ throw /);
+  });
+
+  it("requires the runner itself, not just the completion marker", () => {
+    assert.match(buildImage, /\$ok = \(Test-Path "\$\{osDrive\}:\\rc-provision-complete"\) -and/);
+    assert.match(buildImage, /\(Test-Path "\$\{osDrive\}:\\actions-runner\\run\.cmd"\)/);
+  });
+
+  it("fails inside the guest when the runner archive lacks run.cmd", () => {
+    const expand = buildImage.indexOf("Expand-Archive");
+    const guard = buildImage.indexOf("the runner archive did not contain run.cmd");
+    assert.ok(guard > expand, "the run.cmd guard does not follow the archive expansion");
+  });
+});
+
 describe("build-image.ps1 Defender", () => {
   // Regression: every image was built with real-time monitoring switched off,
   // permanently and silently.
