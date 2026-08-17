@@ -1,5 +1,10 @@
 node_modules/
 dist/
+# hub.sh assembles dist/hub inside a throwaway node container, where pnpm's store lands beside the
+# checkout rather than in a home directory it does not have. Keeping it is deliberate: hub.sh
+# rebuilds the bundle on every run so a re-run after `git pull` can never serve the previous
+# revision, and a warm store is what keeps that from being a full download each time.
+.pnpm-store/
 .turbo/
 .env
 .env.*

@@ -9,6 +9,12 @@
 # Requirements already on the box: docker, cloudflared, a CF origin cert for the zone
 # (`cloudflared login`). Idempotent: containers are replaced, tunnel/DNS reused if present.
 #
+# The hub container does NOT mount this checkout. Each run assembles dist/hub — the hub, its
+# production dependencies, the built UI, the CLI and these installer scripts — with
+# build-hub-bundle.sh, and mounts that read-only instead. The checkout stays on the host, where a
+# container behind a public tunnel cannot read it. State is untouched by all of this: it lives in
+# the portless-data volume at /data, exactly as before.
+#
 # WHY apps live at <app>.<zone> (first level), NOT <app>.apps.<zone>: Cloudflare's free
 # Universal SSL covers only ONE wildcard level (*.zone). A second level (*.apps.zone) resolves
 # but fails TLS. Explicit DNS records you already have always win over the wildcard, so
@@ -22,6 +28,7 @@ HUB_PORT="${PORTLESS_HUB_PORT:-61080}"      # host loopback port the tunnel poin
 REG_PORT="${PORTLESS_REG_PORT:-61050}"      # host loopback port for the OCI registry
 TUNNEL="${PORTLESS_TUNNEL_NAME:-portless}"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
+BUNDLE="$REPO/dist/hub"                     # what the hub container mounts — see build-hub-bundle.sh
 ENVDIR="$HOME/portless-env"
 NODE_IMAGE="${PORTLESS_NODE_IMAGE:-node:22-bookworm-slim}"
 
@@ -42,7 +49,6 @@ NODE_ENV=production
 PORTLESS_BIND=0.0.0.0
 PORTLESS_APP_DOMAIN=$ZONE
 PORTLESS_HUB_HOST=$HUB_HOST
-PORTLESS_WEB_DIR=/srv/portless/apps/hub-web/dist
 PORTLESS_HUB_BASE=https://$HUB_HOST
 PORTLESS_REGISTRY=127.0.0.1:$REG_PORT
 TMPDIR=/data
@@ -62,16 +68,61 @@ else
   fi
 fi
 
-# --- app deps + web build must exist (built dashboard is served by the API) -------------------
+# Where the hub reads the four things it serves. Each of these already exists in server.ts as an
+# override on an import.meta.dirname-relative default, and the bundle keeps the repository's
+# directory depths precisely so both agree — including PORTLESS_WEB_DIR, whose value does not move
+# across this upgrade, so a box that has been running the mounted-repo form keeps a true one.
+# Stated explicitly all the same: a default that silently became load-bearing is the trap, and
+# these four resolving to the same place is what makes the defaults safe rather than unused.
+#
+# Appended, never overwritten: hub.env is written once and reused forever, so a value this script
+# starts depending on has to reach files written before it existed, and an operator's own edit has
+# to survive a re-run.
+add_env() {
+  if ! grep -q "^$1=" "$ENVDIR/hub.env"; then
+    printf '%s=%s\n' "$1" "$2" >>"$ENVDIR/hub.env"
+    log "hub.env: added $1=$2"
+  fi
+}
+add_env PORTLESS_WEB_DIR /srv/portless/apps/hub-web/dist
+add_env PORTLESS_CLI_FILE /srv/portless/packages/cli/portless.mjs
+add_env PORTLESS_DEPLOY_DIR /srv/portless/deploy/infra
+add_env PORTLESS_AGENT_BIN_DIR /srv/agent-bin
+
+# --- the bundle the hub container mounts -------------------------------------------------------
+# The hub used to run straight out of this checkout: `-v "$REPO":/srv/portless -w /srv/portless
+# node … apps/hub/src/server.ts`. That bind mount had two jobs and ADR 0006 retires only one — the
+# hub PROCESS runs from the mounted tree, so dropping the mount means packaging the hub, not just
+# deleting a flag. Since the merge, $REPO is the whole platform, so the mount also put
+# packages/backend/convex — the control plane's source and its GitHub App configuration —
+# read-write inside a container that runs continuously behind a public Cloudflare tunnel, on a box
+# the customer owns. build-hub-bundle.sh assembles the hub, its production dependency closure, the
+# built UI, the CLI and these installer scripts into dist/hub; that is all the container gets.
+#
+# Rebuilt on every run rather than cached on "does it exist": hub.sh is re-run after a `git pull`,
+# and a bundle that quietly stayed at the previous revision is the same class of silent wrong
+# answer as the 404 that a shell executes as a no-op.
 [ -d "$REPO/apps/hub-web/dist" ] || die "apps/hub-web/dist missing — build the dashboard first (pnpm --filter @erainfra/hub-web build)"
-if [ ! -d "$REPO/node_modules" ]; then
-  log "installing workspace deps (inside $NODE_IMAGE)…"
-  # --filter "@erainfra/hub...": this repo is the whole platform now, not just the Hub. Installing
-  # the full workspace on a customer's hub box would pull in the control plane's toolchain for no
-  # reason; the Hub's own dependency closure is a fraction of it. Measured in this PR's description.
-  docker run --rm -v "$REPO":/srv/portless -w /srv/portless "$NODE_IMAGE" \
-    sh -c "corepack enable >/dev/null 2>&1; corepack prepare pnpm@11.21.0 --activate >/dev/null 2>&1; pnpm install --frozen-lockfile --filter \"@erainfra/hub...\""
+# A box upgrading from the mounted-repo form still has the workspace install the old hub.sh put in
+# the checkout. Nothing reads it any more — the bundle carries its own dependencies — but deleting
+# a customer's files is not this script's call, so point at it instead.
+if [ -d "$REPO/node_modules/.pnpm" ]; then
+  log "note: $REPO/node_modules is left over from the mounted-repo form and is no longer used"
+  log "      reclaim it with: rm -rf $REPO/node_modules"
 fi
+log "assembling the hub bundle (inside $NODE_IMAGE)…"
+# The build container gets the repo read-write, because assembling is what it is for; it is
+# ephemeral, holds no port and is gone before anything is published. The long-lived container
+# below is the one that must not have this.
+docker run --rm -v "$REPO":/srv/portless -w /srv/portless "$NODE_IMAGE" \
+  sh -c "corepack enable >/dev/null 2>&1; corepack prepare pnpm@11.21.0 --activate >/dev/null 2>&1; sh deploy/infra/build-hub-bundle.sh dist/hub"
+[ -f "$BUNDLE/.hub-bundle" ] || die "bundle assembly produced nothing at $BUNDLE"
+# build-agents.sh cross-compiles the Infra Agent into deploy/infra/bin from Go source the bundle
+# does not carry, and /agent-bin/<target> is still the only way to onboard a Node (ADR 0006 retires
+# it only behind four platform proofs). Mounting that one directory — compiled binaries, nothing
+# else — keeps `sh deploy/infra/build-agents.sh` serving immediately, exactly as it did when the
+# whole repo was mounted, with no bundle rebuild in between. Created here so docker does not.
+mkdir -p "$REPO/deploy/infra/bin"
 
 # --- containers: registry + hub (replace-in-place, restart policy = reboot survival) -----------
 log "starting registry (127.0.0.1:$REG_PORT) and hub (127.0.0.1:$HUB_PORT)…"
@@ -79,8 +130,16 @@ docker rm -f portless-registry >/dev/null 2>&1 || true
 docker run -d --name portless-registry --restart unless-stopped \
   -p "127.0.0.1:$REG_PORT:5000" -v portless-registry:/var/lib/registry registry:2.8.2 >/dev/null
 docker rm -f portless-hub >/dev/null 2>&1 || true
+# :ro — the hub writes nothing into its own tree. Every durable path it touches hangs off TMPDIR,
+# which this env file points at /data: portless.db (src/db.ts), the secrets key
+# (src/runtime/secrets.ts) and upload staging (server.ts's buildsDir) all land on the portless-data
+# volume, which is unchanged and still named portless-data. So read-only costs nothing and removes
+# the write half of the exposure outright: "the container modified its own source" stops being
+# something an operator would have to notice and becomes something the kernel refuses.
 docker run -d --name portless-hub --restart unless-stopped \
-  -p "127.0.0.1:$HUB_PORT:8787" -v "$REPO":/srv/portless -v portless-data:/data \
+  -p "127.0.0.1:$HUB_PORT:8787" \
+  -v "$BUNDLE":/srv/portless:ro -v "$REPO/deploy/infra/bin":/srv/agent-bin:ro \
+  -v portless-data:/data \
   -w /srv/portless --env-file "$ENVDIR/hub.env" \
   "$NODE_IMAGE" node --experimental-strip-types apps/hub/src/server.ts >/dev/null
 sleep 3

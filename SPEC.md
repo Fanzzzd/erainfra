@@ -150,7 +150,12 @@ Use the official component `@convex-dev/static-hosting` (v0.2.x):
   is therefore `https://<deployment>.convex.site/github/webhook`.
 - `packages/backend` script `deploy` runs `static-hosting deploy` with
   `--dist ../../apps/dashboard/dist`, and builds the dashboard first via
-  `--build-command`. `pnpm deploy` at the root forwards to it.
+  `--build-command`. `pnpm run deploy:control-plane` at the root forwards to it.
+  That root script is **not** called `deploy`: a workspace-root script by that
+  name shadows pnpm's built-in `pnpm deploy`, which `deploy/infra/build-hub-bundle.sh`
+  needs to pack the Hub with its production dependencies. pnpm refuses the
+  built-in outright while the script exists
+  (`ERR_PNPM_SCRIPT_OVERRIDE_IN_WORKSPACE_ROOT`), so the two cannot coexist.
 - Dashboard is then live at `https://<deployment>.convex.site`. No GitHub
   Pages / Vercel needed.
 

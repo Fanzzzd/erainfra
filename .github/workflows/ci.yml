@@ -79,6 +79,17 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      # The Node suite pins server.ts's four import.meta.dirname defaults as they resolve from a
+      # checkout. hub.sh no longer mounts a checkout — it mounts dist/hub — and all four of those
+      # lookups fail SOFT: a missing file is a 404 whose body a shell dutifully executes as a
+      # no-op, so `curl <hub>/agent.sh | sh` silently does nothing and reports success. A bundle
+      # that boots proves nothing; the served bodies do. Runs after `pnpm build` because it needs
+      # apps/hub-web/dist, and before nothing that reads the workspace's node_modules, because
+      # `pnpm deploy` leaves its dependency-status check wanting a re-install.
+      - name: The assembled Hub bundle serves every onboarding route
+        run: |
+          sh deploy/infra/build-hub-bundle.sh
+          sh deploy/infra/bundle.test.sh
       - name: Test the root Go module
         run: go test ./...
       - name: Vet the root Go module
