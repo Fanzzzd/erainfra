@@ -25,14 +25,31 @@ const POWERSHELL_INSTALL_SCRIPT = String.raw`#Requires -Version 5.1
 # deployment's own origin, which is what makes an untrusted byte source safe to read.
 param(
   [string]$Role = "node",
-  [string]$Token = $env:PORTLESS_TOKEN,
-  [string]$Hub = $env:PORTLESS_HUB,
+  [string]$Token = "",
+  [string]$Hub = "",
   [string]$Name = "",
   [string]$Source = "",
   [switch]$Install
 )
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Stage 1 of retiring the "Portless" name (ADR 0004; CONTEXT.md rule 4): read both, prefer the new,
+# warn on the old, delete nothing. A param default cannot call a function declared below it, so the
+# environment fallback for -Token / -Hub lands here rather than in param().
+function Get-RenamedEnv {
+  param([string]$NewName, [string]$OldName)
+  $current = [Environment]::GetEnvironmentVariable($NewName)
+  if ($null -ne $current -and $current -ne "") { return $current }
+  $retired = [Environment]::GetEnvironmentVariable($OldName)
+  if ($null -ne $retired -and $retired -ne "") {
+    Write-Host "[erainfra] $OldName is a retired name - use $NewName instead. The old name still works." -ForegroundColor Yellow
+    return $retired
+  }
+  return $null
+}
+if (-not $Token) { $Token = Get-RenamedEnv "ERAINFRA_TOKEN" "PORTLESS_TOKEN" }
+if (-not $Hub) { $Hub = Get-RenamedEnv "ERAINFRA_HUB" "PORTLESS_HUB" }
 
 $repo = '__AGENT_REPO__'
 $version = '__AGENT_VERSION__'
@@ -72,7 +89,9 @@ if ($Source) {
   $origin = $url
 }
 
-$prefix = Join-Path $HOME ".portless"
+# $HOME\.portless is an identifier a running Node already holds (rule 4). Prefer the renamed
+# directory only when it is ALREADY there; a fresh install still lands on the frozen path.
+$prefix = if (Test-Path (Join-Path $HOME ".erainfra")) { Join-Path $HOME ".erainfra" } else { Join-Path $HOME ".portless" }
 $bin = Join-Path $prefix "bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 $exe = Join-Path $bin "portless-agent.exe"

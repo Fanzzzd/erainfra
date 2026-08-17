@@ -139,6 +139,13 @@ jobs:
         run: |
           sh deploy/infra/build-hub-bundle.sh
           sh deploy/infra/bundle.test.sh
+      # The five installer scripts are curl'd and piped to sh on a customer's machine, so each
+      # carries its own copy of dual_env rather than sourcing one — five chances to write
+      # `${NEW:-${OLD}}` in a way that looks right and silently reclassifies "set to empty" as
+      # "unset". `pnpm test` cannot reach them: deploy/ is not a workspace package. This runs the
+      # real functions out of the real files, and pins the frozen identifiers they still write.
+      - name: The installers read both names and rename nothing frozen
+        run: sh deploy/infra/rename.test.sh
       - name: Test the root Go module
         run: go test ./...
       - name: Vet the root Go module

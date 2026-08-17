@@ -4,11 +4,12 @@ import { z } from "zod";
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from "@trpc/server/adapters/fastify";
-import { tmpdir } from "node:os";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, createReadStream } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { appRouter } from "./router.ts";
+import { renamedEnv } from "./env.ts";
+import { stateDir } from "./db.ts";
 import type { Context } from "./trpc.ts";
 import { InMemoryAuditLog, SqliteAuditLog, type AuditLog } from "./audit.ts";
 import {
@@ -17,7 +18,7 @@ import {
   resolveRequestAuth,
   LoginRateLimiter,
   SESSION_COOKIE,
-  parseCookies,
+  readSessionCookie,
   type TokenStore,
   type Principal,
 } from "./auth.ts";
@@ -156,7 +157,10 @@ export function createApiServer(
   // Drag-drop source ingestion: the dashboard POSTs a project's source as a .tar.gz; a build-capable
   // agent later fetches it back over the spine and builds it. Both routes need app.deploy. The build
   // id is a server-minted UUID, so the GET path can't be traversed.
-  const buildsDir = process.env.PORTLESS_BUILDS_DIR ?? join(tmpdir(), "portless-runtime", "builds");
+  // stateDir() rather than a second tmpdir() literal: upload staging belongs on the same volume as
+  // the DB, and this way it follows the state dir's dual-read instead of drifting from it.
+  const buildsDir =
+    renamedEnv("ERAINFRA_BUILDS_DIR", "PORTLESS_BUILDS_DIR") ?? join(stateDir(), "builds");
   const principalFor = (req: {
     headers: { authorization?: string | string[]; cookie?: string };
   }) => {
@@ -254,7 +258,7 @@ export function createApiServer(
   });
 
   app.post("/auth/logout", async (req, reply) => {
-    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    const token = readSessionCookie(req.headers.cookie);
     if (token) sessionStore.revokeByToken(token);
     return reply.header("set-cookie", sessionCookie(req, "", 0)).send({ ok: true });
   });
@@ -349,8 +353,8 @@ export function createApiServer(
   // When the hub's own hostname lives UNDER the app domain (e.g. hub portless.on99.ai with apps at
   // *.on99.ai — Cloudflare's free Universal SSL only covers one wildcard level, so a separate
   // apps.<zone> level would fail TLS), set PORTLESS_HUB_HOST so dashboard traffic bypasses the proxy.
-  const appDomain = process.env.PORTLESS_APP_DOMAIN;
-  const hubHost = process.env.PORTLESS_HUB_HOST?.toLowerCase();
+  const appDomain = renamedEnv("ERAINFRA_APP_DOMAIN", "PORTLESS_APP_DOMAIN");
+  const hubHost = renamedEnv("ERAINFRA_HUB_HOST", "PORTLESS_HUB_HOST")?.toLowerCase();
   if (appDomain) {
     app.addHook("onRequest", async (req, reply) => {
       if (hubHost && (req.headers.host ?? "").toLowerCase().split(":")[0] === hubHost) return; // the hub itself is never an app
@@ -397,8 +401,9 @@ export function createApiServer(
       // GitHub wants a fast 2xx — build+deploy run in the background; status is recorded on the binding.
       const proto = (req.headers["x-forwarded-proto"] as string | undefined) ?? "https";
       const deployCfg = {
-        registry: process.env.PORTLESS_REGISTRY ?? "127.0.0.1:5000",
-        hubBase: process.env.PORTLESS_HUB_BASE ?? `${proto}://${req.headers.host}`,
+        registry: renamedEnv("ERAINFRA_REGISTRY", "PORTLESS_REGISTRY") ?? "127.0.0.1:5000",
+        hubBase:
+          renamedEnv("ERAINFRA_HUB_BASE", "PORTLESS_HUB_BASE") ?? `${proto}://${req.headers.host}`,
         appId: cfg.appId,
         privateKey: cfg.privateKey,
       };
@@ -423,7 +428,8 @@ export function createApiServer(
   // no secrets. We template the served base URL into each (the `<hub>` placeholder) so the
   // commands they print point back at this hub. Override the directory with PORTLESS_DEPLOY_DIR.
   const deployDir =
-    process.env.PORTLESS_DEPLOY_DIR ?? join(import.meta.dirname, "../../../deploy/infra");
+    renamedEnv("ERAINFRA_DEPLOY_DIR", "PORTLESS_DEPLOY_DIR") ??
+    join(import.meta.dirname, "../../../deploy/infra");
   for (const script of ["registry.sh", "image.sh", "agent.sh", "agent.ps1", "cli.sh"]) {
     const mime = script.endsWith(".ps1")
       ? "text/plain; charset=utf-8"
@@ -444,27 +450,48 @@ export function createApiServer(
     });
   }
 
-  // The portless CLI itself (installed by cli.sh). No templating — it learns its hub via `login`.
+  // The CLI itself (installed by cli.sh). No templating — it learns its hub via `login`.
+  //
+  // Two routes, one file. This is the half of the rename that has to ship FIRST: serving an extra
+  // route costs a customer's box nothing, while asking for a route the Hub may not have yet is a
+  // 404 whose body a shell executes as a no-op. Nothing requests /cli/erainfra.mjs today — cli.sh
+  // still asks for the old path — and that is the point. The Hub is ready before the asker moves.
   const cliFile =
-    process.env.PORTLESS_CLI_FILE ??
+    renamedEnv("ERAINFRA_CLI_FILE", "PORTLESS_CLI_FILE") ??
     join(import.meta.dirname, "../../../packages/cli/portless.mjs");
-  app.get("/cli/portless.mjs", async (_req, reply) => {
-    if (!existsSync(cliFile))
-      return reply.code(404).type("text/plain").send("cli not available on this server\n");
-    return reply.type("text/javascript; charset=utf-8").send(createReadStream(cliFile));
-  });
+  for (const route of ["/cli/portless.mjs", "/cli/erainfra.mjs"]) {
+    app.get(route, async (_req, reply) => {
+      if (!existsSync(cliFile))
+        return reply.code(404).type("text/plain").send("cli not available on this server\n");
+      return reply.type("text/javascript; charset=utf-8").send(createReadStream(cliFile));
+    });
+  }
 
   // Serve prebuilt agent binaries (populated by deploy/infra/build-agents.sh) so agent.sh / agent.ps1 can
   // download the right one. Self-hosted distribution — no Docker Hub, no third-party release host.
   // The filename allowlist keeps this from becoming an arbitrary-file read.
-  const agentBinDir = process.env.PORTLESS_AGENT_BIN_DIR ?? join(deployDir, "bin");
+  //
+  // Both names resolve to the same bytes, for the reason above and one more: build-agents.sh still
+  // writes portless-agent-<target> and must keep doing so (CONTEXT.md rule 4 freezes the download
+  // path), so an erainfra-agent-<target> request has to fall back to the file that is actually on
+  // disk. If a later release does start building under the new name, the new file wins.
+  const agentBinDir =
+    renamedEnv("ERAINFRA_AGENT_BIN_DIR", "PORTLESS_AGENT_BIN_DIR") ?? join(deployDir, "bin");
   app.get("/agent-bin/:file", async (req, reply) => {
     const { file } = req.params as { file: string };
-    if (!/^portless-agent-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/.test(file)) {
+    if (!/^(portless|erainfra)-agent-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$/.test(file)) {
       return reply.code(400).type("text/plain").send("bad agent binary name\n");
     }
-    const f = join(agentBinDir, file);
-    if (!existsSync(f))
+    // Both candidates from EITHER spelling, not just from the renamed one. A box installed before
+    // this release asks for portless-agent-<target> forever — that request is baked into an agent
+    // already on disk — so once a later release builds under the renamed name, resolving a retired
+    // request to the retired name alone is a 404 for exactly the machines this rollout protects.
+    // Serving is the permissive side of the migration: it answers both spellings from whichever
+    // single file exists.
+    const current = file.replace(/^portless-agent-/, "erainfra-agent-");
+    const retired = file.replace(/^erainfra-agent-/, "portless-agent-");
+    const f = [join(agentBinDir, current), join(agentBinDir, retired)].find((p) => existsSync(p));
+    if (!f)
       return reply
         .code(404)
         .type("text/plain")
@@ -489,7 +516,7 @@ export function createApiServer(
   // the Vite server separately and leaves this off. PORTLESS_WEB_DIR defaults to the repo's web dist.
   // resolve() so a relative PORTLESS_WEB_DIR works (fastify-static requires an absolute root, else
   // it throws a cryptic error at boot).
-  const webDir = opts.webDir ?? process.env.PORTLESS_WEB_DIR;
+  const webDir = opts.webDir ?? renamedEnv("ERAINFRA_WEB_DIR", "PORTLESS_WEB_DIR");
   if (webDir && existsSync(webDir)) {
     app.register(fastifyStatic, { root: resolve(webDir), prefix: "/" });
   }
@@ -498,12 +525,14 @@ export function createApiServer(
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.env.PORT ?? process.env.PORTLESS_PORT ?? 8787);
+  const port = Number(process.env.PORT ?? renamedEnv("ERAINFRA_PORT", "PORTLESS_PORT") ?? 8787);
   // Bind loopback by default: behind a tunnel, cloudflared connects over localhost — nothing
   // public binds. Opt into LAN exposure with PORTLESS_BIND only when you mean it.
-  const host = process.env.PORTLESS_BIND ?? "127.0.0.1";
+  const host = renamedEnv("ERAINFRA_BIND", "PORTLESS_BIND") ?? "127.0.0.1";
   // Serve the built dashboard if present (single-origin prod deploy); default to the repo's dist.
-  const webDir = process.env.PORTLESS_WEB_DIR ?? join(import.meta.dirname, "../../hub-web/dist");
+  const webDir =
+    renamedEnv("ERAINFRA_WEB_DIR", "PORTLESS_WEB_DIR") ??
+    join(import.meta.dirname, "../../hub-web/dist");
   deployments.failStale("hub restarted mid-deploy"); // in-flight pipelines died with the old process
   installFailover(); // auto-redeploy stranded apps when a node drops (PORTLESS_FAILOVER=0 to disable)
   installLinkHealer(); // re-establish cross-node mesh links after agent/hub restarts
@@ -517,7 +546,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }, 15_000).unref();
   // Scheduled control-plane backups to your S3 when configured (PORTLESS_BACKUP_INTERVAL_MIN>0).
   const backupCfg = backupConfig();
-  const backupEveryMin = Number(process.env.PORTLESS_BACKUP_INTERVAL_MIN ?? 0);
+  const backupEveryMin = Number(
+    renamedEnv("ERAINFRA_BACKUP_INTERVAL_MIN", "PORTLESS_BACKUP_INTERVAL_MIN") ?? 0,
+  );
   if (backupCfg && backupEveryMin > 0) {
     setInterval(
       () =>

@@ -12,6 +12,7 @@ import { secretStore } from "./secrets.ts";
 import { portAllocator } from "./ports.ts";
 import { deployments } from "./deployments.ts";
 import { parseSpec, implicitSpec, envName, type AppSpec } from "./spec.ts";
+import { renamedEnv } from "../env.ts";
 
 export interface DeploySource {
   repoUrl?: string; // git: clone url (may embed a short-lived token)
@@ -32,7 +33,7 @@ export interface DeployOpts {
 type Gw = Pick<AgentGateway, "send" | "list">;
 type GwConnect = Gw & Pick<AgentGateway, "onConnect">;
 
-const appDomain = () => process.env.PORTLESS_APP_DOMAIN;
+const appDomain = () => renamedEnv("ERAINFRA_APP_DOMAIN", "PORTLESS_APP_DOMAIN");
 
 // Mesh link name: unique per (app, dependency) on both nodes; dumbpipe replaces same-name links, so
 // re-linking is idempotent. Truncated to stay a valid label.
@@ -163,7 +164,7 @@ export async function ensureRegistryLinks(
   registry: string,
   gw: Gw = agentGateway,
 ): Promise<string | null> {
-  const registryNode = process.env.PORTLESS_REGISTRY_NODE;
+  const registryNode = renamedEnv("ERAINFRA_REGISTRY_NODE", "PORTLESS_REGISTRY_NODE");
   if (!registryNode) return null; // unset = single-box setup (registry locally reachable); nothing to wire
   const port = Number(registry.split(":").pop());
   const remote = [...new Set(nodes)].filter((n) => n !== registryNode);

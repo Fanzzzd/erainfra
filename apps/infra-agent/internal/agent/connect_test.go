@@ -264,3 +264,85 @@ func TestReadConfined(t *testing.T) {
 		})
 	}
 }
+
+// Stage 1 of retiring the "Portless" name (ADR 0004). The app spec lives in a CUSTOMER's repository,
+// so it is not ours to rewrite: every repo bound to a Hub today carries portless.yaml and must keep
+// deploying byte-for-byte. Ordered search, new names first, old names still sufficient on their own.
+func TestReadSpecReadsBothSpecFilenames(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name:  "the renamed spec alone",
+			files: map[string]string{"erainfra.yaml": "new: {}\n"},
+			want:  "new: {}\n",
+		},
+		{
+			// THE property: this is every bound repository in the field today.
+			name:  "the retired spec alone is still sufficient",
+			files: map[string]string{"portless.yaml": "old: {}\n"},
+			want:  "old: {}\n",
+		},
+		{
+			name:  "both present — the renamed one wins",
+			files: map[string]string{"erainfra.yaml": "new: {}\n", "portless.yaml": "old: {}\n"},
+			want:  "new: {}\n",
+		},
+		{
+			// Neither: unchanged behaviour, the hub falls back to a single-service deploy.
+			name:  "neither present",
+			files: map[string]string{"README.md": "hello\n"},
+			want:  "",
+		},
+		{
+			name:  "the .yml spelling of each is read too",
+			files: map[string]string{"portless.yml": "old-yml: {}\n"},
+			want:  "old-yml: {}\n",
+		},
+		{
+			// The table said it covered both .yml spellings and only ever wrote the retired one.
+			name:  "the renamed .yml is read as well as the retired one",
+			files: map[string]string{"erainfra.yml": "new-yml: {}\n"},
+			want:  "new-yml: {}\n",
+		},
+		{
+			// A customer mid-migration has both in the repo. Whichever wins has to be the same one
+			// every time, or two deploys of an unchanged commit produce different apps.
+			name: "both names present: the renamed file wins",
+			files: map[string]string{
+				"erainfra.yaml": "new: {}\n",
+				"portless.yaml": "old: {}\n",
+			},
+			want: "new: {}\n",
+		},
+		{
+			// .yaml before .yml within each brand, and a renamed .yml still beats a retired .yaml —
+			// the ordering is by brand first, which is what makes the migration monotonic.
+			name: "the renamed .yml beats the retired .yaml",
+			files: map[string]string{
+				"erainfra.yml":  "new-yml: {}\n",
+				"portless.yaml": "old: {}\n",
+			},
+			want: "new-yml: {}\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, body := range tc.files {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+			}
+			// The production search, not a copy of it. ReadSpec only adds fetching the source into
+			// a temp dir, which needs a network and a git binary; everything this test is about
+			// lives in specFromCheckout, so re-listing the candidates here would assert the test's
+			// own opinion of the order rather than the agent's.
+			got := specFromCheckout(root)
+			if got != tc.want {
+				t.Fatalf("spec = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

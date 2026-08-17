@@ -83,3 +83,40 @@ func TestResolveContainerOperationsValidateNamesAndArguments(t *testing.T) {
 		}
 	}
 }
+
+// Stage 1 of retiring the "Portless" name (ADR 0004). This allowlist is the one place in the
+// migration where the ACCEPTING side is on the Node and the naming side is on the Hub, so it has to
+// widen a release EARLY: a Hub that started issuing erainfra-* unit names against a Node still
+// running today's agent would be refused outright. Both prefixes, one namespace of which is empty.
+func TestSystemctlAcceptsBothBrandPrefixes(t *testing.T) {
+	for _, unit := range []string{"portless-nomad", "erainfra-nomad", "erainfra-consul.service"} {
+		cmd, err := Resolve(Operation{Name: "systemctl.restart", Args: map[string]string{"unit": unit}})
+		if err != nil {
+			t.Fatalf("expected %q allowed, got %v", unit, err)
+		}
+		if cmd.Argv[2] != unit {
+			t.Fatalf("resolved argv for %q: %v", unit, cmd.Argv)
+		}
+	}
+}
+
+// Widening to a second prefix must not widen to everything: the gate is still a brand prefix, not
+// "any unit name". A Node runs this as root.
+func TestSystemctlStillRefusesUnitsUnderNeitherPrefix(t *testing.T) {
+	for _, unit := range []string{"sshd", "docker.service", "erainfra", "not-erainfra-thing", "portless"} {
+		if _, err := Resolve(Operation{Name: "systemctl.stop", Args: map[string]string{"unit": unit}}); err == nil {
+			t.Fatalf("expected %q to be refused", unit)
+		}
+	}
+}
+
+func TestIsPortlessUnitCoversBothPrefixes(t *testing.T) {
+	for _, unit := range []string{"portless-consul.service", "erainfra-consul.service"} {
+		if !IsPortlessUnit(unit) {
+			t.Fatalf("expected %s to be allowed", unit)
+		}
+	}
+	if IsPortlessUnit("erainfra.service") {
+		t.Fatal("a bare brand name is not a managed unit")
+	}
+}

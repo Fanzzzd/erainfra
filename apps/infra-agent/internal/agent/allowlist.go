@@ -27,11 +27,21 @@ type Operation struct {
 	Args map[string]string `json:"args"`
 }
 
-var portlessUnit = regexp.MustCompile(`^portless-[a-z0-9-]+(\.service)?$`)
+// Both brand prefixes, and this one has to widen a release EARLY rather than late (ADR 0004
+// stage 1). Every other entry in this migration is a reader catching up with a writer; this is the
+// reverse. The allowlist runs on the NODE, inside a binary a customer installed months ago, while
+// the thing that names a unit is the HUB. If the Hub started issuing `erainfra-*` unit names first,
+// every Node still running today's agent would refuse them with "operation not allowed" — the
+// mirror image of the 404 that CONTEXT.md rule 4 exists to prevent. So the accepting side ships
+// first and waits, exactly as the Hub serves /agent-bin under both names before any installer asks.
+//
+// The widening is over an empty namespace: nothing in this repository writes an `erainfra-*` unit
+// today, so no operation that is refused now is permitted by this change.
+var portlessUnit = regexp.MustCompile(`^(portless|erainfra)-[a-z0-9-]+(\.service)?$`)
 var portlessContainer = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,126}$`)
 var portlessNetwork = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}-net$`)
 
-// IsPortlessUnit gates systemd actions to Portless-managed units only.
+// IsPortlessUnit gates systemd actions to units this platform manages, under either brand prefix.
 func IsPortlessUnit(name string) bool { return portlessUnit.MatchString(name) }
 
 var unsafeArg = regexp.MustCompile(`[;&|<>$` + "`" + `\n\r\\]`)
@@ -126,7 +136,9 @@ func systemctlBuilder(action, desc string) builder {
 		}
 		unit := args["unit"]
 		if !IsPortlessUnit(unit) {
-			return Command{}, fmt.Errorf("%w: systemctl %s restricted to portless-* units, got %q", ErrNotAllowed, action, unit)
+			// Names both managed prefixes: the matcher accepts erainfra-* now, and a diagnostic that
+			// names only the retired one sends the reader looking for a bug that is not there.
+			return Command{}, fmt.Errorf("%w: systemctl %s restricted to portless-* or erainfra-* units, got %q", ErrNotAllowed, action, unit)
 		}
 		return Command{Path: "systemctl", Argv: []string{"systemctl", action, unit}, Description: desc}, nil
 	}

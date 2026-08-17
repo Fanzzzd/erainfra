@@ -25,7 +25,49 @@ import { join, resolve, basename, dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 const VERSION = "1.0.0";
-const CONFIG_PATH = join(homedir(), ".portless", "config.json");
+
+// ---------- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) ----------------
+// Read both names, prefer the new one, warn when the old one is what was found, delete nothing.
+// This file cannot import the Hub's apps/hub/src/env.ts: it is a zero-dependency single file that
+// a dev machine downloads from `<hub>/cli/portless.mjs` and runs on its own, so the idiom is
+// copied rather than shared. Same shape, same rules — see that file for why they exist.
+const warnedNames = new Set();
+function retiredName(oldName, newName) {
+  if (warnedNames.has(oldName)) return;
+  warnedNames.add(oldName);
+  console.error(
+    `[erainfra] ${oldName} is a retired name — use ${newName} instead. The old name still works.`,
+  );
+}
+function renamedEnv(newName, oldName) {
+  const current = process.env[newName];
+  if (current !== undefined) return current;
+  const retired = process.env[oldName];
+  if (retired === undefined) return undefined;
+  retiredName(oldName, newName);
+  return retired;
+}
+// The config a dev machine already holds. Dual-READ only: with neither present this returns the old
+// path, so `portless login` writes exactly where it writes today. Nothing creates ~/.erainfra yet;
+// the release that does is the one that flips which of these is preferred.
+//
+// Resolved per FILE, not per directory. Choosing the directory first means that once ~/.erainfra
+// exists — which is precisely what the next stage creates — an existing ~/.portless/config.json is
+// ignored and the CLI reports itself disconnected while the credential sits right there. Same rule
+// the Hub's renamedPath already follows: prefer the new location only where it actually exists.
+function renamedConfigFile(name) {
+  const current = join(homedir(), ".erainfra", name);
+  if (existsSync(current)) return current;
+  const retired = join(homedir(), ".portless", name);
+  if (existsSync(retired)) {
+    retiredName(`~/.portless/${name}`, `~/.erainfra/${name}`);
+    return retired;
+  }
+  // Neither exists: the retired path stays the write default, because creating ~/.erainfra here
+  // would make this release the one that starts writing new names, which is the next stage's job.
+  return retired;
+}
+const CONFIG_PATH = renamedConfigFile("config.json");
 
 // ---------- output helpers -------------------------------------------------------------------
 const isTTY = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -77,8 +119,18 @@ function loadConfig() {
     /* no config yet */
   }
   return {
-    hub: process.env.PORTLESS_HUB_URL ?? process.env.PORTLESS_HUB ?? file.hub,
-    token: process.env.PORTLESS_TOKEN ?? file.token,
+    // Both renamed names before either retired one. Chaining `renamedEnv ?? renamedEnv` looks like
+    // it prefers the new name and does not: with ERAINFRA_HUB and PORTLESS_HUB_URL both set, the
+    // first call falls back within its own pair and returns the RETIRED value, warning about a
+    // retired name while a renamed one sat unread. Preference has to be applied across the whole
+    // set, not inside each pair.
+    hub:
+      process.env.ERAINFRA_HUB_URL ??
+      process.env.ERAINFRA_HUB ??
+      renamedEnv("ERAINFRA_HUB_URL", "PORTLESS_HUB_URL") ??
+      renamedEnv("ERAINFRA_HUB", "PORTLESS_HUB") ??
+      file.hub,
+    token: renamedEnv("ERAINFRA_TOKEN", "PORTLESS_TOKEN") ?? file.token,
   };
 }
 
@@ -416,7 +468,9 @@ function parseCodexFile(file) {
 }
 
 // Incremental sync: remember each file's size; re-parse + re-send only when it changed.
-const CHAT_STATE_PATH = join(homedir(), ".portless", "chats-sync.json");
+// Per-file for the same reason as CONFIG_PATH, and the cost of getting it wrong is louder here:
+// losing this file does not error, it re-sends every local chat transcript to the hub.
+const CHAT_STATE_PATH = renamedConfigFile("chats-sync.json");
 
 async function syncChats(cfg, { verbose = false } = {}) {
   let state = {};
@@ -499,10 +553,10 @@ const commands = {
     }
     const cfg = { hub, token };
     const nodes = await query(cfg, "agents.list").catch((e) => die(`login failed: ${e.message}`));
-    mkdirSync(join(homedir(), ".portless"), { recursive: true });
+    mkdirSync(dirname(CONFIG_PATH), { recursive: true });
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
     ok(
-      `connected to ${hub} (${nodes.length} node${nodes.length === 1 ? "" : "s"} online) — saved to ~/.portless/config.json`,
+      `connected to ${hub} (${nodes.length} node${nodes.length === 1 ? "" : "s"} online) — saved to ${CONFIG_PATH}`,
     );
   },
 
@@ -799,6 +853,22 @@ const commands = {
       const bin = process.argv[1];
       if (process.platform === "darwin") {
         const plist = join(homedir(), "Library", "LaunchAgents", "ai.portless.chats-sync.plist");
+        // Detect and report, never rename (ADR 0004 stage 1). A launchd Label is not a path a
+        // fallback can chase: writing a second plist under a new Label leaves the old job LOADED
+        // and syncing on its own 15-minute timer, so the box would have two. The migration is
+        // `launchctl unload` of the old Label first, which is a step this command cannot take on
+        // a user's behalf without being asked.
+        const renamedPlist = join(
+          homedir(),
+          "Library",
+          "LaunchAgents",
+          "ai.erainfra.chats-sync.plist",
+        );
+        if (existsSync(renamedPlist))
+          die(
+            `both ai.portless.chats-sync and ai.erainfra.chats-sync are installed — unload one first:\n` +
+              `  launchctl unload ${renamedPlist}   # or ${plist}`,
+          );
         mkdirSync(dirname(plist), { recursive: true });
         writeFileSync(
           plist,

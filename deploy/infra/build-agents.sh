@@ -11,7 +11,12 @@ log() { printf '\033[36m[portless]\033[0m %s\n' "$*" >&2; }
 
 # Stamp the product version onto the binary so `portless-agent version` reports what shipped. This
 # needs node only to read one field; a box without it still builds, and the binary says "dev".
-VERSION=${PORTLESS_AGENT_VERSION:-$(node -p "require('$HERE/../../package.json').version" 2>/dev/null || echo dev)}
+VERSION="${ERAINFRA_AGENT_VERSION:-${PORTLESS_AGENT_VERSION:-}}"
+if [ -n "${PORTLESS_AGENT_VERSION:-}" ] && [ -z "${ERAINFRA_AGENT_VERSION:-}" ]; then
+  # Stage 1 of retiring the name (ADR 0004): both are read, the new one wins, neither is deleted.
+  printf '\033[33m[erainfra] PORTLESS_AGENT_VERSION is a retired name — use ERAINFRA_AGENT_VERSION.\033[0m\n' >&2
+fi
+[ -n "$VERSION" ] || VERSION=$(node -p "require('$HERE/../../package.json').version" 2>/dev/null || echo dev)
 log "stamping version $VERSION"
 
 # CGO off → static binaries that run anywhere (alpine included). Names match agent.sh / agent.ps1.

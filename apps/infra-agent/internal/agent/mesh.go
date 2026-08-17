@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
 )
 
 // MeshManager runs dumbpipe (iroh) sidecars ON THIS NODE to wire it to another NAT'd node with no
@@ -39,13 +41,19 @@ func NewMeshManager() *MeshManager { return &MeshManager{links: map[string]*mesh
 
 // dumbpipeBin resolves the dumbpipe binary: $PORTLESS_PREFIX/bin (where agent.sh installs it),
 // ~/.portless/bin, then PATH. Under systemd the PATH is minimal, so the explicit locations matter.
+//
+// A search list is the one shape where accepting the renamed location costs nothing to get wrong:
+// a path that is not there is skipped, so the new names go in front of the old ones and the Node in
+// the field falls through to exactly the entry it uses today (ADR 0004 stage 1).
 func dumbpipeBin() string {
 	candidates := []string{}
-	if p := os.Getenv("PORTLESS_PREFIX"); p != "" {
+	if p := rename.Env("ERAINFRA_PREFIX", "PORTLESS_PREFIX"); p != "" {
 		candidates = append(candidates, filepath.Join(p, "bin", "dumbpipe"))
 	}
 	if h, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(h, ".portless", "bin", "dumbpipe"))
+		candidates = append(candidates,
+			filepath.Join(h, ".erainfra", "bin", "dumbpipe"),
+			filepath.Join(h, ".portless", "bin", "dumbpipe"))
 	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {

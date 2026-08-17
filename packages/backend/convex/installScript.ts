@@ -132,19 +132,24 @@ node_fetch() {
 node_install_service() {
   command -v systemctl >/dev/null 2>&1 || return 1
   $NODE_SUDO test -d /run/systemd/system || return 1
-  $NODE_SUDO mkdir -p /etc/portless || return 1
+  # Only the directory holding agent.env may have moved already, and only if something else moved
+  # it: this installer creates neither name. The unit name, the file name and the variable names
+  # inside it all stay frozen, because a second unit would leave the first one enabled.
+  NODE_ENV_DIR=/etc/portless
+  [ -d /etc/erainfra ] && NODE_ENV_DIR=/etc/erainfra
+  $NODE_SUDO mkdir -p "$NODE_ENV_DIR" || return 1
   # 0600 before the token is written, not after: creating it world-readable and chmodding afterwards
   # leaves a window in which any local user can read the Hub credential.
-  $NODE_SUDO install -m 600 /dev/null /etc/portless/agent.env || return 1
+  $NODE_SUDO install -m 600 /dev/null "$NODE_ENV_DIR/agent.env" || return 1
   printf 'PORTLESS_HUB=%s\nPORTLESS_TOKEN=%s\n' "$NODE_HUB" "$NODE_TOKEN" |
-    $NODE_SUDO tee /etc/portless/agent.env >/dev/null || return 1
+    $NODE_SUDO tee "$NODE_ENV_DIR/agent.env" >/dev/null || return 1
   printf '%s\n' \
     '[Unit]' \
     'Description=Portless deploy agent' \
     'After=network-online.target docker.service' \
     'Wants=network-online.target' \
     '[Service]' \
-    'EnvironmentFile=/etc/portless/agent.env' \
+    "EnvironmentFile=$NODE_ENV_DIR/agent.env" \
     "Environment=HOME=$HOME" \
     "ExecStart=$NODE_BIN_DIR/portless-agent connect --name $NODE_MACHINE_NAME" \
     'Restart=always' \
@@ -231,8 +236,17 @@ node_install() {
 
   if [ "$(id -u)" = '0' ]; then NODE_SUDO=''; else NODE_SUDO='sudo'; fi
   # $PORTLESS_PREFIX and the paths under it are identifiers a running Node already holds (rule 4).
-  NODE_PREFIX=$(printenv PORTLESS_PREFIX || true)
-  if [ -z "$NODE_PREFIX" ]; then NODE_PREFIX="$HOME/.portless"; fi
+  # Stage 1 of retiring the name (ADR 0004) reads both and prefers the new one; it writes neither,
+  # so with nothing set and no ~/.erainfra directory this resolves to exactly the old path.
+  NODE_PREFIX=$(printenv ERAINFRA_PREFIX || true)
+  if [ -z "$NODE_PREFIX" ]; then
+    NODE_PREFIX=$(printenv PORTLESS_PREFIX || true)
+    [ -z "$NODE_PREFIX" ] ||
+      node_warn 'PORTLESS_PREFIX is a retired name — use ERAINFRA_PREFIX. The old name still works.'
+  fi
+  if [ -z "$NODE_PREFIX" ]; then
+    if [ -d "$HOME/.erainfra" ]; then NODE_PREFIX="$HOME/.erainfra"; else NODE_PREFIX="$HOME/.portless"; fi
+  fi
   NODE_BIN_DIR="$NODE_PREFIX/bin"
   NODE_RUN_DIR="$NODE_PREFIX/run"
   NODE_MACHINE_NAME=$NODE_NAME
@@ -266,6 +280,15 @@ node_install() {
 
   # Only past the verification does anything on this machine change. A mismatch above leaves an
   # already-installed agent running on the bytes it was installed with.
+  # Detect and report, never rename (ADR 0004 stage 1). A second unit under a new name would leave
+  # portless-agent.service ENABLED and running, so the Node would hold two agents dialling this Hub.
+  # Checked here rather than inside node_install_service, whose output is discarded on the way to the
+  # nohup fallback — which would then start a third.
+  if [ -f /etc/systemd/system/erainfra-agent.service ] &&
+     [ -f /etc/systemd/system/portless-agent.service ]; then
+    node_fail 'This Node has both portless-agent.service and erainfra-agent.service; two agents would dial the same Hub. Disable one first: systemctl disable --now erainfra-agent'
+  fi
+
   node_ensure_runtime
   mkdir -p "$NODE_BIN_DIR"
   chmod +x "$NODE_DOWNLOAD"

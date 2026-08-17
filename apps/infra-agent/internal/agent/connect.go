@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
 )
 
 // The agent dials OUT to the hub over WSS and stays connected; the hub pushes commands and the agent
@@ -344,16 +346,32 @@ func (r ShellRunner) ReadSpec(src BuildSource) (string, error) {
 	if out, err := r.fetchSource(dir, src); err != nil {
 		return out, err
 	}
-	for _, f := range []string{"portless.yaml", "portless.yml"} {
+	return specFromCheckout(dir), nil
+}
+
+// specFromCheckout is the candidate search, split out of ReadSpec so a test can drive the real
+// thing. A test that re-lists the candidates itself passes no matter what order production uses,
+// which is the whole property here: read the renamed names first, but never stop reading the
+// retired ones.
+//
+// Ordered, not exclusive (ADR 0004 stage 1). This name lives in a CUSTOMER's repository, so it is
+// not ours to rewrite — every repo bound to a Hub today carries portless.yaml and must keep
+// deploying byte-for-byte as it does. Reading the renamed names first costs a stat that misses.
+func specFromCheckout(dir string) string {
+	for _, f := range []string{"erainfra.yaml", "erainfra.yml", "portless.yaml", "portless.yml"} {
 		body, err := readConfined(dir, f)
 		if err != nil {
 			// Absent, a directory, or pointing out of the checkout: try the next
 			// name, then fall back to a single-service deploy as before.
 			continue
 		}
-		return string(body), nil
+		if f == "portless.yaml" || f == "portless.yml" {
+			rename.Warn(f, "erainfra"+f[len("portless"):],
+				"Rename it whenever you like; both are read and will be for at least one more release.")
+		}
+		return string(body)
 	}
-	return "", nil
+	return ""
 }
 
 // readConfined reads name from root, refusing anything that resolves outside it. os.ReadFile follows

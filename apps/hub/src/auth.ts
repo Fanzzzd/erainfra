@@ -1,4 +1,5 @@
 import type { Role } from "./rbac.ts";
+import { renamedEnv, retiredName } from "./env.ts";
 import { userStore, type UserStore } from "./runtime/users.ts";
 import { sessionStore, type SessionStore } from "./runtime/sessions.ts";
 import { apiTokenStore, type ApiTokenStore } from "./runtime/apitokens.ts";
@@ -29,7 +30,7 @@ export class StaticTokenStore implements TokenStore {
 
 // Default dev tokens. Override in real deployments via PORTLESS_DEV_TOKENS (JSON: token -> principal).
 export function devTokenStore(): StaticTokenStore {
-  const fromEnv = process.env.PORTLESS_DEV_TOKENS;
+  const fromEnv = renamedEnv("ERAINFRA_DEV_TOKENS", "PORTLESS_DEV_TOKENS");
   if (fromEnv) return new StaticTokenStore(JSON.parse(fromEnv));
   return new StaticTokenStore({
     "owner-dev-token": { id: "u-owner", name: "Dev Owner", roles: ["owner"] },
@@ -42,15 +43,32 @@ export function devTokenStore(): StaticTokenStore {
 // exist only when explicitly supplied via PORTLESS_DEV_TOKENS or opted into with PORTLESS_DEV_AUTH=1.
 // Local dev (NODE_ENV unset) keeps them so the dashboard works out of the box.
 export function defaultTokenStore(): TokenStore {
-  if (process.env.PORTLESS_DEV_TOKENS)
-    return new StaticTokenStore(JSON.parse(process.env.PORTLESS_DEV_TOKENS));
-  if (process.env.NODE_ENV === "production" && process.env.PORTLESS_DEV_AUTH !== "1") {
+  const explicit = renamedEnv("ERAINFRA_DEV_TOKENS", "PORTLESS_DEV_TOKENS");
+  if (explicit) return new StaticTokenStore(JSON.parse(explicit));
+  if (
+    process.env.NODE_ENV === "production" &&
+    renamedEnv("ERAINFRA_DEV_AUTH", "PORTLESS_DEV_AUTH") !== "1"
+  ) {
     return new StaticTokenStore({});
   }
   return devTokenStore();
 }
 
+// The session cookie a logged-in operator's browser already holds. Renaming it in one release is
+// not a rename, it is a mass logout — every open dashboard drops to the login page and the old
+// cookie sits there until it expires. So Stage 1 reads both and keeps SETTING the old one; a later
+// release sets the new one and this fallback carries everyone who was already signed in.
 export const SESSION_COOKIE = "portless_session";
+export const SESSION_COOKIE_NEXT = "erainfra_session";
+
+export function readSessionCookie(header: string | undefined): string | undefined {
+  const jar = parseCookies(header);
+  const current = jar[SESSION_COOKIE_NEXT];
+  if (current !== undefined) return current;
+  const retired = jar[SESSION_COOKIE];
+  if (retired !== undefined) retiredName(SESSION_COOKIE, SESSION_COOKIE_NEXT, "Nothing to do yet.");
+  return retired;
+}
 
 export interface AuthStores {
   users: Pick<UserStore, "get">;
@@ -74,7 +92,7 @@ export function resolveRequestAuth(
   req: { headers: { authorization?: string | string[]; cookie?: string } },
   stores: AuthStores,
 ): Principal | null {
-  const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  const cookie = readSessionCookie(req.headers.cookie);
   if (cookie) {
     const session = stores.sessions.resolve(cookie);
     if (session) {

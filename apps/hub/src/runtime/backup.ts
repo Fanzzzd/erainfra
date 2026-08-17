@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { db } from "../db.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { renamedEnv } from "../env.ts";
 
 export interface S3Config {
   endpoint: string;
@@ -23,18 +24,18 @@ export interface S3Config {
 
 // Reads S3 settings from env. Returns null (backup disabled) unless endpoint+bucket+keys are all set.
 export function backupConfig(): S3Config | null {
-  const endpoint = process.env.PORTLESS_BACKUP_S3_ENDPOINT;
-  const bucket = process.env.PORTLESS_BACKUP_S3_BUCKET;
-  const accessKey = process.env.PORTLESS_BACKUP_S3_ACCESS_KEY;
-  const secretKey = process.env.PORTLESS_BACKUP_S3_SECRET_KEY;
+  const endpoint = renamedEnv("ERAINFRA_BACKUP_S3_ENDPOINT", "PORTLESS_BACKUP_S3_ENDPOINT");
+  const bucket = renamedEnv("ERAINFRA_BACKUP_S3_BUCKET", "PORTLESS_BACKUP_S3_BUCKET");
+  const accessKey = renamedEnv("ERAINFRA_BACKUP_S3_ACCESS_KEY", "PORTLESS_BACKUP_S3_ACCESS_KEY");
+  const secretKey = renamedEnv("ERAINFRA_BACKUP_S3_SECRET_KEY", "PORTLESS_BACKUP_S3_SECRET_KEY");
   if (!endpoint || !bucket || !accessKey || !secretKey) return null;
   return {
     endpoint: endpoint.replace(/\/$/, ""),
     bucket,
     accessKey,
     secretKey,
-    region: process.env.PORTLESS_BACKUP_S3_REGION ?? "us-east-1",
-    prefix: process.env.PORTLESS_BACKUP_S3_PREFIX ?? "portless/",
+    region: renamedEnv("ERAINFRA_BACKUP_S3_REGION", "PORTLESS_BACKUP_S3_REGION") ?? "us-east-1",
+    prefix: renamedEnv("ERAINFRA_BACKUP_S3_PREFIX", "PORTLESS_BACKUP_S3_PREFIX") ?? "portless/",
   };
 }
 
