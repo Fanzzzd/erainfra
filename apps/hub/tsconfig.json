@@ -13,5 +13,8 @@
     // type-only import that Node would otherwise turn into a missing-module crash.
     "verbatimModuleSyntax": true
   },
-  "include": ["src", "test"]
+  // scripts/verify is the third entry for the reason issue #62 exists: it was outside the
+  // project, so `pnpm typecheck` was green *because* those nineteen files were never read.
+  // Eight of them had drifted off the Hub's own procedure contracts and nothing said so.
+  "include": ["src", "test", "scripts/verify"]
 }

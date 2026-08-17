@@ -13,6 +13,7 @@ import { appRouter } from "../../src/router.ts";
 import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import type { Principal } from "../../src/auth.ts";
+import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8795,
   APP = "deps-app",
@@ -90,15 +91,15 @@ try {
   console.log(
     `uploaded app (deps: mathjs, dayjs) → ${buildId.slice(0, 8)}; building (nixpacks runs npm install)…`,
   );
-  const r = await caller.upload.deploy({
+  const started = await caller.upload.deploy({
     buildId,
-    name: APP,
+    app: APP,
     port: APP_PORT,
     buildNode: "builder",
-    deployNode: "builder",
+    node: "builder",
     confirm: true,
   });
-  if (!r.ok) throw new Error(`${r.stage} failed: ${r.error ?? r.output}`);
+  await deployed(caller, started.deployId);
 
   let body = "";
   for (let i = 0; i < 30; i++) {

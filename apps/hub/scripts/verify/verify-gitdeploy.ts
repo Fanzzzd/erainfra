@@ -11,6 +11,7 @@ import { appRouter } from "../../src/router.ts";
 import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import type { Principal } from "../../src/auth.ts";
+import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8795,
   APP = "sample-app",
@@ -70,11 +71,12 @@ try {
   console.log(`✅ bound KlausFan/portless-sample@main → ${APP} (id ${bind.id.slice(0, 8)})`);
 
   console.log("deploying from GitHub (clone → nixpacks build → push → deploy)…");
-  const r = await caller.git.deployNow({ id: bind.id, confirm: true });
+  const started = await caller.git.deployNow({ id: bind.id, confirm: true });
+  console.log(`deploy queued: deployId ${started.deployId.slice(0, 8)}`);
+  const d = await deployed(caller, started.deployId);
   console.log(
-    `deploy result: ok=${r.ok} stage=${r.stage} image=${r.image}${r.error ? " error=" + r.error : ""}`,
+    `deploy finished: ${d.stage} — ${d.detail}${d.urls.length ? ` (${d.urls.join(", ")})` : ""}`,
   );
-  if (!r.ok) throw new Error(`${r.stage} failed: ${r.error ?? r.output}`);
 
   let body = "";
   for (let i = 0; i < 30; i++) {

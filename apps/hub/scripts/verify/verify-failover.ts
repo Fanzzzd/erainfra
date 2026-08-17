@@ -21,6 +21,7 @@ import { routeStore } from "../../src/runtime/routes.ts";
 import { secretStore } from "../../src/runtime/secrets.ts";
 import { installFailover } from "../../src/runtime/failover.ts";
 import type { Principal } from "../../src/auth.ts";
+import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8797,
   APP = "failover-app",
@@ -108,15 +109,17 @@ try {
     headers: { authorization: "Bearer owner-dev-token", "content-type": "application/gzip" },
     payload: execSync(`cat ${tgz}`),
   });
-  const r = await caller.upload.deploy({
+  const started = await caller.upload.deploy({
     buildId: up.json().buildId,
-    name: APP,
+    app: APP,
     port: APP_PORT,
     buildNode: "nodeA",
-    deployNode: "nodeA",
+    node: "nodeA",
     confirm: true,
   });
-  if (!r.ok) throw new Error(`${r.stage} failed: ${r.error}`);
+  // The route is written by the pipeline, not by the mutation, so this assertion is only
+  // meaningful once the deploy has actually settled.
+  await deployed(caller, started.deployId);
   if (routeStore.node(APP) !== "nodeA") throw new Error("route not on nodeA after deploy");
   let res;
   for (let i = 0; i < 30; i++) {
