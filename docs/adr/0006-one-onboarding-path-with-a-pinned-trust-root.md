@@ -1,4 +1,4 @@
-# ADR 0006: One onboarding path, with the checksum as the only trust root
+# ADR 0006: One onboarding path, with a pinned trust root
 
 - Status: Accepted
 - Date: 2026-08-17
@@ -29,10 +29,30 @@ installs are a feature, not an accident.
 
 ## Decision
 
-**The trust root is the pinned SHA-256, not the transport.** Once the checksum is pinned in the
-control plane and the installer refuses on mismatch, the byte source does not need to be trusted.
-Unifying the onboarding path and preserving self-contained distribution are therefore not in
-conflict.
+**For the payload, the trust root is the pinned SHA-256, not the transport.** Once the checksum is
+pinned in the control plane and the installer refuses on mismatch, the byte source does not need to
+be trusted. Unifying the onboarding path and preserving self-contained distribution are therefore
+not in conflict.
+
+**That claim covers the payload only, and the scope matters.** The digest cannot protect the
+`/install` script itself, because the script is what carries the digest and runs the verification.
+A tampered script can drop the check, or execute anything at all, before a single byte of the
+archive is fetched — and it runs under `sudo`. So the bootstrap has a second trust root that has to
+be named rather than implied:
+
+- **TLS to the control plane's own origin is a requirement, not a detail.** `/install` is served
+  from the deployment's origin (`http.ts:261`) over HTTPS, and the installer must be fetched that
+  way. `curl` without `-f`, over plain HTTP, or through a redirect to another host is not the
+  supported path.
+- **`--source` moves the payload's origin, never the script's.** An air-gapped install still
+  bootstraps from a script obtained over TLS (or copied deliberately by an operator); pointing
+  `--source` at a hub mirror or a local file is safe precisely because the verification logic
+  arrived by the trusted path and the expected digest is baked into it.
+- **This asymmetry is the same one the Worker path already lives with**, so it is not a regression
+  introduced here — but the Worker path never wrote it down either. Signing the installer, or
+  publishing a separately pinned verifier that the one-liner fetches first, is the way to remove the
+  asymmetry rather than document it. That is deliberately out of scope here and worth its own ADR;
+  what is in scope is not overstating what the digest buys.
 
 One onboarding path:
 
@@ -42,6 +62,36 @@ One onboarding path:
   checksum for both agents.
 - **One trust root.** `AGENT_RELEASE` extends to cover both agents' artifacts. Both move together,
   which is what the one-product-version rule already requires.
+
+  **Per-role artifacts, not one combined archive.** The two agents are shaped differently and
+  combining them would be worse for both: the Action Runner Agent is one
+  `erainfra-agent-<version>.tar.gz` that every Worker installs identically with `npm install`, while
+  the Infra Agent is a single static Go binary that must be selected per platform —
+  `infra-agent-<os>-<arch>[.exe]`, five targets including `windows/amd64`, which the existing
+  `agent.ps1` path already requires. One combined archive would make every Node download four
+  binaries it cannot run.
+
+  So `AgentRelease` keeps its existing scalar `sha256` for the archive and gains a **map** keyed by
+  target for the binaries. The extension is additive, which is what lets the entire Worker path —
+  `release.yml`'s verification block, `http.ts`, `installScript.ts` and its tests — keep working
+  untouched:
+
+  ```ts
+  export type AgentRelease = {
+    repo: string;
+    version: string;
+    /** SHA-256 of `erainfra-agent-<version>.tar.gz` — the Action Runner Agent. */
+    sha256: string;
+    /** SHA-256 of `infra-agent-<os>-<arch>[.exe]`, keyed by target. */
+    infraAgent: Record<string, string>;
+  };
+  ```
+
+  `--role worker` selects the archive and verifies against `sha256`; `--role node` resolves the
+  host's target, selects that binary, and verifies against `infraAgent[target]`. Both paths must be
+  covered by tests, including the refusal case — a verification path whose failure branch is untested
+  is a verification path nobody has seen work.
+
 - **Pluggable bytes.** GitHub Release by default; a hub mirror or a local file via an explicit
   source override for air-gapped installs. Verification is identical in every case.
 

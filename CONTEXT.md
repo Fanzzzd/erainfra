@@ -18,7 +18,7 @@ platform and the name is retired — see [ADR 0004](docs/adr/0004-portless-is-a-
 | lives at            | `apps/action-runner-agent`                            | `apps/infra-agent`                                |
 | runs on             | a **Worker**                                          | a **Node**                                        |
 | registers           | capacity per Profile                                  | itself, for management                            |
-| claims work         | Attempts, experiments                                 | nothing — it is commanded                         |
+| claims work         | Attempts, experiments, legacy commands                | nothing — it is commanded                         |
 | what it runs        | one disposable boundary per Attempt, then destroys it | long-lived **Apps** + allowlisted host operations |
 | its work's lifetime | single-use                                            | persistent                                        |
 
@@ -37,9 +37,11 @@ one behind NAT with no public IP.
 
 **Action Runner Agent** — the daemon on a Worker. Registers the machine's capacity contract,
 claims Attempts, and drives a provisioner that creates and destroys one isolation boundary per
-Attempt. Machines install it with plain `npm install` from an archive pinned by SHA-256, which is
-why it deliberately does not use the `catalog:` or `workspace:` protocols. Read the name as "the
-agent that serves Action Runners" — **it is not itself a Runner.**
+Attempt. It has three claim paths, not one: `workerApi:claimAttempt`, `workerApi:claimExperiment`,
+and the still-live `agentApi:claim` for legacy commands (`apps/agent/index.ts:216`). Machines
+install it with plain `npm install` from an archive pinned by SHA-256, which is why it deliberately
+does not use the `catalog:` or `workspace:` protocols. Read the name as "the agent that serves
+Action Runners" — **it is not itself a Runner.**
 
 **Runner** — an ephemeral GitHub Actions runner: an object in _GitHub's_ database with a
 `runner_id` that GitHub issues, created per Attempt through
@@ -53,8 +55,9 @@ allowlist-resolved operations; there is no raw-argv path. Also builds images and
 **Hub** — the control plane an Infra Agent connects to. Distinct from the Convex **control plane**
 that Workers report to; the two have not been merged and the terms are not interchangeable.
 
-**Profile** — the immutable contract a Worker advertises capacity against: executor, image
-release, vCPUs, memory. Readiness is per Worker _and_ Profile.
+**Profile** — the immutable contract a Worker advertises capacity against. Not just a size: it
+carries `executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`, `fitPolicy`, `minRunners` and
+`maxRunners` (`convex/schema.ts:70-82`). Readiness is per Worker _and_ Profile.
 
 **Attempt** — one execution of one CI job inside one disposable boundary. The isolation boundary
 is per Attempt, never per Worker.

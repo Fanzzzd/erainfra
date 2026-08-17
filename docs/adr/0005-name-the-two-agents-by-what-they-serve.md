@@ -42,7 +42,7 @@ runs workloads). Two agents, two names, one machine, one platform — and neithe
 
 ## Decision
 
-```
+```text
 apps/action-runner-agent   the Action Runner Agent — on a Worker
 apps/infra-agent           the Infra Agent          — on a Node
 ```

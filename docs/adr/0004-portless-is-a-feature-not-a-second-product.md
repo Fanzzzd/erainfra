@@ -64,9 +64,25 @@ lockfile, and a release that ships what it gates on.
 - The Portless hub's `docker run -v "$REPO":/srv/portless` bind mount (`deploy/hub.sh:61,72`)
   becomes materially more dangerous under this decision. Today `$REPO` is Portless; after the
   merge `$REPO` is the entire CI platform, mounted into a container on a customer's hub box.
-  Merging without addressing this would use the merge to enlarge a customer-facing exposure.
-- Whether Portless remains independently installable — keeping `deploy/`'s `curl | sh`
-  path — is a separate decision this ADR does not settle.
+  The mount is **read-write**, and the container runs continuously behind a public Cloudflare
+  tunnel, so a compromised Hub could write to the host checkout — including
+  `packages/backend/convex` and its GitHub App configuration. Merging without addressing this
+  would use the merge to enlarge a customer-facing exposure.
+
+  Two containment steps follow, and they are ordered because only one of them is cheap. The
+  merge itself must scope the install with `--filter "@erainfra/hub..."`, measured at 183
+  packages against today's 495 — a one-line change that leaves a customer's hub box smaller
+  than it is now rather than larger. Closing the mount itself requires packaging the Hub as a
+  self-contained bundle, because `hub.sh:71-74` runs the Hub _from_ the mounted tree
+  (`-w /srv/portless … node --experimental-strip-types apps/api/src/server.ts`). That is a
+  separate PR, and it is a prerequisite for the read-only or bundle-only form — not something
+  the merge can assert by rewriting a path.
+
+- Whether the infrastructure surface remains independently installable is **settled by
+  [ADR 0006](0006-one-onboarding-path-with-a-pinned-trust-root.md)**, which was written after
+  this one: `deploy/agent.sh` remains supported as a byte _source_ but stops being a trust root,
+  and it is only retired behind four recorded platform proofs. Self-contained and air-gapped
+  installs are preserved deliberately; what is retired is installing without verification.
 
 ## Alternatives considered
 
