@@ -9,7 +9,7 @@ function fakeGw(present: string[], opts: { failShare?: boolean; failConnect?: bo
   const sent: Array<{ to: string; cmd: any }> = [];
   const gw = {
     list: () =>
-      present.map((id) => ({ id, version: null, roles: ["worker"] as any, connectedAt: "" })),
+      present.map((id) => ({ id, version: null, roles: ["compute"] as any, connectedAt: "" })),
     send: async (to: string, cmd: any) => {
       sent.push({ to, cmd });
       if (cmd.cmd === "meshShare")

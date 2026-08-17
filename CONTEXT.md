@@ -74,6 +74,18 @@ reporting a boundary weaker than its executor promises is refused.
 **Readiness evidence** — the measured facts a Worker submits to justify a ready state, including
 the network policy identity hash and thin-pool identity. Admission is fail-closed against it.
 
+**Role** — three unrelated vocabularies here use the word, and only the first is a machine kind, so
+a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
+
+- **Machine role** — `worker` | `node`: the two kinds above. What `/install --role` picks, and the
+  owner of the word **worker**. Neither of the other two may spend it.
+- **Placement role** — `gateway` | `compute` | `database` | `relay`: which capability a Node carries
+  for the Apps deployed onto it, reported by the Infra Agent on its `hello` frame. `compute` was
+  called `worker` until #64, which is how a Node came to be badged as a Worker; the Hub reads both
+  names until that rollout's last stage.
+- **Permission role** — `owner`, …: what a human or an API token may do in the Hub. It shares only
+  the field name with either of the above.
+
 ## Naming rules
 
 1. **`agent` alone is never a name here.** Both daemons are qualified by the surface they serve.
