@@ -2,6 +2,9 @@ package agent
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,15 +122,93 @@ func TestRunCmdUnknown(t *testing.T) {
 	}
 }
 
+// mustMkdirAll and mustSymlink build the checkout shape a contextDir case needs.
+func mustMkdirAll(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	return path
+}
+
+func mustSymlink(t *testing.T, target, link string) string {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
+	}
+	return link
+}
+
+func mustEvalSymlinks(t *testing.T, path string) string {
+	t.Helper()
+	p, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("eval %s: %v", path, err)
+	}
+	return p
+}
+
+// TestContextDirConfined pins the confinement against a checkout an untrusted source produced: the
+// root is filled by a tarball fetch or a `git clone`, so it can contain symlinks as easily as `..`.
 func TestContextDirConfined(t *testing.T) {
 	root := t.TempDir()
-	if _, err := contextDir(root, "../escape"); err == nil {
-		t.Fatal("contextDir must reject escaping the source root")
+	mustMkdirAll(t, filepath.Join(root, "sub", "dir"))
+	mustMkdirAll(t, filepath.Join(root, "svc"))
+	mustSymlink(t, t.TempDir(), filepath.Join(root, "escape"))                // ctx -> somewhere else entirely
+	mustSymlink(t, filepath.Join(root, "svc"), filepath.Join(root, "inside")) // ctx -> a sibling in the checkout
+
+	// Every expectation is against the evaluated root: t.TempDir() hands back a path under /var on
+	// macOS, which is itself a symlink to /private/var, and contextDir returns the path it validated.
+	realRoot := mustEvalSymlinks(t, root)
+
+	for _, tc := range []struct {
+		name    string
+		sub     string
+		want    string // expected return, when the call should succeed
+		wantErr string // substring the error must contain, when it should fail
+	}{
+		{name: "a plain subdirectory", sub: "sub/dir", want: filepath.Join(realRoot, "sub", "dir")},
+		{name: "an empty subdir is the root", sub: "", want: realRoot},
+		{name: "a dot subdir is the root", sub: ".", want: realRoot},
+		{name: "parent traversal out of the root", sub: "../../etc", wantErr: "escapes the source root"},
+		{name: "a symlink pointing out of the root", sub: "escape", wantErr: "escapes the source root"},
+		{name: "a symlink pointing inside the root", sub: "inside", want: filepath.Join(realRoot, "svc")},
+		{name: "a subdir that does not exist", sub: "nope", wantErr: "no such build dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := contextDir(root, tc.sub)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("contextDir(%q) = %q, want error %q", tc.sub, got, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("contextDir(%q) error = %v, want it to mention %q", tc.sub, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("contextDir(%q): %v", tc.sub, err)
+			}
+			if got != tc.want {
+				t.Fatalf("contextDir(%q) = %q, want %q", tc.sub, got, tc.want)
+			}
+		})
 	}
-	if p, err := contextDir(root, "sub/dir"); err != nil || p != root+"/sub/dir" {
-		t.Fatalf("contextDir sub: %v %s", err, p)
+}
+
+// TestContextDirAcceptsASymlinkedRoot covers the shape os.MkdirTemp itself produces on macOS: the
+// root arrives unevaluated, so a resolved child is never lexically prefixed by it.
+func TestContextDirAcceptsASymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	target := mustMkdirAll(t, filepath.Join(base, "checkout"))
+	mustMkdirAll(t, filepath.Join(target, "app"))
+	root := mustSymlink(t, target, filepath.Join(base, "link"))
+
+	got, err := contextDir(root, "app")
+	if err != nil {
+		t.Fatalf("contextDir through a symlinked root: %v", err)
 	}
-	if p, err := contextDir(root, ""); err != nil || p != root {
-		t.Fatalf("contextDir empty: %v %s", err, p)
+	if want := filepath.Join(mustEvalSymlinks(t, target), "app"); got != want {
+		t.Fatalf("contextDir through a symlinked root = %q, want %q", got, want)
 	}
 }

@@ -265,16 +265,42 @@ func (r ShellRunner) fetchSource(dir string, src BuildSource) (string, error) {
 }
 
 // contextDir resolves the optional build-context subdir, confined to the source root (a spec that
-// says `build: ../../etc` must not escape the checkout).
+// says `build: ../../etc` must not escape the checkout). The confinement has to hold against
+// symlinks as well as `..`: root was just filled by fetchSource from an untrusted tarball or repo,
+// so a `ctx -> /etc` entry in the checkout would otherwise pass a lexical check and still hand the
+// host's /etc to the image build. So resolve both sides and decide on the resolved paths, and return
+// the path that was validated — the caller then never traverses the symlink again.
 func contextDir(root, sub string) (string, error) {
-	if sub == "" || sub == "." {
-		return root, nil
+	// The root is resolved too: os.MkdirTemp returns a path under /var on macOS, itself a symlink to
+	// /private/var, and no resolved child is ever lexically prefixed by the unresolved root.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("source root %q: %w", root, err)
 	}
-	p := filepath.Clean(filepath.Join(root, sub))
-	if p != root && !strings.HasPrefix(p, root+string(filepath.Separator)) {
+	if sub == "" || sub == "." {
+		return realRoot, nil
+	}
+	// Lexical first, so a `..` escape is still refused as one even when the path it names is absent.
+	p := filepath.Clean(filepath.Join(realRoot, sub))
+	if !contains(realRoot, p) {
 		return "", fmt.Errorf("build dir %q escapes the source root", sub)
 	}
-	return p, nil
+	realDir, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no such build dir %q in the source", sub)
+		}
+		return "", fmt.Errorf("build dir %q: %w", sub, err)
+	}
+	if !contains(realRoot, realDir) {
+		return "", fmt.Errorf("build dir %q escapes the source root", sub)
+	}
+	return realDir, nil
+}
+
+// contains reports whether p is root itself or a path beneath it. Both must already be resolved.
+func contains(root, p string) bool {
+	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
 // Build fetches a source into a temp dir, then builds+pushes its (sub)directory as an image, reusing
