@@ -26,6 +26,6 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.4",
-  sha256: "cfe2b79e87f48042820a080b18ea1a57cde69a3ce495c3e2744df7277a031cdf",
+  version: "0.2.0-rc.5",
+  sha256: "ea39b72d559c81f9e74864472f92f736b49184d4f992db1b56249bb7bc31c1f1",
 };
