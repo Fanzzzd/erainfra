@@ -371,7 +371,11 @@ describe("provision-mac.sh VM lifecycle", () => {
   it("deletes the VM and exits 124 when the job outlives its timeout", async () => {
     const harness = newHarness();
     const result = await harness.run(PROVISION_MAC, {
-      env: { RC_FAKE_RUNNER_SLEEP: "60", RC_JOB_TIMEOUT_S: "2" },
+      // 20 is 10x the timeout, so the job unambiguously outlives it, and still
+      // leaves 40s of margin under the harness ceiling. The previous value of 60
+      // sat exactly on that ceiling, so a late SIGTERM lost a race with the
+      // harness's SIGKILL and the assertion reported `-1 !== 124`.
+      env: { RC_FAKE_RUNNER_SLEEP: "20", RC_JOB_TIMEOUT_S: "2" },
     });
 
     assert.equal(result.code, 124);
