@@ -26,6 +26,15 @@ export const FAKE_JIT = Buffer.from(
 export const FAKE_HOST_KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFa";
 
+/**
+ * Wall-clock ceiling for one `run()`. It is a backstop against a wedged script,
+ * not a deadline any test should approach: a fixture whose own duration reaches
+ * this number races the SIGKILL, and the race surfaces as `-1 !== <expected>`,
+ * which reads like a product bug rather than a harness limit. Keep fixture
+ * sleeps well under it.
+ */
+const RUN_CEILING_MS = 60_000;
+
 export type RunResult = {
   code: number;
   signal: NodeJS.Signals | null;
@@ -289,9 +298,25 @@ exit "\${RC_FAKE_DOCKER_EXIT:-0}"
 
   async run(script: string, options: { env?: Record<string, string>; stdin?: string } = {}) {
     const running = this.start(script, options);
-    const timer = setTimeout(() => running.kill("SIGKILL"), 60_000);
+    let ceilingFired = false;
+    const timer = setTimeout(() => {
+      ceilingFired = true;
+      running.kill("SIGKILL");
+    }, RUN_CEILING_MS);
     try {
-      return await running.done;
+      const result = await running.done;
+      if (ceilingFired) {
+        // Without this, the caller sees `code: -1` and asserts against it, so a
+        // hung or over-long fixture is reported as the wrong exit code. Name the
+        // real cause and hand over the output, because a ceiling kill leaves no
+        // other trace.
+        throw new Error(
+          `harness ceiling: ${script} did not exit within ${RUN_CEILING_MS}ms and was SIGKILLed. ` +
+            `This is the harness's limit, not the script's exit code — check that the fixture's ` +
+            `own duration is well under it.\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`,
+        );
+      }
+      return result;
     } finally {
       clearTimeout(timer);
     }
