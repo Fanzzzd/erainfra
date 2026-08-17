@@ -34,6 +34,7 @@ import {
 } from "../convex/agentRelease.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
+import { renderPowerShellInstallScript } from "../convex/installScriptPowerShell.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
@@ -113,6 +114,36 @@ done
 exit 0
 `;
 
+/**
+ * An unprivileged box. Every privileged step the Node installer attempts is refused, which keeps a
+ * test from writing /etc/portless or a systemd unit on the machine running the suite, and exercises
+ * the fallback the installer takes on a box where the operator is not root.
+ */
+const SUDO_STUB = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$RC_TEST_SUDO_LOG"
+exit 1
+`;
+
+/**
+ * A box where the operator *can* become root, with every privileged path redirected under
+ * RC_TEST_SUDO_ROOT. Reaching the systemd branch is the only way to test it, and the redirection is
+ * what keeps "reach it" from meaning "write /etc/systemd on the machine running the suite".
+ */
+const ROOT_SUDO_STUB = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$RC_TEST_SUDO_LOG"
+count=$#
+while [ "$count" -gt 0 ]; do
+  arg=$1
+  shift
+  case "$arg" in
+    /etc/*|/run/systemd*) set -- "$@" "$RC_TEST_SUDO_ROOT$arg" ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+  count=$((count - 1))
+done
+exec "$@"
+`;
+
 type Sandbox = {
   root: string;
   home: string;
@@ -122,6 +153,7 @@ type Sandbox = {
   curlLog: string;
   npmLog: string;
   fixtures: string;
+  sudoRoot: string;
 };
 
 function createSandbox(release: AgentRelease): Sandbox {
@@ -143,6 +175,7 @@ function createSandbox(release: AgentRelease): Sandbox {
   writeExecutable(path.join(binDir, "curl"), CURL_STUB);
   writeExecutable(path.join(binDir, "launchctl"), SERVICE_STUB);
   writeExecutable(path.join(binDir, "systemctl"), SERVICE_STUB);
+  writeExecutable(path.join(binDir, "sudo"), SUDO_STUB);
 
   const scriptPath = path.join(root, "install.sh");
   writeFileSync(scriptPath, renderInstallScript(SITE_URL, release));
@@ -159,7 +192,18 @@ function createSandbox(release: AgentRelease): Sandbox {
     curlLog: path.join(root, "curl.log"),
     npmLog: path.join(root, "npm.log"),
     fixtures,
+    sudoRoot: path.join(root, "root"),
   };
+}
+
+/**
+ * Let this sandbox's installer succeed at being root. /etc/systemd/system is created because every
+ * box that has systemd already has it — the installer creates /etc/portless and nothing else.
+ */
+function grantRoot(sandbox: Sandbox) {
+  writeExecutable(path.join(sandbox.root, "bin", "sudo"), ROOT_SUDO_STUB);
+  mkdirSync(path.join(sandbox.sudoRoot, "run", "systemd", "system"), { recursive: true });
+  mkdirSync(path.join(sandbox.sudoRoot, "etc", "systemd", "system"), { recursive: true });
 }
 
 /** Re-render the script, e.g. once a published archive's checksum is known. */
@@ -260,6 +304,9 @@ function spawnOptions(sandbox: Sandbox, options: { connect?: boolean; npmFails?:
       RC_TEST_SERVICE_LOG: path.join(sandbox.root, "service.log"),
       RC_TEST_NPM_FAIL: options.npmFails === true ? "1" : "0",
       RC_TEST_CONNECT: options.connect === false ? "0" : "1",
+      RC_TEST_SUDO_LOG: path.join(sandbox.root, "sudo.log"),
+      RC_TEST_SUDO_ROOT: sandbox.sudoRoot,
+      RC_TEST_AGENT_LOG: path.join(sandbox.root, "infra-agent.log"),
     },
   };
 }
@@ -579,6 +626,358 @@ describe("rendered script", () => {
       expect(INFRA_AGENT_TARGETS).toContain(target);
       expect(AGENT_RELEASE.infraAgent[target]).toMatch(/^[0-9a-f]{64}$/);
     }
+  });
+});
+
+function nodeArgs(extra: readonly string[] = []) {
+  return [
+    "--role",
+    "node",
+    "--token",
+    "plt_node_token",
+    "--hub",
+    "wss://hub.example.com/agent",
+    "--name",
+    "node-01",
+    // The runtime install shells out to the distro package manager, which a test has no business
+    // doing; the flag it is skipped with is the same one an operator uses.
+    "--no-docker",
+    ...extra,
+  ];
+}
+
+/** Where a Node's agent lands — the prefix and binary name a running Node already holds. */
+function installedAgent(sandbox: Sandbox) {
+  return path.join(sandbox.home, ".portless", "bin", "portless-agent");
+}
+
+// The Node half of ADR 0006. A Node's binary used to arrive with no integrity check of any kind, so
+// the tests that matter most here are the ones where verification says no: a path whose failure
+// branch is untested is a path nobody has seen work.
+describe("--role node", () => {
+  const HOST_TARGET = `${process.platform === "darwin" ? "darwin" : "linux"}-${
+    process.arch === "arm64" ? "arm64" : "x86_64"
+  }`;
+
+  /** A stand-in for the Infra Agent: runnable, so the installer can actually start it. */
+  const FAKE_AGENT = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$RC_TEST_AGENT_LOG"
+sleep 5
+`;
+
+  function publishInfraAgent(sandbox: Sandbox, release: AgentRelease, body = FAKE_AGENT) {
+    const asset = `infra-agent-${HOST_TARGET}`;
+    const binaryPath = path.join(sandbox.fixtures, asset);
+    writeFileSync(binaryPath, body);
+    const sha256 = createHash("sha256").update(readFileSync(binaryPath)).digest("hex");
+    route(
+      sandbox,
+      `https://github.com/${release.repo}/releases/download/v${release.version}/${asset}`,
+      binaryPath,
+    );
+    return { sha256, binaryPath, asset };
+  }
+
+  function pinned(release: AgentRelease, digest: string): AgentRelease {
+    return { ...release, infraAgent: { [HOST_TARGET]: digest } };
+  }
+
+  it("installs the binary this deployment pins, and says what it verified it against", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, published.sha256));
+
+    const result = run(sandbox, nodeArgs());
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(
+      new RegExp(
+        `Verified infra-agent-${HOST_TARGET} against the checksum pinned by this EraInfra deployment`,
+      ),
+    );
+
+    expect(existsSync(installedAgent(sandbox))).toBeTruthy();
+    expect(readFileSync(installedAgent(sandbox), "utf8")).toBe(FAKE_AGENT);
+    expect(statSync(installedAgent(sandbox)).mode & 0o111).not.toBe(0);
+    expect(readLog(sandbox.curlLog)).toMatch(
+      new RegExp(`releases/download/v1\\.4\\.2/infra-agent-${HOST_TARGET}$`, "m"),
+    );
+    // It runs, with the name it was given, under the frozen binary name — and the Hub credential
+    // is not on that command line. /proc/<pid>/cmdline is world-readable, so a token in argv is a
+    // token every local user can read for as long as the agent runs; the agent takes it from
+    // PORTLESS_TOKEN instead, the same channel the systemd unit uses.
+    const argv = readLog(path.join(sandbox.root, "infra-agent.log"));
+    expect(argv).toMatch(/^connect --name node-01$/m);
+    expect(argv).not.toMatch(/plt_node_token/);
+  });
+
+  it("refuses bytes that do not match the pin, and installs nothing", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, "0".repeat(64)));
+
+    const result = run(sandbox, nodeArgs());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/);
+    expect(result.stderr).toMatch(/Nothing was installed/);
+    expect(existsSync(installedAgent(sandbox))).toBe(false);
+    expect(existsSync(path.join(sandbox.home, ".portless", "run", "agent.pid"))).toBe(false);
+  });
+
+  it("leaves an already-installed agent running when the new bytes do not match", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishInfraAgent(sandbox, CURRENT, "#!/usr/bin/env bash\nsleep 5\n");
+    repin(sandbox, pinned(CURRENT, "f".repeat(64)));
+    mkdirSync(path.dirname(installedAgent(sandbox)), { recursive: true });
+    writeExecutable(
+      installedAgent(sandbox),
+      "#!/usr/bin/env bash\n# the agent already installed\n",
+    );
+
+    expect(run(sandbox, nodeArgs()).status).not.toBe(0);
+    expect(readFileSync(installedAgent(sandbox), "utf8")).toMatch(/the agent already installed/);
+  });
+
+  it("verifies a --source install exactly as it verifies a release install", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, published.sha256));
+
+    // An air-gapped box: the bytes come off local disk, the digest still decides.
+    const result = run(sandbox, nodeArgs(["--source", `file://${published.binaryPath}`]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(installedAgent(sandbox))).toBeTruthy();
+    // Nothing was fetched over the network for the agent itself.
+    expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent/);
+  });
+
+  it("refuses a --source whose bytes do not match, exactly as it refuses a release", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, published.sha256));
+    // One byte of an otherwise good binary, which is the whole point of pinning a digest.
+    const corrupted = path.join(sandbox.fixtures, "corrupted-infra-agent");
+    writeFileSync(corrupted, `${FAKE_AGENT}#\n`);
+
+    const result = run(sandbox, nodeArgs(["--source", `file://${corrupted}`]));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/);
+    expect(existsSync(installedAgent(sandbox))).toBe(false);
+  });
+
+  it("refuses a target this deployment pins no digest for", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishInfraAgent(sandbox, CURRENT);
+    // The pin covers a target that is not this host's.
+    repin(sandbox, { ...CURRENT, infraAgent: { "solaris-sparc": "a".repeat(64) } });
+
+    const result = run(sandbox, nodeArgs());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(new RegExp(`pins no Infra Agent build for ${HOST_TARGET}`));
+    expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent/);
+    expect(existsSync(installedAgent(sandbox))).toBe(false);
+  });
+
+  it("refuses without the Hub the Node reports to", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, published.sha256));
+
+    const result = run(sandbox, ["--role", "node", "--token", "plt_node_token", "--no-docker"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Hub URL is required/);
+    expect(existsSync(installedAgent(sandbox))).toBe(false);
+  });
+
+  it("refuses a role it does not serve", () => {
+    const sandbox = createSandbox(CURRENT);
+    const result = run(sandbox, ["--role", "gateway", "--token", "plt_node_token"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Unknown --role: gateway/);
+  });
+
+  it("restarts the unit on a re-install, so what runs is what was just verified", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, published.sha256));
+    grantRoot(sandbox);
+
+    const first = run(sandbox, nodeArgs(), { connect: false });
+    expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
+    expect(first.stdout).toMatch(/systemd service 'portless-agent' is active/);
+
+    const second = run(sandbox, nodeArgs(), { connect: false });
+    expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+
+    // "enable --now" starts a stopped unit and does nothing to a running one, so without an
+    // explicit restart the second install would leave the old process on the old bytes while
+    // is-active reported success. Both installs restart; the restart follows the enable.
+    const service = readLog(path.join(sandbox.root, "service.log")).trimEnd().split("\n");
+    expect(service.filter((line) => line === "restart portless-agent")).toHaveLength(2);
+    expect(service.indexOf("restart portless-agent")).toBeGreaterThan(
+      service.indexOf("enable --now portless-agent"),
+    );
+  });
+
+  it("writes the Hub credential to a file no other local user can read", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, published.sha256));
+    grantRoot(sandbox);
+
+    expect(run(sandbox, nodeArgs(), { connect: false }).status).toBe(0);
+
+    // Created 0600 and then written, not created and chmodded afterwards: the second order leaves a
+    // window in which any local user can read the Hub credential. The order is what is asserted,
+    // because the end state is identical either way.
+    const sudo = readLog(path.join(sandbox.root, "sudo.log")).trimEnd().split("\n");
+    const restricted = sudo.findIndex((line) => line.includes("install -m 600"));
+    const written = sudo.findIndex((line) => line === "tee /etc/portless/agent.env");
+    expect(restricted, sudo.join(" / ")).toBeGreaterThanOrEqual(0);
+    expect(restricted).toBeLessThan(written);
+
+    const envFile = path.join(sandbox.sudoRoot, "etc", "portless", "agent.env");
+    expect(statSync(envFile).mode & 0o077).toBe(0);
+    expect(readFileSync(envFile, "utf8")).toMatch(/^PORTLESS_TOKEN=plt_node_token$/m);
+    const unit = path.join(sandbox.sudoRoot, "etc", "systemd", "system", "portless-agent.service");
+    expect(readFileSync(unit, "utf8")).toMatch(/^EnvironmentFile=\/etc\/portless\/agent\.env$/m);
+    expect(readFileSync(unit, "utf8")).not.toMatch(/plt_node_token/);
+  });
+});
+
+// The dispatch runs in front of both roles, so a bug in it is a bug on every install.
+describe("--role parsing", () => {
+  it("refuses a --role with no value, wherever the missing value falls", () => {
+    for (const args of [["--role"], ["--token", "rcreg_test", "--role"]]) {
+      const sandbox = createSandbox(CURRENT);
+      const result = run(sandbox, args);
+
+      // The second line is the one that was silently wrong rather than merely ugly: the dispatch
+      // rotates every non---role argument to the back of "$@", so $# no longer counts what is left
+      // to parse. Testing $# there took the rotated --token as the role name and handed the Worker
+      // parser a bare rcreg_test — it rewrote the argument list instead of refusing.
+      expect(result.status, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toMatch(/--role requires a value: worker or node/);
+      expect(readLog(sandbox.npmLog), "nothing may be installed").toBe("");
+    }
+  });
+
+  it("finds a --role that comes after the flags it rotates", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishRelease(sandbox, CURRENT, "new agent");
+    repin(sandbox, { ...CURRENT, sha256: published.sha256 });
+    publishRegistration(sandbox);
+
+    const result = run(sandbox, [
+      "--token",
+      "rcreg_test",
+      "--name",
+      "test-machine",
+      "--role",
+      "worker",
+    ]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    // Rotation preserved the rest of the line, in a form the Worker parser accepts.
+    expect(metaField(sandbox, "MACHINE_NAME")).toBe("test-machine");
+  });
+});
+
+describe("--role worker", () => {
+  // The regression that would matter most: the Worker path is what every existing machine installs
+  // and updates with, and --role is new syntax in front of it.
+  it("installs exactly as it does with no role given", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishRelease(sandbox, CURRENT, "new agent");
+    repin(sandbox, { ...CURRENT, sha256: published.sha256 });
+    publishRegistration(sandbox);
+
+    const result = run(sandbox, [
+      "--role",
+      "worker",
+      "--token",
+      "rcreg_test",
+      "--name",
+      "test-machine",
+    ]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(agentMarker(sandbox)).toBe("// new agent");
+    expect(metaField(sandbox, "AGENT_VERSION")).toBe("1.4.2");
+    expect(metaField(sandbox, "MACHINE_NAME")).toBe("test-machine");
+  });
+
+  it("is what the script does when no role is given at all", () => {
+    const script = renderInstallScript(SITE_URL, AGENT_RELEASE);
+    expect(script).toMatch(/^INSTALL_ROLE='worker'$/m);
+  });
+
+  // Everything from `SITE_URL=` down is the Worker installer as it was before /install served two
+  // roles — 25 689 bytes, byte-identical to what main renders. The size is asserted because the
+  // Node half above it would otherwise hide an edit to the Worker half in a large diff; a
+  // deliberate change to the Worker path updates this number and says so.
+  it("keeps the Worker installer contiguous, below the dispatch and unentangled with it", () => {
+    const script = renderInstallScript(SITE_URL, AGENT_RELEASE);
+    const workerBody = script.slice(script.indexOf("SITE_URL='"));
+    expect(workerBody).toMatch(/^SITE_URL='https:\/\/example\.convex\.site'\nAGENT_REPO=/);
+    expect(workerBody).not.toMatch(/INSTALL_ROLE|node_install|node_pinned_digest|--role/);
+    expect(Buffer.byteLength(workerBody)).toBe(25_689);
+  });
+});
+
+// Windows cannot run the bash installer, and a Node may well be a Windows box: deploy/infra/agent.ps1
+// has been onboarding them with no integrity check at all. These assert the rendered script rather
+// than run it — there is no PowerShell on the machine this suite runs on — so the end-to-end Windows
+// proof is a separate, manual one.
+describe("the PowerShell installer", () => {
+  const WINDOWS_DIGEST = "b".repeat(64);
+  const WINDOWS_PINNED: AgentRelease = {
+    ...CURRENT,
+    infraAgent: { "windows-x86_64": WINDOWS_DIGEST, "linux-x86_64": "c".repeat(64) },
+  };
+
+  it("carries the digest for the Windows target, and no other target's", () => {
+    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
+    expect(script).toMatch(new RegExp(`"windows-x86_64" = "${WINDOWS_DIGEST}"`));
+    expect(script).not.toMatch(/linux-x86_64/);
+    expect(script).not.toMatch(/__[A-Z_]+__/);
+  });
+
+  it("compares what it downloaded against the pin before anything is installed", () => {
+    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
+    const verify = script.indexOf("Get-FileHash");
+    const install = script.indexOf("Move-Item");
+    expect(verify).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(verify);
+    expect(script).toMatch(/if \(\$actual -ne \$expected\) \{/);
+    expect(script).toMatch(/Remove-Item -LiteralPath \$staged/);
+    expect(script).toMatch(/Nothing was installed/);
+    // Fail() exits non-zero; nothing in this script continues past a mismatch.
+    expect(script).toMatch(/function Fail\(\$message\) \{\n[^}]*exit 1/);
+  });
+
+  it("verifies a -Source install with the same digest as a release install", () => {
+    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
+    // One fetch, one hash, one comparison: -Source only decides which branch of the fetch runs.
+    expect(script.match(/Get-FileHash/g)).toHaveLength(1);
+    expect(script.match(/\$actual -ne \$expected/g)).toHaveLength(1);
+    expect(script).toMatch(/if \(\$Source\) \{/);
+  });
+
+  it("refuses when this deployment pins nothing for Windows", () => {
+    const script = renderPowerShellInstallScript(CURRENT);
+    expect(script).toMatch(/\$pinned = @\{\n+\}/);
+    expect(script).toMatch(/pins no Infra Agent build for \$target/);
+  });
+
+  it("keeps the identifiers a running Node already holds", () => {
+    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
+    expect(script).toMatch(/Join-Path \$HOME "\.portless"/);
+    expect(script).toMatch(/"portless-agent\.exe"/);
+    expect(script).toMatch(/-TaskName "PortlessAgent"/);
+  });
+
+  it("serves only the Node role", () => {
+    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
+    expect(script).toMatch(/\[string\]\$Role = "node"/);
+    expect(script).toMatch(/if \(\$Role -ne "node"\) \{/);
   });
 });
 

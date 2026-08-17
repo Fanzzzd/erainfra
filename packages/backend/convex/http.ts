@@ -22,6 +22,7 @@ import {
   type SetupStateStatus,
 } from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
+import { renderPowerShellInstallScript } from "./installScriptPowerShell";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
@@ -274,6 +275,22 @@ http.route({
     return new Response(renderInstallScript(site.siteUrl, AGENT_RELEASE), {
       status: 200,
       headers: { "Content-Type": "text/x-shellscript; charset=utf-8" },
+    });
+  }),
+});
+
+// The same installer for the machines that cannot run bash. A Node may be a Windows box, and the
+// role is still chosen by a parameter on the script rather than on the URL, so this handler takes
+// nothing from the request either. It carries no SITE_URL: a Node reports to the customer's Hub,
+// which the operator passes with -Hub, and the only thing this deployment contributes is the
+// pinned digest and the verification around it.
+http.route({
+  path: "/install.ps1",
+  method: "GET",
+  handler: httpAction(async () => {
+    return new Response(renderPowerShellInstallScript(AGENT_RELEASE), {
+      status: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }),
 });

@@ -3,6 +3,321 @@ import type { AgentRelease } from "./agentRelease";
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail
 
+# --role picks which machine this is, in CONTEXT.md's terms: a Worker executes CI jobs and runs the
+# Action Runner Agent; a Node runs deployed Apps and runs the Infra Agent. It is a flag on the
+# script rather than a query parameter on the URL because the /install handler takes no request
+# argument — one body, rendered from this deployment's own configuration, cacheable, and impossible
+# to steer by crafting a request. Everything below the dispatch is the Worker path, unchanged.
+INSTALL_ROLE='worker'
+ROLE_REMAINING=$#
+while [ "$ROLE_REMAINING" -gt 0 ]; do
+  ROLE_ARG=$1
+  shift
+  case "$ROLE_ARG" in
+    --role)
+      # ROLE_REMAINING, not $#: the loop rotates every other argument to the back of "$@", so $#
+      # counts arguments this loop has already parsed. "--token X --role" would pass a $# test, take
+      # the rotated --token as the role, and hand the Worker parser a bare X — silently rewriting the
+      # argument list rather than refusing.
+      if [ "$ROLE_REMAINING" -lt 2 ]; then
+        printf '❌ %s\n' '--role requires a value: worker or node' >&2
+        exit 1
+      fi
+      INSTALL_ROLE=$1
+      shift
+      ROLE_REMAINING=$((ROLE_REMAINING - 2))
+      ;;
+    *)
+      # Rotate everything else to the back, so each role's own parser sees exactly its own flags.
+      set -- "$@" "$ROLE_ARG"
+      ROLE_REMAINING=$((ROLE_REMAINING - 1))
+      ;;
+  esac
+done
+
+node_log() { printf '✅ %s\n' "$1"; }
+node_warn() { printf '⚠️  %s\n' "$1" >&2; }
+node_fail() {
+  printf '❌ %s\n' "$1" >&2
+  exit 1
+}
+
+node_usage() {
+  printf '%s\n' 'Usage: bash -s -- --role node --token <hub token> --hub wss://<hub>/agent [--name NAME]'
+  printf '%s\n' '                  [--source <url|file:///path>] [--no-docker]'
+}
+
+# Every Infra Agent digest this deployment pins, one line per published target. A target that is
+# not listed is a target this installer refuses: there would be nothing to check the bytes against,
+# and an unchecked binary running as root on a customer's Node is the thing ADR 0006 exists to end.
+node_pinned_digest() {
+  case "$1" in
+__INFRA_AGENT_DIGESTS__
+    *) printf '' ;;
+  esac
+}
+
+node_sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d ' ' -f 1
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d ' ' -f 1
+  else
+    node_fail 'A SHA-256 utility (shasum or sha256sum) is required'
+  fi
+}
+
+# Bring up a container runtime if there is not one, exactly as deploy/infra/agent.sh does: distro
+# packages only, and a failure warns rather than aborts so the box still enrolls. Apps cannot deploy
+# until a runtime is on PATH, but a Node with no runtime is still a Node the Hub can see.
+node_ensure_runtime() {
+  if [ "$NODE_WANT_DOCKER" -ne 1 ]; then
+    node_log 'Skipping the container runtime install (--no-docker).'
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    node_log "Container runtime present: $(docker --version 2>/dev/null || printf 'docker')"
+    return 0
+  fi
+  if [ "$NODE_OS_NAME" = 'darwin' ]; then
+    node_warn 'No container runtime — install Docker Desktop by hand; this Node still enrolls.'
+    return 0
+  fi
+  node_log 'Installing a container runtime from the distro repositories…'
+  if command -v apt-get >/dev/null 2>&1; then
+    $NODE_SUDO sh -c 'apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io' || node_warn 'Runtime install failed (apt).'
+  elif command -v dnf >/dev/null 2>&1; then
+    $NODE_SUDO dnf install -y docker || node_warn 'Runtime install failed (dnf).'
+  elif command -v yum >/dev/null 2>&1; then
+    $NODE_SUDO yum install -y docker || node_warn 'Runtime install failed (yum).'
+  elif command -v apk >/dev/null 2>&1; then
+    $NODE_SUDO apk add --no-cache docker || node_warn 'Runtime install failed (apk).'
+  elif command -v zypper >/dev/null 2>&1; then
+    $NODE_SUDO zypper -n install docker || node_warn 'Runtime install failed (zypper).'
+  else
+    node_warn 'No supported package manager (apt/dnf/yum/apk/zypper) — install docker by hand.'
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    $NODE_SUDO systemctl enable --now docker >/dev/null 2>&1 || true
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    node_log "Container runtime installed: $(docker --version 2>/dev/null || printf 'docker')"
+  else
+    node_warn 'Docker is still not on PATH — deploys will fail until it is.'
+  fi
+}
+
+# The bytes may come from anywhere. --source moves the payload's origin — a hub mirror, a file on a
+# USB stick — and never the script's: this script and the digest below it arrived from this
+# deployment over TLS, which is what makes an untrusted byte source safe to read from.
+node_fetch() {
+  case "$1" in
+    file://*)
+      cp "$(printf '%s' "$1" | sed 's|^file://||')" "$2" ||
+        node_fail "Could not read the Infra Agent from $1"
+      ;;
+    /*)
+      cp "$1" "$2" || node_fail "Could not read the Infra Agent from $1"
+      ;;
+    *)
+      curl -fsSL "$1" -o "$2" || node_fail "Could not download the Infra Agent from $1"
+      ;;
+  esac
+}
+
+# The unit, its name, the environment file and the download path are all identifiers a running Node
+# already holds. Renaming any of them disconnects live Nodes, so this installer writes exactly the
+# names deploy/infra/agent.sh writes; retiring them is its own staged migration.
+node_install_service() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  $NODE_SUDO test -d /run/systemd/system || return 1
+  $NODE_SUDO mkdir -p /etc/portless || return 1
+  # 0600 before the token is written, not after: creating it world-readable and chmodding afterwards
+  # leaves a window in which any local user can read the Hub credential.
+  $NODE_SUDO install -m 600 /dev/null /etc/portless/agent.env || return 1
+  printf 'PORTLESS_HUB=%s\nPORTLESS_TOKEN=%s\n' "$NODE_HUB" "$NODE_TOKEN" |
+    $NODE_SUDO tee /etc/portless/agent.env >/dev/null || return 1
+  printf '%s\n' \
+    '[Unit]' \
+    'Description=Portless deploy agent' \
+    'After=network-online.target docker.service' \
+    'Wants=network-online.target' \
+    '[Service]' \
+    'EnvironmentFile=/etc/portless/agent.env' \
+    "Environment=HOME=$HOME" \
+    "ExecStart=$NODE_BIN_DIR/portless-agent connect --name $NODE_MACHINE_NAME" \
+    'Restart=always' \
+    'RestartSec=3' \
+    '[Install]' \
+    'WantedBy=multi-user.target' |
+    $NODE_SUDO tee /etc/systemd/system/portless-agent.service >/dev/null || return 1
+  $NODE_SUDO systemctl daemon-reload
+  $NODE_SUDO systemctl enable --now portless-agent >/dev/null 2>&1 || return 1
+  # "enable --now" starts a stopped unit and does nothing to a running one, so on a re-install the
+  # old process keeps executing the bytes it was started with while is-active happily reports
+  # success. Restart explicitly: this installer's whole claim is that what runs was verified.
+  $NODE_SUDO systemctl restart portless-agent || return 1
+  sleep 1
+  $NODE_SUDO systemctl is-active --quiet portless-agent || {
+    $NODE_SUDO journalctl -u portless-agent -n 8 --no-pager >&2 || true
+    return 1
+  }
+  return 0
+}
+
+node_install() {
+  NODE_TOKEN=""
+  NODE_HUB=""
+  NODE_NAME=""
+  NODE_SOURCE=""
+  NODE_WANT_DOCKER=1
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --token)
+        [ "$#" -ge 2 ] || node_fail '--token requires a value'
+        NODE_TOKEN=$2
+        shift 2
+        ;;
+      --hub)
+        [ "$#" -ge 2 ] || node_fail '--hub requires a value'
+        NODE_HUB=$2
+        shift 2
+        ;;
+      --name)
+        [ "$#" -ge 2 ] || node_fail '--name requires a value'
+        NODE_NAME=$2
+        shift 2
+        ;;
+      --source)
+        [ "$#" -ge 2 ] || node_fail '--source requires a url or file:// path'
+        NODE_SOURCE=$2
+        shift 2
+        ;;
+      --no-docker)
+        NODE_WANT_DOCKER=0
+        shift
+        ;;
+      -h|--help)
+        node_usage
+        exit 0
+        ;;
+      *)
+        node_usage >&2
+        node_fail "Unknown option: $1"
+        ;;
+    esac
+  done
+
+  [ -n "$NODE_TOKEN" ] || { node_usage >&2; node_fail 'A Hub enrollment token is required'; }
+  [ -n "$NODE_HUB" ] || { node_usage >&2; node_fail 'The Hub URL is required, e.g. --hub wss://hub.example.com/agent'; }
+
+  case "$(uname -s)" in
+    Linux) NODE_OS_NAME='linux' ;;
+    Darwin) NODE_OS_NAME='darwin' ;;
+    *) node_fail 'On Windows, run the PowerShell installer this deployment serves at /install.ps1' ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) NODE_ARCH_NAME='x86_64' ;;
+    arm64|aarch64) NODE_ARCH_NAME='arm64' ;;
+    *) node_fail "Unsupported CPU architecture: $(uname -m)" ;;
+  esac
+  NODE_TARGET="$NODE_OS_NAME-$NODE_ARCH_NAME"
+  NODE_ASSET="infra-agent-$NODE_TARGET"
+
+  NODE_EXPECTED_SHA=$(node_pinned_digest "$NODE_TARGET")
+  [ -n "$NODE_EXPECTED_SHA" ] ||
+    node_fail "This EraInfra deployment pins no Infra Agent build for $NODE_TARGET, so there is nothing to verify the download against. Deploy a backend whose AGENT_RELEASE pins a release that publishes it."
+
+  if [ "$(id -u)" = '0' ]; then NODE_SUDO=''; else NODE_SUDO='sudo'; fi
+  # $PORTLESS_PREFIX and the paths under it are identifiers a running Node already holds (rule 4).
+  NODE_PREFIX=$(printenv PORTLESS_PREFIX || true)
+  if [ -z "$NODE_PREFIX" ]; then NODE_PREFIX="$HOME/.portless"; fi
+  NODE_BIN_DIR="$NODE_PREFIX/bin"
+  NODE_RUN_DIR="$NODE_PREFIX/run"
+  NODE_MACHINE_NAME=$NODE_NAME
+  if [ -z "$NODE_MACHINE_NAME" ]; then
+    NODE_MACHINE_NAME=$(hostname -s 2>/dev/null || hostname)
+  fi
+
+  NODE_TMP_DIR=$(mktemp -d)
+  trap 'rm -rf "$NODE_TMP_DIR"' EXIT
+
+  NODE_URL="https://github.com/$NODE_REPO/releases/download/v$NODE_VERSION/$NODE_ASSET"
+  NODE_ORIGIN="the release this deployment pins"
+  if [ -n "$NODE_SOURCE" ]; then
+    case "$NODE_SOURCE" in
+      */) NODE_URL="$NODE_SOURCE$NODE_ASSET" ;;
+      *) NODE_URL=$NODE_SOURCE ;;
+    esac
+    NODE_ORIGIN="$NODE_URL"
+  fi
+
+  node_log "Fetching the Infra Agent $NODE_VERSION for $NODE_TARGET from $NODE_ORIGIN."
+  NODE_DOWNLOAD="$NODE_TMP_DIR/$NODE_ASSET"
+  node_fetch "$NODE_URL" "$NODE_DOWNLOAD"
+
+  NODE_ACTUAL_SHA=$(node_sha256_file "$NODE_DOWNLOAD")
+  if [ "$NODE_ACTUAL_SHA" != "$NODE_EXPECTED_SHA" ]; then
+    rm -f "$NODE_DOWNLOAD"
+    node_fail "Infra Agent checksum verification failed: expected $NODE_EXPECTED_SHA but got $NODE_ACTUAL_SHA. Nothing was installed."
+  fi
+  node_log "Verified $NODE_ASSET against the checksum pinned by this EraInfra deployment."
+
+  # Only past the verification does anything on this machine change. A mismatch above leaves an
+  # already-installed agent running on the bytes it was installed with.
+  node_ensure_runtime
+  mkdir -p "$NODE_BIN_DIR"
+  chmod +x "$NODE_DOWNLOAD"
+  mv "$NODE_DOWNLOAD" "$NODE_BIN_DIR/portless-agent"
+  node_log "Installed $NODE_BIN_DIR/portless-agent."
+
+  if node_install_service 2>/dev/null; then
+    node_log "systemd service 'portless-agent' is active; it reconnects and survives reboot."
+    printf '   Stop and remove it with: systemctl disable --now portless-agent\n'
+    exit 0
+  fi
+
+  mkdir -p "$NODE_RUN_DIR"
+  NODE_PID_FILE="$NODE_RUN_DIR/agent.pid"
+  NODE_LOG_FILE="$NODE_RUN_DIR/agent.log"
+  if [ -f "$NODE_PID_FILE" ]; then
+    kill "$(cat "$NODE_PID_FILE")" 2>/dev/null || true
+  fi
+  : > "$NODE_LOG_FILE"
+  # The token goes in the environment, never in argv: /proc/<pid>/cmdline is world-readable on
+  # Linux, so a token passed as a flag is a Hub credential any local user can read for as long as
+  # the agent runs. The agent reads PORTLESS_TOKEN and PORTLESS_HUB as its flag defaults, which is
+  # the same channel the systemd unit uses through /etc/portless/agent.env.
+  PORTLESS_HUB="$NODE_HUB" PORTLESS_TOKEN="$NODE_TOKEN" nohup "$NODE_BIN_DIR/portless-agent" \
+    connect --name "$NODE_MACHINE_NAME" \
+    >>"$NODE_LOG_FILE" 2>&1 &
+  printf '%s\n' "$!" > "$NODE_PID_FILE"
+  sleep 1
+  kill -0 "$(cat "$NODE_PID_FILE")" 2>/dev/null || {
+    tail -n 5 "$NODE_LOG_FILE" >&2 || true
+    node_fail 'The Infra Agent exited on startup.'
+  }
+  node_log "Infra Agent connecting to $NODE_HUB (pid $(cat "$NODE_PID_FILE"), logs: $NODE_LOG_FILE)."
+  node_warn 'Not reboot-persistent — re-run as root on a systemd box for a service.'
+  exit 0
+}
+
+NODE_REPO='__AGENT_REPO__'
+NODE_VERSION='__AGENT_VERSION__'
+
+case "$INSTALL_ROLE" in
+  worker) ;;
+  node)
+    node_install "$@"
+    exit 0
+    ;;
+  *)
+    printf '❌ %s\n' "Unknown --role: $INSTALL_ROLE (expected worker or node)" >&2
+    exit 1
+    ;;
+esac
+
 SITE_URL='__ERAINFRA_SITE_URL__'
 AGENT_REPO='__AGENT_REPO__'
 PINNED_VERSION='__AGENT_VERSION__'
@@ -805,9 +1120,32 @@ printf '⏳ Compatible Profiles are prewarming in the background; cold capacity 
 printf '   Follow live progress with "rc logs -f" or in the dashboard readiness detail.\n'
 `;
 
+/**
+ * The `case` arms of `node_pinned_digest`, one per pinned target.
+ *
+ * Both halves are interpolated into single-quoted shell, so both are checked against the shapes the
+ * release workflow enforces rather than trusted: a pin carrying a quote would be command injection
+ * in a script an operator pipes to `sudo bash`. An empty map renders no arms, which is what makes
+ * an unpinned deployment refuse `--role node` instead of installing something unverifiable.
+ */
+function renderPinnedDigests(infraAgent: AgentRelease["infraAgent"]) {
+  return Object.entries(infraAgent)
+    .map(([target, digest]) => {
+      if (!/^[a-z0-9]+-[a-z0-9_]+$/.test(target)) {
+        throw new Error(`Infra Agent pin has an unusable target name: ${target}`);
+      }
+      if (!/^[0-9a-f]{64}$/.test(digest)) {
+        throw new Error(`Infra Agent pin for ${target} is not a lowercase SHA-256 digest`);
+      }
+      return `    ${target}) printf '%s' '${digest}' ;;`;
+    })
+    .join("\n");
+}
+
 export function renderInstallScript(siteUrl: string, release: AgentRelease) {
   return INSTALL_SCRIPT.replaceAll("__ERAINFRA_SITE_URL__", siteUrl.replace(/\/+$/, ""))
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
-    .replaceAll("__AGENT_SHA256__", release.sha256);
+    .replaceAll("__AGENT_SHA256__", release.sha256)
+    .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent));
 }
