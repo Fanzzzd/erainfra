@@ -26,7 +26,12 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { AGENT_RELEASE, type AgentRelease } from "../convex/agentRelease.ts";
+import {
+  AGENT_RELEASE,
+  INFRA_AGENT_TARGETS,
+  infraAgentAssetName,
+  type AgentRelease,
+} from "../convex/agentRelease.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
 
@@ -275,8 +280,8 @@ function metaField(sandbox: Sandbox, key: string) {
     ?.slice(key.length + 1);
 }
 
-const CURRENT: AgentRelease = { repo: TEST_REPO, version: "1.4.2", sha256: "" };
-const OLDER: AgentRelease = { repo: TEST_REPO, version: "1.3.0", sha256: "" };
+const CURRENT: AgentRelease = { repo: TEST_REPO, version: "1.4.2", sha256: "", infraAgent: {} };
+const OLDER: AgentRelease = { repo: TEST_REPO, version: "1.3.0", sha256: "", infraAgent: {} };
 
 describe("install", () => {
   it("installs the immutable release asset this deployment pins", () => {
@@ -559,6 +564,33 @@ describe("rendered script", () => {
       "sha256 must be empty or a 64-character lowercase digest",
     ).toBeTruthy();
     expect(script).toMatch(new RegExp(`PINNED_VERSION='${AGENT_RELEASE.version}'`));
+  });
+
+  // A partially pinned Infra Agent is the dangerous shape: four verified targets and one that
+  // installs whatever it downloads. Either every target this deployment could resolve is pinned,
+  // or none is and the Node path refuses.
+  it("pins every Infra Agent target, or none of them", () => {
+    const pinned = Object.keys(AGENT_RELEASE.infraAgent);
+    expect(
+      pinned.length === 0 || pinned.length === INFRA_AGENT_TARGETS.length,
+      `infraAgent covers ${pinned.length} of ${INFRA_AGENT_TARGETS.length} targets`,
+    ).toBeTruthy();
+    for (const target of pinned) {
+      expect(INFRA_AGENT_TARGETS).toContain(target);
+      expect(AGENT_RELEASE.infraAgent[target]).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
+describe("Infra Agent asset names", () => {
+  it("names the published asset for every target, with .exe only on Windows", () => {
+    expect(INFRA_AGENT_TARGETS.map((target) => infraAgentAssetName(target))).toEqual([
+      "infra-agent-linux-x86_64",
+      "infra-agent-linux-arm64",
+      "infra-agent-darwin-x86_64",
+      "infra-agent-darwin-arm64",
+      "infra-agent-windows-x86_64.exe",
+    ]);
   });
 });
 
