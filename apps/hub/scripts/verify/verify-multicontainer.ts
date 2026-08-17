@@ -100,7 +100,15 @@ try {
     ],
     confirm: true,
   });
-  if (!r.ok) throw new Error(`deployApp failed: ${r.error}\n${r.output}`);
+  // `error` and `output` are per-node, on results[], not on the reply — the reply carries only the
+  // audit fields and the roll-up `ok`. Report which node failed and what it said.
+  if (!r.ok)
+    throw new Error(
+      `deployApp failed: ${r.results
+        .filter((x) => !x.ok)
+        .map((x) => `${x.node}: ${x.error ?? x.output ?? "no detail"}`)
+        .join("; ")}`,
+    );
   console.log(`✅ deployApp ok — both services up on network ${APP}-net`);
 
   // 1) ingress: reach the web service over the data plane.

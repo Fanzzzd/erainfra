@@ -16,6 +16,7 @@ import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import { dataGateway } from "../../src/runtime/dataplane.ts";
 import type { Principal } from "../../src/auth.ts";
+import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8796,
   APP = "web-app",
@@ -102,15 +103,15 @@ try {
     headers: { authorization: "Bearer owner-dev-token", "content-type": "application/gzip" },
     payload: execSync(`cat ${tgz}`),
   });
-  const r = await caller.upload.deploy({
+  const started = await caller.upload.deploy({
     buildId: up.json().buildId,
-    name: APP,
+    app: APP,
     port: APP_PORT,
     buildNode: "builder",
-    deployNode: "builder",
+    node: "builder",
     confirm: true,
   });
-  if (!r.ok) throw new Error(`${r.stage} failed: ${r.error}`);
+  await deployed(caller, started.deployId);
   console.log("✅ deployed; route recorded app→node");
 
   // The real test: hit the hub with Host <app>.apps.local — no port to the node, it's NAT'd.

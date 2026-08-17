@@ -16,7 +16,13 @@ import (
 // public IP: the box that HAS a service `Share`s it (dumbpipe listen-tcp → a crypto ticket); the box
 // that WANTS it `Connect`s that ticket (dumbpipe connect-tcp → a local port). Data flows P2P between
 // the two nodes (hole-punched, or via the iroh relay) — NOT through the hub. The hub only brokers the
-// ticket. Mirrors the hub-side MeshManager in apps/api/src/runtime/mesh.ts, in Go.
+// ticket.
+//
+// This used to say it mirrored a hub-side MeshManager. It does not, and has not for some time: the
+// hub-side one was removed when the mesh moved off the Hub entirely. The Hub keeps the LinkStore and
+// the healer and sends meshShare/meshConnect/meshDrop (agents.linkService); this is the only thing
+// that runs a sidecar. The stale line was read once as evidence that this file was dead code —
+// see issue #62 — so it is corrected rather than deleted.
 type MeshManager struct {
 	mu    sync.Mutex
 	links map[string]*meshLink

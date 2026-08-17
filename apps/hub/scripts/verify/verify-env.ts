@@ -12,6 +12,7 @@ import { appRouter } from "../../src/router.ts";
 import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import type { Principal } from "../../src/auth.ts";
+import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8795,
   APP = "env-app",
@@ -76,15 +77,15 @@ try {
     headers: { authorization: "Bearer owner-dev-token", "content-type": "application/gzip" },
     payload: execSync(`cat ${tgz}`),
   });
-  const r = await caller.upload.deploy({
+  const started = await caller.upload.deploy({
     buildId: up.json().buildId,
-    name: APP,
+    app: APP,
     port: APP_PORT,
     buildNode: "builder",
-    deployNode: "builder",
+    node: "builder",
     confirm: true,
   });
-  if (!r.ok) throw new Error(`${r.stage} failed: ${r.error}`);
+  await deployed(caller, started.deployId);
 
   let body = "";
   for (let i = 0; i < 30; i++) {
