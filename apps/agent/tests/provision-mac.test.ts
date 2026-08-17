@@ -242,7 +242,7 @@ describe("provision-mac.sh secret handling", () => {
 
     assert.ok(runScript);
     const removal = runScript.indexOf('rm -f "$jit_file"');
-    const exec = runScript.indexOf("exec ./run.sh");
+    const exec = runScript.indexOf("exec ./bin/Runner.Listener run");
     assert.ok(removal > -1 && exec > -1 && removal < exec);
   });
 

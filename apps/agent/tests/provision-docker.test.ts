@@ -38,7 +38,10 @@ describe("provision-docker.sh", () => {
     assert.match(argv, /--label\trunner-center\.profile=rc-linux-js/);
     assert.match(
       argv,
-      new RegExp(`\\t${IMAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\t\\./run\\.sh$`, "m"),
+      new RegExp(
+        `\\t${IMAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\t\\./bin/Runner\\.Listener\\trun$`,
+        "m",
+      ),
     );
     assert.doesNotMatch(argv, new RegExp(FAKE_JIT));
     assert.match(harness.stdinCaptures(), new RegExp(`ACTIONS_RUNNER_INPUT_JITCONFIG=${FAKE_JIT}`));

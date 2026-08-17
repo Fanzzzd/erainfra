@@ -79,11 +79,16 @@ trap 'exit 143' TERM
 
 # `--env NAME` without `=value` forwards the value from this process's
 # environment, so it never appears in the docker client's argv.
+#
+# Not ./run.sh: it and run-helper.sh exist to drive a long-lived service, so
+# they map "listener exited with a terminated error" onto exit 0 -- stop, do
+# not retry. For a one-shot ephemeral runner that turns every startup failure
+# into a reported success. Invoke the listener directly and keep its own code.
 docker run --rm --name "$RUNNER_NAME" \
   --env ACTIONS_RUNNER_INPUT_JITCONFIG \
   --env ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1 \
   "$IMAGE" \
-  ./run.sh &
+  ./bin/Runner.Listener run &
 DOCKER_PID=$!
 
 if [ "$JOB_TIMEOUT_S" -gt 0 ]; then

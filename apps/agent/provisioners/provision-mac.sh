@@ -571,8 +571,8 @@ mkdir -p "\$runner_dir"
 tar -xzf "\$tarball" -C "\$runner_dir"
 rm -f "\$tarball"
 
-if [ ! -x "\$runner_dir/run.sh" ]; then
-  echo "actions/runner $RUNNER_VERSION did not unpack a run.sh" >&2
+if [ ! -x "\$runner_dir/bin/Runner.Listener" ]; then
+  echo "actions/runner $RUNNER_VERSION did not unpack a bin/Runner.Listener" >&2
   exit 1
 fi
 GUEST
@@ -601,7 +601,11 @@ rm -f "$jit_file"
 export ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1
 
 cd "$runner_dir"
-exec ./run.sh
+# Not ./run.sh: it and run-helper.sh exist to drive a long-lived service, so
+# they map "listener exited with a terminated error" onto exit 0 -- stop, do
+# not retry. For a one-shot ephemeral runner that turns every startup failure
+# into a reported success. Invoke the listener directly and keep its own code.
+exec ./bin/Runner.Listener run
 GUEST
 }
 
