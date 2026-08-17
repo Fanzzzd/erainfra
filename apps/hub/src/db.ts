@@ -12,12 +12,19 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { renamedEnv, renamedPath } from "./env.ts";
 
 const TEST = process.execArgv.includes("--test") || !!process.env.NODE_TEST_CONTEXT;
 
 // One state dir for everything durable (the DB, the secrets key). Under the hub container
 // TMPDIR=/data, so this lands on the persistent volume.
-export const stateDir = (): string => join(tmpdir(), "portless-runtime");
+//
+// Dual-READ, never dual-create (ADR 0004 Stage 1): a Hub that invented the new directory because
+// the old one was merely absent would come up with no accounts, apps, routes or tokens and report
+// success — the same silent-empty failure CONTEXT.md rule 4 freezes the portless-data volume over.
+// So the new name wins only when it is already there, and a fresh boot still lands on the old one.
+export const stateDir = (): string =>
+  renamedPath(join(tmpdir(), "erainfra-runtime"), join(tmpdir(), "portless-runtime"));
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -61,7 +68,8 @@ CREATE INDEX IF NOT EXISTS audit_at ON audit(at DESC);
 export function createDb(
   file: string = TEST
     ? ":memory:"
-    : (process.env.PORTLESS_DB_FILE ?? join(stateDir(), "portless.db")),
+    : (renamedEnv("ERAINFRA_DB_FILE", "PORTLESS_DB_FILE") ??
+      renamedPath(join(stateDir(), "erainfra.db"), join(stateDir(), "portless.db"))),
 ): DatabaseSync {
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   const d = new DatabaseSync(file);
@@ -221,7 +229,8 @@ function importLegacyJson(d: DatabaseSync, dir: string): void {
         );
     }
     // Audit trail (JSONL, append-only). Order preserved; the a-<n> ids restart from the new seq.
-    const auditFile = process.env.PORTLESS_AUDIT_FILE ?? join(dir, "audit.jsonl");
+    const auditFile =
+      renamedEnv("ERAINFRA_AUDIT_FILE", "PORTLESS_AUDIT_FILE") ?? join(dir, "audit.jsonl");
     if (existsSync(auditFile)) {
       for (const line of readFileSync(auditFile, "utf8").split("\n")) {
         if (!line.trim()) continue;

@@ -17,7 +17,9 @@
 # Runs with every PORTLESS_* variable unset on purpose: what is under test is the bundle's own
 # layout. hub.sh sets PORTLESS_WEB_DIR / PORTLESS_CLI_FILE / PORTLESS_DEPLOY_DIR anyway, and the
 # two agreeing is the point — an override that silently became load-bearing is a trap waiting for
-# the first operator who edits hub.env.
+# the first operator who edits hub.env. Since ADR 0004 stage 1 the hub reads each of those under a
+# renamed name too, so ERAINFRA_* is unset here for exactly the same reason: an inherited override
+# under either spelling would test the developer's shell rather than the bundle.
 set -eu
 
 HERE=$(CDPATH= cd "$(dirname "$0")" && pwd)
@@ -37,7 +39,7 @@ die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 command -v curl >/dev/null || die "curl is required"
 
 # shellcheck disable=SC2046 # word splitting is the point: unset every name the env matched.
-unset $(env | sed -n 's/^\(PORTLESS_[A-Za-z0-9_]*\)=.*/\1/p') 2>/dev/null || true
+unset $(env | sed -n -e 's/^\(PORTLESS_[A-Za-z0-9_]*\)=.*/\1/p' -e 's/^\(ERAINFRA_[A-Za-z0-9_]*\)=.*/\1/p') 2>/dev/null || true
 
 WORK=$(mktemp -d)
 LOG="$WORK/hub.log"
@@ -70,7 +72,7 @@ while [ "$i" -lt 30 ]; do
   sleep 1
 done
 [ -n "$BASE" ] || { cat "$LOG" >&2; die "the bundled hub never printed a listen address"; }
-printf 'bundle %s serving at %s (no PORTLESS_* set)\n' "$BUNDLE" "$BASE" >&2
+printf 'bundle %s serving at %s (no PORTLESS_*/ERAINFRA_* set)\n' "$BUNDLE" "$BASE" >&2
 
 code() { curl -s -o "$WORK/body" -w '%{http_code}' "$BASE$1"; }
 ctype() { curl -s -o /dev/null -w '%{content_type}' "$BASE$1"; }

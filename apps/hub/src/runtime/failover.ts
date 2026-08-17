@@ -9,6 +9,7 @@ import { agentGateway, type AgentGateway } from "./agents.ts";
 import { routeStore, type RouteStore } from "./routes.ts";
 import { appStore, type AppStore } from "./apps.ts";
 import { secretStore, type SecretStore } from "./secrets.ts";
+import { renamedEnv } from "../env.ts";
 
 export interface FailoverDeps {
   gateway: Pick<AgentGateway, "get" | "list" | "send" | "onDisconnect">;
@@ -126,9 +127,11 @@ export function installFailover(
     secrets: secretStore,
     apps: appStore,
   },
-  graceMs = Number(process.env.PORTLESS_FAILOVER_GRACE_MS ?? 20_000),
+  graceMs = Number(
+    renamedEnv("ERAINFRA_FAILOVER_GRACE_MS", "PORTLESS_FAILOVER_GRACE_MS") ?? 20_000,
+  ),
 ): void {
-  if (process.env.PORTLESS_FAILOVER === "0") return;
+  if (renamedEnv("ERAINFRA_FAILOVER", "PORTLESS_FAILOVER") === "0") return;
   deps.gateway.onDisconnect((lostId) => {
     setTimeout(() => {
       void failoverNode(lostId, deps);

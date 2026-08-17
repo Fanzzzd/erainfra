@@ -3,6 +3,7 @@
 // stdlib crypto (no extra deps): RS256 JWT for the app, HMAC-SHA256 to verify webhooks.
 import { createSign, createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { renamedEnv } from "../env.ts";
 
 const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
 
@@ -95,13 +96,14 @@ export type GithubAppConfig = { appId?: string; webhookSecret?: string; privateK
 // App config from env: PORTLESS_GH_APP_ID, PORTLESS_GH_WEBHOOK_SECRET, and the PEM via
 // PORTLESS_GH_APP_KEY (literal or \n-escaped) or PORTLESS_GH_APP_KEY_FILE (path).
 export function githubAppConfig(): GithubAppConfig {
-  const appId = process.env.PORTLESS_GH_APP_ID;
-  const webhookSecret = process.env.PORTLESS_GH_WEBHOOK_SECRET;
-  let privateKey = process.env.PORTLESS_GH_APP_KEY;
+  const appId = renamedEnv("ERAINFRA_GH_APP_ID", "PORTLESS_GH_APP_ID");
+  const webhookSecret = renamedEnv("ERAINFRA_GH_WEBHOOK_SECRET", "PORTLESS_GH_WEBHOOK_SECRET");
+  let privateKey = renamedEnv("ERAINFRA_GH_APP_KEY", "PORTLESS_GH_APP_KEY");
   if (privateKey?.includes("\\n")) privateKey = privateKey.replace(/\\n/g, "\n");
-  if (!privateKey && process.env.PORTLESS_GH_APP_KEY_FILE) {
+  const keyFile = renamedEnv("ERAINFRA_GH_APP_KEY_FILE", "PORTLESS_GH_APP_KEY_FILE");
+  if (!privateKey && keyFile) {
     try {
-      privateKey = readFileSync(process.env.PORTLESS_GH_APP_KEY_FILE, "utf8");
+      privateKey = readFileSync(keyFile, "utf8");
     } catch {
       /* not present */
     }

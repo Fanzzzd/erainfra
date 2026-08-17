@@ -21,24 +21,97 @@
 # existing subdomains are unaffected. Want *.apps.<zone>? Buy Advanced Certificate Manager.
 set -eu
 
-ZONE="${PORTLESS_ZONE:?set PORTLESS_ZONE (e.g. example.com — apps get <app>.<zone>)}"
-HUB_HOST="${PORTLESS_HUB_HOST:-portless.$ZONE}"
+# --- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) -----------------------
+# Read both names, prefer the new one, warn when the old one is what was found, delete nothing.
+# Nothing writes an ERAINFRA_* name yet, so on a hub box in the field today every dual_env below
+# returns exactly the value it returned before and prints one line to stderr.
+#
+# POSIX sh has no indirect expansion, hence eval on two names this script controls. `${x-}` (not
+# `${x:-}`) inside the eval so "set to empty" survives the read; the `[ -n ]` tests then apply the
+# same empty-is-absent rule the `${VAR:-default}` call sites already used.
+#
+# Copied rather than shared: this file runs on a hub box from a checkout with nothing sourced.
+# Same idiom as apps/hub/src/env.ts and apps/infra-agent/internal/rename/rename.go.
+dual_env() { # dual_env NEW OLD [DEFAULT]
+  eval "_dv_new=\${$1-}"
+  eval "_dv_old=\${$2-}"
+  if [ -n "${_dv_new:-}" ]; then
+    printf '%s' "$_dv_new"
+  elif [ -n "${_dv_old:-}" ]; then
+    printf '\033[33m[erainfra] %s is a retired name — use %s instead. The old name still works.\033[0m\n' \
+      "$2" "$1" >&2
+    printf '%s' "$_dv_old"
+  else
+    printf '%s' "${3:-}"
+  fi
+}
+
+ZONE="$(dual_env ERAINFRA_ZONE PORTLESS_ZONE)"
+[ -n "$ZONE" ] || { printf '❌ set ERAINFRA_ZONE (e.g. example.com — apps get <app>.<zone>)\n' >&2; exit 1; }
+HUB_HOST="$(dual_env ERAINFRA_HUB_HOST PORTLESS_HUB_HOST "portless.$ZONE")"
 CERT="${TUNNEL_ORIGIN_CERT:-$HOME/.cloudflared/cert.pem}"
-HUB_PORT="${PORTLESS_HUB_PORT:-61080}"      # host loopback port the tunnel points at
-REG_PORT="${PORTLESS_REG_PORT:-61050}"      # host loopback port for the OCI registry
-TUNNEL="${PORTLESS_TUNNEL_NAME:-portless}"
+HUB_PORT="$(dual_env ERAINFRA_HUB_PORT PORTLESS_HUB_PORT 61080)"   # host loopback port the tunnel points at
+REG_PORT="$(dual_env ERAINFRA_REG_PORT PORTLESS_REG_PORT 61050)"   # host loopback port for the OCI registry
+TUNNEL="$(dual_env ERAINFRA_TUNNEL_NAME PORTLESS_TUNNEL_NAME portless)"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 BUNDLE="$REPO/dist/hub"                     # what the hub container mounts — see build-hub-bundle.sh
+# $HOME/portless-env/hub.env is an identifier a running hub box already holds. Prefer the renamed
+# directory only when it is ALREADY there; with neither present this resolves to the old path, so a
+# fresh hub writes its env file exactly where it writes it today.
 ENVDIR="$HOME/portless-env"
-NODE_IMAGE="${PORTLESS_NODE_IMAGE:-node:22-bookworm-slim}"
+[ -d "$HOME/erainfra-env" ] && ENVDIR="$HOME/erainfra-env"
+NODE_IMAGE="$(dual_env ERAINFRA_NODE_IMAGE PORTLESS_NODE_IMAGE node:22-bookworm-slim)"
 
 log() { printf '\033[36m[hub]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m[hub] %s\033[0m\n' "$*" >&2; exit 1; }
 
 command -v docker >/dev/null || die "docker is required"
+
+# --- the two Docker volumes: detect and report, NEVER rename and NEVER fall back ---------------
+# portless-data holds portless.db — the hub's accounts, Apps, routes, tokens and secret key.
+# portless-registry holds every image layer a deploy pulls from.
+#
+# A fallback is not merely insufficient here, it is the failure mode. Docker does not fall back:
+# `-v portless-data:/data` against a volume that does not exist SILENTLY CREATES an empty one and
+# the hub boots clean with no accounts, no apps and no routes. This script is idempotent by design
+# and customers re-run it, so that mistake would land on a re-run of a working box. CI cannot catch
+# any of this, because CI never runs hub.sh.
+#
+# So stage 1 renames nothing, aliases nothing, and prefers nothing. The only thing it adds is a
+# refusal: a box holding BOTH names is half-migrated, and picking one would either strand the data
+# or overwrite it. That state needs the operator, not a heuristic.
+check_volume_rename() {
+  for pair in 'portless-data erainfra-data' 'portless-registry erainfra-registry'; do
+    old=${pair% *}; new=${pair#* }
+    docker volume inspect "$old" >/dev/null 2>&1 || continue
+    docker volume inspect "$new" >/dev/null 2>&1 || continue
+    printf '\033[31m[hub] both %s and %s exist — this box is half-migrated.\033[0m\n' "$old" "$new" >&2
+    printf '      Refusing to guess which holds your state. Inspect both, then keep one:\n' >&2
+    printf '        docker run --rm -v %s:/a -v %s:/b alpine sh -c "ls -la /a /b"\n' "$old" "$new" >&2
+    exit 1
+  done
+}
+check_volume_rename
+
+# The containers and the tunnel are the same class as the volumes and get the same treatment: a
+# renamed container leaves the old one running with the port already bound, and a renamed tunnel is
+# a SECOND tunnel that fights the first for DNS. Report, never pick.
+check_container_rename() {
+  for pair in 'portless-hub erainfra-hub' 'portless-registry erainfra-registry'; do
+    old=${pair% *}; new=${pair#* }
+    docker inspect "$new" >/dev/null 2>&1 || continue
+    log "note: a container named $new exists; this script manages $old and will not touch it"
+    log "      it still holds whatever ports it published — stop it before it collides"
+  done
+  if cloudflared tunnel list 2>/dev/null | awk '$2=="erainfra"{f=1} END{exit !f}'; then
+    log "note: a cloudflared tunnel named 'erainfra' exists; this script manages '$TUNNEL'"
+    log "      two tunnels for one hostname fight over DNS — delete one before renaming"
+  fi
+}
 command -v cloudflared >/dev/null || die "cloudflared is required"
 [ -f "$CERT" ] || die "origin cert not found: $CERT (run cloudflared login)"
 export TUNNEL_ORIGIN_CERT="$CERT"
+check_container_rename
 
 # --- hub env: 0600, no baked credentials — auth is user accounts (created on first visit) ------
 mkdir -p "$ENVDIR"

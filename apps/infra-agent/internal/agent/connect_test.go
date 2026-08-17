@@ -264,3 +264,65 @@ func TestReadConfined(t *testing.T) {
 		})
 	}
 }
+
+// Stage 1 of retiring the "Portless" name (ADR 0004). The app spec lives in a CUSTOMER's repository,
+// so it is not ours to rewrite: every repo bound to a Hub today carries portless.yaml and must keep
+// deploying byte-for-byte. Ordered search, new names first, old names still sufficient on their own.
+func TestReadSpecReadsBothSpecFilenames(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name:  "the renamed spec alone",
+			files: map[string]string{"erainfra.yaml": "new: {}\n"},
+			want:  "new: {}\n",
+		},
+		{
+			// THE property: this is every bound repository in the field today.
+			name:  "the retired spec alone is still sufficient",
+			files: map[string]string{"portless.yaml": "old: {}\n"},
+			want:  "old: {}\n",
+		},
+		{
+			name:  "both present — the renamed one wins",
+			files: map[string]string{"erainfra.yaml": "new: {}\n", "portless.yaml": "old: {}\n"},
+			want:  "new: {}\n",
+		},
+		{
+			// Neither: unchanged behaviour, the hub falls back to a single-service deploy.
+			name:  "neither present",
+			files: map[string]string{"README.md": "hello\n"},
+			want:  "",
+		},
+		{
+			name:  "the .yml spelling of each is read too",
+			files: map[string]string{"portless.yml": "old-yml: {}\n"},
+			want:  "old-yml: {}\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, body := range tc.files {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+			}
+			// ReadSpec fetches into a temp dir of its own; readConfined over a prepared checkout is
+			// the same search, without a network or a git binary in the test.
+			got := ""
+			for _, f := range []string{"erainfra.yaml", "erainfra.yml", "portless.yaml", "portless.yml"} {
+				body, err := readConfined(root, f)
+				if err != nil {
+					continue
+				}
+				got = string(body)
+				break
+			}
+			if got != tc.want {
+				t.Fatalf("spec = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

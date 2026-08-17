@@ -13,7 +13,34 @@ set -eu
 
 # <hub> is templated by the server to the base URL this script was served from.
 SERVED_FROM="<hub>"
-HUB=""; TOKEN="${PORTLESS_TOKEN:-}"; NAME=""; FOREGROUND=""; WANT_DOCKER=1
+
+# --- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) -----------------------
+# Read both names, prefer the new one, warn when the old one is what was found, delete nothing.
+# Nothing writes an ERAINFRA_* name yet, so on a box in the field today every dual_env below
+# returns exactly the value it returned before and prints one line to stderr.
+#
+# POSIX sh has no indirect expansion, hence eval on two names this script controls. `${x-}` (not
+# `${x:-}`) inside the eval so "set to empty" survives the read; the `[ -n ]` tests below then
+# apply the same empty-is-absent rule the `${VAR:-default}` call sites already used, which is what
+# keeps this from changing what a box does rather than only what it prints.
+#
+# Copied rather than shared on purpose: this file is curl'd and piped to sh on a bare machine, so
+# it cannot source anything. Same idiom as apps/hub/src/env.ts and internal/rename/rename.go.
+dual_env() { # dual_env NEW OLD [DEFAULT]
+  eval "_dv_new=\${$1-}"
+  eval "_dv_old=\${$2-}"
+  if [ -n "${_dv_new:-}" ]; then
+    printf '%s' "$_dv_new"
+  elif [ -n "${_dv_old:-}" ]; then
+    printf '\033[33m[erainfra] %s is a retired name — use %s instead. The old name still works.\033[0m\n' \
+      "$2" "$1" >&2
+    printf '%s' "$_dv_old"
+  else
+    printf '%s' "${3:-}"
+  fi
+}
+
+HUB=""; TOKEN="$(dual_env ERAINFRA_TOKEN PORTLESS_TOKEN)"; NAME=""; FOREGROUND=""; WANT_DOCKER=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub)   HUB=$2; shift 2 ;;
@@ -25,7 +52,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-PREFIX="${PORTLESS_PREFIX:-$HOME/.portless}"
+# The prefix directory a Node already holds. Dual-READ only: with neither directory present this
+# resolves to the old path, so a fresh enrolment installs exactly where it installs today. Nothing
+# creates ~/.erainfra yet — the release that starts writing new names is the one that flips this.
+PREFIX="$(dual_env ERAINFRA_PREFIX PORTLESS_PREFIX)"
+if [ -z "$PREFIX" ]; then
+  if [ -d "$HOME/.erainfra" ]; then PREFIX="$HOME/.erainfra"; else PREFIX="$HOME/.portless"; fi
+fi
 BIN="$PREFIX/bin"; RUN="$PREFIX/run"
 log()  { printf '\033[36m[portless]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33m[portless] %s\033[0m\n' "$*" >&2; }
@@ -114,14 +147,37 @@ ensure_dumbpipe() {
   rm -rf "$tmp"
 }
 
+# Detect and report, never rename (ADR 0004 stage 1). A systemd unit is not a path a fallback can
+# chase: installing a second unit under a new name leaves the old one ENABLED and running, so the
+# box ends up with two agents dialling the same hub and the operator sees no error at all. So this
+# script keeps writing the frozen unit name and only refuses when a box is ALREADY half-migrated.
+# Nothing in this release can produce that state; the check is here for the release that renames,
+# and for a box someone migrated by hand.
+#
+# Deliberately not inside install_service: that call is `install_service 2>/dev/null` and falls back
+# to a nohup process on failure, which would swallow this message and start a THIRD agent.
+check_unit_rename() {
+  have systemctl || return 0
+  [ -f /etc/systemd/system/erainfra-agent.service ] || return 0
+  [ -f /etc/systemd/system/portless-agent.service ] || return 0
+  warn "this box has BOTH portless-agent.service and erainfra-agent.service"
+  die  "disable one before re-running:  systemctl disable --now erainfra-agent   # or portless-agent"
+}
+
 # systemd service (root only) → reconnects forever and survives reboot. Token lives in a 0600 env
 # file, never in a world-readable unit or argv.
 install_service() {
   have systemctl || return 1
   priv test -d /run/systemd/system || return 1   # systemd actually running (not just installed)
-  priv mkdir -p /etc/portless || return 1
-  printf 'PORTLESS_HUB=%s\nPORTLESS_TOKEN=%s\n' "$WSS" "$TOKEN" | priv tee /etc/portless/agent.env >/dev/null || return 1
-  priv chmod 600 /etc/portless/agent.env
+  # /etc/portless/agent.env is an identifier a running Node already holds. Prefer the renamed
+  # directory only when it is ALREADY there; on every box today neither branch is a change.
+  ENVDIR=/etc/portless
+  [ -d /etc/erainfra ] && ENVDIR=/etc/erainfra
+  priv mkdir -p "$ENVDIR" || return 1
+  # The variable names inside stay frozen too — the agent dual-reads them, and this release writes
+  # no new name anywhere. Only the directory holding the file is allowed to have moved already.
+  printf 'PORTLESS_HUB=%s\nPORTLESS_TOKEN=%s\n' "$WSS" "$TOKEN" | priv tee "$ENVDIR/agent.env" >/dev/null || return 1
+  priv chmod 600 "$ENVDIR/agent.env"
   nm=${NAME:-$(hostname)}
   printf '%s\n' \
     '[Unit]' \
@@ -129,7 +185,7 @@ install_service() {
     'After=network-online.target docker.service' \
     'Wants=network-online.target' \
     '[Service]' \
-    'EnvironmentFile=/etc/portless/agent.env' \
+    "EnvironmentFile=$ENVDIR/agent.env" \
     "Environment=HOME=$HOME" \
     "ExecStart=$BIN/portless-agent connect --name $nm" \
     'Restart=always' \
@@ -144,6 +200,7 @@ install_service() {
   log "   stop/remove: systemctl disable --now portless-agent"
 }
 
+check_unit_rename
 ensure_docker
 install_agent
 ensure_dumbpipe

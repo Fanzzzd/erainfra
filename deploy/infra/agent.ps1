@@ -11,13 +11,41 @@
 #               only INSTALLS the agent and REPORTS what the box still needs to run containers.
 param(
   [string]$Hub = "",
-  [string]$Token = $env:PORTLESS_TOKEN,
+  [string]$Token = "",
   [string]$Name = "",
   [switch]$Install,
   [switch]$SetupRuntime
 )
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# --- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) -----------------------
+# Read both names, prefer the new one, warn when the old one is what was found, delete nothing.
+# Nothing writes an ERAINFRA_* name yet, so on a Windows Node in the field today this returns
+# exactly what it returned before and prints one line. Copied rather than shared: this file is
+# irm'd and run as a scriptblock on a bare box. See apps/hub/src/env.ts for the reasons.
+function Get-RenamedEnv {
+  param([string]$NewName, [string]$OldName)
+  $current = [Environment]::GetEnvironmentVariable($NewName)
+  if ($null -ne $current -and $current -ne "") { return $current }
+  $retired = [Environment]::GetEnvironmentVariable($OldName)
+  if ($null -ne $retired -and $retired -ne "") {
+    Write-Host "[erainfra] $OldName is a retired name - use $NewName instead. The old name still works." -ForegroundColor Yellow
+    return $retired
+  }
+  return $null
+}
+
+# The prefix directory this box already holds. Dual-READ only: with neither directory present this
+# resolves to the old path, so a fresh install lands exactly where it lands today.
+function Get-PrefixDir {
+  $current = Join-Path $HOME ".erainfra"
+  if (Test-Path $current) { return $current }
+  return (Join-Path $HOME ".portless")
+}
+
+# A param default cannot call a function defined below it, so the env fallback lands here instead.
+if (-not $Token) { $Token = Get-RenamedEnv "ERAINFRA_TOKEN" "PORTLESS_TOKEN" }
 
 # <hub> is templated by the server to the base URL this script was served from.
 $servedFrom = "<hub>"
@@ -78,7 +106,7 @@ function Enable-Runtime {
   Write-Host "           nested-virtualization is off — enable it on the hypervisor/BIOS hosting this box." -ForegroundColor Yellow
 }
 
-$prefix = Join-Path $HOME ".portless"
+$prefix = Get-PrefixDir
 $bin = Join-Path $prefix "bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 $exe = Join-Path $bin "portless-agent.exe"
@@ -96,6 +124,16 @@ $agentArgs = @("connect", "--hub", $wss, "--token", $Token)
 if ($Name) { $agentArgs += @("--name", $Name) }
 
 if ($Install) {
+  # Detect and report, never rename (ADR 0004 stage 1). A scheduled task is not a path a fallback
+  # can chase: registering a second task under a new name leaves the old one REGISTERED and starting
+  # its own agent at every logon, so the box would run two. This script keeps registering the frozen
+  # name and only refuses when a box is ALREADY half-migrated — nothing in this release can produce
+  # that state, so the check is here for the release that renames and for a hand-migrated box.
+  $renamedTask = Get-ScheduledTask -TaskName "EraInfraAgent" -ErrorAction SilentlyContinue
+  $frozenTask = Get-ScheduledTask -TaskName "PortlessAgent" -ErrorAction SilentlyContinue
+  if ($renamedTask -and $frozenTask) {
+    throw "this box has both PortlessAgent and EraInfraAgent scheduled tasks - two agents would dial the same hub. Unregister one first: Unregister-ScheduledTask -TaskName EraInfraAgent -Confirm:`$false"
+  }
   # Prefer a scheduled task (runs even before interactive logon). On a UAC-filtered local admin in a
   # non-elevated shell, Register-ScheduledTask is Access Denied — so fall back to a per-user Startup
   # entry, which needs NO elevation and still survives reboot (runs at the next interactive logon).

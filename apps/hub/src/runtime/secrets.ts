@@ -7,15 +7,18 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "n
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { db, stateDir } from "../db.ts";
+import { renamedEnv } from "../env.ts";
 
 // 32-byte key: PORTLESS_SECRET_KEY (64 hex) wins; else a generated key persisted 0600; ephemeral
 // under --test so tests never touch disk.
 function loadKey(): Buffer {
-  const hex = process.env.PORTLESS_SECRET_KEY;
+  const hex = renamedEnv("ERAINFRA_SECRET_KEY", "PORTLESS_SECRET_KEY");
   if (hex && /^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, "hex");
   if (process.execArgv.includes("--test") || !!process.env.NODE_TEST_CONTEXT)
     return randomBytes(32);
-  const keyPath = process.env.PORTLESS_SECRET_KEY_FILE ?? join(stateDir(), "secret.key");
+  const keyPath =
+    renamedEnv("ERAINFRA_SECRET_KEY_FILE", "PORTLESS_SECRET_KEY_FILE") ??
+    join(stateDir(), "secret.key");
   try {
     if (existsSync(keyPath)) return Buffer.from(readFileSync(keyPath, "utf8").trim(), "hex");
     mkdirSync(dirname(keyPath), { recursive: true });

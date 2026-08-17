@@ -19,6 +19,7 @@ import { apiTokenStore } from "./runtime/apitokens.ts";
 import { validateDockerArgs } from "./runtime/dockerargs.ts";
 import type { AuditLog } from "./audit.ts";
 import type { Principal } from "./auth.ts";
+import { renamedEnv } from "./env.ts";
 
 const agentOperationSchema = z
   .object({
@@ -513,7 +514,7 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "confirm:true required to deploy" });
         const binding = gitProjects.get(input.id);
         if (!binding) throw new TRPCError({ code: "NOT_FOUND", message: "no such binding" });
-        const hubBase = process.env.PORTLESS_HUB_BASE;
+        const hubBase = renamedEnv("ERAINFRA_HUB_BASE", "PORTLESS_HUB_BASE");
         if (!hubBase)
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
@@ -523,7 +524,7 @@ export const appRouter = router({
         const { appId, privateKey } = githubAppConfig();
         try {
           const started = startGitDeploy(binding, input.sha, undefined, {
-            registry: process.env.PORTLESS_REGISTRY ?? "127.0.0.1:5000",
+            registry: renamedEnv("ERAINFRA_REGISTRY", "PORTLESS_REGISTRY") ?? "127.0.0.1:5000",
             hubBase,
             appId,
             privateKey,
@@ -600,7 +601,7 @@ export const appRouter = router({
   // every git/upload deploy. Surfaces each app's live URL (wildcard domain) and whether it's online.
   routes: router({
     list: requirePermission("app.read").query(() => {
-      const domain = process.env.PORTLESS_APP_DOMAIN;
+      const domain = renamedEnv("ERAINFRA_APP_DOMAIN", "PORTLESS_APP_DOMAIN");
       return routeStore.list().map((r) => ({
         app: r.app,
         node: r.node,
@@ -700,7 +701,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         if (!input.confirm)
           throw new TRPCError({ code: "BAD_REQUEST", message: "confirm:true required to deploy" });
-        const hubBase = process.env.PORTLESS_HUB_BASE;
+        const hubBase = renamedEnv("ERAINFRA_HUB_BASE", "PORTLESS_HUB_BASE");
         if (!hubBase)
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
@@ -709,7 +710,7 @@ export const appRouter = router({
         requireDurableAudit(ctx, "upload.deploy", `${input.buildId}: ${input.app}`);
         try {
           const started = startUploadDeploy(input.buildId, input, {
-            registry: process.env.PORTLESS_REGISTRY ?? "127.0.0.1:5000",
+            registry: renamedEnv("ERAINFRA_REGISTRY", "PORTLESS_REGISTRY") ?? "127.0.0.1:5000",
             hubBase,
           });
           const op = recordOp(ctx, {
@@ -730,7 +731,7 @@ export const appRouter = router({
   apps: router({
     // Every deployed app with services, nodes, URLs, and liveness.
     list: requirePermission("app.read").query(() => {
-      const domain = process.env.PORTLESS_APP_DOMAIN;
+      const domain = renamedEnv("ERAINFRA_APP_DOMAIN", "PORTLESS_APP_DOMAIN");
       const grouped = appStore.list().map((g) => ({
         app: g.app,
         services: g.services.map((s) => ({

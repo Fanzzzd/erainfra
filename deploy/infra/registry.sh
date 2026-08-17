@@ -14,13 +14,51 @@
 # _ENDPOINT/_PREFIX) and AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the env before `up`.
 set -eu
 
+
+# --- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) -----------------------
+# Read both names, prefer the new one, warn when the old one is what was found, delete nothing.
+# Nothing writes an ERAINFRA_* name yet, so every dual_env below returns exactly what it returned
+# before and prints one line to stderr. POSIX sh has no indirect expansion, hence eval on two names
+# this script controls; `${x-}` inside it so "set to empty" survives, and the `[ -n ]` tests then
+# apply the same empty-is-absent rule the `${VAR:-default}` call sites already used.
+# Copied, not sourced: this file is curl'd and piped to sh. See apps/hub/src/env.ts for the reasons.
+dual_env() { # dual_env NEW OLD [DEFAULT]
+  eval "_dv_new=\${$1-}"
+  eval "_dv_old=\${$2-}"
+  if [ -n "${_dv_new:-}" ]; then
+    printf '%s' "$_dv_new"
+  elif [ -n "${_dv_old:-}" ]; then
+    printf '\033[33m[erainfra] %s is a retired name — use %s instead. The old name still works.\033[0m\n' \
+      "$2" "$1" >&2
+    printf '%s' "$_dv_old"
+  else
+    printf '%s' "${3:-}"
+  fi
+}
+
+# The prefix directory this machine already holds. Dual-READ only: with neither directory present
+# this resolves to the old path, so a fresh install lands exactly where it lands today.
+dual_prefix() {
+  p="$(dual_env ERAINFRA_PREFIX PORTLESS_PREFIX)"
+  if [ -n "$p" ]; then printf '%s' "$p"; return 0; fi
+  h=${HOME:-/root}
+  if [ -d "$h/.erainfra" ]; then printf '%s' "$h/.erainfra"; else printf '%s' "$h/.portless"; fi
+}
+
 ZOT_VERSION="${ZOT_VERSION:-v2.1.18}"
-PREFIX="${PORTLESS_PREFIX:-$HOME/.portless}"
+PREFIX="$(dual_prefix)"
 BIN="$PREFIX/bin"
-DATA="${PORTLESS_REGISTRY_DATA:-$PREFIX/registry/data}"
+DATA="$(dual_env ERAINFRA_REGISTRY_DATA PORTLESS_REGISTRY_DATA "$PREFIX/registry/data")"
 RUN="$PREFIX/run"
 CONF="$PREFIX/registry/config.json"
-BIND="${PORTLESS_REGISTRY_BIND:-127.0.0.1}"
+BIND="$(dual_env ERAINFRA_REGISTRY_BIND PORTLESS_REGISTRY_BIND 127.0.0.1)"
+S3_BUCKET="$(dual_env ERAINFRA_REGISTRY_S3_BUCKET PORTLESS_REGISTRY_S3_BUCKET)"
+S3_REGION="$(dual_env ERAINFRA_REGISTRY_S3_REGION PORTLESS_REGISTRY_S3_REGION us-east-1)"
+# The S3 key prefix is a VALUE, not a name: every layer already stored is under portless-images/,
+# so its default is frozen for the same reason the volumes are. A later release migrates it with a
+# copy, not with a rename (see the PR body's volume procedure).
+S3_PREFIX="$(dual_env ERAINFRA_REGISTRY_S3_PREFIX PORTLESS_REGISTRY_S3_PREFIX portless-images)"
+S3_ENDPOINT="$(dual_env ERAINFRA_REGISTRY_S3_ENDPOINT PORTLESS_REGISTRY_S3_ENDPOINT)"
 
 log() { printf '\033[36m[portless]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m[portless] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -48,8 +86,8 @@ install_zot() {
 write_config() {
   port=$1
   mkdir -p "$(dirname "$CONF")" "$DATA"
-  if [ -n "${PORTLESS_REGISTRY_S3_BUCKET:-}" ]; then
-    log "storage backend: S3 bucket '$PORTLESS_REGISTRY_S3_BUCKET' (creds from AWS_* env)"
+  if [ -n "${S3_BUCKET:-}" ]; then
+    log "storage backend: S3 bucket '$S3_BUCKET' (creds from AWS_* env)"
     # zot uses the Distribution s3 driver; the local rootDirectory is just a small cache.
     cat > "$CONF" <<EOF
 {
@@ -58,10 +96,10 @@ write_config() {
     "dedupe": false,
     "storageDriver": {
       "name": "s3",
-      "region": "${PORTLESS_REGISTRY_S3_REGION:-us-east-1}",
-      "bucket": "$PORTLESS_REGISTRY_S3_BUCKET",
-      "rootdirectory": "${PORTLESS_REGISTRY_S3_PREFIX:-portless-images}",
-      "regionendpoint": "${PORTLESS_REGISTRY_S3_ENDPOINT:-}",
+      "region": "$S3_REGION",
+      "bucket": "$S3_BUCKET",
+      "rootdirectory": "$S3_PREFIX",
+      "regionendpoint": "$S3_ENDPOINT",
       "secure": true
     }
   },

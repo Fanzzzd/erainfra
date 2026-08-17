@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/agent"
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
 )
 
 // Stamped at build time with `-ldflags '-X main.version=<product version>'`. It has to be a var:
@@ -59,8 +60,10 @@ func usage() {
 // OUT — no inbound port — so it works on a NAT'd box with no public IP.
 func runConnect() {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
-	hub := fs.String("hub", os.Getenv("PORTLESS_HUB"), "hub WSS url, e.g. wss://hub.example.com/agent")
-	token := fs.String("token", os.Getenv("PORTLESS_TOKEN"), "auth token (Bearer)")
+	// The systemd unit feeds these through /etc/portless/agent.env, so both names have to be
+	// accepted here before any installer starts writing the new one into that file.
+	hub := fs.String("hub", rename.Env("ERAINFRA_HUB", "PORTLESS_HUB"), "hub WSS url, e.g. wss://hub.example.com/agent")
+	token := fs.String("token", rename.Env("ERAINFRA_TOKEN", "PORTLESS_TOKEN"), "auth token (Bearer)")
 	name := fs.String("name", hostname(), "agent id reported to the hub")
 	docker := fs.String("docker", "docker", "container CLI (docker or podman)")
 	_ = fs.Parse(os.Args[2:])

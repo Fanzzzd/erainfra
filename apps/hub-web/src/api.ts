@@ -3,8 +3,15 @@
 // Auth is the portless_session cookie (set by /auth/login, sent automatically same-origin).
 // A bearer token is only a fallback: localStorage (manual escape hatch) → VITE_PORTLESS_TOKEN
 // (baked private builds) → owner-dev-token in dev so a fresh checkout works with zero setup.
+// Both spellings of each, new first (ADR 0004 stage 1). The localStorage key is held by a browser
+// that already has it and the Vite variable is baked into a build someone already runs, so neither
+// may change in one release; nothing here writes either name, so a dashboard in the field reads
+// exactly what it read before. No warning: this runs in a customer's browser console, where a
+// deprecation notice reaches nobody who can act on it — the Hub's own log is where that belongs.
 const TOKEN =
+  localStorage.getItem("erainfra-token") ??
   localStorage.getItem("portless-token") ??
+  import.meta.env.VITE_ERAINFRA_TOKEN ??
   import.meta.env.VITE_PORTLESS_TOKEN ??
   (import.meta.env.DEV ? "owner-dev-token" : "");
 const AUTH_HEADERS: Record<string, string> = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
