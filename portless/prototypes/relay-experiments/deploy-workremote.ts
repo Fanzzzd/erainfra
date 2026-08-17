@@ -9,7 +9,6 @@ import { createApiServer } from "../../apps/api/src/server.ts";
 import { appRouter } from "../../apps/api/src/router.ts";
 import { createCallerFactory } from "../../apps/api/src/trpc.ts";
 import { InMemoryAuditLog } from "../../apps/api/src/audit.ts";
-import { agentGateway } from "../../apps/api/src/runtime/agents.ts";
 import { dataGateway } from "../../apps/api/src/runtime/dataplane.ts";
 import type { Principal } from "../../apps/api/src/auth.ts";
 

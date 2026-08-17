@@ -51,7 +51,7 @@ test("mcp: initialize handshake + tools/list expose the platform surface", async
   ]);
   assert.equal(init.result.serverInfo.name, "portless");
   assert.ok(init.result.capabilities.tools);
-  const names = tools.result.tools.map((t) => t.name);
+  const names = new Set(tools.result.tools.map((t) => t.name));
   for (const want of [
     "portless_deploy",
     "portless_status",
@@ -59,7 +59,7 @@ test("mcp: initialize handshake + tools/list expose the platform surface", async
     "portless_env_set",
     "portless_remove",
   ]) {
-    assert.ok(names.includes(want), `missing tool ${want}`);
+    assert.ok(names.has(want), `missing tool ${want}`);
   }
   // every tool must carry a JSON schema (Claude rejects tools without one)
   for (const t of tools.result.tools) assert.equal(t.inputSchema.type, "object");

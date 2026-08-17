@@ -10,17 +10,13 @@
     "builtin": true,
     "es2024": true
   },
-  "ignorePatterns": [
-    "**/_generated/**",
-    "**/routeTree.gen.ts",
-    "**/.tanstack/**",
-    // Imported as-is from Fanzzzd/portless (archived); keeps its own conventions
-    // until it is integrated into the workspace.
-    "portless/**"
-  ],
+  "ignorePatterns": ["**/_generated/**", "**/routeTree.gen.ts", "**/.tanstack/**"],
   "rules": {
     "import/no-cycle": "error",
-    "import/no-unassigned-import": ["error", { "allow": ["**/*.css"] }],
+    // `boot-env.ts` exists only for its side effect: it sets the durable-state env
+    // defaults that must be in place before router.ts constructs its singletons.
+    // Assigning the import would be the thing that is wrong, not the import.
+    "import/no-unassigned-import": ["error", { "allow": ["**/*.css", "**/boot-env.ts"] }],
     "no-console": "off",
     // Convex mutations are transactional: sequential awaits are intended.
     "no-await-in-loop": "off",
@@ -34,7 +30,11 @@
   },
   "overrides": [
     {
-      "files": ["apps/dashboard/**"],
+      // The `portless/**` globs here and below are pre-move paths: the merge turns
+      // apps/api -> apps/hub, apps/web -> apps/hub-web, apps/docs -> apps/docs,
+      // packages/cli -> packages/cli and prototypes/relay-experiments ->
+      // apps/hub/scripts/verify. Repointed by the `git mv` commit, not before it.
+      "files": ["apps/dashboard/**", "portless/apps/web/**", "portless/apps/docs/**"],
       "env": { "browser": true }
     },
     {
@@ -42,7 +42,10 @@
         "apps/agent/**",
         "packages/backend/scripts/**",
         "packages/backend/tests/**",
-        "packages/release/**"
+        "packages/release/**",
+        "portless/apps/api/**",
+        "portless/packages/cli/**",
+        "portless/prototypes/**"
       ],
       "env": { "node": true }
     }

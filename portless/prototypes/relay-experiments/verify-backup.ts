@@ -3,7 +3,7 @@
 // SigV4 signing is correct against an actual S3 implementation (not a mock).
 // Needs /tmp/minio (downloaded by the caller). Run:
 //   node --experimental-strip-types prototypes/relay-experiments/verify-backup.ts
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
