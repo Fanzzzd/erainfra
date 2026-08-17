@@ -101,6 +101,8 @@ jobs:
             "runner-center-runtime $VERSION"
           dist/release/runner-center-controller-linux-x86_64 version | \
             grep -Fx "runner-center-controller $VERSION ($GITHUB_SHA)"
+          dist/release/infra-agent-linux-x86_64 version | \
+            grep -Fx "infra-agent $VERSION"
 
       - name: Verify the archive is reproducible
         run: |
@@ -112,6 +114,36 @@ jobs:
             echo "Archive checksum $actual does not match deployment pin $PINNED_SHA256" >&2
             exit 1
           fi
+
+      # A Node installs whichever of these five matches its platform, and the installer refuses on a
+      # checksum mismatch — so the checksum has to describe a build anyone can reproduce, not one
+      # only this runner could have produced. Same property, same method, as the archive above.
+      # Runs after the archive check because rebuilding also rewrites the runtime binaries the
+      # archive embeds, and this must not change what that check proves.
+      - name: Verify the Infra Agent binaries are reproducible
+        run: |
+          pnpm --filter @erainfra/release build-go-assets --out dist/release-recheck
+          for asset in \
+            infra-agent-linux-x86_64 \
+            infra-agent-linux-arm64 \
+            infra-agent-darwin-x86_64 \
+            infra-agent-darwin-arm64 \
+            infra-agent-windows-x86_64.exe
+          do
+            cmp "dist/release/$asset" "dist/release-recheck/$asset"
+            echo "identical  $asset  $(cut -d ' ' -f 1 < "dist/release/$asset.sha256")"
+          done
+
+      # This binary runs as root on customer Nodes. Assert on the shipped bytes rather than on
+      # go.mod: go.mod is the whole platform's now and says nothing about what this binary linked,
+      # so a helper that innocently imported an apps/controller package would widen the dependency
+      # surface with a perfectly green build. ci.yml makes the same assertion on every push; this
+      # one makes it about the artifact being published.
+      - name: The published Infra Agent ships exactly one dependency
+        run: |
+          deps=$(go version -m dist/release/infra-agent-linux-x86_64 | awk '$1 == "dep" { print $2, $3 }')
+          echo "$deps"
+          test "$deps" = "github.com/gorilla/websocket v1.5.3"
 
       # Exactly the command a machine runs during install.
       - name: Verify the agent lockfile installs cleanly
@@ -128,6 +160,11 @@ jobs:
             dist/release/runner-center-controller-darwin-arm64
             dist/release/runner-center-runtime-linux-x86_64
             dist/release/runner-center-runtime-linux-arm64
+            dist/release/infra-agent-linux-x86_64
+            dist/release/infra-agent-linux-arm64
+            dist/release/infra-agent-darwin-x86_64
+            dist/release/infra-agent-darwin-arm64
+            dist/release/infra-agent-windows-x86_64.exe
 
       - name: Publish the release
         env:
@@ -144,6 +181,11 @@ jobs:
             printf 'Agent archive for EraInfra %s.\n\n' "$VERSION"
             printf 'SHA-256 of `erainfra-agent-%s.tar.gz`:\n\n' "$VERSION"
             printf '    %s\n\n' "$sha256"
+            printf 'SHA-256 of the Infra Agent binaries a Node installs:\n\n'
+            for sidecar in dist/release/infra-agent-*.sha256; do
+              printf '    %s\n' "$(cat "$sidecar")"
+            done
+            printf '\n'
             printf 'The release commit already pins these bytes in `AGENT_RELEASE`.\n'
             printf 'Roll the fleet forward with `pnpm deploy` after this workflow succeeds.\n'
             printf 'After that deploy, a single machine can be moved with `rc update`.\n'
@@ -157,6 +199,7 @@ jobs:
             "dist/release/erainfra-agent-$VERSION.tar.gz.sha256" \
             dist/release/runner-center-controller-* \
             dist/release/runner-center-runtime-* \
+            dist/release/infra-agent-* \
             deploy/systemd/runner-center-runtime.service \
             deploy/systemd/runner-center-controller@.service \
             deploy/provision-firecracker-host.sh

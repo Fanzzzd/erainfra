@@ -5,16 +5,40 @@ import path from "node:path";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 const runtimeOut = path.join(repoRoot, "apps", "runtime", "dist", "release");
-const releaseOut = path.join(repoRoot, "dist", "release");
+
+/**
+ * `--out <directory>` builds the same targets somewhere else, which is how the release workflow
+ * builds twice and `cmp`s the two sets. Mirrors package-agent's flag.
+ */
+function parseOutDirectory(argv: readonly string[]) {
+  const index = argv.indexOf("--out");
+  if (index === -1) {
+    return path.join(repoRoot, "dist", "release");
+  }
+  const value = argv[index + 1];
+  if (value === undefined) {
+    throw new Error("--out requires a directory");
+  }
+  return path.resolve(repoRoot, value);
+}
+
+const releaseOut = parseOutDirectory(process.argv.slice(2));
 
 type Target = {
-  os: "linux" | "darwin";
+  // The Infra Agent runs on a Node, and a Node is any box a customer owns — including the Windows
+  // ones deploy/infra/agent.ps1 already onboards.
+  os: "linux" | "darwin" | "windows";
   arch: "amd64" | "arm64";
   output: string;
   package: string;
   embed?: string;
   ldflags: string;
 };
+
+/** Release assets are named by the CPU the operator sees, not by Go's GOARCH spelling. */
+function assetName(name: string, os: Target["os"], arch: Target["arch"]) {
+  return `${name}-${os}-${arch === "amd64" ? "x86_64" : arch}${os === "windows" ? ".exe" : ""}`;
+}
 
 const version = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")).version as
   | string
@@ -48,14 +72,29 @@ const targets: Target[] = [
     (["amd64", "arm64"] as const).map((arch) => ({
       os,
       arch,
-      output: path.join(
-        releaseOut,
-        `runner-center-controller-${os}-${arch === "amd64" ? "x86_64" : arch}`,
-      ),
+      output: path.join(releaseOut, assetName("runner-center-controller", os, arch)),
       package: "./apps/controller/cmd/runner-center-controller",
       ldflags: `-s -w -buildid= -X main.version=${version} -X main.commitSHA=${commit}`,
     })),
   ),
+  // The Infra Agent. Building it here rather than ad hoc on a customer's hub box is what lets its
+  // checksum be pinned before a Node ever downloads it (ADR 0006): these flags produce
+  // byte-identical output across builds, so the release workflow can build twice and cmp.
+  ...(
+    [
+      { os: "linux", arch: "amd64" },
+      { os: "linux", arch: "arm64" },
+      { os: "darwin", arch: "amd64" },
+      { os: "darwin", arch: "arm64" },
+      { os: "windows", arch: "amd64" },
+    ] as const
+  ).map(({ os, arch }) => ({
+    os,
+    arch,
+    output: path.join(releaseOut, assetName("infra-agent", os, arch)),
+    package: "./apps/infra-agent",
+    ldflags: `-s -w -buildid= -X main.version=${version}`,
+  })),
 ];
 
 rmSync(runtimeOut, { recursive: true, force: true });
