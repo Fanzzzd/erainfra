@@ -12,12 +12,12 @@ directory that were both called some variant of "agent", which is not survivable
 
 The two are genuinely different things:
 
-| | on a **Worker** | on a **Node** |
-|---|---|---|
-| registers | capacity per Profile (`executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`) | itself, for management |
-| claims | Attempts, experiments, legacy commands | nothing; it is commanded |
-| runs | one disposable boundary per Attempt, then destroys it | long-lived Apps, plus allowlisted host operations |
-| lifetime of its work | single-use, torn down on every exit path | persistent |
+|                      | on a **Worker**                                                                     | on a **Node**                                     |
+| -------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------- |
+| registers            | capacity per Profile (`executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`) | itself, for management                            |
+| claims               | Attempts, experiments, legacy commands                                              | nothing; it is commanded                          |
+| runs                 | one disposable boundary per Attempt, then destroys it                               | long-lived Apps, plus allowlisted host operations |
+| lifetime of its work | single-use, torn down on every exit path                                            | persistent                                        |
 
 Both dial out and hold no inbound port. Both run on machines the customer owns, including
 behind NAT.
@@ -27,10 +27,10 @@ behind NAT.
 **A qualifier only carries information when the unqualified alternative also exists.**
 
 `ecs-agent` informs because `ssm-agent` exists alongside it. Portainer's `edge agent` informs
-because Portainer also ships a plain `agent` that the server dials *into*. A qualifier naming a
+because Portainer also ships a plain `agent` that the server dials _into_. A qualifier naming a
 property that everything in the system shares teaches the reader nothing.
 
-Surveyed prior art, all of which qualifies by the *service the agent serves* rather than by a
+Surveyed prior art, all of which qualifies by the _service the agent serves_ rather than by a
 functional adjective: `amazon-ecs-agent`, `amazon-ssm-agent`, `codedeploy-agent`, Azure Monitor
 Agent, Azure Pipelines Agent, Azure Connected Machine agent (`azcmagent`), `oracle-cloud-agent`,
 `gitlab-runner`, GitLab Agent for Kubernetes (`agentk`), `datadog-agent` / Cluster Agent,
@@ -99,7 +99,7 @@ form was chosen because it is unambiguous next to the `runner-center-*` binaries
 with it until that migration finishes.
 
 **`edge-agent`.** Has real precedent in Portainer and accurately describes an outbound,
-NAT-traversing agent. Rejected because it is equally true of *both* agents here, and both READMEs
+NAT-traversing agent. Rejected because it is equally true of _both_ agents here, and both READMEs
 advertise it as a headline feature — EraInfra's says "a Worker behind NAT, a home router, or a
 corporate firewall participates like any other", Portless's says "machines dial out to it over WSS,
 so everything works behind NAT/firewalls". A qualifier naming a universally-held property is
@@ -115,5 +115,5 @@ one machine is both a Worker and a Node (deliberately left open by keeping Worke
 relative. `ci-agent` was replaced by `action-runner-agent` because no surveyed system names an
 agent after a functional adjective; every one qualifies by a service name. `infra-agent` keeps the
 functional form despite that, because the surface it serves has no other name once "Portless" is
-retired, and because it is accurate about the full job — host operations *and* App orchestration —
+retired, and because it is accurate about the full job — host operations _and_ App orchestration —
 where `deploy-agent` would be too narrow.

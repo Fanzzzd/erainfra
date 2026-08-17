@@ -10,7 +10,7 @@
 surface to converge on the platform's guarantees. Onboarding is where the two surfaces diverge most,
 and the divergence is a real security gap rather than a cosmetic one.
 
-**Worker onboarding today.** The dashboard's *Machines → Add machine* generates a command. The
+**Worker onboarding today.** The dashboard's _Machines → Add machine_ generates a command. The
 control plane serves the script at `/install` (`convex/http.ts:261`), rendered with `AGENT_RELEASE`
 so the version and SHA-256 are baked into the script itself. The bytes come from the GitHub Release
 (`convex/installScript.ts:329`). The installer verifies SHA-256 against both the published and the
@@ -36,7 +36,7 @@ conflict.
 
 One onboarding path:
 
-- **One surface.** The dashboard's *Add machine* flow onboards both machine kinds, with the role
+- **One surface.** The dashboard's _Add machine_ flow onboards both machine kinds, with the role
   selected there. The separate Node-add flow in the old Portless web app is absorbed.
 - **One endpoint.** `/install` serves both roles (`--role`), rendered with the pinned version and
   checksum for both agents.
@@ -45,7 +45,7 @@ One onboarding path:
 - **Pluggable bytes.** GitHub Release by default; a hub mirror or a local file via an explicit
   source override for air-gapped installs. Verification is identical in every case.
 
-Retired: unverified download, and ad-hoc hub-side compilation as the *only* source of the binary.
+Retired: unverified download, and ad-hoc hub-side compilation as the _only_ source of the binary.
 
 **Correction.** An earlier version of this ADR stated that retiring hub-side compilation also
 retires the `docker run -v "$REPO":/srv/portless` bind mount. That is only half true. The mount has

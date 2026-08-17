@@ -1,7 +1,7 @@
 # EraInfra — domain context
 
 The ubiquitous language for this repository. When a term below is written with a capital
-letter in code, comments, docs or commit messages, it means *this* and nothing looser.
+letter in code, comments, docs or commit messages, it means _this_ and nothing looser.
 
 EraInfra is one platform with two surfaces, both of which run on machines the customer owns:
 
@@ -13,14 +13,14 @@ platform and the name is retired — see [ADR 0004](docs/adr/0004-portless-is-a-
 
 ## The two agents
 
-| | **Action Runner Agent** | **Infra Agent** |
-|---|---|---|
-| lives at | `apps/action-runner-agent` | `apps/infra-agent` |
-| runs on | a **Worker** | a **Node** |
-| registers | capacity per Profile | itself, for management |
-| claims work | Attempts, experiments | nothing — it is commanded |
-| what it runs | one disposable boundary per Attempt, then destroys it | long-lived **Apps** + allowlisted host operations |
-| its work's lifetime | single-use | persistent |
+|                     | **Action Runner Agent**                               | **Infra Agent**                                   |
+| ------------------- | ----------------------------------------------------- | ------------------------------------------------- |
+| lives at            | `apps/action-runner-agent`                            | `apps/infra-agent`                                |
+| runs on             | a **Worker**                                          | a **Node**                                        |
+| registers           | capacity per Profile                                  | itself, for management                            |
+| claims work         | Attempts, experiments                                 | nothing — it is commanded                         |
+| what it runs        | one disposable boundary per Attempt, then destroys it | long-lived **Apps** + allowlisted host operations |
+| its work's lifetime | single-use                                            | persistent                                        |
 
 Both dial out over an encrypted connection and hold no inbound port, so both work behind NAT.
 That property is shared, which is why neither is named for it — see
@@ -41,7 +41,7 @@ Attempt. Machines install it with plain `npm install` from an archive pinned by 
 why it deliberately does not use the `catalog:` or `workspace:` protocols. Read the name as "the
 agent that serves Action Runners" — **it is not itself a Runner.**
 
-**Runner** — an ephemeral GitHub Actions runner: an object in *GitHub's* database with a
+**Runner** — an ephemeral GitHub Actions runner: an object in _GitHub's_ database with a
 `runner_id` that GitHub issues, created per Attempt through
 `actions/runners/generate-jitconfig` and deleted when the Attempt ends. It runs **inside** the
 isolation boundary with only a single-use JIT token. One Agent creates many Runners over its
@@ -54,7 +54,7 @@ allowlist-resolved operations; there is no raw-argv path. Also builds images and
 that Workers report to; the two have not been merged and the terms are not interchangeable.
 
 **Profile** — the immutable contract a Worker advertises capacity against: executor, image
-release, vCPUs, memory. Readiness is per Worker *and* Profile.
+release, vCPUs, memory. Readiness is per Worker _and_ Profile.
 
 **Attempt** — one execution of one CI job inside one disposable boundary. The isolation boundary
 is per Attempt, never per Worker.

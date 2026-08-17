@@ -7,7 +7,7 @@
 ## Context
 
 `feat: absorb portless — infra management joins the CI platform (#35)` moved Portless
-into this repository. The title states the intent: Portless *joins* the platform. The
+into this repository. The title states the intent: Portless _joins_ the platform. The
 execution did not match it. Portless was moved in as a directory, not adopted as a
 member of the workspace, and eleven months of independent history came with it intact.
 
