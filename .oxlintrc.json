@@ -30,22 +30,17 @@
   },
   "overrides": [
     {
-      // The `portless/**` globs here and below are pre-move paths: the merge turns
-      // apps/api -> apps/hub, apps/web -> apps/hub-web, apps/docs -> apps/docs,
-      // packages/cli -> packages/cli and prototypes/relay-experiments ->
-      // apps/hub/scripts/verify. Repointed by the `git mv` commit, not before it.
-      "files": ["apps/dashboard/**", "portless/apps/web/**", "portless/apps/docs/**"],
+      "files": ["apps/dashboard/**", "apps/hub-web/**", "apps/docs/**"],
       "env": { "browser": true }
     },
     {
       "files": [
         "apps/action-runner-agent/**",
+        "apps/hub/**",
         "packages/backend/scripts/**",
         "packages/backend/tests/**",
-        "packages/release/**",
-        "portless/apps/api/**",
-        "portless/packages/cli/**",
-        "portless/prototypes/**"
+        "packages/cli/**",
+        "packages/release/**"
       ],
       "env": { "node": true }
     }
