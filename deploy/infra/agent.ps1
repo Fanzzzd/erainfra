@@ -4,15 +4,28 @@
 #   & ([scriptblock]::Create((irm <hub>/agent.ps1))) -Token <token> [-Name <name>] -Install
 #   & ([scriptblock]::Create((irm <hub>/agent.ps1))) -Token <token> -Install -SetupRuntime
 #
+# What this script no longer does (ADR 0006): download an .exe and run it. It used to fetch
+# $hostBase/agent-bin/portless-agent-windows-amd64.exe with no integrity check of any kind and start
+# it. It now hands the install to the control plane's verified installer at /install.ps1, which
+# checks what it downloaded against a SHA-256 the control plane pins and refuses on a mismatch.
+#
+# The bytes still come from this hub by default — -Source points the payload at /agent-bin/ while the
+# script and the digest come from the control plane over TLS — so self-hosted and air-gapped installs
+# are unaffected. Populate the mirror with build-agents.sh from the commit the control plane pins.
+#
 # The hub URL defaults to wherever this script was served from, so usually just -Token is needed.
 # -Install     registers a scheduled task so the agent reconnects at every logon (survives reboot).
 # -SetupRuntime (elevated) best-effort enables the Windows Linux-container stack (WSL2 features). It
 #               never reboots on its own — it tells you when a reboot is needed. Without it the script
 #               only INSTALLS the agent and REPORTS what the box still needs to run containers.
+# -InstallUrl  the control plane serving /install.ps1; defaults to $env:ERAINFRA_INSTALL_URL.
+# -FromRelease take the bytes from the GitHub release instead of this hub's mirror.
 param(
   [string]$Hub = "",
   [string]$Token = "",
   [string]$Name = "",
+  [string]$InstallUrl = "",
+  [switch]$FromRelease,
   [switch]$Install,
   [switch]$SetupRuntime
 )
@@ -21,9 +34,8 @@ $ErrorActionPreference = "Stop"
 
 # --- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) -----------------------
 # Read both names, prefer the new one, warn when the old one is what was found, delete nothing.
-# Nothing writes an ERAINFRA_* name yet, so on a Windows Node in the field today this returns
-# exactly what it returned before and prints one line. Copied rather than shared: this file is
-# irm'd and run as a scriptblock on a bare box. See apps/hub/src/env.ts for the reasons.
+# Copied rather than shared: this file is irm'd and run as a scriptblock on a bare box. See
+# apps/hub/src/env.ts for the reasons.
 function Get-RenamedEnv {
   param([string]$NewName, [string]$OldName)
   $current = [Environment]::GetEnvironmentVariable($NewName)
@@ -34,14 +46,6 @@ function Get-RenamedEnv {
     return $retired
   }
   return $null
-}
-
-# The prefix directory this box already holds. Dual-READ only: with neither directory present this
-# resolves to the old path, so a fresh install lands exactly where it lands today.
-function Get-PrefixDir {
-  $current = Join-Path $HOME ".erainfra"
-  if (Test-Path $current) { return $current }
-  return (Join-Path $HOME ".portless")
 }
 
 # A param default cannot call a function defined below it, so the env fallback lands here instead.
@@ -106,57 +110,33 @@ function Enable-Runtime {
   Write-Host "           nested-virtualization is off — enable it on the hypervisor/BIOS hosting this box." -ForegroundColor Yellow
 }
 
-$prefix = Get-PrefixDir
-$bin = Join-Path $prefix "bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-$exe = Join-Path $bin "portless-agent.exe"
-
-# Windows agent is amd64 (the common case). For arm64 Windows, build+serve that asset and adjust.
-$arch = "amd64"
-$url = "$hostBase/agent-bin/portless-agent-windows-$arch.exe"
-Write-Host "[portless] downloading agent from $url ..."
-Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
-Unblock-File $exe   # clear MOTW so it runs without a SmartScreen prompt
-
 if ($SetupRuntime) { Enable-Runtime }
 
-$agentArgs = @("connect", "--hub", $wss, "--token", $Token)
-if ($Name) { $agentArgs += @("--name", $Name) }
-
-if ($Install) {
-  # Detect and report, never rename (ADR 0004 stage 1). A scheduled task is not a path a fallback
-  # can chase: registering a second task under a new name leaves the old one REGISTERED and starting
-  # its own agent at every logon, so the box would run two. This script keeps registering the frozen
-  # name and only refuses when a box is ALREADY half-migrated — nothing in this release can produce
-  # that state, so the check is here for the release that renames and for a hand-migrated box.
-  $renamedTask = Get-ScheduledTask -TaskName "EraInfraAgent" -ErrorAction SilentlyContinue
-  $frozenTask = Get-ScheduledTask -TaskName "PortlessAgent" -ErrorAction SilentlyContinue
-  if ($renamedTask -and $frozenTask) {
-    throw "this box has both PortlessAgent and EraInfraAgent scheduled tasks - two agents would dial the same hub. Unregister one first: Unregister-ScheduledTask -TaskName EraInfraAgent -Confirm:`$false"
-  }
-  # Prefer a scheduled task (runs even before interactive logon). On a UAC-filtered local admin in a
-  # non-elevated shell, Register-ScheduledTask is Access Denied — so fall back to a per-user Startup
-  # entry, which needs NO elevation and still survives reboot (runs at the next interactive logon).
-  try {
-    $action = New-ScheduledTaskAction -Execute $exe -Argument ($agentArgs -join " ")
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    Register-ScheduledTask -TaskName "PortlessAgent" -Action $action -Trigger $trigger -Force -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName "PortlessAgent" -ErrorAction Stop
-    Write-Host "[portless] installed scheduled task 'PortlessAgent' and started it." -ForegroundColor Green
-    Write-Host "[portless] remove with: Unregister-ScheduledTask -TaskName PortlessAgent -Confirm:`$false"
-  } catch {
-    Write-Host "[portless] scheduled task needs elevation here; using a per-user Startup entry instead (no admin needed)." -ForegroundColor Yellow
-    $startup = [Environment]::GetFolderPath('Startup')
-    $cmd = Join-Path $startup 'portless-agent.cmd'
-    Set-Content -Path $cmd -Encoding ASCII -Value ('@start "" "' + $exe + '" ' + ($agentArgs -join ' '))
-    Start-Process -FilePath $exe -ArgumentList $agentArgs -WindowStyle Hidden
-    Write-Host "[portless] installed Startup entry and started the agent (hidden)." -ForegroundColor Green
-    Write-Host "[portless] remove with: del `"$cmd`""
-  }
-  Start-Sleep -Seconds 2
-  Show-Runtime | Out-Null
-} else {
-  Show-Runtime | Out-Null
-  Write-Host "[portless] connecting to $wss ... (Ctrl-C to stop)"
-  & $exe @agentArgs
+# The server templates <install> to the control plane this hub is configured against
+# (ERAINFRA_INSTALL_URL), and to the empty string when there is none — which is why the placeholder
+# appears exactly once and nothing below compares against its text: the templating would rewrite
+# that comparison too. Without a control plane there is no pinned digest, and installing an
+# unchecked binary is exactly what ADR 0006 retired, so this refuses rather than falling back.
+$templatedInstallUrl = "<install>"
+$resolvedInstallUrl = $InstallUrl
+if (-not $resolvedInstallUrl) { $resolvedInstallUrl = $env:ERAINFRA_INSTALL_URL }
+if (-not $resolvedInstallUrl) { $resolvedInstallUrl = $templatedInstallUrl }
+if (-not $resolvedInstallUrl) {
+  throw "no verified installer configured: set ERAINFRA_INSTALL_URL on the hub, or pass -InstallUrl https://<control-plane>"
 }
+
+# Self-hosted by default: the payload comes off this hub, the digest comes from the control plane.
+# Windows agent is amd64 (the common case). For arm64 Windows, build+serve that asset and adjust.
+$installerArgs = @{ Role = "node"; Token = $Token; Hub = $wss; Install = [bool]$Install }
+if ($Name) { $installerArgs.Name = $Name }
+if (-not $FromRelease) { $installerArgs.Source = "$hostBase/agent-bin/portless-agent-windows-amd64.exe" }
+
+Write-Host "[portless] installing the verified agent via $resolvedInstallUrl/install.ps1 ..."
+try {
+  & ([scriptblock]::Create((Invoke-RestMethod -Uri "$resolvedInstallUrl/install.ps1" -UseBasicParsing))) @installerArgs
+} catch {
+  Write-Host "[portless] verified install failed. If the checksum did not match, this hub's /agent-bin mirror is not the release the control plane pins: rebuild it with build-agents.sh from that commit, or re-run with -FromRelease." -ForegroundColor Red
+  throw
+}
+
+Show-Runtime | Out-Null

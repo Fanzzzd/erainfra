@@ -76,6 +76,39 @@ curl -fsSL https://<hub>/agent.sh | sudo sh -s -- --token <plt_...> --name <name
 
 Windows: `deploy/infra/agent.ps1` (see `deploy/infra/WINDOWS.md`).
 
+Both hand the install to the control plane's verified installer, which checks the agent binary
+against a SHA-256 the control plane pins and refuses on a mismatch
+([ADR 0006](adr/0006-one-onboarding-path-with-a-pinned-trust-root.md)). The bytes still come off the
+hub — `ERAINFRA_INSTALL_URL` in the hub's env names the control plane the checksum comes from — so
+self-hosted and air-gapped installs are unaffected. Enrolment without that setting refuses; it does
+not fall back to the unchecked download these scripts used to do. The same command works from the
+platform dashboard's **Machines → Add machine → Node**, which is now the one flow for both machine
+kinds.
+
+### Filling the hub's `/agent-bin` mirror
+
+`deploy/infra/build-agents.sh` fills the directory the hub serves those bytes from. Two ways, and the
+difference decides what happens on a box that is offline:
+
+```sh
+sh deploy/infra/build-agents.sh --from-release   # download the attested release assets, verified
+sh deploy/infra/build-agents.sh                  # compile them here, on the pinned toolchain
+```
+
+`--from-release` is the one that cannot drift: it copies the exact bytes the control plane pins, and
+refuses anything else. Compiling is the offline path, and it is byte-reproducible **only on the Go
+toolchain the release used** — a patch release is enough to change the output. Both build paths
+therefore set `GOTOOLCHAIN` explicitly from the `go` directive in the repository's `go.mod`, which is
+also the version `setup-go` installs in CI; `packages/release/tests/go-toolchain.test.ts` fails if
+those declarations ever disagree.
+
+**On an air-gapped hub whose Go is not the pinned version, the compile deliberately fails.**
+`GOTOOLCHAIN=go<pinned>` cannot download the toolchain with no network, so `build-agents.sh` stops
+before it builds anything and names the toolchain in the error. That is the intended behaviour: the
+alternative is silently producing bytes every Node then refuses at install time, which reads as
+tampering and sends the operator to rebuild the mirror they just built correctly. Either install the
+pinned Go on the hub, or fill the mirror with `--from-release` from a box that has the release.
+
 ### Node privilege boundary
 
 Treat every Portless node as a privileged service boundary, not as an unprivileged sandbox. On

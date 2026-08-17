@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { readPinnedGoToolchain } from "../src/go-toolchain.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 const runtimeOut = path.join(repoRoot, "apps", "runtime", "dist", "release");
@@ -110,6 +111,32 @@ const targets: Target[] = [
   },
 ];
 
+// These assets are what a Node's installer verifies against, and deploy/infra/build-agents.sh
+// recompiles the same bytes on a customer's hub. Both read the toolchain from go.mod's go directive
+// and both set GOTOOLCHAIN explicitly, because the default resolves to "at least" rather than
+// "exactly" and a patch difference changes the bytes.
+const toolchain = readPinnedGoToolchain(repoRoot);
+const buildEnv = { ...process.env, CGO_ENABLED: "0", GOTOOLCHAIN: toolchain.goToolchain };
+
+// Setting it is not the same as getting it: a box that cannot obtain the pinned toolchain must fail
+// here, naming the toolchain, rather than publish bytes nobody can reproduce. Both failure shapes
+// end up in the same message — go reporting a different version, and go refusing to run at all,
+// which is what an offline box does when GOTOOLCHAIN names a toolchain it cannot download.
+let reported: string;
+try {
+  reported = execFileSync("go", ["version"], { cwd: repoRoot, encoding: "utf8", env: buildEnv })
+    .trim()
+    .split(" ")[2];
+} catch {
+  reported = "nothing";
+}
+if (reported !== toolchain.expectedGoVersion) {
+  throw new Error(
+    `go.mod pins ${toolchain.expectedGoVersion} but this build would use ${reported}. These assets are only byte-reproducible on the pinned toolchain — a Go patch release is enough to change the bytes a Node then verifies — so the build stops here rather than publishing something the hub cannot reproduce. An offline box cannot download ${toolchain.expectedGoVersion}; install it, or build where it is available.`,
+  );
+}
+console.log(`building Go assets with ${toolchain.expectedGoVersion} (pinned by go.mod)`);
+
 rmSync(runtimeOut, { recursive: true, force: true });
 rmSync(releaseOut, { recursive: true, force: true });
 mkdirSync(runtimeOut, { recursive: true });
@@ -131,7 +158,7 @@ for (const target of targets) {
     {
       cwd: repoRoot,
       stdio: "inherit",
-      env: { ...process.env, CGO_ENABLED: "0", GOOS: target.os, GOARCH: target.arch },
+      env: { ...buildEnv, GOOS: target.os, GOARCH: target.arch },
     },
   );
   const digest = createHash("sha256").update(readFileSync(target.output)).digest("hex");
