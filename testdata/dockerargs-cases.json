@@ -1,0 +1,856 @@
+{
+  "note": [
+    "One conformance fixture, read as a table test by both implementations of this security boundary:",
+    "apps/hub/src/runtime/dockerargs.ts (TypeScript, the Hub) and",
+    "apps/infra-agent/internal/agent/dockerargs.go (Go, the Infra Agent).",
+    "They enforce the same rule — which `docker run` arguments a customer-supplied App spec may contain —",
+    "and they were written separately, back when the two halves of the platform were separate products.",
+    "",
+    "`expect` is a verdict and nothing more. The two implementations return different error types with",
+    "different wording on purpose; what has to match is accepted-or-refused.",
+    "",
+    "Where a row's canonical answer was not obvious, it was decided by asking what `docker run` itself",
+    "would parse. A validator that accepts an argument Docker refuses fails a customer's deploy at the",
+    "Node with a confusing error; a validator that believes a different value than the one it hands over",
+    "is worse, because then the thing it approved and the thing that runs are not the same thing.",
+    "",
+    "No row may be skipped on either side. A skipped row is a failure wearing a disguise.",
+    "",
+    "One thing this file deliberately cannot express: ill-formed text. Go's encoding/json rewrites an",
+    "unpaired surrogate escape to U+FFFD; JavaScript's JSON.parse keeps it. A row spelled that way would",
+    "look shared and would in fact hand the two validators different inputs, so it is pinned natively on",
+    "each side instead — see the ill-formed-text test in each of the two test files."
+  ],
+  "cases": [
+    {
+      "name": "privileged",
+      "args": ["--privileged"],
+      "expect": "reject",
+      "why": "--privileged removes the container's confinement wholesale; it is the one flag that turns a deploy into host root. It is not on the allowlist, so it fails closed."
+    },
+    {
+      "name": "privileged split value",
+      "args": ["--privileged", "true"],
+      "expect": "reject",
+      "why": "Same flag in split syntax. The allowlist is matched against the flag token, so a following value token cannot smuggle it past."
+    },
+    {
+      "name": "privileged combined",
+      "args": ["--privileged=true"],
+      "expect": "reject",
+      "why": "Same flag `=`-joined. Prefix matching is restricted to the four allowed flags, so this is simply an unknown token."
+    },
+    {
+      "name": "host network split",
+      "args": ["--network", "host"],
+      "expect": "reject",
+      "why": "Host networking puts the container on the Node's network namespace, where it can reach every loopback-bound service the Hub assumes is private."
+    },
+    {
+      "name": "host network combined",
+      "args": ["--network=host"],
+      "expect": "reject",
+      "why": "Same escape, `=`-joined."
+    },
+    {
+      "name": "host net alias",
+      "args": ["--net=host"],
+      "expect": "reject",
+      "why": "`--net` is Docker's older alias for `--network`; an allowlist that only knew the long spelling would leave the alias open."
+    },
+    {
+      "name": "host net alias split",
+      "args": ["--net", "host"],
+      "expect": "reject",
+      "why": "Same alias, split syntax."
+    },
+    {
+      "name": "host pid split",
+      "args": ["--pid", "host"],
+      "expect": "reject",
+      "why": "The host PID namespace exposes every process on the Node, including their /proc/<pid>/environ, which is where the agent's own credentials live."
+    },
+    {
+      "name": "host pid combined",
+      "args": ["--pid=host"],
+      "expect": "reject",
+      "why": "Same escape, `=`-joined."
+    },
+    {
+      "name": "host ipc split",
+      "args": ["--ipc", "host"],
+      "expect": "reject",
+      "why": "The host IPC namespace shares System V shared memory with everything else on the Node."
+    },
+    {
+      "name": "host ipc combined",
+      "args": ["--ipc=host"],
+      "expect": "reject",
+      "why": "Same escape, `=`-joined."
+    },
+    {
+      "name": "device split",
+      "args": ["--device", "/dev/kvm"],
+      "expect": "reject",
+      "why": "A device node is a direct channel to the host kernel; /dev/kvm in particular is enough to run an unconfined guest."
+    },
+    {
+      "name": "device combined",
+      "args": ["--device=/dev/kvm"],
+      "expect": "reject",
+      "why": "Same escape, `=`-joined."
+    },
+    {
+      "name": "capability split",
+      "args": ["--cap-add", "SYS_ADMIN"],
+      "expect": "reject",
+      "why": "CAP_SYS_ADMIN is close enough to root that the container boundary stops meaning anything."
+    },
+    {
+      "name": "capability combined",
+      "args": ["--cap-add=SYS_ADMIN"],
+      "expect": "reject",
+      "why": "Same escape, `=`-joined."
+    },
+    {
+      "name": "security opt split",
+      "args": ["--security-opt", "seccomp=unconfined"],
+      "expect": "reject",
+      "why": "Turning off seccomp restores the full syscall surface to a customer-supplied image."
+    },
+    {
+      "name": "security opt combined",
+      "args": ["--security-opt=seccomp=unconfined"],
+      "expect": "reject",
+      "why": "Same escape, `=`-joined."
+    },
+    {
+      "name": "host bind short split",
+      "args": ["-v", "/:/host"],
+      "expect": "reject",
+      "why": "`-v` is allowed, but only for named volumes. A source beginning with `/` is a bind mount of the host filesystem — here, all of it."
+    },
+    {
+      "name": "host bind short equals",
+      "args": ["-v=/:/host"],
+      "expect": "reject",
+      "why": "Same bind mount, `=`-joined."
+    },
+    {
+      "name": "host bind long split",
+      "args": ["--volume", "/etc:/host"],
+      "expect": "reject",
+      "why": "A narrower host bind is still a host bind: /etc holds the Node's agent env file and its TLS material."
+    },
+    {
+      "name": "host bind long equals",
+      "args": ["--volume=/etc:/host"],
+      "expect": "reject",
+      "why": "Same bind mount, `=`-joined."
+    },
+    {
+      "name": "docker socket short",
+      "args": ["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+      "expect": "reject",
+      "why": "The Docker socket is root-equivalent: a container holding it can start another container with --privileged. Refused by name as well as by the named-volume rule, because the name is the part a reader recognises."
+    },
+    {
+      "name": "docker socket long",
+      "args": ["--volume=/var/run/docker.sock:/sock"],
+      "expect": "reject",
+      "why": "Same socket mounted under a different container path — the check is on the source, not on where it lands."
+    },
+    {
+      "name": "bind mount split",
+      "args": ["--mount", "type=bind,source=/,target=/host"],
+      "expect": "reject",
+      "why": "`--mount` is the modern spelling of `-v` and expresses bind mounts too. It is not on the allowlist at all, which is the correct outcome: an allowlist that enumerates escapes will always be one spelling behind."
+    },
+    {
+      "name": "bind mount combined",
+      "args": ["--mount=type=bind,source=/,target=/host"],
+      "expect": "reject",
+      "why": "Same flag, `=`-joined."
+    },
+    {
+      "name": "safe deployment",
+      "args": [
+        "-e",
+        "PORT=8080",
+        "-p",
+        "127.0.0.1:8080:80",
+        "--publish=9090:90",
+        "-v",
+        "myapp-data:/var/lib/data",
+        "--volume=myapp-cache:/cache:ro",
+        "--add-host=host.docker.internal:host-gateway"
+      ],
+      "expect": "accept",
+      "why": "The whole point of the allowlist: an ordinary App — one env var, two published ports, a data volume, a read-only cache volume and the mesh host-gateway entry — deploys unchanged."
+    },
+    {
+      "name": "env alone",
+      "args": ["--env="],
+      "expect": "reject",
+      "why": "An `=`-joined flag carries its value even when that value is empty. If the validator treated it as \"no value yet\" it would consume the NEXT token and approve it in a position Docker never reads it from — so the args it approved and the args Docker ran would differ."
+    },
+    {
+      "name": "env short alone",
+      "args": ["-e="],
+      "expect": "reject",
+      "why": "An `=`-joined flag carries its value even when that value is empty. If the validator treated it as \"no value yet\" it would consume the NEXT token and approve it in a position Docker never reads it from — so the args it approved and the args Docker ran would differ."
+    },
+    {
+      "name": "env swallows next",
+      "args": ["--env=", "PORT=8080"],
+      "expect": "reject",
+      "why": "An `=`-joined flag carries its value even when that value is empty. If the validator treated it as \"no value yet\" it would consume the NEXT token and approve it in a position Docker never reads it from — so the args it approved and the args Docker ran would differ. Here `PORT=8080` is a valid env value in the wrong position; accepting it would mean the validator read the spec one token out of step with Docker."
+    },
+    {
+      "name": "publish swallows next",
+      "args": ["-p=", "127.0.0.1:8080:80"],
+      "expect": "reject",
+      "why": "An `=`-joined flag carries its value even when that value is empty. If the validator treated it as \"no value yet\" it would consume the NEXT token and approve it in a position Docker never reads it from — so the args it approved and the args Docker ran would differ."
+    },
+    {
+      "name": "volume swallows next",
+      "args": ["--volume=", "myapp-data:/var/lib/data"],
+      "expect": "reject",
+      "why": "An `=`-joined flag carries its value even when that value is empty. If the validator treated it as \"no value yet\" it would consume the NEXT token and approve it in a position Docker never reads it from — so the args it approved and the args Docker ran would differ."
+    },
+    {
+      "name": "add-host swallows next",
+      "args": ["--add-host=", "host.docker.internal:host-gateway"],
+      "expect": "reject",
+      "why": "An `=`-joined flag carries its value even when that value is empty. If the validator treated it as \"no value yet\" it would consume the NEXT token and approve it in a position Docker never reads it from — so the args it approved and the args Docker ran would differ."
+    },
+    {
+      "name": "publish hex host port",
+      "args": ["-p", "0x50:80"],
+      "expect": "reject",
+      "why": "DIVERGENT. Docker parses a port with strconv.ParseUint(raw, 10, 16) — decimal digits only, no sign, no whitespace. A validator that parses it any other way approves a spec Docker will refuse, or worse, believes a different port number than the one it hands over. JavaScript's Number(\"0x50\") is 80, so the Hub approved this believing it published port 80 — while the literal text handed to `docker run` is `0x50`, which Docker rejects."
+    },
+    {
+      "name": "publish exponent host port",
+      "args": ["-p", "1e3:80"],
+      "expect": "reject",
+      "why": "DIVERGENT. Docker parses a port with strconv.ParseUint(raw, 10, 16) — decimal digits only, no sign, no whitespace. A validator that parses it any other way approves a spec Docker will refuse, or worse, believes a different port number than the one it hands over. Number(\"1e3\") is 1000. Same failure as the hex row: the validator's belief and the executed argument were different values."
+    },
+    {
+      "name": "publish decimal host port",
+      "args": ["-p", "80.0:80"],
+      "expect": "reject",
+      "why": "DIVERGENT. Docker parses a port with strconv.ParseUint(raw, 10, 16) — decimal digits only, no sign, no whitespace. A validator that parses it any other way approves a spec Docker will refuse, or worse, believes a different port number than the one it hands over. Number(\"80.0\") is the integer 80, so even an is-integer check passes. A port is a token, not a numeric quantity."
+    },
+    {
+      "name": "publish leading space host port",
+      "args": ["-p", " 80:80"],
+      "expect": "reject",
+      "why": "DIVERGENT. Docker parses a port with strconv.ParseUint(raw, 10, 16) — decimal digits only, no sign, no whitespace. A validator that parses it any other way approves a spec Docker will refuse, or worse, believes a different port number than the one it hands over. Number() trims surrounding whitespace before parsing, so the Hub read \" 80\" as 80. Docker does not trim."
+    },
+    {
+      "name": "publish whitespace both sides",
+      "args": ["-p", " 80 :80"],
+      "expect": "reject",
+      "why": "DIVERGENT. Same trimming hole as the leading-space row, and the symmetric spelling shows it is the parser and not a stray character."
+    },
+    {
+      "name": "publish tab in port",
+      "args": ["-p", "\t80:80"],
+      "expect": "reject",
+      "why": "DIVERGENT. A tab is whitespace to Number() and a hard error to Docker."
+    },
+    {
+      "name": "publish trailing newline in value",
+      "args": ["-p", "80:80\n"],
+      "expect": "reject",
+      "why": "DIVERGENT, and the sharpest of the family. Every implementation already refuses NUL, CR and LF in a flag token; the value token of a split flag was never charset-checked, and Number() silently trims the newline away. A newline inside an argument that is later rendered into a command line or a unit file is exactly the primitive that check exists to stop, so the fix is to charset-check the value token too, not just to parse the port more carefully."
+    },
+    {
+      "name": "publish double proto suffix udp then tcp",
+      "args": ["-p", "80/udp/tcp:80"],
+      "expect": "reject",
+      "why": "DIVERGENT, and the row that proves \"the Go one is stricter, so match Go\" would have been the wrong rule — here Go is the LOOSE one. Go stripped `/tcp` and then `/udp` in sequence, leaving a clean `80`. Docker reads a protocol suffix off the CONTAINER-PORT component only, and takes it from the last slash in that component, so this spec is refused twice over: the suffix is on the host port, where none is allowed, and stripping two of them is not something Docker ever does."
+    },
+    {
+      "name": "publish double proto suffix tcp then udp",
+      "args": ["-p", "80/tcp/udp:80"],
+      "expect": "reject",
+      "why": "The mirror spelling, which both sides already refused. It is in the fixture so the fix for the row above cannot be a special case for one ordering."
+    },
+    {
+      "name": "publish double proto suffix on container port",
+      "args": ["-p", "8080:80/udp/tcp"],
+      "expect": "reject",
+      "why": "The same double suffix moved to the component where ONE suffix is legal, so the last-slash rule is pinned where it can actually be exercised: protocol `tcp` comes off, and `80/udp` is then not a port."
+    },
+    {
+      "name": "publish leading plus",
+      "args": ["-p", "+80:80"],
+      "expect": "reject",
+      "why": "Not divergent — both sides ACCEPTED this, and both were wrong. Docker parses a port with ParseUint, which does not permit a sign, so `+80` is refused at the Node and the App simply never deploys. It is refused here for the same reason the hex and exponent rows are: the validator must parse a port the way Docker parses it. The fixture is how a row that both implementations agreed on came to be looked at at all."
+    },
+    {
+      "name": "publish arabic-indic digits",
+      "args": ["-p", "٨٠:80"],
+      "expect": "reject",
+      "why": "Number() accepts Arabic-Indic digits and returns 80; both implementations happened to refuse this already, and the decimal-digits-only rule keeps it refused for a stated reason rather than by luck."
+    },
+    {
+      "name": "publish underscore separator",
+      "args": ["-p", "8_0:80"],
+      "expect": "reject",
+      "why": "Numeric separators are a source-code convenience, not a wire format."
+    },
+    {
+      "name": "publish infinity",
+      "args": ["-p", "Infinity:80"],
+      "expect": "reject",
+      "why": "Number(\"Infinity\") is a number but not an integer. Pinned because it is the obvious next probe after the hex and exponent rows."
+    },
+    {
+      "name": "publish udp proto",
+      "args": ["-p", "80/udp:80"],
+      "expect": "reject",
+      "why": "Not divergent — both sides ACCEPTED this, and both were wrong, which is the second time this fixture has turned up that shape. Docker's ParsePortSpec splits the spec into address, host port and container port FIRST, takes the protocol off the container-port component only, and then parses the host port as a plain port range. `80/udp` is therefore not a port at all in the host position, and Docker refuses the spec. Both validators stripped a suffix from every component, so both approved an App that could never deploy."
+    },
+    {
+      "name": "publish udp proto on container port",
+      "args": ["-p", "8080:80/udp"],
+      "expect": "accept",
+      "why": "The same suffix in the position Docker actually reads it from. This is the row that keeps the fix above from being a blanket ban: `/udp` is ordinary Docker syntax and must keep working."
+    },
+    {
+      "name": "publish tcp proto",
+      "args": ["-p", "8080:80/tcp"],
+      "expect": "accept",
+      "why": "The same for `/tcp`, in its usual position."
+    },
+    {
+      "name": "publish proto on host port of three part form",
+      "args": ["-p", "127.0.0.1:8080/tcp:80"],
+      "expect": "reject",
+      "why": "The host-port suffix again, in the three-component form, where the address makes the component boundaries explicit. Both sides accepted this before for the same reason they accepted `80/udp:80`."
+    },
+    {
+      "name": "publish sctp proto",
+      "args": ["-p", "80/sctp:80"],
+      "expect": "reject",
+      "why": "Refused twice over after this PR: SCTP is not on the protocol allowlist, and the suffix is on the host port where no protocol is read. Kept in the host position because that is where it was measured."
+    },
+    {
+      "name": "publish sctp proto on container port",
+      "args": ["-p", "8080:80/sctp"],
+      "expect": "reject",
+      "why": "SCTP in the position where a protocol IS read, so the allowlist is tested rather than the position rule. Docker itself supports SCTP; these Nodes route TCP and UDP only, so the allowlist stops at those two."
+    },
+    {
+      "name": "publish loopback three part",
+      "args": ["-p", "127.0.0.1:8080:80"],
+      "expect": "accept",
+      "why": "The three-part form is allowed only when it binds loopback — which is how an App gets a port that the mesh can reach but the Node's network cannot."
+    },
+    {
+      "name": "publish non loopback three part",
+      "args": ["-p", "0.0.0.0:8080:80"],
+      "expect": "reject",
+      "why": "An explicit bind address other than 127.0.0.1 publishes the port to the Node's network, and past it to whatever the Node is plugged into."
+    },
+    {
+      "name": "publish empty host port",
+      "args": ["-p", ":80"],
+      "expect": "reject",
+      "why": "An empty component is not a port."
+    },
+    {
+      "name": "publish port zero",
+      "args": ["-p", "0:80"],
+      "expect": "reject",
+      "why": "Port 0 means \"pick one\" to the kernel and \"unspecified\" to everything that reads the spec back."
+    },
+    {
+      "name": "publish port 65536",
+      "args": ["-p", "65536:80"],
+      "expect": "reject",
+      "why": "Out of range; the range check must survive any rewrite of the digit parsing."
+    },
+    {
+      "name": "publish octal-looking",
+      "args": ["-p", "08:80"],
+      "expect": "accept",
+      "why": "Leading zeros are not octal to ParseUint(raw, 10, 16) and must not become an error: `08` is port 8."
+    },
+    {
+      "name": "volume trailing slash target",
+      "args": ["-v", "myapp-data:/var/lib/data/"],
+      "expect": "accept",
+      "why": "DIVERGENT. The container mount target is judged on what it MEANS, not on how it is spelled: normalise it, then require that it is absolute, that it is not the container root, and that no segment is `..`. `/var/lib/data/` and `/var/lib/data` are the same directory to Docker and to the kernel. Refusing the trailing slash rejects a legitimate App for a cosmetic reason — which is why \"the Go one was stricter\" is not by itself an argument for tightening."
+    },
+    {
+      "name": "volume double slash target",
+      "args": ["-v", "myapp-data://srv/app"],
+      "expect": "accept",
+      "why": "DIVERGENT. Normalises to `/srv/app`. A doubled slash is what string concatenation produces when a prefix already ends in one, so refusing it breaks generated specs and protects nothing."
+    },
+    {
+      "name": "volume dot segment target",
+      "args": ["-v", "myapp-data:/var/./lib"],
+      "expect": "accept",
+      "why": "DIVERGENT. Normalises to `/var/lib`. A `.` segment cannot move a path anywhere it could not already reach."
+    },
+    {
+      "name": "volume trailing double slash",
+      "args": ["-v", "myapp-data:/data//"],
+      "expect": "accept",
+      "why": "DIVERGENT. Normalises to `/data`. Same reasoning as the two rows above; listed separately so the fix cannot be a trailing-slash special case."
+    },
+    {
+      "name": "volume dot only target",
+      "args": ["-v", "myapp-data:/."],
+      "expect": "reject",
+      "why": "DIVERGENT, and the one row in this family where the LOOSER side was wrong. `/.` normalises to `/`, the container root — a mount both implementations already refuse when it is spelled `/`. The Hub accepted it only because its check was textual (starts with `/`, is not the string `/`) rather than semantic. Docker refuses `/` as a destination."
+    },
+    {
+      "name": "volume root target",
+      "args": ["-v", "myapp-data:/"],
+      "expect": "reject",
+      "why": "Mounting a volume over the container's root filesystem hides the image the customer asked to run."
+    },
+    {
+      "name": "volume parent at end",
+      "args": ["-v", "myapp-data:/var/lib/.."],
+      "expect": "reject",
+      "why": "A `..` segment is never something a human meant to write in a mount target. Refusing the segment outright — rather than only when it survives normalisation — keeps the rule readable and costs nothing."
+    },
+    {
+      "name": "volume parent in middle",
+      "args": ["-v", "myapp-data:/var/../etc"],
+      "expect": "reject",
+      "why": "This one normalises to the perfectly legal `/etc`, and is still refused: the rule is no `..` segment at all, so that a reader does not have to normalise in their head to know the answer."
+    },
+    {
+      "name": "volume parent at start",
+      "args": ["-v", "myapp-data:/../etc"],
+      "expect": "reject",
+      "why": "Same rule, at the front of the path."
+    },
+    {
+      "name": "volume dotdot prefix filename",
+      "args": ["-v", "myapp-data:/var/..bar"],
+      "expect": "accept",
+      "why": "`..bar` is a filename that begins with two dots, not a parent-directory segment. The distinction matters: a rule written with substring matching instead of segment matching would refuse this."
+    },
+    {
+      "name": "volume relative target",
+      "args": ["-v", "myapp-data:data"],
+      "expect": "reject",
+      "why": "A relative target has no fixed meaning; Docker requires an absolute container path."
+    },
+    {
+      "name": "volume target newline split",
+      "args": ["-v", "myapp-data:/data\n"],
+      "expect": "reject",
+      "why": "Control characters are refused in a mount target on both paths already; pinned here so the value-token charset check added for the publish row is not the only thing keeping it out."
+    },
+    {
+      "name": "volume ro option",
+      "args": ["-v", "myapp-data:/data:ro"],
+      "expect": "accept",
+      "why": "Read-only is the one mount option allowed, and it only ever narrows."
+    },
+    {
+      "name": "volume rw option",
+      "args": ["-v", "myapp-data:/data:rw"],
+      "expect": "reject",
+      "why": "Read-write is already the default; spelling it explicitly is refused so that the option field has exactly one accepted value and cannot become an extension point."
+    },
+    {
+      "name": "volume uppercase RO option",
+      "args": ["-v", "myapp-data:/data:RO"],
+      "expect": "reject",
+      "why": "The option comparison is exact. Docker's own option parsing is case-sensitive here, so accepting `RO` would approve something Docker refuses."
+    },
+    {
+      "name": "volume four segments",
+      "args": ["-v", "myapp-data:/data:ro:z"],
+      "expect": "reject",
+      "why": "`z` and `Z` relabel SELinux contexts on the host. A fourth segment is refused by arity before its content is even considered."
+    },
+    {
+      "name": "volume name newline split",
+      "args": ["-v", "myapp\n:/data"],
+      "expect": "reject",
+      "why": "A newline inside the volume name. Both sides already refuse it, but only because their anchored regexes happen to agree about what end-of-string means — Go's `$` and JavaScript's `$` (without the `m` flag) both stop at the true end. Pinned so that a future rewrite in either language cannot quietly adopt the other convention."
+    },
+    {
+      "name": "volume name leading dash",
+      "args": ["-v", "-bad:/data"],
+      "expect": "reject",
+      "why": "A volume name starting with `-` would be read by Docker as a flag, not a name."
+    },
+    {
+      "name": "volume name dot start",
+      "args": ["-v", ".bad:/data"],
+      "expect": "reject",
+      "why": "Docker's own volume-name rule requires the first character to be alphanumeric."
+    },
+    {
+      "name": "volume uppercase docker sock",
+      "args": ["-v", "/VAR/RUN/DOCKER.SOCK:/sock"],
+      "expect": "reject",
+      "why": "The socket check is case-insensitive; the named-volume rule refuses this anyway. Two independent reasons, kept deliberately — the belt is the one a reader recognises and the braces are the one that holds."
+    },
+    {
+      "name": "volume name only",
+      "args": ["-v", "myapp-data"],
+      "expect": "reject",
+      "why": "A volume with no target is not a mount."
+    },
+    {
+      "name": "env plain",
+      "args": ["-e", "PORT=8080"],
+      "expect": "accept",
+      "why": "The ordinary case."
+    },
+    {
+      "name": "env empty value",
+      "args": ["-e", "PORT="],
+      "expect": "accept",
+      "why": "An env var set to the empty string is meaningfully different from an unset one, and Docker supports it."
+    },
+    {
+      "name": "env no equals",
+      "args": ["-e", "PORT"],
+      "expect": "reject",
+      "why": "`-e PORT` means \"copy PORT from the surrounding environment\" to Docker — the agent's own environment, which holds its credentials. It must never be reachable from a customer spec."
+    },
+    {
+      "name": "env leading equals",
+      "args": ["-e", "=8080"],
+      "expect": "reject",
+      "why": "An empty name is not a name."
+    },
+    {
+      "name": "env digit-leading key",
+      "args": ["-e", "1PORT=x"],
+      "expect": "reject",
+      "why": "Env names may not begin with a digit."
+    },
+    {
+      "name": "env dash in key",
+      "args": ["-e", "PO-RT=x"],
+      "expect": "reject",
+      "why": "Dashes are not legal in an env name and would be silently dropped or mangled downstream."
+    },
+    {
+      "name": "env newline in value split",
+      "args": ["-e", "PORT=80\n"],
+      "expect": "reject",
+      "why": "A newline in an env value survives into anything that renders the environment line by line."
+    },
+    {
+      "name": "env equals in value",
+      "args": ["-e", "URL=a=b"],
+      "expect": "accept",
+      "why": "Only the FIRST `=` separates name from value. `URL=a=b` sets URL to `a=b`, which is ordinary for connection strings."
+    },
+    {
+      "name": "env underscore key",
+      "args": ["-e", "_PORT=8080"],
+      "expect": "accept",
+      "why": "A leading underscore is legal in an env name."
+    },
+    {
+      "name": "add-host gateway split",
+      "args": ["--add-host", "host.docker.internal:host-gateway"],
+      "expect": "accept",
+      "why": "The single entry the mesh needs, so an App can reach a sibling service published on the Node's loopback."
+    },
+    {
+      "name": "add-host other",
+      "args": ["--add-host", "evil.example:1.2.3.4"],
+      "expect": "reject",
+      "why": "Any other entry rewrites name resolution inside the container, which is how a deploy redirects its own update or telemetry endpoint."
+    },
+    {
+      "name": "add-host empty",
+      "args": ["--add-host="],
+      "expect": "reject",
+      "why": "The comparison is against one exact string; nothing else passes, including nothing."
+    },
+    {
+      "name": "token count 65",
+      "args": [
+        "-e=K0=1",
+        "-e=K1=1",
+        "-e=K2=1",
+        "-e=K3=1",
+        "-e=K4=1",
+        "-e=K5=1",
+        "-e=K6=1",
+        "-e=K7=1",
+        "-e=K8=1",
+        "-e=K9=1",
+        "-e=K10=1",
+        "-e=K11=1",
+        "-e=K12=1",
+        "-e=K13=1",
+        "-e=K14=1",
+        "-e=K15=1",
+        "-e=K16=1",
+        "-e=K17=1",
+        "-e=K18=1",
+        "-e=K19=1",
+        "-e=K20=1",
+        "-e=K21=1",
+        "-e=K22=1",
+        "-e=K23=1",
+        "-e=K24=1",
+        "-e=K25=1",
+        "-e=K26=1",
+        "-e=K27=1",
+        "-e=K28=1",
+        "-e=K29=1",
+        "-e=K30=1",
+        "-e=K31=1",
+        "-e=K32=1",
+        "-e=K33=1",
+        "-e=K34=1",
+        "-e=K35=1",
+        "-e=K36=1",
+        "-e=K37=1",
+        "-e=K38=1",
+        "-e=K39=1",
+        "-e=K40=1",
+        "-e=K41=1",
+        "-e=K42=1",
+        "-e=K43=1",
+        "-e=K44=1",
+        "-e=K45=1",
+        "-e=K46=1",
+        "-e=K47=1",
+        "-e=K48=1",
+        "-e=K49=1",
+        "-e=K50=1",
+        "-e=K51=1",
+        "-e=K52=1",
+        "-e=K53=1",
+        "-e=K54=1",
+        "-e=K55=1",
+        "-e=K56=1",
+        "-e=K57=1",
+        "-e=K58=1",
+        "-e=K59=1",
+        "-e=K60=1",
+        "-e=K61=1",
+        "-e=K62=1",
+        "-e=K63=1",
+        "-e=K64=1"
+      ],
+      "expect": "reject",
+      "why": "At most 64 tokens. Every token here is individually valid, so the count is the only thing refusing this — which is the point: the cap is checked before anything is parsed, so a long spec cannot be used to make the parser itself the expensive part."
+    },
+    {
+      "name": "token count 64 valid",
+      "args": [
+        "-e=K0=1",
+        "-e=K1=1",
+        "-e=K2=1",
+        "-e=K3=1",
+        "-e=K4=1",
+        "-e=K5=1",
+        "-e=K6=1",
+        "-e=K7=1",
+        "-e=K8=1",
+        "-e=K9=1",
+        "-e=K10=1",
+        "-e=K11=1",
+        "-e=K12=1",
+        "-e=K13=1",
+        "-e=K14=1",
+        "-e=K15=1",
+        "-e=K16=1",
+        "-e=K17=1",
+        "-e=K18=1",
+        "-e=K19=1",
+        "-e=K20=1",
+        "-e=K21=1",
+        "-e=K22=1",
+        "-e=K23=1",
+        "-e=K24=1",
+        "-e=K25=1",
+        "-e=K26=1",
+        "-e=K27=1",
+        "-e=K28=1",
+        "-e=K29=1",
+        "-e=K30=1",
+        "-e=K31=1",
+        "-e=K32=1",
+        "-e=K33=1",
+        "-e=K34=1",
+        "-e=K35=1",
+        "-e=K36=1",
+        "-e=K37=1",
+        "-e=K38=1",
+        "-e=K39=1",
+        "-e=K40=1",
+        "-e=K41=1",
+        "-e=K42=1",
+        "-e=K43=1",
+        "-e=K44=1",
+        "-e=K45=1",
+        "-e=K46=1",
+        "-e=K47=1",
+        "-e=K48=1",
+        "-e=K49=1",
+        "-e=K50=1",
+        "-e=K51=1",
+        "-e=K52=1",
+        "-e=K53=1",
+        "-e=K54=1",
+        "-e=K55=1",
+        "-e=K56=1",
+        "-e=K57=1",
+        "-e=K58=1",
+        "-e=K59=1",
+        "-e=K60=1",
+        "-e=K61=1",
+        "-e=K62=1",
+        "-e=K63=1"
+      ],
+      "expect": "accept",
+      "why": "The same spec one token shorter. Exactly 64 tokens is inside the limit, pinned so the bound stays inclusive."
+    },
+    {
+      "name": "multibyte token under 512 utf16 over 512 bytes",
+      "args": [
+        "-e=KEY=😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      ],
+      "expect": "reject",
+      "provisional": true,
+      "why": "DIVERGENT, and the only row here decided by preference rather than by what Docker does. Both sides cap a token at 512, but they were counting different things: Go counted UTF-8 bytes (807 here) and the Hub counted JavaScript string units (407), so one spec was accepted on one path and refused on the other. Resolved to bytes, because bytes are what ARG_MAX, a systemd unit file and a log line all count, while UTF-16 units are an artefact of one language's string representation. Marked provisional: the cap is ours and not Docker's, so if an App ever legitimately needs a longer value the answer is to raise it on both sides at once — which this fixture now makes a single reviewable change instead of two."
+    },
+    {
+      "name": "ascii token over 512",
+      "args": [
+        "-e=KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "expect": "reject",
+      "why": "The same cap where the two rulers agree, so the byte-counting fix is pinned from both directions."
+    },
+    {
+      "name": "empty flag token",
+      "args": [""],
+      "expect": "reject",
+      "why": "An empty token is not a flag."
+    },
+    {
+      "name": "nul in flag token",
+      "args": ["-e=KEY=a\u0000b"],
+      "expect": "reject",
+      "why": "NUL truncates a C string; anything after it is invisible to the process that eventually runs."
+    },
+    {
+      "name": "nul in split value",
+      "args": ["-e", "KEY=a\u0000b"],
+      "expect": "reject",
+      "why": "The same character in the value half of a split flag."
+    },
+    {
+      "name": "env value with escape",
+      "args": ["-e", "MOTD=a\u001bb"],
+      "expect": "reject",
+      "why": "ESC is the lead byte of every ANSI sequence: an env value carrying one can rewrite an operator's terminal when the spec is echoed into a log or `docker inspect` output. It reached the container unexamined before this PR, because the shared control set was NUL, LF and CR and nothing else. The refused set is C0 except TAB, plus DEL — code points U+0000-U+0008, U+000A-U+001F and U+007F. Every one of them is a single byte in UTF-8 and a single unit in UTF-16, and none can occur inside a multi-byte sequence, so a Go implementation scanning bytes and a TypeScript one scanning string units give the same answer on every input without either of them decoding a rune."
+    },
+    {
+      "name": "env value with bell",
+      "args": ["-e", "MOTD=a\u0007b"],
+      "expect": "reject",
+      "why": "BEL, same family, same reason. The refused set is C0 except TAB, plus DEL — code points U+0000-U+0008, U+000A-U+001F and U+007F. Every one of them is a single byte in UTF-8 and a single unit in UTF-16, and none can occur inside a multi-byte sequence, so a Go implementation scanning bytes and a TypeScript one scanning string units give the same answer on every input without either of them decoding a rune."
+    },
+    {
+      "name": "env value with vertical tab",
+      "args": ["-e", "MOTD=a\u000bb"],
+      "expect": "reject",
+      "why": "VT moves the cursor down a line in a terminal, which is the same log-forging primitive LF already covers."
+    },
+    {
+      "name": "env value with backspace",
+      "args": ["-e", "MOTD=a\bb"],
+      "expect": "reject",
+      "why": "BS erases the character before it, so it can make a rendered log line read as something other than what was stored."
+    },
+    {
+      "name": "env value with delete",
+      "args": ["-e", "MOTD=ab"],
+      "expect": "reject",
+      "why": "DEL sits outside the C0 block and is the reason the rule is written as two ranges rather than \"below space\"."
+    },
+    {
+      "name": "env value with tab",
+      "args": ["-e", "IFS=a\tb"],
+      "expect": "accept",
+      "why": "THE CARVE-OUT, and the reason this rule was measured rather than copied. Docker accepts a tab in an env value and customers legitimately have them — delimiters, IFS, formatted config. Go's unicode.IsControl and JavaScript's \\p{Cc} both classify TAB as a control character, so widening to \"the control category\" would have turned a working customer command into a rejection: the same mistake as refusing `/var/lib/data/`."
+    },
+    {
+      "name": "env value with c1 next line",
+      "args": ["-e", "MOTD=ab"],
+      "expect": "accept",
+      "why": "THE OTHER EDGE. U+0085 is a C1 control and is in Unicode category Cc, so `\\p{Cc}` and unicode.IsControl both refuse it — and this rule does not. In UTF-8 a C1 code point is a two-byte sequence that a UTF-8-mode terminal does not interpret as a control function, so refusing it would be policing content rather than control characters. It would also drag rune decoding into a check that is otherwise pure ASCII, which is exactly where the two languages can drift apart."
+    },
+    {
+      "name": "mount target with escape",
+      "args": ["-v", "myapp-data:/data\u001bx"],
+      "expect": "reject",
+      "why": "The same character in the other position that renders: a mount target is echoed back in audit logs and the Apps view."
+    },
+    {
+      "name": "mount target with tab",
+      "args": ["-v", "myapp-data:/data\tx"],
+      "expect": "accept",
+      "why": "The TAB carve-out is uniform across positions. One rule in one place is the whole point of this fixture; a mount target that is stricter than an env value would be a second rule to keep in sync, which is the bug class this PR exists to remove."
+    },
+    {
+      "name": "combined flag with escape",
+      "args": ["-e=MOTD=a\u001bb"],
+      "expect": "reject",
+      "why": "The flag token is charset-checked before it is split, so the `=`-joined spelling is refused by the earlier of the two checks. Pinned so a future refactor cannot leave one of the two paths behind."
+    },
+    {
+      "name": "empty args",
+      "args": [],
+      "expect": "accept",
+      "why": "No docker args is the common case and must not be an error."
+    },
+    {
+      "name": "prefix lookalike publish-all",
+      "args": ["--publish-all"],
+      "expect": "reject",
+      "why": "`--publish-all` shares a prefix with `--publish` and publishes EVERY exposed port to the Node's network. Prefix matching is only ever done against the `=`-joined forms, so this stays an unknown flag."
+    },
+    {
+      "name": "prefix lookalike -pfoo",
+      "args": ["-pfoo"],
+      "expect": "reject",
+      "why": "Docker's own CLI accepts `-pfoo` as `-p foo`; this allowlist does not, because a validator that reimplements attached-value short flags will eventually disagree with the CLI about where a value starts."
+    },
+    {
+      "name": "prefix lookalike --envfile",
+      "args": ["--envfile=x"],
+      "expect": "reject",
+      "why": "`--env-file` reads a file from the Node's filesystem into the container's environment. The near-miss spelling is pinned because it is one hyphen away from an allowed flag."
+    },
+    {
+      "name": "double dash terminator",
+      "args": ["--", "--privileged"],
+      "expect": "reject",
+      "why": "`--` is not a flag on the allowlist, so the sequence stops there. Pinned because a parser that honoured `--` as a terminator would then have to decide what the tokens after it are, and every answer to that is worse than refusing."
+    },
+    {
+      "name": "bare value no flag",
+      "args": ["PORT=8080"],
+      "expect": "reject",
+      "why": "Every token must be a flag or the value of one. A bare token is a positional argument to `docker run`, which is where the image name and the command go."
+    }
+  ]
+}
