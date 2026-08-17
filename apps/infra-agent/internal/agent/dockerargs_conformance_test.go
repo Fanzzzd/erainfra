@@ -57,3 +57,23 @@ func TestValidateDockerArgsMatchesTheSharedConformanceFixture(t *testing.T) {
 		})
 	}
 }
+
+// The shared fixture cannot carry this case, so it is pinned natively on each side instead.
+// Measured: `encoding/json` rewrites an unpaired surrogate escape to U+FFFD, so `"a\ud800b"` in
+// the fixture reaches Go as the five bytes 61 ef bf bd 62 — while JavaScript's JSON.parse keeps
+// the lone surrogate and hands its validator a three-unit string. A row spelled that way would
+// look shared and would in fact be testing two different inputs on the two sides, which is worse
+// than not testing it. apps/hub/test/dockerargs.test.ts pins the JavaScript half of this.
+//
+// What both sides must do is agree in KIND: the control check is an ASCII byte predicate and is
+// deliberately blind to whether the surrounding text is well-formed, so ill-formed bytes with no
+// control character among them are accepted rather than being a second, unstated rule.
+func TestValidateDockerArgsIsBlindToIllFormedText(t *testing.T) {
+	illFormed := string([]byte{0x61, 0xff, 0x62}) // a, a bare continuation-less 0xff, b
+	if err := validateDockerArgs([]string{"-e", "MOTD=" + illFormed}); err != nil {
+		t.Fatalf("ill-formed but control-free env value rejected: %v", err)
+	}
+	if err := validateDockerArgs([]string{"-e", "MOTD=" + illFormed + "\x1b"}); err == nil {
+		t.Fatal("ESC alongside ill-formed bytes accepted; the byte scan must not depend on decoding")
+	}
+}

@@ -14,7 +14,12 @@
     "Node with a confusing error; a validator that believes a different value than the one it hands over",
     "is worse, because then the thing it approved and the thing that runs are not the same thing.",
     "",
-    "No row may be skipped on either side. A skipped row is a failure wearing a disguise."
+    "No row may be skipped on either side. A skipped row is a failure wearing a disguise.",
+    "",
+    "One thing this file deliberately cannot express: ill-formed text. Go's encoding/json rewrites an",
+    "unpaired surrogate escape to U+FFFD; JavaScript's JSON.parse keeps it. A row spelled that way would",
+    "look shared and would in fact hand the two validators different inputs, so it is pinned natively on",
+    "each side instead — see the ill-formed-text test in each of the two test files."
   ],
   "cases": [
     {
@@ -265,13 +270,19 @@
       "name": "publish double proto suffix udp then tcp",
       "args": ["-p", "80/udp/tcp:80"],
       "expect": "reject",
-      "why": "DIVERGENT, and the row that proves \"the Go one is stricter, so match Go\" would have been the wrong rule — here Go is the LOOSE one. Go stripped `/tcp` and then `/udp` in sequence, leaving a clean `80`. Docker splits the protocol off the LAST slash only, so it sees port `80/udp` with protocol `tcp` and refuses. Exactly one protocol suffix may be stripped."
+      "why": "DIVERGENT, and the row that proves \"the Go one is stricter, so match Go\" would have been the wrong rule — here Go is the LOOSE one. Go stripped `/tcp` and then `/udp` in sequence, leaving a clean `80`. Docker reads a protocol suffix off the CONTAINER-PORT component only, and takes it from the last slash in that component, so this spec is refused twice over: the suffix is on the host port, where none is allowed, and stripping two of them is not something Docker ever does."
     },
     {
       "name": "publish double proto suffix tcp then udp",
       "args": ["-p", "80/tcp/udp:80"],
       "expect": "reject",
       "why": "The mirror spelling, which both sides already refused. It is in the fixture so the fix for the row above cannot be a special case for one ordering."
+    },
+    {
+      "name": "publish double proto suffix on container port",
+      "args": ["-p", "8080:80/udp/tcp"],
+      "expect": "reject",
+      "why": "The same double suffix moved to the component where ONE suffix is legal, so the last-slash rule is pinned where it can actually be exercised: protocol `tcp` comes off, and `80/udp` is then not a port."
     },
     {
       "name": "publish leading plus",
@@ -300,8 +311,14 @@
     {
       "name": "publish udp proto",
       "args": ["-p", "80/udp:80"],
+      "expect": "reject",
+      "why": "Not divergent — both sides ACCEPTED this, and both were wrong, which is the second time this fixture has turned up that shape. Docker's ParsePortSpec splits the spec into address, host port and container port FIRST, takes the protocol off the container-port component only, and then parses the host port as a plain port range. `80/udp` is therefore not a port at all in the host position, and Docker refuses the spec. Both validators stripped a suffix from every component, so both approved an App that could never deploy."
+    },
+    {
+      "name": "publish udp proto on container port",
+      "args": ["-p", "8080:80/udp"],
       "expect": "accept",
-      "why": "One `/udp` suffix on the container port is ordinary Docker syntax and must keep working."
+      "why": "The same suffix in the position Docker actually reads it from. This is the row that keeps the fix above from being a blanket ban: `/udp` is ordinary Docker syntax and must keep working."
     },
     {
       "name": "publish tcp proto",
@@ -310,10 +327,22 @@
       "why": "The same for `/tcp`, in its usual position."
     },
     {
+      "name": "publish proto on host port of three part form",
+      "args": ["-p", "127.0.0.1:8080/tcp:80"],
+      "expect": "reject",
+      "why": "The host-port suffix again, in the three-component form, where the address makes the component boundaries explicit. Both sides accepted this before for the same reason they accepted `80/udp:80`."
+    },
+    {
       "name": "publish sctp proto",
       "args": ["-p", "80/sctp:80"],
       "expect": "reject",
-      "why": "Docker itself supports SCTP, but this platform's Nodes route TCP and UDP only, so the allowlist stops at those two. Pinned so that fixing the double-suffix row does not accidentally start stripping arbitrary protocol suffixes."
+      "why": "Refused twice over after this PR: SCTP is not on the protocol allowlist, and the suffix is on the host port where no protocol is read. Kept in the host position because that is where it was measured."
+    },
+    {
+      "name": "publish sctp proto on container port",
+      "args": ["-p", "8080:80/sctp"],
+      "expect": "reject",
+      "why": "SCTP in the position where a protocol IS read, so the allowlist is tested rather than the position rule. Docker itself supports SCTP; these Nodes route TCP and UDP only, so the allowlist stops at those two."
     },
     {
       "name": "publish loopback three part",
@@ -726,6 +755,66 @@
       "args": ["-e", "KEY=a\u0000b"],
       "expect": "reject",
       "why": "The same character in the value half of a split flag."
+    },
+    {
+      "name": "env value with escape",
+      "args": ["-e", "MOTD=a\u001bb"],
+      "expect": "reject",
+      "why": "ESC is the lead byte of every ANSI sequence: an env value carrying one can rewrite an operator's terminal when the spec is echoed into a log or `docker inspect` output. It reached the container unexamined before this PR, because the shared control set was NUL, LF and CR and nothing else. The refused set is C0 except TAB, plus DEL — code points U+0000-U+0008, U+000A-U+001F and U+007F. Every one of them is a single byte in UTF-8 and a single unit in UTF-16, and none can occur inside a multi-byte sequence, so a Go implementation scanning bytes and a TypeScript one scanning string units give the same answer on every input without either of them decoding a rune."
+    },
+    {
+      "name": "env value with bell",
+      "args": ["-e", "MOTD=a\u0007b"],
+      "expect": "reject",
+      "why": "BEL, same family, same reason. The refused set is C0 except TAB, plus DEL — code points U+0000-U+0008, U+000A-U+001F and U+007F. Every one of them is a single byte in UTF-8 and a single unit in UTF-16, and none can occur inside a multi-byte sequence, so a Go implementation scanning bytes and a TypeScript one scanning string units give the same answer on every input without either of them decoding a rune."
+    },
+    {
+      "name": "env value with vertical tab",
+      "args": ["-e", "MOTD=a\u000bb"],
+      "expect": "reject",
+      "why": "VT moves the cursor down a line in a terminal, which is the same log-forging primitive LF already covers."
+    },
+    {
+      "name": "env value with backspace",
+      "args": ["-e", "MOTD=a\bb"],
+      "expect": "reject",
+      "why": "BS erases the character before it, so it can make a rendered log line read as something other than what was stored."
+    },
+    {
+      "name": "env value with delete",
+      "args": ["-e", "MOTD=ab"],
+      "expect": "reject",
+      "why": "DEL sits outside the C0 block and is the reason the rule is written as two ranges rather than \"below space\"."
+    },
+    {
+      "name": "env value with tab",
+      "args": ["-e", "IFS=a\tb"],
+      "expect": "accept",
+      "why": "THE CARVE-OUT, and the reason this rule was measured rather than copied. Docker accepts a tab in an env value and customers legitimately have them — delimiters, IFS, formatted config. Go's unicode.IsControl and JavaScript's \\p{Cc} both classify TAB as a control character, so widening to \"the control category\" would have turned a working customer command into a rejection: the same mistake as refusing `/var/lib/data/`."
+    },
+    {
+      "name": "env value with c1 next line",
+      "args": ["-e", "MOTD=ab"],
+      "expect": "accept",
+      "why": "THE OTHER EDGE. U+0085 is a C1 control and is in Unicode category Cc, so `\\p{Cc}` and unicode.IsControl both refuse it — and this rule does not. In UTF-8 a C1 code point is a two-byte sequence that a UTF-8-mode terminal does not interpret as a control function, so refusing it would be policing content rather than control characters. It would also drag rune decoding into a check that is otherwise pure ASCII, which is exactly where the two languages can drift apart."
+    },
+    {
+      "name": "mount target with escape",
+      "args": ["-v", "myapp-data:/data\u001bx"],
+      "expect": "reject",
+      "why": "The same character in the other position that renders: a mount target is echoed back in audit logs and the Apps view."
+    },
+    {
+      "name": "mount target with tab",
+      "args": ["-v", "myapp-data:/data\tx"],
+      "expect": "accept",
+      "why": "The TAB carve-out is uniform across positions. One rule in one place is the whole point of this fixture; a mount target that is stricter than an env value would be a second rule to keep in sync, which is the bug class this PR exists to remove."
+    },
+    {
+      "name": "combined flag with escape",
+      "args": ["-e=MOTD=a\u001bb"],
+      "expect": "reject",
+      "why": "The flag token is charset-checked before it is split, so the `=`-joined spelling is refused by the earlier of the two checks. Pinned so a future refactor cannot leave one of the two paths behind."
     },
     {
       "name": "empty args",

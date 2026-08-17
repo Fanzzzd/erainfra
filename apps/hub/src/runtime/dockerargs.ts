@@ -1,6 +1,17 @@
 const VOLUME_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const CONTROL = /[\0\n\r]/;
+// C0 except TAB, plus DEL. Deliberately NOT the Unicode control category: `\p{Cc}` and Go's
+// unicode.IsControl both classify TAB as a control character, and Docker accepts a tab in an env
+// value, so widening to the category would refuse a working App. The set below is pure ASCII —
+// every code point in it is one byte in UTF-8 and one unit in UTF-16, and none can occur inside a
+// multi-byte sequence — so this check and the Go one give the same answer on every input without
+// either of them decoding a rune. Code points at or above U+0080 are left alone: in UTF-8 they are
+// multi-byte sequences a UTF-8-mode terminal does not read as control functions.
+//
+// False positive below: control characters are the subject of this pattern, not a stray
+// escape in it. The rule's own advice — use a Unicode escape — is already followed.
+// oxlint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000A-\u001F\u007F]/;
 // Docker parses a port with strconv.ParseUint(raw, 10, 16): decimal digits, nothing else.
 const PORT_DIGITS = /^[0-9]+$/;
 
@@ -74,21 +85,24 @@ function validatePublish(value: string): string | null {
     return "publish must be hostPort:containerPort or 127.0.0.1:hostPort:containerPort";
   if (parts.length === 3 && parts[0] !== "127.0.0.1")
     return "explicit publish address must be 127.0.0.1";
-  for (const raw of parts.slice(-2)) {
-    const error = validatePort(raw);
-    if (error) return error;
-  }
-  return null;
+  // Docker's ParsePortSpec splits the spec into address, host port and container port FIRST, and
+  // reads a protocol suffix off the container-port component only; the host port is then parsed as
+  // a plain port range. So `-p 8080:80/udp` is ordinary and `-p 80/udp:80` is refused — a
+  // distinction both implementations used to miss, in the same direction, by stripping a suffix
+  // from every component.
+  const [hostPort, containerPort] = parts.slice(-2);
+  return validatePort(hostPort, false) ?? validatePort(containerPort, true);
 }
 
-// Docker takes the protocol off the LAST slash and parses what remains with
-// strconv.ParseUint(_, 10, 16). A port is therefore a token and not a numeric quantity: parsing
-// it as one accepts `0x50`, `1e3`, `80.0` and ` 80 ` — specs Docker refuses, approved here while
-// believing a port number that is not the one being handed over.
-function validatePort(raw: string): string | null {
+// Within the container-port component Docker takes the protocol off the LAST slash, then parses
+// what remains with strconv.ParseUint(_, 10, 16). A port is therefore a token and not a numeric
+// quantity: parsing it as one accepts `0x50`, `1e3`, `80.0` and ` 80 ` — specs Docker refuses,
+// approved here while believing a port number that is not the one being handed over.
+function validatePort(raw: string, allowProto: boolean): string | null {
   let digits = raw;
   const slash = raw.lastIndexOf("/");
   if (slash !== -1) {
+    if (!allowProto) return `invalid port "${raw}"`;
     const proto = raw.slice(slash + 1);
     // Docker also speaks SCTP; these Nodes route TCP and UDP, so the allowlist stops there.
     if (proto !== "tcp" && proto !== "udp") return `invalid port "${raw}"`;

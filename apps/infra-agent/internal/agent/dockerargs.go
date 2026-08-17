@@ -23,7 +23,21 @@ var (
 	dockerPortDigits = regexp.MustCompile(`^[0-9]+$`)
 )
 
-const dockerControlChars = "\x00\n\r"
+// C0 except TAB, plus DEL. Deliberately NOT unicode.IsControl: it classifies TAB as a control
+// character, and Docker accepts a tab in an env value, so widening to the category would refuse a
+// working App. It also decodes runes, which turns an invalid byte into utf8.RuneError and makes the
+// answer depend on how the string was decoded — where the TypeScript side, working in UTF-16, would
+// not agree. Scanning bytes for an ASCII-only set has neither problem: every code point below
+// U+0080 is one byte in UTF-8 and one unit in UTF-16, and none can occur inside a multi-byte
+// sequence, so the two implementations give the same answer on every input.
+func containsDockerControlChar(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; (b < 0x20 && b != '\t') || b == 0x7f {
+			return true
+		}
+	}
+	return false
+}
 
 func validateDockerArgs(args []string) error {
 	if len(args) > 64 {
@@ -31,7 +45,7 @@ func validateDockerArgs(args []string) error {
 	}
 	for i := 0; i < len(args); i++ {
 		flag := args[i]
-		if flag == "" || len(flag) > 512 || strings.ContainsAny(flag, dockerControlChars) {
+		if flag == "" || len(flag) > 512 || containsDockerControlChar(flag) {
 			return fmt.Errorf("docker args: invalid token")
 		}
 		value := ""
@@ -78,7 +92,7 @@ func validateDockerArgs(args []string) error {
 		// and each per-kind validator only caught control characters in the fields it happened
 		// to look at. A newline survives into anything that renders the spec a line at a time,
 		// so it is refused once, here, for every kind rather than four times with one missing.
-		if strings.ContainsAny(value, dockerControlChars) {
+		if containsDockerControlChar(value) {
 			return fmt.Errorf("docker args: %s: invalid value", flag)
 		}
 		var err error
@@ -109,21 +123,29 @@ func validateDockerPublish(value string) error {
 	if len(parts) == 3 && parts[0] != "127.0.0.1" {
 		return fmt.Errorf("explicit publish address must be 127.0.0.1")
 	}
-	for _, raw := range parts[len(parts)-2:] {
-		if err := validateDockerPort(raw); err != nil {
-			return err
-		}
+	// Docker's ParsePortSpec splits the spec into address, host port and container port FIRST, and
+	// reads a protocol suffix off the container-port component only; the host port is then parsed
+	// as a plain port range. So `-p 8080:80/udp` is ordinary and `-p 80/udp:80` is refused — a
+	// distinction both implementations used to miss, in the same direction, by stripping a suffix
+	// from every component.
+	ports := parts[len(parts)-2:]
+	if err := validateDockerPort(ports[0], false); err != nil {
+		return err
 	}
-	return nil
+	return validateDockerPort(ports[1], true)
 }
 
-// Docker takes the protocol off the LAST slash and parses what remains with
-// strconv.ParseUint(_, 10, 16). Trimming a "/tcp" suffix and then a "/udp" suffix stripped both
-// from "80/udp/tcp" and left a clean "80" — an argument Docker itself refuses, approved here.
-// Exactly one suffix comes off, and what is left has to be decimal digits and nothing else.
-func validateDockerPort(raw string) error {
+// Within the container-port component Docker takes the protocol off the LAST slash, then parses
+// what remains with strconv.ParseUint(_, 10, 16). Trimming a "/tcp" suffix and then a "/udp" suffix
+// stripped both from "80/udp/tcp" and left a clean "80" — an argument Docker itself refuses,
+// approved here. Exactly one suffix comes off, only where Docker reads one, and what is left has to
+// be decimal digits and nothing else.
+func validateDockerPort(raw string, allowProto bool) error {
 	digits := raw
 	if slash := strings.LastIndex(raw, "/"); slash != -1 {
+		if !allowProto {
+			return fmt.Errorf("invalid port %q", raw)
+		}
 		// Docker also speaks SCTP; these Nodes route TCP and UDP, so the allowlist stops there.
 		if proto := raw[slash+1:]; proto != "tcp" && proto != "udp" {
 			return fmt.Errorf("invalid port %q", raw)
