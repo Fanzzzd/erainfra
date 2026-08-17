@@ -11,7 +11,10 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/agent"
 )
 
-const version = "0.1.0"
+// Stamped at build time with `-ldflags '-X main.version=<product version>'`. It has to be a var:
+// `-X` silently does nothing to a const, so a const here would make every attempt to stamp the
+// product version onto this binary a no-op that looks like it worked.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -20,6 +23,10 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "version":
+		// The release workflow greps this exact line off the shipped bytes, which is what turns the
+		// stamped version into an assertion about the artifact rather than about the build script.
+		fmt.Printf("infra-agent %s\n", version)
 	case "plan":
 		runPlan()
 	case "resources":
@@ -45,7 +52,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: portless-agent <plan|resources|heartbeat|benchmark|op|connect>")
+	fmt.Fprintln(os.Stderr, "usage: portless-agent <version|plan|resources|heartbeat|benchmark|op|connect>")
 }
 
 // connect dials the hub over WSS and serves its commands (deploy containers, exec). The agent dials
