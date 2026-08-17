@@ -5,7 +5,7 @@
 **/.env.*
 **/node_modules
 **/dist
-apps/agent
+apps/action-runner-agent
 apps/controller
 apps/dashboard
 docs

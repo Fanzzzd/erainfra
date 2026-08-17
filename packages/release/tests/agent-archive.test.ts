@@ -19,7 +19,10 @@ after(() => {
   }
 });
 
-/** A stand-in for `apps/agent` after a build, so tests never read the real tree. */
+/**
+ * A stand-in for `apps/action-runner-agent` after a build, so tests never read
+ * the real tree.
+ */
 function agentFixture(overrides: Record<string, string | null> = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "rc-agent-"));
   workspaces.push(root);
@@ -151,9 +154,9 @@ describe("readProductVersion", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rc-repo-"));
     workspaces.push(root);
     writeFileSync(path.join(root, "package.json"), `{"version":"${rootVersion}"}`);
-    mkdirSync(path.join(root, "apps", "agent"), { recursive: true });
+    mkdirSync(path.join(root, "apps", "action-runner-agent"), { recursive: true });
     writeFileSync(
-      path.join(root, "apps", "agent", "package.json"),
+      path.join(root, "apps", "action-runner-agent", "package.json"),
       `{"version":"${agentVersion}"}`,
     );
     for (const app of ["controller", "runtime"]) {

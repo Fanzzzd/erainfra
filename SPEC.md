@@ -30,9 +30,9 @@ EraInfra/
 ├── packages/typescript-config/  # shared tsconfig presets: base, node, react
 ├── apps/dashboard/         # Vite + React 19 + TanStack Router + shadcn/ui + convex/react
 │                           # imports the API via `@erainfra/backend/api`
-└── apps/agent/             # Node daemon: ConvexClient subscription + execa → provisioner
-    │                       # standalone on purpose: installed by machines with plain
-    │                       # `npm install`, so no workspace:/catalog: protocols here
+└── apps/action-runner-agent/  # Node daemon: ConvexClient subscription + execa → provisioner
+    │                          # standalone on purpose: installed by machines with plain
+    │                          # `npm install`, so no workspace:/catalog: protocols here
     └── provisioners/
         ├── provision-linux.sh
         ├── provision-mac.sh      # stub OK for v1 (echo "not implemented" && exit 1)
@@ -96,7 +96,7 @@ commands: defineTable({
    { name: runnerName, runner_group_id: 1, labels: job.labels } using env
    `GITHUB_PAT`. Write encoded_jit_config into the command. On failure:
    revert assignment (job → queued, slot back, command deleted) and log.
-4. **Agent** (apps/agent, single index.ts ~150 lines):
+4. **Agent** (apps/action-runner-agent, single index.ts ~150 lines):
    - env/config: CONVEX_URL, MACHINE_TOKEN. Uses `ConvexClient` from "convex/browser".
    - `client.onUpdate(api.agentApi.pendingCommands, { token }, cb)` — for each
      pending command: call claim mutation (returns jitConfig, atomically flips

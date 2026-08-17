@@ -85,7 +85,8 @@ describe("pinned actions/runner release", () => {
       new URL("../../../packages/backend/convex/catalog.ts", import.meta.url),
     );
     if (!existsSync(catalog)) {
-      // apps/agent is also distributed on its own, without the backend.
+      // apps/action-runner-agent is also distributed on its own, without the
+      // backend.
       t.skip("the backend catalog is not present in this checkout");
       return;
     }

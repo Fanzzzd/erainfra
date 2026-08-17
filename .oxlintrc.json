@@ -39,7 +39,7 @@
     },
     {
       "files": [
-        "apps/agent/**",
+        "apps/action-runner-agent/**",
         "packages/backend/scripts/**",
         "packages/backend/tests/**",
         "packages/release/**",
