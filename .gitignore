@@ -8,3 +8,7 @@ dist/
 *.local
 *.tsbuildinfo
 .tanstack/
+
+# Cross-compiled Infra Agent binaries, written by deploy/infra/build-agents.sh on a hub box.
+# Scoped rather than a bare `bin/` — packages/release/bin holds tracked source.
+deploy/infra/bin/

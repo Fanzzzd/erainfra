@@ -19,6 +19,51 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the frozen-identifier gate diffs against the base commit
+      # A repository path is invisible to every machine in the field. A Docker volume name, a
+      # systemd unit, an env-var name, a published package name and a download URL are not — see
+      # CONTEXT.md naming rule 4. The worst of them is the portless-data volume: it holds
+      # portless.db, the Hub's accounts, Apps, routes and tokens. hub.sh is idempotent by design
+      # and customers re-run it, so a renamed volume silently comes up empty, and CI cannot catch
+      # that any other way because CI never runs hub.sh.
+      #
+      # The check is set-difference, not "did a frozen word appear in the diff at all". Renaming a
+      # path that a frozen variable's VALUE points at is legal and routine, so a raw match fires on
+      # legitimate work; what is never legal is a frozen identifier leaving the tree. Comparing the
+      # removed set against the added set also survives git giving up on rename detection, which
+      # turns a moved file into delete-plus-add and floods any line-based version of this.
+      - name: No frozen runtime identifier is renamed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          FROZEN='portless-(data|registry|hub|tunnel|agent)|/etc/portless|PORTLESS_[A-Z_]+|\.portless|portless\.db|portless-env'
+          # The diff is taken once, as its own command, so `set -e` still catches git failing —
+          # a silently empty diff here would fail this check open. The greps below are then
+          # allowed to match nothing, which is the normal case for almost every pull request.
+          #
+          # This file is excluded from its own scan: the pattern above names every frozen
+          # identifier literally, so without the exclusion an edit here would add all of them to
+          # the "still present" side and mask a genuine removal somewhere else in the same PR.
+          git diff --unified=0 -M20% -l0 "$BASE" -- . ':(exclude).github/workflows/ci.yml' > /tmp/pr.diff
+          side() {
+            grep "^[$1]" /tmp/pr.diff | grep -vE '^(\+\+\+|---)' \
+              | grep -oE "$FROZEN" | sort -u || true
+          }
+          side - > /tmp/frozen-removed
+          side + > /tmp/frozen-added
+          gone=$(comm -23 /tmp/frozen-removed /tmp/frozen-added)
+          if [ -n "$gone" ]; then
+            echo "These frozen runtime identifiers left the tree:" >&2
+            echo "$gone" >&2
+            echo >&2
+            echo "Anything on this list is migrated by its own staged rollout (ADR 0004" >&2
+            echo "consequences, CONTEXT.md rule 4), not by a rename. If a customer's box" >&2
+            echo "already holds the name, this PR is the wrong place to change it." >&2
+            exit 1
+          fi
+          echo "Frozen identifiers touched by this diff, all still present:"
+          comm -12 /tmp/frozen-removed /tmp/frozen-added
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
         with:
@@ -44,56 +89,22 @@ jobs:
             go build -o "$RUNNER_TEMP/erainfra-linux-amd64/" ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
             go build -o "$RUNNER_TEMP/erainfra-linux-arm64/" ./...
+      # apps/infra-agent used to be its own Go module, so the compiler refused any import of a root
+      # package and that refusal WAS the guarantee. Joining the root module removes the refusal
+      # without removing the requirement: this binary runs as root on customer Nodes, and a helper
+      # that innocently imports an apps/controller package would hand it containerd's transitive
+      # tree with a perfectly green build. Assert on the shipped bytes rather than on go.mod —
+      # go.mod is the whole platform's now, and says nothing about what this binary linked.
+      - name: The Infra Agent ships exactly one dependency
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o "$RUNNER_TEMP/infra-agent" ./apps/infra-agent
+          deps=$(go version -m "$RUNNER_TEMP/infra-agent" | awk '$1 == "dep" { print $2, $3 }')
+          echo "$deps"
+          test "$deps" = "github.com/gorilla/websocket v1.5.3"
       # Runner machines install the agent with npm, not pnpm, so its lockfile
       # has to stay in sync with its package.json. This replaces the pnpm
       # node_modules in apps/action-runner-agent, so keep it last.
       - name: Verify the agent lockfile matches its manifest
         working-directory: apps/action-runner-agent
         run: npm ci --omit=dev --no-audit --no-fund
-
-  portless:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          package_json_file: portless/package.json
-      - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: portless/pnpm-lock.yaml
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: |
-            portless/agents/node-agent/go.sum
-            portless/prototypes/relay-experiments/go.sum
-      - name: Install the Portless JavaScript workspace
-        working-directory: portless
-        run: pnpm install --frozen-lockfile
-      - name: Validate the Portless JavaScript workspace
-        working-directory: portless
-        run: |
-          pnpm run --if-present lint
-          pnpm typecheck
-          pnpm test
-          pnpm build
-      - name: Validate both Portless Go modules
-        run: |
-          set -euo pipefail
-          for module in portless/agents/node-agent portless/prototypes/relay-experiments; do
-            (
-              cd "$module"
-              target=${module##*/}
-              go test ./...
-              go vet ./...
-              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-                go build -o "$RUNNER_TEMP/$target-linux-amd64/" ./...
-              CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-                go build -o "$RUNNER_TEMP/$target-linux-arm64/" ./...
-            )
-          done

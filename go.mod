@@ -9,6 +9,7 @@ require (
 	github.com/containerd/errdefs v1.0.0
 	github.com/containernetworking/cni v1.1.2
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/sys v0.42.0

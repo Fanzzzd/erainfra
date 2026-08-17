@@ -119,10 +119,11 @@ go test ./...
 go vet ./...
 ```
 
-`pnpm check` is the root JavaScript gate: lint, formatting, type checking, and tests. CI also runs
-the production build, tests and vets the root Go module, compiles both shipped Linux architectures,
-validates Portless from its frozen lockfiles (including both Go modules), and verifies that the npm
-lockfile used by installed Workers is current.
+`pnpm check` is the JavaScript gate for the whole workspace: lint, formatting, type checking, and
+tests. CI also runs the production build, tests and vets the Go module, compiles both shipped Linux
+architectures, asserts that the Infra Agent still links exactly one dependency, refuses any rename of
+an identifier a customer's machine already holds, and verifies that the npm lockfile used by
+installed Workers is current.
 
 ## Deploy the control plane
 
@@ -395,8 +396,8 @@ pull requests on machines that hold persistent credentials.
 ## Releases
 
 EraInfra is one product version: root, Agent, Controller, and Runtime versions must match.
-Tagging `v<version>` runs the release workflow, revalidates the root and Portless JavaScript and Go
-surfaces (including both Linux architectures), rebuilds the agent archive twice byte-for-byte,
+Tagging `v<version>` runs the release workflow, revalidates the JavaScript and Go surfaces
+(including both Linux architectures), rebuilds the agent archive twice byte-for-byte,
 checks the deployment pin, attests the artifacts, and publishes:
 
 - `erainfra-agent-<version>.tar.gz` plus SHA-256;
@@ -413,13 +414,18 @@ overwritten; a correction is a new version.
 apps/action-runner-agent  Worker daemon and Tart/legacy provisioners
 apps/controller           official scale-set listener adapter
 apps/runtime              Firecracker host runtime, job network policy, and guest bootstrap
+apps/infra-agent          Node daemon: outbound WS to the Hub, App deploys, host operations
+apps/hub                  Hub: Fastify + tRPC control plane for Nodes and Apps
+apps/hub-web              the Hub's dashboard
+apps/dashboard            React dashboard for the Convex control plane
+apps/docs                 the documentation site
 deploy                    host provisioner and systemd units
-apps/dashboard            React dashboard
+deploy/infra              Hub and Node installers (hub.sh, agent.sh, build-agents.sh, ...)
 packages/backend          Convex control plane
+packages/cli              the published `portless` CLI
 packages/release          deterministic release packager
 images                    immutable Profile image definitions
 ```
 
 Contributions are welcome. Keep platform lifecycle logic behind the executor boundary, preserve
-single-use secret handling, and run the root and Portless JavaScript and Go gates before opening a
-pull request.
+single-use secret handling, and run the JavaScript and Go gates before opening a pull request.
