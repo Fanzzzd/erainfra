@@ -50,10 +50,11 @@ jobs:
           # is the stem of portless-agent-linux-arm64 and portless-agent.service, `/etc/portless` is a
           # directory holding agent.env, and `portless-tunnel` names portless-tunnel.service.
           PREFIX='portless-agent|/etc/portless|portless-tunnel'
-          # What may extend an EXACT identifier. Deliberately excludes `.` and `/`: a trailing period
-          # is prose ("...the portless-data volume.") and a slash starts a new path segment, so
-          # including either would stop the gate tracking names it tracks today.
-          EXT='[A-Za-z0-9_-]'
+          # What may extend an EXACT identifier. A `.` counts only when something follows it, which is
+          # the distinction between prose and a name: "...the portless-data volume." ends a sentence,
+          # while portless-data.v2 is a DIFFERENT volume and must not vouch for portless-data. `/` is
+          # excluded outright, since it starts a new path segment rather than extending a name.
+          EXT='([A-Za-z0-9_-]|\.[A-Za-z0-9_-])'
           # The diff is taken once, as its own command, so `set -e` still catches git failing —
           # a silently empty diff here would fail this check open. The greps below are then
           # allowed to match nothing, which is the normal case for almost every pull request.
@@ -67,7 +68,11 @@ jobs:
           extract() {
             cat > /tmp/extract.in
             grep -oE "$EXT*($EXACT)$EXT*" /tmp/extract.in | grep -xE "$EXACT" || true
-            grep -oE "$PREFIX" /tmp/extract.in || true
+            # Two stages for PREFIX: the first enforces a LEFT boundary, so `myportless-agent` cannot
+            # vouch for `portless-agent`; the second recovers just the name from that match. A left
+            # boundary cannot be a plain prefix test, because these appear mid-path
+            # (../../deploy/infra/bin/portless-agent-darwin-arm64) as well as at the start.
+            grep -oE "(^|[^A-Za-z0-9_-])($PREFIX)" /tmp/extract.in | grep -oE "$PREFIX" || true
           }
           side() {
             grep "^[$1]" /tmp/pr.diff | grep -vE '^(\+\+\+|---)' | extract | sort -u
