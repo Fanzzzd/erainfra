@@ -73,6 +73,42 @@ function withDirectories(files: readonly TarEntry[]) {
 }
 
 /**
+ * Both root files are packed verbatim, so the archive can ship two files that disagree about what
+ * version it is. That is what happened: the lockfile said 0.2.0-rc.4 from #58 through rc.5 and
+ * rc.6, next to a package.json that said otherwise, in bytes the control plane pins and attests.
+ *
+ * Nothing broke, and that is the reason it survived two releases — `npm ci` reconciles
+ * *dependencies*, not the root `version` field, so every gate stayed green while the shipped
+ * artifact described itself two ways. A release bumps four manifests by hand and the lockfile is
+ * not one of them, so the drift recurs by default and is invisible by default.
+ *
+ * Asserted here rather than in the release workflow because this is the function that packs both
+ * files: a self-inconsistent archive should be impossible to *build*, not merely refused later by
+ * whichever pipeline happens to look.
+ */
+function assertLockfileDeclaresTheSameVersion(agentDir: string) {
+  const read = (name: string) =>
+    JSON.parse(readFileSync(path.join(agentDir, name), "utf8")) as {
+      version?: string;
+      packages?: Record<string, { version?: string }>;
+    };
+  const manifest = read("package.json");
+  const lockfile = read("package-lock.json");
+  // npm writes the version twice — top level and packages[""] — and they drift independently.
+  for (const [where, found] of [
+    ["version", lockfile.version],
+    ['packages[""].version', lockfile.packages?.[""]?.version],
+  ] as const) {
+    if (found !== manifest.version) {
+      throw new Error(
+        `package-lock.json ${where} is ${found}, but package.json is ${manifest.version}; ` +
+          `both are packed into the archive, so run npm install --package-lock-only in ${agentDir}`,
+      );
+    }
+  }
+}
+
+/**
  * Read the files that belong in the archive, in a fixed order and with modes
  * from policy rather than from the working tree.
  */
@@ -86,6 +122,8 @@ export function collectAgentFiles(agentDir: string, runtimeDir?: string): TarEnt
   if (!relativePaths.includes("dist/index.js")) {
     throw new Error(`${agentDir}/dist/index.js is missing; build the agent first`);
   }
+
+  assertLockfileDeclaresTheSameVersion(agentDir);
 
   const files = relativePaths.map((relativePath) => ({
     path: `${ARCHIVE_ROOT}/${relativePath}`,
