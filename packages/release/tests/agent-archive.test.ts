@@ -28,7 +28,11 @@ function agentFixture(overrides: Record<string, string | null> = {}) {
   workspaces.push(root);
   const files: Record<string, string | null> = {
     "package.json": '{"name":"@erainfra/agent","version":"1.2.3"}\n',
-    "package-lock.json": '{"lockfileVersion":3}\n',
+    // Carries the version in both places npm writes it. The fixture used to omit it entirely,
+    // which is why the shipped lockfile could sit three release candidates behind unnoticed.
+    "package-lock.json":
+      '{"name":"@erainfra/agent","version":"1.2.3","lockfileVersion":3,' +
+      '"packages":{"":{"name":"@erainfra/agent","version":"1.2.3"}}}\n',
     "tsconfig.json": "{}\n",
     "index.ts": "// source, not shipped\n",
     "dist/index.js": "console.log('agent');\n",
@@ -93,6 +97,49 @@ describe("collectAgentFiles", () => {
   it("refuses to package an agent that has not been built", () => {
     const root = agentFixture({ "dist/index.js": null });
     assert.throws(() => collectAgentFiles(root), /dist\/index\.js is missing/);
+  });
+
+  // Both root files are packed verbatim, so an archive can describe its own version two ways.
+  // Every release bumps package.json by hand and the lockfile is not on that list, so this drifts
+  // by default; it shipped at 0.2.0-rc.4 through rc.5 and rc.6 without a single gate noticing,
+  // because `npm ci` reconciles dependencies rather than the root version field.
+  it("refuses to package a lockfile that disagrees with the manifest", () => {
+    const root = agentFixture({
+      "package-lock.json":
+        '{"name":"@erainfra/agent","version":"1.2.2","lockfileVersion":3,' +
+        '"packages":{"":{"name":"@erainfra/agent","version":"1.2.2"}}}\n',
+    });
+    assert.throws(() => collectAgentFiles(root), /package-lock\.json version is 1\.2\.2/);
+  });
+
+  // npm writes the version in two places and they drift independently, so a check that reads only
+  // the top level would pass an archive whose packages[""] still names the previous release.
+  it("refuses a lockfile whose nested version alone is stale", () => {
+    const root = agentFixture({
+      "package-lock.json":
+        '{"name":"@erainfra/agent","version":"1.2.3","lockfileVersion":3,' +
+        '"packages":{"":{"name":"@erainfra/agent","version":"1.2.2"}}}\n',
+    });
+    assert.throws(() => collectAgentFiles(root), /packages\[""\]\.version is 1\.2\.2/);
+  });
+
+  // A lockfile with no version at all is the state the old fixture was in. Absent must fail the
+  // same way stale does — treating "cannot tell" as agreement is how this went unnoticed.
+  it("refuses a lockfile that declares no version at all", () => {
+    const root = agentFixture({ "package-lock.json": '{"lockfileVersion":3}\n' });
+    assert.throws(() => collectAgentFiles(root), /package-lock\.json version is undefined/);
+  });
+
+  // The same rule, applied to the side the comparison anchors on. With every version field
+  // missing, `found !== manifest.version` is `undefined !== undefined` — false — so all three
+  // absences would agree with each other and pack an archive declaring no version anywhere.
+  // An equality check cannot distinguish "they match" from "there is nothing to match".
+  it("refuses a manifest that declares no version, rather than agreeing with an absent one", () => {
+    const root = agentFixture({
+      "package.json": '{"name":"@erainfra/agent"}\n',
+      "package-lock.json": '{"lockfileVersion":3}\n',
+    });
+    assert.throws(() => collectAgentFiles(root), /package\.json .* declares no version/);
   });
 
   it("can include both immutable Linux runtime binaries", () => {
