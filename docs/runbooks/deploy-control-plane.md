@@ -35,7 +35,7 @@ decisions made mid-deploy land on whichever code version answers.
 ## 2. Deploy
 
 ```bash
-pnpm deploy
+pnpm run deploy:control-plane
 ```
 
 ## 3. Verify, in this order
@@ -62,7 +62,7 @@ one exception: Attempts created by the new code keep credentials in `attemptSecr
 old code cannot claim.
 
 ```bash
-git checkout <previous-commit> && pnpm deploy
+git checkout <previous-commit> && pnpm run deploy:control-plane
 ```
 
 Then cancel and retry any Attempt created during the window (retry creates a new Attempt, and

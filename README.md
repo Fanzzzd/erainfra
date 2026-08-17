@@ -130,7 +130,7 @@ installed Workers is current.
 Deploy the Convex backend and static dashboard:
 
 ```bash
-pnpm deploy
+pnpm run deploy:control-plane
 ```
 
 Set these deployment variables before production use:
