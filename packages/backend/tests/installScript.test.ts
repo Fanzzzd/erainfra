@@ -764,6 +764,31 @@ sleep 5
     expect(existsSync(installedAgent(sandbox))).toBe(false);
   });
 
+  // deploy/infra/agent.sh has always offered a foreground run for watching a Node's first
+  // connection. It keeps working through the verified installer, with the same verification and no
+  // daemon left behind.
+  it("runs in the foreground without installing a service, when asked", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishInfraAgent(
+      sandbox,
+      CURRENT,
+      '#!/usr/bin/env bash\nprintf \'%s\\n\' "$* | hub=$PORTLESS_HUB token=$PORTLESS_TOKEN" >> "$RC_TEST_AGENT_LOG"\n',
+    );
+    repin(sandbox, pinned(CURRENT, published.sha256));
+
+    const result = run(sandbox, nodeArgs(["--foreground"]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    // The foreground process is the longest-lived of the three, so the credential belongs in its
+    // environment here even more than on the paths that daemonise.
+    const argv = readLog(path.join(sandbox.root, "infra-agent.log"));
+    expect(argv).toMatch(
+      /^connect --name node-01 \| hub=wss:\/\/hub\.example\.com\/agent token=plt_node_token$/m,
+    );
+    expect(argv.split("|")[0]).not.toMatch(/plt_node_token/);
+    expect(existsSync(path.join(sandbox.home, ".portless", "run", "agent.pid"))).toBe(false);
+    expect(readLog(path.join(sandbox.root, "sudo.log"))).not.toMatch(/systemctl/);
+  });
+
   it("refuses a target this deployment pins no digest for", () => {
     const sandbox = createSandbox(CURRENT);
     publishInfraAgent(sandbox, CURRENT);

@@ -44,7 +44,7 @@ node_fail() {
 
 node_usage() {
   printf '%s\n' 'Usage: bash -s -- --role node --token <hub token> --hub wss://<hub>/agent [--name NAME]'
-  printf '%s\n' '                  [--source <url|file:///path>] [--no-docker]'
+  printf '%s\n' '                  [--source <url|file:///path>] [--no-docker] [--foreground]'
 }
 
 # Every Infra Agent digest this deployment pins, one line per published target. A target that is
@@ -177,6 +177,7 @@ node_install() {
   NODE_NAME=""
   NODE_SOURCE=""
   NODE_WANT_DOCKER=1
+  NODE_FOREGROUND=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --token)
@@ -201,6 +202,10 @@ node_install() {
         ;;
       --no-docker)
         NODE_WANT_DOCKER=0
+        shift
+        ;;
+      --foreground)
+        NODE_FOREGROUND=1
         shift
         ;;
       -h|--help)
@@ -294,6 +299,24 @@ node_install() {
   chmod +x "$NODE_DOWNLOAD"
   mv "$NODE_DOWNLOAD" "$NODE_BIN_DIR/portless-agent"
   node_log "Installed $NODE_BIN_DIR/portless-agent."
+
+  # --foreground installs nothing that outlives the shell: the verification and the binary are the
+  # same, only the supervision is the operator's. It is how deploy/infra/agent.sh has always let
+  # someone watch a Node's first connection.
+  if [ "$NODE_FOREGROUND" -eq 1 ]; then
+    node_log "Connecting to $NODE_HUB in the foreground."
+    trap - EXIT
+    rm -rf "$NODE_TMP_DIR"
+    # Exported, not passed as flags, for the same reason the background path does it: this process
+    # is long-lived and /proc/<pid>/cmdline is world-readable. Written on their own lines rather
+    # than as an assignment prefix on the exec — the prefix form does export, but it silently stops
+    # doing so the moment anything is inserted between it and the exec, and this is the line where
+    # that would matter. All three launch paths now name the two variables the same way.
+    PORTLESS_HUB=$NODE_HUB
+    PORTLESS_TOKEN=$NODE_TOKEN
+    export PORTLESS_HUB PORTLESS_TOKEN
+    exec "$NODE_BIN_DIR/portless-agent" connect --name "$NODE_MACHINE_NAME"
+  fi
 
   if node_install_service 2>/dev/null; then
     node_log "systemd service 'portless-agent' is active; it reconnects and survives reboot."
