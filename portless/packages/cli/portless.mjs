@@ -52,15 +52,18 @@ function stageDone() {
   if (isTTY) process.stdout.write("\r\x1b[2K");
 }
 
+// Printable width: colour codes occupy no columns, so strip SGR sequences before measuring.
+// False positive below: ESC (\x1b) is the control character this pattern exists to match — an ANSI
+// escape sequence is not recognisable without it. It is the subject, not a stray control char.
+// oxlint-disable-next-line no-control-regex
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+const printableWidth = (s) => String(s ?? "").replace(ANSI_SGR, "").length;
+const pad = (s, w) => String(s ?? "") + " ".repeat(Math.max(0, w - printableWidth(s)));
+
 function table(rows, headers) {
   if (rows.length === 0) return;
   const all = [headers, ...rows];
-  const widths = headers.map((_, i) =>
-    Math.max(...all.map((r) => String(r[i] ?? "").replace(/\x1b\[[0-9;]*m/g, "").length)),
-  );
-  const pad = (s, w) =>
-    String(s ?? "") +
-    " ".repeat(Math.max(0, w - String(s ?? "").replace(/\x1b\[[0-9;]*m/g, "").length));
+  const widths = headers.map((_, i) => Math.max(...all.map((r) => printableWidth(r[i]))));
   console.log(headers.map((h, i) => c.dim(pad(h, widths[i]))).join("  "));
   for (const r of rows) console.log(r.map((v, i) => pad(v, widths[i])).join("  "));
 }
@@ -101,10 +104,16 @@ async function rpc(cfg, path, input, { method = "POST" } = {}) {
         authorization: `Bearer ${cfg.token}`,
         ...(method === "POST" ? { "content-type": "application/json" } : {}),
       },
+      // False positive: the rule reads `body` as present whenever the key is written. On the GET
+      // path this evaluates to `undefined`, which fetch treats as no body at all; a GET carries its
+      // input in the query string built above.
+      // oxlint-disable-next-line unicorn/no-invalid-fetch-options
       body: method === "POST" ? JSON.stringify(input ?? {}) : undefined,
     });
   } catch (e) {
-    throw new Error(`cannot reach the hub at ${cfg.hub} (${e.cause?.code ?? e.message})`);
+    throw new Error(`cannot reach the hub at ${cfg.hub} (${e.cause?.code ?? e.message})`, {
+      cause: e,
+    });
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body?.error?.message ?? `${path} → HTTP ${res.status}`);
@@ -1110,9 +1119,11 @@ const MCP_TOOLS = [
   },
 ];
 
+// One JSON-RPC message per line on stdout — the MCP stdio framing.
+const respond = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
+
 async function serveMcp() {
   const cfg = requireConfig();
-  const respond = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
   const rl = createInterface({ input: process.stdin });
   for await (const line of rl) {
     if (!line.trim()) continue;

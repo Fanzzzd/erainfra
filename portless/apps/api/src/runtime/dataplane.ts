@@ -114,6 +114,10 @@ export class DataGateway {
   // node and the proxy fast-fails / falls to failover instead of timing out).
   reapStale(maxIdleMs: number): void {
     const now = Date.now();
+    // False positive: the spread is a snapshot, not a conversion. onClose() below deletes from
+    // this.byId and this.lastSeen and rejects in-flight requests, so the loop mutates the very Map
+    // it is walking. Iterating a snapshot keeps the reaper's decision set fixed at entry.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const [id, entry] of [...this.byId]) {
       if (now - (this.lastSeen.get(id) ?? 0) > maxIdleMs) {
         try {
@@ -200,6 +204,9 @@ export class DataGateway {
   // disconnect — they should get a fast 502).
   private rejectSocket(socket: DataSocket, reason: string): void {
     const node = this.idOf.get(socket);
+    // False positive: the spread is a snapshot, not a conversion. The body deletes from
+    // this.pending and settles each request's promise while walking it.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const [id, p] of [...this.pending]) {
       if (node && p.node !== node) continue;
       clearTimeout(p.timer);

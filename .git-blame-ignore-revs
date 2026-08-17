@@ -1,0 +1,14 @@
+# Revisions to skip when running `git blame`.
+#
+# Only whole-tree mechanical reformats belong here. A commit on this list is one that changed no
+# behaviour, so attributing a line to it tells you nothing you wanted to know.
+#
+# GitHub reads this file automatically. Locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: format portless/ with the repo formatter, before the move (#54) — 114 files, quote
+# normalisation and 80-column rewrap, run when `portless/**` was dropped from .oxfmtrc.json's
+# ignore list. Its own PR precisely so this file can name a purely mechanical commit: the
+# repository squash-merges, so the reformat and this lint pass could not have been two commits
+# in one PR without collapsing into one commit that is the wrong thing to blame-ignore.
+5b026365e93ca5b4524e46f5b7f53d15977979a8

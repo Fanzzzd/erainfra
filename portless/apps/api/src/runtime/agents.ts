@@ -209,6 +209,12 @@ export class AgentGateway {
   // rather than only on a clean socket close.
   reapStale(maxIdleMs: number): void {
     const now = Date.now();
+    // False positive: the spread is a snapshot, not a conversion. removeSocket() below fires
+    // disconnectListeners, and a listener is free to re-register the agent — which would insert into
+    // this.byId mid-iteration. A live Map iterator visits entries added during iteration, and the
+    // new entry has no lastSeen yet, so it would be reaped on the spot by the very loop that caused
+    // the reconnect. Iterate the snapshot.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const [id, entry] of [...this.byId]) {
       if (now - (this.lastSeen.get(id) ?? 0) > maxIdleMs) {
         try {

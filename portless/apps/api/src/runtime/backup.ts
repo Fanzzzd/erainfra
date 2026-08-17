@@ -68,6 +68,9 @@ function signV4(
   };
   const signedKeys = Object.keys(baseHeaders)
     .map((k) => k.toLowerCase())
+    // False positive: map() has already produced a fresh array, so sort() mutates nothing. The
+    // rule's toSorted() is ES2023 and this package's tsconfig sets lib: ES2022.
+    // oxlint-disable-next-line unicorn/no-array-sort
     .sort();
   const canonicalHeaders = signedKeys
     .map(
@@ -136,10 +139,17 @@ export async function listBackups(cfg: S3Config, now: Date = new Date()): Promis
   const res = await fetch(`${cfg.endpoint}${uri}?${query}`, { method: "GET", headers });
   if (!res.ok) throw new Error(`S3 LIST → ${res.status}`);
   const xml = await res.text();
-  return [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)]
-    .map((m) => m[1])
-    .sort()
-    .reverse();
+  // False positives on both lines below: the array is built fresh by matchAll() + map(), so neither
+  // call mutates anything observable. toSorted()/toReversed() are ES2023 and this package's tsconfig
+  // sets lib: ES2022, so the suggested rewrite does not typecheck here.
+  return (
+    [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)]
+      .map((m) => m[1])
+      // oxlint-disable-next-line unicorn/no-array-sort
+      .sort()
+      // oxlint-disable-next-line unicorn/no-array-reverse
+      .reverse()
+  );
 }
 
 // tar.gz the state dir (excluding bulky/ephemeral bits). tar is always present on the hub OS.

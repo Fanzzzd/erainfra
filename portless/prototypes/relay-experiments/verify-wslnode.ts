@@ -29,7 +29,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Bring up dockerd (no iptables/bridge — WSL2 lacks them) and load the test image. Backgrounded dockerd
 // logs to a file (not the exec pipe) so agents.run returns instead of hanging on the daemon.
-const BRINGUP = [
+//
+// Underscore-prefixed because it has never been referenced — not by this harness and not since the
+// tree was imported. Kept rather than deleted: it is the only written record of the flags that get
+// dockerd running under WSL2, and it is run by hand before this script (see the header).
+const _BRINGUP = [
   "export PATH=/usr/local/bin:$PATH",
   "pkill -f /usr/local/bin/dockerd 2>/dev/null || true",
   "sleep 1",

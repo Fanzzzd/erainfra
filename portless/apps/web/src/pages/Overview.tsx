@@ -10,15 +10,20 @@ export function Overview() {
   const [offline, setOffline] = useState(false);
 
   useEffect(() => {
-    const load = () =>
-      Promise.all([trpcQuery<AgentInfo[]>("agents.list"), trpcQuery<RouteInfo[]>("routes.list")])
-        .then(([n, r]) => {
-          setNodes(n);
-          setRoutes(r);
-          setOffline(false);
-        })
-        .catch(() => setOffline(true));
-    load();
+    const load = async () => {
+      try {
+        const [n, r] = await Promise.all([
+          trpcQuery<AgentInfo[]>("agents.list"),
+          trpcQuery<RouteInfo[]>("routes.list"),
+        ]);
+        setNodes(n);
+        setRoutes(r);
+        setOffline(false);
+      } catch {
+        setOffline(true);
+      }
+    };
+    void load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, []);
