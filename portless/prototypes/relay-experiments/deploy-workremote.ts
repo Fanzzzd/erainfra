@@ -58,7 +58,7 @@ try {
 
 // Cleanup: stop the demo container on work-remote via the agent, then forget the route.
 try {
-  await caller.agents.run({ agentId: 'wr-node', argv: ['docker', 'rm', '-f', APP], confirm: true });
+  await caller.agents.run({ agentId: 'wr-node', operation: { name: 'container.remove', args: { name: APP } }, confirm: true });
   console.log('cleaned up: pl-demo container removed on work-remote');
 } catch (e) {
   console.error('cleanup note:', (e as Error).message);

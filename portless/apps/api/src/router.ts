@@ -16,8 +16,16 @@ import { chatStore } from './runtime/chats.ts';
 import { userStore } from './runtime/users.ts';
 import { sessionStore } from './runtime/sessions.ts';
 import { apiTokenStore } from './runtime/apitokens.ts';
+import { validateDockerArgs } from './runtime/dockerargs.ts';
 import type { AuditLog } from './audit.ts';
 import type { Principal } from './auth.ts';
+
+const agentOperationSchema = z
+  .object({
+    name: z.string().min(1).max(64),
+    args: z.record(z.string().min(1).max(64), z.string().max(1024)).refine((args) => Object.keys(args).length <= 16, 'at most 16 operation arguments'),
+  })
+  .strict();
 
 // Record an audited op and return the audit id + whether it was durably persisted, so EVERY
 // dangerous mutator surfaces an audit gap to the caller instead of hiding it behind success.
@@ -47,7 +55,7 @@ export const appRouter = router({
 
 
   // Agents: remote boxes that dialed into the hub over WSS (the self-controlled control channel that
-  // replaces dumbpipe). The hub pushes them commands — deploy a container, run a command — and awaits
+  // replaces dumbpipe). The hub pushes typed requests — deploy a container, run an operation — and awaits
   // the reply. Both mutators are confirm-gated + durably audited (they execute on a real machine).
   agents: router({
     list: requirePermission('app.read').query(() => agentGateway.list()),
@@ -66,6 +74,8 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to deploy to an agent' });
+        const dockerError = validateDockerArgs(input.args);
+        if (dockerError) throw new TRPCError({ code: 'BAD_REQUEST', message: dockerError });
         requireDurableAudit(ctx, 'agents.deploy', `${input.agentId}: ${input.image}`);
         try {
           // Secrets (keyed by container name) ride as a map → agent writes a 0600 --env-file, not argv.
@@ -114,6 +124,10 @@ export const appRouter = router({
         const routes = input.services.filter((s) => s.route).map((s) => s.route!);
         if (new Set(routes).size !== routes.length) throw new TRPCError({ code: 'BAD_REQUEST', message: 'service routes must be unique within the app' });
         for (const s of input.services) if (s.route && !s.port) throw new TRPCError({ code: 'BAD_REQUEST', message: `service "${s.name}" has a route but no port` });
+        for (const s of input.services) {
+          const dockerError = validateDockerArgs(s.args);
+          if (dockerError) throw new TRPCError({ code: 'BAD_REQUEST', message: `service "${s.name}": ${dockerError}` });
+        }
         // Resolve each service's node, then group so each node gets ONE deployApp with just its services.
         const placed = input.services.map((s) => ({ ...s, node: s.node ?? input.agentId }));
         const connected = new Set(agentGateway.list().map((a) => a.id));
@@ -177,14 +191,14 @@ export const appRouter = router({
         }
       }),
 
-    // Run a command on an agent (debug/ops; the container path above is the normal one).
-    run: requirePermission('app.deploy')
-      .input(z.object({ agentId: z.string().min(1), argv: z.array(z.string().min(1)).min(1).max(64), confirm: z.boolean().default(false) }))
+    // Run an allowlisted operation on an agent (debug/ops; the container path above is the normal one).
+    run: requirePermission('agent.run')
+      .input(z.object({ agentId: z.string().min(1), operation: agentOperationSchema, confirm: z.boolean().default(false) }).strict())
       .mutation(async ({ ctx, input }) => {
         if (!input.confirm) throw new TRPCError({ code: 'BAD_REQUEST', message: 'confirm:true required to run a command on an agent' });
-        requireDurableAudit(ctx, 'agents.run', `${input.agentId}: ${input.argv.join(' ')}`);
+        requireDurableAudit(ctx, 'agents.run', `${input.agentId}: ${input.operation.name}`);
         try {
-          const reply = await agentGateway.send(input.agentId, { cmd: 'exec', argv: input.argv });
+          const reply = await agentGateway.send(input.agentId, { cmd: 'operate', operation: input.operation });
           const op = recordOp(ctx, { action: 'agents.run', target: input.agentId, outcome: reply.ok ? 'success' : 'failure' });
           return { ...reply, ...op };
         } catch (e) {
@@ -503,7 +517,7 @@ export const appRouter = router({
           node = dep.node;
           container = input.app;
         }
-        const reply = await agentGateway.send(node, { cmd: 'exec', argv: ['docker', 'logs', '--tail', String(input.lines), container] }, 30_000);
+        const reply = await agentGateway.send(node, { cmd: 'operate', operation: { name: 'container.logs', args: { name: container, lines: String(input.lines) } } }, 30_000);
         if (!reply.ok) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: reply.error ?? 'logs failed' });
         return { app: input.app, container, node, output: reply.output ?? '' };
       }),

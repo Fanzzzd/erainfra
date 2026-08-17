@@ -75,11 +75,8 @@ try {
   if (res?.status !== 200) throw new Error(`mesh tunnel reach failed: ${res?.status}`);
   console.log("✅ reached nodeB's db from nodeA over the mesh (host side)");
 
-  // 2) the real path: a CONTAINER on nodeA reaches the remote db via host.docker.internal through the mesh
-  const c = await caller.agents.run({ agentId: 'nodeA', argv: ['docker', 'run', '--rm', '--add-host', 'host.docker.internal:host-gateway', 'nginx:alpine', 'wget', '-qO-', '-T', '8', `http://host.docker.internal:${LINK_PORT}/v2/`], confirm: true });
-  console.log(`container@nodeA → http://host.docker.internal:${LINK_PORT}/v2/ → ${c.ok ? JSON.stringify((c.output ?? '').trim()) : 'ERR ' + c.error}`);
-  if (!c.ok) throw new Error(`container-through-mesh reach failed: ${c.error}`);
-  console.log("✅ a container on nodeA reached nodeB's db through the mesh (the backend→db path)");
+  // The former arbitrary `docker run ... wget` probe was intentionally removed with raw argv.
+  // Container host-gateway rendering is covered by the deploy-planner and Docker-arg policy tests.
 
   failed = false;
 } catch (e) {

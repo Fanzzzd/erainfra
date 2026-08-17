@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,7 +30,7 @@ type Runner interface {
 	MeshConnect(name, ticket string, localPort int) (string, error) // dial a ticket → local 127.0.0.1:localPort
 	MeshDrop(name string) (string, error)                           // tear down a mesh link by name
 	Serve(app string, port int) (string, error)                     // (re)register app->port for the data plane, no deploy
-	Exec(argv []string) (string, error)
+	Execute(command Command) (string, error)
 	Build(src BuildSource, registry, tag, hubBase string) (string, error)
 	ReadSpec(src BuildSource) (string, error) // fetch the source, return its portless.yaml ("" if absent)
 }
@@ -54,7 +57,8 @@ type BuildSource struct {
 	Dir     string // optional build-context subdir within the source (validated: no escaping the root)
 }
 
-// ShellRunner shells out to the container CLI (docker/podman) and the OS for exec. ponytail: CLI
+// ShellRunner shells out to the container CLI (docker/podman) and executes allowlist-resolved host
+// operations. ponytail: CLI
 // shelling is what Coolify does and needs no heavy SDK; swap to github.com/docker/docker/client when
 // we need fine-grained control (events, streamed logs, inspect).
 // Token is the agent's own hub token, used to fetch app.deploy-gated uploaded sources.
@@ -96,11 +100,11 @@ func (r ShellRunner) cli() string {
 	return "docker"
 }
 
-func (r ShellRunner) Exec(argv []string) (string, error) {
-	if len(argv) == 0 {
-		return "", fmt.Errorf("empty argv")
+func (r ShellRunner) Execute(command Command) (string, error) {
+	if command.Path == "" || len(command.Argv) == 0 || command.Argv[0] != command.Path {
+		return "", fmt.Errorf("invalid resolved command")
 	}
-	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	out, err := exec.Command(command.Path, command.Argv[1:]...).CombinedOutput()
 	return string(out), err
 }
 
@@ -108,6 +112,9 @@ func (r ShellRunner) Exec(argv []string) (string, error) {
 // arrive as a map and are written to a 0600 --env-file (never argv) so they don't show in `ps` or
 // leak into the reply output; the file is removed after the run.
 func (r ShellRunner) Deploy(image, name string, args []string, env map[string]string, port int) (string, error) {
+	if err := validateDockerArgs(args); err != nil {
+		return "", err
+	}
 	d := r.cli()
 	var b strings.Builder
 	// Pull only if the image isn't already present locally. This supports pre-loaded / air-gapped
@@ -159,6 +166,11 @@ func (r ShellRunner) Serve(app string, port int) (string, error) {
 // data plane can reverse-proxy them — their Args must publish the port (e.g. -p 127.0.0.1:port:cport).
 // Best-effort sequential: a service that fails to run aborts and returns the output so far.
 func (r ShellRunner) DeployApp(app string, services []Service) (string, error) {
+	for _, service := range services {
+		if err := validateDockerArgs(service.Args); err != nil {
+			return "", fmt.Errorf("service %s: %w", service.Name, err)
+		}
+	}
 	d := r.cli()
 	net := app + "-net"
 	var b strings.Builder
@@ -326,25 +338,25 @@ func scrub(text, secret string) string {
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 type cmdMsg struct {
-	Type     string            `json:"type"`
-	ID       string            `json:"id"`
-	Cmd      string            `json:"cmd"`
-	Argv     []string          `json:"argv"`
-	Image    string            `json:"image"`
-	Name     string            `json:"name"`
-	Args     []string          `json:"args"`
-	Env      map[string]string `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
-	Port     int               `json:"port"`     // deploy: app's loopback port, recorded for the data plane
-	App      string            `json:"app"`      // deployApp: app name (per-app network + container prefix)
-	Services []Service         `json:"services"` // deployApp: the services to bring up together
-	Ticket   string            `json:"ticket"`   // meshConnect: the mesh ticket to dial
-	RepoURL  string            `json:"repoUrl"`  // build/spec (git): git url (may embed a short-lived token)
-	Ref      string            `json:"ref"`      // build/spec (git): branch/tag to clone
-	TarURL   string            `json:"tarUrl"`   // build/spec (upload): hub url of the uploaded source.tgz
-	Dir      string            `json:"dir"`      // build: context subdir within the source
-	Registry string            `json:"registry"` // build: where to push the image
-	Tag      string            `json:"tag"`      // build: image name:tag
-	HubBase  string            `json:"hubBase"`  // build: hub http base to fetch image.sh from
+	Type      string            `json:"type"`
+	ID        string            `json:"id"`
+	Cmd       string            `json:"cmd"`
+	Operation Operation         `json:"operation"`
+	Image     string            `json:"image"`
+	Name      string            `json:"name"`
+	Args      []string          `json:"args"`
+	Env       map[string]string `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
+	Port      int               `json:"port"`     // deploy: app's loopback port, recorded for the data plane
+	App       string            `json:"app"`      // deployApp: app name (per-app network + container prefix)
+	Services  []Service         `json:"services"` // deployApp: the services to bring up together
+	Ticket    string            `json:"ticket"`   // meshConnect: the mesh ticket to dial
+	RepoURL   string            `json:"repoUrl"`  // build/spec (git): git url (may embed a short-lived token)
+	Ref       string            `json:"ref"`      // build/spec (git): branch/tag to clone
+	TarURL    string            `json:"tarUrl"`   // build/spec (upload): hub url of the uploaded source.tgz
+	Dir       string            `json:"dir"`      // build: context subdir within the source
+	Registry  string            `json:"registry"` // build: where to push the image
+	Tag       string            `json:"tag"`      // build: image name:tag
+	HubBase   string            `json:"hubBase"`  // build: hub http base to fetch image.sh from
 }
 
 type replyMsg struct {
@@ -366,12 +378,26 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		reply.OK = true
 		reply.Output = "pong"
 		return reply
-	case "exec":
-		out, err = r.Exec(m.Argv)
+	case "operate":
+		var command Command
+		command, err = Resolve(m.Operation)
+		if err == nil {
+			out, err = r.Execute(command)
+		}
 	case "deploy":
-		out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
+		if err = validateDockerArgs(m.Args); err == nil {
+			out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
+		}
 	case "deployApp":
-		out, err = r.DeployApp(m.App, m.Services)
+		for _, service := range m.Services {
+			if err = validateDockerArgs(service.Args); err != nil {
+				err = fmt.Errorf("service %s: %w", service.Name, err)
+				break
+			}
+		}
+		if err == nil {
+			out, err = r.DeployApp(m.App, m.Services)
+		}
 	case "serve":
 		out, err = r.Serve(m.App, m.Port)
 	case "meshShare":
@@ -397,6 +423,24 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		reply.OK = true
 	}
 	return reply
+}
+
+// decodeCmd is the wire trust boundary. Unknown fields are rejected so retired raw execution
+// fields such as argv cannot be smuggled into a command frame and silently ignored.
+func decodeCmd(raw []byte) (cmdMsg, error) {
+	var m cmdMsg
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil {
+		return cmdMsg{}, fmt.Errorf("decode command: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return cmdMsg{}, fmt.Errorf("decode command: multiple JSON values")
+		}
+		return cmdMsg{}, fmt.Errorf("decode command: %w", err)
+	}
+	return m, nil
 }
 
 // Connect dials the hub and serves commands forever, reconnecting with a fixed backoff on drop.
@@ -455,9 +499,13 @@ func connectOnce(hubURL, token, agentID, version string, roles []Role, runner Ru
 	// ponytail: commands still run synchronously (one at a time) — fine for a single-box agent; only the
 	// heartbeat is concurrent. Spawn goroutines per command if concurrent execution is ever needed.
 	for {
-		var m cmdMsg
-		if err := c.ReadJSON(&m); err != nil {
+		_, raw, err := c.ReadMessage()
+		if err != nil {
 			return fmt.Errorf("read: %w", err)
+		}
+		m, err := decodeCmd(raw)
+		if err != nil {
+			return err
 		}
 		if m.Type != "cmd" {
 			continue

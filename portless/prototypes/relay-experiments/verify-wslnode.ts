@@ -1,12 +1,13 @@
 // Proof: the Windows box .46 — via its now-working WSL2 Ubuntu — is a real portless Linux deploy node.
-// Everything is driven through the connected agent (agents.run / agents.deploy), so output is captured
+// Everything is driven through the connected agent (typed operations / agents.deploy), so output is captured
 // in these logs (no screenshots, no wsl.exe quoting games). The hub runs in a docker-published
 // container on work-remote, reached from .46's WSL2 via a host netsh portproxy.
 //
 // WSL2 here has NO outbound internet (Symantec blocks the NAT) and NO iptables/nft, so:
 //   - docker engine = static binaries fetched from the hub side (already extracted to /usr/local/bin),
 //   - the test image = registry:2.8.2 saved on work-remote and `docker load`ed (no Docker Hub),
-//   - dockerd runs with --iptables=false --bridge=none and containers use --network host.
+//   - current Portless security policy forbids host networking, so this prototype requires a normal
+//     container bridge before it can pass again.
 //   node --experimental-strip-types prototypes/relay-experiments/verify-wslnode.ts
 process.env.PORTLESS_APP_DOMAIN = 'apps.local';
 process.env.PORTLESS_BIND = '0.0.0.0';
@@ -60,8 +61,8 @@ try {
   if (!dataGateway.isConnected(AGENT)) throw new Error(`${AGENT} data channel never connected`);
   console.log(`✅ agent "${AGENT}" online (control + data)`);
 
-  console.log(`deploying ${IMAGE} as "${APP}" (--network host, skip-pull since image is loaded)…`);
-  const r = await caller.agents.deploy({ agentId: AGENT, image: IMAGE, name: APP, args: ['--network', 'host'], port: PORTN, confirm: true });
+  console.log(`deploying ${IMAGE} as "${APP}" with a normal published port…`);
+  const r = await caller.agents.deploy({ agentId: AGENT, image: IMAGE, name: APP, args: ['-p', `127.0.0.1:${PORTN}:${PORTN}`], port: PORTN, confirm: true });
   if (!r.ok) throw new Error(`deploy failed: err=${r.error} | output=${r.output}`);
   console.log(`✅ portless deployed "${APP}" on .46's WSL2`);
 

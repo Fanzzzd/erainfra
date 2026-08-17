@@ -16,6 +16,7 @@
     "web:dev": "cd apps/web && vite"
   },
   "devDependencies": {
-    "turbo": "2.9.18"
+    "turbo": "2.9.18",
+    "typescript": "6.0.3"
   }
 }

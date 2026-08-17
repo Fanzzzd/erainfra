@@ -62,6 +62,6 @@ try {
   console.error('FAIL:', (e as Error).message);
 }
 
-try { await caller.agents.run({ agentId: AGENT, argv: ['docker', 'rm', '-f', APP], confirm: true }); console.log('cleaned up: deployed container removed'); } catch (e) { console.error('cleanup note:', (e as Error).message); }
+try { await caller.agents.run({ agentId: AGENT, operation: { name: 'container.remove', args: { name: APP } }, confirm: true }); console.log('cleaned up: deployed container removed'); } catch (e) { console.error('cleanup note:', (e as Error).message); }
 await app.close();
 process.exit(failed ? 1 : 0);

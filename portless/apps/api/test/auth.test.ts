@@ -9,6 +9,7 @@ import { SessionStore } from '../src/runtime/sessions.ts';
 import { ApiTokenStore } from '../src/runtime/apitokens.ts';
 import { LoginRateLimiter, StaticTokenStore } from '../src/auth.ts';
 import { createDb } from '../src/db.ts';
+import { agentGateway } from '../src/runtime/agents.ts';
 
 test('scrypt password hashing: roundtrip, reject wrong, params encoded in the hash', () => {
   const h = hashPassword('correct horse battery');
@@ -133,6 +134,23 @@ test('http flow: setup-once → login (cookie) → tRPC → cli-token → logout
     assert.match(tok, /^plt_/);
     r = await app.inject({ method: 'GET', url: '/trpc/agents.list', headers: { authorization: `Bearer ${tok}` } });
     assert.equal(r.statusCode, 200);
+    // The real operator bearer token is denied before the outbound control channel is touched.
+    let gatewaySends = 0;
+    const originalSend = agentGateway.send;
+    agentGateway.send = (async () => { gatewaySends++; return { ok: true }; }) as typeof agentGateway.send;
+    try {
+      r = await app.inject({
+        method: 'POST',
+        url: '/trpc/agents.run',
+        headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' },
+        payload: JSON.stringify({ agentId: 'n1', operation: { name: 'disk.usage', args: {} }, confirm: true }),
+      });
+      assert.equal(r.statusCode, 403);
+      assert.match(r.body, /agent\.run/);
+      assert.equal(gatewaySends, 0);
+    } finally {
+      agentGateway.send = originalSend;
+    }
     // operator tokens cannot mint credentials
     r = await app.inject({
       method: 'POST',
