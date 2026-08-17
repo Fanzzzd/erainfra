@@ -57,6 +57,28 @@ func TestValidateDockerArgsPreservesSafeDeployments(t *testing.T) {
 	}
 }
 
+// An `=`-joined flag with an empty value must be rejected on its own terms. If it instead
+// counted as "no value yet", the validator would consume the following token and approve it
+// in a position Docker never reads it from, so the args it approved and the args Docker ran
+// would differ.
+func TestValidateDockerArgsRejectsEmptyCombinedValueWithoutConsumingNextToken(t *testing.T) {
+	cases := map[string][]string{
+		"env alone":              {"--env="},
+		"env short alone":        {"-e="},
+		"env swallows next":      {"--env=", "PORT=8080"},
+		"publish swallows next":  {"-p=", "127.0.0.1:8080:80"},
+		"volume swallows next":   {"--volume=", "myapp-data:/var/lib/data"},
+		"add-host swallows next": {"--add-host=", "host.docker.internal:host-gateway"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := validateDockerArgs(args); err == nil {
+				t.Fatalf("empty combined value accepted: %q", args)
+			}
+		})
+	}
+}
+
 func TestRunCmdRejectsHostSentinelMountBeforeRunner(t *testing.T) {
 	sentinel := t.TempDir() + "/host-secret"
 	const secret = "HOST_SENTINEL_DO_NOT_EXPOSE"

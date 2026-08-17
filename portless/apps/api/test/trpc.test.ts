@@ -102,6 +102,37 @@ test('agents.deploy preserves existing safe publish, env, named-volume, and mesh
   assert.deepEqual(sent[0], { cmd: 'deploy', image: 'busybox', name: 'demo', args, env: {}, port: undefined });
 });
 
+// An `=`-joined flag with an empty value must be rejected on its own terms. If it instead counted
+// as "no value yet", the validator would consume the following token and approve it in a position
+// Docker never reads it from, so the args it approved and the args Docker ran would differ.
+test('agents.deploy rejects an empty combined option value instead of consuming the next token', async (t) => {
+  let sends = 0;
+  const originalSend = agentGateway.send;
+  agentGateway.send = (async () => {
+    sends++;
+    return { ok: true };
+  }) as typeof agentGateway.send;
+  t.after(() => { agentGateway.send = originalSend; });
+
+  const forbidden = [
+    ['--env='],
+    ['-e='],
+    ['--env=', 'PORT=8080'],
+    ['-p=', '127.0.0.1:8080:80'],
+    ['--volume=', 'demo-data:/var/lib/data'],
+    ['--add-host=', 'host.docker.internal:host-gateway'],
+  ];
+  const { call } = caller(operator);
+  for (const args of forbidden) {
+    await assert.rejects(
+      () => call.agents.deploy({ agentId: 'n1', image: 'busybox', name: 'probe', args, confirm: true }),
+      /docker args/i,
+      args.join(' '),
+    );
+  }
+  assert.equal(sends, 0);
+});
+
 test('operator cannot run an agent command and is denied before gateway.send', async (t) => {
   let sends = 0;
   const originalSend = agentGateway.send;

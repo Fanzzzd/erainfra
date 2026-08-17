@@ -27,6 +27,10 @@ func validateDockerArgs(args []string) error {
 			return fmt.Errorf("docker args: invalid token")
 		}
 		value := ""
+		// An `=`-joined flag carries its value even when that value is empty, so track
+		// presence separately: treating `--env=` as "no value yet" would consume the next
+		// token and validate it in a position Docker never reads it from.
+		hasValue := false
 		kind := ""
 		switch flag {
 		case "-p", "--publish":
@@ -47,6 +51,7 @@ func validateDockerArgs(args []string) error {
 				if strings.HasPrefix(flag, prefix) {
 					kind = candidate
 					value = strings.TrimPrefix(flag, prefix)
+					hasValue = true
 					break
 				}
 			}
@@ -54,7 +59,7 @@ func validateDockerArgs(args []string) error {
 				return fmt.Errorf("docker args: flag %q is not allowed", flag)
 			}
 		}
-		if value == "" {
+		if !hasValue {
 			i++
 			if i >= len(args) {
 				return fmt.Errorf("docker args: %s requires a value", flag)

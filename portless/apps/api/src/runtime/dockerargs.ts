@@ -27,9 +27,12 @@ export function validateDockerArgs(args: readonly string[]): string | null {
       kind = found[1];
       value = flag.slice(found[0].length);
     }
-    if (!value) {
+    // An `=`-joined flag carries its value even when that value is empty, so only an absent
+    // value consumes the next token: treating `--env=` as "no value yet" would validate the
+    // following token in a position Docker never reads it from.
+    if (value === undefined) {
       value = args[++i];
-      if (!value) return `docker args: ${flag} requires a value`;
+      if (value === undefined) return `docker args: ${flag} requires a value`;
     }
     const error = kind === 'publish'
       ? validatePublish(value)
