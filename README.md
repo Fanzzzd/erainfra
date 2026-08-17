@@ -397,13 +397,15 @@ pull requests on machines that hold persistent credentials.
 
 EraInfra is one product version: root, Agent, Controller, and Runtime versions must match.
 Tagging `v<version>` runs the release workflow, revalidates the JavaScript and Go surfaces
-(including both Linux architectures), rebuilds the agent archive twice byte-for-byte,
-checks the deployment pin, attests the artifacts, and publishes:
+(including both Linux architectures), rebuilds the agent archive and the Infra Agent binaries
+twice byte-for-byte, checks the deployment pin, attests the artifacts, and publishes:
 
 - `erainfra-agent-<version>.tar.gz` plus SHA-256;
 - Controller binaries and SHA-256 sidecars for Linux/macOS x64/ARM64;
 - Runtime binaries and SHA-256 sidecars for Linux x64/ARM64, plus the runtime and controller
-  systemd units.
+  systemd units;
+- `infra-agent-<os>-<arch>` binaries and SHA-256 sidecars for Linux and macOS x64/ARM64 and
+  Windows x64 — the five targets a Node can be.
 
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never
 overwritten; a correction is a new version.
