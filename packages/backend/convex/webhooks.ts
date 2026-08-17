@@ -15,8 +15,27 @@ import {
 } from "./recovery";
 
 export const MAX_DELIVERY_ATTEMPTS = 5;
-/** How long a delivery may sit in "pending" before reconcile retries it. */
+/** How long a delivery sits in "pending" between reconcile retries. */
 export const DELIVERY_RETRY_AFTER_MS = 60_000;
+
+/**
+ * When a delivery that is still pending becomes eligible for its next retry.
+ *
+ * The interval spaces the attempts out, so it multiplies by the attempts already
+ * spent: measured from `receivedAt` alone it would hold off the first retry and
+ * nothing after it, and every reconcile pass from then on would spend an attempt
+ * and a write. Deriving the schedule from `attempts` keeps it in the row that
+ * already records them, so there is no second timestamp to disagree with the
+ * count and nothing to backfill for rows that are pending right now.
+ *
+ * The whole budget therefore spans `MAX_DELIVERY_ATTEMPTS` intervals from
+ * arrival, which is what a transient failure needs to clear in.
+ */
+export function deliveryRetryDueAt(
+  delivery: Pick<Doc<"webhookDeliveries">, "receivedAt" | "attempts">,
+) {
+  return delivery.receivedAt + (delivery.attempts + 1) * DELIVERY_RETRY_AFTER_MS;
+}
 
 const workflowJobValidator = v.object({
   action: v.union(v.literal("queued"), v.literal("in_progress"), v.literal("completed")),
@@ -193,6 +212,10 @@ export const processDelivery = internalMutation({
 /**
  * Retry deliveries that never settled. Called from reconcile so the attempt
  * accounting commits even when the processor itself keeps rolling back.
+ *
+ * How often reconcile runs is not what paces the retries: `deliveryRetryDueAt`
+ * does, so a pass that arrives early spends nothing, and the attempt budget
+ * covers the same span of time whatever the cron interval happens to be.
  */
 export const retryStalledDeliveries = internalMutation({
   args: { now: v.number() },
@@ -206,7 +229,7 @@ export const retryStalledDeliveries = internalMutation({
     let retried = 0;
     let abandoned = 0;
     for (const delivery of pending) {
-      if (args.now - delivery.receivedAt < DELIVERY_RETRY_AFTER_MS) {
+      if (args.now < deliveryRetryDueAt(delivery)) {
         continue;
       }
       const attempts = delivery.attempts + 1;
