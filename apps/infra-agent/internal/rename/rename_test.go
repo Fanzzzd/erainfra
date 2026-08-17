@@ -1,7 +1,11 @@
 package rename
 
 import (
+	"io/fs"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -69,12 +73,17 @@ func TestEnvTreatsTheEmptyStringAsSet(t *testing.T) {
 
 // THE property this release rests on: a Node that has never heard of the new names behaves exactly
 // as it did. Every variable the Infra Agent reads, set only under its retired name.
+// Every variable the Infra Agent reads under a retired name. Hoisted out of the test below so the
+// completeness test can hold it against the sources: a table is only a safety property while it is
+// complete, and nothing about adding a read site otherwise makes this list grow with it.
+var agentVariables = [][2]string{
+	{"PORTLESS_HUB", "ERAINFRA_HUB"},
+	{"PORTLESS_TOKEN", "ERAINFRA_TOKEN"},
+	{"PORTLESS_PREFIX", "ERAINFRA_PREFIX"},
+}
+
 func TestTheRetiredNameAloneIsSufficientForEveryVariableTheAgentReads(t *testing.T) {
-	for _, pair := range [][2]string{
-		{"PORTLESS_HUB", "ERAINFRA_HUB"},
-		{"PORTLESS_TOKEN", "ERAINFRA_TOKEN"},
-		{"PORTLESS_PREFIX", "ERAINFRA_PREFIX"},
-	} {
+	for _, pair := range agentVariables {
 		Reset()
 		marker := "only-the-old-name-was-set:" + pair[0]
 		t.Setenv(pair[0], marker)
@@ -84,6 +93,73 @@ func TestTheRetiredNameAloneIsSufficientForEveryVariableTheAgentReads(t *testing
 		}
 		if !warned[pair[0]] {
 			t.Fatalf("%s was accepted without saying it is retired", pair[0])
+		}
+	}
+}
+
+// The Hub half of this PR proves its own table complete by reading its sources
+// (apps/hub/test/renamed-identifiers.test.ts). The Agent needs the same guard for the same reason:
+// the test above is a loop over a hand-written list, so a fourth `rename.Env` added anywhere in the
+// Agent would be dual-read but never proven sufficient, and the suite would stay green while the
+// property it claims quietly stopped covering everything.
+//
+// Both directions, because each fails differently: a read site missing from the table is an
+// unproven variable, and a table row with no read site is a name that has already been removed and
+// left a row asserting nothing.
+func TestEveryRetiredNameTheAgentReadsIsCoveredByTheTableAbove(t *testing.T) {
+	root := filepath.Join("..", "..")
+	// This package implements the fallback and tests it; everywhere else must go through it.
+	self := filepath.Join(root, "internal", "rename")
+	call := regexp.MustCompile(`Env\(\s*"(ERAINFRA_[A-Z0-9_]+)"\s*,\s*"(PORTLESS_[A-Z0-9_]+)"\s*\)`)
+	raw := regexp.MustCompile(`os\.Getenv\(\s*"(PORTLESS_[A-Z0-9_]+)"`)
+
+	found := map[string]bool{}
+	walked := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		if filepath.Dir(path) == self {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		walked++
+		for _, m := range call.FindAllStringSubmatch(string(source), -1) {
+			if want := strings.Replace(m[2], "PORTLESS_", "ERAINFRA_", 1); m[1] != want {
+				t.Errorf("%s: %s is paired with %s, not its prefix-swapped name %s", path, m[2], m[1], want)
+			}
+			found[m[2]] = true
+		}
+		// A raw read bypasses the fallback entirely, so it would be invisible to the scan above
+		// while breaking exactly the boxes this PR exists to protect.
+		for _, m := range raw.FindAllStringSubmatch(string(source), -1) {
+			t.Errorf("%s: reads %s directly — route it through rename.Env so the old name keeps working", path, m[1])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	// A scan that read nothing reports the same green as a scan that found nothing wrong. The
+	// Agent is more than a handful of files, so a walk that turned up almost none means the root
+	// moved and this test has quietly stopped guarding anything.
+	if walked < 5 {
+		t.Fatalf("scanned only %d Go files under %s — the walk root is wrong, so this test proves nothing", walked, root)
+	}
+
+	listed := map[string]bool{}
+	for _, pair := range agentVariables {
+		listed[pair[0]] = true
+		if !found[pair[0]] {
+			t.Errorf("%s is in the table but no longer read anywhere — the row asserts nothing", pair[0])
+		}
+	}
+	for name := range found {
+		if !listed[name] {
+			t.Errorf("%s is read but not in agentVariables — it is dual-read but never proven sufficient", name)
 		}
 	}
 }
