@@ -113,7 +113,14 @@ case "$1" in
     esac
     ;;
   clone) exit "\${RC_FAKE_TART_CLONE_EXIT:-0}" ;;
-  run) while :; do sleep 1; done ;;
+  run)
+    # A tart client that will not die politely. An ignored disposition survives
+    # fork and exec, so the sleeps below ignore TERM too and only SIGKILL ends
+    # this -- which is what teardown has to be willing to send before it can
+    # claim the VM was deleted.
+    [ -n "\${RC_FAKE_TART_IGNORE_TERM:-}" ] && trap '' TERM
+    while :; do sleep 1; done
+    ;;
   ip)
     [ -n "\${RC_FAKE_TART_NO_IP:-}" ] && exit 1
     printf '%s\\n' "192.0.2.10"
@@ -145,6 +152,12 @@ case "$payload" in
     exit 0
     ;;
   *ACTIONS_RUNNER_INPUT_JITCONFIG*)
+    # A guest that will not die politely -- a job wedged in an uninterruptible
+    # read, or one that installed its own TERM handler. An ignored disposition
+    # survives fork and exec, so the sleep below ignores TERM as well and the
+    # whole fake outlives any number of SIGTERMs. Only SIGKILL ends it, which is
+    # exactly what a teardown path has to be willing to send.
+    [ -n "\${RC_FAKE_RUNNER_IGNORE_TERM:-}" ] && trap '' TERM
     # The sleep gets its own descriptors so that killing this fake releases the
     # inherited stdout immediately, the way killing a real ssh client would.
     sleep "\${RC_FAKE_RUNNER_SLEEP:-0}" >/dev/null 2>&1

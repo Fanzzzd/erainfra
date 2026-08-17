@@ -73,6 +73,100 @@ die() {
 # Cleanup
 # ---------------------------------------------------------------------------
 
+# Nothing on the teardown path may use `wait`, and nothing on it may be
+# unbounded.
+#
+# `wait` is unusable here because bash's job table can outlive the process it
+# describes. When a child exits in the same instant it signals this shell --
+# which is exactly what the watchdog does, `kill -TERM "$parent"` and then
+# straight to its own exit -- the SIGCHLD can be lost against the trap that
+# signal fires. `jobs` then still reports the watchdog as Running when `kill -0`
+# already reports it gone, and `wait` blocks in waitpid(2) for an exit that has
+# already happened. It is a race, so it is intermittent and load-dependent, and
+# it strands the shell in cleanup() with everything below the `wait` unreached.
+#
+# Unbounded is unacceptable independently of that: this function's whole job is
+# to make progress when the thing it is cleaning up will not. So teardown asks
+# the kernel rather than bash -- `kill -0` is never stale -- and every poll below
+# has a deadline after which the caller carries on regardless.
+TEARDOWN_GRACE_S=2
+
+# True while $1 is live. $1 is a pid, or -pgid for a whole process group.
+#
+# Zombies are explicitly not alive. A process that has exited but has not been
+# reaped still answers `kill -0`, and a process group answers `kill -0` for as
+# long as ANY member exists at all, zombies included. Bash reaps its own
+# children promptly whether or not anybody waits, but a pipeline member that
+# forked and then died before reaping leaves an orphan for init to collect, and
+# that can outlast the grace below. Counting those as alive made every teardown
+# spend its whole budget and then SIGKILL a job that had already died politely.
+still_alive() {
+  local states
+  case "$1" in
+    -*)
+      kill -0 "$1" 2>/dev/null || return 1
+      states="$(ps -A -o pgid=,state= 2>/dev/null | awk -v g="${1#-}" '$1 == g { print $2 }')"
+      # If ps cannot say, fail safe and call it alive: the poll is bounded
+      # anyway, and the alternative would skip the escalation.
+      if [ -z "$states" ]; then
+        return 0
+      fi
+      printf '%s\n' "$states" | grep -qv '^Z'
+      ;;
+    *)
+      kill -0 "$1" 2>/dev/null || return 1
+      case "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" in
+        Z*) return 1 ;;
+      esac
+      ;;
+  esac
+}
+
+# Polls for at most $2 seconds. Non-zero means $1 outlived that budget.
+await_exit() {
+  local target="$1" ticks=$(($2 * 10))
+  while [ "$ticks" -gt 0 ]; do
+    still_alive "$target" || return 0
+    sleep 0.1
+    ticks=$((ticks - 1))
+  done
+  ! still_alive "$target"
+}
+
+# TERM $1, a short grace, then KILL $1, then give up and let the caller
+# continue. Two seconds is plenty: everything reaped here is either the
+# watchdog, which has already done its work, or a host-side process whose guest
+# is about to be deleted out from under it anyway.
+#
+# $1 may be a negated process group, which is how the whole SSH chain is torn
+# down at once.
+#
+# Deliberately always succeeds. Under `set -e` a best-effort teardown step that
+# reported failure would abort the rest of cleanup, which is the same class of
+# mistake as blocking in it.
+reap() {
+  local target="$1"
+
+  still_alive "$target" || return 0
+
+  kill -TERM "$target" 2>/dev/null || true
+  if await_exit "$target" "$TEARDOWN_GRACE_S"; then
+    return 0
+  fi
+
+  kill -KILL "$target" 2>/dev/null || true
+  await_exit "$target" 1 || true
+}
+
+# `--timeout 15` is tart's own bound on the guest's graceful shutdown, not a
+# bound on the tart binary, so the client gets a host-side deadline as well.
+# Its status is discarded either way; the delete that follows is what matters.
+stop_vm() {
+  "$TART" stop "$VM_NAME" --timeout 15 >/dev/null 2>&1 &
+  local stopper=$!
+  await_exit "$stopper" 20 || kill -KILL "$stopper" 2>/dev/null || true
+}
+
 # Deletes the VM and wipes the private work directory. Safe to call more than
 # once and safe to call before the VM exists.
 cleanup() {
@@ -83,22 +177,27 @@ cleanup() {
     TIMED_OUT=1
   fi
 
-  if [ -n "$WATCHDOG_PID" ]; then
-    kill "$WATCHDOG_PID" 2>/dev/null || true
-    wait "$WATCHDOG_PID" 2>/dev/null || true
-  fi
-
-  kill_job_group
-
-  if [ -n "$VM_PID" ] && kill -0 "$VM_PID" 2>/dev/null; then
-    "$TART" stop "$VM_NAME" --timeout 15 >/dev/null 2>&1 || true
-    kill "$VM_PID" 2>/dev/null || true
-    wait "$VM_PID" 2>/dev/null || true
+  # The guest is destroyed first, before anything that merely refuses to die
+  # gets a chance to stand in front of it. It is the only thing here that costs
+  # money to leak: a surviving Tart VM holds its Profile slot until an operator
+  # notices, and macOS has no equivalent of recoverFirecrackerOrphans to find it
+  # on the next run. The host-side processes below are cheap by comparison, so
+  # they are reaped afterwards -- their order relative to the delete never
+  # mattered, and putting them first is what made the delete unreachable.
+  if [ -n "$VM_PID" ] && still_alive "$VM_PID"; then
+    stop_vm
+    reap "$VM_PID"
   fi
 
   if [ "$VM_CLONED" = "1" ]; then
     "$TART" delete "$VM_NAME" >/dev/null 2>&1 || true
   fi
+
+  if [ -n "$WATCHDOG_PID" ]; then
+    reap "$WATCHDOG_PID"
+  fi
+
+  kill_job_group
 
   if [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ]; then
     rm -rf "$WORKDIR" 2>/dev/null || true
@@ -125,20 +224,25 @@ process_group_of() {
 # leaves the SSH client behind, still waiting on a guest that is about to be
 # deleted out from under it.
 kill_job_group() {
-  if [ -z "$JOB_PID" ] || ! kill -0 "$JOB_PID" 2>/dev/null; then
+  if [ -z "$JOB_PID" ] || ! still_alive "$JOB_PID"; then
     return 0
   fi
 
-  local job_group
+  local job_group target
   job_group="$(process_group_of "$JOB_PID")"
 
+  # Falling back to the bare pid is what keeps this from ever signalling the
+  # Agent's own group when the setpgid did not take.
   if [ -n "$job_group" ] && [ "$job_group" != "$(process_group_of $$)" ]; then
-    kill -TERM "-$job_group" 2>/dev/null || true
+    target="-$job_group"
   else
-    kill -TERM "$JOB_PID" 2>/dev/null || true
+    target="$JOB_PID"
   fi
 
-  wait "$JOB_PID" 2>/dev/null || true
+  # A job that ignores TERM -- a runner with its own handler, or one wedged in
+  # an uninterruptible read -- is exactly the case this has to survive, so the
+  # grace is short and the escalation to KILL is unconditional.
+  reap "$target"
 }
 
 # `exit` from a signal trap runs the EXIT trap, which is what deletes the VM.

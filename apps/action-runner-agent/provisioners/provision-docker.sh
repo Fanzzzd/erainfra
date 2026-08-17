@@ -62,23 +62,71 @@ DOCKER_PID=""
 WATCHDOG_PID=""
 ENV_WRITER_PID=""
 
+# Teardown never uses `wait` and never runs unbounded. Bash's job table can
+# outlive the process it describes -- a child that exits in the same instant it
+# signals this shell can leave `jobs` reporting it as Running after `kill -0`
+# already reports it gone, and `wait` then blocks in waitpid(2) for an exit that
+# has already happened. That is a race, so it is intermittent, and in a function
+# whose job is to release a resource it is unacceptable regardless: `kill -0`
+# asks the kernel instead, and every poll below has a deadline.
+# See the same primitives, and the trace that found them, in provision-mac.sh.
+TEARDOWN_GRACE_S=2
+
+# shellcheck disable=SC2317,SC2329  # reached only from the EXIT trap, via reap
+still_alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  # A process that has exited but has not been reaped still answers `kill -0`.
+  # Treating a zombie as alive would make every poll below spend its whole
+  # budget and escalate to SIGKILL against something that already died.
+  case "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" in
+    Z*) return 1 ;;
+  esac
+}
+
+# Polls for at most $2 seconds. Non-zero means $1 outlived that budget.
+# shellcheck disable=SC2317,SC2329  # reached only from the EXIT trap, via reap
+await_exit() {
+  local target="$1" ticks=$(($2 * 10))
+  while [ "$ticks" -gt 0 ]; do
+    still_alive "$target" || return 0
+    sleep 0.1
+    ticks=$((ticks - 1))
+  done
+  ! still_alive "$target"
+}
+
+# TERM, a short grace, then KILL, then carry on regardless. Always succeeds: a
+# best-effort teardown step that reported failure would abort the rest of
+# cleanup under `set -e`, which is the same class of mistake as blocking in it.
+# shellcheck disable=SC2317,SC2329
+reap() {
+  local target="$1"
+  still_alive "$target" || return 0
+  kill -TERM "$target" 2>/dev/null || true
+  if await_exit "$target" "$TEARDOWN_GRACE_S"; then
+    return 0
+  fi
+  kill -KILL "$target" 2>/dev/null || true
+  await_exit "$target" 1 || true
+}
+
 # Invoked indirectly by the EXIT trap installed immediately below.
 # shellcheck disable=SC2317,SC2329
 cleanup() {
   local code=$?
   trap - EXIT
+  # The container goes first. It is the resource that leaks if this function
+  # does not finish, and nothing that merely refuses to die belongs in front of
+  # it. Removing it is also what makes the client below exit on its own.
+  docker rm -f "$RUNNER_NAME" >/dev/null 2>&1 || true
   if [ -n "$WATCHDOG_PID" ]; then
-    kill "$WATCHDOG_PID" 2>/dev/null || true
-    wait "$WATCHDOG_PID" 2>/dev/null || true
+    reap "$WATCHDOG_PID"
   fi
   if [ -n "$ENV_WRITER_PID" ]; then
-    kill "$ENV_WRITER_PID" 2>/dev/null || true
-    wait "$ENV_WRITER_PID" 2>/dev/null || true
+    reap "$ENV_WRITER_PID"
   fi
-  docker rm -f "$RUNNER_NAME" >/dev/null 2>&1 || true
   if [ -n "$DOCKER_PID" ]; then
-    kill "$DOCKER_PID" 2>/dev/null || true
-    wait "$DOCKER_PID" 2>/dev/null || true
+    reap "$DOCKER_PID"
   fi
   if [ -f "$WORKDIR/timed-out" ]; then
     rm -rf "$WORKDIR"
