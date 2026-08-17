@@ -1,18 +1,14 @@
 {
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@erainfra/typescript-config/react.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "allowImportingTsExtensions": true,
-    "paths": { "@/*": ["./src/*"] },
-    "types": ["vite/client"]
+    // Vite, not Node, resolves this tree, so the ambient types it needs are its own
+    // (`import.meta.env`, `?raw` imports). Narrowing `types` also keeps @types/node from
+    // leaking in through the workspace and making `process` look available in the browser.
+    "types": ["vite/client"],
+    // The `@/…` specifier is written into every component import and into
+    // components.json, which is what the shadcn generator reads when it adds a new one.
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src"]
 }
