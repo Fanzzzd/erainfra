@@ -9,7 +9,15 @@
 `feat: absorb portless — infra management joins the CI platform (#35)` moved Portless
 into this repository. The title states the intent: Portless _joins_ the platform. The
 execution did not match it. Portless was moved in as a directory, not adopted as a
-member of the workspace, and eleven months of independent history came with it intact.
+member of the workspace.
+
+**Correction.** An earlier version of this paragraph added "and eleven months of
+independent history came with it intact." That is false, and it was measured after the
+fact: `cf00260` (#35) is a **single-parent** commit whose parent is `3025eeb`, so it is a
+squash. None of Portless's own commits are in this repository. `git log --follow` from any
+file that arrived with it reaches #35 and stops. The eleven months of divergence is real
+and is what the list below measures — but it is divergence in the _files_, not history in
+the _repository_.
 
 The evidence that Portless is currently a separate product sharing a repository:
 
@@ -47,6 +55,11 @@ lockfile, and a release that ships what it gates on.
 
 - The half-absorbed state is a defect to be repaired, not a layout to be preserved. Every
   divergence listed above is now a bug with an owner, not a property of the tree.
+  **All of them are now repaired**, so the list above reads as history rather than as an
+  open defect list: formatting (#54), linting (#59), floating dependency versions (#60),
+  and the workspace, toolchain, lockfile, Go module and release-gate divergences (#61).
+  What #61 deliberately did not do is retire the frozen runtime identifiers; that is still
+  ahead, per rule 4 in [CONTEXT.md](../../CONTEXT.md).
 - A Go module merge becomes admissible. `portless-agent` requires
   `github.com/gorilla/websocket v1.5.3` — it is not, and never was, standard-library only,
   so the module boundary was not protecting a zero-dependency guarantee. What that boundary
