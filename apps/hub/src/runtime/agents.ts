@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { retiredName } from "../env.ts";
 
 // AgentGateway is the self-controlled control channel that replaces dumbpipe: portless agents on
 // remote (NAT'd) boxes dial OUT to the hub over a WebSocket and stay connected; the hub addresses
@@ -72,6 +73,59 @@ export interface AgentReply {
   ok: boolean;
   output?: string;
   error?: string;
+}
+
+// An Infra Agent's `roles` describe PLACEMENT of deployed workloads on a Node — which extra
+// capability this box carries — and that is a different axis from CONTEXT.md's two machine kinds.
+// The placement vocabulary borrowed CONTEXT.md's `worker` for "no extra capability, just runs Apps",
+// so the Nodes page badged every Node as a Worker: the machine kind CONTEXT.md defines as the other
+// one, running the other daemon (#64). The machine kinds own that word — `/install --role
+// worker|node` writes it onto every machine in the field — so the placement value is the one that
+// moves, to `compute`, alongside `gateway`, `database` and `relay`.
+//
+// (A third `roles` field, on Principal in rbac.ts, is a human's or token's permissions. It shares
+// only the field name with either axis and is not involved here.)
+export const ROLE_COMPUTE = "compute";
+export const RETIRED_ROLE_WORKER = "worker";
+
+// A role crosses the WebSocket and the Hub holds it per connected agent, so the two sides move
+// independently and retiring the word takes four releases (CONTEXT.md rule 4; the idiom is #75's
+// `renamedEnv`, one transport over): (1) the Hub accepts both and folds them together — this
+// release; (2) deploy the Hub, wait out the window; (3) the agent sends `compute`; (4) the Hub drops
+// `worker`. Every Infra Agent in the field today sends `worker` and nothing on either side branches
+// on it, so folding on receipt is what lets stage 1 correct the badge on its own, without a single
+// deployed binary changing.
+//
+// Deduplicated because stage 2's window has both values in flight: an agent that reports `worker`
+// and `compute` together is claiming one placement, and must not be rendered as holding two.
+export function normalizeAgentRoles(roles: unknown): string[] {
+  if (!Array.isArray(roles)) return [];
+  const out: string[] = [];
+  for (const raw of roles) {
+    // Only a JSON string is a role. Coercing instead — which is what this did before — turns `[null]`
+    // into a badge reading "null" and `[["worker"]]` into an asserted `worker`, so a malformed frame
+    // could claim a placement nobody sent.
+    //
+    // Unknown STRINGS still cross verbatim, deliberately. An older Hub meeting a placement role
+    // added after it was built must render an unfamiliar badge rather than a missing one: dropping
+    // to an allowlist here would make stage 3 of any role rollout invisible on a Hub that lagged
+    // stage 1, which is the one failure this whole sequence exists to prevent.
+    if (typeof raw !== "string") continue;
+    let role = raw;
+    if (role === RETIRED_ROLE_WORKER) {
+      // Warn-once per process, and deliberately without the agent id: `connect` re-dials forever, so
+      // a line per hello would bury the journal, and naming only the first stale agent of many reads
+      // as if it were the only one. The Nodes page has the versions.
+      retiredName(
+        RETIRED_ROLE_WORKER,
+        ROLE_COMPUTE,
+        "An Infra Agent still reports the retired placement role; the Hub reads it as compute. Nothing to do until that agent is updated.",
+      );
+      role = ROLE_COMPUTE;
+    }
+    if (!out.includes(role)) out.push(role);
+  }
+  return out;
 }
 
 // Pure: parse an inbound agent frame; null on malformed or missing type.
@@ -148,7 +202,7 @@ export class AgentGateway {
         const info: AgentInfo = {
           id,
           version: m.version != null ? String(m.version) : null,
-          roles: Array.isArray(m.roles) ? m.roles.map(String) : [],
+          roles: normalizeAgentRoles(m.roles),
           connectedAt: new Date().toISOString(),
         };
         this.byId.set(id, { socket, info });

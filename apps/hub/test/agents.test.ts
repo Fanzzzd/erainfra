@@ -16,13 +16,15 @@ test("gateway registers an agent on hello and lists it", () => {
   const sock: AgentSocket = { send: () => {}, close: () => {} };
   g.onMessage(
     sock,
-    JSON.stringify({ type: "hello", agentId: "box1", version: "1.0", roles: ["worker"] }),
+    JSON.stringify({ type: "hello", agentId: "box1", version: "1.0", roles: ["relay"] }),
   );
   const list = g.list();
   assert.equal(list.length, 1);
   assert.equal(list[0].id, "box1");
   assert.equal(list[0].version, "1.0");
-  assert.deepEqual(list[0].roles, ["worker"]);
+  // A placement role no rollout is touching, so this stays a test about registering. The retired
+  // `worker` and its fold to `compute` are agent-roles.test.ts's subject.
+  assert.deepEqual(list[0].roles, ["relay"]);
 });
 
 test("send dispatches a cmd and resolves on the matching reply", async () => {

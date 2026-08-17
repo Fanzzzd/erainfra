@@ -12,7 +12,7 @@ function fakeDeps(present: string[], opts: { fail?: Set<string> } = {}) {
   const gateway: FailoverDeps["gateway"] = {
     get: (id) =>
       present.includes(id) ? { id, version: null, roles: [], connectedAt: "" } : undefined,
-    list: () => present.map((id) => ({ id, version: null, roles: ["worker"], connectedAt: "" })),
+    list: () => present.map((id) => ({ id, version: null, roles: ["compute"], connectedAt: "" })),
     send: async (to, cmd) => {
       sent.push({ to, cmd });
       return { ok: !opts.fail?.has(to) };
@@ -34,7 +34,7 @@ test("failover redeploys stranded apps onto a survivor and flips the route", asy
   deps.gateway.get = (id) =>
     present.includes(id) ? { id, version: null, roles: [], connectedAt: "" } : undefined;
   deps.gateway.list = () =>
-    present.map((id) => ({ id, version: null, roles: ["worker"], connectedAt: "" }));
+    present.map((id) => ({ id, version: null, roles: ["compute"], connectedAt: "" }));
 
   const res = await failoverNode("nodeA", deps);
   assert.equal(res.length, 2); // web + api, not other
