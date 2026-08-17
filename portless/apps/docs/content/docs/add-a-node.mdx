@@ -3,7 +3,7 @@ title: Add a node
 description: Bring any Linux, macOS, or Windows box onto your mesh with one command.
 ---
 
-Portless runs your apps on **nodes** — any Linux, macOS, or Windows box, even behind NAT with no public IP. A node runs the **agent**, which dials *out* to your hub over an encrypted WebSocket and waits for deploy commands. No inbound ports, no public IP.
+Portless runs your apps on **nodes** — any Linux, macOS, or Windows box, even behind NAT with no public IP. A node runs the **agent**, which dials _out_ to your hub over an encrypted WebSocket and waits for deploy commands. No inbound ports, no public IP.
 
 ## One command
 
@@ -51,7 +51,7 @@ sh deploy/build-agents.sh   # cross-compiles every platform into deploy/bin/
 
 ## Why one command
 
-You can't bring a machine onto a network you've never had access to — *something* has to run on it first. Every node-based system works this way: Tailscale's `tailscale up`, Fly/Railway/Coolify install scripts, Kubernetes' `kubeadm join`. Portless keeps it to a single command and self-hosts the binary, so there's nothing extra to trust.
+You can't bring a machine onto a network you've never had access to — _something_ has to run on it first. Every node-based system works this way: Tailscale's `tailscale up`, Fly/Railway/Coolify install scripts, Kubernetes' `kubeadm join`. Portless keeps it to a single command and self-hosts the binary, so there's nothing extra to trust.
 
 After the agent runs once, everything else — deploys, restarts, logs, removal — is driven remotely from the hub. You never touch the box again.
 

@@ -39,12 +39,12 @@ How a project deploys is written in the project — the platform executes it det
 ```yaml
 services:
   web:
-    build: .            # Dockerfile or Nixpacks auto-detect
+    build: . # Dockerfile or Nixpacks auto-detect
     port: 3000
-    route: true         # → https://<app>.<your-domain>
-    needs: [db]         # injects DB_HOST / DB_PORT
+    route: true # → https://<app>.<your-domain>
+    needs: [db] # injects DB_HOST / DB_PORT
   db:
-    image: 127.0.0.1:61050/postgres:16   # from YOUR registry
+    image: 127.0.0.1:61050/postgres:16 # from YOUR registry
     port: 5432
     volumes: [pgdata:/var/lib/postgresql/data]
     # node: other-box   # optional placement; needs: wires cross-node over the mesh (iroh)

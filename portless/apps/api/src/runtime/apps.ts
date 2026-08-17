@@ -6,8 +6,8 @@
 // they're re-fetched live from the SecretStore at deploy/failover (same as the single-container path).
 // Stored as one JSON doc per app (nested services/links), with the node lifted into a column for
 // filtering. ponytail: single node per app, last-deploy-wins.
-import type { DatabaseSync } from 'node:sqlite';
-import { db } from '../db.ts';
+import type { DatabaseSync } from "node:sqlite";
+import { db } from "../db.ts";
 
 export interface ServiceDeploy {
   name: string; // DNS name on the app network (e.g. "web", "db")
@@ -44,22 +44,31 @@ export class AppStore {
   }
 
   set(app: string, dep: AppDeployment): void {
-    this.d.prepare('INSERT INTO apps (app, node, doc) VALUES (?, ?, ?) ON CONFLICT(app) DO UPDATE SET node = excluded.node, doc = excluded.doc')
+    this.d
+      .prepare(
+        "INSERT INTO apps (app, node, doc) VALUES (?, ?, ?) ON CONFLICT(app) DO UPDATE SET node = excluded.node, doc = excluded.doc",
+      )
       .run(app, dep.node, JSON.stringify(dep));
   }
 
   get(app: string): AppDeployment | undefined {
-    const r = this.d.prepare('SELECT doc FROM apps WHERE app = ?').get(app) as { doc: string } | undefined;
+    const r = this.d.prepare("SELECT doc FROM apps WHERE app = ?").get(app) as
+      | { doc: string }
+      | undefined;
     return r && (JSON.parse(r.doc) as AppDeployment);
   }
 
   delete(app: string): boolean {
-    return this.d.prepare('DELETE FROM apps WHERE app = ?').run(app).changes > 0;
+    return this.d.prepare("DELETE FROM apps WHERE app = ?").run(app).changes > 0;
   }
 
   list(): Array<{ app: string } & AppDeployment> {
-    return (this.d.prepare('SELECT app, doc FROM apps ORDER BY app').all() as unknown as Array<{ app: string; doc: string }>)
-      .map((r) => ({ app: r.app, ...(JSON.parse(r.doc) as AppDeployment) }));
+    return (
+      this.d.prepare("SELECT app, doc FROM apps ORDER BY app").all() as unknown as Array<{
+        app: string;
+        doc: string;
+      }>
+    ).map((r) => ({ app: r.app, ...(JSON.parse(r.doc) as AppDeployment) }));
   }
 }
 
