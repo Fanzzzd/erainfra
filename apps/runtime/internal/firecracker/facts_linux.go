@@ -80,7 +80,7 @@ func cpuInfo() (model string, virtualization string) {
 // The data fraction is what a new Attempt consumes, and <length> is the pool's
 // size in 512-byte sectors.
 func thinPoolStorage(ctx context.Context, snapshotter string, poolName string) (executor.Storage, error) {
-	storage := executor.Storage{Snapshotter: snapshotter}
+	storage := executor.Storage{Snapshotter: snapshotter, PoolName: poolName}
 	output, err := exec.CommandContext(ctx, "dmsetup", "status", poolName).Output()
 	if err != nil {
 		return storage, fmt.Errorf("read thin-pool %q status: %w", poolName, err)

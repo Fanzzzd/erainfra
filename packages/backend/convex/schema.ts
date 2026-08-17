@@ -441,6 +441,7 @@ export default defineSchema({
     storage: v.optional(
       v.object({
         snapshotter: v.optional(v.string()),
+        poolName: v.optional(v.string()),
         poolTotalMiB: v.optional(v.number()),
         poolFreeMiB: v.optional(v.number()),
       }),
@@ -448,6 +449,7 @@ export default defineSchema({
     network: v.optional(
       v.object({
         policyName: v.optional(v.string()),
+        policyHash: v.optional(v.string()),
         subnet: v.optional(v.string()),
         egressMode: v.optional(v.string()),
       }),
@@ -498,6 +500,7 @@ export default defineSchema({
     storage: v.optional(
       v.object({
         snapshotter: v.optional(v.string()),
+        poolName: v.optional(v.string()),
         poolTotalMiB: v.optional(v.number()),
         poolFreeMiB: v.optional(v.number()),
       }),
@@ -505,6 +508,7 @@ export default defineSchema({
     network: v.optional(
       v.object({
         policyName: v.optional(v.string()),
+        policyHash: v.optional(v.string()),
         subnet: v.optional(v.string()),
         egressMode: v.optional(v.string()),
       }),

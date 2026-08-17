@@ -17,6 +17,7 @@
 package netpolicy
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -127,6 +128,26 @@ func DefaultPolicy(name string) Policy {
 		Nameservers:         []string{"1.1.1.1", "9.9.9.9"},
 		MTU:                 1500,
 	}
+}
+
+// IdentityHash is a stable identity for the exact network contract this build
+// expects and Preflight verifies. It covers every policy input plus the kernel
+// arguments that keep guests on the verified IPv4 path; changing any of them
+// produces a different identity for control-plane readiness evidence.
+func (p Policy) IdentityHash() string {
+	hash := sha256.New()
+	fmt.Fprintf(hash, "runner-center-network-policy/v1\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n",
+		p.Name, p.Subnet, p.EgressMode, p.MTU)
+	for _, destination := range p.AllowedDestinations {
+		fmt.Fprintf(hash, "allow=%q\n", destination)
+	}
+	for _, nameserver := range p.Nameservers {
+		fmt.Fprintf(hash, "nameserver=%q\n", nameserver)
+	}
+	for _, argument := range RequiredKernelArgs {
+		fmt.Fprintf(hash, "kernel-argument=%q\n", argument)
+	}
+	return fmt.Sprintf("sha256:%x", hash.Sum(nil))
 }
 
 func (p Policy) Validate() error {

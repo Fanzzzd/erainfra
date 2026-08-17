@@ -16,15 +16,41 @@ type Harness = TestConvex<typeof schema>;
 const IMAGE =
   "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+const FIRECRACKER_CHECKS = [
+  "firecracker-binary",
+  "guest-kernel-image",
+  "guest-kernel-arguments",
+  "kvm-device",
+  "cni-plugins",
+  "cni-network-configuration",
+  "job-network-policy",
+  "containerd-snapshotter",
+  "cni-address-reservations",
+  "snapshot-storage-headroom",
+  "cache-isolation",
+  "image-release",
+  "warm-pool",
+].map((name) => ({ name, passed: true }));
+
 const FIRECRACKER_FACTS = {
   isolation: "firecracker-microvm",
   boundary: "guest-kernel" as const,
-  checks: [
-    { name: "kvm-device", passed: true },
-    { name: "job-network-policy", passed: true },
-  ],
+  checks: FIRECRACKER_CHECKS,
   cacheScope: "immutable-image",
   cacheSharedWritable: false,
+  hardware: { kvm: true },
+  storage: {
+    snapshotter: "devmapper",
+    poolName: "runner-center-thinpool",
+    poolTotalMiB: 51_200,
+    poolFreeMiB: 40_960,
+  },
+  network: {
+    policyName: "runner-center",
+    policyHash: `sha256:${"b".repeat(64)}`,
+    subnet: "10.241.0.0/16",
+    egressMode: "public",
+  },
 };
 
 describe("EXECUTOR_BOUNDARY", () => {
@@ -49,6 +75,10 @@ describe("assertReadinessContract", () => {
         checks: [{ name: "kvm-device", passed: false, detail: "no /dev/kvm" }],
       }),
     ).not.toThrow();
+  });
+
+  it("does not broaden Docker's ready-report requirements", () => {
+    expect(() => assertReadinessContract("ready", "docker", {})).not.toThrow();
   });
 
   it("rejects readiness alongside a failing check", () => {
@@ -93,6 +123,19 @@ describe("assertReadinessContract", () => {
         checks: [],
       }),
     ).toThrow(/report its checks/);
+  });
+
+  it("rejects blank or partial Firecracker readiness evidence", () => {
+    expect(() => assertReadinessContract("ready", "firecracker", {})).toThrow(
+      /guest-kernel.*hardware\.kvm.*devmapper.*network\.policyHash.*required checks/s,
+    );
+    expect(() =>
+      assertReadinessContract("ready", "firecracker", {
+        ...FIRECRACKER_FACTS,
+        hardware: { kvm: false },
+        network: { policyName: "runner-center", policyHash: "sha256:not-a-digest" },
+      }),
+    ).toThrow(/hardware\.kvm.*network\.policyHash/s);
   });
 });
 
@@ -149,10 +192,10 @@ describe("workerApi.reportReadiness", () => {
       executor: "firecracker",
       imageRelease: IMAGE,
       state: "ready",
+      vcpus: 2,
+      memoryMiB: 4_096,
       ...FIRECRACKER_FACTS,
       hardware: { arch: "amd64", cpus: 64, memoryMiB: 257_000, kvm: true, virtualization: "vmx" },
-      storage: { snapshotter: "devmapper", poolTotalMiB: 51_200, poolFreeMiB: 40_960 },
-      network: { policyName: "runner-center", subnet: "10.241.0.0/16", egressMode: "public" },
     });
 
     const [row, evidence] = await t.run(async (ctx) =>
@@ -167,6 +210,7 @@ describe("workerApi.reportReadiness", () => {
     expect(evidence?.cacheSharedWritable).toBe(false);
     expect(evidence?.hardware?.kvm).toBe(true);
     expect(evidence?.network?.subnet).toBe("10.241.0.0/16");
+    expect(evidence?.network?.policyHash).toBe(`sha256:${"b".repeat(64)}`);
     expect(evidence?.checks?.map((check) => check.name)).toContain("job-network-policy");
   });
 
@@ -180,6 +224,8 @@ describe("workerApi.reportReadiness", () => {
         executor: "firecracker",
         imageRelease: IMAGE,
         state: "ready",
+        vcpus: 2,
+        memoryMiB: 4_096,
         ...FIRECRACKER_FACTS,
         checks: [{ name: "job-network-policy", passed: false, detail: "table missing" }],
       }),
@@ -206,8 +252,10 @@ describe("workerApi.reportReadiness", () => {
         executor: "firecracker",
         imageRelease: IMAGE,
         state: "ready",
+        vcpus: 2,
+        memoryMiB: 4_096,
         ...FIRECRACKER_FACTS,
-        storage: { snapshotter: "devmapper", poolTotalMiB: 51_200, poolFreeMiB },
+        storage: { ...FIRECRACKER_FACTS.storage, poolFreeMiB },
       });
       return t.mutation(internal.attemptScheduler.tryAssign, {});
     }
@@ -228,19 +276,22 @@ describe("workerApi.reportReadiness", () => {
     expect(await assignWith(SNAPSHOT_RESERVE_MIB * 4)).toBe(1);
   });
 
-  it("keeps accepting Workers from a deployment that reports no evidence yet", async () => {
+  it("rejects a blank current Firecracker report at the write boundary", async () => {
     const t = convexTest(schema, modules);
     await worker(t, "token-c");
-    await t.mutation(api.workerApi.reportReadiness, {
-      token: "token-c",
-      profile: "rc-linux-js",
-      executor: "firecracker",
-      imageRelease: IMAGE,
-      state: "ready",
-    });
+    await expect(
+      t.mutation(api.workerApi.reportReadiness, {
+        token: "token-c",
+        profile: "rc-linux-js",
+        executor: "firecracker",
+        imageRelease: IMAGE,
+        vcpus: 2,
+        memoryMiB: 4_096,
+        state: "ready",
+      }),
+    ).rejects.toThrow(/Firecracker readiness evidence is incomplete/);
     const row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
-    expect(row?.state).toBe("ready");
-    expect(row?.boundary).toBeUndefined();
+    expect(row).toBeNull();
   });
 
   it("serves one-cycle legacy evidence and compacts it on the next report", async () => {
@@ -280,9 +331,11 @@ describe("workerApi.reportReadiness", () => {
       executor: "firecracker",
       imageRelease: IMAGE,
       state: "ready",
+      vcpus: 2,
+      memoryMiB: 4_096,
       statusDetail: "new evidence detail",
       ...FIRECRACKER_FACTS,
-      storage: { snapshotter: "devmapper", poolFreeMiB: 24_576 },
+      storage: { ...FIRECRACKER_FACTS.storage, poolFreeMiB: 24_576 },
     });
     const [hot, evidence] = await t.run(async (ctx) =>
       Promise.all([
@@ -325,6 +378,8 @@ describe("workerApi.reportReadiness", () => {
       await t.mutation(api.workerApi.reportReadiness, {
         ...contract,
         state: "ready",
+        vcpus: 2,
+        memoryMiB: 4_096,
         statusDetail: "all checks passed",
         ...FIRECRACKER_FACTS,
       }),
@@ -371,6 +426,8 @@ describe("workerApi.reportReadiness", () => {
     await t.mutation(api.workerApi.reportReadiness, {
       ...contract,
       state: "ready",
+      vcpus: 2,
+      memoryMiB: 4_096,
       ...FIRECRACKER_FACTS,
     });
     await t.mutation(api.workerApi.reportReadiness, {
@@ -384,6 +441,8 @@ describe("workerApi.reportReadiness", () => {
       await t.mutation(api.workerApi.reportReadiness, {
         ...contract,
         state: "ready",
+        vcpus: 2,
+        memoryMiB: 4_096,
         statusDetail: "capacity restored",
         ...FIRECRACKER_FACTS,
       }),

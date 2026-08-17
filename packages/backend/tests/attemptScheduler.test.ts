@@ -15,6 +15,41 @@ const CONTRACT = {
   memoryMiB: 4096,
 };
 
+const FIRECRACKER_FACTS = {
+  isolation: "firecracker-microvm",
+  boundary: "guest-kernel" as const,
+  checks: [
+    "firecracker-binary",
+    "guest-kernel-image",
+    "guest-kernel-arguments",
+    "kvm-device",
+    "cni-plugins",
+    "cni-network-configuration",
+    "job-network-policy",
+    "containerd-snapshotter",
+    "cni-address-reservations",
+    "snapshot-storage-headroom",
+    "cache-isolation",
+    "image-release",
+    "warm-pool",
+  ].map((name) => ({ name, passed: true })),
+  cacheScope: "immutable-image",
+  cacheSharedWritable: false,
+  hardware: { kvm: true },
+  storage: {
+    snapshotter: "devmapper",
+    poolName: "runner-center-thinpool",
+    poolTotalMiB: 51_200,
+    poolFreeMiB: 40_960,
+  },
+  network: {
+    policyName: "runner-center",
+    policyHash: `sha256:${"b".repeat(64)}`,
+    subnet: "10.241.0.0/16",
+    egressMode: "public",
+  },
+};
+
 async function addWorker(t: Harness, name: string, maxSlots = 1, warmPool = 0) {
   await t.mutation(internal.controllerApi.registerProfile, {
     name: CONTRACT.profile,
@@ -46,6 +81,7 @@ async function addWorker(t: Harness, name: string, maxSlots = 1, warmPool = 0) {
     vcpus: CONTRACT.vcpus,
     memoryMiB: CONTRACT.memoryMiB,
     state: "ready",
+    ...FIRECRACKER_FACTS,
     warmPool: { target: warmPool, parked: warmPool, claimed: 0 },
   });
   return machineId;
@@ -101,6 +137,152 @@ async function publishBenchmark(
 }
 
 describe("readiness-gated Attempt scheduling", () => {
+  it("selects zero candidates after blank and partial ready reports are rejected", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.controllerApi.registerProfile, {
+      name: CONTRACT.profile,
+      scaleSetName: CONTRACT.profile,
+      executor: CONTRACT.executor,
+      imageRelease: CONTRACT.imageRelease,
+      vcpus: CONTRACT.vcpus,
+      memoryMiB: CONTRACT.memoryMiB,
+      minRunners: 0,
+      maxRunners: 4,
+    });
+    await t.run((ctx) =>
+      ctx.db.insert("machines", {
+        name: "incomplete",
+        os: "linux",
+        labels: [],
+        maxSlots: 1,
+        usedSlots: 0,
+        lastSeen: Date.now(),
+        token: "token-incomplete",
+      }),
+    );
+    await t.mutation(internal.controllerApi.createAttempt, {
+      ...CONTRACT,
+      runnerName: "runner-incomplete",
+      runnerId: 50,
+      encodedJITConfig: "secret-incomplete",
+    });
+
+    for (const facts of [
+      {},
+      {
+        ...FIRECRACKER_FACTS,
+        checks: FIRECRACKER_FACTS.checks.filter((check) => check.name !== "job-network-policy"),
+      },
+    ]) {
+      await expect(
+        t.mutation(api.workerApi.reportReadiness, {
+          token: "token-incomplete",
+          ...CONTRACT,
+          state: "ready",
+          ...facts,
+        }),
+      ).rejects.toThrow(/Firecracker readiness evidence is incomplete/);
+      expect(await t.mutation(internal.attemptScheduler.tryAssign, {})).toBe(0);
+    }
+  });
+
+  it("treats an incomplete legacy ready row as not ready and surfaces the reason", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.controllerApi.registerProfile, {
+      name: CONTRACT.profile,
+      scaleSetName: CONTRACT.profile,
+      executor: CONTRACT.executor,
+      imageRelease: CONTRACT.imageRelease,
+      vcpus: CONTRACT.vcpus,
+      memoryMiB: CONTRACT.memoryMiB,
+      minRunners: 0,
+      maxRunners: 4,
+    });
+    const machineId = await t.run((ctx) =>
+      ctx.db.insert("machines", {
+        name: "legacy",
+        os: "linux",
+        labels: [],
+        maxSlots: 1,
+        usedSlots: 0,
+        lastSeen: Date.now(),
+        token: "token-legacy",
+      }),
+    );
+    const checkedAt = Date.now();
+    await t.run((ctx) =>
+      ctx.db.insert("workerReadiness", {
+        machineId,
+        ...CONTRACT,
+        state: "ready",
+        checkedAt,
+        preparedAt: checkedAt,
+        boundary: "guest-kernel",
+        checks: [{ name: "kvm-device", passed: true }],
+      }),
+    );
+    await t.mutation(internal.controllerApi.createAttempt, {
+      ...CONTRACT,
+      runnerName: "runner-legacy",
+      runnerId: 51,
+      encodedJITConfig: "secret-legacy",
+    });
+
+    expect(await t.mutation(internal.attemptScheduler.tryAssign, {})).toBe(0);
+    const [profile] = await t
+      .withIdentity({ subject: "operator", issuer: "https://example.test" })
+      .query(api.profiles.list, {});
+    expect(profile?.readyWorkers).toBe(0);
+    expect(profile?.workers[0]).toMatchObject({
+      state: "degraded",
+      lastError: expect.stringMatching(/hardware\.kvm.*storage\.snapshotter.*network\.policyHash/s),
+    });
+
+    await t.run(async (ctx) => {
+      const readiness = await ctx.db.query("workerReadiness").unique();
+      if (readiness === null) throw new Error("missing legacy readiness");
+      await ctx.db.patch(readiness._id, {
+        ...FIRECRACKER_FACTS,
+        checks: FIRECRACKER_FACTS.checks.map((check) =>
+          check.name === "job-network-policy" ? { ...check, passed: false } : check,
+        ),
+      });
+    });
+    expect(await t.mutation(internal.attemptScheduler.tryAssign, {})).toBe(0);
+    const [contradictory] = await t
+      .withIdentity({ subject: "operator", issuer: "https://example.test" })
+      .query(api.profiles.list, {});
+    expect(contradictory?.workers[0]?.lastError).toMatch(/checks must pass: job-network-policy/);
+  });
+
+  it("requires split evidence to match the current ready report exactly", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await addWorker(t, "current");
+    await t.run(async (ctx) => {
+      const readiness = await ctx.db
+        .query("workerReadiness")
+        .withIndex("by_machine_profile", (query) =>
+          query.eq("machineId", machineId).eq("profile", CONTRACT.profile),
+        )
+        .unique();
+      if (readiness === null) throw new Error("missing current readiness");
+      await ctx.db.patch(readiness._id, { checkedAt: readiness.checkedAt + 1 });
+    });
+
+    await createAttempt(t, "runner-stale-evidence");
+    const attempt = await t.run((ctx) =>
+      ctx.db
+        .query("attempts")
+        .withIndex("by_runnerName", (query) => query.eq("runnerName", "runner-stale-evidence"))
+        .unique(),
+    );
+    expect(attempt?.machineId).toBeUndefined();
+    const [profile] = await t
+      .withIdentity({ subject: "operator", issuer: "https://example.test" })
+      .query(api.profiles.list, {});
+    expect(profile?.workers[0]?.lastError).toMatch(/current readinessEvidence.*checkedAt/);
+  });
+
   it("transfers parked capacity to matching Attempts without double-counting", async () => {
     const t = convexTest(schema, modules);
     const machineId = await addWorker(t, "warm", 2, 2);
@@ -133,7 +315,10 @@ describe("readiness-gated Attempt scheduling", () => {
       profile: other.profile,
       executor: other.executor,
       imageRelease: other.imageRelease,
+      vcpus: other.vcpus,
+      memoryMiB: other.memoryMiB,
       state: "ready",
+      ...FIRECRACKER_FACTS,
       warmPool: { target: 0, parked: 0, claimed: 0 },
     });
     await t.mutation(internal.controllerApi.createAttempt, {

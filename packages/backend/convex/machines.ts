@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 
@@ -197,17 +198,23 @@ export const list = query({
           .map((entry) => {
             const evidence = readinessEvidenceByKey.get(`${entry.machineId}:${entry.profile}`);
             const currentEvidence = evidence?.checkedAt === entry.checkedAt ? evidence : undefined;
+            const admissionError = readinessAdmissionError(entry, evidence);
             return {
               profile: entry.profile,
               executor: entry.executor,
               imageRelease: entry.imageRelease,
-              state: entry.state,
+              state:
+                entry.state === "ready" && admissionError !== undefined
+                  ? entry.preparedAt === undefined
+                    ? ("failed" as const)
+                    : ("degraded" as const)
+                  : entry.state,
               checkedAt: entry.checkedAt,
               preparedAt: entry.preparedAt,
               // Legacy hot rows are the one-cycle fallback until their next
               // readiness report creates a matching evidence document.
               statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
-              lastError: currentEvidence?.lastError ?? entry.lastError,
+              lastError: currentEvidence?.lastError ?? entry.lastError ?? admissionError,
             };
           }),
       }));

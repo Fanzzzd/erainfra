@@ -55,9 +55,16 @@ func TestReportSurvivesJSONRoundTrip(t *testing.T) {
 		Isolation: IsolationFirecracker,
 		Boundary:  BoundaryGuestKernel,
 		Hardware:  Hardware{Arch: "amd64", CPUs: 64, MemoryMiB: 257_000, KVM: true, Virtualization: "vmx"},
-		Storage:   Storage{Snapshotter: "devmapper", PoolTotalMiB: 51_200, PoolFreeMiB: 40_960},
-		Network:   Network{PolicyName: "runner-center", Subnet: "10.241.0.0/16", EgressMode: "public"},
-		Cache:     Cache{Scope: "immutable-image", SharedWritable: false},
+		Storage: Storage{
+			Snapshotter: "devmapper", PoolName: "runner-center-thinpool",
+			PoolTotalMiB: 51_200, PoolFreeMiB: 40_960,
+		},
+		Network: Network{
+			PolicyName: "runner-center",
+			PolicyHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			Subnet:     "10.241.0.0/16", EgressMode: "public",
+		},
+		Cache: Cache{Scope: "immutable-image", SharedWritable: false},
 	}
 	report.Pass(CheckKVM, "/dev/kvm")
 
@@ -74,5 +81,8 @@ func TestReportSurvivesJSONRoundTrip(t *testing.T) {
 	}
 	if decoded.Cache.SharedWritable {
 		t.Fatal("cache sharing must not be lost in transport; it is a security claim")
+	}
+	if decoded.Storage.PoolName != "runner-center-thinpool" || decoded.Network.PolicyHash == "" {
+		t.Fatal("storage and network policy identities must survive transport")
 	}
 }

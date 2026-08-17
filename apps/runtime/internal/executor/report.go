@@ -64,6 +64,7 @@ type Hardware struct {
 // is a first-class admission input: a full thin-pool fails jobs at boot.
 type Storage struct {
 	Snapshotter  string `json:"snapshotter"`
+	PoolName     string `json:"poolName"`
 	PoolTotalMiB int64  `json:"poolTotalMiB"`
 	PoolFreeMiB  int64  `json:"poolFreeMiB"`
 }
@@ -71,6 +72,7 @@ type Storage struct {
 // Network is the job network contract the Worker is enforcing right now.
 type Network struct {
 	PolicyName          string   `json:"policyName"`
+	PolicyHash          string   `json:"policyHash"`
 	Subnet              string   `json:"subnet"`
 	EgressMode          string   `json:"egressMode"`
 	AllowedDestinations []string `json:"allowedDestinations,omitempty"`

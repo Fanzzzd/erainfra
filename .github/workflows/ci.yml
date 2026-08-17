@@ -34,9 +34,66 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - name: Test the root Go module
+        run: go test ./...
+      - name: Vet the root Go module
+        run: go vet ./...
+      - name: Compile the root Go module for shipped Linux targets
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o "$RUNNER_TEMP/erainfra-linux-amd64/" ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -o "$RUNNER_TEMP/erainfra-linux-arm64/" ./...
       # Runner machines install the agent with npm, not pnpm, so its lockfile
       # has to stay in sync with its package.json. This replaces the pnpm
       # node_modules in apps/agent, so keep it last.
       - name: Verify the agent lockfile matches its manifest
         working-directory: apps/agent
         run: npm ci --omit=dev --no-audit --no-fund
+
+  portless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: portless/package.json
+      - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: portless/pnpm-lock.yaml
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            portless/agents/node-agent/go.sum
+            portless/prototypes/relay-experiments/go.sum
+      - name: Install the Portless JavaScript workspace
+        working-directory: portless
+        run: pnpm install --frozen-lockfile
+      - name: Validate the Portless JavaScript workspace
+        working-directory: portless
+        run: |
+          pnpm run --if-present lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - name: Validate both Portless Go modules
+        run: |
+          set -euo pipefail
+          for module in portless/agents/node-agent portless/prototypes/relay-experiments; do
+            (
+              cd "$module"
+              target=${module##*/}
+              go test ./...
+              go vet ./...
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+                go build -o "$RUNNER_TEMP/$target-linux-amd64/" ./...
+              CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+                go build -o "$RUNNER_TEMP/$target-linux-arm64/" ./...
+            )
+          done

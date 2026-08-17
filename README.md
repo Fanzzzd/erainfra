@@ -16,7 +16,8 @@ router, or a corporate firewall participates like any other.
   torn down on every exit path, including Worker crashes.
 - **Verified, not assumed.** The isolation boundary is checked by the runtime itself: a Worker
   whose network policy drifts from its Profile stops being ready, and a daily canary exercises
-  the whole path from scale-set listener to teardown.
+  scheduling through the executor's in-job isolation probes. Live Firecracker boot and post-job
+  teardown remain part of issue #17's production gate.
 - **Immutable by construction.** Images are pinned by digest, the agent release is pinned by
   checksum, and nothing writable survives a job. Warm state comes from prewarmed images, not
   shared caches.
@@ -118,8 +119,10 @@ go test ./...
 go vet ./...
 ```
 
-`pnpm check` is the repository gate: lint, formatting, type checking, and tests. CI also runs the
-production build and verifies that the npm lockfile used by installed Workers is current.
+`pnpm check` is the root JavaScript gate: lint, formatting, type checking, and tests. CI also runs
+the production build, tests and vets the root Go module, compiles both shipped Linux architectures,
+validates Portless from its frozen lockfiles (including both Go modules), and verifies that the npm
+lockfile used by installed Workers is current.
 
 ## Deploy the control plane
 
@@ -392,8 +395,9 @@ pull requests on machines that hold persistent credentials.
 ## Releases
 
 EraInfra is one product version: root, Agent, Controller, and Runtime versions must match.
-Tagging `v<version>` runs the release workflow, revalidates the repository, rebuilds the agent archive
-twice byte-for-byte, checks the deployment pin, attests the artifacts, and publishes:
+Tagging `v<version>` runs the release workflow, revalidates the root and Portless JavaScript and Go
+surfaces (including both Linux architectures), rebuilds the agent archive twice byte-for-byte,
+checks the deployment pin, attests the artifacts, and publishes:
 
 - `erainfra-agent-<version>.tar.gz` plus SHA-256;
 - Controller binaries and SHA-256 sidecars for Linux/macOS x64/ARM64;
@@ -417,5 +421,5 @@ images           immutable Profile image definitions
 ```
 
 Contributions are welcome. Keep platform lifecycle logic behind the executor boundary, preserve
-single-use secret handling, and run `pnpm check`, `go test ./...`, and `go vet ./...` before opening
-a pull request.
+single-use secret handling, and run the root and Portless JavaScript and Go gates before opening a
+pull request.
