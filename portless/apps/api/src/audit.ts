@@ -35,6 +35,10 @@ export class InMemoryAuditLog implements AuditLog {
 
   // Most recent first.
   list(limit = 100): AuditEntry[] {
+    // False positive: slice() has already produced a private copy, so reverse() mutates nothing the
+    // caller or this class can observe. The rule's suggested toReversed() is ES2023 and this
+    // package's tsconfig sets lib: ES2022, so it does not typecheck here either.
+    // oxlint-disable-next-line unicorn/no-array-reverse
     return this.entries.slice(-limit).reverse();
   }
 

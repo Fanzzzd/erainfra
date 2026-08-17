@@ -22,12 +22,18 @@ function SessionView({ id, onBack }: { id: string; onBack: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
-    trpcQuery<{ session: ChatSession; messages: ChatMessage[] }>("chats.messages", { id })
-      .then((r) => {
+    void (async () => {
+      try {
+        const r = await trpcQuery<{ session: ChatSession; messages: ChatMessage[] }>(
+          "chats.messages",
+          { id },
+        );
         setSession(r.session);
         setMessages(r.messages);
-      })
-      .catch(() => {});
+      } catch {
+        /* unchanged behaviour: swallow, leaving the view on its "Loading…" state */
+      }
+    })();
   }, [id]);
 
   return (
@@ -127,9 +133,11 @@ export function Chats() {
           <p className="text-muted-foreground text-sm">No matches.</p>
         ) : (
           <div className="space-y-2">
-            {hits.map((h, i) => (
+            {hits.map((h) => (
               <button
-                key={i}
+                // Search returns one hit per message, so session + seq identifies a row across
+                // result sets; the index does not, and re-searching would reuse stale DOM.
+                key={`${h.session.id}:${h.seq}`}
                 onClick={() => setOpen(h.session.id)}
                 className="hover:bg-accent block w-full rounded-md border p-3 text-left"
               >

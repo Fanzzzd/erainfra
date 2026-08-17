@@ -57,6 +57,11 @@ export const ftsQuery = (q: string): string =>
     .map((t) => `"${t.replaceAll('"', '""')}"`)
     .join(" ");
 
+// The LIKE-scan fallback path's escaping, for terms too short for the trigram index. `ESCAPE '\'`
+// is declared in the SQL, so `\`, `%` and `_` all have to be escaped here.
+const likeEscape = (t: string) =>
+  t.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+
 export class ChatStore {
   private d: DatabaseSync;
 
@@ -185,14 +190,12 @@ export class ChatStore {
         )
         .all(ftsQuery(q), limit) as never;
     } else {
-      const esc = (t: string) =>
-        t.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const cond = terms.map(() => "text LIKE ? ESCAPE '\\'").join(" AND ");
       rows = this.d
         .prepare(
           `SELECT session_id, seq, role, at, text FROM chat_messages WHERE ${cond} ORDER BY rowid DESC LIMIT ?`,
         )
-        .all(...terms.map((t) => `%${esc(t)}%`), limit) as never;
+        .all(...terms.map((t) => `%${likeEscape(t)}%`), limit) as never;
     }
     const out: Array<{
       session: ChatSession;

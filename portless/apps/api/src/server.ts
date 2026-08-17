@@ -41,7 +41,8 @@ export { appRouter, type AppRouter } from "./router.ts";
 
 // Read a request body into a Buffer, rejecting once it exceeds the cap (proxy bodies are buffered).
 function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
+  // `resolveBody`, not `resolve`: `resolve` is node:path's, imported above.
+  return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
     req.on("data", (c: Buffer) => {
@@ -53,7 +54,7 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
       }
       chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => resolveBody(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -109,6 +110,19 @@ async function proxyAppRequest(
     else res.end();
   }
 }
+
+// Set-Cookie for a session token. Depends on nothing in the server instance, so it lives here
+// rather than being rebuilt on every createApiServer() call.
+const sessionCookie = (
+  req: { headers: Record<string, unknown> },
+  token: string,
+  maxAgeSec: number,
+) => {
+  // Secure whenever the request came over TLS (cloudflared sets x-forwarded-proto). SameSite=Lax
+  // blocks cross-site POSTs from riding the cookie; HttpOnly keeps it away from page JS.
+  const secure = (req.headers["x-forwarded-proto"] ?? "") === "https" ? "; Secure" : "";
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
+};
 
 export function createApiServer(
   opts: { audit?: AuditLog; tokens?: TokenStore; webDir?: string } = {},
@@ -176,16 +190,6 @@ export function createApiServer(
   // ---- Account auth (the Dokploy model): user accounts + password login + cookie sessions. -----
   // REST (not tRPC) because these set/clear cookies and run before any principal exists.
   const loginLimiter = new LoginRateLimiter();
-  const sessionCookie = (
-    req: { headers: Record<string, unknown> },
-    token: string,
-    maxAgeSec: number,
-  ) => {
-    // Secure whenever the request came over TLS (cloudflared sets x-forwarded-proto). SameSite=Lax
-    // blocks cross-site POSTs from riding the cookie; HttpOnly keeps it away from page JS.
-    const secure = (req.headers["x-forwarded-proto"] ?? "") === "https" ? "; Secure" : "";
-    return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`;
-  };
   const loginBody = z.object({
     email: z.string().min(3).max(254),
     password: z.string().min(1).max(1024),

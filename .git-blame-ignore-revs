@@ -1,0 +1,11 @@
+# Revisions to skip when running `git blame`.
+#
+# Only whole-tree mechanical reformats belong here. A commit on this list is one that changed no
+# behaviour, so attributing a line to it tells you nothing you wanted to know.
+#
+# GitHub reads this file automatically. Locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: format portless/ with the repo formatter — 114 files, quote normalisation and 80-column
+# rewrap, run when `portless/**` was dropped from .oxfmtrc.json's ignore list.
+6c3719a9029d8bec5509a98800b8d3e7124ae6e2

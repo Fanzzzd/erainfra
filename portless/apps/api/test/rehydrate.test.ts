@@ -11,7 +11,9 @@ test("serve rehydrator: on agent connect, pushes that node's routes only", async
   routeStore.set("blog", { node: "node-b", image: "blog:1", port: 62002 });
 
   const sent: Array<{ agent: string; cmd: Record<string, unknown> }> = [];
-  let fire: (id: string) => void = () => {};
+  // No placeholder: if installServeRehydrator() never calls onConnect, calling this should throw
+  // rather than silently no-op and leave the assertion below looking at an empty `sent`.
+  let fire!: (id: string) => void;
   installServeRehydrator({
     onConnect: (cb) => {
       fire = cb;
