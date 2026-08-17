@@ -21,11 +21,11 @@ export PORTLESS_FAILOVER=0                 # disable entirely
 ```
 
 The grace window matters: a brief network blip or a hub restart (agents reconnect within seconds)
-should *not* trigger a redeploy. Twenty seconds rides those out while still recovering a truly-dead node
+should _not_ trigger a redeploy. Twenty seconds rides those out while still recovering a truly-dead node
 quickly.
 
-**Limit:** stateless apps only. A redeployed database starts empty — failover restores *availability*,
-not *data*. For data, use backups (below) and restore onto the new node.
+**Limit:** stateless apps only. A redeployed database starts empty — failover restores _availability_,
+not _data_. For data, use backups (below) and restore onto the new node.
 
 ## Backups (hub → your S3)
 

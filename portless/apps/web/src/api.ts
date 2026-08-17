@@ -3,11 +3,14 @@
 // Auth is the portless_session cookie (set by /auth/login, sent automatically same-origin).
 // A bearer token is only a fallback: localStorage (manual escape hatch) → VITE_PORTLESS_TOKEN
 // (baked private builds) → owner-dev-token in dev so a fresh checkout works with zero setup.
-const TOKEN = localStorage.getItem('portless-token') ?? import.meta.env.VITE_PORTLESS_TOKEN ?? (import.meta.env.DEV ? 'owner-dev-token' : '');
+const TOKEN =
+  localStorage.getItem("portless-token") ??
+  import.meta.env.VITE_PORTLESS_TOKEN ??
+  (import.meta.env.DEV ? "owner-dev-token" : "");
 const AUTH_HEADERS: Record<string, string> = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
 
 export async function trpcQuery<T>(path: string, input?: unknown): Promise<T> {
-  const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify(input))}`;
+  const qs = input === undefined ? "" : `?input=${encodeURIComponent(JSON.stringify(input))}`;
   const res = await fetch(`/trpc/${path}${qs}`, { headers: AUTH_HEADERS });
   const body = await res.json();
   if (!res.ok) throw new Error(body?.error?.message ?? `${path} -> ${res.status}`);
@@ -16,8 +19,8 @@ export async function trpcQuery<T>(path: string, input?: unknown): Promise<T> {
 
 export async function trpcMutation<T>(path: string, input: unknown): Promise<T> {
   const res = await fetch(`/trpc/${path}`, {
-    method: 'POST',
-    headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+    method: "POST",
+    headers: { ...AUTH_HEADERS, "content-type": "application/json" },
     body: JSON.stringify(input ?? {}),
   });
   const body = await res.json();
@@ -28,9 +31,9 @@ export async function trpcMutation<T>(path: string, input: unknown): Promise<T> 
 // Upload a source tarball to POST /upload (not a tRPC route — it's raw bytes), reusing the same
 // bearer token so the auth logic stays in one place. Returns the buildId you then pass to upload.deploy.
 export async function uploadSource(file: Blob): Promise<{ buildId: string }> {
-  const res = await fetch('/upload', {
-    method: 'POST',
-    headers: { ...AUTH_HEADERS, 'content-type': 'application/gzip' },
+  const res = await fetch("/upload", {
+    method: "POST",
+    headers: { ...AUTH_HEADERS, "content-type": "application/gzip" },
     body: file,
   });
   const body = await res.json();
@@ -76,7 +79,7 @@ export interface GitBinding {
 export interface Deployment {
   id: string;
   app: string;
-  stage: 'queued' | 'reading-spec' | 'building' | 'deploying' | 'linking' | 'done' | 'failed';
+  stage: "queued" | "reading-spec" | "building" | "deploying" | "linking" | "done" | "failed";
   detail: string;
   urls: string[];
   error?: string;
@@ -85,11 +88,14 @@ export interface Deployment {
 }
 
 // Poll a deploy until it finishes; reports stage changes via onStage.
-export async function waitForDeploy(deployId: string, onStage?: (d: Deployment) => void): Promise<Deployment> {
+export async function waitForDeploy(
+  deployId: string,
+  onStage?: (d: Deployment) => void,
+): Promise<Deployment> {
   for (;;) {
-    const d = await trpcQuery<Deployment>('apps.status', { deployId });
+    const d = await trpcQuery<Deployment>("apps.status", { deployId });
     onStage?.(d);
-    if (d.stage === 'done' || d.stage === 'failed') return d;
+    if (d.stage === "done" || d.stage === "failed") return d;
     await new Promise((r) => setTimeout(r, 2000));
   }
 }
@@ -104,23 +110,30 @@ export interface AuthUser {
 }
 
 async function authPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
   const out = await res.json();
   if (!res.ok) throw new Error(out?.error ?? `${path} -> ${res.status}`);
   return out as T;
 }
 
-export const authStatus = async (): Promise<{ setup: boolean }> => (await fetch('/auth/status')).json();
+export const authStatus = async (): Promise<{ setup: boolean }> =>
+  (await fetch("/auth/status")).json();
 
 // The logged-in identity, or null when there is no valid session/token.
 export async function authMe(): Promise<AuthUser | null> {
-  const res = await fetch('/auth/me', { headers: AUTH_HEADERS });
+  const res = await fetch("/auth/me", { headers: AUTH_HEADERS });
   return res.ok ? ((await res.json()) as AuthUser) : null;
 }
 
-export const login = (email: string, password: string) => authPost<{ user: AuthUser }>('/auth/login', { email, password });
-export const setupOwner = (email: string, password: string, name?: string) => authPost<{ user: AuthUser }>('/auth/setup', { email, password, name });
-export const logout = () => authPost<{ ok: boolean }>('/auth/logout', {});
+export const login = (email: string, password: string) =>
+  authPost<{ user: AuthUser }>("/auth/login", { email, password });
+export const setupOwner = (email: string, password: string, name?: string) =>
+  authPost<{ user: AuthUser }>("/auth/setup", { email, password, name });
+export const logout = () => authPost<{ ok: boolean }>("/auth/logout", {});
 
 export interface ApiTokenInfo {
   id: string;
@@ -150,7 +163,7 @@ export interface SessionInfo {
 
 export interface ChatSession {
   id: string;
-  source: 'claude' | 'codex';
+  source: "claude" | "codex";
   host: string;
   project?: string;
   title?: string;
@@ -161,7 +174,7 @@ export interface ChatSession {
 
 export interface ChatMessage {
   seq: number;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   model?: string;
   at?: string;
   text: string;

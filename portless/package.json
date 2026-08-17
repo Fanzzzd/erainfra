@@ -1,12 +1,11 @@
 {
   "name": "portless",
   "private": true,
-  "type": "module",
-  "packageManager": "pnpm@9.15.0",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
+  "type": "module",
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
@@ -18,5 +17,6 @@
   "devDependencies": {
     "turbo": "2.9.18",
     "typescript": "6.0.3"
-  }
+  },
+  "packageManager": "pnpm@9.15.0"
 }

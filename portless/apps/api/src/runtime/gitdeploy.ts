@@ -2,13 +2,13 @@
 // deploy node, and a container name/port. A push webhook (or a manual trigger) runs the pipeline:
 // clone the repo at the commit ON the build node (reusing image.sh = Dockerfile-or-nixpacks), push
 // to your registry, then deploy on the deploy node. Self-hosted end to end.
-import { randomUUID } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
-import { db } from '../db.ts';
-import { agentGateway, type AgentGateway } from './agents.ts';
-import { cloneUrl, installationToken } from './github.ts';
-import { deployments } from './deployments.ts';
-import { runDeploy, type PipelineResult } from './appdeploy.ts';
+import { randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
+import { db } from "../db.ts";
+import { agentGateway, type AgentGateway } from "./agents.ts";
+import { cloneUrl, installationToken } from "./github.ts";
+import { deployments } from "./deployments.ts";
+import { runDeploy, type PipelineResult } from "./appdeploy.ts";
 
 export interface GitBinding {
   id: string;
@@ -21,7 +21,12 @@ export interface GitBinding {
   lastStatus?: { at: string; sha: string; ok: boolean; stage: string; error?: string };
 }
 
-export type DeployConfig = { registry: string; hubBase: string; appId?: string; privateKey?: string };
+export type DeployConfig = {
+  registry: string;
+  hubBase: string;
+  appId?: string;
+  privateKey?: string;
+};
 
 export class GitProjectStore {
   static readonly MAX = 200;
@@ -33,11 +38,17 @@ export class GitProjectStore {
   }
 
   private rows(): GitBinding[] {
-    return (this.d.prepare('SELECT doc FROM git_bindings').all() as unknown as Array<{ doc: string }>).map((r) => JSON.parse(r.doc) as GitBinding);
+    return (
+      this.d.prepare("SELECT doc FROM git_bindings").all() as unknown as Array<{ doc: string }>
+    ).map((r) => JSON.parse(r.doc) as GitBinding);
   }
 
   private put(b: GitBinding): void {
-    this.d.prepare('INSERT INTO git_bindings (id, doc) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc').run(b.id, JSON.stringify(b));
+    this.d
+      .prepare(
+        "INSERT INTO git_bindings (id, doc) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc",
+      )
+      .run(b.id, JSON.stringify(b));
   }
 
   list(): GitBinding[] {
@@ -45,39 +56,50 @@ export class GitProjectStore {
   }
 
   get(id: string): GitBinding | undefined {
-    const r = this.d.prepare('SELECT doc FROM git_bindings WHERE id = ?').get(id) as { doc: string } | undefined;
+    const r = this.d.prepare("SELECT doc FROM git_bindings WHERE id = ?").get(id) as
+      | { doc: string }
+      | undefined;
     return r && (JSON.parse(r.doc) as GitBinding);
   }
 
   // First binding matching a repo+branch (what a push webhook looks up). Repo match is case-insensitive.
   find(repo: string, branch: string): GitBinding | undefined {
-    return this.rows().find((b) => b.repo.toLowerCase() === repo.toLowerCase() && b.branch === branch);
+    return this.rows().find(
+      (b) => b.repo.toLowerCase() === repo.toLowerCase() && b.branch === branch,
+    );
   }
 
-  bind(b: Omit<GitBinding, 'id' | 'lastStatus'>): { ok: true; binding: GitBinding } | { ok: false; error: string } {
-    if (this.rows().length >= GitProjectStore.MAX) return { ok: false, error: `binding limit reached (${GitProjectStore.MAX})` };
-    if (this.find(b.repo, b.branch)) return { ok: false, error: `already bound: ${b.repo}@${b.branch}` };
+  bind(
+    b: Omit<GitBinding, "id" | "lastStatus">,
+  ): { ok: true; binding: GitBinding } | { ok: false; error: string } {
+    if (this.rows().length >= GitProjectStore.MAX)
+      return { ok: false, error: `binding limit reached (${GitProjectStore.MAX})` };
+    if (this.find(b.repo, b.branch))
+      return { ok: false, error: `already bound: ${b.repo}@${b.branch}` };
     const binding: GitBinding = { ...b, id: randomUUID() };
     this.put(binding);
     return { ok: true, binding };
   }
 
   unbind(id: string): { ok: boolean } {
-    return { ok: this.d.prepare('DELETE FROM git_bindings WHERE id = ?').run(id).changes > 0 };
+    return { ok: this.d.prepare("DELETE FROM git_bindings WHERE id = ?").run(id).changes > 0 };
   }
 
-  setStatus(id: string, status: GitBinding['lastStatus']): void {
+  setStatus(id: string, status: GitBinding["lastStatus"]): void {
     const b = this.get(id);
-    if (b) { b.lastStatus = status; this.put(b); }
+    if (b) {
+      b.lastStatus = status;
+      this.put(b);
+    }
   }
 }
 
 // Resolve a node preference to a connected agent: the preference itself if given, else the first
 // connected node. "One box" is the common case — make it zero-config.
-function resolveNode(pref: string | undefined, gw: Pick<AgentGateway, 'list'>): string {
+function resolveNode(pref: string | undefined, gw: Pick<AgentGateway, "list">): string {
   if (pref) return pref;
   const first = gw.list()[0];
-  if (!first) throw new Error('no nodes connected — enroll one with agent.sh first');
+  if (!first) throw new Error("no nodes connected — enroll one with agent.sh first");
   return first.id;
 }
 
@@ -91,7 +113,7 @@ export function startGitDeploy(
   sha: string,
   installationId: number | undefined,
   cfg: DeployConfig,
-  gw: Pick<AgentGateway, 'send' | 'list'> = agentGateway,
+  gw: Pick<AgentGateway, "send" | "list"> = agentGateway,
 ): StartedDeploy {
   const d = deployments.create(b.name);
   const done = (async () => {
@@ -99,18 +121,23 @@ export function startGitDeploy(
     if (cfg.appId && cfg.privateKey && installationId) {
       token = await installationToken(cfg.appId, cfg.privateKey, installationId);
     }
-    return runDeploy(d.id, { repoUrl: cloneUrl(b.repo, token), ref: b.branch }, {
-      app: b.name,
-      port: b.port,
-      buildNode: resolveNode(b.buildNode, gw),
-      defaultNode: resolveNode(b.deployNode, gw),
-      registry: cfg.registry,
-      hubBase: cfg.hubBase,
-      sha,
-    }, gw);
+    return runDeploy(
+      d.id,
+      { repoUrl: cloneUrl(b.repo, token), ref: b.branch },
+      {
+        app: b.name,
+        port: b.port,
+        buildNode: resolveNode(b.buildNode, gw),
+        defaultNode: resolveNode(b.deployNode, gw),
+        registry: cfg.registry,
+        hubBase: cfg.hubBase,
+        sha,
+      },
+      gw,
+    );
   })().catch((e): PipelineResult => {
-    deployments.update(d.id, { stage: 'failed', detail: 'deploying', error: (e as Error).message });
-    return { ok: false, stage: 'deploying', urls: [], error: (e as Error).message };
+    deployments.update(d.id, { stage: "failed", detail: "deploying", error: (e as Error).message });
+    return { ok: false, stage: "deploying", urls: [], error: (e as Error).message };
   });
   return { deployId: d.id, done };
 }
@@ -121,20 +148,25 @@ export function startUploadDeploy(
   buildId: string,
   opts: { app: string; port?: number; buildNode?: string; node?: string },
   cfg: DeployConfig,
-  gw: Pick<AgentGateway, 'send' | 'list'> = agentGateway,
+  gw: Pick<AgentGateway, "send" | "list"> = agentGateway,
 ): StartedDeploy {
   const d = deployments.create(opts.app);
-  const done = runDeploy(d.id, { tarUrl: `${cfg.hubBase}/builds/${buildId}/source.tgz` }, {
-    app: opts.app,
-    port: opts.port,
-    buildNode: resolveNode(opts.buildNode, gw),
-    defaultNode: resolveNode(opts.node, gw),
-    registry: cfg.registry,
-    hubBase: cfg.hubBase,
-    sha: buildId,
-  }, gw).catch((e): PipelineResult => {
-    deployments.update(d.id, { stage: 'failed', detail: 'deploying', error: (e as Error).message });
-    return { ok: false, stage: 'deploying', urls: [], error: (e as Error).message };
+  const done = runDeploy(
+    d.id,
+    { tarUrl: `${cfg.hubBase}/builds/${buildId}/source.tgz` },
+    {
+      app: opts.app,
+      port: opts.port,
+      buildNode: resolveNode(opts.buildNode, gw),
+      defaultNode: resolveNode(opts.node, gw),
+      registry: cfg.registry,
+      hubBase: cfg.hubBase,
+      sha: buildId,
+    },
+    gw,
+  ).catch((e): PipelineResult => {
+    deployments.update(d.id, { stage: "failed", detail: "deploying", error: (e as Error).message });
+    return { ok: false, stage: "deploying", urls: [], error: (e as Error).message };
   });
   return { deployId: d.id, done };
 }

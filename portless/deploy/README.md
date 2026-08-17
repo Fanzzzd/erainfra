@@ -43,7 +43,7 @@ It installs deps, builds the dashboard with a generated owner token, writes
 (`portless.yourdomain.com → http://localhost:8787`), routes the DNS, and installs two systemd
 units (`portless-api`, `cloudflared-portless`). Both auto-restart and survive reboot.
 
-## 2. Lock it down with Cloudflare Access  ← do this immediately
+## 2. Lock it down with Cloudflare Access ← do this immediately
 
 The dashboard ships an **owner token** baked into the bundle. Access is the real front door:
 until it's in place, anyone who finds the URL has full control.
@@ -89,7 +89,7 @@ other box. Identity is stable across restarts (a per-link key is persisted under
 `~/.portless/mesh`), so a ticket keeps working after a reboot. Manage links with
 `… | sh -s -- status` and `… | sh -s -- stop <name>`.
 
-**Access caveat:** `/mesh-node.sh` must be fetchable *without* a login, so add a **Bypass** Access
+**Access caveat:** `/mesh-node.sh` must be fetchable _without_ a login, so add a **Bypass** Access
 policy scoped to that one path (Zero Trust → Access → your app → add policy: Action **Bypass**,
 Include **Everyone**, path `/mesh-node.sh`). The script carries no secrets — it only installs
 dumbpipe and runs share/connect.

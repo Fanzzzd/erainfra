@@ -4,7 +4,7 @@ A Windows box needs **one interactive step** to enroll — run a single line in 
 
 - A Windows box typically exposes only **RDP** (maybe SMB), not SSH/WinRM, so there's no clean
   remote-exec channel from outside.
-- Even with admin SMB creds, **UAC remote token filtering** strips a *local* admin's rights over the
+- Even with admin SMB creds, **UAC remote token filtering** strips a _local_ admin's rights over the
   network (`rpc_s_access_denied` for psexec/atexec). So the first run must happen **on the box** (RDP).
 
 After that one line the box is on the mesh and you drive it (exec, deploy) from the hub like any node.
