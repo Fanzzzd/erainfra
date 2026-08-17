@@ -11,5 +11,12 @@ catalog:
   convex: 1.43.0
   typescript: 7.0.2
 
+# pnpm 11 raises ERR_PNPM_IGNORED_BUILDS for any dependency with an install script that is not
+# listed here, and `pnpm run` re-checks dependency status before it runs anything — so one missing
+# entry fails every script in the repo, not just `pnpm install`.
 allowBuilds:
   esbuild: true
+  # Not reachable from this workspace yet: sharp arrives with portless/apps/docs, whose Next.js
+  # lists it as an optional dependency. Declared ahead of the merge so adding portless/* to
+  # `packages` above does not take the whole workspace down on the first install.
+  sharp: true
