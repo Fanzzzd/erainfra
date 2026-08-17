@@ -64,3 +64,22 @@ func TestIsPortlessUnit(t *testing.T) {
 		t.Fatal("expected nginx to be rejected")
 	}
 }
+
+func TestResolveContainerOperationsValidateNamesAndArguments(t *testing.T) {
+	remove, err := Resolve(Operation{Name: "container.remove", Args: map[string]string{"name": "flight-web"}})
+	if err != nil {
+		t.Fatalf("expected a Portless container name to be removable: %v", err)
+	}
+	if remove.Path != "docker" || len(remove.Argv) != 4 || remove.Argv[3] != "flight-web" {
+		t.Fatalf("unexpected remove command: %+v", remove)
+	}
+	for _, op := range []Operation{
+		{Name: "container.remove", Args: map[string]string{"name": "../../host"}},
+		{Name: "container.network.remove", Args: map[string]string{"name": "host"}},
+		{Name: "container.logs", Args: map[string]string{"name": "flight-web", "lines": "100", "extra": "ignored"}},
+	} {
+		if _, err := Resolve(op); !errors.Is(err, ErrNotAllowed) {
+			t.Fatalf("unsafe operation accepted: %+v err=%v", op, err)
+		}
+	}
+}

@@ -28,6 +28,19 @@ That's it. The script detects the platform, downloads the matching agent binary 
 - Windows `-Install`: registers a scheduled task so the agent reconnects after every reboot. Omit it to just run in the current window.
 - The hub URL is baked into the script when your hub serves it, so you normally don't pass `--hub`. If you fetched the script from elsewhere (e.g. Vercel), pass `--hub wss://your-hub.example.com/agent`.
 
+## Security boundary
+
+The persisted Linux service installed through `sudo` runs as root today. Running the agent under a
+separate account does not make it unprivileged when that account can reach the Docker socket:
+membership in the `docker` group is root-equivalent authority over the node, not an isolation
+boundary.
+
+Portless restricts remote requests to typed, allowlisted host operations and rejects deployment flags
+for privileged containers, host namespaces, bind mounts and sockets, devices, added capabilities,
+and security-profile changes. These controls narrow what a valid API credential can request, but the
+agent and Docker daemon remain privileged services. Put nodes and the hub in the same intended trust
+domain, use dedicated machines where practical, and protect admin credentials accordingly.
+
 ## Prerequisite: build the agent binaries (once, on the hub)
 
 The hub serves the agent binaries itself — self-hosted, no Docker Hub, no third-party release host. Build them once:

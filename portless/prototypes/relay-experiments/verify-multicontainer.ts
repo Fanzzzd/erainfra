@@ -78,12 +78,8 @@ try {
   if (res?.status !== 200 || !/nginx/i.test(res.body)) throw new Error(`ingress reach failed: ${res?.status}`);
   console.log('✅ reached the web service over the data plane');
 
-  // 2) inter-service: web resolves + reaches the internal api BY SERVICE NAME over the shared network.
-  const x = await caller.agents.run({ agentId: AGENT, argv: ['docker', 'exec', `${APP}-web`, 'wget', '-qO-', '-T', '3', 'http://api/'], confirm: true });
-  const got = (x.output ?? '').trim();
-  console.log(`web → http://api/ (service-name DNS) → ${/nginx/i.test(got) ? 'nginx welcome page' : JSON.stringify(got.slice(0, 80))}`);
-  if (!x.ok || !/nginx/i.test(got)) throw new Error(`inter-service DNS/network failed: ${x.error ?? got.slice(0, 200)}`);
-  console.log('✅ web reached the internal api by service name — shared network + DNS work');
+  // Raw docker exec is deliberately unavailable. The production deploy planner's same-node DNS
+  // behavior is covered by spec.test.ts without reopening a general-purpose host command channel.
 
   failed = false;
 } catch (e) {

@@ -2,14 +2,42 @@ import { randomUUID } from 'node:crypto';
 
 // AgentGateway is the self-controlled control channel that replaces dumbpipe: portless agents on
 // remote (NAT'd) boxes dial OUT to the hub over a WebSocket and stay connected; the hub addresses
-// them by id and pushes commands (deploy a container, exec, ping), awaiting their reply. No inbound
+// them by id and pushes typed commands (deploy a container, operate, ping), awaiting their reply. No inbound
 // port on the agent, no third-party relay — just our WSS, which rides the hub's Cloudflare tunnel.
 //
 // Protocol (JSON per frame):
 //   agent -> hub: {type:'hello', agentId, version, roles}   (on connect)
 //                 {type:'reply', id, ok, output?, error?}    (answering a cmd)
 //                 {type:'heartbeat'}                          (keepalive)
-//   hub  -> agent: {type:'cmd', id, cmd:'deploy'|'exec'|'ping', ...args}
+//   hub  -> agent: {type:'cmd', id, ...AgentCommand}
+
+export interface AgentOperation {
+  name: string;
+  args: Record<string, string>;
+}
+
+export interface AgentService {
+  name: string;
+  image: string;
+  args: string[];
+  env: Record<string, string>;
+  port?: number;
+  route?: string;
+}
+
+// Exhaustive hub-to-node protocol. In particular, there is no raw argv command: host operations
+// cross the wire only as AgentOperation and are resolved by the node's allowlist.
+export type AgentCommand =
+  | { cmd: 'ping' }
+  | { cmd: 'operate'; operation: AgentOperation }
+  | { cmd: 'deploy'; image: string; name: string; args: string[]; env: Record<string, string>; port?: number }
+  | { cmd: 'deployApp'; app: string; services: AgentService[] }
+  | { cmd: 'serve'; app: string; port: number }
+  | { cmd: 'meshShare'; name: string; port: number }
+  | { cmd: 'meshConnect'; name: string; ticket: string; port: number }
+  | { cmd: 'meshDrop'; name: string }
+  | { cmd: 'build'; repoUrl?: string; ref?: string; tarUrl?: string; dir?: string; registry: string; tag: string; hubBase: string }
+  | { cmd: 'spec'; repoUrl?: string; ref?: string; tarUrl?: string };
 
 // Minimal socket surface so the gateway is testable without a real WebSocket.
 export interface AgentSocket {
@@ -137,7 +165,7 @@ export class AgentGateway {
   }
 
   // Send a command to an agent and resolve with its reply (or reject on timeout / not connected).
-  send(agentId: string, cmd: Record<string, unknown>, timeoutMs = 30_000): Promise<AgentReply> {
+  send(agentId: string, cmd: AgentCommand, timeoutMs = 30_000): Promise<AgentReply> {
     const entry = this.byId.get(agentId);
     if (!entry) return Promise.reject(new Error(`agent not connected: ${agentId}`));
     const id = randomUUID();

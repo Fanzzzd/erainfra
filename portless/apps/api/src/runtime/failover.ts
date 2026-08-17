@@ -57,7 +57,7 @@ export async function failoverNode(lostId: string, deps: FailoverDeps): Promise<
     const services = g.services.map((s) => {
       const env = { ...s.env, ...deps.secrets.get(g.app), ...deps.secrets.get(`${g.app}-${s.name}`) };
       if (s.env?.PORT) env.PORT = s.env.PORT;
-      return { ...s, env };
+      return { name: s.name, image: s.image, args: s.args, port: s.port, route: s.route, env };
     });
     try {
       const reply = await deps.gateway.send(to, { cmd: 'deployApp', app: g.app, services }, 300_000);

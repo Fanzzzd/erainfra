@@ -40,7 +40,7 @@ try {
   for (let i = 0; i < 80; i++) { if ((await caller.agents.list()).some((a) => a.id === 'installed-node')) { seen = true; break; } await sleep(500); }
   if (!seen) throw new Error('node never registered via the installer');
   console.log('✅ one-line installer enrolled the node (downloaded binary from the hub, connected)');
-  const h = await caller.agents.run({ agentId: 'installed-node', argv: ['hostname'], confirm: true });
+  const h = await caller.agents.run({ agentId: 'installed-node', operation: { name: 'system.hostname', args: {} }, confirm: true });
   console.log(`installed node hostname: ${JSON.stringify((h.output ?? '').trim())}`);
   if (!h.ok) throw new Error('exec did not round-trip');
   console.log('✅ exec round-trips to the installer-enrolled node');

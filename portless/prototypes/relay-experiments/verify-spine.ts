@@ -39,10 +39,10 @@ try {
   console.log(seen ? '✅ agent connected + registered (agents.list shows testbox)' : '❌ agent never registered');
   if (!seen) throw new Error('agent did not register');
 
-  // run a real command and check the output round-trips through hub→agent→hub
-  const r = await caller.agents.run({ agentId: 'testbox', argv: ['echo', 'hello-from-spine'], confirm: true });
-  console.log(`exec reply: ok=${r.ok} output=${JSON.stringify((r.output ?? '').trim())}`);
-  if (r.ok && (r.output ?? '').includes('hello-from-spine')) console.log('✅ hub→agent command executed, reply round-tripped');
+  // run an allowlisted operation and check the output round-trips through hub→agent→hub
+  const r = await caller.agents.run({ agentId: 'testbox', operation: { name: 'system.hostname', args: {} }, confirm: true });
+  console.log(`operation reply: ok=${r.ok} output=${JSON.stringify((r.output ?? '').trim())}`);
+  if (r.ok && (r.output ?? '').trim()) console.log('✅ hub→agent operation executed, reply round-tripped');
   else throw new Error('command did not round-trip');
   // (agents.deploy = docker pull+run on the agent — needs a working docker daemon, so it's verified
   // on a real box, not here. ponytail gap: a hung `docker pull` blocks the agent's read loop; add a

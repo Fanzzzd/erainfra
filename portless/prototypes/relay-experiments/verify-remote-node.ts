@@ -49,7 +49,7 @@ try {
   console.log('✅ remote node connected over host.docker.internal (off-loopback)');
 
   // prove it's really a different machine: its hostname is the container id, not this Mac's
-  const h = await caller.agents.run({ agentId: 'linux-node', argv: ['hostname'], confirm: true });
+  const h = await caller.agents.run({ agentId: 'linux-node', operation: { name: 'system.hostname', args: {} }, confirm: true });
   const macHost = execSync('hostname').toString().trim();
   console.log(`node hostname=${JSON.stringify((h.output ?? '').trim())}  (this Mac=${JSON.stringify(macHost)})`);
   if (!h.ok || (h.output ?? '').trim() === macHost) throw new Error('exec did not run on a distinct node');

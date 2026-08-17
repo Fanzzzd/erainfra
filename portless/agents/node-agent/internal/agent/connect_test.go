@@ -8,10 +8,20 @@ import (
 type fakeRunner struct {
 	execOut, depOut, buildOut, appOut, meshOut string
 	execErr, depErr, buildErr, appErr, meshErr error
+	executed                                   *Command
+	deployCalled                               *bool
 }
 
-func (f fakeRunner) Exec(argv []string) (string, error) { return f.execOut, f.execErr }
+func (f fakeRunner) Execute(command Command) (string, error) {
+	if f.executed != nil {
+		*f.executed = command
+	}
+	return f.execOut, f.execErr
+}
 func (f fakeRunner) Deploy(image, name string, a []string, env map[string]string, port int) (string, error) {
+	if f.deployCalled != nil {
+		*f.deployCalled = true
+	}
 	return f.depOut, f.depErr
 }
 func (f fakeRunner) DeployApp(app string, services []Service) (string, error) {
@@ -35,17 +45,28 @@ func TestRunCmdPing(t *testing.T) {
 	}
 }
 
-func TestRunCmdExec(t *testing.T) {
-	r := RunCmd(cmdMsg{ID: "2", Cmd: "exec", Argv: []string{"echo", "hi"}}, fakeRunner{execOut: "hi\n"})
-	if !r.OK || r.Output != "hi\n" {
-		t.Fatalf("exec: %+v", r)
+func TestRunCmdResolvesTypedOperationAtTheNodeBoundary(t *testing.T) {
+	var executed Command
+	r := RunCmd(cmdMsg{ID: "2", Cmd: "operate", Operation: Operation{Name: "disk.usage", Args: map[string]string{}}}, fakeRunner{execOut: "disk\n", executed: &executed})
+	if !r.OK || r.Output != "disk\n" {
+		t.Fatalf("operate: %+v", r)
+	}
+	if executed.Path != "df" || len(executed.Argv) != 2 || executed.Argv[0] != "df" || executed.Argv[1] != "-h" {
+		t.Fatalf("operation was not resolved through the allowlist: %+v", executed)
 	}
 }
 
-func TestRunCmdExecErr(t *testing.T) {
-	r := RunCmd(cmdMsg{ID: "3", Cmd: "exec", Argv: []string{"x"}}, fakeRunner{execErr: errors.New("boom")})
+func TestRunCmdOperationErr(t *testing.T) {
+	r := RunCmd(cmdMsg{ID: "3", Cmd: "operate", Operation: Operation{Name: "disk.usage"}}, fakeRunner{execErr: errors.New("boom")})
 	if r.OK || r.Error != "boom" {
-		t.Fatalf("exec err: %+v", r)
+		t.Fatalf("operation err: %+v", r)
+	}
+}
+
+func TestDecodeCmdRejectsCallerControlledArgv(t *testing.T) {
+	_, err := decodeCmd([]byte(`{"type":"cmd","id":"pwn","cmd":"operate","operation":{"name":"disk.usage","args":{}},"argv":["sh","-c","id"]}`))
+	if err == nil {
+		t.Fatal("raw argv must not be part of the hub-to-node protocol")
 	}
 }
 

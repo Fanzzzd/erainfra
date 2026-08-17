@@ -76,6 +76,22 @@ curl -fsSL https://<hub>/agent.sh | sudo sh -s -- --token <plt_...> --name <name
 
 Windows: `deploy/agent.ps1` (see `deploy/WINDOWS.md`).
 
+### Node privilege boundary
+
+Treat every Portless node as a privileged service boundary, not as an unprivileged sandbox. On
+Linux, the `sudo` installer currently creates `portless-agent.service` without a `User=` directive,
+so the agent runs as root. A foreground/non-root agent that can access the Docker socket (including
+through membership in the `docker` group) is also effectively root-capable on that node; Docker-group
+execution is **not** unprivileged isolation.
+
+The control protocol reduces the exposed authority: `operator` credentials may deploy containers,
+host operations require `agent.run`, host operations are resolved from a node-side allowlist, and
+Docker flags that request host namespaces, bind mounts/sockets, devices, capabilities, or security
+profile changes are rejected at both hub and node. Those checks limit remote requests; they do not
+make a compromised hub, agent binary, Docker daemon, or privileged node account harmless. Use
+dedicated nodes with a blast radius appropriate for the workloads and keep the hub/admin credentials
+inside the same trust domain.
+
 **Push-to-deploy**: create a GitHub App (webhook → `https://<hub>/webhook/github`), set
 `PORTLESS_GH_*` on the hub, bind a repo (`portless bind owner/repo`). Public repos also work without
 an App via `portless redeploy`.

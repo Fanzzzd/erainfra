@@ -265,9 +265,11 @@ export async function removeApp(app: string, gw: Gw = agentGateway): Promise<{ o
     }
     for (const [node, containers] of byNode) {
       try {
-        const r = await gw.send(node, { cmd: 'exec', argv: ['docker', 'rm', '-f', ...containers] }, 60_000);
-        stopped = stopped || r.ok;
-        await gw.send(node, { cmd: 'exec', argv: ['docker', 'network', 'rm', `${app}-net`] }, 30_000).catch(() => {});
+        for (const name of containers) {
+          const r = await gw.send(node, { cmd: 'operate', operation: { name: 'container.remove', args: { name } } }, 60_000);
+          stopped = stopped || r.ok;
+        }
+        await gw.send(node, { cmd: 'operate', operation: { name: 'container.network.remove', args: { name: `${app}-net` } } }, 30_000).catch(() => {});
       } catch { /* node offline — still forget the state below */ }
     }
     for (const l of group.links ?? []) {
@@ -283,7 +285,7 @@ export async function removeApp(app: string, gw: Gw = agentGateway): Promise<{ o
     const dep = routeStore.get(app);
     if (!dep) throw new Error(`no such app: ${app}`);
     try {
-      const r = await gw.send(dep.node, { cmd: 'exec', argv: ['docker', 'rm', '-f', app] }, 30_000);
+      const r = await gw.send(dep.node, { cmd: 'operate', operation: { name: 'container.remove', args: { name: app } } }, 30_000);
       stopped = r.ok;
     } catch { /* node offline */ }
     routeStore.delete(app);

@@ -24,10 +24,11 @@ test('send dispatches a cmd and resolves on the matching reply', async () => {
   const sent: string[] = [];
   const sock: AgentSocket = { send: (d) => sent.push(d), close: () => {} };
   g.onMessage(sock, JSON.stringify({ type: 'hello', agentId: 'box1' }));
-  const p = g.send('box1', { cmd: 'exec', argv: ['echo', 'hi'] });
+  const p = g.send('box1', { cmd: 'operate', operation: { name: 'disk.usage', args: {} } });
   const cmd = JSON.parse(sent[0]);
   assert.equal(cmd.type, 'cmd');
-  assert.equal(cmd.cmd, 'exec');
+  assert.equal(cmd.cmd, 'operate');
+  assert.deepEqual(cmd.operation, { name: 'disk.usage', args: {} });
   g.onMessage(sock, JSON.stringify({ type: 'reply', id: cmd.id, ok: true, output: 'hi' }));
   const reply = await p;
   assert.equal(reply.ok, true);
