@@ -52,7 +52,32 @@ jobs:
           }
           side - > /tmp/frozen-removed
           side + > /tmp/frozen-added
-          gone=$(comm -23 /tmp/frozen-removed /tmp/frozen-added)
+          # A frozen identifier can leave THIS DIFF while staying in the tree, and that is a
+          # refactor rather than a rename: when the only site that wrote it moves to a file that
+          # already contained it, the diff shows a removal with no matching addition. #72 hit
+          # exactly this — `deploy/infra/agent.sh` stopped writing PORTLESS_HUB because
+          # `/install --role node` writes it now, and the name was still in five other files.
+          #
+          # So the diff decides what to LOOK at and the tree decides whether it is gone, which is
+          # what finally makes the message below true: it has always said "left the tree" while
+          # only ever measuring the diff. Absence is still the failure. This narrows a false
+          # positive; it is not an escape hatch.
+          #
+          # The tree is scanned with the SAME pattern and the same greedy extraction as the diff,
+          # deliberately, rather than by searching for each name as a substring. `grep -oE` on
+          # PORTLESS_HUB_BASE yields PORTLESS_HUB_BASE and never PORTLESS_HUB, so renaming
+          # PORTLESS_HUB while PORTLESS_HUB_BASE survives is still caught. A substring search
+          # would call that name "still present" and wave the rename through — which is a worse
+          # bug than the false positive this replaces, so the two sides must extract identically.
+          comm -23 /tmp/frozen-removed /tmp/frozen-added > /tmp/frozen-diff-gone
+          git grep -hIoE "$FROZEN" -- . ':(exclude).github/workflows/ci.yml' \
+            | sort -u > /tmp/frozen-tree
+          gone=$(comm -23 /tmp/frozen-diff-gone /tmp/frozen-tree)
+          moved=$(comm -12 /tmp/frozen-diff-gone /tmp/frozen-tree)
+          if [ -n "$moved" ]; then
+            echo "Left this diff but still in the tree, so moved rather than renamed:"
+            echo "$moved"
+          fi
           if [ -n "$gone" ]; then
             echo "These frozen runtime identifiers left the tree:" >&2
             echo "$gone" >&2
