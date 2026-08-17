@@ -91,11 +91,35 @@ die() {
 # has a deadline after which the caller carries on regardless.
 TEARDOWN_GRACE_S=2
 
-# True while $1 still exists. $1 is a pid, or -pgid for a whole process group.
-# A not-yet-reaped zombie counts as existing, which only ever costs a bounded
-# wait we were willing to spend anyway.
+# True while $1 is live. $1 is a pid, or -pgid for a whole process group.
+#
+# Zombies are explicitly not alive. A process that has exited but has not been
+# reaped still answers `kill -0`, and a process group answers `kill -0` for as
+# long as ANY member exists at all, zombies included. Bash reaps its own
+# children promptly whether or not anybody waits, but a pipeline member that
+# forked and then died before reaping leaves an orphan for init to collect, and
+# that can outlast the grace below. Counting those as alive made every teardown
+# spend its whole budget and then SIGKILL a job that had already died politely.
 still_alive() {
-  kill -0 "$1" 2>/dev/null
+  local states
+  case "$1" in
+    -*)
+      kill -0 "$1" 2>/dev/null || return 1
+      states="$(ps -A -o pgid=,state= 2>/dev/null | awk -v g="${1#-}" '$1 == g { print $2 }')"
+      # If ps cannot say, fail safe and call it alive: the poll is bounded
+      # anyway, and the alternative would skip the escalation.
+      if [ -z "$states" ]; then
+        return 0
+      fi
+      printf '%s\n' "$states" | grep -qv '^Z'
+      ;;
+    *)
+      kill -0 "$1" 2>/dev/null || return 1
+      case "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" in
+        Z*) return 1 ;;
+      esac
+      ;;
+  esac
 }
 
 # Polls for at most $2 seconds. Non-zero means $1 outlived that budget.
@@ -109,10 +133,13 @@ await_exit() {
   ! still_alive "$target"
 }
 
-# TERM, a short grace, then KILL, then give up and let the caller continue. Two
-# seconds is plenty: everything reaped here is either the watchdog, which has
-# already done its work, or a host-side process whose guest is about to be
-# deleted out from under it anyway.
+# TERM $1, a short grace, then KILL $1, then give up and let the caller
+# continue. Two seconds is plenty: everything reaped here is either the
+# watchdog, which has already done its work, or a host-side process whose guest
+# is about to be deleted out from under it anyway.
+#
+# $1 may be a negated process group, which is how the whole SSH chain is torn
+# down at once.
 #
 # Deliberately always succeeds. Under `set -e` a best-effort teardown step that
 # reported failure would abort the rest of cleanup, which is the same class of

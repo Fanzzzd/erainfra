@@ -74,7 +74,13 @@ TEARDOWN_GRACE_S=2
 
 # shellcheck disable=SC2317,SC2329  # reached only from the EXIT trap, via reap
 still_alive() {
-  kill -0 "$1" 2>/dev/null
+  kill -0 "$1" 2>/dev/null || return 1
+  # A process that has exited but has not been reaped still answers `kill -0`.
+  # Treating a zombie as alive would make every poll below spend its whole
+  # budget and escalate to SIGKILL against something that already died.
+  case "$(ps -o state= -p "$1" 2>/dev/null | tr -d ' ')" in
+    Z*) return 1 ;;
+  esac
 }
 
 # Polls for at most $2 seconds. Non-zero means $1 outlived that budget.
