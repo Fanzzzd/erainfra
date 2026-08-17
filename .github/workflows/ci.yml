@@ -37,22 +37,71 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -eu
-          FROZEN='portless-(data|registry|hub|tunnel|agent)|/etc/portless|PORTLESS_[A-Z_]+|\.portless|portless\.db|portless-env'
+          # Frozen identifiers come in two shapes and they need different boundaries. Conflating
+          # them is how the first version of this gate let a rename through: `grep -oE` extracted
+          # `portless-data` out of `portless-data-v2`, so the ADDED side of a rename vouched for the
+          # name the REMOVED side had just dropped.
+          #
+          # EXACT — the identifier is a whole token, and a superstring is a different thing. A
+          # container called `portless-data-v2` is not the volume `portless-data`; an env var
+          # `PORTLESS_HUB2` is not `PORTLESS_HUB`; `~/.portlessrc` is not `~/.portless`.
+          EXACT='portless-(data|registry|hub|env)|portless\.db|\.portless|PORTLESS_[A-Z0-9_]+'
+          # PREFIX — the identifier legitimately continues, measured against the tree: `portless-agent`
+          # is the stem of portless-agent-linux-arm64 and portless-agent.service, `/etc/portless` is a
+          # directory holding agent.env, and `portless-tunnel` names portless-tunnel.service.
+          PREFIX='portless-agent|/etc/portless|portless-tunnel'
+          # What may extend an EXACT identifier. A `.` counts only when something follows it, which is
+          # the distinction between prose and a name: "...the portless-data volume." ends a sentence,
+          # while portless-data.v2 is a DIFFERENT volume and must not vouch for portless-data. `/` is
+          # excluded outright, since it starts a new path segment rather than extending a name.
+          EXT='([A-Za-z0-9_-]|\.[A-Za-z0-9_-])'
           # The diff is taken once, as its own command, so `set -e` still catches git failing —
           # a silently empty diff here would fail this check open. The greps below are then
           # allowed to match nothing, which is the normal case for almost every pull request.
           #
-          # This file is excluded from its own scan: the pattern above names every frozen
-          # identifier literally, so without the exclusion an edit here would add all of them to
-          # the "still present" side and mask a genuine removal somewhere else in the same PR.
+          # This file is excluded from every scan: the patterns above name every frozen identifier
+          # literally, so without the exclusion an edit here would add all of them to the
+          # "still present" side and mask a genuine removal somewhere else in the same PR.
           git diff --unified=0 -M20% -l0 "$BASE" -- . ':(exclude).github/workflows/ci.yml' > /tmp/pr.diff
+          # Pull frozen identifiers out of whatever is on stdin. EXACT names are taken with their
+          # surrounding token and then required to BE the whole token; PREFIX names are taken as-is.
+          extract() {
+            cat > /tmp/extract.in
+            grep -oE "$EXT*($EXACT)$EXT*" /tmp/extract.in | grep -xE "$EXACT" || true
+            # Two stages for PREFIX: the first enforces a LEFT boundary, so `myportless-agent` cannot
+            # vouch for `portless-agent`; the second recovers just the name from that match. A left
+            # boundary cannot be a plain prefix test, because these appear mid-path
+            # (../../deploy/infra/bin/portless-agent-darwin-arm64) as well as at the start.
+            grep -oE "(^|[^A-Za-z0-9_-])($PREFIX)" /tmp/extract.in | grep -oE "$PREFIX" || true
+          }
           side() {
-            grep "^[$1]" /tmp/pr.diff | grep -vE '^(\+\+\+|---)' \
-              | grep -oE "$FROZEN" | sort -u || true
+            grep "^[$1]" /tmp/pr.diff | grep -vE '^(\+\+\+|---)' | extract | sort -u
           }
           side - > /tmp/frozen-removed
           side + > /tmp/frozen-added
-          gone=$(comm -23 /tmp/frozen-removed /tmp/frozen-added)
+          # A frozen identifier can leave THIS DIFF while staying in the tree, and that is a refactor
+          # rather than a rename: when the only site that wrote it moves to a file that already
+          # contained it, the diff shows a removal with no matching addition. #72 hit exactly this —
+          # `deploy/infra/agent.sh` stopped writing PORTLESS_HUB because `/install --role node` writes
+          # it now, and the name was still in five other files including apps/infra-agent/main.go,
+          # where it is the --hub flag default.
+          #
+          # So the diff decides what to LOOK at and the tree decides whether it is gone, which is what
+          # makes the message below true; it has always claimed "left the tree" while only ever
+          # measuring the diff. Absence is still the failure: this narrows a false positive rather than
+          # adding an escape hatch, and both sides extract identically so neither can vouch more
+          # loosely than the other.
+          comm -23 /tmp/frozen-removed /tmp/frozen-added > /tmp/frozen-diff-gone
+          # Only lines that mention the stem can carry a frozen identifier — every name in both
+          # patterns above contains "portless" — so this scans those rather than the whole tree.
+          git grep -hIi --no-color -e portless -- . ':(exclude).github/workflows/ci.yml' \
+            | extract | sort -u > /tmp/frozen-tree
+          gone=$(comm -23 /tmp/frozen-diff-gone /tmp/frozen-tree)
+          moved=$(comm -12 /tmp/frozen-diff-gone /tmp/frozen-tree)
+          if [ -n "$moved" ]; then
+            echo "Left this diff but still in the tree, so moved rather than renamed:"
+            echo "$moved"
+          fi
           if [ -n "$gone" ]; then
             echo "These frozen runtime identifiers left the tree:" >&2
             echo "$gone" >&2
