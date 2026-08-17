@@ -212,3 +212,55 @@ func TestContextDirAcceptsASymlinkedRoot(t *testing.T) {
 		t.Fatalf("contextDir through a symlinked root = %q, want %q", got, want)
 	}
 }
+
+// TestReadConfined pins the spec read against the same untrusted checkout contextDir defends.
+// os.ReadFile follows symlinks, so `portless.yaml -> /etc/shadow` would otherwise be returned to the
+// hub as the app's spec, and the agent reads it as root.
+func TestReadConfined(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("root:$6$hunter2"), 0o600); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "portless.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "shared.yml"), []byte("shared: true\n"), 0o644); err != nil {
+		t.Fatalf("write shared: %v", err)
+	}
+	mustSymlink(t, outside, filepath.Join(root, "escape.yaml"))
+	mustSymlink(t, filepath.Join(root, "shared.yml"), filepath.Join(root, "inside.yaml"))
+	mustMkdirAll(t, filepath.Join(root, "adir.yaml"))
+
+	for _, tc := range []struct {
+		name string
+		file string
+		want string // expected content, when the read should succeed
+		fail bool
+	}{
+		{name: "a regular spec in the checkout", file: "portless.yaml", want: "services: {}\n"},
+		{name: "a symlink to a sibling in the checkout", file: "inside.yaml", want: "shared: true\n"},
+		{name: "a symlink out of the checkout", file: "escape.yaml", fail: true},
+		{name: "a directory", file: "adir.yaml", fail: true},
+		{name: "absent", file: "nope.yaml", fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := readConfined(root, tc.file)
+			if tc.fail {
+				if err == nil {
+					t.Fatalf("readConfined(%q) = %q, want an error", tc.file, body)
+				}
+				if strings.Contains(string(body), "hunter2") {
+					t.Fatalf("readConfined(%q) leaked content from outside the checkout", tc.file)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readConfined(%q): %v", tc.file, err)
+			}
+			if string(body) != tc.want {
+				t.Fatalf("readConfined(%q) = %q, want %q", tc.file, body, tc.want)
+			}
+		})
+	}
+}

@@ -345,11 +345,43 @@ func (r ShellRunner) ReadSpec(src BuildSource) (string, error) {
 		return out, err
 	}
 	for _, f := range []string{"portless.yaml", "portless.yml"} {
-		if body, err := os.ReadFile(filepath.Join(dir, f)); err == nil {
-			return string(body), nil
+		body, err := readConfined(dir, f)
+		if err != nil {
+			// Absent, a directory, or pointing out of the checkout: try the next
+			// name, then fall back to a single-service deploy as before.
+			continue
 		}
+		return string(body), nil
 	}
 	return "", nil
+}
+
+// readConfined reads name from root, refusing anything that resolves outside it. os.ReadFile follows
+// symlinks, so without this a checkout containing `portless.yaml -> /etc/shadow` would have that
+// file's contents returned to the hub as the app's spec — an arbitrary-file read on a Node, since the
+// agent runs as root. Same root cause as contextDir, different call path.
+func readConfined(root, name string) ([]byte, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("source root %q: %w", root, err)
+	}
+	p, err := filepath.EvalSymlinks(filepath.Join(realRoot, name))
+	if err != nil {
+		return nil, err
+	}
+	if !contains(realRoot, p) {
+		return nil, fmt.Errorf("%q escapes the source root", name)
+	}
+	// A symlink to a sibling in the checkout is fine and is why containment is
+	// checked rather than symlinks refused outright; a directory is not a spec.
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", name)
+	}
+	return os.ReadFile(p)
 }
 
 // scrub removes a secret-bearing URL from text (so clone errors don't leak the token).
