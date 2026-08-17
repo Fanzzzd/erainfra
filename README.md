@@ -410,6 +410,13 @@ twice byte-for-byte, checks the deployment pin, attests the artifacts, and publi
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never
 overwritten; a correction is a new version.
 
+Both halves of `AGENT_RELEASE` are pinned on the release commit, before the tag: `sha256` from
+the deterministic archive, and `infraAgent` from `pnpm --filter @erainfra/release build-go-assets`
+followed by `pnpm --filter @erainfra/backend print-infra-agent-pin`, which reads the digests out
+of the sidecars so nobody transcribes five of them by hand. The workflow refuses to publish a tag
+whose pin disagrees with the bytes it just built, or whose Infra Agent pin covers only some of the
+five targets.
+
 ## Repository layout
 
 ```text

@@ -58,7 +58,10 @@ jobs:
 
           node --experimental-strip-types --input-type=module <<'NODE'
           import { appendFileSync } from "node:fs";
-          import { AGENT_RELEASE } from "./packages/backend/convex/agentRelease.ts";
+          import {
+            AGENT_RELEASE,
+            INFRA_AGENT_TARGETS,
+          } from "./packages/backend/convex/agentRelease.ts";
 
           const version = process.env.GITHUB_REF_NAME?.replace(/^v/, "");
           if (AGENT_RELEASE.repo !== process.env.GITHUB_REPOSITORY) {
@@ -73,6 +76,20 @@ jobs:
           }
           if (!/^[a-f0-9]{64}$/.test(AGENT_RELEASE.sha256)) {
             throw new Error("Agent release pin must contain a lowercase SHA-256 checksum");
+          }
+          // The Node side of the same pin. A release publishes all five binaries, so a pin that
+          // covers four of them would leave one platform installing bytes nothing vouches for.
+          const pinned = Object.keys(AGENT_RELEASE.infraAgent).sort();
+          const expected = [...INFRA_AGENT_TARGETS].sort();
+          if (pinned.join(",") !== expected.join(",")) {
+            throw new Error(
+              `Infra Agent pin covers ${pinned.join(", ") || "no targets"}; expected ${expected.join(", ")}`,
+            );
+          }
+          for (const [target, digest] of Object.entries(AGENT_RELEASE.infraAgent)) {
+            if (!/^[a-f0-9]{64}$/.test(digest)) {
+              throw new Error(`Infra Agent pin for ${target} is not a lowercase SHA-256 checksum`);
+            }
           }
           appendFileSync(process.env.GITHUB_ENV, `PINNED_SHA256=${AGENT_RELEASE.sha256}\n`);
           NODE
@@ -169,6 +186,29 @@ jobs:
             fi
             printf 'platform  %s  %s\n' "$name" "$declared"
           done
+
+      # Same rule as the archive: bytes that do not match what this deployment pins are not
+      # published, because the installer will refuse them and a Node would have no way to onboard.
+      - name: Verify the Infra Agent binaries match the deployment pin
+        run: |
+          node --experimental-strip-types --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import {
+            AGENT_RELEASE,
+            INFRA_AGENT_TARGETS,
+            infraAgentAssetName,
+          } from "./packages/backend/convex/agentRelease.ts";
+
+          for (const target of INFRA_AGENT_TARGETS) {
+            const asset = infraAgentAssetName(target);
+            const built = readFileSync(`dist/release/${asset}.sha256`, "utf8").split(" ")[0];
+            const pinned = AGENT_RELEASE.infraAgent[target];
+            if (built !== pinned) {
+              throw new Error(`${asset} is ${built}, but this deployment pins ${pinned}`);
+            }
+            console.log(`${built}  ${asset}  matches the deployment pin`);
+          }
+          NODE
 
       # This binary runs as root on customer Nodes. Assert on the shipped bytes rather than on
       # go.mod: go.mod is the whole platform's now and says nothing about what this binary linked,

@@ -21,7 +21,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p convex/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
     "deploy": "static-hosting deploy --dist ../../apps/dashboard/dist --build-command \"pnpm --filter @erainfra/dashboard build\"",
-    "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts"
+    "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts",
+    "print-infra-agent-pin": "node --experimental-strip-types scripts/print-infra-agent-pin.ts"
   },
   "dependencies": {
     "@auth/core": "0.41.3",
