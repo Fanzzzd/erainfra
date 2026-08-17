@@ -1,6 +1,12 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "tui",
+  // testdata/dockerargs-cases.json sits outside every package, because the boundary it
+  // defines belongs to neither of the two apps that implement it. Turbo hashes a task
+  // against its own package's files, so without this line editing the fixture would leave
+  // apps/hub's cached `test` result standing — a green replay of a run that never saw the
+  // new row.
+  "globalDependencies": ["testdata/dockerargs-cases.json"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
