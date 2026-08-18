@@ -375,9 +375,9 @@ describe("build-image.ps1 tooling pin", () => {
   });
 
   it("hashes every download between fetching it and using it", () => {
-    const helper = guestScript.slice(
-      guestScript.indexOf("function Save-RcPinnedDownload"),
-      guestScript.indexOf("function Install-RcPinnedTool"),
+    const helper = guestCode.slice(
+      guestCode.indexOf("function Save-RcPinnedDownload"),
+      guestCode.indexOf("function Install-RcPinnedTool"),
     );
     const fetch = helper.indexOf("Invoke-WebRequest -Uri $Url -OutFile $Path");
     const hash = helper.indexOf("Get-FileHash -Path $Path -Algorithm SHA256");
@@ -400,7 +400,7 @@ describe("build-image.ps1 tooling pin", () => {
       assert.ok(installed > verified, `${tool} is installed before its digest is checked`);
     }
     // The runner archive keeps its own inline check; nothing else may fetch.
-    assert.equal(guestScript.split("Invoke-WebRequest").length - 1, 2);
+    assert.equal(guestCode.split("Invoke-WebRequest").length - 1, 2);
   });
 
   // The other half of #48's complaint: $ErrorActionPreference does not apply to

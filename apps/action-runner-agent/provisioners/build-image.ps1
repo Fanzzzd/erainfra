@@ -255,6 +255,10 @@ try {
     # worse than none. Never echo a credential into the transcript.
     $provisionBody = @'
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 renders an Invoke-WebRequest progress bar per chunk
+# even with nowhere to render it, which costs more than the download does. The
+# guest fetches a quarter of a gigabyte across four artifacts; turn it off.
+$ProgressPreference = 'SilentlyContinue'
 
 # Fetch one pinned artifact and prove it is the artifact that was pinned, in
 # that order and with nothing in between: a file that fails this never becomes
