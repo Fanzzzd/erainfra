@@ -22,7 +22,7 @@ import {
   type SetupStateStatus,
 } from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
-import { renderPowerShellInstallScript } from "./installScriptPowerShell";
+import { renderWindowsInstallScript } from "./installScriptPowerShell";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
@@ -279,16 +279,25 @@ http.route({
   }),
 });
 
-// The same installer for the machines that cannot run bash. A Node may be a Windows box, and the
-// role is still chosen by a parameter on the script rather than on the URL, so this handler takes
-// nothing from the request either. It carries no SITE_URL: a Node reports to the customer's Hub,
-// which the operator passes with -Hub, and the only thing this deployment contributes is the
-// pinned digest and the verification around it.
+// The same installer for the machines that cannot run bash, and — since #49 — for both roles, the
+// way /install carries both. The role is still chosen by a parameter on the script rather than on
+// the URL, so this handler also takes nothing from the request.
+//
+// It resolves the site URL where it used to render without one. A Node genuinely needs no SITE_URL,
+// because it reports to the customer's Hub; a Worker bakes this deployment's origin into its own
+// configuration exactly as the bash installer does. Failing closed therefore now covers a Node
+// install too — which is the right trade, because a deployment with no canonical origin cannot
+// serve a working Worker command from its dashboard either.
 http.route({
   path: "/install.ps1",
   method: "GET",
   handler: httpAction(async () => {
-    return new Response(renderPowerShellInstallScript(AGENT_RELEASE), {
+    const site = resolveSiteUrl(process.env.CONVEX_SITE_URL);
+    if (!site.ok) {
+      return misconfiguredSiteUrlResponse("Refusing to render the Windows installer", site.error);
+    }
+
+    return new Response(renderWindowsInstallScript(site.siteUrl, AGENT_RELEASE), {
       status: 200,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });

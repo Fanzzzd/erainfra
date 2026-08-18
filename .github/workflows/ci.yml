@@ -146,6 +146,21 @@ jobs:
       # real functions out of the real files, and pins the frozen identifiers they still write.
       - name: The installers read both names and rename nothing frozen
         run: sh deploy/infra/rename.test.sh
+      # `pnpm test` runs the PowerShell suite only when pwsh is on PATH, so on a contributor's
+      # machine it degrades to a skip. Here it must not: an installer that does not parse is the
+      # failure mode with no other signal, and the runner image ships PowerShell.
+      #
+      # `node`, not `pnpm run`: the Hub-bundle step above leaves pnpm's dependency status wanting a
+      # re-install, so pnpm prefixes its own summary to stdout and that summary lands in the file
+      # being parsed. The script imports nothing outside this repository, so it needs no
+      # node_modules. The first line is checked because a truncated render still parses as nothing.
+      - name: The rendered Windows installer parses
+        working-directory: packages/backend
+        run: |
+          node --experimental-strip-types scripts/print-install-script.ts win \
+            https://example.convex.site > "$RUNNER_TEMP/install.ps1"
+          head -n 1 "$RUNNER_TEMP/install.ps1" | grep -qx '#Requires -Version 5.1'
+          pwsh -NoProfile -Command '$null = [ScriptBlock]::Create((Get-Content -Raw $env:RUNNER_TEMP/install.ps1))'
       - name: Test the root Go module
         run: go test ./...
       - name: Vet the root Go module
