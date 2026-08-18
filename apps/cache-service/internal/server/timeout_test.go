@@ -35,14 +35,20 @@ import (
 
 const testBudget = 150 * time.Millisecond
 
-// answersWithin fails the test if the call takes materially longer than the
-// budget. The slack is generous on purpose: this is asserting that a deadline
-// exists, not measuring scheduler latency.
+// schedulingAllowance is how much longer than its budget a handler may take
+// before this suite calls it a hang. It absorbs scheduler latency and a loaded
+// CI runner and nothing else — it is deliberately not a second budget, because
+// a ceiling loose enough to pass a handler that ignores its budget entirely
+// would test nothing.
+const schedulingAllowance = 2 * time.Second
+
+// answersWithin fails the test if the call takes longer than the budget plus
+// that allowance.
 func answersWithin(t *testing.T, budget time.Duration, call func()) {
 	t.Helper()
 	start := time.Now()
 	call()
-	if elapsed := time.Since(start); elapsed > budget*10+2*time.Second {
+	if elapsed := time.Since(start); elapsed > budget+schedulingAllowance {
 		t.Fatalf("answered in %s, want the %s budget to have fired", elapsed, budget)
 	}
 }
@@ -254,18 +260,17 @@ func TestAStalledRequestBodyIsCutAtTheControlBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	// The client's own deadline sits just past what the service is allowed, so
+	// a service that never cuts the connection fails this test rather than
+	// hanging it.
+	if err := conn.SetReadDeadline(time.Now().Add(testBudget + 2*schedulingAllowance)); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
-	// The service either answers or drops the connection; either way it stops
-	// waiting. What must not happen is this read blocking until the test's own
-	// deadline.
-	if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, io.EOF) {
-		t.Logf("connection ended with %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("a stalled request body held the connection for %s, want the %s budget to have cut it",
-			elapsed, testBudget)
-	}
+	answersWithin(t, testBudget, func() {
+		// The service either answers or drops the connection; either way it
+		// stops waiting.
+		if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, io.EOF) {
+			t.Logf("connection ended with %v", err)
+		}
+	})
 }

@@ -44,19 +44,34 @@ repository's own `check` job restores 329 MiB per warm run.
 # One workable shape, on the store host. Any S3-compatible server will do.
 # certs/ holds public.crt and private.key for this host — see the TLS note in §2,
 # which is a requirement here rather than a nicety.
+#
+# The API port is published; the admin console is bound to loopback, because it
+# is reached over an SSH tunnel by a human occasionally and by nothing else ever.
 mkdir -p /srv/erainfra-cache /srv/erainfra-cache-certs
 podman run -d --name erainfra-cache-store \
-  -p 9000:9000 -p 9001:9001 \
+  -p 9000:9000 -p 127.0.0.1:9001:9001 \
   -v /srv/erainfra-cache:/data \
   -v /srv/erainfra-cache-certs:/certs:ro \
-  -e MINIO_ROOT_USER="$store_access_key" \
-  -e MINIO_ROOT_PASSWORD="$store_secret" \
+  -e MINIO_ROOT_USER="$store_root_user" \
+  -e MINIO_ROOT_PASSWORD="$store_root_password" \
   quay.io/minio/minio server /data --certs-dir /certs --console-address ":9001"
 ```
 
-Create a bucket (`erainfra-cache` below) and an access key **scoped to that bucket only**. The
-service needs `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` and the multipart calls
-(`s3:AbortMultipartUpload`) on it, and nothing else anywhere.
+Then create a bucket and, **separately, a credential scoped to that bucket only**. The root
+credential above administers the store and must never be what the cache service holds; the service
+needs `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` and the multipart calls
+(`s3:AbortMultipartUpload`) on one bucket, and nothing else anywhere.
+
+```bash
+mc alias set erainfra https://store.lan:9000 "$store_root_user" "$store_root_password"
+mc mb erainfra/erainfra-cache
+# Keep these two named apart from the root pair: they are what §2 writes to disk
+# and what ERAINFRA_CACHE_S3_ACCESS_KEY names.
+cache_access_key=erainfra-cache
+cache_secret=$(openssl rand -base64 36)
+mc admin user add erainfra "$cache_access_key" "$cache_secret"
+mc admin policy attach erainfra readwrite --user "$cache_access_key"   # narrow this to the one bucket
+```
 
 ### Case B — no colocated store, or a fleet spread across sites
 
@@ -115,8 +130,11 @@ install -d -m 0700 /etc/erainfra
 # The signing key. Generate it once and give the same value to whatever mints
 # tokens — in stage C, the controller.
 openssl rand -base64 48 > /etc/erainfra/cache-signing-key
-# The store's secret key, from the bucket-scoped credential you created in §1.
-printf '%s' "$store_secret" > /etc/erainfra/cache-store-secret
+# The store's secret key. This is $cache_secret from §1 — the bucket-scoped
+# credential that pairs with ERAINFRA_CACHE_S3_ACCESS_KEY — and never the root
+# password, which would both fail to authenticate against that access key and
+# hand the service the run of the store.
+printf '%s' "$cache_secret" > /etc/erainfra/cache-store-secret
 chmod 600 /etc/erainfra/cache-signing-key /etc/erainfra/cache-store-secret
 ```
 
@@ -200,9 +218,30 @@ ProtectHome=yes
 WantedBy=multi-user.target
 ```
 
-`LoadCredential=` needs systemd 247 or newer (`systemctl --version`). On anything older, drop
-`DynamicUser=yes`, create a service account, and give it read access to the two files explicitly —
-what must not happen is the service running as root because the secrets were unreadable any other
+`LoadCredential=` needs systemd 247 or newer (`systemctl --version`). On anything older, replace the
+credential block and `DynamicUser=yes` with a real service account, and grant it the access
+explicitly — all three parts of it, because missing any one produces the same permission error on a
+file that is plainly there:
+
+```bash
+useradd --system --no-create-home --shell /usr/sbin/nologin erainfra-cache
+# 1. traverse the directory
+chgrp erainfra-cache /etc/erainfra && chmod 0710 /etc/erainfra
+# 2. read the files
+chgrp erainfra-cache /etc/erainfra/cache-signing-key /etc/erainfra/cache-store-secret
+chmod 0640 /etc/erainfra/cache-signing-key /etc/erainfra/cache-store-secret
+# 3. own the spool
+install -d -o erainfra-cache -g erainfra-cache -m 0700 /var/lib/erainfra-cache/spool
+```
+
+```ini
+User=erainfra-cache
+Group=erainfra-cache
+Environment=ERAINFRA_CACHE_SIGNING_KEY_FILE=/etc/erainfra/cache-signing-key
+Environment=ERAINFRA_CACHE_S3_SECRET_FILE=/etc/erainfra/cache-store-secret
+```
+
+What must not happen is the service running as root because the secrets were unreadable any other
 way.
 
 ```bash
@@ -234,8 +273,18 @@ rather than retyping it:
 
 ```bash
 # MinIO / any store with an S3-compatible lifecycle API
+set -eu
 prefix=$(. /etc/erainfra/cache.env; printf '%s' "${ERAINFRA_CACHE_S3_PREFIX:-erainfra-cache/v1/}")
-cat > /tmp/erainfra-cache-lifecycle.json <<EOF
+# The prefix is interpolated into JSON below, so refuse anything that would not
+# survive it rather than emitting a document that silently will not parse.
+case $prefix in
+  *[!A-Za-z0-9/._-]*) echo "refusing to build a rule for prefix $prefix" >&2; exit 1 ;;
+esac
+
+# Not a predictable path: this is run as root, and another local user can put a
+# symlink at a name they can guess.
+rule=$(mktemp) && trap 'rm -f "$rule"' EXIT
+cat > "$rule" <<EOF
 {
   "Rules": [
     {
@@ -248,7 +297,7 @@ cat > /tmp/erainfra-cache-lifecycle.json <<EOF
   ]
 }
 EOF
-mc ilm import erainfra/erainfra-cache < /tmp/erainfra-cache-lifecycle.json
+mc ilm import erainfra/erainfra-cache < "$rule"
 mc ilm rule ls erainfra/erainfra-cache    # confirm the prefix that landed
 ```
 
