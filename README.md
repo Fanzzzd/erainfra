@@ -108,6 +108,15 @@ readiness again. A Worker with no free range refuses the Attempt rather than run
 over-subscribed, and a Profile asking for more vCPUs than the Worker has CPUs fails its
 `cpu-capacity` readiness check instead of being scheduled onto.
 
+None of that is taken on trust. Before a Worker advertises a Docker Profile as ready it runs one
+throwaway container with that Profile's exact limit flags, on a range borrowed from the same
+allocator that pins a real Attempt, and asserts the container agrees about its own size: `nproc`
+equals `vcpus`, `RC_VCPUS` and `RC_MEMORY_MIB` hold the right numbers, and `RC_MEMORY_MIB` is the
+limit the memory cgroup actually enforces. That is the `job-resource-visibility` check, and its
+detail carries the measured numbers on a pass as well as a failure. A Worker that cannot give a job
+an honest view of its own size does not accept work, which is the rule the network policy already
+follows.
+
 A cpuset does not fix every CPU-count interface, so **`RC_VCPUS` in the job environment is the
 authoritative limit.** `/proc/cpuinfo` is not filtered and still lists every host CPU, which leaves
 Node's `os.cpus().length` reporting the Worker. Python's `os.cpu_count()` depends on the C library —

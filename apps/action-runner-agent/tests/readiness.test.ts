@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   architectureMismatch,
+  CHECK_JOB_RESOURCE_VISIBILITY,
+  jobResourceVisibility,
+  probeInvocation,
+  type CoreLease,
   HEALTHY_READINESS_REFRESH_MS,
   parseRuntimeReport,
   parseWarmPoolStatus,
@@ -180,6 +184,94 @@ describe("prepareProfile", () => {
     });
     assert.equal(result.state, "failed");
     assert.ok(result.checks.some((check) => check.name === "hyperv-validation" && !check.passed));
+  });
+});
+
+const probe = (stdout: string, exitCode = 0, stderr = "") => ({ exitCode, stdout, stderr });
+
+describe("job resource visibility", () => {
+  const PROFILE = {
+    profile: "rc-linux-js",
+    executor: "docker" as const,
+    imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
+    vcpus: 8,
+    memoryMiB: 8192,
+  };
+  const LEASE: CoreLease = { spec: "0-7", exclusive: true, release: () => {} };
+  const GIB8 = String(8192 * 1024 * 1024);
+
+  // The probe runs the limit flags a real Attempt gets, in the order
+  // provision-docker.sh writes them, against the Profile's own image.
+  it("starts the probe with the Attempt's own limit flags", () => {
+    const args = probeInvocation(PROFILE, "8-15");
+    const joined = args.join(" ");
+    assert.match(joined, /--cpus 8 --cpuset-cpus 8-15 --memory 8192m --shm-size 4096m/);
+    assert.match(joined, /--env RC_VCPUS=8 --env RC_MEMORY_MIB=8192/);
+    assert.match(joined, /--rm --pull=never/);
+    assert.ok(args.includes(PROFILE.imageRelease));
+    // A cpuset does not filter /proc/cpuinfo, so asserting on it would fail
+    // forever; nproc is the affinity-derived count a cpuset actually corrects.
+    assert.match(joined, /\$\(nproc\)/);
+    assert.doesNotMatch(joined, /cpuinfo/);
+    // cgroup v1 first: the production Workers are v1 hybrid and Docker uses
+    // the v1 paths there.
+    const v1 = joined.indexOf("/sys/fs/cgroup/memory/memory.limit_in_bytes");
+    const v2 = joined.indexOf("/sys/fs/cgroup/memory.max");
+    assert.ok(v1 > 0 && v2 > v1, "cgroup v2 is consulted before v1");
+  });
+
+  it("passes with the measured numbers in the detail, not a boolean", () => {
+    const check = jobResourceVisibility(PROFILE, LEASE, probe(`8\n8\n8192\n${GIB8}\n`));
+    assert.equal(check.name, CHECK_JOB_RESOURCE_VISIBILITY);
+    assert.equal(check.passed, true);
+    assert.match(check.detail ?? "", /nproc=8 on 0-7/);
+    assert.match(check.detail ?? "", /RC_VCPUS=8, RC_MEMORY_MIB=8192, 8192 MiB enforced/);
+  });
+
+  // The regression this exists to catch: someone drops --cpuset-cpus and the
+  // container goes back to reporting the Worker.
+  it("fails when the container reports the host's core count", () => {
+    const check = jobResourceVisibility(PROFILE, LEASE, probe(`64\n8\n8192\n${GIB8}\n`));
+    assert.equal(check.passed, false);
+    assert.match(check.detail ?? "", /reports 64 CPUs but the Profile grants 8/);
+  });
+
+  it("fails when the job's own limits are missing or wrong", () => {
+    for (const stdout of [`8\nunset\nunset\n${GIB8}\n`, `8\n8\n4096\n${GIB8}\n`]) {
+      const check = jobResourceVisibility(PROFILE, LEASE, probe(stdout));
+      assert.equal(check.passed, false, stdout);
+      assert.match(check.detail ?? "", /RC_VCPUS=|RC_MEMORY_MIB=/);
+    }
+  });
+
+  // RC_MEMORY_MIB is the number a job has to trust, because free(1) will not
+  // tell it. It is only worth trusting if the kernel enforces that number.
+  it("fails when RC_MEMORY_MIB is not the limit the cgroup enforces", () => {
+    const check = jobResourceVisibility(
+      PROFILE,
+      LEASE,
+      probe(`8\n8\n8192\n${512 * 1024 * 1024}\n`),
+    );
+    assert.equal(check.passed, false);
+    assert.match(check.detail ?? "", /enforces 512 MiB/);
+  });
+
+  it("tolerates a host whose memory cgroup cannot be read", () => {
+    const check = jobResourceVisibility(PROFILE, LEASE, probe("8\n8\n8192\nunknown\n"));
+    assert.equal(check.passed, true);
+    assert.match(check.detail ?? "", /cgroup limit unreadable/);
+  });
+
+  it("reports a probe that could not run at all", () => {
+    const check = jobResourceVisibility(PROFILE, LEASE, probe("", 125, "no such image"));
+    assert.equal(check.passed, false);
+    assert.match(check.detail ?? "", /exited 125: no such image/);
+  });
+
+  it("says so when the Worker was too busy to lend the probe a range", () => {
+    const shared: CoreLease = { spec: "0-7", exclusive: false, release: () => {} };
+    const check = jobResourceVisibility(PROFILE, shared, probe(`8\n8\n8192\n${GIB8}\n`));
+    assert.match(check.detail ?? "", /shared: the Worker was busy/);
   });
 });
 

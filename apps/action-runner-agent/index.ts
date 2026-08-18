@@ -12,6 +12,7 @@ import {
   CoreAllocator,
   CoreExhaustedError,
   CPUSET_EXHAUSTED_EXIT,
+  formatCpuset,
   reconcileDockerReservations,
   RECONCILE_INTERVAL_MS,
   withCores,
@@ -32,6 +33,7 @@ import {
   prepareProfile,
   removePreparedFirecrackerProfile,
   warmPoolCapacityError,
+  type CoreLease,
   type PublishedReadinessState,
   type ReadinessFacts,
   type ProfileSpec,
@@ -190,6 +192,28 @@ const cores = new CoreAllocator();
  */
 function coreBoundVcpus(executor: AttemptExecution["executor"], vcpus: number) {
   return executor === "docker" || executor === "firecracker" ? vcpus : undefined;
+}
+
+/**
+ * Borrows a range for readiness's resource-visibility probe from the allocator
+ * that pins real Attempts, so the check measures production's own arithmetic
+ * rather than a hardcoded `0-N`. A busy Worker has nothing to lend; the probe
+ * then shares cores for the second it takes to read `nproc`, and says so in
+ * its detail rather than skipping and reporting a boolean nobody measured.
+ */
+function leaseCoresForProbe(profile: string) {
+  return (vcpus: number): CoreLease => {
+    const key = `readiness:${profile}`;
+    const reservation = cores.has(key) ? undefined : cores.reserve(key, vcpus);
+    if (reservation !== undefined) {
+      return { spec: reservation.spec, exclusive: true, release: () => void cores.release(key) };
+    }
+    return {
+      spec: formatCpuset(Array.from({ length: vcpus }, (_, core) => core)),
+      exclusive: false,
+      release: () => {},
+    };
+  };
 }
 
 function scheduleBenchmark(delayMs: number) {
@@ -618,7 +642,10 @@ async function refreshProfiles() {
               cacheScope: "immutable-image",
               cacheSharedWritable: false,
             }
-          : await prepareProfile(profile, { hostCores: cores.totalCores });
+          : await prepareProfile(profile, {
+              hostCores: cores.totalCores,
+              leaseCores: leaseCoresForProbe(profile.profile),
+            });
         if (profile.executor === "firecracker" && !blockedByPoolCapacity) {
           preparedFirecrackerProfiles.add(profile.profile);
         }
