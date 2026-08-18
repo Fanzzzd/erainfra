@@ -25,6 +25,39 @@ const agentSource = readFileSync(new URL("../provision.ts", import.meta.url), "u
 const PINNED_RUNNER_VERSION = "2.336.0";
 const PINNED_RUNNER_SHA256 = "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162";
 
+// The tooling pins, in the same shape: a version, a digest of the vendor's own
+// artifact, and nothing resolved at build time.
+const PINNED_GIT_VERSION = "2.55.0";
+const PINNED_GIT_WINDOWS_REVISION = "4";
+const PINNED_GIT_SHA256 = "0cbc0b34a74b3aff3ace0910328549155a770e228331b19cb1498218a120e7ff";
+const PINNED_NODE_VERSION = "24.19.0";
+const PINNED_NODE_SHA256 = "f0f66c2a80c08a30a5ab5179ee9ea9e45f9b46289436a8cc87ff833b852db351";
+const PINNED_PYTHON_VERSION = "3.13.15";
+const PINNED_PYTHON_SHA256 = "edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403";
+
+// The guest half of build-image.ps1 is a single-quoted here-string, so the
+// builder expands nothing inside it and it can be read as its own program.
+// Every assertion about what runs on the guest is made against this slice.
+const guestScript = (() => {
+  const start = buildImage.indexOf("$provisionBody = @'");
+  const end = buildImage.indexOf("\n'@", start);
+  if (start < 0 || end < start) throw new Error("build-image.ps1 has no guest here-string");
+  return buildImage.slice(start, end);
+})();
+
+// These scripts explain themselves in comments that quote the very literals
+// some assertions forbid, so anything asserting about what the script *does*
+// reads the code with the prose removed.
+function codeOf(source: string) {
+  return source
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+}
+
+const buildImageCode = codeOf(buildImage);
+const guestCode = codeOf(guestScript);
+
 describe("provision-mac.sh capacity guard", () => {
   it("takes an atomic host slot and refuses to exceed the configured allowance", () => {
     assert.match(provisionMac, /if mkdir "\$candidate"/);
@@ -258,6 +291,232 @@ describe("build-image.ps1 runner pin", () => {
   });
 });
 
+describe("build-image.ps1 tooling pin", () => {
+  // Regression (#48): git, node and python were installed "best effort"
+  // through a package manager that ships on no Windows Server SKU, with the
+  // exit code logged and never checked. On Server 2022 the else branch ran, the
+  // completion marker was written anyway, and the builder blessed a parent
+  // image carrying the runner and no git -- so every job scheduled onto it died
+  // at its first actions/checkout with nothing in the build log to explain it.
+  it("installs nothing through a package manager that may not exist", () => {
+    assert.doesNotMatch(buildImage, /winget/);
+    assert.doesNotMatch(
+      buildImage,
+      /Get-Command \w+ -ErrorAction SilentlyContinue\) \{[\s\S]{0,80}install/,
+    );
+  });
+
+  // #48 proposed resolving node from nodejs.org/dist/index.json and "the newest
+  // matching installer" under python.org/ftp. That is releases/latest by
+  // another name -- the exact regression the runner pin above exists to
+  // prevent, one tool over. python.org/ftp cannot be forbidden outright, since
+  // the pinned installer lives under it; what is forbidden is asking a vendor
+  // which version to take, so every vendor URL has to name a pinned version.
+  it("asks no vendor which version to install", () => {
+    assert.doesNotMatch(buildImage, /nodejs\.org\/dist\/index\.json/);
+    assert.doesNotMatch(buildImage, /releases\/latest/);
+    assert.doesNotMatch(buildImage, /api\.github\.com/);
+    const urls = buildImageCode.match(/https:\/\/[^"'\s)]+/g) ?? [];
+    const vendor = urls.filter((url) => /nodejs\.org|python\.org|github\.com/.test(url));
+    assert.equal(
+      vendor.length,
+      4,
+      `expected one URL per pinned artifact, got ${vendor.join(", ")}`,
+    );
+    for (const url of vendor) {
+      assert.match(url, /\$Rc\w+Version/, `resolved at build time rather than pinned: ${url}`);
+    }
+  });
+
+  it("pins an explicit version and SHA-256 for each tool", () => {
+    assert.match(buildImage, new RegExp(`\\$GitVersion = '${PINNED_GIT_VERSION}'`));
+    assert.match(buildImage, new RegExp(`\\$GitWindowsRevision = ${PINNED_GIT_WINDOWS_REVISION}`));
+    assert.match(buildImage, new RegExp(`\\$GitSha256 = '${PINNED_GIT_SHA256}'`));
+    assert.match(buildImage, new RegExp(`\\$NodeVersion = '${PINNED_NODE_VERSION}'`));
+    assert.match(buildImage, new RegExp(`\\$NodeSha256 = '${PINNED_NODE_SHA256}'`));
+    assert.match(buildImage, new RegExp(`\\$PythonVersion = '${PINNED_PYTHON_VERSION}'`));
+    assert.match(buildImage, new RegExp(`\\$PythonSha256 = '${PINNED_PYTHON_SHA256}'`));
+  });
+
+  // A digest nobody obtained is worse than no digest at all: it reads as
+  // verification while proving that the artifact is whatever arrives.
+  it("pins digests, not placeholders", () => {
+    for (const [tool, sha] of [
+      ["git", PINNED_GIT_SHA256],
+      ["node", PINNED_NODE_SHA256],
+      ["python", PINNED_PYTHON_SHA256],
+    ] as const) {
+      assert.match(sha, /^[0-9a-f]{64}$/, `the ${tool} digest is not 64 lowercase hex characters`);
+      assert.ok(new Set(sha).size > 8, `the ${tool} digest looks like a placeholder`);
+    }
+  });
+
+  it("validates every pin before it is interpolated into the guest script", () => {
+    assert.match(buildImage, /\$GitVersion -notmatch '\^\\d\+\\\.\\d\+\\\.\\d\+\$'/);
+    assert.match(buildImage, /\$NodeVersion -notmatch '\^\\d\+\\\.\\d\+\\\.\\d\+\$'/);
+    assert.match(buildImage, /\$PythonVersion -notmatch '\^\\d\+\\\.\\d\+\\\.\\d\+\$'/);
+    assert.match(buildImage, /\$GitSha256 -notmatch '\^\[0-9a-fA-F\]\{64\}\$'/);
+    assert.match(buildImage, /\$NodeSha256 -notmatch '\^\[0-9a-fA-F\]\{64\}\$'/);
+    assert.match(buildImage, /\$PythonSha256 -notmatch '\^\[0-9a-fA-F\]\{64\}\$'/);
+    const injected = buildImage.indexOf('$provisionPrelude = @"');
+    assert.ok(injected > 0, "the guest prelude is gone");
+    for (const check of [
+      "$GitVersion -notmatch",
+      "$GitWindowsRevision -lt 1",
+      "$GitSha256 -notmatch",
+      "$NodeVersion -notmatch",
+      "$NodeSha256 -notmatch",
+      "$PythonVersion -notmatch",
+      "$PythonSha256 -notmatch",
+    ]) {
+      const at = buildImage.indexOf(check);
+      assert.ok(at > 0 && at < injected, `${check} runs after the value reaches the guest`);
+    }
+  });
+
+  it("hashes every download between fetching it and using it", () => {
+    const helper = guestCode.slice(
+      guestCode.indexOf("function Save-RcPinnedDownload"),
+      guestCode.indexOf("function Install-RcPinnedTool"),
+    );
+    const fetch = helper.indexOf("Invoke-WebRequest -Uri $Url -OutFile $Path");
+    const hash = helper.indexOf("Get-FileHash -Path $Path -Algorithm SHA256");
+    const refuse = helper.indexOf("SHA-256 mismatch: expected $Sha256, got $actual");
+    assert.ok(fetch >= 0, "the helper does not download");
+    assert.ok(hash > fetch, "the helper hashes before it downloads");
+    assert.ok(refuse > hash, "the helper does not refuse a mismatch");
+    assert.match(helper, /Remove-Item \$Path -Force -ErrorAction SilentlyContinue/);
+
+    for (const [tool, sha] of [
+      ["git", "$RcGitSha256"],
+      ["node", "$RcNodeSha256"],
+      ["python", "$RcPythonSha256"],
+    ] as const) {
+      const verified = guestScript.indexOf(
+        `Save-RcPinnedDownload $${tool}Url $${tool}Installer ${sha}`,
+      );
+      const installed = guestScript.indexOf(`Install-RcPinnedTool '${tool}'`);
+      assert.ok(verified > 0, `${tool} is not fetched through the verifying helper`);
+      assert.ok(installed > verified, `${tool} is installed before its digest is checked`);
+    }
+    // The runner archive keeps its own inline check; nothing else may fetch.
+    assert.equal(guestCode.split("Invoke-WebRequest").length - 1, 2);
+  });
+
+  // The other half of #48's complaint: $ErrorActionPreference does not apply to
+  // native exit codes. These installers are also GUI-subsystem binaries, which
+  // the call operator does not wait for, so the code has to be read off a
+  // process that was waited on -- an exit code from a process still running is
+  // the same missing measurement in a different disguise.
+  it("waits for every installer and checks the code it returned", () => {
+    assert.match(
+      guestScript,
+      /Start-Process -FilePath \$Program -ArgumentList \$ArgumentList -Wait -PassThru/,
+    );
+    assert.match(guestScript, /\$code = \$process\.ExitCode/);
+    assert.match(guestScript, /if \(\$code -ne 0 -and \$code -ne 3010\) \{/);
+    assert.match(guestScript, /throw "the \$Name installer exited with \$code"/);
+    for (const line of buildImage.split("\n")) {
+      if (!/Start-Process/.test(line) || /^\s*#/.test(line)) continue;
+      assert.match(line, /-Wait/, `an installer is started without waiting: ${line.trim()}`);
+    }
+  });
+
+  // Installer PATH edits are visible only to sessions started afterwards, so
+  // probing this process's $env:PATH would prove nothing about the image. The
+  // @(...) wrap and the .Count test are load-bearing: a one-element pipeline
+  // result is not an array, so -not $found misreads the case that matters.
+  it("proves each tool reached the machine PATH, not this session's", () => {
+    assert.match(guestScript, /\[Environment\]::GetEnvironmentVariable\('Path', 'Machine'\)/);
+    assert.match(guestScript, /foreach \(\$tool in \$pinnedTools\)/);
+    for (const exe of ["git.exe", "node.exe", "python.exe"]) {
+      assert.match(guestScript, new RegExp(`Exe = '${exe.replace(".", "\\.")}'`));
+    }
+    assert.match(guestScript, /\$found = @\(\$machinePath\.Split\(';'\)/);
+    assert.match(
+      guestScript,
+      /if \(\$found\.Count -eq 0\) \{ throw "\$exe is not on the machine PATH after provisioning" \}/,
+    );
+    assert.doesNotMatch(guestCode, /\$env:PATH/);
+  });
+
+  it("records the version and the path of everything it installed", () => {
+    assert.match(guestScript, /\$reported = @\(& \$resolved --version\)/);
+    assert.match(guestScript, /"\$exe -> \$resolved \(\$\(\$reported\[0\]\)\)"/);
+    assert.match(buildImage, /gitVersion = "\$GitVersion\.windows\.\$GitWindowsRevision"/);
+    assert.match(buildImage, /gitSha256 = \$GitSha256\.ToLowerInvariant\(\)/);
+    assert.match(buildImage, /nodeVersion = \$NodeVersion/);
+    assert.match(buildImage, /nodeSha256 = \$NodeSha256\.ToLowerInvariant\(\)/);
+    assert.match(buildImage, /pythonVersion = \$PythonVersion/);
+    assert.match(buildImage, /pythonSha256 = \$PythonSha256\.ToLowerInvariant\(\)/);
+  });
+
+  // A tool that answers is not necessarily the tool that was pinned. An
+  // installer that no-ops over an existing copy still exits 0, and a base image
+  // that already carried the tool would leave it first on the machine PATH --
+  // and the manifest would then record a version the image does not have, which
+  // is the same lie as recording one it does not carry at all. Raised by
+  // CodeRabbit on #85 and confirmed on the merits.
+  it("rejects a tool whose reported version is not the pinned one", () => {
+    assert.match(
+      guestCode,
+      /Exe = 'git\.exe'; Version = "\$RcGitVersion\.windows\.\$RcGitWindowsRevision"/,
+    );
+    assert.match(guestCode, /Exe = 'node\.exe'; Version = "v\$RcNodeVersion"/);
+    assert.match(guestCode, /Exe = 'python\.exe'; Version = \$RcPythonVersion/);
+    assert.match(
+      guestCode,
+      /if \(\$reported\.Count -eq 0 -or \$reported\[0\] -notlike "\*\$\(\$tool\.Version\)\*"\) \{/,
+    );
+    assert.match(
+      guestCode,
+      /throw "\$resolved reports '\$\(\$reported\[0\]\)', not the pinned \$\(\$tool\.Version\)"/,
+    );
+
+    // Every name in the loop carries a version, so a tool cannot be added with
+    // nothing to check it against -- a lookup that missed would compare against
+    // an empty pattern, which matches everything.
+    const names = [...guestCode.matchAll(/Exe = '([^']+)'/g)].map((m) => m[1]);
+    const versions = [...guestCode.matchAll(/Exe = '[^']+'; Version = /g)];
+    assert.deepEqual(names, ["git.exe", "node.exe", "python.exe"]);
+    assert.equal(versions.length, names.length);
+
+    // And it runs before the image is blessed.
+    const check = guestCode.indexOf("not the pinned");
+    const marker = guestCode.indexOf("New-Item -ItemType File -Path 'C:\\rc-provision-complete'");
+    assert.ok(check > 0, "nothing compares the reported version against the pin");
+    assert.ok(marker > check, "the version check runs after the image is blessed");
+  });
+
+  // #48 restated as an invariant, and the test that matters most here: the
+  // bless marker is a claim that the image carries what it promises, so no
+  // path through the guest may reach it with a tool missing.
+  it("cannot write the bless marker when a tool is missing", () => {
+    const missing = guestCode.indexOf("is not on the machine PATH after provisioning");
+    const marker = guestCode.indexOf("New-Item -ItemType File -Path 'C:\\rc-provision-complete'");
+    const failed = guestCode.indexOf("} catch {");
+    assert.ok(missing > 0, "nothing asserts that a tool arrived");
+    assert.ok(marker > missing, "the marker is written before the tools are proven");
+    assert.ok(failed > marker, "the marker is written outside the guarded block");
+
+    for (const tool of ["'git'", "'node'", "'python'"]) {
+      const installed = guestCode.indexOf(`Install-RcPinnedTool ${tool}`);
+      assert.ok(installed > 0 && installed < marker, `${tool} is installed after the marker`);
+    }
+
+    // The one failure path writes the failure marker and nothing else, and the
+    // completion marker is written in exactly one place.
+    const onFailure = guestCode.slice(failed);
+    assert.doesNotMatch(onFailure, /rc-provision-complete/);
+    assert.match(onFailure, /rc-provision-failed/);
+    assert.equal(guestCode.split("rc-provision-complete").length - 1, 1);
+
+    // And the host still refuses to bless an image whose guest never got there.
+    assert.match(buildImage, /\$ok = \(Test-Path "\$\{osDrive\}:\\rc-provision-complete"\)/);
+    assert.match(buildImage, /if \(-not \$ok\) \{\s*\n\s*throw /);
+  });
+});
+
 describe("build-image.ps1 image secrets", () => {
   // Regression: the image was built with an unattend AutoLogon block, which
   // Windows persists as a plaintext password under HKLM\...\Winlogon, and the
@@ -338,6 +597,14 @@ describe("build-image.ps1 Windows PowerShell 5.1 compatibility", () => {
       buildImage,
       /try \{ \$rng\.GetBytes\(\$bytes\) \} finally \{ \$rng\.Dispose\(\) \}/,
     );
+  });
+
+  // The guest runs the inbox shell -- Windows PowerShell 5.1 on the .NET
+  // Framework -- and installs nothing that could provide a newer one.
+  it("uses no PowerShell 7 syntax and expects no pwsh", () => {
+    assert.doesNotMatch(buildImage, /\?\?/);
+    assert.doesNotMatch(buildImage, /\$\w+\?\./);
+    assert.doesNotMatch(buildImage, /\bpwsh\b/);
   });
 });
 
