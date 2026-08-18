@@ -1,0 +1,21 @@
+# The same four variables, read from inside a JavaScript action step.
+#
+# This exists because every real cache client is a JavaScript action --
+# actions/cache, actions/setup-node, actions/setup-go all are -- and the first
+# live probe run measured `run:` steps only. Those are not the same environment:
+# run 32108617455 found all four variables UNSET in a `run:` step on rc-e2e,
+# while actions/upload-artifact was uploading artifacts from the same Profile in
+# the same hour, which it cannot do without ACTIONS_RESULTS_URL and
+# ACTIONS_RUNTIME_TOKEN. So the credentials exist and a script step does not see
+# them, and a probe that only ever asked a script step was asking the wrong
+# process.
+name: Cache environment tier, as an action step sees it
+description: Records the four Actions cache variables from a JavaScript action step.
+inputs:
+  out:
+    description: Path to write the tier snapshot to, one TAB-separated line per variable.
+    required: true
+runs:
+  # The pinned runner is actions-runner 2.336.0, which ships node24.
+  using: node24
+  main: index.mjs

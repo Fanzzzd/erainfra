@@ -124,40 +124,93 @@ grep -q '"path":"/t2/_apis/artifactcache/cache"' "$work/capture.jsonl" ||
 kill "$server_pid"
 server_pid=""
 
-# Now the verdict. Two fixtures: one where the runner overwrote a tier, and one
-# where the tier survived. Both have to render, and neither may fail the job.
-printf 'ACTIONS_CACHE_URL\tunset\nACTIONS_RUNTIME_TOKEN\tunset\n' > "$work/t0.txt"
-printf 'ACTIONS_CACHE_URL\thttps://github.example/_apis/artifactcache/\n' > "$work/t1.txt"
-printf 'ACTIONS_CACHE_URL\thttps://github.example/_apis/artifactcache/\n' > "$work/t2.txt"
-printf 'ACTIONS_CACHE_URL\t%st3/\nACTIONS_RUNTIME_TOKEN\tpresent, 812 bytes\n' "$base" \
-  > "$work/t3.txt"
 
-printf 'success\n' > "$work/t2-client.txt"
-printf 'success\n' > "$work/t3-client.txt"
+# The two renderers. tiers.sh reads a script step's environment in shell and
+# env-action reads an action step's in Node, and the verdict puts their output
+# in one table -- so they have to agree character for character on every shape,
+# including the two that are easy to conflate (unset and set-but-empty) and the
+# one that must never print a value.
+# Every one of the four names is controlled explicitly, because this test also
+# runs inside a GitHub job where some of them are already set.
+env -u ACTIONS_CACHE_SERVICE_V2 \
+  ACTIONS_CACHE_URL="http://127.0.0.1:9/t2/" \
+  ACTIONS_RESULTS_URL="" \
+  ACTIONS_RUNTIME_TOKEN="0123456789" \
+  sh -c 'cd "$1" && . ./.github/probes/tiers.sh && snapshot_tier "$2"' \
+  _ "$root" "$work/render-shell.txt"
+
+env -u ACTIONS_CACHE_SERVICE_V2 \
+  ACTIONS_CACHE_URL="http://127.0.0.1:9/t2/" \
+  ACTIONS_RESULTS_URL="" \
+  ACTIONS_RUNTIME_TOKEN="0123456789" \
+  INPUT_OUT="$work/render-action.txt" \
+  node "$root/.github/probes/env-action/index.mjs" > /dev/null
+
+cmp -s "$work/render-shell.txt" "$work/render-action.txt" ||
+  fail "the shell and action renderers disagree:
+$(diff -u "$work/render-shell.txt" "$work/render-action.txt" || true)"
+grep -q 'ACTIONS_CACHE_SERVICE_V2	unset' "$work/render-shell.txt" ||
+  fail "an absent variable was not rendered as unset"
+grep -q 'ACTIONS_RESULTS_URL	set-but-empty' "$work/render-shell.txt" ||
+  fail "a variable set to the empty string was not distinguished from an absent one"
+grep -q 'ACTIONS_RUNTIME_TOKEN	present, 10 bytes' "$work/render-shell.txt" ||
+  fail "the runtime token was not rendered by length"
+if grep -q '0123456789' "$work/render-action.txt"; then
+  fail "the action renderer wrote the runtime token's value"
+fi
+
+# Now the verdict. The first fixture is this iteration's whole reason for
+# existing: an override that holds in a script step and loses in an action step.
+# Every real cache client is an action step, so those two are not the same
+# finding and the verdict has to say so out loud.
+github=https://acghubeus1.actions.githubusercontent.com/x/
+printf 'ACTIONS_CACHE_URL\tunset\nACTIONS_RUNTIME_TOKEN\tunset\n' > "$work/t0.txt"
+printf 'ACTIONS_CACHE_URL\tunset\nACTIONS_RUNTIME_TOKEN\tunset\n' > "$work/t1.txt"
+printf 'ACTIONS_CACHE_URL\t%s\nACTIONS_RUNTIME_TOKEN\tpresent, 812 bytes\n' "$github" \
+  > "$work/t1a.txt"
+printf 'ACTIONS_CACHE_URL\t%st2/\n' "$base" > "$work/t2.txt"
+printf 'ACTIONS_CACHE_URL\t%s\n' "$github" > "$work/t2a.txt"
+printf 'ACTIONS_CACHE_URL\t%st3/\n' "$base" > "$work/t3.txt"
+printf 'ACTIONS_CACHE_URL\t%st3/\n' "$base" > "$work/t3a.txt"
+for tier in t2 t2tok t3 t3tok; do
+  printf 'success\n' > "$work/$tier-client.txt"
+done
 
 sh "$root/.github/probes/verdict.sh" "$work" > "$work/verdict.md" ||
   fail "the verdict exited non-zero on a measured result"
 
-grep -q 'T2\*\*, a step-level `env:` block: OVERWRITTEN' "$work/verdict.md" ||
-  fail "the verdict did not report the overwritten tier"
-grep -q 'T3\*\*, written through `\$GITHUB_ENV`: the value set at this tier SURVIVED' \
-  "$work/verdict.md" || fail "the verdict did not report the surviving tier"
-grep -q 'ACTIONS_RESULTS_URL. | not measured' "$work/verdict.md" ||
+grep -q 'script step SURVIVED, action step OVERWRITTEN' "$work/verdict.md" ||
+  fail "the verdict did not separate the script tier from the action tier"
+grep -q 'cannot deliver a cache endpoint to one' "$work/verdict.md" ||
+  fail "the verdict did not draw the consequence of an action step losing the override"
+grep -q 'T3, written through `\$GITHUB_ENV`\*\*: script step SURVIVED, action step SURVIVED' \
+  "$work/verdict.md" || fail "the verdict did not report a tier that survived in both step kinds"
+grep -q 'T1 \*\*action\*\* step, no override' "$work/verdict.md" ||
+  fail "the action tier is missing from the table"
+# A variable no snapshot recorded reads as "not measured", which is not the same
+# as "unset": the first says the step never ran, the second is a finding.
+grep -q '| not measured |' "$work/verdict.md" ||
   fail "a variable no tier measured was not reported as unmeasured"
+grep -q '| unset |' "$work/verdict.md" ||
+  fail "a variable a tier measured as absent was not reported as unset"
 
-# The client result is a SEPARATE claim from the tier snapshot above, and it has
-# three shapes rather than two. The requests driven at the top of this file went
-# to both prefixes, so both tiers read as honoured here.
-grep -q '\*\*t2\*\*: the client HONOURED this tier' "$work/verdict.md" ||
-  fail "the verdict did not report that a client reached the t2 prefix"
-grep -q '\*\*t3\*\*: the client HONOURED this tier' "$work/verdict.md" ||
-  fail "the verdict did not report that a client reached the t3 prefix"
+# The client result is a SEPARATE claim from the tier snapshot, and it has three
+# shapes rather than two. The requests driven at the top of this file went to
+# the t2 and t3 prefixes, so those read as honoured and the two token variants
+# have nothing.
+grep -q '\*\*t2\*\* (step `env:`, no runtime token): the client HONOURED this tier' \
+  "$work/verdict.md" || fail "the verdict did not report a client reaching the t2 prefix"
+grep -q '\*\*t3\*\* (`\$GITHUB_ENV`, no runtime token): the client HONOURED this tier' \
+  "$work/verdict.md" || fail "the verdict did not report a client reaching the t3 prefix"
+grep -q '\*\*t2tok\*\* (step `env:`, dummy runtime token): the client WENT ELSEWHERE' \
+  "$work/verdict.md" || fail "the dummy-token client run is not reported"
+grep -q '\*\*t3tok\*\*' "$work/verdict.md" ||
+  fail "the second dummy-token client run is not reported"
 
-# The other two shapes, and the distinction that matters: an empty capture log
-# means the client went elsewhere ONLY if the client actually ran. A client step
-# that never completed -- both are continue-on-error -- proves nothing about the
-# environment, and reporting that as an overwritten tier would be inventing a
-# measurement.
+# An empty capture log means the client went elsewhere ONLY if the client
+# actually ran. A client step that never completed -- all four are
+# continue-on-error -- proves nothing about the environment, and reporting that
+# as an overwritten tier would be inventing a measurement.
 : > "$work/capture.jsonl"
 printf 'success\n' > "$work/t2-client.txt"
 printf 'failure\n' > "$work/t3-client.txt"
@@ -165,26 +218,54 @@ sh "$root/.github/probes/verdict.sh" "$work" > "$work/verdict-empty.md" ||
   fail "the verdict exited non-zero when nothing reached the endpoint"
 grep -q 'The capture log is empty' "$work/verdict-empty.md" ||
   fail "an empty capture log was not reported"
-grep -q '\*\*t2\*\*: the client WENT ELSEWHERE' "$work/verdict-empty.md" ||
+grep -q '\*\*t2\*\* (step `env:`, no runtime token): the client WENT ELSEWHERE' \
+  "$work/verdict-empty.md" ||
   fail "a client that ran and sent nothing to the probe was not reported as such"
-grep -q '\*\*t3\*\*: INCONCLUSIVE' "$work/verdict-empty.md" ||
+grep -q '\*\*t3\*\* (`\$GITHUB_ENV`, no runtime token): INCONCLUSIVE' "$work/verdict-empty.md" ||
   fail "a client step that never completed was reported as a measurement"
-if grep -q '\*\*t3\*\*: the client WENT ELSEWHERE' "$work/verdict-empty.md"; then
+if grep -q '\*\*t3\*\* (`\$GITHUB_ENV`, no runtime token): the client WENT ELSEWHERE' \
+  "$work/verdict-empty.md"; then
   fail "an incomplete client step was reported as evidence about the tier"
 fi
 
 # The tier snapshot must be unchanged by any of that: it is read from the step
 # environment and does not depend on a client at all.
-grep -q 'T3\*\*, written through `\$GITHUB_ENV`: the value set at this tier SURVIVED' \
-  "$work/verdict-empty.md" ||
+grep -q 'script step SURVIVED, action step OVERWRITTEN' "$work/verdict-empty.md" ||
   fail "the tier verdict changed when the client result did"
 
 # Nothing recorded at all -- the job died before the outcomes were written -- is
 # inconclusive too, and must not read as "the client went elsewhere".
-rm -f "$work/t2-client.txt" "$work/t3-client.txt"
+rm -f "$work"/t2-client.txt "$work"/t2tok-client.txt "$work"/t3-client.txt "$work"/t3tok-client.txt
 sh "$root/.github/probes/verdict.sh" "$work" > "$work/verdict-unrecorded.md" ||
   fail "the verdict exited non-zero with no client outcome recorded"
-grep -q '\*\*t2\*\*: INCONCLUSIVE' "$work/verdict-unrecorded.md" ||
+grep -q '\*\*t2\*\* (step `env:`, no runtime token): INCONCLUSIVE' "$work/verdict-unrecorded.md" ||
   fail "an unrecorded client outcome was not reported as inconclusive"
+
+# The artifact control. Its whole job is to stop "a script step saw nothing"
+# from being read as "this fleet injects nothing", so both of its outcomes have
+# to render and the working one has to say what it costs the design.
+printf 'success\n' > "$work/upload.txt"
+printf 'success\n' > "$work/download.txt"
+printf 'match\n' > "$work/roundtrip.txt"
+sh "$root/.github/probes/artifact-control.sh" "$work" > "$work/control.md" ||
+  fail "the artifact control exited non-zero on a working round trip"
+grep -q 'The artifact path WORKS on this Profile' "$work/control.md" ||
+  fail "a working artifact round trip was not reported"
+grep -q 'same URL behind the' "$work/control.md" ||
+  fail "the control did not state what repointing ACTIONS_RESULTS_URL would cost"
+grep -q 'present, 812 bytes' "$work/control.md" ||
+  fail "the control did not report what an action step is given"
+if grep -q "$github" "$work/control.md" && ! grep -q 'ACTIONS_CACHE_URL' "$work/control.md"; then
+  fail "the control table is missing its variable column"
+fi
+
+printf 'failure\n' > "$work/upload.txt"
+printf 'no-match\n' > "$work/roundtrip.txt"
+sh "$root/.github/probes/artifact-control.sh" "$work" > "$work/control-broken.md" ||
+  fail "the artifact control exited non-zero on a broken round trip"
+grep -q 'DID NOT complete on this Profile' "$work/control-broken.md" ||
+  fail "a broken artifact round trip was not reported"
+grep -q 'filed separately' "$work/control-broken.md" ||
+  fail "a broken artifact path was not called out as its own finding"
 
 echo "probe self-test OK"
