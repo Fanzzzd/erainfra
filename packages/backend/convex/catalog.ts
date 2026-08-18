@@ -42,11 +42,15 @@ const MACOS_TAHOE_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest";
 // name of a parent VHDX the machine keeps under %RC_HOME%\images\<name>.vhdx.
 // provision-win.ps1 clones it into a differencing disk per job.
 //
-// Every Windows entry is preview-gated. The installer onboards macOS and Linux
-// only, and neither the Hyper-V provisioner nor the image builder has been run
-// against a real Windows host, so these labels must not look like capacity a
-// workflow can rely on. Drop `preview` once a supported Windows onboarding path
-// ships and the provisioner has been validated.
+// Every Windows entry is preview-gated, and stays that way. #49 shipped the
+// onboarding half — /install.ps1 -Role worker installs a Windows Worker from the
+// same pinned archive as every other platform — so the first of the two reasons
+// is gone. The second is not: neither the Hyper-V provisioner nor the image
+// builder has ever run against a real Windows host, and readiness.ts refuses to
+// report a `hyperv` Profile ready for exactly that reason. A label dropped here
+// would promise capacity the control plane still declines to advertise. Drop
+// `preview` when a Windows Worker has run a job end to end and that refusal is
+// lifted with it, not before.
 const WINDOWS_2025_IMAGE = "rc-win2025";
 const WINDOWS_2022_IMAGE = "rc-win2022";
 

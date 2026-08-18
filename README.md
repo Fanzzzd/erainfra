@@ -67,7 +67,7 @@ can run one item instead of becoming unusable, while an undersized host still fa
 | Linux x64/ARM64     | Docker                             | Bootstrap path for trusted repositories; digest-pinned and ephemeral. |
 | Linux x64/ARM64     | Firecracker + containerd devmapper | Strong isolation path; requires KVM and dedicated runtime storage.    |
 | Apple Silicon macOS | Tart                               | Supported execution path, capped at two guests by default.            |
-| Windows             | Hyper-V                            | Preview only; not advertised ready by the Worker.                     |
+| Windows x64         | Hyper-V                            | One-command onboarding; execution preview, never advertised ready.    |
 
 Both Linux executors use the new Profile and scale-set protocol. Docker deliberately has no host
 bind mounts, privileged mode, Docker socket, or shared volume, but it shares the host kernel and
@@ -252,7 +252,7 @@ any Worker.
 
 ## Add Workers
 
-From **Machines → Add machine**, run the generated command on a Linux or macOS host. The installer:
+From **Machines → Add machine**, pick the host's OS and run the generated command. The installer:
 
 1. detects OS, architecture, CPU, memory, and a conservative slot count;
 2. downloads the exact product release and verifies both published and deployment-pinned SHA-256;
@@ -357,6 +357,36 @@ Tart bridge and is not used when an earlier pin is available. An attacker presen
 can poison the persisted pin, and later strict checks do not authenticate it; verify the file under
 `~/.runner-center/known_hosts.d` through a trusted guest console or working vsock, and if it is wrong,
 restore attestation, remove the pin, and rerun the job to enroll the attested key.
+
+### Windows Worker prerequisites
+
+Windows cannot run the bash installer, so the same command comes from `/install.ps1` instead. The
+dashboard's OS toggle renders it; run it on an x64 Windows Server host:
+
+```powershell
+& ([scriptblock]::Create((irm https://<site>/install.ps1))) -Role worker -Token rcreg_xxx
+```
+
+`-Role worker` is explicit because that URL also serves the Node installer and defaults to it. The
+supply chain is the bash installer's, unchanged: the pinned `erainfra-agent-<version>.tar.gz`, its
+published SHA-256, and this deployment's own pin as the trust root — an archive that matches the
+release but not the pin is refused and nothing is installed. `npm ci` runs against the lockfile the
+release shipped; nothing is compiled on the machine.
+
+A fresh Windows Server has no Node.js, so the installer fetches the official Node 22 `win-x64`
+build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before running it —
+the same source and the same check the POSIX installer already uses when a host has no runtime.
+Everything lands under `%USERPROFILE%\.runner-center`, which is the `RC_HOME` the Hyper-V
+provisioner and `build-image.ps1` already default to. An elevated shell gets a WinSW-backed Windows
+service that starts at boot; an unelevated one gets a logon Scheduled Task. `-Update`, `-Version`,
+`-Sha256`, and rollback through `agent.previous` work exactly as they do on POSIX, and `rc.ps1`
+under `%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
+
+Hyper-V and its PowerShell module have to be enabled, and a parent VHDX has to exist under
+`%RC_HOME%\images\<name>.vhdx` — `provisioners/build-image.ps1` produces one. **Windows catalog
+labels remain preview-gated.** Onboarding is supported; execution is not yet validated, and the
+control plane still refuses to advertise a Hyper-V Worker as ready, so a Windows Worker enrols and
+reports in but is not scheduled onto.
 
 ## Target a Profile from GitHub Actions
 

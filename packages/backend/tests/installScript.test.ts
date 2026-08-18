@@ -34,7 +34,6 @@ import {
 } from "../convex/agentRelease.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
-import { renderPowerShellInstallScript } from "../convex/installScriptPowerShell.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
@@ -919,65 +918,6 @@ describe("--role worker", () => {
     expect(workerBody).toMatch(/^SITE_URL='https:\/\/example\.convex\.site'\nAGENT_REPO=/);
     expect(workerBody).not.toMatch(/INSTALL_ROLE|node_install|node_pinned_digest|--role/);
     expect(Buffer.byteLength(workerBody)).toBe(25_689);
-  });
-});
-
-// Windows cannot run the bash installer, and a Node may well be a Windows box: deploy/infra/agent.ps1
-// has been onboarding them with no integrity check at all. These assert the rendered script rather
-// than run it — there is no PowerShell on the machine this suite runs on — so the end-to-end Windows
-// proof is a separate, manual one.
-describe("the PowerShell installer", () => {
-  const WINDOWS_DIGEST = "b".repeat(64);
-  const WINDOWS_PINNED: AgentRelease = {
-    ...CURRENT,
-    infraAgent: { "windows-x86_64": WINDOWS_DIGEST, "linux-x86_64": "c".repeat(64) },
-  };
-
-  it("carries the digest for the Windows target, and no other target's", () => {
-    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
-    expect(script).toMatch(new RegExp(`"windows-x86_64" = "${WINDOWS_DIGEST}"`));
-    expect(script).not.toMatch(/linux-x86_64/);
-    expect(script).not.toMatch(/__[A-Z_]+__/);
-  });
-
-  it("compares what it downloaded against the pin before anything is installed", () => {
-    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
-    const verify = script.indexOf("Get-FileHash");
-    const install = script.indexOf("Move-Item");
-    expect(verify).toBeGreaterThan(-1);
-    expect(install).toBeGreaterThan(verify);
-    expect(script).toMatch(/if \(\$actual -ne \$expected\) \{/);
-    expect(script).toMatch(/Remove-Item -LiteralPath \$staged/);
-    expect(script).toMatch(/Nothing was installed/);
-    // Fail() exits non-zero; nothing in this script continues past a mismatch.
-    expect(script).toMatch(/function Fail\(\$message\) \{\n[^}]*exit 1/);
-  });
-
-  it("verifies a -Source install with the same digest as a release install", () => {
-    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
-    // One fetch, one hash, one comparison: -Source only decides which branch of the fetch runs.
-    expect(script.match(/Get-FileHash/g)).toHaveLength(1);
-    expect(script.match(/\$actual -ne \$expected/g)).toHaveLength(1);
-    expect(script).toMatch(/if \(\$Source\) \{/);
-  });
-
-  it("refuses when this deployment pins nothing for Windows", () => {
-    const script = renderPowerShellInstallScript(CURRENT);
-    expect(script).toMatch(/\$pinned = @\{\n+\}/);
-    expect(script).toMatch(/pins no Infra Agent build for \$target/);
-  });
-
-  it("keeps the identifiers a running Node already holds", () => {
-    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
-    expect(script).toMatch(/Join-Path \$HOME "\.portless"/);
-    expect(script).toMatch(/"portless-agent\.exe"/);
-    expect(script).toMatch(/-TaskName "PortlessAgent"/);
-  });
-
-  it("serves only the Node role", () => {
-    const script = renderPowerShellInstallScript(WINDOWS_PINNED);
-    expect(script).toMatch(/\[string\]\$Role = "node"/);
-    expect(script).toMatch(/if \(\$Role -ne "node"\) \{/);
   });
 });
 

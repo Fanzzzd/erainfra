@@ -471,7 +471,7 @@ case "$(uname -s)" in
     NODE_OS='linux'
     ;;
   *)
-    fail 'This installer onboards macOS and Linux hosts only. Windows is a preview with no supported onboarding path yet; see the Windows section of the README.'
+    fail 'This installer onboards macOS and Linux hosts only. On Windows, run the PowerShell installer this deployment serves at /install.ps1 with -Role worker.'
     ;;
 esac
 

@@ -60,11 +60,25 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/")({ component: MachinesPage });
 
 type RegistrationCommand = {
-  command: string;
+  commands: Record<InstallOs, string>;
   issuedAt: number;
   expiresAt: number;
   knownMachineIds: string[];
 };
+
+/**
+ * Which installer body a Worker command is for. Not the same axis as the machine's OS: `posix`
+ * covers Linux and macOS because one bash script onboards both, and `win` is the PowerShell body
+ * `/install.ps1` serves, because Windows cannot run the other one.
+ */
+type InstallOs = "posix" | "win";
+
+const INSTALL_OS_LABEL: Record<InstallOs, string> = {
+  posix: "Linux or macOS",
+  win: "Windows",
+};
+
+const INSTALL_OS_ORDER: readonly InstallOs[] = ["posix", "win"];
 
 const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
 
@@ -83,6 +97,7 @@ function MachinesPage() {
   const now = useNow();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [role, setRole] = useState<MachineRole>("worker");
+  const [installOs, setInstallOs] = useState<InstallOs>("posix");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [registration, setRegistration] = useState<RegistrationCommand>();
@@ -122,7 +137,13 @@ function MachinesPage() {
       const result = await createRegistrationToken({});
       const siteUrl = convexSiteUrl();
       setRegistration({
-        command: `curl -fsSL ${siteUrl}/install | bash -s -- --token ${result.token}`,
+        commands: {
+          posix: `curl -fsSL ${siteUrl}/install | bash -s -- --token ${result.token}`,
+          // -Role worker is explicit because /install.ps1 defaults to the Node role: that URL has
+          // been serving the Node installer since before it carried a Worker one, and commands
+          // already in operators' hands omit the flag.
+          win: `& ([scriptblock]::Create((irm ${siteUrl}/install.ps1))) -Role worker -Token ${result.token}`,
+        },
         issuedAt: result.expiresAt - REGISTRATION_TTL_MS,
         expiresAt: result.expiresAt,
         knownMachineIds: (machines ?? []).map((machine) => machine._id),
@@ -162,6 +183,13 @@ function MachinesPage() {
 
   // A Node's enrollment token is issued by the Hub it reports to, not by this control plane, so
   // switching to that role neither needs nor spends a registration token.
+  // Switching which body to run does not touch the registration: the token is already minted and
+  // both commands carry the same one.
+  function changeInstallOs(next: InstallOs) {
+    setInstallOs(next);
+    setCopiedCommand(undefined);
+  }
+
   function changeRole(next: MachineRole) {
     setRole(next);
     setCopiedCommand(undefined);
@@ -227,24 +255,55 @@ function MachinesPage() {
                             {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))} min
                           </span>
                         </div>
-                        <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-                          <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
-                            <code>{registration.command}</code>
-                          </pre>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="absolute right-1.5 top-1.5 size-8"
-                            aria-label="Copy install command"
-                            onClick={() => void copyCommand(registration.command)}
-                          >
-                            {copiedCommand === registration.command ? <Check /> : <Clipboard />}
-                          </Button>
-                        </div>
+                        {/* One registration token, two installer bodies. The token is the same
+                            either way, so switching here re-renders the command and never spends a
+                            second token. */}
+                        <Tabs
+                          value={installOs}
+                          onValueChange={(value) => changeInstallOs(value as InstallOs)}
+                        >
+                          <TabsList>
+                            {INSTALL_OS_ORDER.map((value) => (
+                              <TabsTrigger key={value} value={value}>
+                                {INSTALL_OS_LABEL[value]}
+                              </TabsTrigger>
+                            ))}
+                          </TabsList>
+                          {INSTALL_OS_ORDER.map((value) => (
+                            <TabsContent key={value} value={value}>
+                              <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
+                                <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
+                                  <code>{registration.commands[value]}</code>
+                                </pre>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-1.5 top-1.5 size-8"
+                                  aria-label={`Copy the ${INSTALL_OS_LABEL[value]} install command`}
+                                  onClick={() => void copyCommand(registration.commands[value])}
+                                >
+                                  {copiedCommand === registration.commands[value] ? (
+                                    <Check />
+                                  ) : (
+                                    <Clipboard />
+                                  )}
+                                </Button>
+                              </div>
+                            </TabsContent>
+                          ))}
+                        </Tabs>
                         <p className="text-xs leading-5 text-muted-foreground">
                           The registration token expires in 15 minutes and can be used once.
                         </p>
+                        {installOs === "win" && (
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Run it from an elevated PowerShell to get a boot-time Windows service;
+                            an unelevated shell gets a logon Scheduled Task instead. Windows job
+                            Profiles stay preview-gated either way, so a Windows Worker enrols but
+                            is not scheduled onto yet.
+                          </p>
+                        )}
                       </div>
 
                       {connectedMachine ? (
@@ -277,17 +336,24 @@ function MachinesPage() {
                         <div className="mt-3 space-y-2 leading-5">
                           <p>
                             Append{" "}
-                            <code className="text-secondary-foreground">--name build-linux-01</code>{" "}
+                            <code className="text-secondary-foreground">
+                              {installOs === "win" ? "-Name build-win-01" : "--name build-linux-01"}
+                            </code>{" "}
                             to override the hostname.
                           </p>
                           <p>
                             Append{" "}
-                            <code className="text-secondary-foreground">--labels gpu,docker</code>{" "}
+                            <code className="text-secondary-foreground">
+                              {installOs === "win" ? "-Labels gpu,hyperv" : "--labels gpu,docker"}
+                            </code>{" "}
                             for machine capability labels.
                           </p>
                           <p>
-                            Append <code className="text-secondary-foreground">--slots 2</code> to
-                            override detected concurrency.
+                            Append{" "}
+                            <code className="text-secondary-foreground">
+                              {installOs === "win" ? "-Slots 2" : "--slots 2"}
+                            </code>{" "}
+                            to override detected concurrency.
                           </p>
                         </div>
                       </details>
@@ -320,9 +386,14 @@ function MachinesPage() {
                 registration &&
                 !connectedMachine &&
                 now < registration.expiresAt && (
-                  <Button type="button" onClick={() => void copyCommand(registration.command)}>
-                    {copiedCommand === registration.command ? <Check /> : <Clipboard />}
-                    {copiedCommand === registration.command ? "Copied" : "Copy command"}
+                  <Button
+                    type="button"
+                    onClick={() => void copyCommand(registration.commands[installOs])}
+                  >
+                    {copiedCommand === registration.commands[installOs] ? <Check /> : <Clipboard />}
+                    {copiedCommand === registration.commands[installOs]
+                      ? "Copied"
+                      : `Copy the ${INSTALL_OS_LABEL[installOs]} command`}
                   </Button>
                 )}
             </DialogFooter>
@@ -1232,8 +1303,9 @@ function isMachineOnline(lastSeen: number, now: number) {
 
 function formatOs(os: "linux" | "mac" | "win") {
   if (os === "mac") return "macOS";
-  // Windows machines can only exist through manual onboarding, and their images
-  // stay inert without the rc-preview opt-in label. Say so where they are listed.
+  // Onboarding a Windows Worker is supported since #49, but its images stay inert without the
+  // rc-preview opt-in label and the control plane still refuses to advertise a Hyper-V Worker as
+  // ready. Say so where they are listed, until that changes.
   if (os === "win") return "Windows (preview)";
   return "linux";
 }
