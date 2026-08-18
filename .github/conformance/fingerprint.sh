@@ -33,9 +33,12 @@ set -eu
 # fingerprints carrying different schema numbers were produced by two
 # different scripts and are not comparable; diff.sh refuses to compare them
 # rather than reporting the script's own evolution as fleet drift.
-FINGERPRINT_SCHEMA=1
+FINGERPRINT_SCHEMA=2
 
-CGROUP_ROOT=/sys/fs/cgroup
+# Overridable ONLY so conformance.test.sh can point the cgroup probes at a
+# synthetic v1 tree and a synthetic v2 tree and prove both normalise to the
+# same keys. Nothing in the workflow sets it.
+CGROUP_ROOT=${RC_FINGERPRINT_CGROUP_ROOT:-/sys/fs/cgroup}
 
 OUT=$(mktemp "${TMPDIR:-/tmp}/rc-fingerprint-XXXXXX")
 trap 'rm -f "$OUT"' EXIT
@@ -104,14 +107,33 @@ count_cpu_list() (
   printf '%s' "$total"
 )
 
+# Where the unified (v2) hierarchy is mounted, if it is at all. A pure v2 host
+# puts it at the cgroup root; a v1 HYBRID host -- which is what the fleet's
+# Workers are -- keeps the v1 controllers at the root and mounts v2 alongside
+# them under `unified`. Both layouts are read here, and every caller below
+# folds whatever it finds into ONE key per fact, so the diff fails on a limit
+# whose value differs and never on the path the two legs happened to store it
+# at. `ubuntu-latest` is cgroup v2 and answers from cpu.max; a Worker is
+# cgroup v1 and answers from cpu.cfs_quota_us and cpu.cfs_period_us; the
+# fingerprint says `cpu_cgroup_quota_millicpu` on both.
+cgroup_v2_base() (
+  if [ -r "$CGROUP_ROOT/cgroup.controllers" ]; then
+    printf '%s' "$CGROUP_ROOT"
+  elif [ -r "$CGROUP_ROOT/unified/cgroup.controllers" ]; then
+    printf '%s' "$CGROUP_ROOT/unified"
+  else
+    printf '%s' "$CGROUP_ROOT"
+  fi
+)
+
 # This process's own cgroup v2 directory. `/proc/self/cgroup` reports the path
-# as the *host* sees it, which is not where a namespaced /sys/fs/cgroup mounts
-# it, so callers walk from here up to the root and take whichever ancestor
-# they can actually read.
+# as the *host* sees it, which is not where a namespaced cgroupfs mounts it, so
+# callers walk from here up to the base and take whichever ancestor they can
+# actually read.
 cgroup_v2_leaf() (
   rel=$(sed -n 's|^0::||p' /proc/self/cgroup 2>/dev/null | head -n 1 || true)
   rel=${rel%/}
-  printf '%s%s' "$CGROUP_ROOT" "$rel"
+  printf '%s%s' "$(cgroup_v2_base)" "$rel"
 )
 
 # The CPU bandwidth this process is actually allowed, in thousandths of a CPU,
@@ -121,6 +143,7 @@ cgroup_v2_leaf() (
 # only reading that is true under all of them.
 cgroup_cpu_milli() (
   best=
+  cgroup_base=$(cgroup_v2_base)
   dir=$(cgroup_v2_leaf)
   hops=0
   while [ "$hops" -lt 32 ]; do
@@ -140,7 +163,7 @@ cgroup_cpu_milli() (
       esac
     fi
     case "$dir" in
-      "$CGROUP_ROOT" | / | .) break ;;
+      "$cgroup_base" | / | .) break ;;
     esac
     dir=$(dirname "$dir")
   done
@@ -166,6 +189,7 @@ cgroup_cpu_milli() (
 # treated as absent rather than fed into shell arithmetic.
 cgroup_memory_bytes() (
   best=
+  cgroup_base=$(cgroup_v2_base)
   dir=$(cgroup_v2_leaf)
   hops=0
   while [ "$hops" -lt 32 ]; do
@@ -180,7 +204,7 @@ cgroup_memory_bytes() (
         ;;
     esac
     case "$dir" in
-      "$CGROUP_ROOT" | / | .) break ;;
+      "$cgroup_base" | / | .) break ;;
     esac
     dir=$(dirname "$dir")
   done
@@ -199,6 +223,7 @@ cgroup_memory_bytes() (
 # The first readable value of a cgroup v2 file between this cgroup and the
 # root, for facts that are not numeric minima (a cpuset list, a pids ceiling).
 cgroup_v2_nearest() (
+  cgroup_base=$(cgroup_v2_base)
   dir=$(cgroup_v2_leaf)
   hops=0
   while [ "$hops" -lt 32 ]; do
@@ -209,7 +234,7 @@ cgroup_v2_nearest() (
       return 0
     fi
     case "$dir" in
-      "$CGROUP_ROOT" | / | .) break ;;
+      "$cgroup_base" | / | .) break ;;
     esac
     dir=$(dirname "$dir")
   done
@@ -326,12 +351,22 @@ else
 fi
 
 cgroup_version=none
+cgroup_v1=no
+for controller in memory cpu cpu,cpuacct pids cpuset; do
+  if [ -d "$CGROUP_ROOT/$controller" ]; then
+    cgroup_v1=yes
+    break
+  fi
+done
 if [ -r "$CGROUP_ROOT/cgroup.controllers" ]; then
   cgroup_version=v2
-  if [ -d "$CGROUP_ROOT/memory" ] || [ -d "$CGROUP_ROOT/cpu" ]; then
-    cgroup_version=hybrid
-  fi
-elif [ -d "$CGROUP_ROOT/memory" ] || [ -d "$CGROUP_ROOT/cpu" ]; then
+  if [ "$cgroup_v1" = yes ]; then cgroup_version=hybrid; fi
+elif [ -r "$CGROUP_ROOT/unified/cgroup.controllers" ]; then
+  # v1 controllers at the root with the unified hierarchy mounted beside them:
+  # the layout the fleet's Workers run, and the one a root-only probe reads as
+  # plain v1.
+  cgroup_version=hybrid
+elif [ "$cgroup_v1" = yes ]; then
   cgroup_version=v1
 fi
 emit cgroup_version "$cgroup_version"
@@ -355,10 +390,32 @@ case "$visible_count" in
   '' | *[!0-9]* | 0) visible_count=$affinity_count ;;
 esac
 
-emit cpu_visible_count "$visible_count"
+emit cpu_visible_nproc "$visible_count"
 emit cpu_affinity_count "$affinity_count"
 emit cpu_cpuinfo_count "$cpuinfo_count"
 emit cpu_online_count "$online_count"
+
+# `nproc` goes through sched_getaffinity. /proc/cpuinfo lists the host's
+# processors and has no idea a cpuset exists. Measured on a production Worker
+# (cgroup v1, Docker 28.1.1): a container run with `--cpus 8 --cpuset-cpus 0-7`
+# reports nproc=8 while /proc/cpuinfo still lists all 64 host processors.
+#
+# That is the residue #80's fix does NOT close. Today both numbers are 64 and
+# they agree; the day the cpuset allocator lands, nproc will agree with the
+# quota and this key will start disagreeing, which is the moment somebody has
+# to decide in writing that anything parsing /proc/cpuinfo directly is still
+# being lied to. It is deliberately a key of its own and deliberately not
+# pre-allowlisted, so that decision is made rather than inherited.
+case "$cpuinfo_count" in
+  '' | *[!0-9]* | 0) emit cpu_nproc_matches_cpuinfo unavailable ;;
+  *)
+    if [ "$visible_count" = "$cpuinfo_count" ]; then
+      emit cpu_nproc_matches_cpuinfo yes
+    else
+      emit cpu_nproc_matches_cpuinfo no
+    fi
+    ;;
+esac
 
 cpuset_list=$(cgroup_v2_nearest cpuset.cpus.effective)
 if [ -z "$cpuset_list" ]; then
@@ -594,7 +651,11 @@ case "$cap_eff" in
 esac
 emit no_new_privs "$(awk '/^NoNewPrivs:/ { print $2 }' /proc/self/status 2>/dev/null || true)"
 emit seccomp_mode "$(awk '/^Seccomp:/ { print $2 }' /proc/self/status 2>/dev/null || true)"
-emit lsm_profile "$(tr -d '\000' </proc/self/attr/current 2>/dev/null || true)"
+if [ -r /proc/self/attr/current ]; then
+  emit lsm_profile "$(tr -d '\000' </proc/self/attr/current 2>/dev/null || true)"
+else
+  emit lsm_profile unavailable
+fi
 
 # ---------------------------------------------------------------------------
 # Time, locale, shell environment

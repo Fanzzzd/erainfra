@@ -39,7 +39,7 @@
 #   and the diff would go green. These are asserted absolutely, per leg.
 require cpu_visible_matches_allowed=yes  # a machine that reports more CPUs than its own quota allows lies to every build tool that autosizes; this is #80
 require mem_visible_matches_allowed=yes  # `free` and os.totalmem() read /proc/meminfo, which is the host's unless LXCFS is mounted, so a job can be OOM-killed at its cgroup limit while believing it has the host's RAM; this is the second half of #80
-never-allow cpu_visible_matches_allowed  # the excusable difference is cpu_visible_count, which is allowed below; the agreement between what a job sees and what it may use is not
+never-allow cpu_visible_matches_allowed  # the excusable difference is cpu_visible_nproc, which is allowed below; the agreement between what a job sees and what it may use is not
 never-allow mem_visible_matches_allowed  # same shape as the CPU key: sizes may differ between legs, a machine disagreeing with itself may not
 never-allow node_heap_within_allowed_mem  # Node sizes its default old space from total RAM, so a heap ceiling above the cgroup limit entitles a process to grow until the kernel kills it, and the OOM carries no stack
 
@@ -62,9 +62,9 @@ allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; t
 # (convex/schema.ts) and a hosted runner carries whatever GitHub sells. None of
 # them can express #80 on its own, which is exactly why the derived keys above
 # exist and are not on this list.
-allow cpu_visible_count  # a Profile's vcpus is not ubuntu-latest's 4
+allow cpu_visible_nproc  # a Profile's vcpus is not ubuntu-latest's 4
 allow cpu_nproc_all  # the Worker host's core count, which no Profile promises to match
-allow cpu_cpuinfo_count  # same host fact, read through /proc/cpuinfo
+allow cpu_cpuinfo_count  # the Worker host's processor list, which /proc/cpuinfo reports whole and which no cpuset can narrow. The count differing between legs is a size difference; whether it agrees with nproc is a separate key and is not on this list
 allow cpu_affinity_count  # the scheduler affinity mask a Profile hands the job
 allow cpu_online_count  # the Worker host's online CPU set
 allow cpu_cgroup_cpuset_count  # the cpuset width the executor allocates per Attempt
@@ -108,6 +108,22 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # ---------------------------------------------------------------------------
 # Deliberately NOT allowlisted, though it will fail
 # ---------------------------------------------------------------------------
+# cpu_nproc_matches_cpuinfo. Not today: both numbers are the host's 64 and they
+# agree, so this key is `yes` on both legs and says nothing. It exists for the
+# day #80's cpuset allocator lands. Measured on a production Worker (cgroup v1,
+# Docker 28.1.1): a container run with `--cpus 8 --cpuset-cpus 0-7` reports
+# nproc=8 and still lists 64 processors in /proc/cpuinfo. So the fix moves the
+# defect rather than removing it -- cpu_visible_matches_allowed goes green and
+# THIS key goes red -- and the entry that belongs here on that day is roughly:
+#
+#   allow cpu_nproc_matches_cpuinfo  # known residue of #80's cpuset fix: nproc
+#   and the quota agree, /proc/cpuinfo still reports the host, so anything
+#   parsing it directly is still told the wrong number
+#
+# It is written here as prose rather than as an entry precisely because it has
+# not happened yet. Allowlisting a difference nobody has measured is how a
+# record becomes a wish.
+#
 # dev_shm_size_mib. `ubuntu-latest` measures 7995 MiB, half its RAM; a container
 # created the way provision-docker.sh creates one measures 64 MiB and stays at
 # 64 MiB whatever --memory says, because --shm-size is never passed and Docker's

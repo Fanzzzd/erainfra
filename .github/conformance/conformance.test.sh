@@ -158,6 +158,68 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# cgroup v1 and cgroup v2 must reduce to the same keys
+# ---------------------------------------------------------------------------
+# The fleet's Workers are cgroup v1 hybrid and `ubuntu-latest` is cgroup v2, so
+# one leg answers from cpu.cfs_quota_us plus cpu.cfs_period_us and the other
+# from cpu.max. If the fingerprint carried where it read a limit, every run
+# would fail on the hierarchy version rather than on a limit that actually
+# differs -- a red job that says nothing, which is the fastest possible way to
+# teach everyone to ignore it. These build both layouts with identical limits
+# and require identical keys out of them.
+make_cgroup_v2() (
+  mkdir -p "$1"
+  : >"$1/cgroup.controllers"
+  printf '6400000 100000\n' >"$1/cpu.max"
+  printf '1099511627776\n' >"$1/memory.max"
+  printf '0-63\n' >"$1/cpuset.cpus.effective"
+  printf '4096\n' >"$1/pids.max"
+)
+make_cgroup_v1() (
+  mkdir -p "$1/cpu" "$1/memory" "$1/cpuset" "$1/pids"
+  printf '6400000\n' >"$1/cpu/cpu.cfs_quota_us"
+  printf '100000\n' >"$1/cpu/cpu.cfs_period_us"
+  printf '1099511627776\n' >"$1/memory/memory.limit_in_bytes"
+  printf '0-63\n' >"$1/cpuset/cpuset.effective_cpus"
+  printf '4096\n' >"$1/pids/pids.max"
+)
+
+make_cgroup_v2 "$WORK/cgv2"
+make_cgroup_v1 "$WORK/cgv1"
+# A hybrid host keeps the v1 controllers at the root and mounts the unified
+# hierarchy beside them, which a root-only probe reads as plain v1.
+make_cgroup_v1 "$WORK/cghybrid"
+mkdir -p "$WORK/cghybrid/unified"
+: >"$WORK/cghybrid/unified/cgroup.controllers"
+
+limits_of() ( # limits_of <cgroup-root> <fingerprint-destination>
+  RC_FINGERPRINT_CGROUP_ROOT=$1 sh "$HERE/fingerprint.sh" "$2"
+  grep -E '^(cpu_cgroup_quota_millicpu|cpu_cgroup_cpuset_count|mem_cgroup_limit_mib|pids_cgroup_max)=' "$2"
+)
+v2_limits=$(limits_of "$WORK/cgv2" "$WORK/fp-v2.txt")
+v1_limits=$(limits_of "$WORK/cgv1" "$WORK/fp-v1.txt")
+hybrid_limits=$(limits_of "$WORK/cghybrid" "$WORK/fp-hybrid.txt")
+
+eq "a cgroup v1 hierarchy yields the same limit keys as cgroup v2" "$v1_limits" "$v2_limits"
+eq "a v1 HYBRID hierarchy, which is what a Worker runs, yields them too" \
+  "$hybrid_limits" "$v2_limits"
+eq "and the limits are the ones that were set" "$v2_limits" \
+  "cpu_cgroup_cpuset_count=64
+cpu_cgroup_quota_millicpu=64000
+mem_cgroup_limit_mib=1048576
+pids_cgroup_max=4096"
+eq "a v1 hierarchy is reported as v1" \
+  "$(grep '^cgroup_version=' "$WORK/fp-v1.txt")" cgroup_version=v1
+eq "a hybrid hierarchy is reported as hybrid rather than as v1" \
+  "$(grep '^cgroup_version=' "$WORK/fp-hybrid.txt")" cgroup_version=hybrid
+
+# The end of that argument: put the two through the REAL allowlist. The only
+# thing that may differ is cgroup_version, which has an entry; the limits
+# themselves must not surface as a difference at all.
+run_diff "$HERE/allowlist.txt" "$WORK/fp-v2.txt" "$WORK/fp-v1.txt"
+eq "a v2 leg and a v1 leg carrying the same limits pass the real diff" "$DIFF_STATUS" 0
+
+# ---------------------------------------------------------------------------
 # The diff agrees when there is nothing to disagree about
 # ---------------------------------------------------------------------------
 test_allowlist "$LIST"
