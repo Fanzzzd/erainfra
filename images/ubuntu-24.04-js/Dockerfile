@@ -14,6 +14,8 @@ ARG TARGETARCH
 ARG RUNNER_VERSION=2.336.0
 ARG NODE_VERSION=22.23.2
 ARG PNPM_VERSION=11.21.0
+ARG GO_VERSION=1.25.3
+ARG GH_VERSION=2.97.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -34,18 +36,49 @@ RUN apt-get update \
     libatomic1 \
     libicu74 \
     libssl-dev \
+    locales \
     net-tools \
+    openssh-client \
     pkg-config \
+    python3 \
+    python3-pip \
+    rsync \
     sudo \
     systemd \
     systemd-sysv \
+    tzdata \
     udev \
     unzip \
     wget \
     xz-utils \
     zip \
+    zstd \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
+
+# Without this the image had no locale and no timezone database at all, so the C
+# library fell back to ANSI_X3.4-1968 -- ASCII -- and a named zone did not
+# resolve because neither /etc/timezone nor /etc/localtime existed. ubuntu-latest
+# measures LANG=C.UTF-8, an en_US.UTF-8 present in `locale -a`, and Etc/UTC. Those
+# three values are what this reproduces and nothing more: LC_ALL is left unset
+# because it is unset on ubuntu-latest too, and setting it would add a new
+# difference wearing a fix's clothes. The zone is written explicitly rather than
+# left to tzdata's postinst default, so the value is this file's decision.
+#
+# LANG is stated in three places because three different things start a job. The
+# systemd system manager rebuilds a clean environment for every unit and does not
+# hand down PID 1's, so ENV alone never reaches a runner: /etc/locale.conf is what
+# that manager imports, /etc/default/locale is what PAM gives a login shell, and
+# ENV is what a plain `docker run` or `docker exec` against this image sees.
+# runner-center-guest.service carries the same value for the path that carries
+# every job; smoke.sh asserts all four agree.
+RUN locale-gen en_US.UTF-8 \
+  && printf 'LANG=C.UTF-8\n' > /etc/locale.conf \
+  && printf 'LANG=C.UTF-8\n' > /etc/default/locale \
+  && ln --symbolic --force --no-dereference /usr/share/zoneinfo/Etc/UTC /etc/localtime \
+  && printf 'Etc/UTC\n' > /etc/timezone
+
+ENV LANG=C.UTF-8
 
 # Ubuntu 24.04 points iptables at the nft backend, which needs CONFIG_NF_TABLES
 # in the *guest* kernel. The kernel series the provisioner pins does not have
@@ -149,6 +182,48 @@ RUN case "$TARGETARCH" in \
   && node --version \
   && pnpm --version \
   && chown -R runner:docker /opt/hostedtoolcache
+
+# Go, in the same tool-cache layout as Node above, because this image already
+# seeds the actions/setup-go archive and then shipped no Go for it to find. The
+# version deliberately tracks go.mod and the builder stage at the top of this
+# file, so the Go that compiles runner-center-guest and the Go a workflow gets
+# are one version rather than two that drift apart unwatched.
+RUN case "$TARGETARCH" in \
+      amd64) go_arch=x64; go_dist=amd64; go_sha=0335f314b6e7bfe08c3d0cfaa7c19db961b7b99fb20be62b0a826c992ad14e0f ;; \
+      arm64) go_arch=arm64; go_dist=arm64; go_sha=1d42ebc84999b5e2069f5e31b67d6fc5d67308adad3e178d5a2ee2c9ff2001f5 ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && go_dir="/opt/hostedtoolcache/go/${GO_VERSION}/${go_arch}" \
+  && install -d -o runner -g docker "$go_dir" \
+  && curl --fail --location --retry 5 \
+    --output /tmp/go.tar.gz \
+    "https://dl.google.com/go/go${GO_VERSION}.linux-${go_dist}.tar.gz" \
+  && echo "${go_sha}  /tmp/go.tar.gz" | sha256sum --check --strict \
+  && tar --extract --gzip --strip-components=1 --file /tmp/go.tar.gz --directory "$go_dir" \
+  && rm /tmp/go.tar.gz \
+  && touch "/opt/hostedtoolcache/go/${GO_VERSION}/${go_arch}.complete" \
+  && ln -s "$go_dir/bin/go" /usr/local/bin/go \
+  && ln -s "$go_dir/bin/gofmt" /usr/local/bin/gofmt \
+  && go version \
+  && chown -R runner:docker /opt/hostedtoolcache/go
+
+# gh is one static binary, so it comes from its release the way the runner
+# tarball does: pinned version, per-architecture SHA-256, checked before anything
+# is extracted. Only the binary is taken -- the release also carries man pages
+# and completions this image has no reader for.
+RUN case "$TARGETARCH" in \
+      amd64) gh_arch=amd64; gh_sha=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112 ;; \
+      arm64) gh_arch=arm64; gh_sha=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl --fail --location --retry 5 \
+    --output /tmp/gh.tar.gz \
+    "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" \
+  && echo "${gh_sha}  /tmp/gh.tar.gz" | sha256sum --check --strict \
+  && tar --extract --gzip --strip-components=2 --file /tmp/gh.tar.gz \
+    --directory /usr/local/bin "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" \
+  && rm /tmp/gh.tar.gz \
+  && gh --version
 
 COPY --from=guest /out/runner-center-guest /usr/local/bin/runner-center-guest
 COPY images/ubuntu-24.04-js/runner-center-guest.service /etc/systemd/system/runner-center-guest.service
