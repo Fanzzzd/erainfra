@@ -129,39 +129,45 @@ allow toolcache_node_versions  # same: one pinned Node, seeded so actions/setup-
 allow tool_*_version  # our Image Release pins its toolchain and GitHub's floats, so version drift between the two is expected. A tool DISAPPEARING is not, and tool_*_present is not on this list -- that is the #48 bug class
 allow docker_daemon_reachable  # no Docker control socket is mounted into an Attempt, and the daily smoke canary fails if one ever is. A workflow that needs `docker build` cannot have it on this executor, and that is a decision rather than an accident
 allow docker_server_version  # follows from the line above
-allow dev_shm_size_mib  # #87/#90. Until the next release reaches the fleet this reads 64 MiB against 7995 — Docker's fixed default, which was the defect. #90 is merged and sets --shm-size to half the Profile's memory, matching the hosted convention, after which the two legs differ because the sizes scale with the Profile rather than with GitHub's runner. Because shm is tmpfs the size is a cap rather than a reservation, so it grants no memory the cgroup limit did not already promise
 allow cpu_nproc_matches_cpuinfo  # pre-positioned, and expected to match nothing until #83's release lands. /proc/cpuinfo is kernel-global and lists the host's processors; a cpuset cannot narrow it and only LXCFS (#93) could. The day the cpuset ships, nproc and the quota agree and THIS key starts differing — that is a known residue, not a regression, and nproc/sched_getaffinity is the honest interface every autosizing tool actually reads
 allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubuntu-24.04-js/Dockerfile) and GitHub's does not ship it at all, measured. A tool we have and they do not cannot break a workflow written for ubuntu-latest; the reverse can, which is why the rest of tool_*_present is not on this list
 
 # ---------------------------------------------------------------------------
 # Deliberately NOT allowlisted, though it will fail
 # ---------------------------------------------------------------------------
-# cpu_nproc_matches_cpuinfo. Not today: both numbers are the host's 64 and they
-# agree, so this key is `yes` on both legs and says nothing. It exists for the
-# day #80's cpuset allocator lands. Measured on a production Worker (cgroup v1,
-# Docker 28.1.1): a container run with `--cpus 8 --cpuset-cpus 0-7` reports
-# nproc=8 and still lists 64 processors in /proc/cpuinfo. So the fix moves the
-# defect rather than removing it -- cpu_visible_matches_allowed goes green and
-# THIS key goes red -- and the entry that belongs here on that day is roughly:
+# A key belongs in this section when it is expected to go red and deliberately
+# carries no directive at all, so that the red is read by a person rather than
+# absorbed by a line in this file.
 #
-#   allow cpu_nproc_matches_cpuinfo  # known residue of #80's cpuset fix: nproc
-#   and the quota agree, /proc/cpuinfo still reports the host, so anything
-#   parsing it directly is still told the wrong number
+# It is empty today, and that is a state rather than an oversight. Two keys were
+# held here and both have since graduated to entries above; what moved them is
+# recorded because in each case it was a decision landing, not a mind changing.
 #
-# It is written here as prose rather than as an entry precisely because it has
-# not happened yet. Allowlisting a difference nobody has measured is how a
-# record becomes a wish.
+#   cpu_nproc_matches_cpuinfo was prose here on the argument that allowlisting a
+#   difference nobody has measured is how a record becomes a wish. It is
+#   `allow`ed above now, because the measurement exists: on a production Worker
+#   (cgroup v1, Docker 28.1.1) a container run with `--cpus 8 --cpuset-cpus 0-7`
+#   reports nproc=8 and still lists all 64 host processors in /proc/cpuinfo.
+#   What has not happened yet is the RELEASE that puts that cpuset on the fleet
+#   -- the residue itself has been seen, so the entry records a measurement and
+#   not a wish. Pre-positioning it means the day cpu_visible_matches_allowed
+#   goes green and THIS key goes red, the swap reads as the documented handover
+#   it is rather than as a new defect.
 #
-# dev_shm_size_mib. `ubuntu-latest` measures 7995 MiB, half its RAM; the fleet
-# measures 64 MiB and stays at 64 MiB whatever --memory says, because
-# --shm-size is never passed and Docker's default is a fixed 64 MB. That was
-# the first thing this job found that nobody had written down, it is #80's
-# shape exactly -- a resource a job is silently much smaller in than every
-# interface it can read suggests -- and it is filed as #87. It has a `pending`
-# entry below and it will never get an `allow` one: nothing here chose 64 MiB,
-# and an `allow` line would convert an unowned Docker default into a decision
-# this repository never made, which is the precise mistake this file exists to
-# stop.
+#   dev_shm_size_mib was prose here with the flat claim that it would never get
+#   an `allow` entry: nothing had chosen 64 MiB, it is Docker's fixed default,
+#   and an entry would have converted an unowned default into a decision this
+#   repository never made. That claim still holds, and the key is `pending`
+#   rather than `allow` below precisely because it does -- 64 MiB is recorded,
+#   owned by #87/#90, and dies on a date. #90 chose half the Profile's memory;
+#   the entry that describes THAT number will be written when a fleet running it
+#   has been measured.
+#
+# The two keys that fail today are not here either, and deliberately:
+# cpu_visible_matches_allowed and mem_visible_matches_allowed carry `require`
+# and `never-allow` at the top of this file, which is stronger than silence --
+# silence lets a difference pass unnoticed if it stops differing for the wrong
+# reason, and `require` asserts it on every leg instead.
 
 # ---------------------------------------------------------------------------
 # Deliberately not fingerprinted
@@ -208,6 +214,15 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # the reason this job exists; granting them a grace period would retire the only
 # continuously-checked statement that this platform tells a job the truth about
 # its own size.
+
+# #87, fixed by #90 and not yet on the fleet. It is the only entry in this
+# section whose fix is already merged, and it keeps a `pending` line rather than
+# an `allow` one for a reason worth stating: what is recorded here is 64 MiB, and 64 MiB is
+# Docker's fixed default, which nobody chose. #90 chose half the Profile's
+# memory. Recording the default is not blessing it, and the day the release
+# reaches the fleet this line stops matching and goes red — at which point the
+# post-release pair is measured and THAT is what earns an `allow`.
+pending dev_shm_size_mib=64 2026-11-16  # #87/#90: 64 MiB against 7995 on hosted — Docker's default, reached because --shm-size was never passed, which is #80's shape exactly: a resource a job is silently much smaller in than every interface it can read suggests. #90 is merged and sets --shm-size to half the Profile's memory; until that release lands the fleet still reads 64. Because shm is tmpfs the size is a cap rather than a reservation, so it grants no memory the cgroup limit did not already promise
 
 # #94 — the Image Release ships no locale and no tzdata, so the C library falls
 # back to ASCII and a named timezone does not resolve.

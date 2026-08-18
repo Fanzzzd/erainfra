@@ -146,7 +146,13 @@ jobs:
             exit 1
           fi
           missing=
-          while IFS= read -r profile; do
+          # `|| [ -n "$profile" ]` because `read` returns non-zero on a final
+          # line with no newline after it, and the body would then never see the
+          # last Profile in the file. Nothing about that failure is loud: the
+          # presence check finds nothing missing and the diff loop below has one
+          # fewer leg to compare, so dropping the ONLY declared Profile turns
+          # this job green while it proves nothing at all.
+          while IFS= read -r profile || [ -n "$profile" ]; do
             case "$profile" in '' | \#*) continue ;; esac
             if [ ! -s "fingerprints/fingerprint-$profile/fingerprint.txt" ]; then
               missing="$missing $profile"
@@ -164,8 +170,10 @@ jobs:
         run: |
           set -eu
           status=0
-          while IFS= read -r profile; do
+          compared=0
+          while IFS= read -r profile || [ -n "$profile" ]; do
             case "$profile" in '' | \#*) continue ;; esac
+            compared=$((compared + 1))
             printf '\n========== %s ==========\n' "$profile"
             sh .github/conformance/diff.sh \
               .github/conformance/allowlist.txt \
@@ -174,6 +182,17 @@ jobs:
               "$profile (EraInfra Profile)" \
               "fingerprints/fingerprint-$profile/fingerprint.txt" || status=1
           done < .github/conformance/profiles.txt
+          # A loop that ran zero times exits 0, and this job would report a
+          # green conformance run in which nothing was ever compared. The step
+          # above only catches a Profile that is declared and did not produce a
+          # fingerprint; it cannot catch a profiles.txt that declares nobody.
+          if [ "$compared" -eq 0 ]; then
+            echo "::error::profiles.txt declares no Profile, so nothing was compared" >&2
+            echo "An empty declaration is not a conformant fleet; it is an unasked" >&2
+            echo "question. Name the Profiles a Worker serves on this repository." >&2
+            exit 1
+          fi
+          echo "Compared $compared Profile(s) against ubuntu-latest."
           exit "$status"
 
   # Runs whatever happened, and exists for exactly one reason: a red run must

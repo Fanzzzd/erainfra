@@ -79,6 +79,24 @@ says_pair() { # says_pair <case> <label> <value>
   fi
 }
 
+# Two cases below put REAL fingerprints of this machine through the REAL
+# allowlist, and what they prove is that the differ finds nothing to complain
+# about. They cannot assert `DIFF_STATUS = 0` to do it: that allowlist carries
+# `require cpu_visible_matches_allowed=yes` and `require
+# mem_visible_matches_allowed=yes`, diff.sh asserts a `require` per leg whether
+# or not anything differs, and both are `no` on any machine whose own cgroup is
+# narrower than its visible CPU or memory -- a container, a devcontainer, a
+# Worker. The exit status there is a fact about the host running the test, and
+# the case would fail while naming something it never set out to measure.
+no_unallowlisted() { # no_unallowlisted <case>
+  if grep -Fq 'FAIL  unallowlisted differences' "$WORK/out"; then
+    fail "$1: the report raises an unallowlisted difference"
+    sed 's/^/      | /' "$WORK/out" >&2
+  else
+    ok "$1"
+  fi
+}
+
 # A minimal pair of fingerprints. Every case starts from these and perturbs
 # exactly one thing, so a case that goes red names its own cause.
 base_fingerprint() {
@@ -151,8 +169,7 @@ if [ "$(uname -s)" = Linux ]; then
     fail "fingerprint.sh emitted nothing"
   fi
   run_diff "$HERE/allowlist.txt" "$WORK/run1.txt" "$WORK/run2.txt"
-  eq "the checked-in allowlist compares a fingerprint against itself cleanly" \
-    "$DIFF_STATUS" 0
+  no_unallowlisted "the checked-in allowlist compares a fingerprint against itself cleanly"
 else
   ok "fingerprint.sh reads /proc and /sys; determinism is proven on the Linux legs"
 fi
@@ -217,7 +234,7 @@ eq "a hybrid hierarchy is reported as hybrid rather than as v1" \
 # thing that may differ is cgroup_version, which has an entry; the limits
 # themselves must not surface as a difference at all.
 run_diff "$HERE/allowlist.txt" "$WORK/fp-v2.txt" "$WORK/fp-v1.txt"
-eq "a v2 leg and a v1 leg carrying the same limits pass the real diff" "$DIFF_STATUS" 0
+no_unallowlisted "a v2 leg and a v1 leg carrying the same limits pass the real diff"
 
 # ---------------------------------------------------------------------------
 # The diff agrees when there is nothing to disagree about
@@ -227,6 +244,62 @@ base_fingerprint "$A"
 base_fingerprint "$B"
 run_diff "$LIST" "$A" "$B"
 eq "identical fingerprints pass" "$DIFF_STATUS" 0
+
+# ---------------------------------------------------------------------------
+# The report does not depend on the locale it was produced under
+# ---------------------------------------------------------------------------
+# `join` requires its input sorted in the CURRENT locale's collating order, and
+# diff.sh sorts under C. glibc's en_US.UTF-8 ignores punctuation on the first
+# pass, so two keys fingerprint.sh really emits invert between the two orders:
+# `no_new_privs` before `node_heap_limit_mib` under C, after it under
+# en_US.UTF-8. Measured on ubuntu:24.04 against diff.sh before it pinned the
+# locale, with one leg not emitting one of that pair: join stopped at `input is
+# not in sorted order` and `set -eu` took the differ down before it printed
+# anything, so the difference that WAS there went unreported and the red named
+# a sort order instead of an environment.
+#
+# So this runs the same comparison twice, once under C and once under a UTF-8
+# locale, and requires the two reports byte-identical. Reverting the LC_ALL=C on
+# diff.sh's join turns both assertions below red on any host with a glibc
+# en_US.UTF-8 -- verified, rather than assumed.
+utf8_locale=$(locale -a 2>/dev/null | grep -iE '^en_US\.(utf-?8)$' | head -n 1 || true)
+if [ -z "$utf8_locale" ]; then
+  utf8_locale=$(locale -a 2>/dev/null | grep -iE '^C\.(utf-?8)$' | head -n 1 || true)
+fi
+if [ -n "$utf8_locale" ]; then
+  # Its own files: every case after this one starts from $A and $B, and a case
+  # that quietly leaves them somewhere else is how a suite starts lying.
+  cat >"$WORK/loc-list.txt" <<'LOCALE_ALLOWLIST'
+allow no_new_privs  # the case only needs the pair to be comparable, not to be a real policy
+LOCALE_ALLOWLIST
+  # The pair that inverts, plus the asymmetry that made the mis-ordered merge
+  # fabricate a key: the candidate does not emit no_new_privs at all.
+  cat >"$WORK/loc-a.txt" <<'FINGERPRINT'
+fingerprint_schema=1
+no_new_privs=1
+node_heap_limit_mib=512
+FINGERPRINT
+  cat >"$WORK/loc-b.txt" <<'FINGERPRINT'
+fingerprint_schema=1
+node_heap_limit_mib=256
+FINGERPRINT
+  LC_ALL=C sh "$HERE/diff.sh" "$WORK/loc-list.txt" \
+    "$LABEL_A" "$WORK/loc-a.txt" "$LABEL_B" "$WORK/loc-b.txt" \
+    >"$WORK/out.c" 2>&1 || true
+  LC_ALL="$utf8_locale" sh "$HERE/diff.sh" "$WORK/loc-list.txt" \
+    "$LABEL_A" "$WORK/loc-a.txt" "$LABEL_B" "$WORK/loc-b.txt" \
+    >"$WORK/out.utf8" 2>&1 || true
+  if cmp -s "$WORK/out.c" "$WORK/out.utf8"; then
+    ok "the report is identical under C and under $utf8_locale"
+  else
+    fail "the report changes with the ambient locale ($utf8_locale)"
+    diff -u "$WORK/out.c" "$WORK/out.utf8" | sed 's/^/      | /' >&2 || true
+  fi
+  eq "and reports node_heap_limit_mib exactly once under $utf8_locale" \
+    "$(grep -c '^  node_heap_limit_mib$' "$WORK/out.utf8" | tr -d ' ')" 1
+else
+  ok "no UTF-8 locale is generated here; the Linux legs carry one"
+fi
 
 # ---------------------------------------------------------------------------
 # ... and goes red, once per way it claims it can

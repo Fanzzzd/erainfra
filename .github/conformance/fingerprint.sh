@@ -401,11 +401,17 @@ emit cpu_online_count "$online_count"
 # reports nproc=8 while /proc/cpuinfo still lists all 64 host processors.
 #
 # That is the residue #80's fix does NOT close. Today both numbers are 64 and
-# they agree; the day the cpuset allocator lands, nproc will agree with the
-# quota and this key will start disagreeing, which is the moment somebody has
-# to decide in writing that anything parsing /proc/cpuinfo directly is still
-# being lied to. It is deliberately a key of its own and deliberately not
-# pre-allowlisted, so that decision is made rather than inherited.
+# they agree; the day the cpuset allocator reaches the fleet, nproc will agree
+# with the quota and this key will start disagreeing. It is deliberately a key
+# of its own so that the swap is legible: cpu_visible_matches_allowed goes green
+# and this one goes red on the same release, and one red replacing another is
+# only readable if they are different keys.
+#
+# The decision has been made in writing rather than left for that morning --
+# allowlist.txt carries an `allow` for it, on the strength of the measurement
+# above rather than on an expectation -- because anything parsing /proc/cpuinfo
+# directly is still told the host's number and nothing short of LXCFS (#93) can
+# change that.
 case "$cpuinfo_count" in
   '' | *[!0-9]* | 0) emit cpu_nproc_matches_cpuinfo unavailable ;;
   *)

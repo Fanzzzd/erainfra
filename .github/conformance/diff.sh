@@ -283,7 +283,22 @@ first_match() (
 # -a1 -a2 keeps a key that only one side emitted; -e marks the side that is
 # missing it. A key that exists on one side only is a difference, and a large
 # one: it usually means a probe could not run at all over there.
-join -t"$TAB" -a1 -a2 -e '<key absent>' -o '0,1.2,2.2' \
+#
+# LC_ALL=C because `join` requires its input sorted in the CURRENT locale's
+# collating order, and read_fingerprint sorted it under C. glibc's en_US.UTF-8
+# ignores punctuation on the first pass, so two keys fingerprint.sh really emits
+# invert between the two orders: `no_new_privs` sorts before `node_heap_limit_mib`
+# under C and after it under en_US.UTF-8.
+#
+# Measured on ubuntu:24.04 with `join` left to the ambient locale and one leg
+# not emitting one of that pair: join stops at `input is not in sorted order`,
+# exits 1, and `set -eu` above takes the whole differ down before a single line
+# of report is printed. The run is red, which sounds survivable, but it is red
+# for the wrong reason -- the divergence that was actually there is never named,
+# and the triage job that exists to tell one kind of red from another is handed
+# a third kind. Run without `set -e` it is worse: join emits the shared key
+# TWICE, once claiming each side lacks it, and invents a difference outright.
+LC_ALL=C join -t"$TAB" -a1 -a2 -e '<key absent>' -o '0,1.2,2.2' \
   "$WORK/base.tsv" "$WORK/cand.tsv" >"$WORK/joined"
 
 label_width=${#BASE_LABEL}
