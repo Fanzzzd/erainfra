@@ -89,6 +89,107 @@ case "$JOB_TIMEOUT_S" in
   "" | *[!0-9]* | 0) printf 'error: RC_JOB_TIMEOUT_S must be a positive integer.\n' >&2; exit 2 ;;
 esac
 
+# The resolver a job gets. Docker hands a container whatever the daemon
+# inherited from the host, and when the host's own resolvers are loopback the
+# daemon silently substitutes its built-in public ones -- so on the fleet the
+# shape a job resolves through (#96: two nameservers, no options, no search
+# domain) was picked three layers away and by nobody here. `ubuntu-latest` is
+# not the target: its single 127.0.0.53 stub belongs to systemd-resolved inside
+# that VM and cannot be reproduced across a network namespace. What has to go is
+# the inheritance, so the servers are named explicitly on the command line and
+# the shape is decided below.
+#
+# RC_DNS_SERVERS names them outright. Otherwise they are read from the host, and
+# systemd-resolved's upstream file is preferred over /etc/resolv.conf because on
+# such a host /etc/resolv.conf holds only the 127.0.0.53 stub, which a container
+# in its own network namespace cannot reach.
+RESOLV_SOURCES=(/run/systemd/resolve/resolv.conf /etc/resolv.conf)
+
+# A resolver a container can actually reach. A hostname is refused because
+# resolving it needs the resolver being configured, and loopback is refused
+# because 127.0.0.53 inside a container's own network namespace is the
+# container's empty loopback, not the host's stub.
+reachable_resolver() {
+  case "$1" in
+    127.* | ::1 | 0:0:0:0:0:0:0:1) return 1 ;;
+  esac
+  if [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    local octet
+    for octet in "${BASH_REMATCH[@]:1}"; do
+      [ "$((10#$octet))" -le 255 ] || return 1
+    done
+    return 0
+  fi
+  # An IPv6 literal: hex groups separated by colons, either compressed with ::
+  # or written out in full. Anything else -- a hostname, a URL, a shell
+  # metacharacter -- is not a resolver and does not reach the command line.
+  if [[ $1 =~ ^[0-9a-fA-F:]+$ && $1 == *::* ]]; then return 0; fi
+  if [[ $1 =~ ^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$ ]]; then return 0; fi
+  return 1
+}
+
+dns_servers=()
+if [ -n "${RC_DNS_SERVERS:-}" ]; then
+  IFS=',' read -r -a dns_candidates <<<"$RC_DNS_SERVERS"
+  for candidate in "${dns_candidates[@]}"; do
+    if ! reachable_resolver "$candidate"; then
+      printf 'error: RC_DNS_SERVERS entry %s is not an IP address a container can reach.\n' \
+        "$candidate" >&2
+      exit 2
+    fi
+    dns_servers+=("$candidate")
+  done
+  if [ "${#dns_servers[@]}" -eq 0 ]; then
+    printf 'error: RC_DNS_SERVERS is set but names no address.\n' >&2
+    exit 2
+  fi
+else
+  for resolv in "${RESOLV_SOURCES[@]}"; do
+    [ -r "$resolv" ] || continue
+    while read -r keyword address _rest; do
+      [ "$keyword" = "nameserver" ] || continue
+      reachable_resolver "$address" || continue
+      dns_servers+=("$address")
+    done <"$resolv"
+    [ "${#dns_servers[@]}" -gt 0 ] && break
+  done
+fi
+if [ "${#dns_servers[@]}" -eq 0 ]; then
+  # There is no inherit-and-hope fallback, for the same reason there is no
+  # quota-only fallback above: a job silently resolving through whatever the
+  # daemon guessed is the defect being fixed. One environment variable, named in
+  # the message, is the way out.
+  printf 'error: no container-reachable nameserver in %s; set RC_DNS_SERVERS.\n' \
+    "${RESOLV_SOURCES[*]}" >&2
+  exit 2
+fi
+# glibc reads at most MAXNS (3) nameservers and ignores the rest, so passing
+# more would write lines into the container's resolv.conf that no lookup will
+# ever use.
+if [ "${#dns_servers[@]}" -gt 3 ]; then
+  dns_servers=("${dns_servers[@]:0:3}")
+fi
+dns_flags=()
+for address in "${dns_servers[@]}"; do
+  dns_flags+=(--dns "$address")
+done
+# edns0 lets the stub advertise a UDP payload larger than 512 bytes, so an
+# answer that would otherwise come back truncated and be retried over TCP fits
+# in one datagram. `ubuntu-latest` sets it; large TXT and SRV answers and
+# DNSSEC-signed zones are the ones that notice.
+dns_flags+=(--dns-option edns0)
+# `trust-ad` is deliberately NOT set even though ubuntu-latest has it. It tells
+# the stub to believe the AD bit in a reply, which is only sound when the
+# resolver is trusted and local -- there it is systemd-resolved on 127.0.0.53,
+# and here it is whatever the Worker's network provides.
+#
+# `--dns-search .` is the documented way to ask Docker for no search domain at
+# all, and the empty search list a container happened to inherit becomes a
+# decision. A search domain is not wanted: it makes a bare name in a workflow
+# resolve through a suffix the Worker's network supplies, so `registry` could
+# reach an operator's internal host on one Worker and NXDOMAIN on the next.
+dns_flags+=(--dns-search .)
+
 if [ -t 0 ]; then
   printf 'error: the JIT configuration must be piped on stdin.\n' >&2
   exit 2
@@ -230,12 +331,88 @@ ENV_WRITER_PID=$!
 # against the same cgroup limit either way, so this grants no memory the
 # limit did not already promise (#87).
 RC_SHM_MIB=$((RC_MEMORY_MIB / 2))
+# Resource limits. Every rlimit a container gets is the Docker daemon's, which
+# is its systemd unit's, which is the host's -- three layers, none of them this
+# repository, and #96 measured the result: no core-dump bound, an 8 MiB stack
+# where hosted gives 16, a million file descriptors where hosted gives 65536, a
+# 64 KiB lock bound where hosted gives 8 MiB, and no process bound at all. Each
+# flag below is a decision; the two limits deliberately left inherited are
+# recorded at the end of this block, because "we looked and the default is
+# right" and "nobody looked" have to be distinguishable later.
+#
+# core: a crashing process may not write a core dump. `ubuntu-latest` sets the
+# soft limit to 0 for the same reason; the hard limit is 0 here as well, which
+# hosted's is not, because a hosted VM's dump lands on a disk that belongs to
+# one job and this container's writable layer shares the Worker's filesystem
+# with every other Attempt on the machine. A multi-gigabyte dump from one job
+# is a disk-full failure for its neighbours.
+#
+# stack: 16 MiB soft, matching hosted. Docker's 8 MiB default is the number a
+# deeply recursive build, a generated parser or a large template instantiation
+# overflows -- and it overflows as a SIGSEGV, not as a message anyone can act
+# on. The hard limit stays unlimited, as Docker leaves it, so a job that wants
+# a bigger thread stack can still raise its own.
+#
+# nofile: soft 65536, matching hosted, and the hard limit stays at the daemon's
+# 1048576. Bigger is not better here: code that closes the whole descriptor
+# range across fork/exec -- older Python `subprocess`, some JVM and Ruby paths
+# -- walks it one descriptor at a time, and a million takes measurably longer
+# than sixty-five thousand for no benefit. Leaving the hard limit high means a
+# job that genuinely needs more can raise its own soft limit, which on a hosted
+# runner it cannot.
+#
+# memlock: 8 MiB, matching hosted. Docker's 64 KiB is small enough that a
+# library holding key material in unswappable pages -- gnupg, some TLS and
+# hardware-token stacks -- either falls back to unlocked memory or refuses to
+# start. Locked pages are charged to the same memory cgroup either way, so this
+# grants nothing the Profile's --memory did not already promise.
+RC_PIDS_LIMIT=4096
+# nproc: the kernel's own rule, applied to the Profile instead of the host.
+# Linux derives RLIMIT_NPROC as max_threads/2 and max_threads from RAM at one
+# thread per 8 stacks, which on a 4 KiB-page, 16 KiB-stack host is 128 KiB per
+# thread -- so the default is RAM/256 KiB, i.e. four processes per MiB. That is
+# where hosted's 63838 comes from (16 GiB), and applying the same rule to the
+# Profile's memory rather than the Worker's 251 GiB is what makes the bound
+# scale with what the job was sold.
+#
+# The bound is a backstop and not the primary one. RLIMIT_NPROC is counted per
+# real UID, and every Attempt on this Worker runs as the same `runner` uid in
+# the same user namespace, so this ceiling is shared with the other Attempts on
+# the machine. --pids-limit is the per-Attempt bound that is actually precise,
+# because the cgroup pids controller counts per cgroup. The floor keeps a small
+# Profile's share above four Attempts' worth of that bound, so one Attempt
+# saturating its own cgroup cannot be what fails its neighbours -- while
+# `unlimited`, which is what the daemon handed us, bounded nothing at all.
+RC_NPROC_MAX=$((RC_MEMORY_MIB * 4))
+if [ "$RC_NPROC_MAX" -lt $((RC_PIDS_LIMIT * 4)) ]; then
+  RC_NPROC_MAX=$((RC_PIDS_LIMIT * 4))
+fi
+# Left inherited on purpose, and this is the record of it:
+#
+#   sigpending -- the daemon's value follows the host's RAM (#96 measured
+#   1029590 against hosted's 63838). It bounds queued real-time signals per
+#   uid; no build tool queues them in bulk, lowering it can only produce
+#   sigqueue(3) EAGAIN, and because it is per-uid a tighter bound would couple
+#   concurrent Attempts together for no measured benefit.
+#
+#   the sysctls in #96 -- vm.max_map_count, the two fs.inotify limits,
+#   vm.swappiness, kernel.threads-max and user.max_user_namespaces. Not one of
+#   them is namespaced, so `docker run --sysctl` refuses all six outright
+#   ("sysctl '...' is not allowed", verified against Docker 27.5 and 28.1);
+#   they are Worker host settings. Readiness measures them per Profile
+#   (`host-sysctls`) and README carries the sysctl.d file that sets them.
 docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --cpus "$RC_VCPUS" \
   --cpuset-cpus "$RC_CPUSET_CPUS" \
   --memory "${RC_MEMORY_MIB}m" \
   --shm-size "${RC_SHM_MIB}m" \
-  --pids-limit 4096 \
+  --pids-limit "$RC_PIDS_LIMIT" \
+  --ulimit core=0:0 \
+  --ulimit stack=16777216:-1 \
+  --ulimit nofile=65536:1048576 \
+  --ulimit memlock=8388608:8388608 \
+  --ulimit "nproc=${RC_NPROC_MAX}:${RC_NPROC_MAX}" \
+  "${dns_flags[@]}" \
   --user runner \
   --workdir /opt/runner \
   --label "runner-center.profile=$RC_PROFILE" \

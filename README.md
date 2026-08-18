@@ -311,10 +311,51 @@ is stale and no longer affects slot reduction or candidate ranking.
 
 ### Linux Worker prerequisites
 
-For a trusted-only Docker Profile, Docker 28+ and enough local image storage are sufficient. The
-Worker pulls the exact manifest digest before becoming schedulable; jobs then use `--pull=never`,
-explicit CPU/memory/process limits, an unprivileged container user, and no host mounts or volumes.
-This is the fastest path to add an existing Linux machine without privileged host reconfiguration.
+For a trusted-only Docker Profile, Docker 28+, enough local image storage and the kernel settings
+below are what a host needs. The Worker pulls the exact manifest digest before becoming schedulable;
+jobs then use `--pull=never`, explicit CPU/memory/process limits, an unprivileged container user, and
+no host mounts or volumes. This is the fastest path to add an existing Linux machine without
+privileged host reconfiguration.
+
+A Docker Attempt is also given explicit resource limits and an explicit resolver, rather than the
+Docker daemon's inherited ones: no core dumps into a writable layer the Worker's other Attempts share
+a filesystem with, a 16 MiB stack, a 65536 soft descriptor limit with the daemon's million left as
+the ceiling a job may raise itself to, an 8 MiB lock limit so a library holding key material in
+unswappable pages works, and a process bound of four per MiB of the Profile's memory — which is the
+kernel's own RLIMIT_NPROC rule applied to what the job was sold instead of to the Worker's RAM
+(#96). The container's nameservers are named on the command line and `edns0` is asked for; no search
+domain is set, so a bare name in a workflow cannot resolve through whatever suffix a Worker's network
+happens to supply. `RC_DNS_SERVERS` (comma-separated) overrides the resolvers the Worker reads from
+systemd-resolved or `/etc/resolv.conf`; a host where neither yields an address a container can reach
+refuses the Attempt rather than letting the daemon guess one.
+
+**Kernel settings a Docker Profile needs.** A container shares the Worker's kernel, and not one of
+the sysctls a CI job cares about is namespaced — `docker run --sysctl vm.max_map_count=262144` is
+refused by the daemon outright — so what a job reads is what the host holds. Readiness measures them
+per Profile as the `host-sysctls` check, publishes every number as evidence, and refuses to advertise
+a Docker Profile on a host below what a job needs. Apply them once:
+
+```bash
+sudo tee /etc/sysctl.d/60-erainfra-worker.conf >/dev/null <<'EOF'
+# Elasticsearch and OpenSearch refuse to start below 262144 and say so in a
+# startup error; the JVM and mmap-heavy builds degrade more quietly. The 5.4
+# kernel default is 65530 and ubuntu-latest ships 262144. Required.
+vm.max_map_count = 262144
+# Watch exhaustion in a bundler, a test watcher or a file-watching dev server
+# surfaces as an opaque ENOSPC that has nothing to do with disk. The default is
+# 128 and ubuntu-latest ships 1280. Required.
+fs.inotify.max_user_instances = 1280
+# The same subsystem one level up. Recommended, not required.
+fs.inotify.max_user_watches = 655360
+# ubuntu-latest's value. 100 makes the host readier to swap a job out under
+# pressure, which costs latency rather than failing a job. Recommended.
+vm.swappiness = 60
+EOF
+sudo sysctl --system
+```
+
+The two marked required are the two a job fails on rather than merely notices, so a Worker without
+them reports `host-sysctls` failed and stops accepting Docker work until `sysctl --system` has run.
 
 For repositories that run fork PRs or other untrusted code, use Firecracker. It needs system-level
 provisioning, and `deploy/provision-firecracker-host.sh` does all of it. The host must have Linux

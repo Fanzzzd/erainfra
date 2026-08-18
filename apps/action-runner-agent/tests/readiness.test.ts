@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   architectureMismatch,
+  CHECK_HOST_SYSCTLS,
   CHECK_JOB_RESOURCE_VISIBILITY,
+  HOST_SYSCTLS,
+  type HostSysctl,
+  hostSysctlReadiness,
   jobResourceVisibility,
   probeInvocation,
+  readHostSysctls,
   type CoreLease,
   HEALTHY_READINESS_REFRESH_MS,
   parseRuntimeReport,
   parseWarmPoolStatus,
+  PIDS_LIMIT,
   prepareProfile,
+  processBound,
   readinessRefreshDelay,
   UNHEALTHY_READINESS_REFRESH_MS,
   WARM_POOL_READINESS_REFRESH_MS,
@@ -206,6 +216,15 @@ describe("job resource visibility", () => {
     const args = probeInvocation(PROFILE, "8-15");
     const joined = args.join(" ");
     assert.match(joined, /--cpus 8 --cpuset-cpus 8-15 --memory 8192m --shm-size 4096m/);
+    // The rlimits too (#96): a Docker that stops accepting one of these would
+    // otherwise fail every Attempt at run time on a Profile already advertised
+    // ready. The resolver flags are not here on purpose -- reaching a
+    // nameserver is a network question, not a question about the job's size.
+    assert.match(joined, /--pids-limit 4096/);
+    assert.match(joined, /--ulimit core=0:0 --ulimit stack=16777216:-1/);
+    assert.match(joined, /--ulimit nofile=65536:1048576 --ulimit memlock=8388608:8388608/);
+    assert.match(joined, /--ulimit nproc=32768:32768/);
+    assert.doesNotMatch(joined, /--dns/);
     assert.match(joined, /--env RC_VCPUS=8 --env RC_MEMORY_MIB=8192/);
     assert.match(joined, /--rm --pull=never/);
     assert.ok(args.includes(PROFILE.imageRelease));
@@ -275,6 +294,25 @@ describe("job resource visibility", () => {
   });
 });
 
+describe("the process bound", () => {
+  // The kernel derives RLIMIT_NPROC as RAM/256 KiB, which is four per MiB; that
+  // is where ubuntu-latest's 63838 comes from on a 16 GiB runner. Applying it to
+  // the Profile is what makes the bound scale with what the job was sold.
+  it("is four per MiB of the Profile, as the kernel derives its own", () => {
+    assert.equal(processBound(16384), 65536);
+    assert.equal(processBound(8192), 32768);
+  });
+
+  // A small Profile must not land under the per-Attempt cgroup bound it exists
+  // to backstop: RLIMIT_NPROC is counted per uid and shared with the other
+  // Attempts on the Worker, so one saturating its own cgroup should not be what
+  // fails its neighbours.
+  it("never falls below four Attempts' worth of the cgroup bound", () => {
+    assert.equal(processBound(2048), PIDS_LIMIT * 4);
+    assert.equal(processBound(512), PIDS_LIMIT * 4);
+  });
+});
+
 describe("architectureMismatch", () => {
   it("accepts a matching architecture in either vocabulary", () => {
     // Node says x64/arm64; docker image inspect says amd64/arm64.
@@ -335,5 +373,113 @@ describe("readiness refresh cadence", () => {
 
   it("polls healthy warm pools every minute", () => {
     assert.equal(readinessRefreshDelay(["ready"], true), WARM_POOL_READINESS_REFRESH_MS);
+  });
+});
+
+/** What a Worker holding exactly `ubuntu-latest`'s values would read. */
+function hostedSysctls(overrides: Record<string, number | undefined> = {}) {
+  const readings = new Map<string, number | undefined>();
+  for (const sysctl of HOST_SYSCTLS) readings.set(sysctl.key, sysctl.hosted);
+  for (const [key, value] of Object.entries(overrides)) readings.set(key, value);
+  return readings;
+}
+
+describe("host sysctls", () => {
+  // Docker refuses `--sysctl` for all six -- none is namespaced -- so this
+  // check exists because the flag cannot. If one of them ever becomes settable
+  // per container the fix belongs in provision-docker.sh, not here.
+  it("covers exactly the keys #96 measured", () => {
+    assert.deepEqual(HOST_SYSCTLS.map((sysctl) => sysctl.key).toSorted(), [
+      "fs.inotify.max_user_instances",
+      "fs.inotify.max_user_watches",
+      "kernel.threads-max",
+      "user.max_user_namespaces",
+      "vm.max_map_count",
+      "vm.swappiness",
+    ]);
+    for (const sysctl of HOST_SYSCTLS) {
+      assert.match(sysctl.path, /^\/proc\/sys\//, sysctl.key);
+      assert.ok(sysctl.because.length > 0, sysctl.key);
+    }
+  });
+
+  it("passes with every measured number in the detail, not a boolean", () => {
+    const check = hostSysctlReadiness(hostedSysctls());
+    assert.equal(check.name, CHECK_HOST_SYSCTLS);
+    assert.equal(check.passed, true);
+    for (const sysctl of HOST_SYSCTLS) {
+      assert.match(check.detail ?? "", new RegExp(`${sysctl.key.replace(/\./g, "\\.")}=`));
+    }
+  });
+
+  // A Worker that is merely different keeps working and says how it differs.
+  // Withdrawing capacity over a swap-latency gap would be the wish this check
+  // exists to replace, pointing the other way.
+  it("shows the gap against hosted without gating on it", () => {
+    const check = hostSysctlReadiness(
+      hostedSysctls({ "vm.swappiness": 100, "fs.inotify.max_user_watches": 524288 }),
+    );
+    assert.equal(check.passed, true);
+    assert.match(check.detail ?? "", /vm\.swappiness=100 \(hosted 60\)/);
+    assert.match(check.detail ?? "", /fs\.inotify\.max_user_watches=524288 \(hosted 655360\)/);
+  });
+
+  // The fleet's measured value. Elasticsearch and OpenSearch refuse to start
+  // below 262144 and say so, so a workflow that brings one up as a service
+  // fails here and passes on hosted -- which is a job breaking, not a job
+  // being different.
+  it("refuses a Worker whose vm.max_map_count would break a search container", () => {
+    const check = hostSysctlReadiness(hostedSysctls({ "vm.max_map_count": 65530 }));
+    assert.equal(check.passed, false);
+    assert.match(check.detail ?? "", /vm\.max_map_count is 65530 but a job needs 262144/);
+    assert.match(check.detail ?? "", /Elasticsearch/);
+    // The way out is in the message, not only in the issue.
+    assert.match(check.detail ?? "", /sysctl\.d/);
+    // And the evidence survives the failure.
+    assert.match(check.detail ?? "", /kernel\.threads-max=/);
+  });
+
+  it("refuses a Worker whose inotify instances would exhaust a watcher", () => {
+    const check = hostSysctlReadiness(hostedSysctls({ "fs.inotify.max_user_instances": 128 }));
+    assert.equal(check.passed, false);
+    assert.match(check.detail ?? "", /fs\.inotify\.max_user_instances is 128 but a job needs 1280/);
+    assert.match(check.detail ?? "", /ENOSPC/);
+  });
+
+  // Preflight does not stop at the first failure, and neither does this: an
+  // operator fixing a host should see both lines of the sysctl.d file at once.
+  it("names every broken key rather than the first", () => {
+    const check = hostSysctlReadiness(
+      hostedSysctls({ "vm.max_map_count": 65530, "fs.inotify.max_user_instances": 128 }),
+    );
+    assert.equal(check.passed, false);
+    assert.match(check.detail ?? "", /vm\.max_map_count/);
+    assert.match(check.detail ?? "", /fs\.inotify\.max_user_instances/);
+  });
+
+  // A host with no /proc/sys is not a Linux Worker, and refusing one is a
+  // different problem than a job being broken by a kernel setting -- the same
+  // tolerance the unreadable memory cgroup gets.
+  it("tolerates a setting it cannot read", () => {
+    const check = hostSysctlReadiness(hostedSysctls({ "vm.max_map_count": undefined }));
+    assert.equal(check.passed, true);
+    assert.match(check.detail ?? "", /vm\.max_map_count=unreadable/);
+  });
+
+  it("reads a value from /proc/sys and reports a missing one as unreadable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rc-sysctl-"));
+    try {
+      const path = join(dir, "max_map_count");
+      await writeFile(path, "262144\n");
+      const table: HostSysctl[] = [
+        { key: "vm.max_map_count", path, hosted: 262144, because: "test" },
+        { key: "vm.swappiness", path: join(dir, "absent"), hosted: 60, because: "test" },
+      ];
+      const readings = await readHostSysctls(table);
+      assert.equal(readings.get("vm.max_map_count"), 262144);
+      assert.equal(readings.get("vm.swappiness"), undefined);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

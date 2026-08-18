@@ -83,8 +83,48 @@ describe("provision-docker.sh isolation contract", () => {
     assert.match(provisionDocker, /--pull=never/);
     assert.match(provisionDocker, /--cpus "\$RC_VCPUS"/);
     assert.match(provisionDocker, /--memory "\$\{RC_MEMORY_MIB\}m"/);
-    assert.match(provisionDocker, /--pids-limit 4096/);
+    assert.match(provisionDocker, /--pids-limit "\$RC_PIDS_LIMIT"/);
+    assert.match(provisionDocker, /RC_PIDS_LIMIT=4096/);
     assert.match(provisionDocker, /--user runner/);
+  });
+
+  // #96: every rlimit and the resolver were the Docker daemon's inherited
+  // defaults. Each is now a flag with the reason it was chosen written beside
+  // it, and the ones deliberately left alone say so in the same place.
+  it("sets each resource limit deliberately and says why", () => {
+    for (const flag of [
+      /--ulimit core=0:0/,
+      /--ulimit stack=16777216:-1/,
+      /--ulimit nofile=65536:1048576/,
+      /--ulimit memlock=8388608:8388608/,
+      /--ulimit "nproc=\$\{RC_NPROC_MAX\}:\$\{RC_NPROC_MAX\}"/,
+    ]) {
+      assert.match(provisionDocker, flag);
+    }
+    // The bound scales with the Profile rather than with the Worker's RAM.
+    assert.match(provisionDocker, /RC_NPROC_MAX=\$\(\(RC_MEMORY_MIB \* 4\)\)/);
+    // Not every difference becomes a flag, but every one becomes a record.
+    assert.match(provisionDocker, /sigpending/);
+    assert.match(provisionDocker, /host-sysctls/);
+  });
+
+  // None of #96's sysctls is namespaced, so `docker run --sysctl` refuses all
+  // six and passing one would fail every Attempt outright. They are a Worker
+  // prerequisite that readiness proves instead.
+  it("never passes a sysctl the daemon would refuse", () => {
+    assert.doesNotMatch(provisionDocker, /--sysctl [^ ]/);
+  });
+
+  // The resolver a job gets is named on the command line rather than whatever
+  // the daemon inherited, and a bare name may not resolve through a suffix the
+  // Worker's network happens to supply.
+  it("decides the resolver shape instead of inheriting it", () => {
+    assert.match(provisionDocker, /dns_flags\+=\(--dns-option edns0\)/);
+    assert.match(provisionDocker, /dns_flags\+=\(--dns-search \.\)/);
+    assert.match(provisionDocker, /"\$\{dns_flags\[@\]\}"/);
+    // trust-ad asks the stub to believe an AD bit from a resolver we do not own.
+    assert.doesNotMatch(provisionDocker, /dns_flags\+=\(--dns-option trust-ad\)/);
+    assert.match(provisionDocker, /set RC_DNS_SERVERS/);
   });
 
   // Regression (#80): --cpus sets only the CFS bandwidth quota, so nproc(1),
