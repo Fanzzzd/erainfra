@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
@@ -220,10 +220,32 @@ const PROBE_COMMAND =
   'cat /sys/fs/cgroup/memory.max 2>/dev/null || printf unknown)"';
 
 /**
+ * The number of processes an Attempt of this size may create, and the per-job
+ * cgroup bound it backstops. Both are read from provision-docker.sh, which
+ * carries the reasoning: --pids-limit is the precise per-Attempt bound because
+ * the cgroup pids controller counts per cgroup, and RLIMIT_NPROC is a second
+ * finite ceiling derived the way the kernel derives its own — four per MiB —
+ * from the Profile's memory rather than the Worker's (#96).
+ */
+export const PIDS_LIMIT = 4096;
+
+export function processBound(memoryMiB: number) {
+  return Math.max(memoryMiB * 4, PIDS_LIMIT * 4);
+}
+
+/**
  * The exact limit flags an Attempt is given, in the same order
  * provision-docker.sh writes them. `--user` and `--workdir` are left off on
  * purpose: they are not limits, and an image without that account would fail
  * this check for a reason that has nothing to do with what a job can see.
+ *
+ * The `--ulimit` flags are here because a Docker that refuses one of them —
+ * a future release that stops accepting `-1` for an unlimited hard limit, say —
+ * would otherwise fail every Attempt at run time with the Profile already
+ * advertised ready, which is the class of failure #9 moves to readiness. The
+ * resolver flags are deliberately NOT here: which nameservers a Worker has is
+ * derived per host in the provisioner, and reaching one is a network question
+ * rather than a question about what a job can see about itself.
  */
 export function probeInvocation(profile: ProfileSpec, cpuset: string): string[] {
   return [
@@ -239,7 +261,17 @@ export function probeInvocation(profile: ProfileSpec, cpuset: string): string[] 
     "--shm-size",
     `${Math.floor(profile.memoryMiB / 2)}m`,
     "--pids-limit",
-    "4096",
+    String(PIDS_LIMIT),
+    "--ulimit",
+    "core=0:0",
+    "--ulimit",
+    "stack=16777216:-1",
+    "--ulimit",
+    "nofile=65536:1048576",
+    "--ulimit",
+    "memlock=8388608:8388608",
+    "--ulimit",
+    `nproc=${processBound(profile.memoryMiB)}:${processBound(profile.memoryMiB)}`,
     "--env",
     `RC_VCPUS=${profile.vcpus}`,
     "--env",
@@ -316,6 +348,155 @@ export function jobResourceVisibility(
   };
 }
 
+/**
+ * A stable identifier, on the same rule as CHECK_JOB_RESOURCE_VISIBILITY above:
+ * the dashboard groups by it and README's sysctl.d section names it, so
+ * renaming it is a product change.
+ */
+export const CHECK_HOST_SYSCTLS = "host-sysctls";
+
+/**
+ * One kernel setting a Docker Attempt inherits from the Worker it lands on.
+ *
+ * Not one of the six #96 measured is namespaced, so not one of them can be
+ * chosen per container: `docker run --sysctl vm.max_map_count=262144` is
+ * refused by the daemon outright — `sysctl 'vm.max_map_count' is not allowed` —
+ * and so are the other five, verified against Docker 27.5 and 28.1. Docker
+ * admits only the IPC keys, `fs.mqueue.*` and `net.*`. What a job reads is
+ * therefore whatever the Worker's kernel holds, which makes these a Worker
+ * prerequisite; and a prerequisite nothing proves is a wish, which is the gap
+ * #91 closed for the resource limits.
+ *
+ * `minimum` is set only where a job breaks below it, because a failing check
+ * withdraws the Profile from scheduling and a Worker should not refuse work
+ * over a latency difference. The rest carry `hosted` so an operator can see the
+ * gap in the evidence without the check having an opinion about it.
+ */
+export type HostSysctl = {
+  key: string;
+  path: string;
+  /** `ubuntu-latest`'s value, from conformance run 32092987570 (#96). */
+  hosted: number;
+  /** Below this a job fails outright. Absent means recorded, not gated. */
+  minimum?: number;
+  /** What breaks below `minimum`, or why the gap is recorded rather than gated. */
+  because: string;
+};
+
+export const HOST_SYSCTLS: HostSysctl[] = [
+  {
+    key: "vm.max_map_count",
+    path: "/proc/sys/vm/max_map_count",
+    hosted: 262144,
+    minimum: 262144,
+    because:
+      "Elasticsearch and OpenSearch refuse to start below 262144 and say so in a startup error; " +
+      "the JVM and mmap-heavy builds degrade more quietly",
+  },
+  {
+    key: "fs.inotify.max_user_instances",
+    path: "/proc/sys/fs/inotify/max_user_instances",
+    hosted: 1280,
+    minimum: 1280,
+    because:
+      "a bundler, a test watcher or a file-watching dev server exhausts the instances and reports " +
+      "an opaque ENOSPC that has nothing to do with disk space",
+  },
+  {
+    key: "fs.inotify.max_user_watches",
+    path: "/proc/sys/fs/inotify/max_user_watches",
+    hosted: 655360,
+    because:
+      "the same subsystem one level up, and no measured workflow has exhausted the kernel's own " +
+      "524288 default; recorded so the gap is visible rather than gated",
+  },
+  {
+    key: "vm.swappiness",
+    path: "/proc/sys/vm/swappiness",
+    hosted: 60,
+    because: "a host readier to swap a job out costs it latency rather than failing it",
+  },
+  {
+    key: "kernel.threads-max",
+    path: "/proc/sys/kernel/threads-max",
+    hosted: 127677,
+    because:
+      "a Worker is bigger than a hosted runner so this is bigger too; the bound a job actually " +
+      "meets first is --pids-limit and RLIMIT_NPROC, which provision-docker.sh sets per Attempt",
+  },
+  {
+    key: "user.max_user_namespaces",
+    path: "/proc/sys/user/max_user_namespaces",
+    hosted: 63838,
+    because: "larger here for the same reason, and nothing a job does is bounded by it first",
+  },
+];
+
+/**
+ * Reads the settings on this host. An unreadable one is `undefined` rather than
+ * an error: a Worker with no /proc/sys is not a Linux host and a job being
+ * refused there is a different problem than a job being broken by a kernel
+ * setting — the same tolerance the cgroup limit gets above.
+ */
+export async function readHostSysctls(
+  sysctls: HostSysctl[] = HOST_SYSCTLS,
+): Promise<Map<string, number | undefined>> {
+  const readings = new Map<string, number | undefined>();
+  await Promise.all(
+    sysctls.map(async (sysctl) => {
+      try {
+        const value = Number((await readFile(sysctl.path, "utf8")).trim().split(/\s+/)[0]);
+        readings.set(sysctl.key, Number.isFinite(value) ? value : undefined);
+      } catch {
+        readings.set(sysctl.key, undefined);
+      }
+    }),
+  );
+  return readings;
+}
+
+/**
+ * Turns those readings into the check. The detail carries every measured number
+ * whether or not it passed — evidence, not a boolean (ADR 0002) — so the
+ * dashboard shows the gap on a Worker that is merely different and names the
+ * exact key and threshold on one that would break a job.
+ */
+export function hostSysctlReadiness(
+  readings: ReadonlyMap<string, number | undefined>,
+  sysctls: HostSysctl[] = HOST_SYSCTLS,
+): ReadinessCheck {
+  const evidence = sysctls
+    .map((sysctl) => {
+      const value = readings.get(sysctl.key);
+      if (value === undefined) return `${sysctl.key}=unreadable`;
+      return value === sysctl.hosted
+        ? `${sysctl.key}=${value}`
+        : `${sysctl.key}=${value} (hosted ${sysctl.hosted})`;
+    })
+    .join(", ");
+  const broken = sysctls.filter((sysctl) => {
+    const value = readings.get(sysctl.key);
+    return sysctl.minimum !== undefined && value !== undefined && value < sysctl.minimum;
+  });
+  if (broken.length > 0) {
+    return {
+      name: CHECK_HOST_SYSCTLS,
+      passed: false,
+      detail:
+        broken
+          .map(
+            (sysctl) =>
+              `${sysctl.key} is ${readings.get(sysctl.key)} but a job needs ${sysctl.minimum}: ` +
+              sysctl.because,
+          )
+          .join("; ") +
+        `. These are host settings that no --sysctl flag can override per container; ` +
+        `set them in /etc/sysctl.d (README, Linux Worker prerequisites). Measured: ${evidence}`,
+    };
+  }
+  return { name: CHECK_HOST_SYSCTLS, passed: true, detail: evidence };
+}
+
 async function prepareDocker(
   profile: ProfileSpec,
   cores: number,
@@ -339,6 +520,20 @@ async function prepareDocker(
     );
   }
   checks.push({ name: "cpu-capacity", passed: true, detail: `${profile.vcpus} of ${cores} CPUs` });
+  // The other half of #96, and the half no flag can reach: a shared kernel means
+  // the job reads the Worker's sysctls, and Docker refuses to set any of the six
+  // that matter per container because none is namespaced. That makes them a
+  // Worker prerequisite, so they are proved here beside cpu-capacity — both are
+  // static host facts that no pull, retry or Docker version can change.
+  const sysctls = hostSysctlReadiness(await readHostSysctls());
+  checks.push(sysctls);
+  if (!sysctls.passed) {
+    return {
+      state: "failed",
+      error: sysctls.detail ?? "the Worker's kernel settings would break a job",
+      ...dockerFacts(checks),
+    };
+  }
   try {
     const info = await execa("docker", ["info", "--format", "{{.ServerVersion}}"], {
       timeout: 30_000,

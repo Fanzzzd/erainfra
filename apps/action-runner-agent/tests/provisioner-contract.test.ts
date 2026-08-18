@@ -11,6 +11,7 @@ import {
   provisionInvocation,
 } from "../provision.ts";
 import { parseCpuset } from "../cpuset.ts";
+import { PIDS_LIMIT, probeInvocation } from "../readiness.ts";
 import { PROVISION_LINUX, PROVISION_MAC } from "./helpers/harness.ts";
 
 const SHELL_PROVISIONERS = [PROVISION_MAC, PROVISION_LINUX, dockerProvisionerPath()];
@@ -63,6 +64,37 @@ describe("provisioner scripts", () => {
       assert.match(source, /exit 124/);
     });
   }
+
+  // The readiness probe's own comment claims it runs "the exact limit flags an
+  // Attempt is given". Two sources for one rule drift, so the drift is what is
+  // asserted: every resource limit the probe emits has to be a literal in the
+  // provisioner, and the one that is derived has its derivation asserted
+  // instead (#96).
+  it("probes with the same resource limits provision-docker.sh passes", () => {
+    const source = readFileSync(dockerProvisionerPath(), "utf8");
+    const args = probeInvocation(
+      {
+        profile: "rc-linux-js",
+        executor: "docker",
+        imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+        vcpus: 4,
+        memoryMiB: 8192,
+      },
+      "0-3",
+    );
+    const ulimits = args.filter((_, index) => args[index - 1] === "--ulimit");
+    assert.equal(ulimits.length, 5, "the probe stopped passing the Attempt's rlimits");
+    for (const limit of ulimits) {
+      if (limit.startsWith("nproc=")) {
+        assert.match(source, /RC_NPROC_MAX=\$\(\(RC_MEMORY_MIB \* 4\)\)/);
+        assert.match(source, /RC_NPROC_MAX" -lt \$\(\(RC_PIDS_LIMIT \* 4\)\)/);
+        continue;
+      }
+      assert.ok(source.includes(`--ulimit ${limit}`), limit);
+    }
+    assert.ok(source.includes('--pids-limit "$RC_PIDS_LIMIT"'));
+    assert.match(source, new RegExp(`RC_PIDS_LIMIT=${PIDS_LIMIT}\\b`));
+  });
 
   it("delivers the JIT configuration to every provisioner on stdin", () => {
     const source = readFileSync(fileURLToPath(new URL("../provision.ts", import.meta.url)), "utf8");

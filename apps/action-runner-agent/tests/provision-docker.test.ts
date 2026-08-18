@@ -12,6 +12,9 @@ function env(overrides: Record<string, string> = {}) {
     RC_MEMORY_MIB: "8192",
     RC_CPUSET_CPUS: "4-7",
     RC_JOB_TIMEOUT_S: "60",
+    // Pinned so the argv assertions do not depend on the resolvers of whichever
+    // machine runs the suite. The unset case is its own test below.
+    RC_DNS_SERVERS: "10.0.0.53,10.0.0.54",
     ...overrides,
   };
 }
@@ -47,6 +50,26 @@ describe("provision-docker.sh", () => {
     // renderer shared memory in /dev/shm, so an unset size kills browser
     // tests with SIGBUS inside a limit sized to allow them (#87).
     assert.match(argv, /--shm-size\t4096m\t/);
+    // #96: every rlimit a container gets is the Docker daemon's, which is the
+    // host's. Each of these is a decision with its reason in the provisioner --
+    // no core dump into a writable layer the Worker's other Attempts share,
+    // hosted's 16 MiB stack, hosted's 65536 soft descriptor limit with the
+    // daemon's million left as the ceiling a job may raise itself to, and
+    // hosted's 8 MiB lock bound.
+    assert.match(argv, /--ulimit\tcore=0:0\t/);
+    assert.match(argv, /--ulimit\tstack=16777216:-1\t/);
+    assert.match(argv, /--ulimit\tnofile=65536:1048576\t/);
+    assert.match(argv, /--ulimit\tmemlock=8388608:8388608\t/);
+    // Four processes per MiB is the kernel's own RLIMIT_NPROC rule applied to
+    // the Profile's memory instead of the Worker's, so the bound scales with
+    // what the job was sold rather than staying `unlimited`.
+    assert.match(argv, /--ulimit\tnproc=32768:32768\t/);
+    // The resolver is named rather than inherited, edns0 is asked for and no
+    // search domain is: a bare name must not resolve through whatever suffix
+    // the Worker's network happens to supply (#96).
+    assert.match(argv, /--dns\t10\.0\.0\.53\t--dns\t10\.0\.0\.54\t/);
+    assert.match(argv, /--dns-option\tedns0\t--dns-search\t\.\t/);
+    assert.doesNotMatch(argv, /trust-ad/);
     assert.match(
       argv,
       new RegExp(
@@ -138,6 +161,81 @@ describe("provision-docker.sh", () => {
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /RC_CPUSET_CPUS is required/);
     assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+  });
+
+  // The bound is the kernel's own rule -- RAM/256 KiB, four per MiB -- applied
+  // to the Profile rather than to the Worker's 251 GiB, with a floor so a small
+  // Profile never lands under the --pids-limit it is supposed to backstop.
+  it("scales the process bound with the Profile and floors it", async () => {
+    const big = new Harness();
+    assert.equal(
+      (await big.run(PROVISION_DOCKER, { env: env({ RC_MEMORY_MIB: "16384" }) })).code,
+      0,
+    );
+    assert.match(big.argv(), /--ulimit\tnproc=65536:65536\t/);
+
+    const small = new Harness();
+    assert.equal(
+      (await small.run(PROVISION_DOCKER, { env: env({ RC_MEMORY_MIB: "2048" }) })).code,
+      0,
+    );
+    assert.match(small.argv(), /--ulimit\tnproc=16384:16384\t/);
+  });
+
+  // Whatever the daemon inherited is the thing #96 is about, so it may not
+  // reach a job either way: the servers are named on the command line, or the
+  // Attempt refuses to start and says which variable names them.
+  it("never lets a job inherit the daemon's resolver", async () => {
+    const harness = new Harness();
+    const withoutOverride: Record<string, string> = { ...env() };
+    delete withoutOverride.RC_DNS_SERVERS;
+    const result = await harness.run(PROVISION_DOCKER, { env: withoutOverride });
+
+    if (result.code === 0) {
+      assert.match(harness.argv(), /--dns\t[0-9a-fA-F.:]+\t/);
+      assert.match(harness.argv(), /--dns-option\tedns0\t--dns-search\t\.\t/);
+    } else {
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /set RC_DNS_SERVERS/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
+
+  // A hostname cannot be resolved by the resolver being configured, a loopback
+  // address inside the container's own network namespace is the container's
+  // empty loopback, and neither a shell metacharacter nor an octet over 255 is
+  // an address at all.
+  it("refuses a resolver a container could not reach", async () => {
+    for (const servers of [
+      "dns.example.com",
+      "127.0.0.53",
+      "10.0.0.53,::1",
+      "10.0.0.999",
+      "10.0.0.53;rm -rf /",
+      "$(id)",
+      "10.0.0.53,,10.0.0.54",
+      ",",
+    ]) {
+      const harness = new Harness();
+      const result = await harness.run(PROVISION_DOCKER, { env: env({ RC_DNS_SERVERS: servers }) });
+
+      assert.equal(result.code, 2, servers);
+      assert.match(result.stderr, /RC_DNS_SERVERS/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
+
+  // glibc reads at most MAXNS nameservers, so a fourth would be a line in the
+  // container's resolv.conf that no lookup ever uses.
+  it("passes at most three nameservers", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, {
+      env: env({ RC_DNS_SERVERS: "10.0.0.1,10.0.0.2,2001:db8::1,10.0.0.4" }),
+    });
+
+    assert.equal(result.code, 0);
+    assert.match(harness.argv(), /--dns\t10\.0\.0\.1\t--dns\t10\.0\.0\.2\t--dns\t2001:db8::1\t/);
+    assert.doesNotMatch(harness.argv(), /10\.0\.0\.4/);
   });
 
   it("deletes the container when the Agent terminates it", async () => {
