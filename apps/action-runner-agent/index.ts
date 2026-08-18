@@ -494,6 +494,15 @@ async function reconcileCoreReservations() {
           `${cores.freeCores} of ${cores.totalCores} CPUs free`,
       );
     }
+    if (unpinned.length > 0) {
+      // The one reconcile outcome that leaves real contention standing: an
+      // unpinned container floats across every CPU, including the ones the next
+      // Attempt is about to be pinned to. A count cannot be acted on; a name can.
+      console.error(
+        `Container(s) ${unpinned.join(", ")} run with no cpuset and float across every CPU ` +
+          `on this Worker; Attempts placed here will contend with them`,
+      );
+    }
     if (released.length > 0) pump();
   } catch (error) {
     failed = true;

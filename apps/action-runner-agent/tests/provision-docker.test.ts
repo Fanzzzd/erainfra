@@ -89,6 +89,28 @@ describe("provision-docker.sh", () => {
     assert.doesNotMatch(harness.argv(), /^docker\trun/m);
   });
 
+  // Overlapping ranges sum to the right width while covering fewer CPUs, so a
+  // width check alone would pass `0-1,1-2` for four vCPUs and Docker would hand
+  // the job three.
+  it("refuses overlapping ranges that add up to the right width", async () => {
+    for (const cpuset of ["0-1,1-2", "0,0,1,1", "0-3,2-3"]) {
+      const harness = new Harness();
+      const result = await harness.run(PROVISION_DOCKER, { env: env({ RC_CPUSET_CPUS: cpuset }) });
+
+      assert.equal(result.code, 2, cpuset);
+      assert.match(result.stderr, /RC_CPUSET_CPUS/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
+
+  it("accepts a range list that is discontiguous but disjoint", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, { env: env({ RC_CPUSET_CPUS: "0-1,8-9" }) });
+
+    assert.equal(result.code, 0);
+    assert.match(harness.argv(), /--cpus\t4\t--cpuset-cpus\t0-1,8-9\t/);
+  });
+
   it("refuses a core range that is not a CPU list", async () => {
     for (const cpuset of ["all", "0-", "0,,1", "-1", "7-4"]) {
       const harness = new Harness();

@@ -41,10 +41,10 @@ done
 # The per-Attempt core range the Agent reserved, disjoint from every other
 # Attempt on this Worker. --cpus alone sets the CFS bandwidth quota and leaves
 # the affinity mask covering the whole host, so nproc(1),
-# os.availableParallelism(), runtime.NumCPU() and every other autosizing
-# interface report the host's core count and each build tool over-subscribes by
-# the ratio between them (#80). There is no quota-only fallback: a container
-# that silently reads the wrong number is the defect being fixed.
+# os.availableParallelism(), runtime.NumCPU() and Runtime.availableProcessors()
+# all report the host's core count and each build tool over-subscribes by the
+# ratio between them (#80). There is no quota-only fallback: a container that
+# silently reads the wrong number is the defect being fixed.
 if [[ ! $RC_CPUSET_CPUS =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then
   printf 'error: RC_CPUSET_CPUS must be a CPU list such as 0-3 or 0,2,4-5.\n' >&2
   exit 2
@@ -65,6 +65,22 @@ done
 if [ "$cpuset_width" -ne "$RC_VCPUS" ]; then
   printf 'error: RC_CPUSET_CPUS covers %s CPUs but RC_VCPUS is %s.\n' \
     "$cpuset_width" "$RC_VCPUS" >&2
+  exit 2
+fi
+# Summing the ranges is not enough: overlapping ones add up to the right width
+# while covering fewer CPUs, so `0-1,1-2` would pass for RC_VCPUS=4 and Docker
+# would hand the job three. Count the distinct ids too. The expansion below is
+# bounded by the width check above, so a range like 0-999999 is already gone.
+cpuset_distinct=$(
+  for range in "${cpuset_ranges[@]}"; do
+    first="10#${range%%-*}"
+    last="10#${range##*-}"
+    for ((cpu = first; cpu <= last; cpu++)); do printf '%s\n' "$cpu"; done
+  done | sort -nu | wc -l | tr -d ' '
+)
+if [ "$cpuset_distinct" -ne "$RC_VCPUS" ]; then
+  printf 'error: RC_CPUSET_CPUS ranges overlap: %s distinct CPUs, not %s.\n' \
+    "$cpuset_distinct" "$RC_VCPUS" >&2
   exit 2
 fi
 

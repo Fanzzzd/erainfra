@@ -6,16 +6,19 @@ import { execa } from "execa";
  *
  * `--cpus` sets the CFS bandwidth quota and nothing else: the container's
  * affinity mask still covers every host CPU. `nproc(1)`,
- * `os.availableParallelism()` (via uv_available_parallelism), `runtime.NumCPU()`,
- * CPython's `os.cpu_count()` and `Runtime.availableProcessors()` all go through
- * `sched_getaffinity(2)` and never the quota, so an 8-vCPU job on a 64-core
- * Worker tells every autosizing build tool it owns 64 cores. `--cpuset-cpus`
- * sets the mask those calls read, and is what makes them honest.
+ * `os.availableParallelism()` (via uv_available_parallelism), `runtime.NumCPU()`
+ * and `Runtime.availableProcessors()` all go through `sched_getaffinity(2)` and
+ * never the quota, so an 8-vCPU job on a 64-core Worker tells every autosizing
+ * build tool it owns 64 cores. `--cpuset-cpus` sets the mask those calls read,
+ * and is what makes them honest.
  *
- * Measured, so the limits are written down rather than assumed: a cpuset does
+ * Measured, so the limits are written down rather than assumed. A cpuset does
  * NOT filter `/proc/cpuinfo`, which still lists every host CPU, so anything
  * counting processor lines there — Node's own `os.cpus().length` included —
- * stays wrong. Only the affinity-based interfaces above are fixed by this.
+ * stays wrong. Python's `os.cpu_count()` is libc-dependent: musl answers it
+ * from the affinity mask, glibc from the online-CPU count, and the Image
+ * Release is glibc, so Python jobs still need `len(os.sched_getaffinity(0))`
+ * or 3.13's `os.process_cpu_count()`.
  *
  * A cpuset is only an improvement if it is *this* Attempt's cores. Pinning
  * every Attempt to `0-7` would put every concurrent job on the same eight CPUs
