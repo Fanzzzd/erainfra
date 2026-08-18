@@ -298,6 +298,22 @@ describe("reconcileDockerReservations", () => {
     assert.equal(allocator.freeCores, 8);
   });
 
+  // `docker inspect a b` exits non-zero when either container vanished between
+  // the two commands, having still printed the one that resolved. That partial
+  // answer is the one wanted, so the reconciler reads stdout and not the code.
+  it("uses the containers a partly failed inspect did resolve", async () => {
+    const allocator = new CoreAllocator(8);
+    const result = await reconcileDockerReservations(allocator, {
+      runDocker: async (args) =>
+        args[0] === "ps"
+          ? { exitCode: 0, stdout: "rc-runner-a\nrc-runner-gone" }
+          : { exitCode: 1, stdout: "/rc-runner-a\t0-3" },
+    });
+
+    assert.deepEqual(result.adopted, ["rc-runner-a"]);
+    assert.equal(allocator.freeCores, 4);
+  });
+
   it("issues no inspect at all on a Worker with no containers", async () => {
     const allocator = new CoreAllocator(8);
     const calls: string[][] = [];
