@@ -76,6 +76,49 @@ describe("prepareProfile", () => {
     assert.equal(result.cacheScope, "immutable-image");
   });
 
+  // Every Docker Attempt is pinned to its own disjoint core range, so a Profile
+  // wider than the Worker is one no Attempt placed here could ever be given.
+  // Refusing at run time forever is the alternative, and it is worse (#80).
+  it("refuses a Docker Profile wider than the Worker's CPUs", async () => {
+    const result = await prepareProfile(
+      {
+        profile: "rc-linux-js",
+        executor: "docker",
+        imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
+        vcpus: 64,
+        memoryMiB: 8192,
+      },
+      { hostCores: 8 },
+    );
+
+    assert.equal(result.state, "failed");
+    assert.match(
+      result.state === "failed" ? result.error : "",
+      /8 CPUs but the Profile asks for 64/,
+    );
+    const check = result.checks.find((entry) => entry.name === "cpu-capacity");
+    assert.equal(check?.passed, false);
+    // Proved before the daemon and the image, neither of which can change it.
+    assert.equal(result.checks.length, 1);
+  });
+
+  it("records the Profile fitting the Worker as a check of its own", async () => {
+    const result = await prepareProfile(
+      {
+        profile: "rc-linux-js",
+        executor: "docker",
+        imageRelease: `ghcr.io/fanzzzd/does-not-exist${DIGEST}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+      },
+      { hostCores: 8 },
+    );
+
+    const check = result.checks.find((entry) => entry.name === "cpu-capacity");
+    assert.equal(check?.passed, true);
+    assert.equal(check?.detail, "2 of 8 CPUs");
+  });
+
   it("reports an unpinned Tart image as a failed readiness check", async () => {
     // The binary check still runs, but the mutable tag is never pulled.
     const previousTart = process.env.TART;

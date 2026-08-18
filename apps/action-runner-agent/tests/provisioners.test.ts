@@ -87,6 +87,25 @@ describe("provision-docker.sh isolation contract", () => {
     assert.match(provisionDocker, /--user runner/);
   });
 
+  // Regression (#80): --cpus sets only the CFS bandwidth quota, so nproc(1),
+  // os.availableParallelism(), runtime.NumCPU(), os.cpu_count() and
+  // Runtime.availableProcessors() all kept reading the host's affinity mask and
+  // every autosizing build tool over-subscribed by the ratio between them.
+  it("pins the container to the core range the Agent reserved for it", () => {
+    assert.match(provisionDocker, /--cpuset-cpus "\$RC_CPUSET_CPUS"/);
+    assert.match(provisionDocker, /RC_CPUSET_CPUS:\?RC_CPUSET_CPUS is required/);
+    assert.match(provisionDocker, /RC_CPUSET_CPUS covers %s CPUs but RC_VCPUS is %s/);
+  });
+
+  // The cpuset makes every CPU interface honest; /proc/meminfo stays the
+  // host's. The limit is exported so the truth is at least available, and the
+  // decision not to mount LXCFS is written down where the flags are.
+  it("tells the job its memory limit, which /proc/meminfo will not", () => {
+    assert.match(provisionDocker, /--env "RC_MEMORY_MIB=\$RC_MEMORY_MIB"/);
+    assert.match(provisionDocker, /--env "RC_VCPUS=\$RC_VCPUS"/);
+    assert.match(provisionDocker, /LXCFS/);
+  });
+
   it("passes JIT through a FIFO, never argv, host env, or a regular file", () => {
     assert.match(provisionDocker, /mkfifo "\$WORKDIR\/runner\.env"/);
     assert.match(provisionDocker, /--env-file "\$WORKDIR\/runner\.env"/);

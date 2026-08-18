@@ -10,6 +10,7 @@ function env(overrides: Record<string, string> = {}) {
     RC_PROFILE: "rc-linux-js",
     RC_VCPUS: "4",
     RC_MEMORY_MIB: "8192",
+    RC_CPUSET_CPUS: "4-7",
     RC_JOB_TIMEOUT_S: "60",
     ...overrides,
   };
@@ -36,6 +37,11 @@ describe("provision-docker.sh", () => {
     assert.match(argv, /^docker\trun\t--rm\t--pull=never\t--init/m);
     assert.doesNotMatch(argv, /--mount|--volume|runner-cache/);
     assert.match(argv, /--label\trunner-center\.profile=rc-linux-js/);
+    // The whole point of #80: --cpus is a quota, --cpuset-cpus is what nproc,
+    // os.availableParallelism() and runtime.NumCPU() actually read.
+    assert.match(argv, /--cpus\t4\t--cpuset-cpus\t4-7\t/);
+    assert.match(argv, /--env\tRC_VCPUS=4\t/);
+    assert.match(argv, /--env\tRC_MEMORY_MIB=8192\t/);
     assert.match(
       argv,
       new RegExp(
@@ -67,6 +73,66 @@ describe("provision-docker.sh", () => {
     assert.match(result.stderr, /exceeded RC_JOB_TIMEOUT_S/);
     assert.match(harness.argv(), /^docker\tstop\t--time\t30\trc-test-runner$/m);
     assert.match(harness.argv(), /^docker\trm\t-f\trc-test-runner$/m);
+  });
+
+  // A cpuset the Agent did not size to the Profile is the same lie in a new
+  // place: a job on eight CPUs that believes it has four is as wrong as one on
+  // four that believes it has sixty-four.
+  it("refuses a core range whose width is not RC_VCPUS", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, {
+      env: env({ RC_CPUSET_CPUS: "0-7" }),
+    });
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /covers 8 CPUs but RC_VCPUS is 4/);
+    assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+  });
+
+  // Overlapping ranges sum to the right width while covering fewer CPUs, so a
+  // width check alone would pass `0-1,1-2` for four vCPUs and Docker would hand
+  // the job three.
+  it("refuses overlapping ranges that add up to the right width", async () => {
+    for (const cpuset of ["0-1,1-2", "0,0,1,1", "0-3,2-3"]) {
+      const harness = new Harness();
+      const result = await harness.run(PROVISION_DOCKER, { env: env({ RC_CPUSET_CPUS: cpuset }) });
+
+      assert.equal(result.code, 2, cpuset);
+      assert.match(result.stderr, /RC_CPUSET_CPUS/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
+
+  it("accepts a range list that is discontiguous but disjoint", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, { env: env({ RC_CPUSET_CPUS: "0-1,8-9" }) });
+
+    assert.equal(result.code, 0);
+    assert.match(harness.argv(), /--cpus\t4\t--cpuset-cpus\t0-1,8-9\t/);
+  });
+
+  it("refuses a core range that is not a CPU list", async () => {
+    for (const cpuset of ["all", "0-", "0,,1", "-1", "7-4"]) {
+      const harness = new Harness();
+      const result = await harness.run(PROVISION_DOCKER, { env: env({ RC_CPUSET_CPUS: cpuset }) });
+
+      assert.equal(result.code, 2, cpuset);
+      assert.match(result.stderr, /RC_CPUSET_CPUS/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
+
+  // There is no quota-only fallback. A container that quietly reads the host's
+  // core count is the defect, so its absence stops the job instead.
+  it("refuses to start at all without a core range", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, {
+      env: { ...env(), RC_CPUSET_CPUS: "" },
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /RC_CPUSET_CPUS is required/);
+    assert.doesNotMatch(harness.argv(), /^docker\trun/m);
   });
 
   it("deletes the container when the Agent terminates it", async () => {

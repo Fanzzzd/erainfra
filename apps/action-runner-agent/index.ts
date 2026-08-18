@@ -8,6 +8,14 @@ import {
   type BenchmarkReport,
 } from "./benchmark.js";
 import { config } from "./config.js";
+import {
+  CoreAllocator,
+  CoreExhaustedError,
+  CPUSET_EXHAUSTED_EXIT,
+  reconcileDockerReservations,
+  RECONCILE_INTERVAL_MS,
+  withCores,
+} from "./cpuset.js";
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
   spawnAttempt,
@@ -166,6 +174,23 @@ let recoveryRevision = 0;
 let completedRecoveryRevision = 0;
 let recoveringRuntime = false;
 let recoveryRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let coreReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * The Worker's CPUs, handed out in disjoint ranges so no two concurrent
+ * Attempts share a core and every job's `nproc` is its own size (#80).
+ */
+const cores = new CoreAllocator();
+
+/**
+ * The vCPUs an executor takes out of *this* Worker's cores, or undefined when
+ * it takes none of them. Docker containers and Firecracker microVMs both run
+ * here; a Tart or Hyper-V Attempt runs a guest whose own provisioner owns the
+ * host's capacity guard, and neither has a cpuset to be given.
+ */
+function coreBoundVcpus(executor: AttemptExecution["executor"], vcpus: number) {
+  return executor === "docker" || executor === "firecracker" ? vcpus : undefined;
+}
 
 function scheduleBenchmark(delayMs: number) {
   if (shuttingDown) return;
@@ -253,6 +278,7 @@ async function runLegacyCommand(item: Extract<WorkItem, { kind: "command" }>) {
 async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) {
   let exitCode = 1;
   let claimedByThisAgent = false;
+  const key = workKey(item.kind, item.id);
   try {
     const claimed = await client.mutation(claimAttempt, {
       token: config.machineToken,
@@ -261,18 +287,35 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
     if (claimed === null) return;
     claimedByThisAgent = true;
     console.log(`Starting ${claimed.executor} Attempt ${claimed.runnerName}`);
-    const child = spawnAttempt({ attemptId: item.id, ...claimed });
-    running.set(workKey(item.kind, item.id), child);
-    try {
-      if (child.pid === undefined) {
-        throw new Error(`The ${claimed.executor} executor did not spawn`);
-      }
-      const result = await child;
-      exitCode = result.exitCode ?? 1;
-    } finally {
-      running.delete(workKey(item.kind, item.id));
-    }
+    exitCode = await withCores(
+      cores,
+      {
+        key,
+        vcpus: coreBoundVcpus(claimed.executor, claimed.vcpus),
+        containerName: claimed.executor === "docker" ? claimed.runnerName : undefined,
+      },
+      async (reservation) => {
+        if (reservation !== undefined) {
+          console.log(
+            `Attempt ${claimed.runnerName} holds CPUs ${reservation.spec}; ` +
+              `${cores.freeCores} of ${cores.totalCores} free`,
+          );
+        }
+        const child = spawnAttempt({ attemptId: item.id, ...claimed, cpuset: reservation?.spec });
+        running.set(key, child);
+        try {
+          if (child.pid === undefined) {
+            throw new Error(`The ${claimed.executor} executor did not spawn`);
+          }
+          const result = await child;
+          return result.exitCode ?? 1;
+        } finally {
+          running.delete(key);
+        }
+      },
+    );
   } catch (error) {
+    exitCode = error instanceof CoreExhaustedError ? CPUSET_EXHAUSTED_EXIT : 1;
     console.error(`Attempt ${item.runnerName} failed`, error);
   } finally {
     if (claimedByThisAgent) {
@@ -292,6 +335,7 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
 async function runExperiment(item: Extract<WorkItem, { kind: "experiment" }>) {
   let exitCode = 1;
   let claimedByThisAgent = false;
+  const key = workKey(item.kind, item.id);
   try {
     const claimed = await client.mutation(claimExperiment, {
       token: config.machineToken,
@@ -300,26 +344,32 @@ async function runExperiment(item: Extract<WorkItem, { kind: "experiment" }>) {
     if (claimed === null) return;
     claimedByThisAgent = true;
     console.log(`Starting Experiment ${claimed.name} with ${claimed.profile}`);
-    const child = spawnExperiment({ experimentId: item.id, ...claimed });
-    running.set(workKey(item.kind, item.id), child);
-    try {
-      if (child.pid === undefined) {
-        throw new Error("The Firecracker Experiment executor did not spawn");
+    // An Experiment takes the same capacity an Attempt does, by design, so it
+    // reserves cores on the same allocator. It gets no cpuset: its executor is
+    // Firecracker, whose guest has real vCPUs and an honest `nproc`.
+    exitCode = await withCores(cores, { key, vcpus: claimed.vcpus }, async () => {
+      const child = spawnExperiment({ experimentId: item.id, ...claimed });
+      running.set(key, child);
+      try {
+        if (child.pid === undefined) {
+          throw new Error("The Firecracker Experiment executor did not spawn");
+        }
+        const accepted = await client.mutation(markExperimentRunning, {
+          token: config.machineToken,
+          experimentId: item.id,
+        });
+        if (!accepted) {
+          child.kill();
+          throw new Error("The control plane cancelled the Experiment while it was starting");
+        }
+        const result = await child;
+        return result.exitCode ?? 1;
+      } finally {
+        running.delete(key);
       }
-      const accepted = await client.mutation(markExperimentRunning, {
-        token: config.machineToken,
-        experimentId: item.id,
-      });
-      if (!accepted) {
-        child.kill();
-        throw new Error("The control plane cancelled the Experiment while it was starting");
-      }
-      const result = await child;
-      exitCode = result.exitCode ?? 1;
-    } finally {
-      running.delete(workKey(item.kind, item.id));
-    }
+    });
   } catch (error) {
+    exitCode = error instanceof CoreExhaustedError ? CPUSET_EXHAUSTED_EXIT : 1;
     console.error(`Experiment ${item.runnerName} failed`, error);
   } finally {
     if (claimedByThisAgent) {
@@ -417,6 +467,51 @@ async function drainRuntimeRecovery() {
   }
 }
 
+/**
+ * Re-checks the cores held by containers this Agent did not start. Scheduled
+ * only while something is adopted, or after a failed pass, so a Worker that
+ * came up clean issues no Docker commands at all.
+ */
+function scheduleCoreReconcile(afterFailure: boolean) {
+  if (coreReconcileTimer !== undefined) {
+    clearTimeout(coreReconcileTimer);
+    coreReconcileTimer = undefined;
+  }
+  if (shuttingDown) return;
+  if (!afterFailure && !cores.reservations().some((reservation) => reservation.adopted)) return;
+  coreReconcileTimer = setTimeout(() => void reconcileCoreReservations(), RECONCILE_INTERVAL_MS);
+}
+
+async function reconcileCoreReservations() {
+  if (shuttingDown) return;
+  let failed = false;
+  try {
+    const { adopted, released, unpinned } = await reconcileDockerReservations(cores);
+    if (adopted.length + released.length + unpinned.length > 0) {
+      console.log(
+        `Core reservations: adopted ${adopted.length} surviving container(s), released ` +
+          `${released.length}, ${unpinned.length} running without a cpuset; ` +
+          `${cores.freeCores} of ${cores.totalCores} CPUs free`,
+      );
+    }
+    if (unpinned.length > 0) {
+      // The one reconcile outcome that leaves real contention standing: an
+      // unpinned container floats across every CPU, including the ones the next
+      // Attempt is about to be pinned to. A count cannot be acted on; a name can.
+      console.error(
+        `Container(s) ${unpinned.join(", ")} run with no cpuset and float across every CPU ` +
+          `on this Worker; Attempts placed here will contend with them`,
+      );
+    }
+    if (released.length > 0) pump();
+  } catch (error) {
+    failed = true;
+    console.error("Reconciling Docker core reservations failed", error);
+  } finally {
+    scheduleCoreReconcile(failed);
+  }
+}
+
 function pump() {
   if (
     shuttingDown ||
@@ -426,7 +521,11 @@ function pump() {
   ) {
     return;
   }
-  while (active < maxSlots && queue.length > 0) {
+  // A Worker with no free core cannot give the next Attempt a cpuset, and its
+  // size is only known after the claim — so admitting one here would claim it
+  // and immediately refuse it. Waiting costs nothing: every release pumps
+  // again, including the reconciler's.
+  while (active < maxSlots && cores.freeCores > 0 && queue.length > 0) {
     const item = queue.shift();
     if (item === undefined) break;
     active += 1;
@@ -519,7 +618,7 @@ async function refreshProfiles() {
               cacheScope: "immutable-image",
               cacheSharedWritable: false,
             }
-          : await prepareProfile(profile);
+          : await prepareProfile(profile, { hostCores: cores.totalCores });
         if (profile.executor === "firecracker" && !blockedByPoolCapacity) {
           preparedFirecrackerProfiles.add(profile.profile);
         }
@@ -570,6 +669,14 @@ discoveredProfiles = initialProfiles;
 latestLiveAttemptIds = new Set(initialAttempts.liveAttemptIds);
 latestLiveExperimentIds = new Set(initialExperiments.liveExperimentIds);
 await recoverFirecrackerOrphans(discoveredProfiles, liveFirecrackerIds());
+// Reservations live in this process and the containers holding them do not, so
+// a Worker whose Agent was killed comes back believing every CPU is free while
+// the previous run's containers are still pinned to some of them. Reconcile
+// against the daemon before any of the capacity below is advertised, for the
+// same reason the privileged runtime is reconciled first.
+if (discoveredProfiles.some((profile) => profile.executor === "docker")) {
+  await reconcileCoreReservations();
+}
 
 const hostCapacity = await client.mutation(reportHostFacts, {
   token: config.machineToken,
@@ -662,6 +769,7 @@ async function shutdown(signal: string) {
   if (readinessTimer !== undefined) clearTimeout(readinessTimer);
   if (benchmarkTimer !== undefined) clearTimeout(benchmarkTimer);
   if (recoveryRetryTimer !== undefined) clearTimeout(recoveryRetryTimer);
+  if (coreReconcileTimer !== undefined) clearTimeout(coreReconcileTimer);
   unsubscribeCommands();
   unsubscribeAttempts();
   unsubscribeExperiments();

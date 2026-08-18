@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 
@@ -173,12 +173,25 @@ export function architectureMismatch(hostArch: string, imageArch: string): strin
   return `this Worker is ${wanted} but the Image Release is built for ${imageArch}; the job would run under emulation or not at all`;
 }
 
-async function prepareDocker(profile: ProfileSpec): Promise<ReadinessResult> {
+async function prepareDocker(profile: ProfileSpec, cores: number): Promise<ReadinessResult> {
   const checks: ReadinessCheck[] = [];
   const fail = (name: string, detail: string): ReadinessResult => {
     checks.push({ name, passed: false, detail });
     return { state: "failed", error: detail, ...dockerFacts(checks) };
   };
+  // Every Attempt is pinned to its own disjoint range of this Worker's CPUs, so
+  // a Profile wider than the Worker can never be given one and every Attempt
+  // placed here would be refused at run time forever. Readiness is where a
+  // static mismatch belongs, and it is proved first because it is the one check
+  // no daemon, pull or retry can change (#9, #80).
+  if (profile.vcpus > cores) {
+    return fail(
+      "cpu-capacity",
+      `this Worker has ${cores} CPUs but the Profile asks for ${profile.vcpus}; ` +
+        `no Attempt could be given a core range of that width`,
+    );
+  }
+  checks.push({ name: "cpu-capacity", passed: true, detail: `${profile.vcpus} of ${cores} CPUs` });
   try {
     const info = await execa("docker", ["info", "--format", "{{.ServerVersion}}"], {
       timeout: 30_000,
@@ -339,7 +352,10 @@ function failureOf(facts: ReadinessFacts, stderr: string) {
   );
 }
 
-export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessResult> {
+export async function prepareProfile(
+  profile: ProfileSpec,
+  options: { hostCores?: number } = {},
+): Promise<ReadinessResult> {
   // Both Linux executors already refuse a mutable reference at job time, so
   // failing here moves that rejection to readiness. Tart performs the same
   // check in its branch so it can still report the independent binary check.
@@ -363,7 +379,7 @@ export async function prepareProfile(profile: ProfileSpec): Promise<ReadinessRes
   }
   switch (profile.executor) {
     case "docker":
-      return prepareDocker(profile);
+      return prepareDocker(profile, options.hostCores ?? availableParallelism());
     case "firecracker":
       return prepareFirecracker(profile);
     case "tart": {
