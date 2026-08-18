@@ -12,6 +12,10 @@
 # Security model of the produced image:
 #   - The Actions runner archive is pinned by version and SHA-256 and verified
 #     in the guest before it is expanded. A mismatch fails the build.
+#   - git, Node.js and Python come from their vendors under the same rule: an
+#     explicit version, an explicit SHA-256, verified before the installer is
+#     executed, and asserted onto the machine PATH afterwards. A tool that does
+#     not install fails the build instead of shipping a hollow image.
 #   - No AutoLogon is configured, so no plaintext password is ever written to
 #     HKLM\...\Winlogon. Provisioning runs from SetupComplete.cmd as SYSTEM at
 #     the end of setup, before any interactive logon exists.
@@ -53,6 +57,22 @@ param(
     # from the actions/runner release; update them together.
     [string] $RunnerVersion = '2.336.0',
     [string] $RunnerSha256 = 'd59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162',
+    # The tooling every checkout needs, pinned exactly the way the runner above
+    # is: a version, a SHA-256 of the vendor's own artifact, and no resolution
+    # of "whatever is newest" at build time. Bump a version and its digest in
+    # the same edit; the guest refuses a download that hashes to anything else.
+    #   git    https://github.com/git-for-windows/git/releases
+    #   node   https://nodejs.org/dist/v<version>/SHASUMS256.txt
+    #   python https://www.python.org/downloads/release/python-<version>/
+    [string] $GitVersion = '2.55.0',
+    # Git for Windows re-releases one upstream version several times; the tag is
+    # v<GitVersion>.windows.<GitWindowsRevision> and the digest is per revision.
+    [int] $GitWindowsRevision = 4,
+    [string] $GitSha256 = '0cbc0b34a74b3aff3ace0910328549155a770e228331b19cb1498218a120e7ff',
+    [string] $NodeVersion = '24.19.0',
+    [string] $NodeSha256 = 'f0f66c2a80c08a30a5ab5179ee9ea9e45f9b46289436a8cc87ff833b852db351',
+    [string] $PythonVersion = '3.13.15',
+    [string] $PythonSha256 = 'edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403',
     [switch] $DisableDefenderRealtime
 )
 
@@ -93,6 +113,27 @@ if ($RunnerVersion -notmatch '^\d+\.\d+\.\d+$') {
 }
 if ($RunnerSha256 -notmatch '^[0-9a-fA-F]{64}$') {
     throw '-RunnerSha256 must be 64 hex characters.'
+}
+if ($GitVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "-GitVersion must look like 2.55.0, got '$GitVersion'."
+}
+if ($GitWindowsRevision -lt 1) {
+    throw "-GitWindowsRevision must be the Git for Windows revision of that tag, got '$GitWindowsRevision'."
+}
+if ($GitSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw '-GitSha256 must be 64 hex characters.'
+}
+if ($NodeVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "-NodeVersion must look like 24.19.0, got '$NodeVersion'."
+}
+if ($NodeSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw '-NodeSha256 must be 64 hex characters.'
+}
+if ($PythonVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "-PythonVersion must look like 3.13.15, got '$PythonVersion'."
+}
+if ($PythonSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw '-PythonSha256 must be 64 hex characters.'
 }
 
 $imageDir = Join-Path $RcHome 'images'
@@ -198,6 +239,13 @@ try {
     $provisionPrelude = @"
 `$RcRunnerVersion = '$RunnerVersion'
 `$RcRunnerSha256 = '$RunnerSha256'
+`$RcGitVersion = '$GitVersion'
+`$RcGitWindowsRevision = $GitWindowsRevision
+`$RcGitSha256 = '$GitSha256'
+`$RcNodeVersion = '$NodeVersion'
+`$RcNodeSha256 = '$NodeSha256'
+`$RcPythonVersion = '$PythonVersion'
+`$RcPythonSha256 = '$PythonSha256'
 `$RcGuestUser = '$GuestUser'
 `$RcDisableDefenderRealtime = `$$($DisableDefenderRealtime.IsPresent)
 "@
@@ -207,6 +255,37 @@ try {
     # worse than none. Never echo a credential into the transcript.
     $provisionBody = @'
 $ErrorActionPreference = 'Stop'
+
+# Fetch one pinned artifact and prove it is the artifact that was pinned, in
+# that order and with nothing in between: a file that fails this never becomes
+# an argument to anything.
+function Save-RcPinnedDownload([string] $Url, [string] $Path, [string] $Sha256) {
+    $name = Split-Path $Path -Leaf
+    Invoke-WebRequest -Uri $Url -OutFile $Path -UseBasicParsing
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+    if ($actual -ne $Sha256.ToUpperInvariant()) {
+        Remove-Item $Path -Force -ErrorAction SilentlyContinue
+        throw "$name SHA-256 mismatch: expected $Sha256, got $actual"
+    }
+    Write-Host "verified $name ($actual)"
+}
+
+# Run one verified installer and read the code it actually returned.
+# $ErrorActionPreference has no bearing on a native exit code, and these are
+# GUI-subsystem binaries that '&' does not wait for, so a $LASTEXITCODE read
+# straight after '&' would describe a process that is still running. Wait for
+# the process, then check it.
+function Install-RcPinnedTool([string] $Name, [string] $Program, [string[]] $ArgumentList) {
+    $process = Start-Process -FilePath $Program -ArgumentList $ArgumentList -Wait -PassThru
+    $code = $process.ExitCode
+    # 3010 is ERROR_SUCCESS_REBOOT_REQUIRED, and provisioning shuts the guest
+    # down when it finishes, so the restart the installer asked for happens.
+    if ($code -ne 0 -and $code -ne 3010) {
+        throw "the $Name installer exited with $code"
+    }
+    Write-Host "installed $Name (installer exit=$code)"
+}
+
 $log = 'C:\rc-provision.log'
 Start-Transcript -Path $log -Append
 try {
@@ -240,15 +319,81 @@ try {
         Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
     }
 
-    # Best effort: winget is absent from Server images and unreliable under
-    # SYSTEM. Missing extra tooling must not fail the image.
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        foreach ($pkg in @('Git.Git', 'OpenJS.NodeJS.LTS', 'Python.Python.3.12')) {
-            winget install --id $pkg --silent --accept-source-agreements --accept-package-agreements --scope machine
-            "winget $pkg exit=$LASTEXITCODE"
-        }
-    } else {
-        'winget is unavailable; skipping extra tooling'
+    # A missing tool fails the image, reversing this file's earlier "Missing
+    # extra tooling must not fail the image". git, node and python are not
+    # extras: actions/checkout is git, and the setup-* actions bootstrap from a
+    # host interpreter. An image blessed without them fails every job ever
+    # placed onto it, at the first step, in a way that reads like the user's
+    # fault. C:\rc-provision-complete is a bless signal and it means one thing
+    # -- everything this image promises is present -- so the absence of a tool
+    # must not be able to produce it. Recording the gap instead would need a
+    # placement-time check in the scheduler that does not exist yet; until it
+    # does, recording is today's silent shipping with better logging. Stopping
+    # here spends one builder's time once instead of every job's time forever.
+    #
+    # The package manager this replaces ships on no Windows Server SKU, so on
+    # 2022 the whole block was a log line and a shrug. Nothing here needs one:
+    # every vendor publishes an installer and a digest for it.
+    $gitInstallerName = "Git-$RcGitVersion.$RcGitWindowsRevision-64-bit.exe"
+    if ($RcGitWindowsRevision -eq 1) {
+        # Only revision 1 is published without the revision in the file name.
+        $gitInstallerName = "Git-$RcGitVersion-64-bit.exe"
+    }
+    $gitInstaller = Join-Path $env:TEMP $gitInstallerName
+    $gitUrl = "https://github.com/git-for-windows/git/releases/download/v$RcGitVersion.windows.$RcGitWindowsRevision/$gitInstallerName"
+    Save-RcPinnedDownload $gitUrl $gitInstaller $RcGitSha256
+    # PathOption=Cmd is the option that puts git.exe on the machine PATH, which
+    # is the thing asserted below; the rest just keep the installer silent.
+    Install-RcPinnedTool 'git' $gitInstaller @(
+        '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-', '/SUPPRESSMSGBOXES', '/o:PathOption=Cmd')
+    Remove-Item $gitInstaller -Force
+
+    $nodeInstallerName = "node-v$RcNodeVersion-x64.msi"
+    $nodeInstaller = Join-Path $env:TEMP $nodeInstallerName
+    $nodeUrl = "https://nodejs.org/dist/v$RcNodeVersion/$nodeInstallerName"
+    Save-RcPinnedDownload $nodeUrl $nodeInstaller $RcNodeSha256
+    # An .msi is data, not a program: msiexec is the program that runs it.
+    Install-RcPinnedTool 'node' 'msiexec.exe' @('/i', "`"$nodeInstaller`"", '/qn', '/norestart')
+    Remove-Item $nodeInstaller -Force
+
+    $pythonInstallerName = "python-$RcPythonVersion-amd64.exe"
+    $pythonInstaller = Join-Path $env:TEMP $pythonInstallerName
+    $pythonUrl = "https://www.python.org/ftp/python/$RcPythonVersion/$pythonInstallerName"
+    Save-RcPinnedDownload $pythonUrl $pythonInstaller $RcPythonSha256
+    # InstallAllUsers makes it a machine installation; PrependPath is what adds
+    # it to the machine PATH rather than to SYSTEM's own profile.
+    Install-RcPinnedTool 'python' $pythonInstaller @(
+        '/quiet', 'InstallAllUsers=1', 'PrependPath=1', 'Include_test=0')
+    Remove-Item $pythonInstaller -Force
+
+    # An installer's PATH edit is visible only to sessions started after it, so
+    # this process's $env:PATH proves nothing about the image; the machine value
+    # in the registry is what a job's shell will inherit. The @(...) wrap and
+    # the .Count test are load-bearing: a one-element pipeline result is not an
+    # array in PowerShell, so -not $found misreads exactly the case that matters.
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    # The stored machine value may still carry unexpanded %SystemRoot% entries.
+    $machinePath = [Environment]::ExpandEnvironmentVariables($machinePath)
+    foreach ($exe in @('git.exe', 'node.exe', 'python.exe')) {
+        # Join-Path parses its first argument as a drive, so one quoted entry in
+        # the machine PATH -- installers do write those -- would throw here and
+        # fail the build for a reason that has nothing to do with the tools.
+        # Trim the entry and probe it literally instead.
+        $found = @($machinePath.Split(';') |
+            Where-Object { $_ } |
+            ForEach-Object { $_.Trim('"').TrimEnd('\') + '\' + $exe } |
+            Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue })
+        if ($found.Count -eq 0) { throw "$exe is not on the machine PATH after provisioning" }
+        $resolved = $found[0]
+        # These three are console applications, so '&' does wait for them and
+        # $LASTEXITCODE describes the run that just finished.
+        # Capture every line rather than piping to Select-Object: stopping a
+        # pipeline early kills the native command and leaves $LASTEXITCODE
+        # describing the kill instead of the run.
+        $reported = @(& $resolved --version)
+        if ($LASTEXITCODE -ne 0) { throw "$resolved --version exited with $LASTEXITCODE" }
+        # What the image ships, in the transcript, so it can be audited later.
+        "$exe -> $resolved ($($reported[0]))"
     }
 
     # Nobody has the built-in Administrator's throwaway password, and nobody
@@ -398,6 +543,12 @@ try {
         guestUser = $GuestUser
         runnerVersion = $RunnerVersion
         runnerSha256 = $RunnerSha256.ToLowerInvariant()
+        gitVersion = "$GitVersion.windows.$GitWindowsRevision"
+        gitSha256 = $GitSha256.ToLowerInvariant()
+        nodeVersion = $NodeVersion
+        nodeSha256 = $NodeSha256.ToLowerInvariant()
+        pythonVersion = $PythonVersion
+        pythonSha256 = $PythonSha256.ToLowerInvariant()
         defenderRealtimeDisabled = [bool] $DisableDefenderRealtime
         builtAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     } | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding UTF8
