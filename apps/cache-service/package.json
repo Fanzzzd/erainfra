@@ -1,6 +1,5 @@
 {
   "name": "@erainfra/cache-service",
-  "version": "0.2.0-rc.6",
   "private": true,
   "scripts": {
     "build": "mkdir -p dist && go build -o dist/erainfra-cache-service ./cmd/erainfra-cache-service",
