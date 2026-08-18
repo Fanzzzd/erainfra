@@ -35,6 +35,7 @@
     },
     {
       "files": [
+        ".github/probes/**",
         "apps/action-runner-agent/**",
         "apps/hub/**",
         "packages/backend/scripts/**",
