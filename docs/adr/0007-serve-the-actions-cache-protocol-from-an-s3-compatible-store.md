@@ -63,8 +63,17 @@ L001–L006 with the variable absent, L007–L012 with it present). The pinned
 `actions-runner:2.336.0` does not choose either: its `Runner.Worker.dll` carries the literal pairs
 `CacheServerUrl`/`ACTIONS_CACHE_URL`, `ResultsServiceUrl`/`ACTIONS_RESULTS_URL` and
 `actions_uses_cache_service_v2`/`ACTIONS_CACHE_SERVICE_V2`, which is a relay of a server-delivered
-job flag, not a decision. The consequence is good news: **EraInfra composes the job environment, so
-EraInfra picks the generation.**
+job flag, not a decision.
+
+**And EraInfra does not own that flag either.** `actions_uses_cache_service_v2` arrives in GitHub's
+job message; the runner maps it into the step environment. EraInfra's controller creates the JIT
+runner and observes `JobStarted` — it does not author the job message, so it cannot set the flag
+there. Overriding the value the runner injects, from outside the runner, is a _possible_ route and
+is exactly what third-party cache proxies do, but **whether an EraInfra-supplied value survives the
+runner's own injection is unmeasured here** and is a stage-C prerequisite, not an assumption this
+ADR is allowed to make. An earlier draft of this ADR said "EraInfra composes the job environment, so
+EraInfra picks the generation." That was wrong twice over — it skipped the origin of the flag and it
+skipped the override question — and it is retracted.
 
 **But it cannot pick only one.** Client version still decides in both directions. `actions/cache`
 v4.0.2 — which plenty of workflows still pin — has no v2 code path and stays on v1 even with the
@@ -98,6 +107,19 @@ one that names them.
   GitHub's service sets `actions_uses_cache_service_v2`, so a fleet that relays GitHub's flag
   instead of setting its own would be relying on unmeasured behaviour.
 - **BuildKit against malformed v1 responses** — only its v2 fault behaviour was observed.
+- **Whether a value EraInfra sets for `ACTIONS_CACHE_SERVICE_V2` survives the runner's own
+  injection.** The string table proves the runner writes that variable from the job message; it says
+  nothing about what happens to a value already present in the process environment. Stage C has to
+  measure this before any part of the design leans on choosing a generation.
+- **GitHub's branch-fallback ordering.** The capture establishes that v1 `keys` is a prefix match
+  (L072) and that v2 accepts a `restore_keys` array (L115). It contains **no multi-entry
+  `restore_keys` case and no non-`main` ref**, so it does not establish own-ref → base-ref →
+  default-branch ordering, and it does not demonstrate sibling-branch exclusion. Rule 3 below is
+  therefore a stage-B requirement to be proved by test, not a measured fact.
+- **Anything other than an HTTP response.** The fault matrix covers `404` and `500` bodies. DNS
+  failure, connection refusal, a TLS error and an endpoint that never answers are **not measured**,
+  so the "restores degrade to misses" property below is claimed only for the HTTP shapes captured,
+  and the timeout and retry budgets that would make it true for the rest are stage-B work.
 - **Any latency or throughput number for a colocated store versus R2 versus GitHub.** The two-case
   recommendation below rests on where the bytes travel, not on a benchmark; the actual delta is
   stage C's job to report, on real Profiles, the way #80's canary reported its numbers.
@@ -118,19 +140,36 @@ setup actions speak the cache protocol directly through their bundled `@actions/
 buildx's `type=gha`; a per-Attempt environment captures all of them with no workflow change at all.
 
 **Implement both API generations.** Not as a migration with a deprecation date — as a standing
-requirement, for the reason measured above. `ACTIONS_CACHE_URL` and `ACTIONS_RESULTS_URL` are both
-injected, and `ACTIONS_CACHE_SERVICE_V2` is set. Clients that can use v2 will; clients that cannot
-fall back to v1 and must still work.
+requirement, for two reasons rather than one: client version overrides the flag in both directions
+(measured), and the flag itself is GitHub's to set (above). `ACTIONS_CACHE_URL` and
+`ACTIONS_RESULTS_URL` are both pointed at EraInfra's service. Clients that reach for v2 must find
+it; clients that fall back to v1 must find that too, and neither path may be the one that only
+works by accident.
+
+Concretely, **v1 is the path that has to work with no assumptions at all**, because it is what every
+client we drove uses when the flag is absent. Nothing may ship that relies on v2 being selected
+until a job running on a real Attempt has been observed choosing it — an end-to-end test, not a
+capture against a stand-in. That test is a stage-C exit condition.
 
 **The store is S3-compatible with a configurable endpoint.** One `endpoint / bucket / access key /
 secret` contract covers R2, S3, MinIO, Garage, SeaweedFS and Ceph, and no vendor name appears in the
 design. This is deliberately an operator's decision and not an architectural one, because the right
 answer depends on a fact the design cannot know — where the Workers are:
 
-- **Workers on the operator's own network**, which is this product's entire premise: put the store on
-  the same LAN — MinIO or Garage on a Worker or a NAS. This is where the speedup actually comes
-  from. The win is bandwidth and latency, not the storage vendor; a remote bucket recovers some of
-  the gap to a colocated competitor, a local one recovers all of it.
+- **Workers on the operator's own network**, which is this product's entire premise: put the store
+  on the same LAN — MinIO or Garage on a NAS, or on a machine that is not a Worker. This is where
+  the speedup actually comes from. The win is bandwidth and latency, not the storage vendor; a
+  remote bucket recovers some of the gap to a colocated competitor, a local one recovers all of it.
+
+  **"On the same LAN" means a different host, and that is a constraint rather than a preference.**
+  ADR 0002's nftables table `inet runner-center` drops guest traffic to the host itself, so a store
+  running on a Worker is not reachable from that Worker's own jobs without punching a hole in
+  exactly the rule ADR 0002 added — and that rule is verified at readiness, so the hole would have
+  to be rendered and verified too. Beyond reachability it is the wrong shape: persistent writable
+  storage on a machine that also runs untrusted jobs is a target sitting inside the blast radius,
+  and the isolation argument in this ADR rests on the cache being somewhere the job can only reach
+  as an authenticated network client.
+
 - **No colocated store, or a fleet spread across sites:** R2 over S3, decisively. A CI cache is
   egress-dominated — written once per key, restored by every job on every branch — so on S3 that
   egress is most of the bill and on R2 it is zero. R2 speaks the S3 API, so choosing it now costs
@@ -145,11 +184,17 @@ stages B and C. A cache is a supply-chain surface: whoever can write an entry in
 every later job that restores it. These are stated as a contract because each has to be a test
 before it is a feature.
 
-1. **Scope by repository.** A job for repository A can neither read nor write repository B's
-   entries. The object key prefix is derived from the per-Attempt **token**, never from anything in
-   the request body. This is not a detail of how the prefix is computed: the capture shows the
-   client sends `key` and `version` and nothing else that identifies a repository (L008, L020), so
-   any repository identity the service reads out of the request is identity the _client_ chose.
+1. **Scope by an authenticated repository claim carried in the token.** A job for repository A can
+   neither read nor write repository B's entries. This has to be stated more precisely than "derive
+   the prefix from the per-Attempt token", because a per-Attempt token by itself would give every
+   Attempt its own prefix and the cache would never hit: what the prefix derives from is a
+   **repository claim inside the token that is stable across Attempts and minted by the issuer, not
+   supplied by the job**. A request whose token carries no such claim is rejected rather than
+   defaulted. The capture shows why nothing else can carry it: the client sends `key` and `version`
+   and nothing that identifies a repository (L008, L020), so any repository identity the service
+   reads out of a request is identity the _client_ chose. Two tests, not one: two Attempts for the
+   same repository hit each other's entries, and an Attempt for another repository is denied the
+   same key.
 
 2. **A fork pull request must never write.** This is the poisoning attack, and the one to get right
    first. GitHub-hosted runners already enforce it; a self-hosted fleet that omits it has shipped a
@@ -166,11 +211,17 @@ before it is a feature.
 3. **Reproduce GitHub's restore fallback exactly: own ref, then base ref, then default branch —
    never a sibling feature branch.** People rely on this for warm caches on new branches, and it is
    simultaneously an isolation property: sibling-branch reads let any branch author stage bytes that
-   another branch picks up. The capture makes the mechanism precise — restore keys are prefix
-   matches, and the client accepts whatever `matched_key`/`cacheKey` the service returns (L072
-   answers a request for `index-D1-1-f921bd05` with `index-D1-1-f921bd05#1`). The service, not the
-   client, decides what a key matches, so scoping the candidate set by ref is the service's job and
-   nothing in the request can be trusted to do it.
+   another branch picks up.
+
+   **This one is a requirement, not a finding.** The capture establishes only the mechanism it runs
+   on — v1 `keys` is a prefix match and the client accepts whatever `matched_key`/`cacheKey` the
+   service returns (L072 answers a request for `index-D1-1-f921bd05` with `index-D1-1-f921bd05#1`),
+   and v2 accepts a `restore_keys` array (L115). It contains no multi-entry `restore_keys` case and
+   no ref other than `refs/heads/main`, so it says nothing about ordering or about sibling-branch
+   exclusion, and this ADR does not claim otherwise. What the mechanism does establish is where the
+   responsibility sits: the service, not the client, decides what a key matches, so scoping the
+   candidate set by ref is the service's job and nothing in the request can be trusted to do it.
+   Stage B proves the ordering with cross-branch tests for both the hit and the poisoning attempt.
 
 4. **The job never holds bucket credentials.** It gets a short-lived, per-Attempt token for
    EraInfra's service, which presigns or proxies. Static bucket keys inside a job would let any job
@@ -181,6 +232,39 @@ before it is a feature.
    one method.
 
 5. **Say so in the readiness evidence.** Below.
+
+### The v2 upload path is Azure-shaped, and "S3-compatible" does not cover it
+
+The one place where "presign against an S3-compatible store" does not simply work, and it is worth
+naming here because it constrains stage B rather than decorating it.
+
+**Downloads presign cleanly.** Every download in the capture — both generations, every client — was
+a plain `GET` with no `Range` or `x-ms-range` header (L006, L012, L030, L040, L073, L116). A
+presigned S3 `GET` satisfies that. `@actions/cache` fetches with its own HTTP client in both
+generations; only BuildKit's v2 path uses an Azure SDK, and it too sent a plain `GET`.
+
+**Uploads do not.** The v2 `signed_upload_url` is consumed by an Azure Blob client: `PUT
+?comp=block&blockid=<base64>` per block, then `PUT ?comp=blocklist` with an XML `<BlockList>` body
+(L033–L037, L081–L085), and the commit response must carry `x-ms-request-id` or `buildkitd`
+segfaults. None of that is S3: S3 has no `comp=block`, its multipart commit is
+`CompleteMultipartUpload` with different XML, and a presigned S3 `PUT` cannot return an
+`x-ms-request-id` header. **A presigned S3 URL therefore cannot be handed out as
+`signed_upload_url`.** Stage B picks one of exactly two answers and this ADR does not pick it for
+them:
+
+- **translate** — `signed_upload_url` points back at EraInfra's own service, which accepts the Azure
+  block protocol, maps blocks to S3 multipart parts and `blocklist` to `CompleteMultipartUpload`,
+  and answers the commit with `x-ms-request-id`. Costs a proxy hop for upload bytes; keeps the store
+  a plain bucket.
+- **front the bucket with an Azure-compatible gateway** — no translation code, but a second piece of
+  infrastructure an operator has to run, which cuts against the one-`endpoint`/`bucket`/`key`/
+  `secret` contract above.
+
+Either way the contract on the commit response is fixed: **`x-ms-request-id` is mandatory**, and it
+is mandatory because of a nil-pointer dereference in a client we do not control, which no amount of
+protocol reasoning would have predicted. Whichever answer stage B picks, the v1 upload path is
+unaffected — it is `PATCH` against our own service already (L021–L028) and never touches a
+presigned URL.
 
 ## Consequences
 
@@ -210,11 +294,21 @@ volume stays deleted.
 
 **The cache is not free and not a Profile promise.** A colocated store is a machine an operator has
 to run and size; a remote bucket is a bill. Neither belongs in a Profile's capacity contract, and a
-Worker must not become unready because a cache is unreachable — restores degrade to misses. The
-capture supports that shape: every wrong-shaped _restore_ response we injected produced a warning
-and a slower job rather than a failed one (L121–L128). Uploads are where it is not free — a
-malformed _success_ response on the v2 commit path panics `buildkitd` and fails the build — so the
-service's upload path needs the harder tests.
+Worker must not become unready because a cache is unreachable.
+
+The capture supports that shape **only as far as it goes, which is HTTP responses**: every
+wrong-shaped _restore_ response we injected produced a warning and a slower job rather than a failed
+one (L121–L128), and the worst of them cost about 30 seconds of backoff per restore step. That is
+not the same as proving the property for an unreachable endpoint. DNS failure, connection refusal, a
+TLS error and a service that accepts the connection and never answers are **unmeasured**, and the
+last one is the dangerous shape, because a client with no deadline turns a cache outage into a job
+that hangs rather than one that misses. Stage B therefore owes an explicit timeout and retry budget
+and a test per fault class; until it exists, "restores degrade to misses" is a claim about `404` and
+`500`, not about the network.
+
+Uploads are where it is not free even on the measured path — a malformed _success_ response on the
+v2 commit path panics `buildkitd` and fails the build — so the service's upload path needs the
+harder tests.
 
 **Stage B inherits a specification, not a guess.** The endpoint list, request and response bodies,
 chunking, the `204`-versus-`{"ok":false}` miss shapes, the prefix-match requirement, the
@@ -253,11 +347,12 @@ In ADR 0002's own style, stated so that a future reader can check it rather than
 - **Implement only Cache Service v2, on the grounds that it is current:** rejected, measured.
   `actions/cache` v4.0.2 has no v2 code path (L013–L018) and buildx v0.20.1 does not select v2 even
   when told to (L147–L164). A v2-only service silently loses those clients' caches.
-- **Implement only legacy v1, on the grounds that every client still falls back to it:** rejected.
-  It is true today only because we control the flag, and it means opting the whole fleet out of the
-  generation GitHub is moving to; the v1 upload path is also a single-stream `PATCH` per chunk
-  against our service rather than a presigned object write, which puts the full cache byte volume
-  through the control path.
+- **Implement only legacy v1, on the grounds that every client falls back to it when the flag is
+  absent:** rejected. The fallback is real but the flag is GitHub's, not ours: a job message that
+  carries `actions_uses_cache_service_v2` sends the newer clients to `ACTIONS_RESULTS_URL`, and a
+  v1-only service answers those requests with nothing. The v1 upload path is also a single-stream
+  `PATCH` per chunk against our service rather than a presigned object write, which puts the full
+  cache byte volume through the control path. v1 is the floor, not the ceiling.
 - **Hand jobs bucket credentials directly and skip the service:** rejected. It is the simplest
   design and it hands every untrusted job read-write access to the whole fleet's cache. It also
   cannot enforce rules 1–3, which are the entire answer to ADR 0002's second objection.

@@ -8,9 +8,12 @@ its claims cite the `Lnnn` line numbers in [the transcript](#transcript).
 
 ## Bottom line
 
-1. **There are two live generations and both are still in use today, in the same job.** Legacy v1 is
-   a REST API under `ACTIONS_CACHE_URL`; Cache Service v2 is a twirp API under `ACTIONS_RESULTS_URL`.
-   A service that implements only one of them breaks some clients.
+1. **There are two live generations and both are still in use, across the clients exercised here.**
+   Legacy v1 is a REST API under `ACTIONS_CACHE_URL`; Cache Service v2 is a twirp API under
+   `ACTIONS_RESULTS_URL`. A service that implements only one of them breaks some clients. Each
+   client below was driven on its own, under one condition at a time; **no single job using both
+   generations was captured**, so the coexistence claim is about the client population, not about an
+   observed job.
 2. **The generation is chosen by an environment variable, not by the runner version and not by the
    action version alone.** Every client we drove selects v2 only when `ACTIONS_CACHE_SERVICE_V2` is
    present, and falls back to v1 otherwise — including `actions/cache` v6.1.0, released 2026-06-26
@@ -87,7 +90,7 @@ We pin `ghcr.io/actions/actions-runner:2.336.0`
 consecutive run of UTF-16 strings, which is the mapping the worker uses when it builds a step's
 environment:
 
-```
+```text
 ACTIONS_RUNTIME_URL
 ACTIONS_RUNTIME_TOKEN
 CacheServerUrl
@@ -119,7 +122,7 @@ binary; it does not prove the exact conditions under which the service sets the 
 The first v2 buildx run answered `PUT ?comp=blocklist` with `201` and an `ETag` but no
 `x-ms-request-id`. BuildKit did not fail the export — it crashed:
 
-```
+```text
 panic: runtime error: invalid memory address or nil pointer dereference
 [signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0xcd2a7c]
 github.com/tonistiigi/go-actions-cache.(*Cache).uploadV2(...)
@@ -169,6 +172,13 @@ failed build from a malformed _success_ response.
 - `POST _apis/artifactcache/caches/<cacheId>` body `{"size"}` → `204` commits (L028).
 - Download is a plain `GET` of `archiveLocation` (L030), which need not be on the cache host.
 
+**Downloads carried no range headers, in either generation.** All eight blob `GET`s in this capture
+(L006, L012, L018, L030, L040, L050, L073, L116) arrived with no `Range` and no `x-ms-range`.
+`@actions/cache` fetched with its own client (`User-Agent: actions/cache`) in **both** generations;
+BuildKit used `Go-http-client/1.1` on v1 and `azsdk-go-azblob/v1.5.0` with
+`x-ms-version: 2024-11-04` on v2, and that Azure client also sent a plain `GET`. Larger or resumed
+transfers may range-request; that is **unmeasured**.
+
 ### Cache Service v2 — twirp, under `ACTIONS_RESULTS_URL`
 
 All three are `POST` with `Content-Type: application/json` to
@@ -196,14 +206,14 @@ per-job path prefix the legacy URL carries.
 
 **phase: miss**
 
-```
+```text
 L001  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=key-A1&version=b34e6f1cc07875b8…
       <-- 204 <0 bytes>
 ```
 
 **phase: save**
 
-```
+```text
 L002  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches
       req  {"key":"key-A1","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960","cacheSize":8010521}
       <-- 201 {"cacheId":782669}
@@ -217,7 +227,7 @@ L004  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/782669
 
 **phase: hit**
 
-```
+```text
 L005  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=key-A1&version=b34e6f1cc07875b8…
       <-- 200 {"cacheKey":"key-A1","scope":"refs/heads/main","archiveLocation":"http://127.0.0.1:8721/blob/v1-782669.tzst"}
 L006  GET {signed url}/v1-782669.tzst
@@ -228,7 +238,7 @@ L006  GET {signed url}/v1-782669.tzst
 
 **phase: miss**
 
-```
+```text
 L007  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"key-A2","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960"}
       <-- 200 {"ok":false,"signed_download_url":"","matched_key":""}
@@ -236,7 +246,7 @@ L007  POST twirp CacheService/GetCacheEntryDownloadURL
 
 **phase: save**
 
-```
+```text
 L008  POST twirp CacheService/CreateCacheEntry
       req  {"key":"key-A2","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960"}
       <-- 200 {"ok":true,"signed_upload_url":"http://127.0.0.1:8721/blob/v2-e14f99f6-9594-4034-a1b4-055f49c70891.tzst?sig=stand-in&se=2030-01-01"}
@@ -250,7 +260,7 @@ L010  POST twirp CacheService/FinalizeCacheEntryUpload
 
 **phase: hit**
 
-```
+```text
 L011  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"key-A2","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960"}
       <-- 200 {"ok":true,"signed_download_url":"http://127.0.0.1:8721/blob/v2-e14f99f6-9594-4034-a1b4-055f49c70891.tzst?sig=stand-in","matched_key":"key-A2"}
@@ -262,14 +272,14 @@ L012  GET {signed url}/v2-e14f99f6-9594-4034-a1b4-055f49c70891.tzst
 
 **phase: miss**
 
-```
+```text
 L013  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=key-A3&version=b34e6f1cc07875b8…
       <-- 204 <0 bytes>
 ```
 
 **phase: save**
 
-```
+```text
 L014  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches
       req  {"key":"key-A3","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960","cacheSize":8010447}
       <-- 201 {"cacheId":52297}
@@ -283,7 +293,7 @@ L016  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/52297
 
 **phase: hit**
 
-```
+```text
 L017  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=key-A3&version=b34e6f1cc07875b8…
       <-- 200 {"cacheKey":"key-A3","scope":"refs/heads/main","archiveLocation":"http://127.0.0.1:8721/blob/v1-52297.tzst"}
 L018  GET {signed url}/v1-52297.tzst
@@ -294,14 +304,14 @@ L018  GET {signed url}/v1-52297.tzst
 
 **phase: miss**
 
-```
+```text
 L019  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154&version=13b0cbcf39f1eacf…
       <-- 204 <0 bytes>
 ```
 
 **phase: save**
 
-```
+```text
 L020  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches
       req  {"key":"node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154","version":"13b0cbcf39f1eacfbd22d7a93564786f34bf3f11397a4a1aa82ec6753d628f31","cacheSize":203848100}
       <-- 201 {"cacheId":358496}
@@ -333,7 +343,7 @@ L028  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/358496
 
 **phase: hit**
 
-```
+```text
 L029  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154&version=13b0cbcf39f1eacf…
       <-- 200 {"cacheKey":"node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154","scope":"refs/heads/main","archiveLocation":"http://127.0.0.1:8721/blob/v
 L030  GET {signed url}/v1-358496.tzst
@@ -344,7 +354,7 @@ L030  GET {signed url}/v1-358496.tzst
 
 **phase: miss**
 
-```
+```text
 L031  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154","version":"13b0cbcf39f1eacfbd22d7a93564786f34bf3f11397a4a1aa82ec6753d628f31"}
       <-- 200 {"ok":false,"signed_download_url":"","matched_key":""}
@@ -352,7 +362,7 @@ L031  POST twirp CacheService/GetCacheEntryDownloadURL
 
 **phase: save**
 
-```
+```text
 L032  POST twirp CacheService/CreateCacheEntry
       req  {"key":"node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154","version":"13b0cbcf39f1eacfbd22d7a93564786f34bf3f11397a4a1aa82ec6753d628f31"}
       <-- 200 {"ok":true,"signed_upload_url":"http://127.0.0.1:8721/blob/v2-3bdce9bb-13e9-435e-bf18-62dd4dc996f2.tzst?sig=stand-in&se=2030-01-01"}
@@ -378,7 +388,7 @@ L038  POST twirp CacheService/FinalizeCacheEntryUpload
 
 **phase: hit**
 
-```
+```text
 L039  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2b85871b240918321ce3d4cc13f099bec963093faf7a4154","version":"13b0cbcf39f1eacfbd22d7a93564786f34bf3f11397a4a1aa82ec6753d628f31"}
       <-- 200 {"ok":true,"signed_download_url":"http://127.0.0.1:8721/blob/v2-3bdce9bb-13e9-435e-bf18-62dd4dc996f2.tzst?sig=stand-in","matched_key":"node-cache-macOS-arm64-pnpm-2f99318bf4e73abd2
@@ -390,14 +400,14 @@ L040  GET {signed url}/v2-3bdce9bb-13e9-435e-bf18-62dd4dc996f2.tzst
 
 **phase: miss**
 
-```
+```text
 L041  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=setup-go-macOS-arm64-go-1.24.5-57019200cf6d68437774163d928bbc66c1d8d979429f42b72317d6f57fadab5a&version=6311729ed309697d…
       <-- 204 <0 bytes>
 ```
 
 **phase: save**
 
-```
+```text
 L042  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches
       req  {"key":"setup-go-macOS-arm64-go-1.24.5-57019200cf6d68437774163d928bbc66c1d8d979429f42b72317d6f57fadab5a","version":"6311729ed309697d6f389ac79214d894faee98551769f74ca1f06395cc384ffd","cacheSize":141265787}
       <-- 201 {"cacheId":334311}
@@ -423,7 +433,7 @@ L048  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/334311
 
 **phase: hit**
 
-```
+```text
 L049  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=setup-go-macOS-arm64-go-1.24.5-57019200cf6d68437774163d928bbc66c1d8d979429f42b72317d6f57fadab5a&version=6311729ed309697d…
       <-- 200 {"cacheKey":"setup-go-macOS-arm64-go-1.24.5-57019200cf6d68437774163d928bbc66c1d8d979429f42b72317d6f57fadab5a","scope":"refs/heads/main","archiveLocation":"http://127.0.0.1:8721/blo
 L050  GET {signed url}/v1-334311.tzst
@@ -434,7 +444,7 @@ L050  GET {signed url}/v1-334311.tzst
 
 **phase: miss**
 
-```
+```text
 L051  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=index-D1-1-f921bd05&version=693bb7016429d803…
       <-- 204 <0 bytes>
 L052  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=buildkit-blob-1-sha256:0af15d9df66c1946af0aa6d95f6b501492e77a917f261a06d7986ecfe7a4895e&version=693bb7016429d803…
@@ -496,7 +506,7 @@ L071  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/499575
 
 **phase: hit**
 
-```
+```text
 L072  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=index-D1-1-f921bd05&version=693bb7016429d803…
       <-- 200 {"cacheKey":"index-D1-1-f921bd05#1","scope":"refs/heads/main","archiveLocation":"http://host.docker.internal:8721/blob/v1-499575.tzst"}
 L073  GET {signed url}/v1-499575.tzst
@@ -515,7 +525,7 @@ L077  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=buildkit-blob-1-sha
 
 **phase: miss**
 
-```
+```text
 L078  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"index-D2-1-f921bd05","restore_keys":["index-D2-1-f921bd05"],"version":"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2"}
       <-- 200 {"ok":false,"signed_download_url":"","matched_key":""}
@@ -631,7 +641,7 @@ L114  POST twirp CacheService/FinalizeCacheEntryUpload
 
 **phase: hit**
 
-```
+```text
 L115  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"index-D2-1-f921bd05","restore_keys":["index-D2-1-f921bd05"],"version":"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2"}
       <-- 200 {"ok":true,"signed_download_url":"http://host.docker.internal:8721/blob/v2-e297f265-2ef8-41dc-8760-e8f4019bea4d.tzst?sig=stand-in","matched_key":"index-D2-1-f921bd05#1"}
@@ -655,7 +665,7 @@ L120  POST twirp CacheService/GetCacheEntryDownloadURL
 
 **phase: restore**
 
-```
+```text
 L121  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=fault-v1-404-30421&version=b34e6f1cc07875b8…
       <-- 404 {"message":"not found"}
 ```
@@ -664,7 +674,7 @@ L121  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=fault-v1-404-30421&
 
 **phase: restore**
 
-```
+```text
 L122  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=fault-v1-500-6739&version=b34e6f1cc07875b8…
       <-- 500 {"message":"boom"}
 ```
@@ -673,7 +683,7 @@ L122  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=fault-v1-500-6739&v
 
 **phase: restore**
 
-```
+```text
 L123  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"fault-v2-twirp-notfound-6256","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960"}
       <-- 404 {"code":"not_found","msg":"cache entry not found"}
@@ -683,7 +693,7 @@ L123  POST twirp CacheService/GetCacheEntryDownloadURL
 
 **phase: restore**
 
-```
+```text
 L124  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"fault-v2-http-500-31272","version":"b34e6f1cc07875b8b978f21e92cbe8337fea885819e74e1d75a2c78c7a523960"}
       <-- 500 {"code":"internal","msg":"boom"}
@@ -705,7 +715,7 @@ L128  POST twirp CacheService/GetCacheEntryDownloadURL
 
 **phase: miss**
 
-```
+```text
 L129  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=index-F1-1-f921bd05&version=693bb7016429d803…
       <-- 204 <0 bytes>
 L130  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=buildkit-blob-1-sha256:3f26bc2dec0b515f1c2818f6e13a8f1da1f88179a008445d4e587233386bff78&version=693bb7016429d803…
@@ -760,7 +770,7 @@ L146  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/375475
 
 **phase: miss**
 
-```
+```text
 L147  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=index-F2-1-f921bd05&version=693bb7016429d803…
       <-- 204 <0 bytes>
 L148  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=buildkit-blob-1-sha256:3f26bc2dec0b515f1c2818f6e13a8f1da1f88179a008445d4e587233386bff78&version=693bb7016429d803…
@@ -815,7 +825,7 @@ L164  POST {ACTIONS_CACHE_URL}/_apis/artifactcache/caches/112972
 
 **phase: miss**
 
-```
+```text
 L165  POST twirp CacheService/GetCacheEntryDownloadURL
       req  {"key":"index-G1-1-f921bd05","restore_keys":["index-G1-1-f921bd05"],"version":"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2"}
       <-- 200 {"ok":false,"signed_download_url":"","matched_key":""}
@@ -912,7 +922,7 @@ L194  POST twirp CacheService/FinalizeCacheEntryUpload
 
 **phase: miss**
 
-```
+```text
 L195  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=index-G2-1-f921bd05&version=693bb7016429d803…
       <-- 204 <0 bytes>
 L196  GET {ACTIONS_CACHE_URL}/_apis/artifactcache/cache?keys=buildkit-blob-1-sha256:3f26bc2dec0b515f1c2818f6e13a8f1da1f88179a008445d4e587233386bff78&version=693bb7016429d803…
