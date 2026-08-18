@@ -41,6 +41,12 @@ export type AttemptExecution = {
   imageRelease: string;
   vcpus: number;
   memoryMiB: number;
+  /**
+   * The CPU ids the Agent reserved for this Attempt, as `--cpuset-cpus` writes
+   * them. Required for the Docker executor and meaningless for the rest: a
+   * microVM guest has real vCPUs, so its `nproc` is honest by construction.
+   */
+  cpuset?: string;
   jitConfig: string;
 };
 
@@ -128,6 +134,15 @@ export function attemptInvocation(
   }
 
   if (attempt.executor === "docker") {
+    // Refusing here rather than omitting the variable keeps the failure at the
+    // one place that can still say why. The provisioner refuses too, but by
+    // then the Attempt is claimed and the message is a shell error.
+    if (attempt.cpuset === undefined) {
+      throw new Error(
+        `Attempt ${attempt.attemptId} has no CPU reservation; the Docker executor must not ` +
+          `start a container that reads the host's core count (#80)`,
+      );
+    }
     return {
       file: dockerProvisionerPath(),
       args: [],
@@ -137,6 +152,7 @@ export function attemptInvocation(
         IMAGE: attempt.imageRelease,
         RC_VCPUS: String(attempt.vcpus),
         RC_MEMORY_MIB: String(attempt.memoryMiB),
+        RC_CPUSET_CPUS: attempt.cpuset,
       },
     };
   }

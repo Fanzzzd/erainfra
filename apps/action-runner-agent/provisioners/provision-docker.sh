@@ -10,6 +10,7 @@ set -euo pipefail
 : "${IMAGE:?IMAGE is required}"
 : "${RC_VCPUS:?RC_VCPUS is required}"
 : "${RC_MEMORY_MIB:?RC_MEMORY_MIB is required}"
+: "${RC_CPUSET_CPUS:?RC_CPUSET_CPUS is required}"
 
 case "$RUNNER_NAME" in
   *[!A-Za-z0-9._-]* | "")
@@ -36,6 +37,36 @@ for value in "$RC_VCPUS" "$RC_MEMORY_MIB"; do
     "" | *[!0-9]* | 0) printf 'error: Docker resource limits must be positive integers.\n' >&2; exit 2 ;;
   esac
 done
+
+# The per-Attempt core range the Agent reserved, disjoint from every other
+# Attempt on this Worker. --cpus alone sets the CFS bandwidth quota and leaves
+# the affinity mask covering the whole host, so nproc(1),
+# os.availableParallelism(), runtime.NumCPU() and every other autosizing
+# interface report the host's core count and each build tool over-subscribes by
+# the ratio between them (#80). There is no quota-only fallback: a container
+# that silently reads the wrong number is the defect being fixed.
+if [[ ! $RC_CPUSET_CPUS =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then
+  printf 'error: RC_CPUSET_CPUS must be a CPU list such as 0-3 or 0,2,4-5.\n' >&2
+  exit 2
+fi
+# A cpuset whose width is not RC_VCPUS tells the job a different wrong number,
+# so the two are checked against each other here rather than trusted.
+cpuset_width=0
+IFS=',' read -r -a cpuset_ranges <<<"$RC_CPUSET_CPUS"
+for range in "${cpuset_ranges[@]}"; do
+  first="10#${range%%-*}"
+  last="10#${range##*-}"
+  if [ "$((last))" -lt "$((first))" ]; then
+    printf 'error: RC_CPUSET_CPUS range %s runs backwards.\n' "$range" >&2
+    exit 2
+  fi
+  cpuset_width=$((cpuset_width + last - first + 1))
+done
+if [ "$cpuset_width" -ne "$RC_VCPUS" ]; then
+  printf 'error: RC_CPUSET_CPUS covers %s CPUs but RC_VCPUS is %s.\n' \
+    "$cpuset_width" "$RC_VCPUS" >&2
+  exit 2
+fi
 
 JOB_TIMEOUT_S="${RC_JOB_TIMEOUT_S:-21600}"
 case "$JOB_TIMEOUT_S" in
@@ -152,6 +183,17 @@ chmod 600 "$WORKDIR/runner.env"
 ) &
 ENV_WRITER_PID=$!
 
+# RC_VCPUS and RC_MEMORY_MIB are handed to the job as well as to Docker. The
+# cpuset makes every CPU interface inside the container honest, but memory is
+# not fixed by it: /proc/meminfo, free(1) and os.totalmem() report the host's
+# RAM, so Node still sizes its default old-space heap from 251 GiB inside an
+# 8 GiB cgroup and gets OOM-killed believing it had room. Mounting LXCFS is the
+# other answer and is not taken here: it needs a host daemon this Worker does
+# not install, readiness evidence to prove it, and a bind mount into the
+# container, which this executor's contract and its tests forbid outright. The
+# limit is exported instead, so the truth is available to anything that asks
+# even though free(1) keeps lying.
+#
 # Readiness already pulled this exact digest, so --pull=never prevents a job
 # from changing its Image Release at execution time. No host path, volume or
 # Docker socket enters the container: nothing writable is shared between jobs,
@@ -165,12 +207,15 @@ ENV_WRITER_PID=$!
 # into a reported success. Invoke the listener directly and keep its own code.
 docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --cpus "$RC_VCPUS" \
+  --cpuset-cpus "$RC_CPUSET_CPUS" \
   --memory "${RC_MEMORY_MIB}m" \
   --pids-limit 4096 \
   --user runner \
   --workdir /opt/runner \
   --label "runner-center.profile=$RC_PROFILE" \
   --env-file "$WORKDIR/runner.env" \
+  --env "RC_VCPUS=$RC_VCPUS" \
+  --env "RC_MEMORY_MIB=$RC_MEMORY_MIB" \
   --env ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1 \
   --env ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/action-cache \
   --env RUNNER_TOOL_CACHE=/opt/hostedtoolcache \

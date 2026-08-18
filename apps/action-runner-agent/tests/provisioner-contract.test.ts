@@ -10,6 +10,7 @@ import {
   provisionerPath,
   provisionInvocation,
 } from "../provision.ts";
+import { parseCpuset } from "../cpuset.ts";
 import { PROVISION_LINUX, PROVISION_MAC } from "./helpers/harness.ts";
 
 const SHELL_PROVISIONERS = [PROVISION_MAC, PROVISION_LINUX, dockerProvisionerPath()];
@@ -173,6 +174,7 @@ describe("scale-set Attempt invocation", () => {
       imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
       vcpus: 4,
       memoryMiB: 8192,
+      cpuset: "0-3",
     });
     assert.equal(invocation.file, dockerProvisionerPath());
     assert.deepEqual(invocation.args, []);
@@ -182,7 +184,50 @@ describe("scale-set Attempt invocation", () => {
       IMAGE: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
       RC_VCPUS: "4",
       RC_MEMORY_MIB: "8192",
+      RC_CPUSET_CPUS: "0-3",
     });
+  });
+
+  // --cpus is a CFS quota and leaves the affinity mask covering the host, so a
+  // cpuset narrower or wider than RC_VCPUS tells the job a different wrong
+  // number than the one #80 reported. The width is the contract, not the flag.
+  it("gives the container a core range exactly RC_VCPUS wide", () => {
+    for (const [vcpus, cpuset] of [
+      [1, "5"],
+      [2, "6-7"],
+      [4, "0-3"],
+      [4, "0-1,8-9"],
+      [8, "8-15"],
+    ] as const) {
+      const { env } = attemptInvocation({
+        attemptId: "attempt-docker",
+        runnerName: "runner-docker",
+        profile: "rc-linux-js",
+        executor: "docker",
+        imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+        vcpus,
+        memoryMiB: 8192,
+        cpuset,
+      });
+      assert.equal(env.RC_CPUSET_CPUS, cpuset);
+      assert.equal(parseCpuset(env.RC_CPUSET_CPUS ?? "")?.length, Number(env.RC_VCPUS));
+    }
+  });
+
+  it("refuses to start a container with no CPU reservation at all", () => {
+    assert.throws(
+      () =>
+        attemptInvocation({
+          attemptId: "attempt-docker",
+          runnerName: "runner-docker",
+          profile: "rc-linux-js",
+          executor: "docker",
+          imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+          vcpus: 4,
+          memoryMiB: 8192,
+        }),
+      /no CPU reservation/,
+    );
   });
 
   it("runs Firecracker by Profile without exposing JIT", () => {
@@ -198,6 +243,8 @@ describe("scale-set Attempt invocation", () => {
     });
     assert.equal(invocation.file, "runner-center-runtime");
     assert.deepEqual(invocation.args, ["run"]);
+    // A microVM guest has real vCPUs, so its nproc is honest without a cpuset.
+    assert.equal(invocation.env.RC_CPUSET_CPUS, undefined);
     assert.deepEqual(invocation.env, {
       RC_ATTEMPT_ID: "attempt-1",
       RC_RUNNER_NAME: "runner-a",

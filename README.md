@@ -96,6 +96,26 @@ For a Firecracker Profile, each Attempt gets:
 - CPU, memory and thin-pool admission before the Attempt is placed, and one process-bounded runtime
   service per host.
 
+For a Docker Profile, each Attempt additionally gets **its own range of the Worker's CPUs**. The
+Agent reserves `vcpus` cores per Attempt, disjoint from every other Attempt and Experiment running
+on that Worker, and passes them to `--cpuset-cpus` beside the `--cpus` quota. Without the cpuset the
+quota is invisible: `nproc`, `os.availableParallelism()`, `runtime.NumCPU()`, `os.cpu_count()` and
+`Runtime.availableProcessors()` all read the affinity mask or `/proc/cpuinfo`, so an 8-vCPU job on a
+64-core Worker told every autosizing build tool it owned 64 cores and each one over-subscribed by
+8x. Reservations are released on every teardown path, and a Worker whose Agent was killed outright
+reconciles them against the running containers before it advertises readiness again. A Worker with
+no free range refuses the Attempt rather than running it over-subscribed, and a Profile asking for
+more vCPUs than the Worker has CPUs fails its `cpu-capacity` readiness check instead of being
+scheduled onto.
+
+**Memory is not made honest by that, and the container is told so explicitly.** `free`,
+`/proc/meminfo` and `os.totalmem()` still report the host's RAM, because the cgroup limit is not
+reflected there without LXCFS — which needs a host daemon, its own readiness evidence, and a bind
+mount into a container whose contract forbids one. Every Docker job therefore receives `RC_VCPUS`
+and `RC_MEMORY_MIB` in its environment, holding the limits actually enforced on it. Anything that
+sizes a heap or a worker pool from total RAM — `--max-old-space-size` is the usual one — should read
+`RC_MEMORY_MIB` rather than believe `free`.
+
 Nothing writable survives a job on either Linux executor. Warm state comes from the immutable Image
 Release; cross-job dependency caching belongs to GitHub's own cache service, which is authenticated
 and scoped by repository, branch and key, and is reachable over allowed egress. See
