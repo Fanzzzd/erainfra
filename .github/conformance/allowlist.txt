@@ -55,8 +55,8 @@
 #   differential job cannot see a defect that both legs share: if hosted and
 #   Profile were both misreporting their own size the two values would agree
 #   and the diff would go green. These are asserted absolutely, per leg.
-require cpu_visible_matches_allowed=yes  # a machine that reports more CPUs than its own quota allows lies to every build tool that autosizes; this is #80
-require mem_visible_matches_allowed=yes  # `free` and os.totalmem() read /proc/meminfo, which is the host's unless LXCFS is mounted, so a job can be OOM-killed at its cgroup limit while believing it has the host's RAM; this is the second half of #80
+require cpu_visible_matches_allowed=yes  # a machine that reports more CPUs than its own quota allows lies to every build tool that autosizes; this is #80, and it is `no` on the fleet today because the deployed Worker runs 0.2.0-rc.6, which predates #83's cpuset allocator. Goes green when the next release reaches the Workers
+require mem_visible_matches_allowed=yes  # #93, measured live: a job promised 2 GiB reads 251 GiB from /proc/meminfo, a factor of 125. It stays red even after #83's release, because a cgroup limit does not rewrite a kernel-global file — LXCFS, or #17's microVMs, is the fix
 never-allow cpu_visible_matches_allowed  # the excusable difference is cpu_visible_nproc, which is allowed below; the agreement between what a job sees and what it may use is not
 never-allow mem_visible_matches_allowed  # same shape as the CPU key: sizes may differ between legs, a machine disagreeing with itself may not
 never-allow node_heap_within_allowed_mem  # Node sizes its default old space from total RAM, so a heap ceiling above the cgroup limit entitles a process to grow until the kernel kills it, and the OOM carries no stack
@@ -75,7 +75,7 @@ allow dev_fuse  # measured absent on the fleet, and the same decision as dev_kvm
 allow dev_net_tun  # same: no device node reaches an Attempt, which is what a shared-kernel boundary buys
 allow dev_vhost_vsock  # same
 allow dev_loop_control  # same; a job that needs to mount an image needs the Firecracker executor (#17)
-allow dev_dri  # same; no GPU is exposed to any Profile today
+allow dev_dri  # same; no GPU is exposed to any Profile today. The five device keys are listed in #96 too, so the record of what a shared-kernel Attempt does not get lives in one place
 
 # ---------------------------------------------------------------------------
 # Size. A Profile is a contract for a size, and it is not ubuntu-latest's
@@ -129,6 +129,8 @@ allow toolcache_node_versions  # same: one pinned Node, seeded so actions/setup-
 allow tool_*_version  # our Image Release pins its toolchain and GitHub's floats, so version drift between the two is expected. A tool DISAPPEARING is not, and tool_*_present is not on this list -- that is the #48 bug class
 allow docker_daemon_reachable  # no Docker control socket is mounted into an Attempt, and the daily smoke canary fails if one ever is. A workflow that needs `docker build` cannot have it on this executor, and that is a decision rather than an accident
 allow docker_server_version  # follows from the line above
+allow dev_shm_size_mib  # #87/#90. Until the next release reaches the fleet this reads 64 MiB against 7995 — Docker's fixed default, which was the defect. #90 is merged and sets --shm-size to half the Profile's memory, matching the hosted convention, after which the two legs differ because the sizes scale with the Profile rather than with GitHub's runner. Because shm is tmpfs the size is a cap rather than a reservation, so it grants no memory the cgroup limit did not already promise
+allow cpu_nproc_matches_cpuinfo  # pre-positioned, and expected to match nothing until #83's release lands. /proc/cpuinfo is kernel-global and lists the host's processors; a cpuset cannot narrow it and only LXCFS (#93) could. The day the cpuset ships, nproc and the quota agree and THIS key starts differing — that is a known residue, not a regression, and nproc/sched_getaffinity is the honest interface every autosizing tool actually reads
 allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubuntu-24.04-js/Dockerfile) and GitHub's does not ship it at all, measured. A tool we have and they do not cannot break a workflow written for ubuntu-latest; the reverse can, which is why the rest of tool_*_present is not on this list
 
 # ---------------------------------------------------------------------------
@@ -185,66 +187,67 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # ---------------------------------------------------------------------------
 # Recorded, owned, and time-boxed — NOT intended
 # ---------------------------------------------------------------------------
-# `pending` is not an allowlist entry. It says: this difference was measured,
-# an issue owns it, and this line dies on that date. It fails if the divergence
+# `pending` is not an allowlist entry. It says: this difference was measured, an
+# issue owns it, and this line dies on that date. It fails if the divergence
 # gets worse than the value recorded here, and it fails outright once the date
 # passes, so it cannot quietly become permanent the way an `allow` with a
-# hand-wave reason can. Everything below arrived in the FIRST run against a real
-# Worker (run 32092987570): 103 keys identical, 45 differences already accounted
-# for above, and these 34 that nobody had written down.
+# hand-wave reason can.
 #
-# The rule that decides which list a difference lands on: `allow` requires the
-# difference to be traceable to a decision recorded in this repository — a flag
-# in a provisioner, a line in the Dockerfile, an ADR, a documented product
-# statement. Everything else is `pending` with an issue, because "nobody has
-# looked at this yet" and "we meant this" are different claims and only one of
-# them belongs in an allowlist.
+# Everything below arrived in the FIRST run against a real Worker (run
+# 32092987570): 103 keys identical, the differences above already accounted for,
+# and these that nobody had written down. The rule that decides which list a
+# difference lands on is at the top of this file: `allow` needs the difference
+# to be traceable to a decision recorded in this repository. Nothing below is.
+#
+# NOT here, and deliberately: cpu_visible_matches_allowed and
+# mem_visible_matches_allowed. Both are `no` on the fleet and both are left to
+# FAIL. The first is #80, live on the deployed Worker, which runs 0.2.0-rc.6 --
+# older than #83's cpuset allocator -- and goes green when the next release
+# reaches the fleet. The second is #93 and stays red even after that release,
+# because /proc/meminfo is the host's until LXCFS is mounted. Those two keys are
+# the reason this job exists; granting them a grace period would retire the only
+# continuously-checked statement that this platform tells a job the truth about
+# its own size.
 
-# #80, live on the deployed fleet. nproc reports 64 against a 2-CPU quota and
-# /proc/meminfo reports 251 GiB against a 2 GiB limit — a factor of 125. #83 is
-# MERGED but the Worker still runs a provisioner that predates it, so this is
-# deployment lag rather than a new defect, and this job will keep saying so
-# until the rollout reaches the fleet. These two keys are `never-allow`
-# precisely so nobody can retire them by calling them intended; recording that
-# they are currently true is the opposite of that, and is what these lines do.
-pending cpu_visible_matches_allowed=no 2026-11-16  # #80 measured live on the fleet: cpu_visible_nproc=64 against cpu_cgroup_quota_millicpu=2000. Fix #83 is merged; delete this line when the rollout reaches the Workers
-pending mem_visible_matches_allowed=no 2026-11-16  # the other half of #80, which #83 explicitly does not fix: mem_visible_mib=257581 against mem_cgroup_limit_mib=2048. Needs LXCFS or the limit exported into the job
+# #94 — the Image Release ships no locale and no tzdata, so the C library falls
+# back to ASCII and a named timezone does not resolve.
+pending locale_lang=unset 2026-11-16  # #94: unset here against C.UTF-8 on hosted, so Python open(), sort collation and every locale-formatted string differ. Fix is a locale in the Dockerfile, asserted in smoke.sh
+pending locale_charmap=ANSI_X3.4-1968 2026-11-16  # #94: the measured consequence of the line above
+pending locale_has_en_us_utf8=no 2026-11-16  # #94: no UTF-8 locale is generated in the image
+pending tz_name=unavailable 2026-11-16  # #94: neither /etc/timezone nor /etc/localtime exists, so the container is UTC by absence and Java ZoneId, Python zoneinfo and Intl with a named zone all fail rather than resolve
 
-# #87, now confirmed on real hardware rather than inferred from Docker's
-# documented default.
-pending dev_shm_size_mib=64 2026-11-16  # #87: provision-docker.sh never passes --shm-size, so every Attempt gets Docker default 64 MiB against 7995 on hosted, whatever the Profile memoryMiB says
+# #95 — present on ubuntu-latest, absent from the Image Release. This is #48's
+# bug class on Linux. Each needs one of two answers before the date: it joins
+# the image with an assertion in smoke.sh, or it becomes a documented
+# non-promise with the reason a workflow may not assume it here.
+pending tool_ssh_present=no 2026-11-16  # #95: the sharpest of the seven — a git remote over SSH, an ssh:// submodule or any action that shells out to ssh fails here and works on hosted
+pending tool_python3_present=no 2026-11-16  # #95: a great many Actions shell out to python3 without declaring it, and setup-python does not help a step that already ran it
+pending tool_zstd_present=no 2026-11-16  # #95: costs money rather than correctness — actions/cache falls back to gzip without it, so every save and restore on this Profile is slower than the same step on hosted, silently
+pending tool_gh_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
+pending tool_go_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
+pending tool_pip3_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
+pending tool_rsync_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
 
-# #92 — the 31 the first fleet run turned up that nobody has decided about.
-# Each needs one of two answers before the date: fix it, or promote it to an
-# `allow` line with the reason it is intended. Re-dating is not an answer.
-pending tool_ssh_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending tool_python3_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending tool_zstd_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending tool_gh_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending tool_go_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending tool_pip3_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending tool_rsync_present=no 2026-11-16  # #92: present on ubuntu-latest, absent from the Image Release — the #48 bug class on Linux
-pending locale_lang=unset 2026-11-16  # #92: unset here against C.UTF-8 on hosted, so the C library falls back to ASCII and any date, sort or non-ASCII assertion can pass there and fail here
-pending locale_charmap=ANSI_X3.4-1968 2026-11-16  # #92: the consequence of the line above, measured
-pending locale_has_en_us_utf8=no 2026-11-16  # #92: no en_US.UTF-8 locale is generated in the Image Release
-pending tz_name=unavailable 2026-11-16  # #92: neither /etc/timezone nor /etc/localtime exists, so the container is UTC by absence and a named zone lookup errors rather than resolving
-pending sysctl_vm_max_map_count=65530 2026-11-16  # #92: the Worker host runs kernel 5.4 with the old default against 262144 on hosted; Elasticsearch and OpenSearch refuse to start below 262144
-pending sysctl_fs_inotify_max_user_instances=128 2026-11-16  # #92: the Worker host kernel setting, which nothing in this repository chose
-pending sysctl_fs_inotify_max_user_watches=524288 2026-11-16  # #92: the Worker host kernel setting, which nothing in this repository chose
-pending sysctl_kernel_threads_max=2059180 2026-11-16  # #92: the Worker host kernel setting, which nothing in this repository chose
-pending sysctl_user_max_user_namespaces=1029590 2026-11-16  # #92: the Worker host kernel setting, which nothing in this repository chose
-pending sysctl_vm_swappiness=100 2026-11-16  # #92: the Worker host kernel setting, which nothing in this repository chose
-pending rlimit_max_locked_memory_soft=65536 2026-11-16  # #92: 64 KiB against 8 MiB on hosted; anything that mlocks key material notices
-pending rlimit_max_locked_memory_hard=65536 2026-11-16  # #92: as above, hard limit
-pending rlimit_max_open_files_soft=1048576 2026-11-16  # #92: LARGER than hosted, which is not automatically better — code that walks the fd range on fork stalls measurably at a million
-pending rlimit_max_open_files_hard=1048576 2026-11-16  # #92: as above, hard limit
-pending rlimit_max_processes_soft=unlimited 2026-11-16  # #92: unlimited here against 63838 on hosted, so a blast-radius bound hosted has is absent here
-pending rlimit_max_processes_hard=unlimited 2026-11-16  # #92: as above, hard limit
-pending rlimit_max_core_file_size_soft=unlimited 2026-11-16  # #92: a Docker daemon default nothing in this repository chose, same gap as #87
-pending rlimit_max_pending_signals_soft=1029590 2026-11-16  # #92: a Docker daemon default nothing in this repository chose, same gap as #87
-pending rlimit_max_pending_signals_hard=1029590 2026-11-16  # #92: a Docker daemon default nothing in this repository chose, same gap as #87
-pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #92: a Docker daemon default nothing in this repository chose, same gap as #87
-pending dns_nameserver_count=2 2026-11-16  # #92: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and retry behaviour are what differ
-pending dns_nameserver_loopback=no 2026-11-16  # #92: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and retry behaviour are what differ
-pending dns_options=unavailable 2026-11-16  # #92: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and retry behaviour are what differ
-pending dns_search_domain_count=0 2026-11-16  # #92: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and retry behaviour are what differ
+# #96 — the Docker daemon's defaults and the Worker host's kernel settings,
+# arriving through a gap nobody was looking at. Not one of these was chosen
+# here, which is exactly why none of them gets an `allow` line.
+pending sysctl_vm_max_map_count=65530 2026-11-16  # #96: the 5.4 kernel default against 262144 on hosted. Elasticsearch and OpenSearch refuse to start below 262144; the JVM and mmap-heavy builds degrade more quietly
+pending sysctl_fs_inotify_max_user_instances=128 2026-11-16  # #96: 128 against 1280 on hosted. Watch exhaustion in a bundler or test watcher surfaces as an opaque ENOSPC that has nothing to do with disk
+pending sysctl_fs_inotify_max_user_watches=524288 2026-11-16  # #96: same subsystem, same failure, one level up
+pending sysctl_vm_swappiness=100 2026-11-16  # #96: 100 against 60 makes the host readier to swap a job out under pressure, which shows up as latency rather than failure
+pending sysctl_kernel_threads_max=2059180 2026-11-16  # #96: a Worker host kernel setting nothing in this repository chose
+pending sysctl_user_max_user_namespaces=1029590 2026-11-16  # #96: a Worker host kernel setting nothing in this repository chose
+pending rlimit_max_locked_memory_soft=65536 2026-11-16  # #96: 64 KiB against 8 MiB on hosted. Some crypto libraries refuse to hold key material in unlockable memory and fall back or fail
+pending rlimit_max_locked_memory_hard=65536 2026-11-16  # #96: as above, hard limit
+pending rlimit_max_open_files_soft=1048576 2026-11-16  # #96: LARGER than hosted, which is not automatically better — code that walks the fd range on fork stalls measurably at a million rather than sixty-five thousand
+pending rlimit_max_open_files_hard=1048576 2026-11-16  # #96: as above, hard limit
+pending rlimit_max_processes_soft=unlimited 2026-11-16  # #96: unlimited here against 63838 on hosted, so a blast-radius bound hosted has is simply absent here
+pending rlimit_max_processes_hard=unlimited 2026-11-16  # #96: as above, hard limit
+pending rlimit_max_core_file_size_soft=unlimited 2026-11-16  # #96: unlimited here against 0 on hosted, so a crashing job writes a core dump into the container writable layer instead of being denied one
+pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
+pending rlimit_max_pending_signals_soft=1029590 2026-11-16  # #96: a Docker daemon default nothing in this repository chose, same gap as #87
+pending rlimit_max_pending_signals_hard=1029590 2026-11-16  # #96: a Docker daemon default nothing in this repository chose, same gap as #87
+pending dns_nameserver_count=2 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
+pending dns_nameserver_loopback=no 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
+pending dns_options=unavailable 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
+pending dns_search_domain_count=0 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
