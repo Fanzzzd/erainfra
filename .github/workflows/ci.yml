@@ -173,6 +173,15 @@ jobs:
       # expensive way.
       - name: The environment conformance differ can go red
         run: sh .github/conformance/conformance.test.sh
+      # cache-env-probe.yml is dispatched by hand against a live Profile, so no
+      # pull request ever executes it and a probe that had quietly stopped
+      # measuring anything would look exactly like one nobody had dispatched
+      # yet. This drives its capture endpoint with a real HTTP client, checks
+      # each answer against the shape ADR 0007's capture measured, and proves
+      # the verdict can report the NEGATIVE outcome -- the one the probe exists
+      # to be able to report -- without failing the job for it.
+      - name: The cache environment probe can measure, and can report a negative
+        run: sh .github/probes/probe.test.sh
       - name: Test the root Go module
         run: go test ./...
       - name: Vet the root Go module

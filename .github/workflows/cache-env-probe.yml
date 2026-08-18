@@ -1,0 +1,218 @@
+# ADR 0007 names one measurement as a prerequisite for stage C and marks it
+# unmeasured: "Whether a value EraInfra sets for ACTIONS_CACHE_SERVICE_V2
+# survives the runner's own injection. The string table proves the runner writes
+# that variable from the job message; it says nothing about what happens to a
+# value already present in the process environment."
+#
+# This is the instrument for that, and it is deliberately a REAL Attempt rather
+# than another capture against a stand-in: `rc-e2e` is the only scale set
+# measured to pick work up on this repository (.github/actionlint.yaml), so a
+# job here is the pinned actions-runner:2.336.0 composing a real step's
+# environment. Nothing about the answer can be inferred from the runner's string
+# table, which is all stage A had.
+#
+# Four variables and four tiers. The tiers are where a value can come from, in
+# the order a design would reach for them:
+#
+#   T0  the CONTAINER environment -- what apps/action-runner-agent hands
+#       `docker run`. This is the tier stage C's env-injection seam writes, and
+#       the tier the ADR's question is about.
+#   T1  a step with no override at all. This is what the runner injects from the
+#       job message, and the baseline the other tiers are read against.
+#   T2  a step-level `env:` block. The strongest thing a WORKFLOW can do.
+#   T3  a value written to $GITHUB_ENV by an earlier step. This is the tier a
+#       runner job-started hook would write, so it is the one that says whether
+#       a token minted at JobStarted -- after the container already exists --
+#       could ever reach the client that needs it.
+#
+# A tier that loses is not a failure of this workflow. Measuring nothing while
+# reporting green would be, so the verdict is computed from the evidence and
+# printed either way, and only a broken instrument fails the job.
+name: EraInfra cache environment probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      cache_service_v2:
+        description: The value to set for ACTIONS_CACHE_SERVICE_V2 in tiers T2 and T3
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+
+permissions: {}
+
+concurrency:
+  group: cache-env-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: which environment does a real step get
+    runs-on: rc-e2e
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      # First, and before anything that can fail: evidence that this job was
+      # ASSIGNED. A Profile with no Worker QUEUES rather than fails, and an
+      # empty log then reads the same as a job that ran and broke.
+      - name: Record which runner picked this up
+        run: |
+          set -eu
+          printf 'probe assigned to runner %s (%s), %s %s\n' \
+            "$RUNNER_NAME" "${RUNNER_ENVIRONMENT:-unknown}" "$(uname -s)" "$(uname -m)"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # T0 and T1 in one step, because they are read from the same process tree
+      # and the comparison is the point.
+      #
+      # /proc/1/environ is the container's environment: this executor runs
+      # `docker run --init --user runner`, so PID 1 is tini under the same uid
+      # as the job and the file is readable. It also holds
+      # ACTIONS_RUNNER_INPUT_JITCONFIG, a single-use runner registration, so
+      # this only ever greps for the four names it wants and never dumps the
+      # file. On an executor where PID 1 is an init system rather than the
+      # runner's own parent -- Firecracker's systemd -- T0 reads "unavailable"
+      # instead of guessing, which is the honest answer for that shape.
+      - name: T0 the container environment, T1 the runner's injection
+        run: |
+          set -eu
+          . ./.github/probes/tiers.sh
+          : > "$RUNNER_TEMP/t0.txt"
+          if [ -r /proc/1/environ ]; then
+            tr '\0' '\n' < /proc/1/environ > "$RUNNER_TEMP/pid1.env"
+            for name in $PROBE_NAMES; do
+              if grep -q "^$name=" "$RUNNER_TEMP/pid1.env"; then
+                value=$(sed -n "s/^$name=//p" "$RUNNER_TEMP/pid1.env" | head -n 1)
+                record_tier "$RUNNER_TEMP/t0.txt" "$name" "$value" set
+              else
+                record_tier "$RUNNER_TEMP/t0.txt" "$name" "" unset
+              fi
+            done
+            # It held a single-use runner registration; nothing else may read it.
+            rm -f "$RUNNER_TEMP/pid1.env"
+          else
+            for name in $PROBE_NAMES; do
+              printf '%s\tunavailable\n' "$name" >> "$RUNNER_TEMP/t0.txt"
+            done
+          fi
+          snapshot_tier "$RUNNER_TEMP/t1.txt"
+          cat "$RUNNER_TEMP/t0.txt" "$RUNNER_TEMP/t1.txt"
+
+      - name: Start the capture endpoint
+        run: |
+          set -eu
+          : > "$RUNNER_TEMP/capture.jsonl"
+          # Its output goes to a file, not to this step's log. A background
+          # process that keeps the step's stdout pipe open is a step that never
+          # finishes, and the server outlives this step by design.
+          PROBE_LOG="$RUNNER_TEMP/capture.jsonl" \
+          PROBE_URL_FILE="$RUNNER_TEMP/probe-url" \
+            node .github/probes/cache-capture-server.mjs \
+              > "$RUNNER_TEMP/probe-server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/probe.pid"
+          # Ten tries at a tenth of a second. The server binds an ephemeral port
+          # and writes the URL, so there is nothing to poll for but the file.
+          tries=10
+          while [ ! -s "$RUNNER_TEMP/probe-url" ] && [ "$tries" -gt 0 ]; do
+            sleep 0.1
+            tries=$((tries - 1))
+          done
+          if [ ! -s "$RUNNER_TEMP/probe-url" ]; then
+            echo "::error::the capture endpoint never bound a port" >&2
+            exit 1
+          fi
+          base=$(cat "$RUNNER_TEMP/probe-url")
+          echo "capture endpoint at $base"
+          # Two prefixes so the log attributes every request to the tier that
+          # produced it. The service under test matches its own path markers
+          # anywhere in the path for exactly this reason, and so does the probe.
+          echo "PROBE_T2_URL=${base}t2" >> "$GITHUB_ENV"
+          echo "PROBE_T3_URL=${base}t3" >> "$GITHUB_ENV"
+
+      # T2. A step-level `env:` block is the strongest override a workflow has.
+      # If the runner's injection wins here it wins everywhere a workflow could
+      # reach, and the container tier below it cannot do better.
+      - name: T2 what a step sees under a step-level env block
+        env:
+          ACTIONS_CACHE_URL: ${{ env.PROBE_T2_URL }}/
+          ACTIONS_RESULTS_URL: ${{ env.PROBE_T2_URL }}/
+          ACTIONS_CACHE_SERVICE_V2: ${{ inputs.cache_service_v2 }}
+        run: |
+          set -eu
+          . ./.github/probes/tiers.sh
+          snapshot_tier "$RUNNER_TEMP/t2.txt"
+          cat "$RUNNER_TEMP/t2.txt"
+
+      # The same override, driven through the client the capture measured. The
+      # environment tiers above say what a step SEES; this says where a real
+      # cache client actually goes and which generation it picks, which is the
+      # end-to-end evidence ADR 0007 lists as unmeasured.
+      #
+      # ACTIONS_RUNTIME_TOKEN is deliberately NOT overridden. It is the runner's
+      # own credential and it is shared with the artifact service under
+      # ACTIONS_RESULTS_URL, so replacing it is a change with consequences well
+      # beyond the cache -- the probe records that the client sent one and never
+      # what it was.
+      - name: T2 drive a real client at the capture endpoint
+        continue-on-error: true
+        env:
+          ACTIONS_CACHE_URL: ${{ env.PROBE_T2_URL }}/
+          ACTIONS_RESULTS_URL: ${{ env.PROBE_T2_URL }}/
+          ACTIONS_CACHE_SERVICE_V2: ${{ inputs.cache_service_v2 }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/probe-payload
+          key: erainfra-cache-env-probe-t2-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # T3. Written to $GITHUB_ENV, which is the only tier that exists AFTER the
+      # container was created -- and therefore the only one a token minted at
+      # JobStarted could use. It is last because it is not scoped to one step:
+      # every step after this one carries it, including anything that would
+      # otherwise talk to GitHub's own results service.
+      - name: T3 write the same values through $GITHUB_ENV
+        env:
+          CACHE_SERVICE_V2: ${{ inputs.cache_service_v2 }}
+        run: |
+          set -eu
+          {
+            printf 'ACTIONS_CACHE_URL=%s/\n' "$PROBE_T3_URL"
+            printf 'ACTIONS_RESULTS_URL=%s/\n' "$PROBE_T3_URL"
+            printf 'ACTIONS_CACHE_SERVICE_V2=%s\n' "$CACHE_SERVICE_V2"
+          } >> "$GITHUB_ENV"
+
+      - name: T3 what a later step sees
+        run: |
+          set -eu
+          . ./.github/probes/tiers.sh
+          snapshot_tier "$RUNNER_TEMP/t3.txt"
+          cat "$RUNNER_TEMP/t3.txt"
+
+      - name: T3 drive a real client
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/probe-payload
+          key: erainfra-cache-env-probe-t3-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Always: a probe whose verdict step is skipped by an earlier failure has
+      # measured nothing and said nothing, which is the one outcome worse than a
+      # negative result.
+      - name: Verdict
+        if: always()
+        run: |
+          set -eu
+          if [ -f "$RUNNER_TEMP/probe.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/probe.pid")" 2>/dev/null || true
+          fi
+          sh .github/probes/verdict.sh "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+          sh .github/probes/verdict.sh "$RUNNER_TEMP"
+          if [ -s "$RUNNER_TEMP/probe-server.log" ]; then
+            echo "--- capture endpoint output ---"
+            cat "$RUNNER_TEMP/probe-server.log"
+          fi
