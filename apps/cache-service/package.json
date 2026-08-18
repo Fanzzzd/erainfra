@@ -1,0 +1,9 @@
+{
+  "name": "@erainfra/cache-service",
+  "private": true,
+  "scripts": {
+    "build": "mkdir -p dist && go build -o dist/erainfra-cache-service ./cmd/erainfra-cache-service",
+    "test": "go test ./...",
+    "typecheck": "go vet ./..."
+  }
+}
