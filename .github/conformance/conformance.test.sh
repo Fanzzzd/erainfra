@@ -104,7 +104,11 @@ no_unallowlisted() { # no_unallowlisted <case>
 }
 
 # A minimal pair of fingerprints. Every case starts from these and perturbs
-# exactly one thing, so a case that goes red names its own cause.
+# exactly one thing, so a case that goes red names its own cause. The keys that
+# look inert -- the two *_matches_allowed, node_heap_within_allowed_mem, the
+# three *_free_meets_floor -- are the ones the REAL allowlist `require`s, and
+# they are here so that the cases running against it measure the differ rather
+# than the machine the test happens to be on.
 base_fingerprint() {
   cat >"$1" <<'FINGERPRINT'
 cpu_visible_matches_allowed=yes
@@ -113,7 +117,10 @@ fingerprint_schema=1
 kernel_release=6.11.0-1018-azure
 mem_visible_matches_allowed=yes
 node_heap_within_allowed_mem=yes
+root_free_meets_floor=yes
+scratch_free_meets_floor=yes
 tool_git_version=2.43.0
+workspace_free_meets_floor=yes
 FINGERPRINT
 }
 

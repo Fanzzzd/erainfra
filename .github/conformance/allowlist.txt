@@ -60,6 +60,12 @@ require mem_visible_matches_allowed=yes  # #93, measured live: a job promised 2 
 never-allow cpu_visible_matches_allowed  # the excusable difference is cpu_visible_nproc, which is allowed below; the agreement between what a job sees and what it may use is not
 never-allow mem_visible_matches_allowed  # same shape as the CPU key: sizes may differ between legs, a machine disagreeing with itself may not
 never-allow node_heap_within_allowed_mem  # Node sizes its default old space from total RAM, so a heap ceiling above the cgroup limit entitles a process to grow until the kernel kills it, and the OOM carries no stack
+require workspace_free_meets_floor=yes  # 14 GiB is what GitHub documents a hosted Linux runner has free, so it is the floor a workflow written for `ubuntu-latest` is entitled to assume. Asserted per leg because the SIZES are allowed to differ below and a size comparison between two different machines answers a different question than "is there room to build"
+require scratch_free_meets_floor=yes  # same floor, for RUNNER_TEMP: the directory actions/cache, setup-node and every `mktemp` in a workflow write to
+require root_free_meets_floor=yes  # same floor, for the writable layer a `docker build` or an apt install lands in
+never-allow workspace_free_meets_floor  # the room itself may differ; having enough of it may not
+never-allow scratch_free_meets_floor  # same
+never-allow root_free_meets_floor  # same
 
 # ---------------------------------------------------------------------------
 # The boundary itself
@@ -130,6 +136,9 @@ allow tool_*_version  # our Image Release pins its toolchain and GitHub's floats
 allow docker_daemon_reachable  # no Docker control socket is mounted into an Attempt, and the daily smoke canary fails if one ever is. A workflow that needs `docker build` cannot have it on this executor, and that is a decision rather than an accident
 allow docker_server_version  # follows from the line above
 allow cpu_nproc_matches_cpuinfo  # pre-positioned, and expected to match nothing until #83's release lands. /proc/cpuinfo is kernel-global and lists the host's processors; a cpuset cannot narrow it and only LXCFS (#93) could. The day the cpuset ships, nproc and the quota agree and THIS key starts differing — that is a known residue, not a regression, and nproc/sched_getaffinity is the honest interface every autosizing tool actually reads
+allow workspace_free_gib_pow2  # a Worker host's disk is not the one GitHub hands out, so the two legs land in different power-of-two buckets whenever they differ by more than a factor of two — measured 64 against 128 in one run and 64 against 64 in the run before it, with nothing having changed between them. The bucket exists so ONE machine reports the same number twice, not so two machines agree. What a job is actually entitled to is a floor, and that is required above rather than allowed here
+allow scratch_free_gib_pow2  # same, for RUNNER_TEMP
+allow root_free_gib_pow2  # same, for the container's writable layer
 allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubuntu-24.04-js/Dockerfile) and GitHub's does not ship it at all, measured. A tool we have and they do not cannot break a workflow written for ubuntu-latest; the reverse can, which is why the rest of tool_*_present is not on this list
 
 # ---------------------------------------------------------------------------
@@ -179,7 +188,9 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 #   hostname, container id, IP addresses, uptime, PIDs, timestamps -- they move
 #   between two runs on the SAME machine, so they cannot be diffed between two
 #   different ones. Free space is fingerprinted as a power-of-two bucket for
-#   the same reason.
+#   the same reason -- and the bucket only makes ONE machine agree with itself,
+#   so the buckets are allowed to differ between legs above and the assertion
+#   that survives is the 14 GiB floor, which is `require`d per leg.
 #
 #   CPU model, vendor and instruction-set flags -- GitHub rotates hosted
 #   hardware, so these differ from ubuntu-latest to ubuntu-latest. A dimension

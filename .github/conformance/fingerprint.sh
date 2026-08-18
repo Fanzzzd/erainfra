@@ -33,7 +33,7 @@ set -eu
 # fingerprints carrying different schema numbers were produced by two
 # different scripts and are not comparable; diff.sh refuses to compare them
 # rather than reporting the script's own evolution as fleet drift.
-FINGERPRINT_SCHEMA=2
+FINGERPRINT_SCHEMA=3
 
 # Overridable ONLY so conformance.test.sh can point the cgroup probes at a
 # synthetic v1 tree and a synthetic v2 tree and prove both normalise to the
@@ -243,6 +243,17 @@ cgroup_v2_nearest() (
 # Free space rounded down to a power of two gibibytes. Free bytes move between
 # any two runs; the bucket does not, and "is there room for a build" is the
 # only question this dimension was ever able to answer.
+#
+# The bucket makes the number stable on ONE machine across two runs. It does not
+# make two machines agree, and it was never going to: a Worker host's disk is
+# not GitHub's, so these land in different buckets whenever the two differ by
+# more than a factor of two, which is most of the time and has nothing to do
+# with anything changing. Measured: the hosted leg bucketed to 64 and the fleet
+# leg to 128 in one run and both to 64 in the run before it. So the SIZE is
+# allowlisted as intended, and what a job actually needs -- enough room to
+# build -- is the floor key below, which is the same value on both legs and
+# fails when it is not.
+FREE_FLOOR_GIB=14
 free_gib_pow2() (
   kib=$(df -P -k "$1" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)
   case "$kib" in
@@ -256,6 +267,24 @@ free_gib_pow2() (
     next=$((next * 2))
   done
   printf '%s' "$bucket"
+)
+
+# Whether a directory has the room GitHub's own documentation promises a hosted
+# Linux runner (14 GB). A bucket comparison between two different machines is a
+# size difference and says nothing; this is the assertion underneath it, it is
+# `yes` on any leg with room to build, and a Profile provisioned onto a disk too
+# small to hold a checkout and a node_modules fails it on its own leg rather
+# than by disagreeing with whatever GitHub happened to hand out that morning.
+free_meets_floor() (
+  kib=$(df -P -k "$1" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)
+  case "$kib" in
+    '' | *[!0-9]*) printf unavailable; return 0 ;;
+  esac
+  if [ "$((kib / 1048576))" -ge "$FREE_FLOOR_GIB" ]; then
+    printf yes
+  else
+    printf no
+  fi
 )
 
 # Whether a binary written to this directory can be executed from it. A
@@ -587,12 +616,15 @@ workspace_dir=${GITHUB_WORKSPACE:-$PWD}
 scratch_dir=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 emit workspace_fstype "$(stat -f -c '%T' "$workspace_dir" 2>/dev/null || true)"
 emit workspace_free_gib_pow2 "$(free_gib_pow2 "$workspace_dir")"
+emit workspace_free_meets_floor "$(free_meets_floor "$workspace_dir")"
 emit workspace_exec_allowed "$(exec_allowed "$workspace_dir")"
 emit scratch_fstype "$(stat -f -c '%T' "$scratch_dir" 2>/dev/null || true)"
 emit scratch_free_gib_pow2 "$(free_gib_pow2 "$scratch_dir")"
+emit scratch_free_meets_floor "$(free_meets_floor "$scratch_dir")"
 emit scratch_exec_allowed "$(exec_allowed "$scratch_dir")"
 emit root_fstype "$(stat -f -c '%T' / 2>/dev/null || true)"
 emit root_free_gib_pow2 "$(free_gib_pow2 /)"
+emit root_free_meets_floor "$(free_meets_floor /)"
 
 # ---------------------------------------------------------------------------
 # Kernel tunables a build can trip over
