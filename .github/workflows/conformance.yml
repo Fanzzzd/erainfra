@@ -55,8 +55,8 @@ jobs:
         include:
           - leg: github-hosted
             runs-on: ubuntu-latest
-          - leg: rc-linux-js
-            runs-on: rc-linux-js
+          - leg: rc-e2e
+            runs-on: rc-e2e
     runs-on: ${{ matrix.runs-on }}
     # A Profile leg has no runner at all unless a Worker is serving that
     # Profile, and a job with no runner QUEUES rather than fails — which reads
@@ -67,6 +67,20 @@ jobs:
     permissions:
       contents: read
     steps:
+      # First, and before anything that can fail: evidence that this leg was
+      # ASSIGNED. A Profile leg that never gets a runner produces an empty log
+      # and a timeout, which reads the same as a leg that ran and broke. This
+      # line is the difference, and `triage` below reads the same distinction
+      # off the job results.
+      - name: Record which runner picked this leg up
+        env:
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -eu
+          printf '%s was assigned to runner %s (%s)\n' \
+            "$LEG" "$RUNNER_NAME" "${RUNNER_ENVIRONMENT:-unknown}"
+          printf -- '- leg **%s** executed on runner %s (%s)\n' \
+            "$LEG" "$RUNNER_NAME" "${RUNNER_ENVIRONMENT:-unknown}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -161,3 +175,58 @@ jobs:
               "fingerprints/fingerprint-$profile/fingerprint.txt" || status=1
           done < .github/conformance/profiles.txt
           exit "$status"
+
+  # Runs whatever happened, and exists for exactly one reason: a red run must
+  # say WHICH kind of red it is. "A Profile leg never got a runner" and "the two
+  # legs ran and their environments differ" both end as a red run, they are
+  # completely different problems, and the first of them leaves an EMPTY log --
+  # a job that queued until the timeout has no output at all. Reading those
+  # apart at 03:00 from nothing is not reasonable, so this job says it out loud.
+  #
+  # It cannot make a red run green. The only path here that exits 0 requires
+  # `conformance` to have SUCCEEDED, and `conformance` is itself strictly gated
+  # on both fingerprint legs finishing. `if: always()` widens what this job can
+  # explain, never what the workflow will accept.
+  triage:
+    name: what kind of red is this
+    needs: [selftest, fingerprint, conformance]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Name the failure class
+        env:
+          SELFTEST: ${{ needs.selftest.result }}
+          FINGERPRINT: ${{ needs.fingerprint.result }}
+          CONFORMANCE: ${{ needs.conformance.result }}
+        run: |
+          set -eu
+          printf 'selftest=%s  fingerprint=%s  conformance=%s\n' \
+            "$SELFTEST" "$FINGERPRINT" "$CONFORMANCE"
+          if [ "$CONFORMANCE" = success ]; then
+            echo "Every leg executed on its own runner and every difference was accounted for."
+            exit 0
+          fi
+          if [ "$CONFORMANCE" = failure ]; then
+            echo "::error title=Environment divergence::both legs RAN; their environments differ"
+            echo "This is the job doing its work. Open the 'diff the Profiles against" >&2
+            echo "ubuntu-latest' job: it names each key, both values, and which side is" >&2
+            echo "which. Either fix the difference or add an allow line to" >&2
+            echo ".github/conformance/allowlist.txt carrying the reason it is intended." >&2
+            exit 1
+          fi
+          if [ "$SELFTEST" != success ]; then
+            echo "::error title=The differ itself is broken::the conformance self-test failed"
+            echo "Nothing was compared. Fix .github/conformance/ before reading anything" >&2
+            echo "else in this run: an unproven differ cannot clear a fleet." >&2
+            exit 1
+          fi
+          echo "::error title=A leg was never assigned a runner::no environment was compared"
+          echo "A fingerprint leg did not finish, so the diff never ran. This is NOT" >&2
+          echo "environment drift and it is not a Worker that died mid-job -- check" >&2
+          echo "whether the leg has any log at all. An empty log plus a timeout means it" >&2
+          echo "sat in 'queued': scale sets are registered PER REPOSITORY, so a job" >&2
+          echo "targeting a label no scale set serves on THIS repository is never" >&2
+          echo "assigned and never fails on its own. See the constraint written down in" >&2
+          echo ".github/conformance/profiles.txt." >&2
+          exit 1

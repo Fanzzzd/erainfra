@@ -2,8 +2,7 @@ self-hosted-runner:
   # Live canary scale-set label; it does not imply Firecracker before the
   # separate issue #17 production gate passes.
   labels:
+    # Also the Profile the environment conformance job fingerprints against
+    # ubuntu-latest: it is the only scale set measured to pick work up on THIS
+    # repository, and .github/conformance/profiles.txt says why that matters.
     - rc-e2e
-    # The Linux Profile the environment conformance job fingerprints against
-    # ubuntu-latest. .github/conformance/profiles.txt is the list that job
-    # holds itself to; this entry only teaches actionlint the label exists.
-    - rc-linux-js
