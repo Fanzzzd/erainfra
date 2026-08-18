@@ -1,0 +1,126 @@
+# Every way an EraInfra Profile is deliberately not `ubuntu-latest`.
+#
+# `diff.sh` fingerprints a job on `ubuntu-latest` and on each Linux Profile and
+# fails on every difference this file does not account for. So this file is the
+# written record of the decisions: what we chose to be different about, and why.
+# It did not exist before #82, which is why #80 -- a job capped at 8 CPUs while
+# every interface it could read said 64 -- reached a production repository and
+# was found by a user's test suite.
+#
+# Three directives, each of which MUST carry a `# reason`. An entry with no
+# reason is a bug being hidden, so diff.sh treats a missing reason as a syntax
+# error rather than a style preference.
+#
+#   allow <key-or-glob>        a difference in this key is intended
+#   require <key>=<value>      this key must hold this value on EVERY leg
+#   never-allow <key-or-glob>  `allow` may never name this key
+#
+# ---------------------------------------------------------------------------
+# The two keys that are not negotiable
+# ---------------------------------------------------------------------------
+# #80 is not "the CPU count differs". Of course it differs: a Worker is a
+# different size from a hosted runner, and the entries further down say so. #80
+# is that the count a job SEES disagreed with the count it was ALLOWED -- 64
+# against a quota of 8 -- so every tool that autosizes (vitest, `make -j`,
+# Go, the JVM, Python) oversubscribed by 8x. That gap is what the
+# `*_matches_allowed` keys measure, and there is no fleet anywhere on which it
+# is intended.
+#
+# They are handled twice on purpose:
+#
+#   `never-allow` stops the plausible entry. Someone reading a red job at 03:00
+#   will reach for "our machines are bigger, allow it"; that reasoning is
+#   correct for `cpu_visible_count` and fatal for this key, so the attempt is a
+#   hard failure instead of a comment nobody reads.
+#
+#   `require` stops the silent one. This job is differential, and a
+#   differential job cannot see a defect that both legs share: if hosted and
+#   Profile were both misreporting their own size the two values would agree
+#   and the diff would go green. These are asserted absolutely, per leg.
+require cpu_visible_matches_allowed=yes  # a machine that reports more CPUs than its own quota allows lies to every build tool that autosizes; this is #80
+require mem_visible_matches_allowed=yes  # `free` and os.totalmem() read /proc/meminfo, which is the host's unless LXCFS is mounted, so a job can be OOM-killed at its cgroup limit while believing it has the host's RAM; this is the second half of #80
+never-allow cpu_visible_matches_allowed  # the excusable difference is cpu_visible_count, which is allowed below; the agreement between what a job sees and what it may use is not
+never-allow mem_visible_matches_allowed  # same shape as the CPU key: sizes may differ between legs, a machine disagreeing with itself may not
+never-allow node_heap_within_allowed_mem  # Node sizes its default old space from total RAM, so a heap ceiling above the cgroup limit entitles a process to grow until the kernel kills it, and the OOM carries no stack
+
+# ---------------------------------------------------------------------------
+# The boundary itself
+# ---------------------------------------------------------------------------
+allow kernel_release  # a GitHub-hosted job runs on Azure's kernel; a Profile runs on the Worker's, or on the guest kernel deploy/provision-firecracker-host.sh pins. Both are pinned deliberately and neither tracks the other
+allow virtualisation  # hosted is an Azure VM; the transitional Docker executor is a container and Firecracker is a microVM (ADR 0001)
+allow container_hint  # the Docker executor is a container by construction, and says so; it is the trusted-repository fallback until #17 cuts over
+allow cgroup_version  # the executor inherits the Worker host's cgroup hierarchy, and our hosts are not all on the same one; the numbers underneath it are read for v1 and v2 alike
+allow cap_eff  # a container's effective capability set is not a VM's. The bit that matters is fingerprinted separately as cap_sys_admin and is not on this list
+allow seccomp_mode  # the Docker executor runs under Docker's default seccomp profile; a hosted VM job runs unfiltered
+allow lsm_profile  # same reason: Docker applies its default AppArmor profile to the container
+allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; the shared-kernel Docker executor exposes no device nodes at all, which #80's own evidence records as kvm=absent. Firecracker guests get real vCPUs instead (#17)
+
+# ---------------------------------------------------------------------------
+# Size. A Profile is a contract for a size, and it is not ubuntu-latest's
+# ---------------------------------------------------------------------------
+# Each of these differs because a Profile carries `vcpus` and `memoryMiB`
+# (convex/schema.ts) and a hosted runner carries whatever GitHub sells. None of
+# them can express #80 on its own, which is exactly why the derived keys above
+# exist and are not on this list.
+allow cpu_visible_count  # a Profile's vcpus is not ubuntu-latest's 4
+allow cpu_nproc_all  # the Worker host's core count, which no Profile promises to match
+allow cpu_cpuinfo_count  # same host fact, read through /proc/cpuinfo
+allow cpu_affinity_count  # the scheduler affinity mask a Profile hands the job
+allow cpu_online_count  # the Worker host's online CPU set
+allow cpu_cgroup_cpuset_count  # the cpuset width the executor allocates per Attempt
+allow cpu_cgroup_quota_millicpu  # the CFS bandwidth quota, which is the Profile's vcpus on our side and unset on a hosted VM
+allow cpu_allowed_millicpu  # the resolved ceiling of the two above
+allow cpu_node_available_parallelism  # what Node reports, which follows the affinity mask
+allow mem_visible_mib  # the Worker host's RAM, which no Profile promises to match
+allow mem_allowed_mib  # the Profile's memoryMiB against whatever the hosted runner ships
+allow mem_cgroup_limit_mib  # the executor sets a memory ceiling per Attempt; a hosted VM has none
+allow mem_node_totalmem_mib  # the same host RAM read through os.totalmem()
+allow mem_swap_total_mib  # swap is a property of the Worker host, not of the Profile
+allow node_heap_limit_mib  # V8 sizes its default old space from total RAM, so this moves with the number above it; whether it FITS is the assertion, and it is not on this list
+allow pids_cgroup_max  # apps/action-runner-agent/provisioners/provision-docker.sh sets --pids-limit 4096 as a deliberate blast-radius bound
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+allow workspace_fstype  # the Docker executor's writable layer is overlayfs and is destroyed with the Attempt; a hosted runner writes to the VM's own filesystem
+allow scratch_fstype  # same layer
+allow root_fstype  # same layer
+allow workspace_free_gib_pow2  # an Image Release is sized for the builds it serves, not for GitHub's 14 GB SSD
+allow scratch_free_gib_pow2  # same
+allow root_free_gib_pow2  # same
+
+# ---------------------------------------------------------------------------
+# The runner and its image
+# ---------------------------------------------------------------------------
+allow runner_environment  # `self-hosted` against `github-hosted` is the entire premise of the comparison
+allow runner_version  # GitHub updates the hosted runner continuously; images/ubuntu-24.04-js/Dockerfile pins actions/runner by version and SHA-256, and that pin is asserted there
+allow runner_image_os  # ImageOS is set by GitHub's image provisioning and by nothing of ours
+allow runner_action_archive_cache  # provision-docker.sh points the runner at the image's read-only /opt/action-cache so a job does not fetch its Actions over the network
+allow env_path  # the runner root and tool cache live at different paths in the two images. Whether a workflow can still FIND its tools is asserted by the tool_*_present keys, which are not on this list
+allow user_groups  # the Image Release creates the runner account with exactly the docker and sudo groups; GitHub's image adds a dozen more for tooling we deliberately do not ship
+allow toolcache_tools  # the Image Release is minimal on purpose (docs/research/blacksmith-runner-images.md): it carries the toolchain its Profiles were built for and is not advertised as GitHub-hosted-compatible
+allow toolcache_node_versions  # same: one pinned Node, seeded so actions/setup-node resolves it without a download
+allow tool_*_version  # our Image Release pins its toolchain and GitHub's floats, so version drift between the two is expected. A tool DISAPPEARING is not, and tool_*_present is not on this list -- that is the #48 bug class
+allow docker_daemon_reachable  # no Docker control socket is mounted into an Attempt, and the daily smoke canary fails if one ever is. A workflow that needs `docker build` cannot have it on this executor, and that is a decision rather than an accident
+allow docker_server_version  # follows from the line above
+
+# ---------------------------------------------------------------------------
+# Deliberately not fingerprinted
+# ---------------------------------------------------------------------------
+# Recorded here because "why is X not checked" is the second question anyone
+# asks this file, and because a dimension dropped without a note reads later
+# like a dimension nobody thought of.
+#
+#   hostname, container id, IP addresses, uptime, PIDs, timestamps -- they move
+#   between two runs on the SAME machine, so they cannot be diffed between two
+#   different ones. Free space is fingerprinted as a power-of-two bucket for
+#   the same reason.
+#
+#   CPU model, vendor and instruction-set flags -- GitHub rotates hosted
+#   hardware, so these differ from ubuntu-latest to ubuntu-latest. A dimension
+#   that is not stable on the baseline cannot be conformance-checked against
+#   it; a build that needs AVX-512 needs a Profile that promises it, which is a
+#   Profile contract question and not this job's.
+#
+#   ImageVersion -- GitHub bumps it weekly. It would be an allowlisted key that
+#   never fails, i.e. noise. The workflow prints it in the run summary instead.

@@ -3,3 +3,7 @@ self-hosted-runner:
   # separate issue #17 production gate passes.
   labels:
     - rc-e2e
+    # The Linux Profile the environment conformance job fingerprints against
+    # ubuntu-latest. .github/conformance/profiles.txt is the list that job
+    # holds itself to; this entry only teaches actionlint the label exists.
+    - rc-linux-js

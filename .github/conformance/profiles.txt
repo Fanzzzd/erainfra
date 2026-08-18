@@ -1,0 +1,13 @@
+# The Linux Profiles this job proves against `ubuntu-latest`. One name per line.
+#
+# This file, not the workflow's matrix, is what the conformance job checks
+# itself against: it refuses to report success unless every Profile named here
+# produced a fingerprint in that run. A Profile leg that was dropped from the
+# matrix, cancelled, or left queued because no Worker was serving it therefore
+# fails the job instead of quietly reducing it to a comparison of
+# `ubuntu-latest` against itself.
+#
+# Adding a Profile here without adding a matrix leg for it in
+# .github/workflows/conformance.yml turns the job red, which is the intended
+# order: declare what must be proven, then go and prove it.
+rc-linux-js

@@ -161,6 +161,18 @@ jobs:
             https://example.convex.site > "$RUNNER_TEMP/install.ps1"
           head -n 1 "$RUNNER_TEMP/install.ps1" | grep -qx '#Requires -Version 5.1'
           pwsh -NoProfile -Command '$null = [ScriptBlock]::Create((Get-Content -Raw $env:RUNNER_TEMP/install.ps1))'
+      # The environment conformance workflow only runs on a pull request that
+      # touches the provisioners, the images or readiness.ts, so its differ is
+      # untested on every other PR. This runs its self-test here instead: it
+      # shellchecks the three scripts, proves the fingerprint is byte-identical
+      # across two runs on this machine, and proves the diff goes RED -- one
+      # case per failure mode, including deleting an entry from the real
+      # allowlist and requiring the difference it covered to surface. A
+      # conformance job nobody has watched fail is indistinguishable from a
+      # vacuous one, which is the same lesson rename.test.sh above learned the
+      # expensive way.
+      - name: The environment conformance differ can go red
+        run: sh .github/conformance/conformance.test.sh
       - name: Test the root Go module
         run: go test ./...
       - name: Vet the root Go module
