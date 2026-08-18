@@ -378,7 +378,15 @@ try {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     # The stored machine value may still carry unexpanded %SystemRoot% entries.
     $machinePath = [Environment]::ExpandEnvironmentVariables($machinePath)
-    foreach ($exe in @('git.exe', 'node.exe', 'python.exe')) {
+    # Each name carries the version it must report, in one list, so a tool
+    # cannot be added to the loop with nothing to check it against.
+    $pinnedTools = @(
+        @{ Exe = 'git.exe'; Version = "$RcGitVersion.windows.$RcGitWindowsRevision" },
+        @{ Exe = 'node.exe'; Version = "v$RcNodeVersion" },
+        @{ Exe = 'python.exe'; Version = $RcPythonVersion }
+    )
+    foreach ($tool in $pinnedTools) {
+        $exe = $tool.Exe
         # Join-Path parses its first argument as a drive, so one quoted entry in
         # the machine PATH -- installers do write those -- would throw here and
         # fail the build for a reason that has nothing to do with the tools.
@@ -396,6 +404,14 @@ try {
         # describing the kill instead of the run.
         $reported = @(& $resolved --version)
         if ($LASTEXITCODE -ne 0) { throw "$resolved --version exited with $LASTEXITCODE" }
+        # Answering is not the same as being the pinned tool. An installer that
+        # no-ops over an existing copy still exits 0, and a base image that
+        # already carried the tool would leave it first on the machine PATH --
+        # either way the manifest would record a version the image does not
+        # have, which is the same lie as recording one it does not carry at all.
+        if ($reported.Count -eq 0 -or $reported[0] -notlike "*$($tool.Version)*") {
+            throw "$resolved reports '$($reported[0])', not the pinned $($tool.Version)"
+        }
         # What the image ships, in the transcript, so it can be audited later.
         "$exe -> $resolved ($($reported[0]))"
     }

@@ -428,7 +428,10 @@ describe("build-image.ps1 tooling pin", () => {
   // result is not an array, so -not $found misreads the case that matters.
   it("proves each tool reached the machine PATH, not this session's", () => {
     assert.match(guestScript, /\[Environment\]::GetEnvironmentVariable\('Path', 'Machine'\)/);
-    assert.match(guestScript, /foreach \(\$exe in @\('git\.exe', 'node\.exe', 'python\.exe'\)\)/);
+    assert.match(guestScript, /foreach \(\$tool in \$pinnedTools\)/);
+    for (const exe of ["git.exe", "node.exe", "python.exe"]) {
+      assert.match(guestScript, new RegExp(`Exe = '${exe.replace(".", "\\.")}'`));
+    }
     assert.match(guestScript, /\$found = @\(\$machinePath\.Split\(';'\)/);
     assert.match(
       guestScript,
@@ -446,6 +449,43 @@ describe("build-image.ps1 tooling pin", () => {
     assert.match(buildImage, /nodeSha256 = \$NodeSha256\.ToLowerInvariant\(\)/);
     assert.match(buildImage, /pythonVersion = \$PythonVersion/);
     assert.match(buildImage, /pythonSha256 = \$PythonSha256\.ToLowerInvariant\(\)/);
+  });
+
+  // A tool that answers is not necessarily the tool that was pinned. An
+  // installer that no-ops over an existing copy still exits 0, and a base image
+  // that already carried the tool would leave it first on the machine PATH --
+  // and the manifest would then record a version the image does not have, which
+  // is the same lie as recording one it does not carry at all. Raised by
+  // CodeRabbit on #85 and confirmed on the merits.
+  it("rejects a tool whose reported version is not the pinned one", () => {
+    assert.match(
+      guestCode,
+      /Exe = 'git\.exe'; Version = "\$RcGitVersion\.windows\.\$RcGitWindowsRevision"/,
+    );
+    assert.match(guestCode, /Exe = 'node\.exe'; Version = "v\$RcNodeVersion"/);
+    assert.match(guestCode, /Exe = 'python\.exe'; Version = \$RcPythonVersion/);
+    assert.match(
+      guestCode,
+      /if \(\$reported\.Count -eq 0 -or \$reported\[0\] -notlike "\*\$\(\$tool\.Version\)\*"\) \{/,
+    );
+    assert.match(
+      guestCode,
+      /throw "\$resolved reports '\$\(\$reported\[0\]\)', not the pinned \$\(\$tool\.Version\)"/,
+    );
+
+    // Every name in the loop carries a version, so a tool cannot be added with
+    // nothing to check it against -- a lookup that missed would compare against
+    // an empty pattern, which matches everything.
+    const names = [...guestCode.matchAll(/Exe = '([^']+)'/g)].map((m) => m[1]);
+    const versions = [...guestCode.matchAll(/Exe = '[^']+'; Version = /g)];
+    assert.deepEqual(names, ["git.exe", "node.exe", "python.exe"]);
+    assert.equal(versions.length, names.length);
+
+    // And it runs before the image is blessed.
+    const check = guestCode.indexOf("not the pinned");
+    const marker = guestCode.indexOf("New-Item -ItemType File -Path 'C:\\rc-provision-complete'");
+    assert.ok(check > 0, "nothing compares the reported version against the pin");
+    assert.ok(marker > check, "the version check runs after the image is blessed");
   });
 
   // #48 restated as an invariant, and the test that matters most here: the
