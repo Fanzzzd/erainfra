@@ -51,6 +51,27 @@ export type ReadinessFacts = {
 export type ReadinessResult = ({ state: "ready" } | { state: "failed"; error: string }) &
   ReadinessFacts;
 
+/**
+ * A core range borrowed for the resource-visibility probe. The Agent hands
+ * this in rather than readiness importing the allocator, so the range the
+ * probe pins to is produced by the very code that pins a real Attempt.
+ */
+export type CoreLease = {
+  /** The range, as `--cpuset-cpus` writes it. */
+  spec: string;
+  /** False when the Worker was too busy to hold it and the probe shares cores. */
+  exclusive: boolean;
+  release: () => void;
+};
+
+export type ProbeResult = { exitCode: number; stdout: string; stderr: string };
+
+export type PrepareProfileOptions = {
+  hostCores?: number;
+  leaseCores?: (vcpus: number) => CoreLease;
+  runProbe?: (args: string[]) => Promise<ProbeResult>;
+};
+
 export type PublishedReadinessState = "preparing" | "ready" | "degraded" | "failed";
 
 /** Healthy images are refreshed sparingly; broken capacity retries promptly. */
@@ -173,7 +194,131 @@ export function architectureMismatch(hostArch: string, imageArch: string): strin
   return `this Worker is ${wanted} but the Image Release is built for ${imageArch}; the job would run under emulation or not at all`;
 }
 
-async function prepareDocker(profile: ProfileSpec, cores: number): Promise<ReadinessResult> {
+/**
+ * A stable identifier. The dashboard groups by these names and the operator
+ * runbook refers to them, so this follows the same rule the runtime's own
+ * check names do: renaming it is a product change.
+ */
+export const CHECK_JOB_RESOURCE_VISIBILITY = "job-resource-visibility";
+
+/**
+ * What the probe container is asked to report about itself. `nproc` is the
+ * affinity-derived count — the one `uv_available_parallelism` and
+ * `runtime.NumCPU()` also read, and the one a cpuset actually corrects.
+ * /proc/cpuinfo is deliberately not asserted on: a cpuset does not filter it,
+ * it still lists every host CPU, and a check against it would fail forever.
+ *
+ * The cgroup limit is read v1-first because the production Workers are cgroup
+ * v1 hybrid and Docker uses the v1 paths there; v2 is the alternative, not the
+ * other way round. `unknown` is tolerated rather than failed: a host without a
+ * readable memory cgroup is a different problem than a job being lied to.
+ */
+const PROBE_COMMAND =
+  'printf "%s\n%s\n%s\n%s\n" ' +
+  '"$(nproc)" "${RC_VCPUS:-unset}" "${RC_MEMORY_MIB:-unset}" ' +
+  '"$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || ' +
+  'cat /sys/fs/cgroup/memory.max 2>/dev/null || printf unknown)"';
+
+/**
+ * The exact limit flags an Attempt is given, in the same order
+ * provision-docker.sh writes them. `--user` and `--workdir` are left off on
+ * purpose: they are not limits, and an image without that account would fail
+ * this check for a reason that has nothing to do with what a job can see.
+ */
+export function probeInvocation(profile: ProfileSpec, cpuset: string): string[] {
+  return [
+    "run",
+    "--rm",
+    "--pull=never",
+    "--cpus",
+    String(profile.vcpus),
+    "--cpuset-cpus",
+    cpuset,
+    "--memory",
+    `${profile.memoryMiB}m`,
+    "--pids-limit",
+    "4096",
+    "--env",
+    `RC_VCPUS=${profile.vcpus}`,
+    "--env",
+    `RC_MEMORY_MIB=${profile.memoryMiB}`,
+    profile.imageRelease,
+    "sh",
+    "-c",
+    PROBE_COMMAND,
+  ];
+}
+
+/**
+ * Turns what the probe container said about itself into the check.
+ *
+ * A cpuset allocator that is correct today regresses silently the next time
+ * provision-docker.sh is edited, because nothing else in the tree asserts what
+ * a job can actually see — which is the same shape as the bug this exists to
+ * prevent. The detail carries the measured numbers even when it passes:
+ * evidence, not a boolean.
+ */
+export function jobResourceVisibility(
+  profile: ProfileSpec,
+  lease: CoreLease,
+  probe: ProbeResult,
+): ReadinessCheck {
+  const fail = (detail: string): ReadinessCheck => ({
+    name: CHECK_JOB_RESOURCE_VISIBILITY,
+    passed: false,
+    detail,
+  });
+  if (probe.exitCode !== 0) {
+    return fail(
+      `the probe container exited ${probe.exitCode}: ${probe.stderr.trim().slice(0, 300) || "no output"}`,
+    );
+  }
+  const [nproc, envVcpus, envMemory, cgroupBytes] = probe.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.trim());
+  if (nproc === undefined || envVcpus === undefined || envMemory === undefined) {
+    return fail(`the probe container printed ${JSON.stringify(probe.stdout.slice(0, 200))}`);
+  }
+  if (Number(nproc) !== profile.vcpus) {
+    return fail(
+      `the container reports ${nproc} CPUs but the Profile grants ${profile.vcpus}; ` +
+        `a job here would autosize against the wrong number`,
+    );
+  }
+  if (Number(envVcpus) !== profile.vcpus || Number(envMemory) !== profile.memoryMiB) {
+    return fail(
+      `the container's own limits read RC_VCPUS=${envVcpus} RC_MEMORY_MIB=${envMemory}, ` +
+        `not ${profile.vcpus} and ${profile.memoryMiB}`,
+    );
+  }
+  // free(1) and /proc/meminfo stay the host's without LXCFS, so RC_MEMORY_MIB
+  // is the number a job has to trust. It is only worth trusting if it is the
+  // limit the kernel is actually enforcing.
+  const enforcedMiB = cgroupBytes === undefined ? NaN : Number(cgroupBytes) / 1024 / 1024;
+  if (Number.isFinite(enforcedMiB) && Math.round(enforcedMiB) !== profile.memoryMiB) {
+    return fail(
+      `RC_MEMORY_MIB says ${profile.memoryMiB} but the memory cgroup enforces ` +
+        `${Math.round(enforcedMiB)} MiB`,
+    );
+  }
+  const enforced = Number.isFinite(enforcedMiB)
+    ? `${Math.round(enforcedMiB)} MiB enforced`
+    : "cgroup limit unreadable";
+  return {
+    name: CHECK_JOB_RESOURCE_VISIBILITY,
+    passed: true,
+    detail:
+      `nproc=${nproc} on ${lease.spec}${lease.exclusive ? "" : " (shared: the Worker was busy)"}, ` +
+      `RC_VCPUS=${envVcpus}, RC_MEMORY_MIB=${envMemory}, ${enforced}`,
+  };
+}
+
+async function prepareDocker(
+  profile: ProfileSpec,
+  cores: number,
+  options: PrepareProfileOptions = {},
+): Promise<ReadinessResult> {
   const checks: ReadinessCheck[] = [];
   const fail = (name: string, detail: string): ReadinessResult => {
     checks.push({ name, passed: false, detail });
@@ -231,7 +376,63 @@ async function prepareDocker(profile: ProfileSpec, cores: number): Promise<Readi
     return fail("image-architecture", mismatch);
   }
   checks.push({ name: "image-architecture", passed: true, detail: imageArch });
+
+  // The last thing readiness proves is the thing the job depends on and nothing
+  // else measures: that a container started with this Profile's limit flags
+  // agrees about its own size. The scratch-directory check above moves a job
+  // failure to readiness (#9); this does the same for the resource lie (#80).
+  const lease = (options.leaseCores ?? defaultLease)(profile.vcpus);
+  let visibility: ReadinessCheck;
+  try {
+    const run = options.runProbe ?? runDockerProbe;
+    visibility = jobResourceVisibility(
+      profile,
+      lease,
+      await run(probeInvocation(profile, lease.spec)),
+    );
+  } catch (error) {
+    visibility = {
+      name: CHECK_JOB_RESOURCE_VISIBILITY,
+      passed: false,
+      detail: `the probe container could not be run: ${message(error)}`,
+    };
+  } finally {
+    lease.release();
+  }
+  checks.push(visibility);
+  if (!visibility.passed) {
+    // A Worker that cannot give a job an honest view of its own size has no
+    // business accepting work, which is the rule the network policy already
+    // follows.
+    return {
+      state: "failed",
+      error: visibility.detail ?? "resource visibility failed",
+      ...dockerFacts(checks),
+    };
+  }
   return { state: "ready", ...dockerFacts(checks) };
+}
+
+/**
+ * When the Agent did not hand in an allocator — only a direct caller does
+ * that — the probe still pins to a real range of the right width. `cpu-capacity`
+ * has already proved the Worker has that many CPUs.
+ */
+function defaultLease(vcpus: number): CoreLease {
+  return {
+    spec: vcpus === 1 ? "0" : `0-${vcpus - 1}`,
+    exclusive: false,
+    release: () => {},
+  };
+}
+
+async function runDockerProbe(args: string[]): Promise<ProbeResult> {
+  const result = await execa("docker", args, { timeout: 120_000, reject: false });
+  return {
+    exitCode: result.exitCode ?? 1,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult> {
@@ -354,7 +555,7 @@ function failureOf(facts: ReadinessFacts, stderr: string) {
 
 export async function prepareProfile(
   profile: ProfileSpec,
-  options: { hostCores?: number } = {},
+  options: PrepareProfileOptions = {},
 ): Promise<ReadinessResult> {
   // Both Linux executors already refuse a mutable reference at job time, so
   // failing here moves that rejection to readiness. Tart performs the same
@@ -379,7 +580,7 @@ export async function prepareProfile(
   }
   switch (profile.executor) {
     case "docker":
-      return prepareDocker(profile, options.hostCores ?? availableParallelism());
+      return prepareDocker(profile, options.hostCores ?? availableParallelism(), options);
     case "firecracker":
       return prepareFirecracker(profile);
     case "tart": {
