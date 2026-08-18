@@ -1,0 +1,251 @@
+name: EraInfra environment conformance
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Differential conformance: one environment fingerprint taken on
+    # `ubuntu-latest` and on every Linux Profile, then diffed. It answers a
+    # question the daily smoke canary does not — that canary proves a job RUNS,
+    # this proves it runs in the environment it was promised. #80 (a job capped
+    # at 8 CPUs and 8 GiB while every interface it could read said 64 and
+    # 251 GiB) reached a production repository because nothing here had ever
+    # compared our fleet against the environment every workflow in the world is
+    # written against.
+    - cron: "41 4 * * *"
+  pull_request:
+    paths:
+      # The three inputs that can move the fingerprint, plus this job's own
+      # source. Anything else cannot change what a job sees.
+      - "apps/action-runner-agent/provisioners/**"
+      - "apps/action-runner-agent/readiness.ts"
+      - "images/**"
+      - ".github/conformance/**"
+      - ".github/workflows/conformance.yml"
+
+permissions: {}
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs first and gates the rest. A conformance job that has never been seen
+  # to fail is indistinguishable from a vacuous one, so every run re-proves
+  # that the differ goes red — including by deleting an entry from the real
+  # allowlist and requiring the difference it covered to surface.
+  selftest:
+    name: the differ can go red
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh .github/conformance/conformance.test.sh
+
+  fingerprint:
+    name: fingerprint ${{ matrix.leg }}
+    strategy:
+      # Never fail-fast: one leg dying must not cancel the other and leave the
+      # run looking like it merely stopped early.
+      fail-fast: false
+      matrix:
+        include:
+          - leg: github-hosted
+            runs-on: ubuntu-latest
+          - leg: rc-e2e
+            runs-on: rc-e2e
+    runs-on: ${{ matrix.runs-on }}
+    # A Profile leg has no runner at all unless a Worker is serving that
+    # Profile, and a job with no runner QUEUES rather than fails — which reads
+    # as "not finished" instead of "broken". The timeout turns that into a red
+    # leg, and `conformance` below refuses to run without this job's artefacts,
+    # so a queued Profile can never be reported as a pass.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # First, and before anything that can fail: evidence that this leg was
+      # ASSIGNED. A Profile leg that never gets a runner produces an empty log
+      # and a timeout, which reads the same as a leg that ran and broke. This
+      # line is the difference, and `triage` below reads the same distinction
+      # off the job results.
+      - name: Record which runner picked this leg up
+        env:
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -eu
+          printf '%s was assigned to runner %s (%s)\n' \
+            "$LEG" "$RUNNER_NAME" "${RUNNER_ENVIRONMENT:-unknown}"
+          printf -- '- leg **%s** executed on runner %s (%s)\n' \
+            "$LEG" "$RUNNER_NAME" "${RUNNER_ENVIRONMENT:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Determinism is the whole game: a fingerprint that disagrees with itself
+      # makes every diff noise, and a noisy job is one everybody learns to
+      # ignore, which is worse than not having one. It is proven here, on the
+      # real platform, rather than asserted in a comment.
+      - name: The fingerprint is stable against itself
+        env:
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -eu
+          sh .github/conformance/fingerprint.sh "$RUNNER_TEMP/first.txt"
+          sh .github/conformance/fingerprint.sh "$RUNNER_TEMP/second.txt"
+          if ! diff -u "$RUNNER_TEMP/first.txt" "$RUNNER_TEMP/second.txt"; then
+            echo "::error::the fingerprint disagreed with itself on $LEG" >&2
+            echo "A dimension above moves between two runs on ONE machine, so it" >&2
+            echo "cannot be compared between two. Normalise it or drop it, and" >&2
+            echo "record which in .github/conformance/allowlist.txt." >&2
+            exit 1
+          fi
+          mkdir -p fingerprint
+          cp "$RUNNER_TEMP/first.txt" fingerprint/fingerprint.txt
+          {
+            echo "## Fingerprint: $LEG"
+            echo
+            echo '```'
+            cat fingerprint/fingerprint.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fingerprint-${{ matrix.leg }}
+          path: fingerprint/fingerprint.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  conformance:
+    name: diff the Profiles against ubuntu-latest
+    # No `if: always()`. This job must not start unless BOTH legs finished, so
+    # that a Profile leg which never got a runner leaves the run unfinished
+    # rather than green. Adding a condition here is the single edit that would
+    # make this workflow vacuous.
+    needs: [selftest, fingerprint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: fingerprints
+          pattern: fingerprint-*
+      - name: Every declared Profile produced a fingerprint
+        run: |
+          set -eu
+          base=fingerprints/fingerprint-github-hosted/fingerprint.txt
+          if [ ! -s "$base" ]; then
+            echo "::error::the ubuntu-latest baseline is missing" >&2
+            exit 1
+          fi
+          missing=
+          # `|| [ -n "$profile" ]` because `read` returns non-zero on a final
+          # line with no newline after it, and the body would then never see the
+          # last Profile in the file. Nothing about that failure is loud: the
+          # presence check finds nothing missing and the diff loop below has one
+          # fewer leg to compare, so dropping the ONLY declared Profile turns
+          # this job green while it proves nothing at all.
+          while IFS= read -r profile || [ -n "$profile" ]; do
+            case "$profile" in '' | \#*) continue ;; esac
+            if [ ! -s "fingerprints/fingerprint-$profile/fingerprint.txt" ]; then
+              missing="$missing $profile"
+            fi
+          done < .github/conformance/profiles.txt
+          if [ -n "$missing" ]; then
+            echo "::error::no fingerprint from:$missing" >&2
+            echo "profiles.txt declares these must be proven against ubuntu-latest." >&2
+            echo "A leg that queued, was cancelled, or was dropped from the matrix is" >&2
+            echo "not a leg that passed; comparing ubuntu-latest with itself is not" >&2
+            echo "conformance." >&2
+            exit 1
+          fi
+      - name: Diff every Profile against ubuntu-latest
+        run: |
+          set -eu
+          status=0
+          compared=0
+          while IFS= read -r profile || [ -n "$profile" ]; do
+            case "$profile" in '' | \#*) continue ;; esac
+            compared=$((compared + 1))
+            printf '\n========== %s ==========\n' "$profile"
+            sh .github/conformance/diff.sh \
+              .github/conformance/allowlist.txt \
+              "ubuntu-latest (GitHub-hosted)" \
+              fingerprints/fingerprint-github-hosted/fingerprint.txt \
+              "$profile (EraInfra Profile)" \
+              "fingerprints/fingerprint-$profile/fingerprint.txt" || status=1
+          done < .github/conformance/profiles.txt
+          # A loop that ran zero times exits 0, and this job would report a
+          # green conformance run in which nothing was ever compared. The step
+          # above only catches a Profile that is declared and did not produce a
+          # fingerprint; it cannot catch a profiles.txt that declares nobody.
+          if [ "$compared" -eq 0 ]; then
+            echo "::error::profiles.txt declares no Profile, so nothing was compared" >&2
+            echo "An empty declaration is not a conformant fleet; it is an unasked" >&2
+            echo "question. Name the Profiles a Worker serves on this repository." >&2
+            exit 1
+          fi
+          echo "Compared $compared Profile(s) against ubuntu-latest."
+          exit "$status"
+
+  # Runs whatever happened, and exists for exactly one reason: a red run must
+  # say WHICH kind of red it is. "A Profile leg never got a runner" and "the two
+  # legs ran and their environments differ" both end as a red run, they are
+  # completely different problems, and the first of them leaves an EMPTY log --
+  # a job that queued until the timeout has no output at all. Reading those
+  # apart at 03:00 from nothing is not reasonable, so this job says it out loud.
+  #
+  # It cannot make a red run green. The only path here that exits 0 requires
+  # `conformance` to have SUCCEEDED, and `conformance` is itself strictly gated
+  # on both fingerprint legs finishing. `if: always()` widens what this job can
+  # explain, never what the workflow will accept.
+  triage:
+    name: what kind of red is this
+    needs: [selftest, fingerprint, conformance]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Name the failure class
+        env:
+          SELFTEST: ${{ needs.selftest.result }}
+          FINGERPRINT: ${{ needs.fingerprint.result }}
+          CONFORMANCE: ${{ needs.conformance.result }}
+        run: |
+          set -eu
+          printf 'selftest=%s  fingerprint=%s  conformance=%s\n' \
+            "$SELFTEST" "$FINGERPRINT" "$CONFORMANCE"
+          if [ "$CONFORMANCE" = success ]; then
+            echo "Every leg executed on its own runner and every difference was accounted for."
+            exit 0
+          fi
+          if [ "$CONFORMANCE" = failure ]; then
+            echo "::error title=Environment divergence::both legs RAN; their environments differ"
+            echo "This is the job doing its work. Open the 'diff the Profiles against" >&2
+            echo "ubuntu-latest' job: it names each key, both values, and which side is" >&2
+            echo "which. Either fix the difference or add an allow line to" >&2
+            echo ".github/conformance/allowlist.txt carrying the reason it is intended." >&2
+            exit 1
+          fi
+          if [ "$SELFTEST" != success ]; then
+            echo "::error title=The differ itself is broken::the conformance self-test failed"
+            echo "Nothing was compared. Fix .github/conformance/ before reading anything" >&2
+            echo "else in this run: an unproven differ cannot clear a fleet." >&2
+            exit 1
+          fi
+          echo "::error title=A leg was never assigned a runner::no environment was compared"
+          echo "A fingerprint leg did not finish, so the diff never ran. This is NOT" >&2
+          echo "environment drift and it is not a Worker that died mid-job -- check" >&2
+          echo "whether the leg has any log at all. An empty log plus a timeout means it" >&2
+          echo "sat in 'queued': scale sets are registered PER REPOSITORY, so a job" >&2
+          echo "targeting a label no scale set serves on THIS repository is never" >&2
+          echo "assigned and never fails on its own. See the constraint written down in" >&2
+          echo ".github/conformance/profiles.txt." >&2
+          exit 1

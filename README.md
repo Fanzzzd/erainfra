@@ -205,6 +205,21 @@ This Profile promises its explicit smoke-tested tools, not complete GitHub-hoste
 See [the image research](docs/research/blacksmith-runner-images.md) for why GitHub's minimal runner
 container and hosted `ubuntu-24.04` VM are different products.
 
+Exactly _how_ it differs is measured rather than described. The **environment conformance** workflow
+runs one fingerprint script on `ubuntu-latest` and on every Profile declared in
+[`.github/conformance/profiles.txt`](.github/conformance/profiles.txt), then diffs the two and
+fails on any difference that is not on [an explicit, commented
+allowlist](.github/conformance/allowlist.txt). The allowlist is the written record of every way
+this environment is deliberately not GitHub's, and everything not on it is a bug — a job that reads
+a different CPU count from the one it may use, a tool present there and missing here, a scratch
+directory mounted `noexec`. It runs daily and on every change to the provisioners, the images or
+the readiness code, because those are the three inputs that can move it.
+
+A Profile is declarable only once a Worker serves it on _this_ repository. Scale sets are registered
+per repository, so a leg for a Profile nobody serves here does not fail — it queues until the
+timeout, and a timeout reads exactly like a runner that died. `rc-linux-js` is deliberately not
+declared today for that reason, and is therefore not among what the job proves.
+
 ## Run a Profile controller
 
 One lightweight controller process owns one Profile. It can run on a small always-on host; it does
@@ -509,6 +524,8 @@ packages/backend          Convex control plane
 packages/cli              the published `portless` CLI
 packages/release          deterministic release packager
 images                    immutable Profile image definitions
+.github/conformance       the environment fingerprint, its diff, and the allowlist of intended
+                          differences from `ubuntu-latest`
 ```
 
 Contributions are welcome. Keep platform lifecycle logic behind the executor boundary, preserve

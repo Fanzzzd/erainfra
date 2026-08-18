@@ -1,0 +1,27 @@
+# The Linux Profiles this job proves against `ubuntu-latest`. One name per line.
+#
+# A Profile leg only proves anything in a repository whose scale set actually
+# serves that Profile. Scale sets are registered PER REPOSITORY: a listener
+# serving `rc-linux-js` for another repository cannot be assigned a job here, no
+# matter how healthy it is. A job targeting a label nobody serves does not fail
+# — it QUEUES, until the timeout kills it, and a timeout looks exactly like a
+# runner that died. Listing a foreign Profile therefore manufactures a red run
+# that says "the environment drifted" when the truth is "nobody serves this
+# label here", which is the worst kind of false alarm: it is about the right
+# subject and it is wrong.
+#
+# So this file names what serves THIS repository. Today that is `rc-e2e`, the
+# scale set the daily smoke canary in .github/workflows/smoke.yml runs on and
+# the only one measured to pick work up here. `rc-linux-js` is deliberately
+# absent: its listener serves bielcrystal-labs/biel-payable-system, so a leg for
+# it would queue here forever. Add it the day a Worker serves it on this
+# repository, and not before.
+#
+# The conformance job checks itself against this file rather than against the
+# workflow's matrix, and refuses to report success unless every Profile named
+# here produced a fingerprint in that run — so a leg dropped from the matrix,
+# cancelled, or left queued fails the job instead of quietly reducing it to a
+# comparison of `ubuntu-latest` against itself. Adding a name here without
+# adding a matrix leg for it turns the job red, which is the intended order:
+# declare what must be proven, then go and prove it.
+rc-e2e
