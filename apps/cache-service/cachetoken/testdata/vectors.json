@@ -1,0 +1,420 @@
+{
+  "comment": "Shared cache-token vectors. Read by apps/cache-service/cachetoken (Go) and packages/backend/tests/cacheToken.test.ts (TypeScript); neither may regenerate it to make itself pass. See vectors_test.go.",
+  "signingKeyHex": "2f6a1d5c8b0e4739ac21fe5d90b3746182cd0af5e6931b7c48d250ea9f6c3b18",
+  "issue": [
+    {
+      "name": "a push on the default branch writes to its own ref",
+      "why": "the ordinary case: trusted code, so write proves itself and the read order is own-ref then default branch",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "Fanzzzd/erainfra",
+        "event": "push",
+        "ref": "refs/heads/main",
+        "baseRef": "",
+        "defaultBranch": "refs/heads/main",
+        "attempt": "rc-e2e-8f21c0a"
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImF0dGVtcHQiOiJyYy1lMmUtOGYyMWMwYSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.6BkuqYBVDEjrXtnb2GEb9nshaVVwQob20xkTDmj5jp4",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "attempt": "rc-e2e-8f21c0a",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": true,
+      "readScopes": [
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/main"
+    },
+    {
+      "name": "a push with no head repository still writes",
+      "why": "most events carry no head repository at all; only a pull-request event treats absence as foreign",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "",
+        "event": "push",
+        "ref": "refs/heads/feature-x",
+        "baseRef": "",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvZmVhdHVyZS14IiwiZGVmYXVsdEJyYW5jaCI6InJlZnMvaGVhZHMvbWFpbiIsInBlcm1pc3Npb24iOiJyZWFkLXdyaXRlIiwiaWF0IjoxNzg3MDU0NDAwLCJleHAiOjE3ODcwNTUzMDB9.Dv_OReCsCmSbDh4aTCLbgg_pzhE_jW1HI5EiffhgDFY",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/feature-x",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": true,
+      "readScopes": [
+        "refs/heads/feature-x",
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/feature-x"
+    },
+    {
+      "name": "a same-repository pull request writes to the merge ref",
+      "why": "a branch pushed to this repository is code this repository controls, pull request or not",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "Fanzzzd/erainfra",
+        "event": "pull_request",
+        "ref": "refs/pull/7/merge",
+        "baseRef": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvcHVsbC83L21lcmdlIiwiYmFzZVJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.vZ6MDs2MxDMudf-Uufi8-a7OYzM0NoGK_YC5HbM1tDQ",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/pull/7/merge",
+        "baseRef": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": true,
+      "readScopes": [
+        "refs/pull/7/merge",
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/pull/7/merge"
+    },
+    {
+      "name": "a fork pull request reads the base branch and writes nothing",
+      "why": "ADR 0007 rule 2, the poisoning attack: the ref collapses to the base and the base ref is cleared, so the job has no scope of its own",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "attacker/erainfra",
+        "event": "pull_request",
+        "ref": "refs/pull/9/merge",
+        "baseRef": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZCIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.uiMRgTLtH8Sl1c--TGpJtKWB3beMSmpCBXrgzpZ5dKQ",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": false,
+      "readScopes": [
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/main"
+    },
+    {
+      "name": "a pull request whose head repository is unknown is treated as a fork",
+      "why": "absence is never a successful measurement; on a pull request an unnamed head is the fact that decides this going unmeasured",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "",
+        "event": "pull_request",
+        "ref": "refs/pull/9/merge",
+        "baseRef": "refs/heads/release",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvcmVsZWFzZSIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZCIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.y2sFLL7gSylIylh2zqRtBaMdfOTL7DrEmPRs9WBrbm0",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/release",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": false,
+      "readScopes": [
+        "refs/heads/release",
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/release"
+    },
+    {
+      "name": "issue_comment on a fork's pull request does not write",
+      "why": "the fork test is a foreign head repository on ANY event; issue_comment and workflow_run carry fork code into the base repository and neither is a pull-request event",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "attacker/erainfra",
+        "event": "issue_comment",
+        "ref": "refs/heads/main",
+        "baseRef": "",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZCIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.uiMRgTLtH8Sl1c--TGpJtKWB3beMSmpCBXrgzpZ5dKQ",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": false,
+      "readScopes": [
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/main"
+    },
+    {
+      "name": "an untrusted job with no base and no default branch can read nothing",
+      "why": "the collapse leaves an empty ref rather than the job's own, so the fallback is no scope at all instead of its own",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "attacker/erainfra",
+        "event": "pull_request",
+        "ref": "refs/pull/9/merge",
+        "baseRef": "",
+        "defaultBranch": "",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6IiIsInBlcm1pc3Npb24iOiJyZWFkIiwiaWF0IjoxNzg3MDU0NDAwLCJleHAiOjE3ODcwNTUzMDB9._8z3jEXuW0aPGoEt5hfgJ_dgOaMOff_fXdLwi9SCsnU",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "",
+        "permission": "read",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": false,
+      "readScopes": [],
+      "writeScope": ""
+    },
+    {
+      "name": "an unnamed event never reaches read-write",
+      "why": "write is the case that has to prove itself, and an empty event proves nothing",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "",
+        "event": "",
+        "ref": "refs/heads/main",
+        "baseRef": "",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZCIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.uiMRgTLtH8Sl1c--TGpJtKWB3beMSmpCBXrgzpZ5dKQ",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": false,
+      "readScopes": [
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/main"
+    },
+    {
+      "name": "a ref carrying HTML metacharacters",
+      "why": "Go's encoding/json escapes \u003c, \u003e and \u0026 by default and JSON.stringify does not, so a payload containing them is where two implementations silently stop producing the same bytes",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "Fanzzzd/erainfra",
+        "event": "push",
+        "ref": "refs/heads/a\u0026b\u003cc\u003ed",
+        "baseRef": "",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvYVx1MDAyNmJcdTAwM2NjXHUwMDNlZCIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.CIQKP7fbKNp0eO4enoJKPHjpD7MshMnF0mLH585nLVg",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/a\u0026b\u003cc\u003ed",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": true,
+      "readScopes": [
+        "refs/heads/a\u0026b\u003cc\u003ed",
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/a\u0026b\u003cc\u003ed"
+    },
+    {
+      "name": "a ref outside ASCII",
+      "why": "the payload is base64url over UTF-8 bytes, so a multi-byte ref pins the encoding rather than the character count",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 900,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "Fanzzzd/erainfra",
+        "event": "push",
+        "ref": "refs/heads/café-naïve-日本",
+        "baseRef": "",
+        "defaultBranch": "refs/heads/main",
+        "attempt": ""
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvY2Fmw6ktbmHDr3ZlLeaXpeacrCIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.goUcs8LkRQQVrRb2GCMMYDiMtvEePISIIncLYiC4p6s",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/café-naïve-日本",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "iat": 1787054400,
+        "exp": 1787055300
+      },
+      "canWrite": true,
+      "readScopes": [
+        "refs/heads/café-naïve-日本",
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/heads/café-naïve-日本"
+    },
+    {
+      "name": "the read order deduplicates and drops empties",
+      "why": "own ref, then base, then default branch, and a base that equals the default branch is one scope rather than two",
+      "nowUnix": 1787054400,
+      "ttlSeconds": 60,
+      "facts": {
+        "repository": "Fanzzzd/erainfra",
+        "headRepository": "Fanzzzd/erainfra",
+        "event": "pull_request",
+        "ref": "refs/pull/11/merge",
+        "baseRef": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "attempt": "rc-e2e-0c19bd4"
+      },
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvcHVsbC8xMS9tZXJnZSIsImJhc2VSZWYiOiJyZWZzL2hlYWRzL21haW4iLCJkZWZhdWx0QnJhbmNoIjoicmVmcy9oZWFkcy9tYWluIiwicGVybWlzc2lvbiI6InJlYWQtd3JpdGUiLCJhdHRlbXB0IjoicmMtZTJlLTBjMTliZDQiLCJpYXQiOjE3ODcwNTQ0MDAsImV4cCI6MTc4NzA1NDQ2MH0.zzC0E6qldcqvkuszLQXXKlcc6FgCjlhMXFHgUJf-_m8",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/pull/11/merge",
+        "baseRef": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "attempt": "rc-e2e-0c19bd4",
+        "iat": 1787054400,
+        "exp": 1787054460
+      },
+      "canWrite": true,
+      "readScopes": [
+        "refs/pull/11/merge",
+        "refs/heads/main"
+      ],
+      "writeScope": "refs/pull/11/merge"
+    }
+  ],
+  "verify": [
+    {
+      "name": "a token inside its window verifies",
+      "why": "the positive case, read back at a moment other than the one it was minted at",
+      "nowUnix": 1787054700,
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImF0dGVtcHQiOiJyYy1lMmUtOGYyMWMwYSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.6BkuqYBVDEjrXtnb2GEb9nshaVVwQob20xkTDmj5jp4",
+      "error": "",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "attempt": "rc-e2e-8f21c0a",
+        "iat": 1787054400,
+        "exp": 1787055300
+      }
+    },
+    {
+      "name": "leeway covers a small clock skew",
+      "why": "the verifier absorbs 30s of skew between issuer and service; one second past expiry is still inside it",
+      "nowUnix": 1787055301,
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImF0dGVtcHQiOiJyYy1lMmUtOGYyMWMwYSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.6BkuqYBVDEjrXtnb2GEb9nshaVVwQob20xkTDmj5jp4",
+      "error": "",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "defaultBranch": "refs/heads/main",
+        "permission": "read-write",
+        "attempt": "rc-e2e-8f21c0a",
+        "iat": 1787054400,
+        "exp": 1787055300
+      }
+    },
+    {
+      "name": "past expiry plus leeway is expired",
+      "why": "the leeway is a bound, not an extension; a token handed to untrusted code stops working",
+      "nowUnix": 1787055331,
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImF0dGVtcHQiOiJyYy1lMmUtOGYyMWMwYSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.6BkuqYBVDEjrXtnb2GEb9nshaVVwQob20xkTDmj5jp4",
+      "error": "expired",
+      "claims": null
+    },
+    {
+      "name": "a flipped signature byte does not verify",
+      "why": "the MAC covers prefix and payload, so any edit to either is a signature failure rather than a parse failure",
+      "nowUnix": 1787054700,
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImF0dGVtcHQiOiJyYy1lMmUtOGYyMWMwYSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.6BkuqYBVDEjrXtnb2GEb9nshaVVwQob20AkTDmj5jp4",
+      "error": "signature",
+      "claims": null
+    },
+    {
+      "name": "two segments is malformed",
+      "why": "a shape that is not prefix.payload.mac is rejected before anything is decoded",
+      "nowUnix": 1787054700,
+      "token": "erainfra-cache-v1.e30",
+      "error": "malformed",
+      "claims": null
+    },
+    {
+      "name": "another version prefix is malformed",
+      "why": "the prefix versions the wire format: a future layout is rejected here rather than misparsed",
+      "nowUnix": 1787054700,
+      "token": "erainfra-cache-v2.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsImRlZmF1bHRCcmFuY2giOiJyZWZzL2hlYWRzL21haW4iLCJwZXJtaXNzaW9uIjoicmVhZC13cml0ZSIsImF0dGVtcHQiOiJyYy1lMmUtOGYyMWMwYSIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.AAAA",
+      "error": "malformed",
+      "claims": null
+    },
+    {
+      "name": "a token with no repository claim is refused",
+      "why": "ADR 0007 rule 1: a request whose token carries no repository claim is rejected rather than defaulted",
+      "nowUnix": 1787054700,
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiIiwicmVmIjoicmVmcy9oZWFkcy9tYWluIiwicGVybWlzc2lvbiI6InJlYWQtd3JpdGUiLCJpYXQiOjE3ODcwNTQ0MDAsImV4cCI6MTc4NzA1NTMwMH0.SFkMo57j37l27gYVTCMgBHwclrdFWMh6dMX48FxArS8",
+      "error": "no-repository",
+      "claims": null
+    },
+    {
+      "name": "an unknown permission reads as read",
+      "why": "anything that is not exactly read-write is read, so a claim set that fails to decide cannot decide write by accident",
+      "nowUnix": 1787054700,
+      "token": "erainfra-cache-v1.eyJyZXBvc2l0b3J5IjoiRmFuenp6ZC9lcmFpbmZyYSIsInJlZiI6InJlZnMvaGVhZHMvbWFpbiIsInBlcm1pc3Npb24iOiJhZG1pbiIsImlhdCI6MTc4NzA1NDQwMCwiZXhwIjoxNzg3MDU1MzAwfQ.vtHJHhbmmntupaSbus3jzsO3kGG5sGDUID6zXoRClXU",
+      "error": "",
+      "claims": {
+        "repository": "Fanzzzd/erainfra",
+        "ref": "refs/heads/main",
+        "permission": "read",
+        "iat": 1787054400,
+        "exp": 1787055300
+      }
+    }
+  ]
+}
