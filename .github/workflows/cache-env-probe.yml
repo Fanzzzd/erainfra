@@ -160,6 +160,7 @@ jobs:
       # beyond the cache -- the probe records that the client sent one and never
       # what it was.
       - name: T2 drive a real client at the capture endpoint
+        id: t2-client
         continue-on-error: true
         env:
           ACTIONS_CACHE_URL: ${{ env.PROBE_T2_URL }}/
@@ -194,11 +195,29 @@ jobs:
           cat "$RUNNER_TEMP/t3.txt"
 
       - name: T3 drive a real client
+        id: t3-client
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/probe-payload
           key: erainfra-cache-env-probe-t3-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Both client steps are `continue-on-error`, so an empty capture log has
+      # two causes that are not the same finding: a client that ran and chose to
+      # talk to GitHub, and a client that never got as far as sending a request
+      # -- a failed action download, a client that refused the environment it
+      # was given. Only the first says anything about which tier won. Without
+      # this the second would be reported as a measurement, so the outcome is
+      # recorded and the verdict calls the difference.
+      - name: Record whether each client step actually ran
+        if: always()
+        env:
+          T2_OUTCOME: ${{ steps.t2-client.outcome }}
+          T3_OUTCOME: ${{ steps.t3-client.outcome }}
+        run: |
+          set -eu
+          printf '%s\n' "${T2_OUTCOME:-not-run}" > "$RUNNER_TEMP/t2-client.txt"
+          printf '%s\n' "${T3_OUTCOME:-not-run}" > "$RUNNER_TEMP/t3-client.txt"
 
       # Always: a probe whose verdict step is skipped by an earlier failure has
       # measured nothing and said nothing, which is the one outcome worse than a

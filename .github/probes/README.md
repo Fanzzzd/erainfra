@@ -41,7 +41,35 @@ local capture endpoint under a distinct path prefix, and a real
 `actions/cache` v6.1.0 — the release the stage-A capture drove — is run against
 it. A tier survived if a step saw the probe's own URL; a client honoured it if
 a request with that prefix reaches the capture log. Those are two different
-claims and the verdict reports them separately.
+claims and the verdict reports them separately, because they can disagree:
+
+- **The tier claim** is read out of the step's own environment. It settles what
+  a client _would_ see and needs no client at all.
+- **The client claim** has three outcomes, not two. Both client steps are
+  `continue-on-error`, so an empty capture log means the client went elsewhere
+  **only if it ran**. A client step that never completed — a failed action
+  download, a client that refused the environment — proves nothing about the
+  environment, and the verdict says `INCONCLUSIVE` rather than turning it into
+  a measurement. The step outcome is recorded for exactly this distinction.
+
+### What never reaches the log
+
+The capture log is printed into a job summary, so two things in a cache request
+are treated as secrets:
+
+- **the bearer credential** — a client sends the runner's own
+  `ACTIONS_RUNTIME_TOKEN`; its presence and length are recorded and its value
+  never leaves the process.
+- **the cache key** — v1 carries it in the `keys=` query parameter and v2 in the
+  request body, and a key is routinely a lockfile hash, a branch name or a path
+  out of a private repository. The query string is dropped before anything is
+  written and the body is drained without being read, so only the pathname is
+  recorded — which is where the tier prefix and the generation marker live.
+  Whether there _was_ a query is still recorded, because "a restore arrived
+  carrying keys" is evidence and the keys are not.
+
+`probe.test.sh` sends a distinctive sentinel through each route and fails if
+either reaches the log.
 
 A negative result is a result. The verdict never fails the job for one, because
 a probe that goes red on the answer nobody wants is a probe that stops being

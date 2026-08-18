@@ -28,10 +28,18 @@ if (logPath === undefined || logPath.length === 0) {
   process.exit(2);
 }
 
-// The request line and nothing from the request that could be a secret. A
-// client sends the runner's own ACTIONS_RUNTIME_TOKEN as a bearer credential,
-// and this log is uploaded as a workflow artifact, so the token's PRESENCE is
-// what gets recorded and its value never leaves the process.
+// The request line and nothing from the request that could be a secret. Two
+// things in a cache request are, and this log is printed into a job summary:
+//
+//   - the bearer credential. A client sends the runner's own
+//     ACTIONS_RUNTIME_TOKEN, so its PRESENCE is recorded and its value never
+//     leaves the process.
+//   - the cache key. v1 carries it in the `keys=` query parameter and v2 in
+//     the request body, and a key is routinely a lockfile hash, a branch name
+//     or a path from a private repository. So the QUERY STRING IS DROPPED
+//     before anything is written, and the body is drained without being read.
+//     Only the pathname is recorded -- which is all the tier prefix and the
+//     generation marker live in.
 function record(entry) {
   appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
 }
@@ -89,7 +97,13 @@ function answer(request, response, generation) {
 }
 
 const server = createServer((request, response) => {
-  const path = request.url ?? "";
+  // Origin-form, so this is already path-and-query rather than a full URL, and
+  // splitting at the first `?` is what leaves the cache key on the floor.
+  // `query` is still reported, because "a restore arrived and it carried keys"
+  // is evidence and the keys themselves are not.
+  const target = request.url ?? "";
+  const separator = target.indexOf("?");
+  const path = separator < 0 ? target : target.slice(0, separator);
   const generation = generationOf(path);
   // The body is drained but never read: a v2 request carries the cache key,
   // and the point of this probe is the environment, not the keys.
@@ -98,6 +112,7 @@ const server = createServer((request, response) => {
   record({
     method: request.method,
     path,
+    query: separator < 0 ? "absent" : "present",
     generation,
     status,
     authorization: request.headers.authorization === undefined ? "absent" : "present",
