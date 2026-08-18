@@ -89,6 +89,50 @@ case "$JOB_TIMEOUT_S" in
   "" | *[!0-9]* | 0) printf 'error: RC_JOB_TIMEOUT_S must be a positive integer.\n' >&2; exit 2 ;;
 esac
 
+# The job cache endpoint, or nothing. Both are unset on a fleet that has not
+# configured one, and then not one flag below reaches the command line: a Worker
+# without a cache composes exactly the environment it composed before.
+#
+# The rename lives here, next to every other --env decision, so one place
+# decides what a job is told. What an operator sets is ERAINFRA_CACHE_*; what a
+# container receives is what the cache clients actually read.
+#
+# ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN are NOT written here and must
+# not be added. Probe run 32109974600 measured the artifact service living at
+# the same ACTIONS_RESULTS_URL behind the same ACTIONS_RUNTIME_TOKEN, so
+# repointing either to carry cache traffic takes actions/upload-artifact away
+# from every job on this Worker. Serving v2 needs an answer to that, not a line
+# in this list.
+cache_flags=()
+if [ -n "${ERAINFRA_CACHE_URL:-}" ]; then
+  case "$ERAINFRA_CACHE_URL" in
+    http://* | https://*) ;;
+    *)
+      printf 'error: ERAINFRA_CACHE_URL must be an absolute http(s) URL.\n' >&2
+      exit 2
+      ;;
+  esac
+  # A value with whitespace or a control character in it is not a URL, and it is
+  # the shape that turns one --env into two arguments somewhere downstream.
+  case "$ERAINFRA_CACHE_URL" in
+    *[[:space:]]* | *[[:cntrl:]]*)
+      printf 'error: ERAINFRA_CACHE_URL must not contain whitespace.\n' >&2
+      exit 2
+      ;;
+  esac
+  cache_flags+=(--env "ACTIONS_CACHE_URL=$ERAINFRA_CACHE_URL")
+fi
+if [ -n "${ERAINFRA_CACHE_SERVICE_V2:-}" ]; then
+  case "$ERAINFRA_CACHE_SERVICE_V2" in
+    true | false) ;;
+    *)
+      printf 'error: ERAINFRA_CACHE_SERVICE_V2 must be exactly "true" or "false".\n' >&2
+      exit 2
+      ;;
+  esac
+  cache_flags+=(--env "ACTIONS_CACHE_SERVICE_V2=$ERAINFRA_CACHE_SERVICE_V2")
+fi
+
 # The resolver a job gets. Docker hands a container whatever the daemon
 # inherited from the host, and when the host's own resolvers are loopback the
 # daemon silently substitutes its built-in public ones -- so on the fleet the
@@ -315,8 +359,10 @@ ENV_WRITER_PID=$!
 # from changing its Image Release at execution time. No host path, volume or
 # Docker socket enters the container: nothing writable is shared between jobs,
 # and warm state comes only from the immutable Image Release. Cross-job
-# dependency caching belongs outside this boundary, in GitHub's own
-# repository-scoped and authenticated cache service.
+# dependency caching belongs outside this boundary, in a repository-scoped and
+# authenticated cache service reached over the network -- GitHub's own by
+# default, or the endpoint in ERAINFRA_CACHE_URL when an operator has configured
+# one (ADR 0007). Neither is storage on this Worker.
 #
 # Not ./run.sh: it and run-helper.sh exist to drive a long-lived service, so
 # they map "listener exited with a terminated error" onto exit 0 -- stop, do
@@ -421,6 +467,7 @@ docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --env "RC_MEMORY_MIB=$RC_MEMORY_MIB" \
   --env ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1 \
   --env ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/action-cache \
+  ${cache_flags[@]+"${cache_flags[@]}"} \
   --env RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
   --env AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache \
   "$IMAGE" ./bin/Runner.Listener run &

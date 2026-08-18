@@ -6,11 +6,11 @@ reach it as an authenticated network client and nothing writable is added to any
 the whole reason [ADR 0007](../adr/0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)
 can add a cache without touching ADR 0002's isolation contract.
 
-**What this runbook covers:** choosing and provisioning the store, running the service, and the
-bucket lifecycle rule that does the eviction. **What it does not cover:** pointing jobs at the
-service. That is stage C — it composes the per-Attempt environment and adds the cache endpoint to
-`apps/runtime/internal/netpolicy`'s allowed egress destinations. Until stage C lands, this service
-runs and answers but nothing calls it.
+**What this runbook covers:** choosing and provisioning the store, running the service, the bucket
+lifecycle rule that does the eviction, and the two Worker-side variables that offer the endpoint to
+jobs (§7). **What it does not cover:** the per-Attempt token, and adding the cache endpoint to
+`apps/runtime/internal/netpolicy`'s allowed egress destinations. Until those land, this service runs
+and answers, and §7 has a measurement to pass before it is worth pointing anything at it.
 
 ---
 
@@ -371,3 +371,66 @@ systemctl disable --now erainfra-cache-service
 The bucket keeps its contents. Restarting the service picks them up again — the index is the bucket,
 not process state. In-flight uploads are the exception: they are spooled on disk and are dropped on
 shutdown, which costs the jobs that were saving a cache miss on their next run.
+
+---
+
+## 7. Point jobs at it, and the measurement that comes first
+
+Two variables, on the **Worker's Agent** rather than on this service, and both off by default. A
+fleet that sets neither composes exactly the environment it composed before.
+
+| variable                    | what it does                                                      |
+| --------------------------- | ----------------------------------------------------------------- |
+| `ERAINFRA_CACHE_URL`        | the endpoint a job's cache client is offered                      |
+| `ERAINFRA_CACHE_SERVICE_V2` | `true` or `false`; which protocol generation a client should pick |
+
+They are set on `apps/action-runner-agent` — the process that holds `CONVEX_URL` and
+`MACHINE_TOKEN` — and reach a job as `ACTIONS_CACHE_URL` and `ACTIONS_CACHE_SERVICE_V2`, written on
+the `docker run` command line by `provision-docker.sh` next to `RC_VCPUS`. The operator's spelling
+is `ERAINFRA_CACHE_*` and the job's is `ACTIONS_*`, because a Worker's configuration must not be
+confusable with the runner's own job-message variables. A malformed value is refused when the Agent
+starts, not when the first job runs.
+
+Today this is the Docker executor only. Firecracker, Tart and Hyper-V compose a guest environment
+somewhere else entirely, and there is nothing to gain by wiring them until the measurement below
+comes back.
+
+**`ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` are deliberately not written, and must not be
+added.** Probe run `32109974600` round-tripped a real artifact on `rc-e2e` and recorded what an
+action step is given: the artifact service lives at the same `ACTIONS_RESULTS_URL` behind the same
+`ACTIONS_RUNTIME_TOKEN`. Repointing either to carry cache traffic takes `actions/upload-artifact`
+away from every job on that Worker. That is the price of serving the v2 generation from here, and it
+is not a price this seam is allowed to pay quietly.
+
+### Do the free measurement first
+
+The same probe run measured something that decides whether any of this works at all: the runner
+overwrites all four cache variables from its job message in every **action** step — and every cache
+client (`actions/cache`, `actions/setup-node`, `actions/setup-go`) is an action step. A workflow
+`env:` block loses. `$GITHUB_ENV` loses. The container environment is the last candidate, and
+whether it survives is **unmeasured**, because until now nothing could set it.
+
+So measure before you deploy anything:
+
+```bash
+# On the Worker serving the Profile, in the Agent's environment:
+ERAINFRA_CACHE_SERVICE_V2=false
+```
+
+Restart the Agent and dispatch the probe:
+
+```bash
+gh workflow run cache-env-probe.yml -f cache_service_v2=true
+```
+
+Read the **T0** line in the job summary.
+
+- `SURVIVED into an action step` — the container environment reaches a cache client. Setting
+  `ERAINFRA_CACHE_URL` will now do something, and the rest of this runbook is worth deploying.
+- `OVERWRITTEN in an action step` — the runner replaced it, and no Worker-side variable can reach a
+  cache client. Nothing in this runbook fixes that; it makes ADR 0007 an amendment rather than an
+  implementation, because what would be left is intercepting the runner itself.
+
+The flag alone is the right thing to set for this: GitHub serves both generations, so it moves no
+traffic anywhere new and a wrong answer costs nothing. The capitalisation is the tell — the runner
+writes `True` and this writes `true`, so the two are never confusable in the report.

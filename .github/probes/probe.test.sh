@@ -187,6 +187,44 @@ grep -q 'T3, written through `\$GITHUB_ENV`\*\*: script step SURVIVED, action st
   "$work/verdict.md" || fail "the verdict did not report a tier that survived in both step kinds"
 grep -q 'T1 \*\*action\*\* step, no override' "$work/verdict.md" ||
   fail "the action tier is missing from the table"
+
+# T0 has three shapes, and the first one matters most: a run where nothing set
+# the container environment must say it measured NOTHING about T0 rather than
+# reporting an absence as a result. That is the shape every run takes until an
+# operator turns the Agent seam on.
+grep -q 'says NOTHING about T0' "$work/verdict.md" ||
+  fail "a run that never exercised T0 did not say so"
+grep -q 'not exercised -- the container was given no value' "$work/verdict.md" ||
+  fail "an unexercised T0 was not labelled as such"
+
+printf 'ACTIONS_CACHE_URL\thttps://cache.lan/erainfra/\nACTIONS_CACHE_SERVICE_V2\tfalse\n' \
+  > "$work/t0.txt"
+printf 'ACTIONS_CACHE_URL\thttps://cache.lan/erainfra/\nACTIONS_CACHE_SERVICE_V2\tfalse\n' \
+  > "$work/t1a.txt"
+sh "$root/.github/probes/verdict.sh" "$work" > "$work/verdict-t0-wins.md" ||
+  fail "the verdict exited non-zero on a surviving T0"
+grep -q 'ACTIONS_CACHE_URL`: SURVIVED into an action step' "$work/verdict-t0-wins.md" ||
+  fail "a container value an action step still saw was not reported as surviving"
+if grep -q 'says NOTHING about T0' "$work/verdict-t0-wins.md"; then
+  fail "an exercised T0 was still reported as unexercised"
+fi
+
+# The runner writes the flag as `True` and an EraInfra-set value is `true`, so
+# the capitalisation alone is the tell that the value in an action step is the
+# runner's own. An equality check that normalised case would miss it.
+printf 'ACTIONS_CACHE_URL\t%s\nACTIONS_CACHE_SERVICE_V2\tTrue\n' "$github" > "$work/t1a.txt"
+sh "$root/.github/probes/verdict.sh" "$work" > "$work/verdict-t0-loses.md" ||
+  fail "the verdict exited non-zero on an overwritten T0"
+grep -q 'ACTIONS_CACHE_URL`: OVERWRITTEN in an action step' "$work/verdict-t0-loses.md" ||
+  fail "a container value the runner replaced was not reported as overwritten"
+grep -q 'ACTIONS_CACHE_SERVICE_V2`: OVERWRITTEN in an action step' "$work/verdict-t0-loses.md" ||
+  fail "a flag the runner rewrote from true to True was not reported as overwritten"
+
+# Restore the unexercised fixture for the client-section cases below, which do
+# not depend on T0 and should not silently inherit this one.
+printf 'ACTIONS_CACHE_URL\tunset\nACTIONS_RUNTIME_TOKEN\tunset\n' > "$work/t0.txt"
+printf 'ACTIONS_CACHE_URL\t%s\nACTIONS_RUNTIME_TOKEN\tpresent, 812 bytes\n' "$github" \
+  > "$work/t1a.txt"
 # A variable no snapshot recorded reads as "not measured", which is not the same
 # as "unset": the first says the step never ran, the second is a finding.
 grep -q '| not measured |' "$work/verdict.md" ||

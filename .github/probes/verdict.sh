@@ -70,11 +70,48 @@ tier_state() {
   esac
 }
 
+# T0 is the one tier no workflow can set, so it cannot be compared against the
+# probe's own URL the way the others are. What it is compared against is the
+# container: whatever apps/action-runner-agent wrote is in T0, and the question
+# is whether an ACTION step still sees it. Exact string equality, which also
+# catches the tell -- the runner writes the flag as `True` and an EraInfra-set
+# value is `true`, so a capitalised value in the action row IS the runner's own.
+T0_UNEXERCISED='not exercised -- the container was given no value'
+
+t0_state() {
+  container=$(tier_value t0.txt "$1")
+  action=$(tier_value t1a.txt "$1")
+  case $container in
+    unset | unavailable | 'not measured')
+      printf '%s' "$T0_UNEXERCISED"
+      return 0
+      ;;
+  esac
+  if [ "$container" = "$action" ]; then
+    printf 'SURVIVED into an action step'
+  else
+    printf 'OVERWRITTEN in an action step (the container held `%s`, the step saw `%s`)' \
+      "$container" "$action"
+  fi
+}
+
 # Read straight out of each step's own environment, so this stands on its own:
 # it says nothing about whether a client then used the value, and the client
 # section below says nothing about the tier. Conflating the two is how an
 # unrelated client failure would be reported as an overwritten tier.
 printf '### Which tier wins\n\n'
+printf -- '- **T0, the container environment** -- the only tier a workflow cannot set,\n'
+printf -- '  and the only one left after the two below\n'
+printf -- '  - `ACTIONS_CACHE_URL`: %s\n' "$(t0_state ACTIONS_CACHE_URL)"
+printf -- '  - `ACTIONS_CACHE_SERVICE_V2`: %s\n' "$(t0_state ACTIONS_CACHE_SERVICE_V2)"
+if [ "$(t0_state ACTIONS_CACHE_URL)" = "$T0_UNEXERCISED" ] &&
+  [ "$(t0_state ACTIONS_CACHE_SERVICE_V2)" = "$T0_UNEXERCISED" ]; then
+  printf -- '  - Nothing set the container environment, so this run says NOTHING about T0.\n'
+  printf -- '    Set `ERAINFRA_CACHE_SERVICE_V2` -- and optionally `ERAINFRA_CACHE_URL` --\n'
+  printf -- '    on the Worker serving this Profile and dispatch again. The flag alone is\n'
+  printf -- '    the free measurement: GitHub serves both generations, so it moves no\n'
+  printf -- '    traffic anywhere new.\n'
+fi
 for pair in 't2 T2, a step-level `env:` block' 't3 T3, written through `$GITHUB_ENV`'; do
   tier=${pair%% *}
   label=${pair#* }
@@ -151,9 +188,11 @@ printf '\n'
 printf '### What this decides\n\n'
 printf 'T0 is the tier `apps/action-runner-agent` writes when it composes the\n'
 printf 'container environment, and it is the only tier that exists before the\n'
-printf 'runner starts. T3 is the only tier that exists after a job is bound to a\n'
-printf 'repository, so it is the one a token minted at `JobStarted` would have to\n'
-printf 'use. ADR 0007 leans on one of these being available.\n'
+printf 'runner starts. Run 32109974600 measured the runner overwriting all four\n'
+printf 'variables from the job message in every ACTION step -- which is what every\n'
+printf 'cache client is -- so T2 and T3 are spent and T0 is the last candidate a\n'
+printf 'workflow-shaped design has. If it loses too, what is left is intercepting\n'
+printf 'the runner itself, and that is an ADR 0007 amendment rather than code.\n'
 printf '\n'
 printf 'Read the sections above as separate claims. "Which tier wins" is read out\n'
 printf 'of each step environment and settles what a client WOULD see -- and it\n'
