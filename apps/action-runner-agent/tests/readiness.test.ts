@@ -205,7 +205,7 @@ describe("job resource visibility", () => {
   it("starts the probe with the Attempt's own limit flags", () => {
     const args = probeInvocation(PROFILE, "8-15");
     const joined = args.join(" ");
-    assert.match(joined, /--cpus 8 --cpuset-cpus 8-15 --memory 8192m/);
+    assert.match(joined, /--cpus 8 --cpuset-cpus 8-15 --memory 8192m --shm-size 4096m/);
     assert.match(joined, /--env RC_VCPUS=8 --env RC_MEMORY_MIB=8192/);
     assert.match(joined, /--rm --pull=never/);
     assert.ok(args.includes(PROFILE.imageRelease));

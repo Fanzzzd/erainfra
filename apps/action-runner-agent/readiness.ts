@@ -236,6 +236,8 @@ export function probeInvocation(profile: ProfileSpec, cpuset: string): string[] 
     cpuset,
     "--memory",
     `${profile.memoryMiB}m`,
+    "--shm-size",
+    `${Math.floor(profile.memoryMiB / 2)}m`,
     "--pids-limit",
     "4096",
     "--env",
