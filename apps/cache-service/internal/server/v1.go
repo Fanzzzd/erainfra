@@ -66,6 +66,11 @@ func (s *Server) v1Restore(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The budget is taken before anything is validated, so the early misses
+	// below are written under a deadline too.
+	ctx, cancel := s.deadline(w, r, s.config.LookupTimeout)
+	defer cancel()
+
 	query := r.URL.Query()
 	version := query.Get("version")
 	if err := validateVersion(version); err != nil {
@@ -75,9 +80,6 @@ func (s *Server) v1Restore(w http.ResponseWriter, r *http.Request) {
 	// `keys` is one comma-separated parameter: the primary key first, then the
 	// restore keys in the client's own order (capture L001).
 	keys := strings.Split(query.Get("keys"), ",")
-
-	ctx, cancel := s.deadline(w, r, s.config.LookupTimeout)
-	defer cancel()
 
 	entry, err := s.index.Lookup(ctx, claims, keys, version)
 	if err != nil {
@@ -113,7 +115,7 @@ func (s *Server) v1Reserve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request v1ReserveRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := s.decodeControl(w, r, &request); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "malformed reserve request"})
 		return
 	}
@@ -228,7 +230,7 @@ func (s *Server) v1Commit(w http.ResponseWriter, r *http.Request, rawID string) 
 		return
 	}
 	var request v1CommitRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := s.decodeControl(w, r, &request); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "malformed commit request"})
 		return
 	}
@@ -244,7 +246,6 @@ func (s *Server) v1Commit(w http.ResponseWriter, r *http.Request, rawID string) 
 
 	ctx, cancel := s.deadline(w, r, s.config.TransferTimeout)
 	defer cancel()
-	s.readBodyDeadline(w)
 
 	spool, err := held.open()
 	if err != nil {

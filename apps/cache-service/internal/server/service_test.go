@@ -2,10 +2,13 @@ package server
 
 import (
 	"bytes"
+	"io/fs"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,5 +298,109 @@ func TestV1AcceptsConcurrentOutOfOrderChunks(t *testing.T) {
 	}
 	if got := h.restoreV1(token, keySetupNode, versionSetupNode); !bytes.Equal(got, body) {
 		t.Fatal("concurrent chunks did not reassemble")
+	}
+}
+
+// spooledBytes is what this session has actually put on disk, which is the
+// number the per-entry ceiling is supposed to bound.
+func spooledBytes(t *testing.T, root string) int64 {
+	t.Helper()
+	var total int64
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return total
+}
+
+// Azure clients stage blocks concurrently. Checking the remaining budget and
+// recording the block afterwards would let every one of them read the same
+// remaining capacity, be allowed all of it, and together put several times the
+// ceiling on disk — so the claim and the check are one operation.
+func TestConcurrentBlocksCannotOvershootTheEntryCeiling(t *testing.T) {
+	const ceiling = 64 << 10
+	h := newHarness(t, func(cfg *config.Config) { cfg.MaxEntryBytes = ceiling })
+	token := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+	blobPath := blobPathOf(t, h.createV2(token, keySetupNode, versionSetupNode))
+
+	const blocks = 8
+	var accepted, refused atomic.Int64
+	var wait sync.WaitGroup
+	for i := 0; i < blocks; i++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			response := h.do(http.MethodPut,
+				blobPath+"?comp=block&blockid="+urlEscape(blockID(index)), "",
+				bytes.NewReader(payload(ceiling)), nil)
+			readAll(t, response)
+			switch response.StatusCode {
+			case http.StatusCreated:
+				accepted.Add(1)
+			case http.StatusRequestEntityTooLarge:
+				refused.Add(1)
+			default:
+				t.Errorf("block %d = %d", index, response.StatusCode)
+			}
+		}(i)
+	}
+	wait.Wait()
+
+	if accepted.Load()+refused.Load() != blocks {
+		t.Fatalf("accepted %d refused %d of %d", accepted.Load(), refused.Load(), blocks)
+	}
+	if accepted.Load() != 1 {
+		t.Errorf("accepted %d blocks of %d bytes against a %d byte ceiling, want 1",
+			accepted.Load(), ceiling, ceiling)
+	}
+	if spooled := spooledBytes(t, h.server.config.SpoolDir); spooled > ceiling {
+		t.Fatalf("%d bytes are on disk against a %d byte ceiling", spooled, ceiling)
+	}
+}
+
+// CreateCacheEntry is refused only when the entry already exists in the index,
+// so a client that reserves the same key twice — a retry, or a step that runs
+// again — leaves more than one session behind. Map iteration order is random,
+// so picking whichever came first would answer {"ok":false} for an upload that
+// had already put every byte in the store.
+func TestFinalizeFindsTheSessionThatActuallyUploaded(t *testing.T) {
+	h := newHarness(t, nil)
+	token := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+	body := payload(2305)
+
+	// Four reservations for one key, and the bytes go through the last of them.
+	var uploadURL string
+	for i := 0; i < 4; i++ {
+		uploadURL = h.createV2(token, "index-D2-1-f921bd05#1", versionBuildKit)
+	}
+	put := h.do(http.MethodPut, blobPathOf(t, uploadURL), "", bytes.NewReader(body), nil)
+	readAll(t, put)
+	if put.StatusCode != http.StatusCreated {
+		t.Fatalf("upload = %d", put.StatusCode)
+	}
+
+	finalized := h.finalizeV2(token, "index-D2-1-f921bd05#1", versionBuildKit, len(body))
+	if !finalized.OK {
+		t.Fatalf("finalize = %+v, want the committed session to have been found", finalized)
+	}
+
+	response := h.postJSON(v2Path("GetCacheEntryDownloadURL"), token,
+		jsonBody(map[string]any{"key": "index-D2-1-f921bd05#1", "version": versionBuildKit}))
+	var hit v2DownloadResponse
+	decodeInto(t, response, &hit)
+	if !hit.OK {
+		t.Fatal("the entry did not come back")
+	}
+	if got := readAll(t, h.getURL(hit.SignedDownloadURL)); !bytes.Equal(got, body) {
+		t.Fatal("the entry does not hold the bytes that were uploaded")
 	}
 }

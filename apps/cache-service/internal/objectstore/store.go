@@ -52,8 +52,15 @@ type Store interface {
 // the whole reason AddPart takes a size and coalesces rather than mapping one
 // call to one part.
 type Upload interface {
-	// AddPart appends exactly size bytes read from body. Bytes arrive in the
-	// order the finished object needs them.
+	// AddPart appends exactly size bytes from body. Bytes arrive in the order
+	// the finished object needs them.
+	//
+	// It does NOT necessarily read body before it returns. An implementation
+	// that coalesces holds the reader until it has enough bytes for a part, so
+	// **the caller must keep body readable until Complete or Abort returns**.
+	// Closing a file handed to AddPart before then produces an upload that
+	// fails at the flush, several calls later, with an error that names the
+	// part rather than the close.
 	AddPart(ctx context.Context, body io.Reader, size int64) error
 	// Complete finishes the object. An upload that never grew past one part is
 	// written as a single object rather than as a one-part multipart, because

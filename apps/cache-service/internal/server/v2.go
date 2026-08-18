@@ -83,7 +83,7 @@ func (s *Server) v2Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request v2DownloadRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := s.decodeControl(w, r, &request); err != nil {
 		writeJSON(w, http.StatusOK, v2DownloadResponse{})
 		return
 	}
@@ -142,7 +142,7 @@ func (s *Server) v2Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request v2CreateRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := s.decodeControl(w, r, &request); err != nil {
 		writeJSON(w, http.StatusOK, v2CreateResponse{})
 		return
 	}
@@ -213,7 +213,7 @@ func (s *Server) v2Finalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request v2FinalizeRequest
-	if err := decodeJSON(r, &request); err != nil {
+	if err := s.decodeControl(w, r, &request); err != nil {
 		writeJSON(w, http.StatusOK, v2FinalizeResponse{})
 		return
 	}
@@ -282,16 +282,33 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+// sessionForEntry finds the upload a FinalizeCacheEntryUpload is talking about.
+//
+// There can be more than one. CreateCacheEntry is refused only when the entry
+// already exists in the index, so a client that reserves the same key twice —
+// a retry, or a step that runs again — gets a second session, and Go's map
+// iteration order is deliberately random. Returning whichever came first would
+// answer {"ok":false} for an upload that had already put every byte in the
+// store. Prefer the one that is committed; otherwise the newest, which is the
+// one the client most recently reserved.
 func (s *Server) sessionForEntry(repository, ref, key, version string) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var newest *session
 	for _, held := range s.sessions {
-		if strings.EqualFold(held.repository, repository) && held.ref == ref &&
-			held.key == key && held.version == version {
+		if !strings.EqualFold(held.repository, repository) || held.ref != ref ||
+			held.key != key || held.version != version {
+			continue
+		}
+		// state takes the session's own mutex, which is not this one.
+		if _, _, committed := held.state(); committed {
 			return held
 		}
+		if newest == nil || held.expires.After(newest.expires) {
+			newest = held
+		}
 	}
-	return nil
+	return newest
 }
 
 func (s *Server) dropSession(id string) {

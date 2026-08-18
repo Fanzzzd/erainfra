@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -223,4 +225,47 @@ func TestUnreachableStoreAnswersRestoresAsAMiss(t *testing.T) {
 			t.Fatalf("v1 restore = %d, want a 204 miss", response.StatusCode)
 		}
 	})
+}
+
+// A client that opens a control request and then dribbles its body is the same
+// outage as a hung store, seen from the other end: it costs a connection and a
+// goroutine for as long as it cares to hold them. The read deadline is set
+// before the body is decoded, so the budget starts when the request does rather
+// than when the body finishes arriving.
+func TestAStalledRequestBodyIsCutAtTheControlBudget(t *testing.T) {
+	h := newHarness(t, func(cfg *config.Config) { cfg.ReserveTimeout = testBudget })
+	token := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+
+	address := strings.TrimPrefix(h.http.URL, "http://")
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Announce a body and then never finish it.
+	request := "POST " + v1Path("caches") + " HTTP/1.1\r\n" +
+		"Host: " + address + "\r\n" +
+		"Authorization: Bearer " + token + "\r\n" +
+		"Content-Type: application/json\r\n" +
+		"Content-Length: 200\r\n\r\n" +
+		`{"key":"key-A1"`
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	// The service either answers or drops the connection; either way it stops
+	// waiting. What must not happen is this read blocking until the test's own
+	// deadline.
+	if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, io.EOF) {
+		t.Logf("connection ended with %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("a stalled request body held the connection for %s, want the %s budget to have cut it",
+			elapsed, testBudget)
+	}
 }

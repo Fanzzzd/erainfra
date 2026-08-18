@@ -57,7 +57,6 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, rest string) 
 		return
 	}
 
-	s.readBodyDeadline(w)
 	ctx, cancel := s.deadline(w, r, s.config.TransferTimeout)
 	defer cancel()
 
@@ -141,19 +140,22 @@ func (s *Server) stageBlock(w http.ResponseWriter, r *http.Request, held *sessio
 	// The block id is client-chosen base64 (capture L033: a 64-character
 	// base64 block id), so it never becomes a path element as sent.
 	path := filepath.Join(held.dir, "blk-"+hex.EncodeToString([]byte(blockID)))
-	remaining := held.limit - held.stagedBytes()
-	if remaining <= 0 {
+	// Claim the budget before writing a byte, so concurrent blocks cannot each
+	// be told there is room for all of it.
+	claimed, ok := held.reserveBlock(r.ContentLength)
+	if !ok {
 		s.writeBlobError(w, r, http.StatusRequestEntityTooLarge, "RequestBodyTooLarge",
 			ErrEntryTooLarge.Error())
 		return
 	}
 
-	size, err := writeSpoolFile(path, r.Body, remaining)
+	size, err := writeSpoolFile(path, r.Body, claimed)
 	if err != nil {
+		held.releaseBlock(claimed)
 		s.blobWriteFailed(w, r, err)
 		return
 	}
-	held.stage(blockID, path, size)
+	held.stage(blockID, path, claimed, size)
 	s.writeBlobAccepted(w, r)
 }
 

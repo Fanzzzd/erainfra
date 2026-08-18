@@ -227,22 +227,56 @@ func (s *Server) require(w http.ResponseWriter, r *http.Request, write bool) (ca
 	return claims, true
 }
 
-// deadline gives a handler its budget and pins the socket to the same one, so
-// neither a hung store nor a client that stops reading can hold the handler
-// past it.
+// socketSlack is how much longer the connection lives than the handler that is
+// using it. A handler bounded by a context should be the thing that expires
+// first, so that the client gets the answer the budget promises instead of a
+// dropped connection.
+const socketSlack = 30 * time.Second
+
+// deadline gives a handler its budget and pins the socket past it. Both socket
+// deadlines are set: a handler that answers late and a client that reads late
+// are the same outage seen from opposite ends.
 func (s *Server) deadline(w http.ResponseWriter, r *http.Request, budget time.Duration) (context.Context, context.CancelFunc) {
-	controller := http.NewResponseController(w)
-	_ = controller.SetWriteDeadline(s.now().Add(budget + 5*time.Second))
+	s.socketDeadline(w, budget+socketSlack)
 	return context.WithTimeout(r.Context(), budget)
+}
+
+// socketDeadline pins how long this connection may take, in either direction.
+//
+// It reads the wall clock rather than s.now(). The injected clock exists so a
+// test can decide what "expired" and "newest" mean for tokens, signed URLs and
+// entries; a socket deadline is not that kind of time. Handing the network
+// stack a logical timestamp sets the deadline hours away from the real one in
+// either direction, so the bound silently stops existing — which is exactly the
+// failure this function is here to prevent.
+func (s *Server) socketDeadline(w http.ResponseWriter, within time.Duration) {
+	controller := http.NewResponseController(w)
+	deadline := time.Now().Add(within)
+	_ = controller.SetReadDeadline(deadline)
+	_ = controller.SetWriteDeadline(deadline)
 }
 
 // readBodyDeadline bounds how long a client may take to deliver a body. A
 // request that stalls mid-chunk otherwise holds a spool file and a goroutine
 // for as long as the connection stays open.
 func (s *Server) readBodyDeadline(w http.ResponseWriter) {
-	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(s.now().Add(s.config.TransferTimeout))
-	_ = controller.SetWriteDeadline(s.now().Add(s.config.TransferTimeout + 30*time.Second))
+	s.socketDeadline(w, s.config.TransferTimeout+socketSlack)
+}
+
+// decodeControl reads a small JSON request body under its own deadline.
+//
+// The deadline is set BEFORE the decode, and that ordering is the point. Every
+// control endpoint reads a body of a few hundred bytes and then does its real
+// work; a handler that decodes first has already let a client which sends one
+// byte a minute hold a connection and a goroutine for as long as it likes, and
+// the handler's own budget never starts. It also covers the early error
+// responses, which are written before any longer budget is chosen.
+//
+// There is no slack here, unlike deadline above: nothing else is bounding this
+// read, so the socket deadline is the whole of the bound.
+func (s *Server) decodeControl(w http.ResponseWriter, r *http.Request, target any) error {
+	s.socketDeadline(w, s.config.ReserveTimeout)
+	return decodeJSON(r, target)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

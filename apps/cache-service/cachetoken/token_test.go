@@ -95,6 +95,27 @@ func TestIssueGrantsWriteOnlyForCodeTheRepositoryControls(t *testing.T) {
 			Ref: "refs/pull/9/merge", BaseRef: "refs/heads/main"}, false},
 		"no event at all": {JobFacts{
 			Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"}, false},
+		// issue_comment fires in the BASE repository for a comment on a fork's
+		// pull request, and the /ok-to-test pattern it exists to serve then
+		// checks the fork's head out and runs it. It is not a pull-request
+		// event, so a fork test written as a list of event names grants it
+		// write to the base repository's cache.
+		"issue_comment on a fork's pull request": {JobFacts{
+			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Event: "issue_comment", Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"}, false},
+		"issue_comment with no fork behind it": {JobFacts{
+			Repository: "Fanzzzd/erainfra", Event: "issue_comment",
+			Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"}, true},
+		// workflow_run is the same shape one step removed: it runs on the base
+		// repository's default branch after a fork's workflow finished, with
+		// that workflow's artifacts to hand.
+		"workflow_run after a fork's workflow": {JobFacts{
+			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Event: "workflow_run", Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"}, false},
+		"an event nobody here has heard of, from a fork": {JobFacts{
+			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Event: "some_event_invented_in_2027", Ref: "refs/heads/main",
+			DefaultBranch: "refs/heads/main"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, claims, err := newTestIssuer(t).Issue(testCase.facts)
@@ -133,6 +154,25 @@ func TestIssueCollapsesAForkToTheBaseBranchScope(t *testing.T) {
 	}
 	if contains(scopes, "refs/pull/7/merge") {
 		t.Fatal("the fork's own ref is still a readable scope")
+	}
+}
+
+// A foreign head repository collapses the read scope too, not just the
+// permission — including on an event that is not a pull request.
+func TestIssueCollapsesAnyForeignHeadToTheBaseBranchScope(t *testing.T) {
+	_, claims, err := newTestIssuer(t).Issue(JobFacts{
+		Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+		Event: "issue_comment", Ref: "refs/heads/main", DefaultBranch: "refs/heads/main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.CanWrite() {
+		t.Fatal("an issue_comment carrying a fork's head repository was granted write")
+	}
+	scopes := claims.ReadScopes()
+	if len(scopes) != 1 || scopes[0] != "refs/heads/main" {
+		t.Fatalf("read scopes = %v, want the default branch only", scopes)
 	}
 }
 

@@ -127,6 +127,12 @@ type JobFacts struct {
 	Repository string
 	// HeadRepository is where the code that will run comes from. Empty for
 	// events that have no head repository, which is most of them.
+	//
+	// Whoever fills this in owes it for every event that has one, not only for
+	// pull requests: a foreign head repository is what denies write, and an
+	// `issue_comment` or `workflow_run` on a fork's pull request that arrives
+	// here with this field empty is indistinguishable from a job on the
+	// repository's own code.
 	HeadRepository string
 	// Event is the GitHub event name: push, pull_request, schedule, ...
 	Event string
@@ -142,11 +148,12 @@ type JobFacts struct {
 	Attempt string
 }
 
-// pullRequestEvents are the events whose job can be running code from a fork.
-// The list is a denylist of shapes rather than an allowlist of safe events on
-// purpose: an event nobody here has heard of is not a pull request, and if that
-// ever stops being true the fix is to add it here rather than to discover that
-// write was granted.
+// pullRequestEvents are the events on which an unknown head repository is
+// treated as a foreign one. It is deliberately not the whole of the fork test —
+// a head repository that differs denies write on any event at all — because a
+// list of event names is exactly the thing that goes stale: `issue_comment` and
+// `workflow_run` both carry fork code into the base repository and neither is a
+// pull-request event.
 var pullRequestEvents = map[string]bool{
 	"pull_request":                true,
 	"pull_request_target":         true,
@@ -204,22 +211,41 @@ func (i *Issuer) Issue(facts JobFacts) (string, Claims, error) {
 	}
 
 	// Rule 2. The question is never "is this a fork?" in the abstract, it is
-	// "will this job run code the repository does not control?". A pull request
-	// whose head repository is missing, unknown, or different is that job, and
-	// all three land on read-only through the same branch.
-	fork := pullRequestEvents[strings.ToLower(strings.TrimSpace(facts.Event))] &&
-		!strings.EqualFold(strings.TrimSpace(facts.HeadRepository), repository)
-	if fork {
-		// A fork pull request reads the base branch's entries and has no scope
-		// of its own. Collapsing Ref here rather than special-casing the
-		// service means there is one place where a fork's scope is decided.
+	// "will this job run code the repository does not control?", and there are
+	// two ways for the answer to be yes.
+	//
+	// The first is a head repository that is not this repository, whatever the
+	// event. This is not an "if the event is a pull request" test, and it must
+	// not become one: `issue_comment` fires in the BASE repository for a
+	// comment on a fork's pull request, and the /ok-to-test pattern it exists
+	// to serve then checks the fork's head out and runs it. So does
+	// `workflow_run` after a fork's workflow. An earlier version of this
+	// function granted write to every event that was not on a list of
+	// pull-request event names, which meant every one of those shapes wrote to
+	// the base repository's cache. The list is now the narrow case and a
+	// foreign head repository is the general one.
+	//
+	// The second is a pull request whose head repository the controller could
+	// not name. Unknown is not the same as absent: on a pull request it means
+	// the fact that decides this was not measured, and CONTEXT.md's rule for
+	// that is that absence is never a successful measurement.
+	event := strings.ToLower(strings.TrimSpace(facts.Event))
+	head := strings.TrimSpace(facts.HeadRepository)
+	untrusted := (head != "" && !strings.EqualFold(head, repository)) ||
+		(pullRequestEvents[event] && head == "")
+	if untrusted {
+		// An untrusted job reads the base branch's entries and has no scope of
+		// its own. Collapsing Ref here rather than special-casing the service
+		// means there is one place where such a job's scope is decided. If
+		// neither a base ref nor a default branch is known, it is left with no
+		// readable scope at all rather than with its own.
 		base := claims.BaseRef
 		if base == "" {
 			base = claims.DefaultBranch
 		}
 		claims.Ref = base
 		claims.BaseRef = ""
-	} else if strings.TrimSpace(facts.Event) != "" {
+	} else if event != "" {
 		claims.Permission = PermissionReadWrite
 	}
 

@@ -42,13 +42,16 @@ repository's own `check` job restores 329 MiB per warm run.
 
 ```bash
 # One workable shape, on the store host. Any S3-compatible server will do.
-mkdir -p /srv/erainfra-cache
+# certs/ holds public.crt and private.key for this host — see the TLS note in §2,
+# which is a requirement here rather than a nicety.
+mkdir -p /srv/erainfra-cache /srv/erainfra-cache-certs
 podman run -d --name erainfra-cache-store \
   -p 9000:9000 -p 9001:9001 \
   -v /srv/erainfra-cache:/data \
+  -v /srv/erainfra-cache-certs:/certs:ro \
   -e MINIO_ROOT_USER="$store_access_key" \
   -e MINIO_ROOT_PASSWORD="$store_secret" \
-  quay.io/minio/minio server /data --console-address ":9001"
+  quay.io/minio/minio server /data --certs-dir /certs --console-address ":9001"
 ```
 
 Create a bucket (`erainfra-cache` below) and an access key **scoped to that bucket only**. The
@@ -103,12 +106,33 @@ Every secret variable has a `_FILE` twin (`ERAINFRA_CACHE_SIGNING_KEY_FILE`,
 `ERAINFRA_CACHE_S3_SECRET_FILE`). Prefer them: a secret in an environment variable is readable by
 anything that can read `/proc`.
 
-**Generate the signing key once**, and give the same value to whatever mints tokens:
+**Provision both secret files before the service starts.** `config.Load` opens them at startup and
+refuses to run without either, so a missing file is a service that never comes up rather than one
+that comes up degraded.
 
 ```bash
+install -d -m 0700 /etc/erainfra
+# The signing key. Generate it once and give the same value to whatever mints
+# tokens — in stage C, the controller.
 openssl rand -base64 48 > /etc/erainfra/cache-signing-key
-chmod 600 /etc/erainfra/cache-signing-key
+# The store's secret key, from the bucket-scoped credential you created in §1.
+printf '%s' "$store_secret" > /etc/erainfra/cache-store-secret
+chmod 600 /etc/erainfra/cache-signing-key /etc/erainfra/cache-store-secret
 ```
+
+**Give the store a TLS endpoint.** `ERAINFRA_CACHE_S3_ENDPOINT` should be `https://`, and not only
+because the cache bytes would otherwise cross the LAN in the clear. Uploads are signed with
+`UNSIGNED-PAYLOAD` — S3's own scheme for a streamed body of known length, since the payload cannot
+be hashed without buffering it — so **the signature covers the request, not the bytes**, and TLS is
+what stands between an on-path attacker and rewriting a cache entry in flight. That is the same
+supply-chain hole as a fork PR writing an entry, reached a different way: whoever can change those
+bytes injects them into every later job that restores the key.
+
+MinIO, Garage, SeaweedFS and Ceph all take a certificate; on a LAN an internal CA or a
+`step-ca`-issued certificate is enough, and the service uses the host's trust store. If you
+deliberately run cleartext anyway, you are asserting that every host that can reach that endpoint is
+as trusted as the jobs' output, and the cache stops being an authenticated surface for anyone who
+can get on that segment. Say so in your own runbook rather than inheriting it from this one.
 
 **`ERAINFRA_CACHE_SPOOL_DIR` needs real disk.** A v1 upload is spooled whole before it reaches the
 store, because `@actions/cache` sends 32 MiB chunks out of order and each names its own byte range;
@@ -128,17 +152,22 @@ bytes and leaves the jobs with exactly one destination to allow.
 
 ```bash
 install -m 0755 erainfra-cache-service /usr/local/bin/erainfra-cache-service
-install -d -m 0700 /etc/erainfra
 cat > /etc/erainfra/cache.env <<'EOF'
 ERAINFRA_CACHE_LISTEN=:8721
-ERAINFRA_CACHE_S3_ENDPOINT=http://store.lan:9000
+ERAINFRA_CACHE_S3_ENDPOINT=https://store.lan:9000
 ERAINFRA_CACHE_S3_BUCKET=erainfra-cache
 ERAINFRA_CACHE_S3_ACCESS_KEY=erainfra-cache
-ERAINFRA_CACHE_S3_SECRET_FILE=/etc/erainfra/cache-store-secret
-ERAINFRA_CACHE_SIGNING_KEY_FILE=/etc/erainfra/cache-signing-key
 EOF
 chmod 600 /etc/erainfra/cache.env
 ```
+
+The two `_FILE` variables are deliberately **not** in that file. `EnvironmentFile` is read by systemd
+as root, but the paths inside it are opened by the _service process_, and this unit runs under
+`DynamicUser=yes` — a transient identity that cannot traverse a `0700` root-owned `/etc/erainfra`.
+Pointing the variables straight at those paths produces a service that fails at startup with a
+permission error on a file that is plainly there. `LoadCredential=` is the way through: systemd reads
+each file as root and drops a copy, readable only by this service's identity, into
+`$CREDENTIALS_DIRECTORY` — which `%d` expands to.
 
 ```ini
 # /etc/systemd/system/erainfra-cache-service.service
@@ -152,6 +181,13 @@ EnvironmentFile=/etc/erainfra/cache.env
 ExecStart=/usr/local/bin/erainfra-cache-service
 Restart=always
 RestartSec=5
+
+# The secrets, read by systemd as root and handed to the service identity.
+LoadCredential=cache-signing-key:/etc/erainfra/cache-signing-key
+LoadCredential=cache-store-secret:/etc/erainfra/cache-store-secret
+Environment=ERAINFRA_CACHE_SIGNING_KEY_FILE=%d/cache-signing-key
+Environment=ERAINFRA_CACHE_S3_SECRET_FILE=%d/cache-store-secret
+
 DynamicUser=yes
 StateDirectory=erainfra-cache
 Environment=ERAINFRA_CACHE_SPOOL_DIR=/var/lib/erainfra-cache/spool
@@ -163,6 +199,11 @@ ProtectHome=yes
 [Install]
 WantedBy=multi-user.target
 ```
+
+`LoadCredential=` needs systemd 247 or newer (`systemctl --version`). On anything older, drop
+`DynamicUser=yes`, create a service account, and give it read access to the two files explicitly —
+what must not happen is the service running as root because the secrets were unreadable any other
+way.
 
 ```bash
 systemctl daemon-reload
@@ -185,15 +226,22 @@ this service being replaced.
 GitHub evicts entries unused for 7 days and caps a repository at 10 GB. A reasonable starting point
 is an age-based expiry on the whole prefix:
 
+**The filter must be the prefix the service is configured with.** `ERAINFRA_CACHE_S3_PREFIX` is an
+operator's setting and defaults to `erainfra-cache/v1/`; a rule that hardcodes the default against a
+service configured with anything else matches nothing at all, and nothing is exactly what a
+lifecycle rule looks like when it is working. Take the prefix from the same place the service does
+rather than retyping it:
+
 ```bash
 # MinIO / any store with an S3-compatible lifecycle API
-cat > /tmp/erainfra-cache-lifecycle.json <<'EOF'
+prefix=$(. /etc/erainfra/cache.env; printf '%s' "${ERAINFRA_CACHE_S3_PREFIX:-erainfra-cache/v1/}")
+cat > /tmp/erainfra-cache-lifecycle.json <<EOF
 {
   "Rules": [
     {
       "ID": "expire-cache-entries",
       "Status": "Enabled",
-      "Filter": { "Prefix": "erainfra-cache/v1/" },
+      "Filter": { "Prefix": "${prefix}" },
       "Expiration": { "Days": 14 },
       "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
     }
@@ -201,19 +249,21 @@ cat > /tmp/erainfra-cache-lifecycle.json <<'EOF'
 }
 EOF
 mc ilm import erainfra/erainfra-cache < /tmp/erainfra-cache-lifecycle.json
+mc ilm rule ls erainfra/erainfra-cache    # confirm the prefix that landed
 ```
 
 Two things that rule is doing, both of which matter:
 
-- **`Expiration`** removes entries and their blobs together. The layout is
-  `erainfra-cache/v1/entries/<owner>/<repo>/<ref>/<version>/<key>` for metadata and
-  `erainfra-cache/v1/blobs/<owner>/<repo>/<id>` for bytes, so an age rule on the shared prefix
-  reaches both. An entry whose blob has expired is served as a miss, not as an error.
+- **`Expiration`** removes entries and their blobs together. Below the configured prefix the layout
+  is `<prefix>entries/<owner>/<repo>/<ref>/<version>/<key>` for metadata and
+  `<prefix>blobs/<owner>/<repo>/<id>` for bytes, so an age rule on the prefix itself reaches both.
+  An entry whose blob has expired is served as a miss, not as an error.
 - **`AbortIncompleteMultipartUpload`** is the one people forget. A job that dies mid-save leaves a
   multipart upload holding storage that no listing shows and no expiry rule reaches.
 
 Per-repository policies are possible because the repository is a readable path segment: filter on
-`erainfra-cache/v1/entries/<owner>/<repo>/` and `erainfra-cache/v1/blobs/<owner>/<repo>/`.
+`<prefix>entries/<owner>/<repo>/` and `<prefix>blobs/<owner>/<repo>/`, with the same `<prefix>` the
+service is configured with.
 
 ---
 

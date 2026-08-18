@@ -193,17 +193,52 @@ func newSession(id, dir string, limit int64, expires time.Time) (*session, error
 		blocks: map[string]stagedBlock{}}, nil
 }
 
-func (s *session) stage(id string, path string, size int64) {
+// reserveBlock claims budget for a block BEFORE its bytes land, and returns how
+// many bytes the caller may write.
+//
+// Checking the remaining budget and recording the block afterwards is not the
+// same thing: Azure clients stage blocks concurrently, so two of them would
+// both read the same remaining capacity, both be allowed it, and together put
+// twice the ceiling on disk. The claim and the check are therefore one
+// operation under the session's own lock, and the bytes are only written
+// against a claim that was granted.
+//
+// want of zero or less means the client did not declare a length; the whole
+// remaining budget is claimed and given back below.
+func (s *session) reserveBlock(want int64) (int64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	remaining := s.limit - s.staged
+	if remaining <= 0 {
+		return 0, false
+	}
+	if want <= 0 || want > remaining {
+		want = remaining
+	}
+	s.staged += want
+	return want, true
+}
+
+// releaseBlock gives a claim back when the bytes never arrived.
+func (s *session) releaseBlock(claimed int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staged -= claimed
+}
+
+// stage records a block that has landed and returns the unused part of its
+// claim to the budget.
+func (s *session) stage(id string, path string, claimed, actual int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staged -= claimed - actual
 	if previous, ok := s.blocks[id]; ok {
 		// Azure lets a client re-stage a block id. The earlier bytes are dead
 		// the moment the new ones land.
 		s.staged -= previous.size
 		_ = os.Remove(previous.path)
 	}
-	s.blocks[id] = stagedBlock{path: path, size: size}
-	s.staged += size
+	s.blocks[id] = stagedBlock{path: path, size: actual}
 }
 
 func (s *session) block(id string) (stagedBlock, bool) {
