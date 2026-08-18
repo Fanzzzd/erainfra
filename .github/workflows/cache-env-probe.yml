@@ -4,26 +4,35 @@
 # that variable from the job message; it says nothing about what happens to a
 # value already present in the process environment."
 #
-# This is the instrument for that, and it is deliberately a REAL Attempt rather
-# than another capture against a stand-in: `rc-e2e` is the only scale set
-# measured to pick work up on this repository (.github/actionlint.yaml), so a
-# job here is the pinned actions-runner:2.336.0 composing a real step's
-# environment. Nothing about the answer can be inferred from the runner's string
-# table, which is all stage A had.
+# This is the instrument for that, on a REAL Attempt: `rc-e2e` is the only scale
+# set measured to pick work up on this repository (.github/actionlint.yaml), so
+# a job here is the pinned actions-runner:2.336.0 composing a real environment.
 #
-# Four variables and four tiers. The tiers are where a value can come from, in
-# the order a design would reach for them:
+# The first live run (32108617455) answered less than it appeared to, and how it
+# was wrong is now built into the instrument. It found all four variables UNSET
+# in a `run:` step and both overrides surviving there, and `actions/cache` then
+# reported a restore without sending the probe a single request. Read on its
+# own that says the fleet injects nothing. It cannot: `actions/upload-artifact`
+# uploads from rc-e2e in the same hour, and it cannot do that without
+# ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN. The credentials exist, and a
+# SCRIPT step does not see them.
 #
-#   T0  the CONTAINER environment -- what apps/action-runner-agent hands
-#       `docker run`. This is the tier stage C's env-injection seam writes, and
-#       the tier the ADR's question is about.
-#   T1  a step with no override at all. This is what the runner injects from the
-#       job message, and the baseline the other tiers are read against.
-#   T2  a step-level `env:` block. The strongest thing a WORKFLOW can do.
-#   T3  a value written to $GITHUB_ENV by an earlier step. This is the tier a
+# So the tiers now come in two kinds, because a `run:` step and an action step
+# are not the same environment and every real cache client -- actions/cache,
+# setup-node, setup-go -- is an action step:
+#
+#   T0  the CONTAINER environment. What apps/action-runner-agent hands
+#       `docker run`, and the only tier that exists before the runner starts.
+#   T1  no override at all, read from a script step and from an action step.
+#   T2  a step-level `env:` block, read from both.
+#   T3  a value written to $GITHUB_ENV, read from both. This is the tier a
 #       runner job-started hook would write, so it is the one that says whether
 #       a token minted at JobStarted -- after the container already exists --
 #       could ever reach the client that needs it.
+#
+# Four client runs rather than one, because the leading explanation for a client
+# that sent nothing is that a missing ACTIONS_RUNTIME_TOKEN disabled it, and
+# that is a hypothesis until a dummy token is put in front of it.
 #
 # A tier that loses is not a failure of this workflow. Measuring nothing while
 # reporting green would be, so the verdict is computed from the evidence and
@@ -34,7 +43,7 @@ on:
   workflow_dispatch:
     inputs:
       cache_service_v2:
-        description: The value to set for ACTIONS_CACHE_SERVICE_V2 in tiers T2 and T3
+        description: The value to set for ACTIONS_CACHE_SERVICE_V2 in the overriding tiers
         type: choice
         options:
           - "true"
@@ -46,6 +55,13 @@ permissions: {}
 concurrency:
   group: cache-env-probe-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # Obviously not a credential, so a log that carries it reads as the probe's
+  # own string rather than as a leak. Its job is to be PRESENT: the question is
+  # whether a client that finds no runtime token disables itself, and the
+  # cheapest way to ask is to give it one that cannot work.
+  PROBE_DUMMY_TOKEN: erainfra-probe-not-a-real-runtime-token
 
 jobs:
   probe:
@@ -79,7 +95,7 @@ jobs:
       # file. On an executor where PID 1 is an init system rather than the
       # runner's own parent -- Firecracker's systemd -- T0 reads "unavailable"
       # instead of guessing, which is the honest answer for that shape.
-      - name: T0 the container environment, T1 the runner's injection
+      - name: T0 the container environment, T1 a script step
         run: |
           set -eu
           . ./.github/probes/tiers.sh
@@ -103,6 +119,13 @@ jobs:
           fi
           snapshot_tier "$RUNNER_TEMP/t1.txt"
           cat "$RUNNER_TEMP/t0.txt" "$RUNNER_TEMP/t1.txt"
+
+      # The same tier, read from an action step. This is the comparison the
+      # first run could not make, and the one every cache client depends on.
+      - name: T1 an action step
+        uses: ./.github/probes/env-action
+        with:
+          out: ${{ runner.temp }}/t1a.txt
 
       - name: Start the capture endpoint
         run: |
@@ -129,16 +152,19 @@ jobs:
           fi
           base=$(cat "$RUNNER_TEMP/probe-url")
           echo "capture endpoint at $base"
-          # Two prefixes so the log attributes every request to the tier that
-          # produced it. The service under test matches its own path markers
-          # anywhere in the path for exactly this reason, and so does the probe.
-          echo "PROBE_T2_URL=${base}t2" >> "$GITHUB_ENV"
-          echo "PROBE_T3_URL=${base}t3" >> "$GITHUB_ENV"
+          # One prefix per client run, so the log attributes every request to
+          # the run that produced it. The service under test matches its own
+          # path markers anywhere in the path for exactly this reason, and so
+          # does the probe.
+          {
+            echo "PROBE_T2_URL=${base}t2"
+            echo "PROBE_T2TOK_URL=${base}t2tok"
+            echo "PROBE_T3_URL=${base}t3"
+            echo "PROBE_T3TOK_URL=${base}t3tok"
+          } >> "$GITHUB_ENV"
 
       # T2. A step-level `env:` block is the strongest override a workflow has.
-      # If the runner's injection wins here it wins everywhere a workflow could
-      # reach, and the container tier below it cannot do better.
-      - name: T2 what a step sees under a step-level env block
+      - name: T2 a script step under a step-level env block
         env:
           ACTIONS_CACHE_URL: ${{ env.PROBE_T2_URL }}/
           ACTIONS_RESULTS_URL: ${{ env.PROBE_T2_URL }}/
@@ -149,17 +175,24 @@ jobs:
           snapshot_tier "$RUNNER_TEMP/t2.txt"
           cat "$RUNNER_TEMP/t2.txt"
 
+      - name: T2 an action step under a step-level env block
+        uses: ./.github/probes/env-action
+        env:
+          ACTIONS_CACHE_URL: ${{ env.PROBE_T2_URL }}/
+          ACTIONS_RESULTS_URL: ${{ env.PROBE_T2_URL }}/
+          ACTIONS_CACHE_SERVICE_V2: ${{ inputs.cache_service_v2 }}
+        with:
+          out: ${{ runner.temp }}/t2a.txt
+
       # The same override, driven through the client the capture measured. The
-      # environment tiers above say what a step SEES; this says where a real
-      # cache client actually goes and which generation it picks, which is the
-      # end-to-end evidence ADR 0007 lists as unmeasured.
+      # tiers above say what a step SEES; this says where a real cache client
+      # actually goes and which generation it picks.
       #
-      # ACTIONS_RUNTIME_TOKEN is deliberately NOT overridden. It is the runner's
-      # own credential and it is shared with the artifact service under
-      # ACTIONS_RESULTS_URL, so replacing it is a change with consequences well
-      # beyond the cache -- the probe records that the client sent one and never
-      # what it was.
-      - name: T2 drive a real client at the capture endpoint
+      # ACTIONS_RUNTIME_TOKEN is left alone here. It is the runner's own
+      # credential and it is shared with the artifact service under
+      # ACTIONS_RESULTS_URL, so replacing it has consequences well beyond the
+      # cache -- which is what the `artifacts` job below measures the price of.
+      - name: T2 drive a real client, no runtime token
         id: t2-client
         continue-on-error: true
         env:
@@ -171,12 +204,29 @@ jobs:
           path: ${{ runner.temp }}/probe-payload
           key: erainfra-cache-env-probe-t2-${{ github.run_id }}-${{ github.run_attempt }}
 
+      # The same client with a runtime token that is present and useless. If the
+      # first run's silence was a client disabling itself for want of a
+      # credential, this one reaches the probe; if it stays silent, that
+      # explanation is spent and the environment is what has to explain it.
+      - name: T2 drive a real client, dummy runtime token
+        id: t2tok-client
+        continue-on-error: true
+        env:
+          ACTIONS_CACHE_URL: ${{ env.PROBE_T2TOK_URL }}/
+          ACTIONS_RESULTS_URL: ${{ env.PROBE_T2TOK_URL }}/
+          ACTIONS_CACHE_SERVICE_V2: ${{ inputs.cache_service_v2 }}
+          ACTIONS_RUNTIME_TOKEN: ${{ env.PROBE_DUMMY_TOKEN }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/probe-payload
+          key: erainfra-cache-env-probe-t2tok-${{ github.run_id }}-${{ github.run_attempt }}
+
       # T3. Written to $GITHUB_ENV, which is the only tier that exists AFTER the
       # container was created -- and therefore the only one a token minted at
       # JobStarted could use. It is last because it is not scoped to one step:
       # every step after this one carries it, including anything that would
       # otherwise talk to GitHub's own results service.
-      - name: T3 write the same values through $GITHUB_ENV
+      - name: T3 write the URLs through $GITHUB_ENV
         env:
           CACHE_SERVICE_V2: ${{ inputs.cache_service_v2 }}
         run: |
@@ -187,14 +237,19 @@ jobs:
             printf 'ACTIONS_CACHE_SERVICE_V2=%s\n' "$CACHE_SERVICE_V2"
           } >> "$GITHUB_ENV"
 
-      - name: T3 what a later step sees
+      - name: T3 a script step
         run: |
           set -eu
           . ./.github/probes/tiers.sh
           snapshot_tier "$RUNNER_TEMP/t3.txt"
           cat "$RUNNER_TEMP/t3.txt"
 
-      - name: T3 drive a real client
+      - name: T3 an action step
+        uses: ./.github/probes/env-action
+        with:
+          out: ${{ runner.temp }}/t3a.txt
+
+      - name: T3 drive a real client, no runtime token
         id: t3-client
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -202,7 +257,24 @@ jobs:
           path: ${{ runner.temp }}/probe-payload
           key: erainfra-cache-env-probe-t3-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # Both client steps are `continue-on-error`, so an empty capture log has
+      - name: T3 add a dummy runtime token through $GITHUB_ENV
+        run: |
+          set -eu
+          {
+            printf 'ACTIONS_CACHE_URL=%s/\n' "$PROBE_T3TOK_URL"
+            printf 'ACTIONS_RESULTS_URL=%s/\n' "$PROBE_T3TOK_URL"
+            printf 'ACTIONS_RUNTIME_TOKEN=%s\n' "$PROBE_DUMMY_TOKEN"
+          } >> "$GITHUB_ENV"
+
+      - name: T3 drive a real client, dummy runtime token
+        id: t3tok-client
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/probe-payload
+          key: erainfra-cache-env-probe-t3tok-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Every client step is `continue-on-error`, so an empty capture log has
       # two causes that are not the same finding: a client that ran and chose to
       # talk to GitHub, and a client that never got as far as sending a request
       # -- a failed action download, a client that refused the environment it
@@ -213,11 +285,15 @@ jobs:
         if: always()
         env:
           T2_OUTCOME: ${{ steps.t2-client.outcome }}
+          T2TOK_OUTCOME: ${{ steps.t2tok-client.outcome }}
           T3_OUTCOME: ${{ steps.t3-client.outcome }}
+          T3TOK_OUTCOME: ${{ steps.t3tok-client.outcome }}
         run: |
           set -eu
           printf '%s\n' "${T2_OUTCOME:-not-run}" > "$RUNNER_TEMP/t2-client.txt"
+          printf '%s\n' "${T2TOK_OUTCOME:-not-run}" > "$RUNNER_TEMP/t2tok-client.txt"
           printf '%s\n' "${T3_OUTCOME:-not-run}" > "$RUNNER_TEMP/t3-client.txt"
+          printf '%s\n' "${T3TOK_OUTCOME:-not-run}" > "$RUNNER_TEMP/t3tok-client.txt"
 
       # Always: a probe whose verdict step is skipped by an earlier failure has
       # measured nothing and said nothing, which is the one outcome worse than a
@@ -235,3 +311,72 @@ jobs:
             echo "--- capture endpoint output ---"
             cat "$RUNNER_TEMP/probe-server.log"
           fi
+
+  # The control, in its own job because the probe job repoints
+  # ACTIONS_RESULTS_URL through $GITHUB_ENV and would break exactly the thing
+  # this measures. Nothing here overrides anything: it reports what an action
+  # step is handed on this Profile and then proves whether those credentials
+  # work, which is what turns "a script step saw nothing" into a statement about
+  # script steps rather than about the fleet.
+  artifacts:
+    name: do the runtime credentials an action step gets actually work
+    runs-on: rc-e2e
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: What an action step is given, with nothing overridden
+        uses: ./.github/probes/env-action
+        with:
+          out: ${{ runner.temp }}/t1a.txt
+
+      - name: Make something to round-trip
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/control"
+          printf 'erainfra artifact control %s %s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/control/payload.txt"
+          cp "$RUNNER_TEMP/control/payload.txt" "$RUNNER_TEMP/expected.txt"
+
+      - name: Upload
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cache-env-probe-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/control/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Download
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v6.0.0
+        with:
+          name: cache-env-probe-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/downloaded
+
+      - name: Report
+        if: always()
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+        run: |
+          set -eu
+          printf '%s\n' "${UPLOAD_OUTCOME:-not-run}" > "$RUNNER_TEMP/upload.txt"
+          printf '%s\n' "${DOWNLOAD_OUTCOME:-not-run}" > "$RUNNER_TEMP/download.txt"
+          # An upload that reports success and a file that comes back different
+          # are not the same thing, so the bytes are compared rather than the
+          # step outcomes trusted.
+          if [ -f "$RUNNER_TEMP/downloaded/payload.txt" ] &&
+            cmp -s "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/downloaded/payload.txt"; then
+            printf 'match\n' > "$RUNNER_TEMP/roundtrip.txt"
+          else
+            printf 'no-match\n' > "$RUNNER_TEMP/roundtrip.txt"
+          fi
+          sh .github/probes/artifact-control.sh "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+          sh .github/probes/artifact-control.sh "$RUNNER_TEMP"
