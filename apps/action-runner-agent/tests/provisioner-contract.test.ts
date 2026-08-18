@@ -220,6 +220,52 @@ describe("scale-set Attempt invocation", () => {
     });
   });
 
+  // The T0 tier, and after probe run 32109974600 the only candidate left: the
+  // runner overwrites all four cache variables from the job message in every
+  // ACTION step, which is what every cache client is, so a workflow `env:`
+  // block and $GITHUB_ENV both lose. The container environment is the only
+  // place a value can already be present when the runner starts.
+  const DOCKER_ATTEMPT = {
+    attemptId: "attempt-docker",
+    runnerName: "runner-docker",
+    profile: "rc-linux-js",
+    executor: "docker" as const,
+    imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+    vcpus: 4,
+    memoryMiB: 8192,
+    cpuset: "0-3",
+  };
+
+  it("adds nothing to the environment when no cache endpoint is configured", () => {
+    for (const cache of [undefined, {}]) {
+      const { env } = attemptInvocation({ ...DOCKER_ATTEMPT, cache });
+      // Absent, not empty: a Worker without a cache hands the provisioner
+      // exactly what it handed before this seam existed.
+      assert.equal(
+        Object.keys(env).some((name) => name.startsWith("ERAINFRA_")),
+        false,
+      );
+    }
+  });
+
+  it("names the cache endpoint rather than letting it arrive from the agent's own env", () => {
+    const { env } = attemptInvocation({
+      ...DOCKER_ATTEMPT,
+      cache: { url: "https://cache.lan/erainfra/", serviceV2: "false" },
+    });
+    assert.equal(env.ERAINFRA_CACHE_URL, "https://cache.lan/erainfra/");
+    assert.equal(env.ERAINFRA_CACHE_SERVICE_V2, "false");
+  });
+
+  // Independent, because they carry different risk: the flag alone moves no
+  // traffic anywhere -- GitHub serves both generations -- so it is the free way
+  // to ask whether an EraInfra-set value survives the runner's injection.
+  it("carries the generation flag on its own", () => {
+    const { env } = attemptInvocation({ ...DOCKER_ATTEMPT, cache: { serviceV2: "true" } });
+    assert.equal(env.ERAINFRA_CACHE_SERVICE_V2, "true");
+    assert.equal("ERAINFRA_CACHE_URL" in env, false);
+  });
+
   // --cpus is a CFS quota and leaves the affinity mask covering the host, so a
   // cpuset narrower or wider than RC_VCPUS tells the job a different wrong
   // number than the one #80 reported. The width is the contract, not the flag.

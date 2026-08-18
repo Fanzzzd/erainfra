@@ -251,4 +251,101 @@ describe("provision-docker.sh", () => {
     assert.equal(result.code, 143);
     assert.match(harness.argv(), /^docker\trm\t-f\trc-test-runner$/m);
   });
+
+  // The T0 tier. Probe run 32109974600 measured the runner overwriting
+  // ACTIONS_CACHE_URL, ACTIONS_RESULTS_URL, ACTIONS_CACHE_SERVICE_V2 and
+  // ACTIONS_RUNTIME_TOKEN from the job message in every ACTION step -- which is
+  // what every cache client is -- so a workflow `env:` block and $GITHUB_ENV
+  // both lose. The container environment is the only tier left that can hold a
+  // value before the runner starts, and this is where it is written.
+  it("offers no cache endpoint at all when none is configured", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, { env: env() });
+
+    assert.equal(result.code, 0);
+    const argv = harness.argv();
+    // Not "empty value" and not "unset name": absent. A fleet that has not
+    // configured a cache composes exactly the command line it composed before.
+    assert.doesNotMatch(argv, /ACTIONS_CACHE_URL/);
+    assert.doesNotMatch(argv, /ACTIONS_CACHE_SERVICE_V2/);
+    assert.doesNotMatch(argv, /ERAINFRA_CACHE/);
+  });
+
+  it("hands the container the endpoint under the name a cache client reads", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, {
+      env: env({
+        ERAINFRA_CACHE_URL: "https://cache.lan:8443/erainfra/",
+        ERAINFRA_CACHE_SERVICE_V2: "false",
+      }),
+    });
+
+    assert.equal(result.code, 0);
+    const argv = harness.argv();
+    assert.match(argv, /--env\tACTIONS_CACHE_URL=https:\/\/cache\.lan:8443\/erainfra\/\t/);
+    assert.match(argv, /--env\tACTIONS_CACHE_SERVICE_V2=false\t/);
+    // The operator's own spelling never reaches the job: ERAINFRA_CACHE_* is
+    // Worker configuration and ACTIONS_* is what the clients read.
+    assert.doesNotMatch(argv, /--env\tERAINFRA_CACHE/);
+  });
+
+  // The two variables are independent because they carry different risk. The
+  // flag alone moves no traffic anywhere -- GitHub serves both generations --
+  // so it is the free way to find out whether an EraInfra-set value survives
+  // the runner's injection at all.
+  it("can set the generation flag without pointing any traffic anywhere", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, {
+      env: env({ ERAINFRA_CACHE_SERVICE_V2: "true" }),
+    });
+
+    assert.equal(result.code, 0);
+    assert.match(harness.argv(), /--env\tACTIONS_CACHE_SERVICE_V2=true\t/);
+    assert.doesNotMatch(harness.argv(), /ACTIONS_CACHE_URL/);
+  });
+
+  // The artifact service lives at ACTIONS_RESULTS_URL behind
+  // ACTIONS_RUNTIME_TOKEN -- probe run 32109974600 round-tripped a real
+  // artifact to prove it -- so writing either of those to carry cache traffic
+  // takes actions/upload-artifact away from every job on this Worker. This is
+  // the test that makes that a decision rather than an oversight.
+  it("never repoints the artifact service or replaces the runner's credential", async () => {
+    const harness = new Harness();
+    const result = await harness.run(PROVISION_DOCKER, {
+      env: env({
+        ERAINFRA_CACHE_URL: "https://cache.lan/erainfra/",
+        ERAINFRA_CACHE_SERVICE_V2: "true",
+      }),
+    });
+
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(harness.argv(), /ACTIONS_RESULTS_URL/);
+    assert.doesNotMatch(harness.argv(), /ACTIONS_RUNTIME_TOKEN/);
+  });
+
+  it("refuses a cache endpoint that is not an absolute http(s) URL", async () => {
+    for (const url of ["cache.lan", "ftp://cache.lan/", "/erainfra/", "https://cache.lan/ a"]) {
+      const harness = new Harness();
+      const result = await harness.run(PROVISION_DOCKER, {
+        env: env({ ERAINFRA_CACHE_URL: url }),
+      });
+
+      assert.equal(result.code, 2, url);
+      assert.match(result.stderr, /ERAINFRA_CACHE_URL/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
+
+  it("refuses a generation flag that is not true or false", async () => {
+    for (const flag of ["yes", "1", "True", "maybe"]) {
+      const harness = new Harness();
+      const result = await harness.run(PROVISION_DOCKER, {
+        env: env({ ERAINFRA_CACHE_SERVICE_V2: flag }),
+      });
+
+      assert.equal(result.code, 2, flag);
+      assert.match(result.stderr, /ERAINFRA_CACHE_SERVICE_V2/);
+      assert.doesNotMatch(harness.argv(), /^docker\trun/m);
+    }
+  });
 });

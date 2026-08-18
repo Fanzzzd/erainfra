@@ -69,9 +69,23 @@ Neither is proven. This iteration measures instead of choosing:
 
 T1, T2 and T3 are each read from a script step and from an action step. T0 is
 read once, from the container, and is the one tier this workflow **cannot** set
-for itself: nothing in a workflow reaches `docker run`. Until the agent seam
-ships and an operator points `ERAINFRA_CACHE_URL` at something, T0 says only
-what the container was given, which today is nothing.
+for itself: nothing in a workflow reaches `docker run`.
+
+Iteration 2 answered T2 and T3 and spent them both. Run `32109974600` on
+`rc-e2e`: the runner overwrites `ACTIONS_CACHE_URL`, `ACTIONS_RESULTS_URL`,
+`ACTIONS_CACHE_SERVICE_V2` and `ACTIONS_RUNTIME_TOKEN` from its job message in
+every **action** step, in both the step-`env:` and `$GITHUB_ENV` tiers, with or
+without a runtime token. Script steps keep the workflow's values and no cache
+client is a script step. So every workflow-reachable delivery tier is dead, and
+**T0 is the only candidate left.**
+
+T0 is compared differently from the others, because the probe cannot choose its
+value: whatever `apps/action-runner-agent` wrote is in T0, and the verdict asks
+whether an action step still sees the same string. An operator has to turn it on
+for a run to say anything — `ERAINFRA_CACHE_SERVICE_V2` alone is the free way,
+since GitHub serves both generations and it moves no traffic. The capitalisation
+is the tell: the runner writes `True`, an EraInfra-set value is `true`. See
+[the runbook](../../docs/runbooks/operate-the-job-cache.md), §7.
 
 T0 and T3 are the two that decide a design rather than a preference, and the
 reason is an ordering fact this repository already records in

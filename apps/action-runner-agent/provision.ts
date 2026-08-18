@@ -47,7 +47,32 @@ export type AttemptExecution = {
    * microVM guest has real vCPUs, so its `nproc` is honest by construction.
    */
   cpuset?: string;
+  /**
+   * The job cache endpoint this Worker offers, or absent. Absent is the default
+   * and composes exactly the environment a fleet without a cache composes.
+   *
+   * This is the T0 tier, and after probe run 32109974600 it is the only
+   * candidate left: the runner overwrites `ACTIONS_CACHE_URL`,
+   * `ACTIONS_RESULTS_URL`, `ACTIONS_CACHE_SERVICE_V2` and
+   * `ACTIONS_RUNTIME_TOKEN` from the job message in every ACTION step, which is
+   * what every cache client is, so neither a workflow `env:` block nor
+   * `$GITHUB_ENV` can reach one. The container environment is the only place
+   * left that a value can be present before the runner starts. Whether the
+   * runner's injection also beats its own process environment is the next
+   * measurement, and this is what makes it possible to take.
+   */
+  cache?: CacheEndpoint;
   jitConfig: string;
+};
+
+/**
+ * What an operator configured, not what a container receives. The rename to the
+ * runner's own variable names happens in provision-docker.sh, next to every
+ * other `--env` decision, so there is one place that decides what a job is told.
+ */
+export type CacheEndpoint = {
+  url?: string;
+  serviceV2?: string;
 };
 
 export type ExperimentExecution = {
@@ -153,6 +178,16 @@ export function attemptInvocation(
         RC_VCPUS: String(attempt.vcpus),
         RC_MEMORY_MIB: String(attempt.memoryMiB),
         RC_CPUSET_CPUS: attempt.cpuset,
+        // Named here rather than left to `{ ...process.env }` in spawnAttempt.
+        // The agent's own environment would carry these to the provisioner
+        // either way, and that is exactly the accident worth refusing: what a
+        // job is handed should be a decision this function makes and a test can
+        // read, not something that arrives because the agent happened to be
+        // started with it.
+        ...(attempt.cache?.url === undefined ? {} : { ERAINFRA_CACHE_URL: attempt.cache.url }),
+        ...(attempt.cache?.serviceV2 === undefined
+          ? {}
+          : { ERAINFRA_CACHE_SERVICE_V2: attempt.cache.serviceV2 }),
       },
     };
   }

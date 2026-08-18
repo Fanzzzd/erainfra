@@ -325,7 +325,16 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
               `${cores.freeCores} of ${cores.totalCores} free`,
           );
         }
-        const child = spawnAttempt({ attemptId: item.id, ...claimed, cpuset: reservation?.spec });
+        const child = spawnAttempt({
+          attemptId: item.id,
+          ...claimed,
+          cpuset: reservation?.spec,
+          // Empty unless an operator configured one, in which case every
+          // Attempt on this Worker is offered the same endpoint. It is per
+          // Worker rather than per Attempt because nothing yet mints anything
+          // per Attempt -- an Attempt exists before GitHub assigns it a job.
+          cache: config.cache,
+        });
         running.set(key, child);
         try {
           if (child.pid === undefined) {
