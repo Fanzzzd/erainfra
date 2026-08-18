@@ -275,6 +275,79 @@ base_fingerprint "$A"
 base_fingerprint "$B"
 
 # ---------------------------------------------------------------------------
+# `pending` records a defect without calling it intended, and cannot outlive it
+# ---------------------------------------------------------------------------
+# The whole risk of a grace period is that it becomes permanent. Every property
+# that stops that happening is asserted here, because an unproven expiry is the
+# same as no expiry.
+pending_list() { # pending_list <value> <expiry>
+  {
+    cat "$LIST"
+    printf 'pending cpu_visible_matches_allowed=%s %s  # live on the fleet, #80; fix #83 merged, not yet deployed\n' \
+      "$1" "$2"
+  } >"$WORK/pending.txt"
+}
+
+base_fingerprint "$A"
+base_fingerprint "$B"
+tweak "$B" 's/^cpu_visible_matches_allowed=.*/cpu_visible_matches_allowed=no/'
+
+pending_list no 2999-01-01
+run_diff "$WORK/pending.txt" "$A" "$B"
+eq "a live pending entry keeps a known, owned defect from failing the job" "$DIFF_STATUS" 0
+says "and reports it as recorded rather than intended" \
+  "differences that are recorded and owned, not intended"
+says "naming the issue that owns it" "#80"
+says "and the date its grace runs out" "pending until 2999-01-01"
+
+pending_list no 2000-01-01
+run_diff "$WORK/pending.txt" "$A" "$B"
+eq "an EXPIRED pending entry fails" "$DIFF_STATUS" 1
+says "and says the grace ran out rather than that the fleet drifted" \
+  "the grace period ran out on 2000-01-01"
+
+# The divergence getting worse must not be covered by a grace granted for the
+# divergence as it was measured.
+pending_list definitely-not-this 2999-01-01
+run_diff "$WORK/pending.txt" "$A" "$B"
+eq "a pending entry does not cover a value it did not record" "$DIFF_STATUS" 1
+says "and says so" "this is a DIFFERENT divergence"
+
+{
+  cat "$LIST"
+  printf 'pending cpu_visible_matches_allowed=no 2999-01-01  # someone will look at it\n'
+} >"$WORK/pending-no-issue.txt"
+run_diff "$WORK/pending-no-issue.txt" "$A" "$B"
+eq "a pending entry that names no issue fails" "$DIFF_STATUS" 1
+says "because a defect with no issue is a defect being forgotten" "names no issue"
+
+{
+  cat "$LIST"
+  printf 'pending cpu_visible_matches_allowed=no soon  # tracked as #80\n'
+} >"$WORK/pending-no-date.txt"
+run_diff "$WORK/pending-no-date.txt" "$A" "$B"
+eq "a pending entry with no real expiry fails" "$DIFF_STATUS" 1
+
+# The two guards must not contradict each other: never-allow refuses to call
+# this key intended, and that is exactly why it must still be recordable.
+pending_list no 2999-01-01
+if grep -q '^never-allow cpu_visible_matches_allowed' "$WORK/pending.txt"; then
+  ok "the key pending covers here is one never-allow refuses to let allow name"
+else
+  fail "the pending test case no longer exercises a never-allow key"
+fi
+
+# A pending entry for a defect that has been FIXED covered nothing, which is the
+# outcome this job exists to produce, so it warns instead of punishing the fix.
+base_fingerprint "$B"
+pending_list no 2999-01-01
+run_diff "$WORK/pending.txt" "$A" "$B"
+eq "a pending entry whose defect is gone does not fail the job" "$DIFF_STATUS" 0
+says "but it does say to delete it" "the defect is gone"
+base_fingerprint "$A"
+base_fingerprint "$B"
+
+# ---------------------------------------------------------------------------
 # The allowlist cannot be used to hide the thing it exists to record
 # ---------------------------------------------------------------------------
 printf 'allow kernel_release\n' >"$WORK/no-reason.txt"

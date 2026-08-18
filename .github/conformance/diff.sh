@@ -15,12 +15,27 @@
 # the operator reading a red job at 03:00 should not have to open two logs to
 # learn what moved.
 #
-# The allowlist carries three directives; `allowlist.txt` documents them and
+# The allowlist carries four directives; `allowlist.txt` documents them and
 # `conformance.test.sh` proves each one can fail.
 #
-#   allow <key-or-glob>       # a difference in this key is intended
-#   require <key>=<value>     # this key must hold this value on BOTH sides
-#   never-allow <key-or-glob> # `allow` may never name this key
+#   allow <key-or-glob>            # a difference in this key is intended
+#   require <key>=<value>          # this key must hold this value on BOTH sides
+#   never-allow <key-or-glob>      # `allow` may never name this key
+#   pending <key>=<value> <date>   # seen, owned by an issue, and time-boxed
+#
+# `pending` exists because "intended" and "unexamined" are different claims and
+# only one of them belongs in an allowlist. A difference that is a real defect,
+# or one nobody has decided about yet, is not intended; writing `allow` for it
+# launders an open question into a settled decision, and that is the single way
+# this file could become worse than useless. A `pending` entry instead pins the
+# value that was measured, names the issue that owns it, and carries the date
+# its grace runs out -- so it cannot quietly become permanent, a divergence that
+# gets WORSE still fails, and the record says the difference was seen rather
+# than missed.
+#
+# `never-allow` blocks `allow` for a key. It deliberately does not block
+# `pending`: refusing to call #80 intended is the point, and refusing to record
+# that #80 is currently true would just be a different kind of lying.
 #
 # `require` exists because this job is differential, and a differential job is
 # structurally blind to a defect that both sides share: if `ubuntu-latest` and
@@ -69,9 +84,11 @@ WARN="$WORK/warn"
 ALLOW="$WORK/allow"
 NEVER="$WORK/never"
 REQUIRE="$WORK/require"
+PENDING="$WORK/pending"
+OWNED="$WORK/owned"
 USED="$WORK/used"
 for scratch in "$FAIL_CONFIG" "$FAIL_DIFF" "$FAIL_REQUIRE" "$INTENDED" "$WARN" \
-  "$ALLOW" "$NEVER" "$REQUIRE" "$USED"; do
+  "$ALLOW" "$NEVER" "$REQUIRE" "$PENDING" "$OWNED" "$USED"; do
   : >"$scratch"
 done
 
@@ -182,11 +199,68 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
           ;;
       esac
       ;;
+    pending)
+      # <key>=<value> <YYYY-MM-DD>. The date is not decoration: an entry that
+      # cannot expire is an allow entry wearing a disguise.
+      pending_when=${argument##* }
+      pending_pair=${argument% *}
+      case "$pending_pair" in
+        *' '* | *=*) ;;
+        *)
+          fail_config "$ALLOWLIST:$line_number: pending needs <key>=<value> <YYYY-MM-DD>."
+          continue
+          ;;
+      esac
+      case "$pending_when" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+        *)
+          fail_config "$ALLOWLIST:$line_number: '$pending_when' is not a YYYY-MM-DD expiry."
+          continue
+          ;;
+      esac
+      case "$pending_pair" in
+        *=*) ;;
+        *)
+          fail_config "$ALLOWLIST:$line_number: pending needs <key>=<value>, got '$pending_pair'."
+          continue
+          ;;
+      esac
+      # A defect with no issue is a defect being forgotten, which is the same
+      # failure as an entry with no reason and gets the same treatment.
+      case "$reason" in
+        *'#'[0-9]*) ;;
+        *)
+          fail_config "$ALLOWLIST:$line_number: pending $pending_pair names no issue (#NNN)."
+          continue
+          ;;
+      esac
+      printf '%s\t%s\t%s\t%s\n' \
+        "${pending_pair%%=*}" "${pending_pair#*=}" "$pending_when" "$reason" >>"$PENDING"
+      ;;
     *)
       fail_config "$ALLOWLIST:$line_number: unknown directive '$directive'."
       ;;
   esac
 done <"$ALLOWLIST"
+
+# `date` is the one thing in this file that is not a pure function of its
+# inputs, and it is here rather than in fingerprint.sh on purpose: a fingerprint
+# has to be deterministic, a grace period has to be able to run out.
+TODAY=$(date -u +%Y-%m-%d)
+# Compared as an integer, because `test`'s lexicographical > is not POSIX and
+# YYYYMMDD orders identically to the date it came from.
+TODAY_NUMBER=$(printf '%s' "$TODAY" | sed 's/-//g')
+
+# The `pending` entry for a key, as `value<TAB>expiry<TAB>reason`, or nothing.
+pending_for() (
+  while IFS="$TAB" read -r key value expiry reason || [ -n "$key" ]; do
+    if [ "$key" = "$1" ]; then
+      printf '%s\t%s\t%s' "$value" "$expiry" "$reason"
+      return 0
+    fi
+  done <"$PENDING"
+  return 1
+)
 
 # Returns the first entry whose pattern matches $1, as `pattern<TAB>reason`.
 first_match() (
@@ -243,12 +317,41 @@ while IFS="$TAB" read -r key base_value cand_value; do
     } >>"$INTENDED"
     continue
   fi
+  # Not intended, but perhaps already seen, owned and time-boxed. The pinned
+  # value is checked rather than trusted: a grace for "8 CPUs reported as 64"
+  # must not silently cover "8 reported as 512".
+  pending_hit=$(pending_for "$key" || true)
+  if [ -n "$pending_hit" ]; then
+    pending_value=${pending_hit%%"$TAB"*}
+    pending_rest=${pending_hit#*"$TAB"}
+    pending_when=${pending_rest%%"$TAB"*}
+    pending_why=${pending_rest#*"$TAB"}
+    if [ "$pending_value" != "$cand_value" ]; then
+      pending_note="the recorded value was $pending_value; this is a DIFFERENT divergence"
+    elif [ "$TODAY_NUMBER" -gt "$(printf '%s' "$pending_when" | sed 's/-//g')" ]; then
+      pending_note="the grace period ran out on $pending_when; re-decide it, do not re-date it"
+    else
+      printf '%s\n' "$key" >>"$OWNED"
+      {
+        printf '  %s\n' "$key"
+        printf '      %s = %s\n' "$(pad "$BASE_LABEL" "$label_width")" "$base_value"
+        printf '      %s = %s\n' "$(pad "$CAND_LABEL" "$label_width")" "$cand_value"
+        printf '      pending until %s: %s\n' "$pending_when" "$pending_why"
+      } >>"$WORK/pending-report"
+      continue
+    fi
+  else
+    pending_note=
+  fi
   {
     printf '  %s\n' "$key"
     printf '      %s = %s\n' "$(pad "$BASE_LABEL" "$label_width")" "$base_value"
     printf '      %s = %s\n' "$(pad "$CAND_LABEL" "$label_width")" "$cand_value"
     if [ -n "$never_hit" ]; then
       printf '      NOT ALLOWLISTABLE: %s\n' "${never_hit#*"$TAB"}"
+    fi
+    if [ -n "$pending_note" ]; then
+      printf '      a pending entry exists but does not cover this: %s\n' "$pending_note"
     fi
   } >>"$FAIL_DIFF"
 done <"$WORK/joined"
@@ -260,6 +363,11 @@ value_of() ( awk -F'\t' -v want="$2" '$1 == want { print $2; exit }' "$1" )
 
 while IFS="$TAB" read -r key want reason || [ -n "$key" ]; do
   [ -n "$key" ] || continue
+  # A live `pending` entry already owns this key: reporting it twice, once as a
+  # difference and once as a broken requirement, buries the other findings.
+  if grep -qxF "$key" "$OWNED" 2>/dev/null; then
+    continue
+  fi
   for side in base cand; do
     if [ "$side" = base ]; then
       side_label=$BASE_LABEL
@@ -288,6 +396,15 @@ while IFS="$TAB" read -r pattern reason || [ -n "$pattern" ]; do
     fail_config "never-allow $pattern matches no key in either fingerprint. ($reason)"
   fi
 done <"$NEVER"
+
+# A `pending` entry that covered nothing is the good outcome -- the defect it
+# owned is gone -- so it warns rather than fails, exactly like a stale `allow`.
+while IFS="$TAB" read -r key value expiry reason || [ -n "$key" ]; do
+  [ -n "$key" ] || continue
+  if ! grep -qxF "$key" "$OWNED" 2>/dev/null; then
+    warn "pending $key=$value ($expiry) covered nothing; the defect is gone. Delete it. ($reason)"
+  fi
+done <"$PENDING"
 
 # A stale `allow` is only a warning, and a compact one: a difference
 # disappearing is the outcome this job exists to produce, so turning it red
@@ -336,6 +453,16 @@ report() {
     printf '\n'
     printf '  These are asserted on every leg rather than diffed, because a\n'
     printf '  differential job cannot see a defect both sides share.\n'
+    printf '\n'
+  fi
+  if [ -s "$WORK/pending-report" ]; then
+    printf 'seen  differences that are recorded and owned, not intended (%s)\n' \
+      "$(count "$OWNED")"
+    cat "$WORK/pending-report"
+    printf '\n'
+    printf '  These are NOT allowlisted. Each names the issue that owns it and the\n'
+    printf '  date its grace runs out; on that date this job goes red again and the\n'
+    printf '  question has to be answered rather than re-dated.\n'
     printf '\n'
   fi
   if [ -s "$INTENDED" ]; then
