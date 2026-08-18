@@ -34,8 +34,8 @@ export type AgentRelease = {
  * rejected.
  *
  * `infraAgent` is the same pin for the Node side, and the trust root that replaces the Infra
- * Agent's unverified download. v0.2.0-rc.6 is the first release to publish those binaries, so it
- * is the first to carry the pin: the five digests are generated from the sidecars with
+ * Agent's unverified download. v0.2.0-rc.6 was the first release to publish those binaries, and
+ * every release since carries the pin: the five digests are generated from the sidecars with
  * `pnpm --filter @erainfra/backend print-infra-agent-pin` rather than typed by hand, and the
  * release workflow refuses to publish a tag whose pin disagrees with the bytes it just built.
  * Every target `INFRA_AGENT_TARGETS` names has to be covered — a pin missing one platform would
@@ -44,14 +44,14 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.6",
-  sha256: "31cff17937a97bb3710b98fdf0926a76ea81f7f00566432eb4e9d2fd5adf2b90",
+  version: "0.2.0-rc.7",
+  sha256: "eb01df92153f385c729391932261bfed198d64ac8cb6ba5e82fbc75163fedc8b",
   infraAgent: {
-    "linux-x86_64": "7d5e6d2e840a30648beea4cb7770babba6dbb93c573db4a81ad56fac551c3c91",
-    "linux-arm64": "eeb17644552d23215fc35a9d28814fbca849d11cd7661ddb7002e30976e809cb",
-    "darwin-x86_64": "6a479c1646a128b63810861291ae8a6c682ac5da3858e7cc9c5495f9b99b6750",
-    "darwin-arm64": "d5aacfd934cb834eb3553b7f892a2d12fafdf6b8acddfbbf8d871354aedbb2fb",
-    "windows-x86_64": "5dc14f2fac1a944690c69f3ece8a71c3791bdf165e189cba60a7136ddeb8e5d3",
+    "linux-x86_64": "9ebfef5696545956c37a1a1b8539df42e5bec6f08f214ef0b9490409535862bf",
+    "linux-arm64": "0c8827106dc07c990f9bea0ae1b5f345a505c7c72708e6d7e6409d3b55bd9f9d",
+    "darwin-x86_64": "ebd72e99008633b63835f81a63cc631d1401b1cbaf4a646b553a81b7312ebf82",
+    "darwin-arm64": "9d18807eab987342bbb95416f30d33a6547d22c1329194aee37974c36c49a90b",
+    "windows-x86_64": "10ccf5e44ef9406ba317589496398de5c235f44958a1dd6c53568360fdcf391d",
   },
 };
 
