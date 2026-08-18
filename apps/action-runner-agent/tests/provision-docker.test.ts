@@ -42,6 +42,11 @@ describe("provision-docker.sh", () => {
     assert.match(argv, /--cpus\t4\t--cpuset-cpus\t4-7\t/);
     assert.match(argv, /--env\tRC_VCPUS=4\t/);
     assert.match(argv, /--env\tRC_MEMORY_MIB=8192\t/);
+    // Docker's /dev/shm default is 64 MiB regardless of --memory, and a
+    // GitHub-hosted runner gives a job half its RAM there. Chromium puts
+    // renderer shared memory in /dev/shm, so an unset size kills browser
+    // tests with SIGBUS inside a limit sized to allow them (#87).
+    assert.match(argv, /--shm-size\t4096m\t/);
     assert.match(
       argv,
       new RegExp(

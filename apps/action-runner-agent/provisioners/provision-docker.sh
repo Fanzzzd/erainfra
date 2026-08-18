@@ -221,10 +221,20 @@ ENV_WRITER_PID=$!
 # they map "listener exited with a terminated error" onto exit 0 -- stop, do
 # not retry. For a one-shot ephemeral runner that turns every startup failure
 # into a reported success. Invoke the listener directly and keep its own code.
+# Docker's /dev/shm default is 64 MiB no matter what --memory says, while a
+# GitHub-hosted runner gives a job half its RAM there (measured: 7995 MiB of
+# 15989 in #87). Chromium and friends put renderer shared memory in /dev/shm,
+# so at 64 MiB browser tests die with SIGBUS on writes the memory limit was
+# sized to allow. Half the job's memory matches the hosted convention, and
+# because shm is tmpfs the size is a CAP, not a reservation -- pages count
+# against the same cgroup limit either way, so this grants no memory the
+# limit did not already promise (#87).
+RC_SHM_MIB=$((RC_MEMORY_MIB / 2))
 docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --cpus "$RC_VCPUS" \
   --cpuset-cpus "$RC_CPUSET_CPUS" \
   --memory "${RC_MEMORY_MIB}m" \
+  --shm-size "${RC_SHM_MIB}m" \
   --pids-limit 4096 \
   --user runner \
   --workdir /opt/runner \
