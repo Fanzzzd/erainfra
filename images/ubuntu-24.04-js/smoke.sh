@@ -18,9 +18,49 @@ command -v docker >/dev/null
 command -v node >/dev/null
 command -v npm >/dev/null
 command -v pnpm >/dev/null
+# Seven tools ubuntu-latest has and this image did not, measured by the
+# conformance job as tool_*_present. Four come from apt at whatever version the
+# archive holds, so answering is the whole promise for those.
+command -v ssh >/dev/null
+command -v python3 >/dev/null
+command -v pip3 >/dev/null
+command -v zstd >/dev/null
+command -v rsync >/dev/null
+command -v gh >/dev/null
+command -v go >/dev/null
+ssh -V >/dev/null 2>&1
+python3 --version >/dev/null
+pip3 --version >/dev/null
+zstd --version >/dev/null
+rsync --version >/dev/null
 ldconfig -p | grep -F 'libatomic.so.1' >/dev/null
 node --version | grep -Fxq 'v22.23.2'
 pnpm --version | grep -Fxq '11.21.0'
+# A tool answering is not the pinned tool shipping. go and gh are pinned in the
+# Dockerfile, so assert the pin rather than that something by that name exists.
+go version | grep -Eq '^go version go1\.25\.3 '
+gh --version | grep -Eq '^gh version 2\.97\.0( |$)'
+# actions/setup-go only skips its download if the marker beside the version
+# directory is there, which is the whole reason Go lives in the tool cache.
+ls /opt/hostedtoolcache/go/1.25.3/*.complete >/dev/null
+# The C library answers ASCII unless a locale says otherwise, and each of these
+# is a different way a job can arrive: the image's own environment, the systemd
+# system manager, a PAM login shell, and the unit that runs every job.
+test "${LANG:-unset}" = 'C.UTF-8'
+grep -Fxq 'LANG=C.UTF-8' /etc/locale.conf
+grep -Fxq 'LANG=C.UTF-8' /etc/default/locale
+grep -Fxq 'Environment=LANG=C.UTF-8' /etc/systemd/system/runner-center-guest.service
+# ubuntu-latest leaves LC_ALL unset; setting it here would be a new difference,
+# not a fix for this one.
+test -z "${LC_ALL:-}"
+locale charmap | grep -Fxq 'UTF-8'
+# The same test the conformance job's locale_has_en_us_utf8 key runs.
+locale -a | grep -qiE '^en_US\.(utf-?8)$'
+grep -Fxq 'Etc/UTC' /etc/timezone
+test "$(readlink /etc/localtime)" = '/usr/share/zoneinfo/Etc/UTC'
+# The point of tzdata is that a NAMED zone resolves rather than falling back to
+# UTC. Asia/Tokyo observes no DST, so this is the same answer on every date.
+test "$(TZ=Asia/Tokyo date +%z)" = '+0900'
 test "$(sudo -u runner HOME=/home/runner pnpm config get store-dir)" = '/runner-cache/pnpm'
 test "$(stat -c '%U:%G' /runner-cache/pnpm)" = 'runner:docker'
 test "$(stat -c '%a' /etc/sudoers.d/runner)" = 440

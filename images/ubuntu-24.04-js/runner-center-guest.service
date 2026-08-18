@@ -16,6 +16,10 @@ Restart=on-failure
 RestartSec=2s
 Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
 Environment=RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+# The system manager starts every unit from a clean environment block, so the
+# image's own ENV never reaches a job through here. Without this line LANG is
+# unset for every step the runner spawns, and glibc answers ANSI_X3.4-1968.
+Environment=LANG=C.UTF-8
 
 [Install]
 WantedBy=multi-user.target
