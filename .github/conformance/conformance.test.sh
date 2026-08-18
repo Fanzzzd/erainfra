@@ -89,7 +89,13 @@ says_pair() { # says_pair <case> <label> <value>
 # Worker. The exit status there is a fact about the host running the test, and
 # the case would fail while naming something it never set out to measure.
 no_unallowlisted() { # no_unallowlisted <case>
-  if grep -Fq 'FAIL  unallowlisted differences' "$WORK/out"; then
+  # Status 2 is the differ refusing to run at all -- a schema mismatch, an
+  # empty or malformed fingerprint. No report line can appear then, so the
+  # grep below would pass a case in which nothing was ever compared.
+  if [ "$DIFF_STATUS" -ge 2 ]; then
+    fail "$1: the differ itself failed (status $DIFF_STATUS) instead of comparing"
+    sed 's/^/      | /' "$WORK/out" >&2
+  elif grep -Fq 'FAIL  unallowlisted differences' "$WORK/out"; then
     fail "$1: the report raises an unallowlisted difference"
     sed 's/^/      | /' "$WORK/out" >&2
   else
@@ -262,10 +268,10 @@ eq "identical fingerprints pass" "$DIFF_STATUS" 0
 # locale, and requires the two reports byte-identical. Reverting the LC_ALL=C on
 # diff.sh's join turns both assertions below red on any host with a glibc
 # en_US.UTF-8 -- verified, rather than assumed.
+# en_US.UTF-8 specifically, and no C.UTF-8 fallback: C.UTF-8 collates exactly
+# like C, so under it the pair below never inverts and the case would pass
+# without testing the regression it exists to catch.
 utf8_locale=$(locale -a 2>/dev/null | grep -iE '^en_US\.(utf-?8)$' | head -n 1 || true)
-if [ -z "$utf8_locale" ]; then
-  utf8_locale=$(locale -a 2>/dev/null | grep -iE '^C\.(utf-?8)$' | head -n 1 || true)
-fi
 if [ -n "$utf8_locale" ]; then
   # Its own files: every case after this one starts from $A and $B, and a case
   # that quietly leaves them somewhere else is how a suite starts lying.
@@ -298,7 +304,7 @@ FINGERPRINT
   eq "and reports node_heap_limit_mib exactly once under $utf8_locale" \
     "$(grep -c '^  node_heap_limit_mib$' "$WORK/out.utf8" | tr -d ' ')" 1
 else
-  ok "no UTF-8 locale is generated here; the Linux legs carry one"
+  ok "SKIPPED: no en_US.UTF-8 here to invert the sort; the Linux legs carry one"
 fi
 
 # ---------------------------------------------------------------------------
