@@ -22,7 +22,7 @@ import {
   type SetupStateStatus,
 } from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
-import { renderWindowsInstallScript } from "./installScriptWin";
+import { renderWindowsInstallScript } from "./installScriptPowerShell";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);

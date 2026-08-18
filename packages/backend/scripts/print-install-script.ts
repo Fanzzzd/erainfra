@@ -6,7 +6,7 @@
 //   pnpm --filter @erainfra/backend print-install-script win [https://site] > out.ps1
 import { AGENT_RELEASE } from "../convex/agentRelease.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
-import { renderWindowsInstallScript } from "../convex/installScriptWin.ts";
+import { renderWindowsInstallScript } from "../convex/installScriptPowerShell.ts";
 
 const DEFAULT_SITE_URL = "https://example.convex.site";
 const wantsWindows = process.argv[2] === "win";

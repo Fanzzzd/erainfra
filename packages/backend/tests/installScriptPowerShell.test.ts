@@ -11,11 +11,10 @@
  *    the bash installer without touching the machine running the suite.
  *
  * What the second half does NOT prove: this is PowerShell 7 on the suite's own OS, not Windows
- * PowerShell 5.1 on Windows. The elevated branch is unreachable here, because `WindowsIdentity`
- * throws off Windows and `Test-Elevated` answers "no" — so WinSW is never downloaded, the service
- * is never registered, and only the Scheduled Task fallback is executed. `PSUseCompatibleSyntax`
- * and `PSUseCompatibleCommands` against a 5.1 profile cover what a parse on 7 cannot. An end-to-end
- * Windows install remains unexecuted; nothing in this file should be read as claiming otherwise.
+ * PowerShell 5.1 on Windows, and every Windows-only cmdlet it reaches is a stub whose ARGUMENTS are
+ * asserted and whose behaviour is not. `PSUseCompatibleSyntax` and `PSUseCompatibleCommands`
+ * against a 5.1 profile cover what a parse on 7 cannot. An end-to-end Windows install remains
+ * unexecuted; nothing in this file should be read as claiming otherwise.
  *
  * @vitest-environment node
  */
@@ -35,7 +34,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { AGENT_RELEASE, type AgentRelease } from "../convex/agentRelease.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
-import { renderWindowsInstallScript, WINSW_RELEASE } from "../convex/installScriptWin.ts";
+import { renderWindowsInstallScript } from "../convex/installScriptPowerShell.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
@@ -186,7 +185,6 @@ describe("the rendered Windows installer", () => {
       ["unpacking the archive", /Invoke-Native -Exe 'tar\.exe'/],
       ["locking a path down", /Invoke-Native -Exe 'icacls\.exe'/],
       ["installing dependencies", /Invoke-Native -Exe \$npmCmd/],
-      ["registering the service", /Invoke-Native -Exe \$winswExe -CommandArgs @\('install'\)/],
     ] as const) {
       expect(script, what).toMatch(call);
     }
@@ -200,25 +198,34 @@ describe("the rendered Windows installer", () => {
       "installer", //   rc.ps1's update: a scriptblock, not a native program
       "nodeBin", //     start-agent.ps1 launching the agent, which then exits $LASTEXITCODE itself
       "nodeExe", //     node --version, for the line reporting which runtime was found
-      "winsw", //       rc.ps1's uninstall: best-effort teardown that is already unwinding
     ]);
   });
 
-  it("hashes with one implementation, so there is one place to get a comparison wrong", () => {
-    expect(script.match(/Get-FileHash/g)).toHaveLength(1);
+  // Two, not one: the Worker's helper, and the Node body's own line, left exactly as it shipped.
+  // Folding the Node role into the helper would be a change to a working path for no gain to it.
+  it("gives the Worker one hashing helper without touching the Node body's own", () => {
+    expect(script.match(/Get-FileHash/g)).toHaveLength(2);
+    expect(script).toMatch(/function Get-Sha256\(\$path\) \{\n {2}return \(Get-FileHash/);
   });
 
-  // A tampered service wrapper must not get to choose the service kind. Unreachable falls back;
-  // a mismatch refuses.
-  it("pins WinSW by digest and treats a mismatch as fatal rather than a downgrade", () => {
-    expect(script).toMatch(new RegExp(`\\$winswSha256 = '${WINSW_RELEASE.sha256}'`));
-    expect(WINSW_RELEASE.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(script).toMatch(/WinSW checksum verification failed[^\n]*Nothing was installed/);
-    const mismatch = script.indexOf("WinSW checksum verification failed");
-    const fallback = script.indexOf("installing a Scheduled Task instead");
-    expect(fallback).toBeGreaterThan(-1);
-    expect(fallback).toBeLessThan(mismatch);
-    expect(script.slice(mismatch, mismatch + 400)).not.toMatch(/schtask/);
+  // The constraint that decides the persistence mechanism, and the one most likely to be "fixed"
+  // later by someone who reads "Scheduled Task at logon" as a limitation rather than a requirement.
+  // build-image.ps1 writes the guest credential with Export-Clixml (user-scope DPAPI) and
+  // provision-win.ps1 reads it with Import-Clixml, so the agent has to run as the account that
+  // built the image. LocalSystem cannot decrypt it, and neither can an S4U logon token.
+  it("runs the agent as the account that built the image, which DPAPI requires", () => {
+    expect(script).toMatch(/New-ScheduledTaskPrincipal -UserId \$taskUser -LogonType Interactive/);
+    expect(script).toMatch(/if \(-not \$env:USERNAME\) \{/);
+    expect(script).not.toMatch(/LogonType S4U/);
+    expect(script).not.toMatch(/NT AUTHORITY/);
+    // No Windows service, and therefore no third-party service wrapper in the supply chain.
+    expect(script).not.toMatch(/winsw/i);
+    expect(script).not.toMatch(/New-Service|sc\.exe/);
+    // The reason is in the script, not only in the PR that wrote it.
+    expect(script).toMatch(/Export-Clixml/);
+    expect(script).toMatch(/USER-SCOPE DPAPI/);
+    // And the cost is stated rather than hidden.
+    expect(script).toMatch(/starts at LOGON/);
   });
 
   it("refuses the Node role when this deployment pins nothing for Windows", () => {
@@ -259,8 +266,8 @@ describe("the rendered Windows installer", () => {
  *
  * Defined in the runner's scope rather than patched into the script: PowerShell resolves a function
  * before a cmdlet and walks the scope chain outward, so the installer runs unmodified and still
- * reaches these. What it cannot reach is the elevated branch — WindowsIdentity throws off Windows,
- * Test-Elevated answers no, and the Scheduled Task fallback is what executes.
+ * reaches these. `Register-ScheduledTask` and friends record their arguments so the tests can
+ * assert on what the installer asked for, which is as far as an off-Windows suite can go.
  */
 // No param() block: every argument lands in $args verbatim, and @args splatting is the one
 // pass-through form that still binds -Role and -Token as named parameters rather than positionally.
@@ -326,9 +333,14 @@ function New-ScheduledTaskSettingsSet {
   )
   return [pscustomobject]@{ RestartCount = $RestartCount }
 }
+function New-ScheduledTaskPrincipal {
+  [CmdletBinding()] param([string]$UserId, [string]$LogonType, [string]$RunLevel)
+  return [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType }
+}
 function Register-ScheduledTask {
-  [CmdletBinding()] param([string]$TaskName, $Action, $Trigger, $Settings, [switch]$Force)
+  [CmdletBinding()] param([string]$TaskName, $Action, $Trigger, $Principal, $Settings, [switch]$Force)
   Add-Content -LiteralPath $env:RC_TEST_SERVICE_LOG -Value "register $TaskName $($Action.Argument)"
+  Add-Content -LiteralPath $env:RC_TEST_SERVICE_LOG -Value "principal $($Principal.UserId) $($Principal.LogonType)"
   return [pscustomobject]@{ TaskName = $TaskName }
 }
 function Unregister-ScheduledTask {
@@ -364,19 +376,6 @@ function Start-ScheduledTask {
   Set-Content -LiteralPath (Join-Path $rcHome 'agent.ready') -Value $version
 }
 
-function Get-Service {
-  [CmdletBinding()] param([string]$Name)
-  return $null
-}
-function Stop-Service {
-  [CmdletBinding()] param([string]$Name, [switch]$Force)
-}
-function Restart-Service {
-  [CmdletBinding()] param([string]$Name, [switch]$Force)
-}
-function Unblock-File {
-  [CmdletBinding()] param([string]$LiteralPath)
-}
 
 & $env:RC_TEST_SCRIPT @args
 exit $LASTEXITCODE
@@ -545,6 +544,8 @@ function run(
       HOME: sandbox.home,
       USERPROFILE: sandbox.home,
       COMPUTERNAME: "WIN-TEST-01",
+      USERNAME: "rcbuilder",
+      USERDOMAIN: "WIN-TEST-01",
       PROCESSOR_ARCHITECTURE: options.arch ?? "AMD64",
       RC_TEST_SCRIPT: options.script ?? sandbox.scriptPath,
       RC_TEST_ROUTES: sandbox.routesPath,
@@ -898,15 +899,14 @@ describeExecuted("the Windows installer, executed", () => {
       );
       expect(parse.status, `${generated}: ${parse.stderr}`).toBe(0);
     }
-    expect(readLog(sandbox.serviceLog)).toContain("register EraInfraAgent");
+    expect(readLog(sandbox.serviceLog)).toContain("register erainfra-action-runner-agent");
     expect(readLog(sandbox.serviceLog)).not.toContain("launcher failed");
     // Both service kinds have to produce one agent.log, because that is the file rc.ps1 reads and
-    // the file the connection wait quotes back. WinSW only writes <logname>.out.log, and a
-    // Scheduled Task redirects nothing, so the launcher owns the redirect and this proves it ran.
+    // the file the connection wait quotes back. A Scheduled Task redirects nothing at all, so the
+    // launcher owns the redirect, and running it is the only way to prove the redirect works.
     const agentLog = readFileSync(path.join(sandbox.rcHome, "agent.log"), "utf8");
     expect(agentLog).toContain("agent stub running");
     expect(agentLog).toContain(path.join(sandbox.rcHome, "agent", "dist", "index.js"));
-    expect(renderWindowsInstallScript(SITE_URL, AGENT_RELEASE)).toContain('<log mode="none"/>');
   });
 
   // The CLI reads the same KEY=value metadata the installer wrote, under the same stubs. Running it

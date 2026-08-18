@@ -3,6 +3,12 @@ import type { AgentRelease } from "./agentRelease";
 /**
  * `/install.ps1` — the Windows installer, both roles.
  *
+ * This module has served the Node role since the Infra Agent moved onto a pinned download. #49 adds
+ * the Worker role to it rather than beside it: ADR 0006 is one onboarding path with the role as a
+ * parameter, and a second script per role is the shape that ADR retired. It stays one file for a
+ * second, harder reason — PowerShell allows exactly one `param()` block per script, so two roles
+ * served from one URL have to share one, and two modules could not have composed into one body.
+ *
  * This is the PowerShell counterpart of `installScript.ts`, and it mirrors that file's supply chain
  * rather than inventing a second one: the archive named by this deployment's `AGENT_RELEASE`, the
  * digest published beside it, and — the part that actually matters — the digest this deployment
@@ -15,26 +21,9 @@ import type { AgentRelease } from "./agentRelease";
  * on its own until this landed. Two files could not have composed — PowerShell allows exactly one
  * `param()` block per script, and the two roles have to share it.
  *
- * Nothing in the Worker body has been executed on Windows. See `installScriptWin.test.ts` for what
- * the suite does and does not prove.
+ * Nothing in the Worker body has been executed on Windows. See `installScriptPowerShell.test.ts`
+ * for what the suite does and does not prove.
  */
-
-/**
- * WinSW turns `node dist/index.js` into a real Windows service — auto-start at boot with nobody
- * logged in, and restart-on-failure — which a Worker needs and a Scheduled Task only approximates.
- *
- * It is a third-party binary, so it is pinned exactly the way everything else this installer
- * downloads is pinned: a digest that ships inside the script, served over TLS by this deployment.
- * Bytes that do not match it are refused outright rather than quietly downgraded to the Scheduled
- * Task path — a tampered download is a security event, not a capability the host happens to lack.
- * `WinSW.NET461.exe` rather than the 18 MB self-contained `WinSW-x64.exe`: Server 2022 ships .NET
- * Framework 4.8 in the box, so the 640 KB framework-dependent build is the one that runs.
- */
-export const WINSW_RELEASE = {
-  version: "v2.12.0",
-  asset: "WinSW.NET461.exe",
-  sha256: "b5066b7bbdfba1293e5d15cda3caaea88fbeab35bd5b38c41c913d492aadfc4f",
-} as const;
 
 /**
  * The Node body's `param()` entries — the ones only `-Role node` reads. The Worker refuses them,
@@ -47,14 +36,25 @@ const POWERSHELL_NODE_PARAMS = [
 ] as const;
 
 /**
- * The Node installer, from the release pin down.
+ * The Node installer, from the release pin down — the body this module shipped before #49, kept as
+ * close to unchanged as sharing one script with a second role allows. Three deltas, each forced:
  *
- * `$releaseRepo` / `$releaseVersion` rather than `$repo` / `$version`: PowerShell variable names are
- * case-insensitive, so a bare `$version` here IS the Worker's `-Version` parameter, and assigning to
- * it would silently rewrite an argument the operator passed. `Fail` and `Get-RenamedEnv` come from
- * the shared preamble above, so both roles refuse in the same voice.
+ * 1. `param()`, `$ErrorActionPreference`, the TLS line, `Get-RenamedEnv` and `Fail` moved up into
+ *    the shared preamble. PowerShell allows exactly one `param()` block per script, so two roles in
+ *    one script have to share it, and the dispatch needs `Fail` declared above it.
+ * 2. `$version` became `$releaseVersion`. PowerShell variable names are case-insensitive, so with
+ *    `-Version` in the shared block a bare `$version` here IS that parameter, and this body would
+ *    silently overwrite an argument the operator passed.
+ * 3. The `-Role` refusal became the dispatch below it.
+ * 4. One em dash in a comment became a hyphen. The rendered script has to stay pure ASCII: Windows
+ *    PowerShell 5.1 reads a BOM-less file as ANSI, and this one is fetched over HTTP and built with
+ *    `[scriptblock]::Create`, so there is no BOM to read.
+ *
+ * `$repo` keeps its name because nothing collides with it, and the digest comparison keeps its own
+ * `Get-FileHash` rather than borrowing the Worker's helper: this path is shipped and working, and
+ * consolidating it would be a change to it for no benefit the Node role receives.
  */
-const POWERSHELL_NODE_BODY = String.raw`$releaseRepo = '__AGENT_REPO__'
+const POWERSHELL_NODE_BODY = String.raw`$repo = '__AGENT_REPO__'
 $releaseVersion = '__AGENT_VERSION__'
 
 # Every Infra Agent digest this deployment pins. A target that is not listed is a target this
@@ -77,7 +77,7 @@ if (-not $expected) {
   Fail "This EraInfra deployment pins no Infra Agent build for $target, so there is nothing to verify the download against. Deploy a backend whose AGENT_RELEASE pins a release that publishes it."
 }
 
-$url = "https://github.com/$releaseRepo/releases/download/v$releaseVersion/$asset"
+$url = "https://github.com/$repo/releases/download/v$releaseVersion/$asset"
 $origin = "the release this deployment pins"
 if ($Source) {
   if ($Source.EndsWith("/")) { $url = $Source + $asset } else { $url = $Source }
@@ -105,7 +105,7 @@ try {
   Fail "Could not read the Infra Agent from $url"
 }
 
-$actual = Get-Sha256 $staged
+$actual = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -ne $expected) {
   Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
   Fail "Infra Agent checksum verification failed: expected $expected but got $actual. Nothing was installed."
@@ -248,27 +248,19 @@ function Get-RenamedEnv {
   return $null
 }
 
-# Both of these are Windows-only APIs, and both answer conservatively when they are unavailable:
-# "not elevated" installs a Scheduled Task instead of a service, and an empty SID grants one fewer
-# principal. Neither failure can widen access, which is why swallowing the exception is safe here
-# and would not be in a verification path.
-function Test-Elevated {
-  try {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    return (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  } catch {
-    return $false
-  }
-}
+# A Windows-only API that answers conservatively when it is unavailable: an empty SID grants one
+# fewer principal, which cannot widen access. Safe to swallow here; it would not be in a
+# verification path.
 function Get-CurrentUserSid {
   try { return ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value } catch { return "" }
 }
 
-# The POSIX installer writes the Hub credential and the machine token with umask 077. NTFS has no
-# umask, so the equivalent is explicit: break inheritance, then grant a closed set. SIDs, never
-# account names - "Administrators" is "Administrateurs" on a French install and the grant silently
-# does not apply. S-1-5-18 is LocalSystem, which is the account the service runs as and therefore
-# has to be able to read .env at all.
+# The POSIX installer writes the machine token with umask 077. NTFS has no umask, so the equivalent
+# is explicit: break inheritance, then grant a closed set. SIDs, never account names - the built-in
+# groups are localised ("Administrateurs" on a French install) and a grant by name silently does not
+# apply. The agent runs as the installing user, so that account's own SID is the one that must be
+# able to read .env; SYSTEM and Administrators are here because they can read it regardless and
+# leaving them out only breaks backup and repair.
 function Protect-Path($path) {
   $sid = Get-CurrentUserSid
   $grants = @('*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)')
@@ -282,9 +274,6 @@ function Install-Worker {
   $agentRepo = '__AGENT_REPO__'
   $pinnedVersion = '__AGENT_VERSION__'
   $pinnedSha256 = '__AGENT_SHA256__'
-  $winswVersion = '__WINSW_VERSION__'
-  $winswAsset = '__WINSW_ASSET__'
-  $winswSha256 = '__WINSW_SHA256__'
 
   # %USERPROFILE%\.runner-center, NOT %ProgramData%\RunnerCenter as #49's design reference had it.
   # That reference predates the Hyper-V provisioner landing on main: provisioners/build-image.ps1
@@ -303,14 +292,11 @@ function Install-Worker {
   $readyFile = Join-Path $rcHome 'agent.ready'
   $startScript = Join-Path $rcHome 'start-agent.ps1'
   $rcCli = Join-Path $binDir 'rc.ps1'
-  $serviceDir = Join-Path $rcHome 'service'
-  $winswExe = Join-Path $serviceDir 'erainfra-agent.exe'
-  $winswXml = Join-Path $serviceDir 'erainfra-agent.xml'
-  # Nothing on Windows is a frozen runtime identifier yet, because no Windows Worker has ever been
-  # onboarded: there is no deployed box holding these names. So they are the current names rather
-  # than the retiring runner-center-* ones, which CONTEXT.md rule 2 calls legacy, not precedent.
-  $serviceId = 'erainfra-agent'
-  $taskName = 'EraInfraAgent'
+  # A new identifier, and frozen the day it ships, so it is named under the current rules rather
+  # than the retiring runner-center-* ones (CONTEXT.md rule 2 calls those legacy, not precedent).
+  # Qualified by the surface it serves, because rule 1 says "agent" alone is never a name here: this
+  # is the Action Runner Agent's task, and a box can be a Node too, whose task is PortlessAgent.
+  $taskName = 'erainfra-action-runner-agent'
 
   function Show-Usage {
     Write-Host 'Usage: -Role worker -Token rcreg_xxx [-Name NAME] [-Labels a,b] [-Slots N]'
@@ -390,25 +376,19 @@ function Install-Worker {
   function Get-ServiceKind { return (Get-MetaField 'SERVICE_KIND') }
 
   function Stop-Agent {
-    switch (Get-ServiceKind) {
-      'winsw' { Stop-Service -Name $serviceId -Force -ErrorAction SilentlyContinue }
-      'schtask' { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null }
+    if ((Get-ServiceKind) -eq 'schtask') {
+      Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
     }
   }
 
   function Start-Agent($kind) {
-    switch ($kind) {
-      'winsw' {
-        # Restart, not Start: "already running" is the dangerous success here, because the process
-        # that is already running is executing the bytes this install just replaced.
-        Restart-Service -Name $serviceId -Force
-      }
-      'schtask' {
-        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
-        Start-ScheduledTask -TaskName $taskName
-      }
-      default { Fail 'EraInfra service metadata is missing. Re-run the install command from the dashboard.' }
+    if ($kind -ne 'schtask') {
+      Fail 'EraInfra service metadata is missing. Re-run the install command from the dashboard.'
     }
+    # Stop first, then start: "already running" is the dangerous success here, because the process
+    # that is already running is executing the bytes this install just replaced.
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
+    Start-ScheduledTask -TaskName $taskName
   }
 
   # Never delete the working agent before its replacement is staged and verified: every failure path
@@ -428,7 +408,7 @@ function Install-Worker {
   if (-not $machineName) { $machineName = $env:COMPUTERNAME }
   $previousVersion = Get-MetaField 'AGENT_VERSION'
 
-  New-Item -ItemType Directory -Force -Path $rcHome, $binDir, $serviceDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $rcHome, $binDir | Out-Null
   # No trap-on-EXIT equivalent runs reliably across every way this script can end, so an
   # interrupted install leaves its staging directory behind. Sweep them rather than accumulate.
   Get-ChildItem -LiteralPath $rcHome -Directory -Filter 'install.*' -ErrorAction SilentlyContinue |
@@ -676,13 +656,12 @@ function Install-Worker {
   }
 
   # --- the launcher ----------------------------------------------------------------------------
-  # The service holds no credential. It runs this, and this reads .env and install-meta - exactly
-  # what start-agent.sh does on POSIX, and the reason the WinSW XML below can be world-readable.
+  # The scheduled task holds no credential. It runs this, and this reads .env and install-meta -
+  # exactly what start-agent.sh does on POSIX, and the reason the task definition is world-readable.
   #
   # It also owns the log. On POSIX the service manager redirects (launchd StandardOutPath, systemd
-  # StandardOutput=append:); on Windows the two service kinds cannot agree on one - WinSW only ever
-  # writes <logname>.out.log and .err.log, and a Scheduled Task cannot redirect at all. Doing it
-  # here gives both kinds the same agent.log, which is the file rc.ps1 and the connection wait read.
+  # StandardOutput=append:); a Scheduled Task cannot redirect at all, so doing it here is the only
+  # way agent.log exists - and agent.log is the file rc.ps1 and the connection wait both read.
   Set-Content -LiteralPath $startScript -Encoding ASCII -Value @(
     '#Requires -Version 5.1',
     '$ErrorActionPreference = "Stop"',
@@ -736,7 +715,6 @@ function Install-Worker {
     ')',
     '$ErrorActionPreference = "Stop"',
     ('$rcHome = ' + "'$rcHome'"),
-    ('$serviceId = ' + "'$serviceId'"),
     ('$taskName = ' + "'$taskName'"),
     '$metaFile = Join-Path $rcHome "install-meta"',
     '$logFile = Join-Path $rcHome "agent.log"',
@@ -746,27 +724,25 @@ function Install-Worker {
     '  if (-not $line) { return "" }',
     '  return $line.Substring($key.Length + 1)',
     '}',
+    '# SERVICE_KIND is read rather than assumed even though schtask is the only value this installer',
+    '# writes: install-meta is the contract with the installer, and a CLI that ignores it would keep',
+    '# driving a scheduled task after a future install had moved to something else.',
     'function Kind { return (Field "SERVICE_KIND") }',
+    'function Require-Kind {',
+    '  if ((Kind) -ne "schtask") { Write-Error "EraInfra service metadata is missing or unrecognised."; exit 1 }',
+    '}',
     'function Stop-Agent {',
-    '  switch (Kind) {',
-    '    "winsw" { Stop-Service -Name $serviceId -Force -ErrorAction SilentlyContinue }',
-    '    "schtask" { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null }',
-    '    default { Write-Error "EraInfra service metadata is missing."; exit 1 }',
-    '  }',
+    '  Require-Kind',
+    '  Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null',
     '}',
     'function Start-Agent {',
-    '  switch (Kind) {',
-    '    "winsw" { Restart-Service -Name $serviceId -Force }',
-    '    "schtask" { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null; Start-ScheduledTask -TaskName $taskName }',
-    '    default { Write-Error "EraInfra service metadata is missing."; exit 1 }',
-    '  }',
+    '  Require-Kind',
+    '  Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null',
+    '  Start-ScheduledTask -TaskName $taskName',
     '}',
     'function Test-Running {',
-    '  switch (Kind) {',
-    '    "winsw" { return ((Get-Service -Name $serviceId -ErrorAction SilentlyContinue).Status -eq "Running") }',
-    '    "schtask" { return ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq "Running") }',
-    '    default { return $false }',
-    '  }',
+    '  if ((Kind) -ne "schtask") { return $false }',
+    '  return ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq "Running")',
     '}',
     'switch ($Command) {',
     '  "status" {',
@@ -815,14 +791,8 @@ function Install-Worker {
     '    & $installer @forward',
     '  }',
     '  "uninstall" {',
-    '    $kind = Kind',
-    '    Stop-Agent',
-    '    if ($kind -eq "winsw") {',
-    '      $winsw = Join-Path (Join-Path $rcHome "service") "erainfra-agent.exe"',
-    '      if (Test-Path -LiteralPath $winsw) { & $winsw uninstall | Out-Null }',
-    '    } elseif ($kind -eq "schtask") {',
-    '      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue',
-    '    }',
+    '    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null',
+    '    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue',
     '    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")',
     '    $binDir = Join-Path $rcHome "bin"',
     '    if ($userPath) {',
@@ -851,71 +821,42 @@ function Install-Worker {
     Say "The EraInfra CLI is already on your user PATH."
   }
 
-  # --- the service -----------------------------------------------------------------------------
-  # winsw when this shell can create a service, a Scheduled Task when it cannot - the same shape as
-  # the POSIX installer's launchd / systemd --user / nohup ladder, and for the same reason: a Worker
-  # that cannot become a service is still a Worker.
+  # --- persistence -----------------------------------------------------------------------------
+  # A Scheduled Task registered for the CURRENT USER, at logon. Not a Windows service, and this is
+  # the constraint that decides it rather than a preference:
+  #
+  #   provisioners/build-image.ps1 stores the guest credential with Export-Clixml, which is
+  #   USER-SCOPE DPAPI, and provisioners/provision-win.ps1 reads it back with Import-Clixml. DPAPI
+  #   material written by one account cannot be decrypted by another. So the account that runs this
+  #   agent MUST be the account that ran build-image.ps1, or every Hyper-V provision fails at
+  #   credential decryption with an error that reads like a corrupt file.
+  #
+  # That rules out LocalSystem, which is what a service wrapper would have run as, and it rules out
+  # a task registered with the S4U logon type: an S4U token carries no credentials, so it cannot
+  # unlock the user's DPAPI master key either. An interactive logon token can, which leaves exactly
+  # this. It is also what the Node role's own scheduled task already does.
+  #
+  # The cost is stated rather than hidden: this starts at LOGON, so an unattended reboot leaves the
+  # Worker down until someone signs in. On a dedicated Worker box, enable automatic logon. Changing
+  # this to a boot-time service means first moving the guest credential to machine-scope DPAPI in
+  # both provisioner scripts, which is its own change and needs a real Windows host to verify.
   $serviceKind = 'schtask'
-  if (Test-Elevated) {
-    $winswUrl = "https://github.com/winsw/winsw/releases/download/$winswVersion/$winswAsset"
-    $winswStaged = Join-Path $tmpDir 'winsw.exe'
-    $winswOk = $false
-    try {
-      Invoke-WebRequest -Uri $winswUrl -OutFile $winswStaged -UseBasicParsing
-      $winswOk = $true
-    } catch {
-      # Unreachable is a capability this host lacks, so it falls back. A MISMATCH is not: the
-      # comparison below refuses outright rather than silently choosing the other service kind,
-      # because a tampered download must never be able to pick which path the installer takes.
-      Warn "Could not download WinSW from $winswUrl; installing a Scheduled Task instead."
-      $winswOk = $false
-    }
-    if ($winswOk) {
-      $winswActual = Get-Sha256 $winswStaged
-      if ($winswActual -ne $winswSha256) {
-        Remove-Item -LiteralPath $winswStaged -Force -ErrorAction SilentlyContinue
-        Fail "WinSW checksum verification failed: expected $winswSha256 but got $winswActual. Nothing was installed."
-      }
-      Move-Item -LiteralPath $winswStaged -Destination $winswExe -Force
-      Unblock-File -LiteralPath $winswExe
-      Set-Content -LiteralPath $winswXml -Encoding UTF8 -Value @(
-        '<service>',
-        "  <id>$serviceId</id>",
-        '  <name>EraInfra Action Runner Agent</name>',
-        '  <description>Runs CI jobs for EraInfra in a Hyper-V isolation boundary.</description>',
-        '  <executable>powershell.exe</executable>',
-        ('  <arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $startScript + '"</arguments>'),
-        "  <workingdirectory>$agentDir</workingdirectory>",
-        '  <onfailure action="restart" delay="5 sec"/>',
-        # start-agent.ps1 appends to agent.log itself, so WinSW keeps no second copy under a
-        # different name that rc.ps1 would then have to know about.
-        '  <log mode="none"/>',
-        '  <startmode>Automatic</startmode>',
-        '</service>'
-      )
-      # The service runs as LocalSystem, which is why Protect-Path grants S-1-5-18: .env has to stay
-      # readable to it. Hyper-V image credentials are a separate matter - provision-win.ps1 reads a
-      # DPAPI blob bound to the account that BUILT the image, and LocalSystem is not that account.
-      # Windows Profiles are preview-gated for reasons that include this one.
-      # A re-install must replace the service, not fail on "already exists" and leave the old one
-      # running the bytes this install just replaced.
-      if (Get-Service -Name $serviceId -ErrorAction SilentlyContinue) {
-        Stop-Service -Name $serviceId -Force -ErrorAction SilentlyContinue
-        Invoke-Native -Exe $winswExe -CommandArgs @('uninstall') -What 'Removing the previous Windows service'
-      }
-      Invoke-Native -Exe $winswExe -CommandArgs @('install') -What 'Registering the Windows service'
-      $serviceKind = 'winsw'
-    }
-  } else {
-    Warn 'Not running elevated, so this installs a Scheduled Task that starts at logon rather than a service that starts at boot. Re-run from an elevated shell for a boot-time service.'
+  # The principal is named from the same environment that decided where RC_HOME lives. That is the
+  # point rather than a shortcut: %USERPROFILE% belongs to one account, the DPAPI credential is
+  # readable by one account, and this makes them provably the same one. Refuse rather than guess.
+  if (-not $env:USERNAME) {
+    Fail 'USERNAME is not set, so this installer cannot name the account the agent has to run as.'
   }
-
-  if ($serviceKind -eq 'schtask') {
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $startScript + '"')
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-  }
+  $taskUser = $env:USERNAME
+  if ($env:USERDOMAIN) { $taskUser = $env:USERDOMAIN + '' + $env:USERNAME }
+  # Highest, because the Hyper-V provisioner needs elevation to create and destroy a VM. On an
+  # account that is not a local administrator the task registers and then cannot provision, which
+  # rc.ps1 doctor reports.
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $startScript + '"')
+  $trigger = New-ScheduledTaskTrigger -AtLogOn
+  $principal = New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
   # start-agent.ps1 reads NODE_BIN and AGENT_VERSION out of the metadata file, so it has to exist
   # before anything starts the service.
@@ -1027,8 +968,5 @@ export function renderWindowsInstallScript(siteUrl: string, release: AgentReleas
     .replaceAll("__ERAINFRA_SITE_URL__", origin)
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
-    .replaceAll("__AGENT_SHA256__", release.sha256)
-    .replaceAll("__WINSW_VERSION__", WINSW_RELEASE.version)
-    .replaceAll("__WINSW_ASSET__", WINSW_RELEASE.asset)
-    .replaceAll("__WINSW_SHA256__", WINSW_RELEASE.sha256);
+    .replaceAll("__AGENT_SHA256__", release.sha256);
 }

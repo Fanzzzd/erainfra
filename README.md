@@ -377,10 +377,19 @@ A fresh Windows Server has no Node.js, so the installer fetches the official Nod
 build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before running it —
 the same source and the same check the POSIX installer already uses when a host has no runtime.
 Everything lands under `%USERPROFILE%\.runner-center`, which is the `RC_HOME` the Hyper-V
-provisioner and `build-image.ps1` already default to. An elevated shell gets a WinSW-backed Windows
-service that starts at boot; an unelevated one gets a logon Scheduled Task. `-Update`, `-Version`,
-`-Sha256`, and rollback through `agent.previous` work exactly as they do on POSIX, and `rc.ps1`
-under `%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
+provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-Sha256`, and rollback
+through `agent.previous` work exactly as they do on POSIX, and `rc.ps1` under
+`%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
+
+Persistence is a Scheduled Task registered **for the installing account, at logon** — not a Windows
+service, and the reason is a hard constraint rather than a preference. `build-image.ps1` stores the
+guest credential with `Export-Clixml`, which is user-scope DPAPI, and `provision-win.ps1` reads it
+back with `Import-Clixml`; DPAPI material written by one account cannot be decrypted by another. So
+**the account that runs the agent must be the account that built the image**, which rules out
+LocalSystem and rules out an S4U task token, neither of which can unlock that account's DPAPI master
+key. The cost is that the Worker starts at logon: on a dedicated Worker box, enable automatic logon.
+Moving to a boot-time service means first moving that credential to machine-scope DPAPI in both
+provisioner scripts.
 
 Hyper-V and its PowerShell module have to be enabled, and a parent VHDX has to exist under
 `%RC_HOME%\images\<name>.vhdx` — `provisioners/build-image.ps1` produces one. **Windows catalog
