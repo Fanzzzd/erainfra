@@ -165,7 +165,11 @@ func injectBearer(pr *httputil.ProxyRequest) {
 func (i *Interceptor) TLSConfig() *tls.Config { return i.tlsConfig.Clone() }
 
 func (i *Interceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if i.cache != nil && strings.Contains(r.URL.Path, cacheServiceMarker) {
+	// Prefix, not substring: GitHub serves CacheService at the root of the host,
+	// so only a path that starts with the marker is ours. A substring match would
+	// route a crafted /anything/twirp/…/CacheService/… request to the cache and
+	// swap its Authorization — exactly what a transparent forward must not do.
+	if i.cache != nil && strings.HasPrefix(r.URL.Path, cacheServiceMarker) {
 		i.serveCache(w, r)
 		return
 	}

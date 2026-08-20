@@ -294,6 +294,30 @@ func TestNonCacheServicePathRoutesToGitHub(t *testing.T) {
 	}
 }
 
+// The marker only routes to the cache when it is a prefix. A path that merely
+// contains it deeper in the request — not something GitHub serves there — must
+// forward to GitHub untouched, keeping its own token, never getting the bearer.
+func TestMarkerAsSubstringForwardsToGitHub(t *testing.T) {
+	h := setup(t, options{withCache: true, githubStatus: http.StatusOK, githubBody: "gh"})
+
+	resp := h.do(t, http.MethodPost, "/anything"+cachePath, `{"key":"abc"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := recv(t, h.github.got)
+	if rec == nil {
+		t.Fatal("a non-prefix path did not reach GitHub; it was misrouted to the cache")
+	}
+	if rec.auth != guestToken {
+		t.Errorf("Authorization = %q, want the guest token untouched", rec.auth)
+	}
+	if got := recv(t, h.cache.got); got != nil {
+		t.Error("the cache received a request whose marker was only a substring")
+	}
+}
+
 // When the bearer cannot be minted the interceptor fails closed: it refuses the
 // cache request rather than serving under an unproven identity, and nothing
 // reaches the cache. The cache client reads the error as a miss.
