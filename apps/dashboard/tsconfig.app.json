@@ -2,6 +2,7 @@
   "$schema": "https://json.schemastore.org/tsconfig",
   "extends": "@erainfra/typescript-config/react.json",
   "compilerOptions": {
+    "allowImportingTsExtensions": true,
     "allowJs": false,
     "types": ["node", "vite/client"],
     "paths": {

@@ -1,4 +1,8 @@
 import type { AgentRelease } from "./agentRelease";
+import {
+  FIRECRACKER_HOST_PROVISIONER_B64,
+  FIRECRACKER_HOST_PROVISIONER_SHA256,
+} from "./provisionerFirecrackerHost.generated.ts";
 
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail
@@ -7,7 +11,9 @@ set -euo pipefail
 # Action Runner Agent; a Node runs deployed Apps and runs the Infra Agent. It is a flag on the
 # script rather than a query parameter on the URL because the /install handler takes no request
 # argument — one body, rendered from this deployment's own configuration, cacheable, and impossible
-# to steer by crafting a request. Everything below the dispatch is the Worker path, unchanged.
+# to steer by crafting a request. worker-host is the third role: the root-level, once-per-machine
+# Firecracker host provisioning that a Worker install assumes. Everything below the dispatch is
+# the Worker path, unchanged.
 INSTALL_ROLE='worker'
 ROLE_REMAINING=$#
 while [ "$ROLE_REMAINING" -gt 0 ]; do
@@ -20,7 +26,7 @@ while [ "$ROLE_REMAINING" -gt 0 ]; do
       # the rotated --token as the role, and hand the Worker parser a bare X — silently rewriting the
       # argument list rather than refusing.
       if [ "$ROLE_REMAINING" -lt 2 ]; then
-        printf '❌ %s\n' '--role requires a value: worker or node' >&2
+        printf '❌ %s\n' '--role requires a value: worker, node or worker-host' >&2
         exit 1
       fi
       INSTALL_ROLE=$1
@@ -329,14 +335,177 @@ node_install() {
 NODE_REPO='__AGENT_REPO__'
 NODE_VERSION='__AGENT_VERSION__'
 
+# --role worker-host turns a bare Linux box into a Firecracker microVM host in the one curl that
+# fetched this script: the runtime binary comes out of the agent archive this deployment already
+# pins — no second trust root — and deploy/provision-firecracker-host.sh travels embedded below,
+# so nothing else is fetched from this deployment. Root, because the provisioner writes under
+# /usr/local, /etc/runner-center and nftables; the Worker agent itself still installs
+# unprivileged with --role worker afterwards.
+worker_host_install() {
+  WH_SITE='__ERAINFRA_SITE_URL__'
+  WH_REPO='__AGENT_REPO__'
+  WH_VERSION='__AGENT_VERSION__'
+  WH_SHA256='__AGENT_SHA256__'
+
+  wh_fail() {
+    printf '❌ %s\n' "$1" >&2
+    exit 1
+  }
+  wh_sha256() {
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "$1" | cut -d ' ' -f 1
+    elif command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$1" | cut -d ' ' -f 1
+    else
+      wh_fail 'A SHA-256 utility (shasum or sha256sum) is required'
+    fi
+  }
+  wh_usage() {
+    printf '%s\n' 'Usage: curl -fsSL <site>/install | sudo bash -s -- --role worker-host'
+    printf '%s\n' '         [--pool-gib N] [--pool-dir PATH] [--worker-user NAME]'
+    printf '%s\n' '         [--data-device DEV --meta-device DEV] [--uninstall]'
+    printf '%s\n' ''
+    printf '%s\n' 'Provisions this Linux host to run one ephemeral Firecracker microVM per CI job.'
+    printf '%s\n' 'Storage defaults to a file-backed thin-pool (--pool-gib 200) under --pool-dir;'
+    printf '%s\n' '--data-device/--meta-device use dedicated block devices instead and DESTROY'
+    printf '%s\n' 'their contents. --uninstall reverses exactly what provisioning added.'
+  }
+
+  WH_POOL_GIB='200'
+  WH_POOL_DIR=''
+  WH_POOL_SET=0
+  WH_WORKER_USER=''
+  WH_DATA_DEVICE=''
+  WH_META_DEVICE=''
+  WH_UNINSTALL=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pool-gib) [ "$#" -ge 2 ] || wh_fail '--pool-gib requires a value'; WH_POOL_GIB=$2; WH_POOL_SET=1; shift 2 ;;
+      --pool-dir) [ "$#" -ge 2 ] || wh_fail '--pool-dir requires a value'; WH_POOL_DIR=$2; WH_POOL_SET=1; shift 2 ;;
+      --worker-user) [ "$#" -ge 2 ] || wh_fail '--worker-user requires a value'; WH_WORKER_USER=$2; shift 2 ;;
+      --data-device) [ "$#" -ge 2 ] || wh_fail '--data-device requires a value'; WH_DATA_DEVICE=$2; shift 2 ;;
+      --meta-device) [ "$#" -ge 2 ] || wh_fail '--meta-device requires a value'; WH_META_DEVICE=$2; shift 2 ;;
+      --uninstall) WH_UNINSTALL=1; shift ;;
+      -h|--help) wh_usage; exit 0 ;;
+      *) wh_usage >&2; wh_fail "Unknown worker-host option: $1" ;;
+    esac
+  done
+  case "$WH_POOL_GIB" in
+    ''|*[!0-9]*) wh_fail '--pool-gib must be a whole number of GiB' ;;
+  esac
+  [ "$WH_POOL_GIB" -ge 32 ] || wh_fail '--pool-gib needs at least 32 GiB; the provisioner refuses a smaller thin-pool'
+  if [ -n "$WH_DATA_DEVICE" ] && [ -z "$WH_META_DEVICE" ]; then
+    wh_fail '--data-device needs --meta-device: the thin-pool takes one device for data and one for metadata'
+  fi
+  if [ -n "$WH_META_DEVICE" ] && [ -z "$WH_DATA_DEVICE" ]; then
+    wh_fail '--meta-device needs --data-device: the thin-pool takes one device for data and one for metadata'
+  fi
+  if [ -n "$WH_DATA_DEVICE" ] && [ "$WH_POOL_SET" -eq 1 ]; then
+    wh_fail 'Choose one storage form: --data-device/--meta-device or --pool-gib/--pool-dir, not both'
+  fi
+
+  # The pin check precedes the root check on purpose: an unpinned deployment should refuse while
+  # the operator is still unprivileged, not after they have escalated.
+  if [ "$WH_UNINSTALL" -eq 0 ] && [ -z "$WH_SHA256" ]; then
+    wh_fail 'This EraInfra deployment pins no agent release, so there is nothing to verify the runtime against; deploy a backend whose AGENT_RELEASE is pinned'
+  fi
+  [ "$(id -u)" -eq 0 ] ||
+    wh_fail "worker-host provisioning must run as root: curl -fsSL $WH_SITE/install | sudo bash -s -- --role worker-host"
+  [ "$(uname -s)" = 'Linux' ] || wh_fail 'Firecracker microVMs need Linux with /dev/kvm'
+  for wh_tool in curl tar base64; do
+    command -v "$wh_tool" >/dev/null 2>&1 || wh_fail "worker-host provisioning needs $wh_tool on PATH"
+  done
+
+  WH_TMP=$(mktemp -d)
+  trap 'rm -rf "$WH_TMP"' EXIT INT TERM
+
+  # The provisioner ships inside this script, base64 wrapped, because it is itself full of
+  # heredocs no quoting scheme survives. The checksum was computed from the repository file at
+  # render time, so a truncated download of THIS script fails here rather than half-provisioning.
+  WH_PROVISIONER="$WH_TMP/provision-firecracker-host.sh"
+  base64 -d > "$WH_PROVISIONER" <<'WH_PROVISIONER_B64'
+__FIRECRACKER_PROVISIONER_B64__
+WH_PROVISIONER_B64
+  WH_PROVISIONER_SHA=$(wh_sha256 "$WH_PROVISIONER")
+  [ "$WH_PROVISIONER_SHA" = '__FIRECRACKER_PROVISIONER_SHA256__' ] ||
+    wh_fail 'The embedded provisioner failed its checksum; the download of this script was corrupted'
+  chmod 0755 "$WH_PROVISIONER"
+
+  if [ "$WH_UNINSTALL" -eq 1 ]; then
+    bash "$WH_PROVISIONER" --uninstall
+    exit 0
+  fi
+
+  case "$(uname -m)" in
+    x86_64|amd64) WH_ARCH='x86_64' ;;
+    aarch64|arm64) WH_ARCH='arm64' ;;
+    *) wh_fail "This deployment publishes no Firecracker runtime for $(uname -m)" ;;
+  esac
+
+  WH_ASSET="erainfra-agent-$WH_VERSION.tar.gz"
+  WH_ARCHIVE="$WH_TMP/$WH_ASSET"
+  printf '✅ Downloading the EraInfra agent %s release for its Firecracker runtime.\n' "$WH_VERSION"
+  curl -fsSL "https://github.com/$WH_REPO/releases/download/v$WH_VERSION/$WH_ASSET" -o "$WH_ARCHIVE" ||
+    wh_fail "Could not download $WH_ASSET from release v$WH_VERSION of $WH_REPO"
+  WH_ACTUAL=$(wh_sha256 "$WH_ARCHIVE")
+  [ "$WH_ACTUAL" = "$WH_SHA256" ] ||
+    wh_fail "Agent archive checksum verification failed: expected $WH_SHA256 but got $WH_ACTUAL. Nothing was installed."
+  printf '✅ Verified the agent archive against the checksum pinned by this EraInfra deployment.\n'
+
+  mkdir -p "$WH_TMP/staged"
+  tar -xzf "$WH_ARCHIVE" -C "$WH_TMP/staged" --strip-components=1
+  WH_RUNTIME="$WH_TMP/staged/runtime/linux-$WH_ARCH/runner-center-runtime"
+  [ -f "$WH_RUNTIME" ] ||
+    wh_fail "The pinned agent archive carries no Linux $WH_ARCH Firecracker runtime; releases before v0.2.0-rc.6 predate it"
+  chmod 0755 "$WH_RUNTIME"
+
+  # Whoever ran sudo is the Worker account unless told otherwise; root itself never is — the
+  # whole point of the runner-center group is that the agent stays unprivileged.
+  if [ -z "$WH_WORKER_USER" ]; then
+    WH_WORKER_USER=$(printenv SUDO_USER || true)
+  fi
+  if [ "$WH_WORKER_USER" = 'root' ]; then
+    WH_WORKER_USER=''
+  fi
+
+  set -- --runtime-binary "$WH_RUNTIME"
+  if [ -n "$WH_DATA_DEVICE" ]; then
+    set -- "$@" --data-device "$WH_DATA_DEVICE" --meta-device "$WH_META_DEVICE"
+  else
+    set -- "$@" --file-backed-pool "$WH_POOL_GIB"
+    if [ -n "$WH_POOL_DIR" ]; then
+      set -- "$@" --pool-dir "$WH_POOL_DIR"
+    fi
+  fi
+  if [ -n "$WH_WORKER_USER" ]; then
+    set -- "$@" --worker-user "$WH_WORKER_USER"
+  else
+    printf '⚠️  %s\n' 'No --worker-user and no sudo user to default to: no unprivileged account was added to the runner-center group.' >&2
+  fi
+  bash "$WH_PROVISIONER" "$@"
+
+  printf '✅ %s\n' 'This host can now run one ephemeral Firecracker microVM per job.'
+  if [ -n "$WH_WORKER_USER" ]; then
+    printf '%s\n' "Next, as $WH_WORKER_USER (log out and back in first, so the runner-center group applies):"
+  else
+    printf '%s\n' 'Next, as the unprivileged Worker account:'
+  fi
+  printf '%s\n' "  curl -fsSL $WH_SITE/install | bash -s -- --token <registration token>"
+  exit 0
+}
+
 case "$INSTALL_ROLE" in
   worker) ;;
   node)
     node_install "$@"
     exit 0
     ;;
+  worker-host)
+    worker_host_install "$@"
+    exit 0
+    ;;
   *)
-    printf '❌ %s\n' "Unknown --role: $INSTALL_ROLE (expected worker or node)" >&2
+    printf '❌ %s\n' "Unknown --role: $INSTALL_ROLE (expected worker, node or worker-host)" >&2
     exit 1
     ;;
 esac
@@ -1165,10 +1334,28 @@ function renderPinnedDigests(infraAgent: AgentRelease["infraAgent"]) {
     .join("\n");
 }
 
+/**
+ * The embedded Firecracker host provisioner, checked rather than trusted for the same reason the
+ * digests are: it lands inside a heredoc in a script an operator pipes to `sudo bash`. The base64
+ * alphabet cannot contain the heredoc terminator (no underscore), so proving the charset proves
+ * the heredoc cannot be broken out of.
+ */
+function renderedProvisionerB64() {
+  if (!/^[A-Za-z0-9+/=\n]+$/.test(FIRECRACKER_HOST_PROVISIONER_B64)) {
+    throw new Error("The embedded provisioner is not base64; regenerate it");
+  }
+  if (!/^[0-9a-f]{64}$/.test(FIRECRACKER_HOST_PROVISIONER_SHA256)) {
+    throw new Error("The embedded provisioner checksum is not a lowercase SHA-256 digest");
+  }
+  return FIRECRACKER_HOST_PROVISIONER_B64;
+}
+
 export function renderInstallScript(siteUrl: string, release: AgentRelease) {
   return INSTALL_SCRIPT.replaceAll("__ERAINFRA_SITE_URL__", siteUrl.replace(/\/+$/, ""))
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256)
-    .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent));
+    .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent))
+    .replaceAll("__FIRECRACKER_PROVISIONER_B64__", renderedProvisionerB64())
+    .replaceAll("__FIRECRACKER_PROVISIONER_SHA256__", FIRECRACKER_HOST_PROVISIONER_SHA256);
 }

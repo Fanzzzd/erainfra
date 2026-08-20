@@ -30,6 +30,20 @@ software fallback that preserves the boundary, and Docker is not one — see
 
 ## 2. Provision the Worker host
 
+The one-command form does all of this section in a single verified step — it downloads the agent
+archive this deployment pins, checks it against the pinned SHA-256, and hands the runtime inside to
+the provisioner that travels embedded in the script itself:
+
+```bash
+curl -fsSL https://<your-deployment>.convex.site/install | sudo bash -s -- --role worker-host \
+  --pool-gib 200 --pool-dir /path/on/a/roomy/filesystem
+```
+
+`--worker-user` defaults to whoever ran sudo; `--data-device`/`--meta-device` swap the file-backed
+pool for dedicated devices (destroyed, as below); `--uninstall` mirrors the rollback section.
+Everything after this paragraph is the same provisioning done by hand — for air-gapped hosts, for
+a runtime built from source, or to read what the one command does.
+
 Download the runtime asset for the release you are running and verify it against its published
 sidecar before it touches the host:
 
