@@ -122,6 +122,16 @@ if (-not $Name) { $Name = $env:COMPUTERNAME }
 $agentArgs = @("connect", "--hub", $Hub, "--token", $Token, "--name", $Name)
 
 if ($Install) {
+  # Detect and report, never rename (ADR 0004 stage 1). A scheduled task is not a path a fallback
+  # can chase: registering a second task under a new name leaves the old one REGISTERED and starting
+  # its own agent at every logon, so the box would run two. This guard lived in deploy/infra/agent.ps1
+  # next to the registration; the registration moved here, so the guard moves with it — nothing in
+  # this release can produce the half-migrated state, but a hand-migrated box can.
+  $renamedTask = Get-ScheduledTask -TaskName "EraInfraAgent" -ErrorAction SilentlyContinue
+  $frozenTask = Get-ScheduledTask -TaskName "PortlessAgent" -ErrorAction SilentlyContinue
+  if ($renamedTask -and $frozenTask) {
+    Fail 'this box has both PortlessAgent and EraInfraAgent scheduled tasks - two agents would dial the same hub. Unregister one first: Unregister-ScheduledTask -TaskName EraInfraAgent -Confirm:$false'
+  }
   # The scheduled task name is an identifier a running Node already holds, so it keeps the one
   # deploy/infra/agent.ps1 registers. On a UAC-filtered local admin in a non-elevated shell,
   # Register-ScheduledTask is Access Denied - fall back to a per-user Startup entry, which needs no

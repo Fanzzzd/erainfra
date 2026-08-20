@@ -61,6 +61,12 @@ BUNDLE="$REPO/dist/hub"                     # what the hub container mounts — 
 ENVDIR="$HOME/portless-env"
 [ -d "$HOME/erainfra-env" ] && ENVDIR="$HOME/erainfra-env"
 NODE_IMAGE="$(dual_env ERAINFRA_NODE_IMAGE PORTLESS_NODE_IMAGE node:22-bookworm-slim)"
+# The EraInfra control plane that serves the verified Node installer and the checksum it pins
+# (ADR 0006). The hub serves the agent's bytes; it does not vouch for them. Left empty, enrollment
+# refuses rather than installing a binary nothing checked — which is what it used to do.
+# ERAINFRA_INSTALL_URL is new in this change, so it gets only the new name: no deployed box holds a
+# PORTLESS_ spelling of it, and inventing one would freeze a retired alias for nothing (ADR 0004).
+INSTALL_URL="${ERAINFRA_INSTALL_URL:-}"
 
 log() { printf '\033[36m[hub]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m[hub] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -127,6 +133,7 @@ PORTLESS_APP_DOMAIN=$ZONE
 PORTLESS_HUB_HOST=$HUB_HOST
 PORTLESS_HUB_BASE=https://$HUB_HOST
 PORTLESS_REGISTRY=127.0.0.1:$REG_PORT
+ERAINFRA_INSTALL_URL=$INSTALL_URL
 TMPDIR=/data
 EOF
   # Multi-node? Name the agent co-located with the registry so deploys wire remote nodes to it
@@ -273,3 +280,11 @@ log "first boot: open https://$HUB_HOST → create the owner account (one-time s
 log "node tokens: dashboard Settings → API tokens → create (role: operator), then:"
 log "  enroll a node:  curl -fsSL https://$HUB_HOST/agent.sh | sudo sh -s -- --token <plt_...> --name <node>"
 log "  enroll THIS box: curl -fsSL http://127.0.0.1:$HUB_PORT/agent.sh -o /tmp/a.sh && sudo sh /tmp/a.sh --token <plt_...> --name $(hostname) --hub ws://127.0.0.1:$HUB_PORT/agent"
+if [ -z "$INSTALL_URL" ] && ! grep -q '^ERAINFRA_INSTALL_URL=.\+$' "$ENVDIR/hub.env"; then
+  log ""
+  log "⚠️  enrollment will refuse until this hub knows its control plane: add"
+  log "    ERAINFRA_INSTALL_URL=https://<your-deployment>.convex.site  →  $ENVDIR/hub.env, then re-run."
+  log "    That is where the verified installer and the checksum it pins come from; the agent's"
+  log "    bytes still come from this hub, and are checked against that checksum before install."
+  log "    Populate this hub's mirror with: sh deploy/infra/build-agents.sh"
+fi

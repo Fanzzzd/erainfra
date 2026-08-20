@@ -427,6 +427,12 @@ export function createApiServer(
   // registry.sh (image store), cli.sh (the portless CLI). Unauthenticated by design — they carry
   // no secrets. We template the served base URL into each (the `<hub>` placeholder) so the
   // commands they print point back at this hub. Override the directory with PORTLESS_DEPLOY_DIR.
+  //
+  // `<install>` is the second placeholder, and it is a different kind of thing: the control plane
+  // that serves the verified installer and the digest it pins (ADR 0006). This hub serves the
+  // agent's bytes and the enrollment script; it does not vouch for the bytes. Unset, the enrollment
+  // scripts refuse rather than falling back to the unchecked download they used to do.
+  const installUrl = (process.env.ERAINFRA_INSTALL_URL ?? "").replace(/\/+$/, "");
   const deployDir =
     renamedEnv("ERAINFRA_DEPLOY_DIR", "PORTLESS_DEPLOY_DIR") ??
     join(import.meta.dirname, "../../../deploy/infra");
@@ -446,7 +452,9 @@ export function createApiServer(
       // the templated download URL is https against a plaintext port and curl/irm fail.
       const proto = (req.headers["x-forwarded-proto"] as string | undefined) ?? req.protocol;
       const base = `${proto}://${req.headers.host}`;
-      return reply.type(mime).send(body.split("<hub>").join(base));
+      return reply
+        .type(mime)
+        .send(body.split("<hub>").join(base).split("<install>").join(installUrl));
     });
   }
 
