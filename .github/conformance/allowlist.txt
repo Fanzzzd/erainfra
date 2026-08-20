@@ -66,6 +66,8 @@ require root_free_meets_floor=yes  # same floor, for the writable layer a `docke
 never-allow workspace_free_meets_floor  # the room itself may differ; having enough of it may not
 never-allow scratch_free_meets_floor  # same
 never-allow root_free_meets_floor  # same
+require sysctl_vm_max_map_count_meets_floor=yes  # 262144 is the documented floor Elasticsearch and OpenSearch refuse to start below, and the value hosted ships. The raw sysctl is allowed to differ below (the microVM guest boots at 1048576); this asserts per leg that no guest kernel or image change ever drops under the floor while the raw difference stays allowed
+never-allow sysctl_vm_max_map_count_meets_floor  # the value may differ; clearing the floor may not
 
 # ---------------------------------------------------------------------------
 # The boundary itself
@@ -218,14 +220,13 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # to be traceable to a decision recorded in this repository. Nothing below is.
 #
 # NOT here, and deliberately: cpu_visible_matches_allowed and
-# mem_visible_matches_allowed. Both are `no` on the fleet and both are left to
-# FAIL. The first is #80, live on the deployed Worker, which runs 0.2.0-rc.6 --
-# older than #83's cpuset allocator -- and goes green when the next release
-# reaches the fleet. The second is #93 and stays red even after that release,
-# because /proc/meminfo is the host's until LXCFS is mounted. Those two keys are
-# the reason this job exists; granting them a grace period would retire the only
+# mem_visible_matches_allowed. Both were `no` on the fleet when this file was
+# born -- #80 until v0.2.0-rc.7 carried #83's cpuset allocator, #93 until #17
+# put every job in a microVM whose /proc IS its allowance -- and both are
+# measured `yes` since run 32330383534. They stay `require`d above rather than
+# retired: those two keys are the reason this job exists, the only
 # continuously-checked statement that this platform tells a job the truth about
-# its own size.
+# its own size, and a regression in either goes red on its own leg.
 
 # #87, fixed by #90 and not yet on the fleet. It is the only entry in this
 # section whose fix is already merged, and it keeps a `pending` line rather than
@@ -254,10 +255,15 @@ pending tool_go_present=no 2026-11-16  # #95: one ordinary workflow step from th
 pending tool_pip3_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
 pending tool_rsync_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
 
-# #96 — the Docker daemon's defaults and the Worker host's kernel settings,
-# arriving through a gap nobody was looking at. Not one of these was chosen
-# here, which is exactly why none of them gets an `allow` line.
-allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). Elasticsearch and OpenSearch refuse to start below 262144 — what a job is entitled to is a floor, and the guest clears hosted's by 4x
+# #96 measured the Docker daemon's defaults and the Worker host's kernel
+# settings arriving through a gap nobody was looking at; the #17 cutover
+# replaced them with the guest kernel's defaults, which are pinned but mostly
+# memory-proportional — sized by the Profile's RAM rather than chosen. The
+# pendings below pin the measured guest values and are owned by #110, the
+# guest-environment seam where they become decisions. vm_max_map_count is the
+# one graduate: its guest value is chosen (pinned kernel and image) and its
+# floor is `require`d absolutely above.
+allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). The value is chosen — the guest kernel and image are both pinned — and the floor that actually matters is asserted absolutely by `require sysctl_vm_max_map_count_meets_floor=yes` above, so this allow covers only the headroom, never a regression
 pending sysctl_fs_inotify_max_user_instances=128 2026-11-16  # #96: 128 against 1280 on hosted. Watch exhaustion in a bundler or test watcher surfaces as an opaque ENOSPC that has nothing to do with disk
 pending sysctl_fs_inotify_max_user_watches=15690 2026-11-16  # #110: the 6.1 guest kernel sizes watches at 1% of RAM, so a 2 GiB guest gets 15690 against 655360 hosted. A vite or jest watcher exhausts that fast, and the failure is an opaque ENOSPC. The guest boot should set this deliberately — the same guest-environment seam #110 needs for LANG
 pending sysctl_vm_swappiness=100 2026-11-16  # #96: 100 against 60 makes the host readier to swap a job out under pressure, which shows up as latency rather than failure
