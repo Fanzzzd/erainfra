@@ -100,12 +100,19 @@ EraInfra-built and digest-pinned. Concretely:
    interception that 404 IS a fleet-wide artifact outage. So the routing rule
    is an acceptance condition: cache twirp paths are served locally,
    everything else on the results host is reverse-proxied to an explicitly
-   configured upstream with the original `Host` and TLS SNI preserved (the
-   guest's pinned resolution must not leak into the upstream dial — the proxy
-   resolves the real address itself), and an `actions/upload-artifact` job on
-   an intercepted Worker is a standing integration test, not a canary that
+   configured upstream, and an `actions/upload-artifact` job on an
+   intercepted Worker is a standing integration test, not a canary that
    exists only in prose. The v1 host serves cache alone and is intercepted
    whole.
+
+   The proxy is not an open forwarder, and the inbound request does not get
+   to steer it: inbound `Host` and TLS SNI are untrusted and must BOTH equal
+   the results hostname exactly, or the request is rejected; the upstream
+   `Host` and TLS `ServerName` come from fixed configuration, never copied
+   from the request; and the upstream dial resolves the real address itself,
+   so the guest's pinned resolution cannot loop the proxy back into itself.
+   Tests: an arbitrary inbound `Host` is rejected, and a request arriving on
+   the v1 cache hostname cannot be routed to the results upstream.
 
 4. **The repository claim is this amendment's open question, and it fails
    closed until answered.** The intercepted requests arrive bearing the job
@@ -145,12 +152,17 @@ EraInfra-built and digest-pinned. Concretely:
   IPs directly gets GitHub, which is the degraded-to-upstream behaviour, not a
   breach.
 - **A dead cache service degrades cache and BREAKS artifacts, and those are
-  different failures with different budgets.** When the pinned names refuse
-  connections, cache clients degrade to misses — slower jobs. Artifact
-  clients cannot degrade to anything: their upstream path runs THROUGH the
-  proxy this design put in front of them, so on an intercepted Worker the
-  cache service becomes a hard availability dependency of
-  `actions/upload-artifact`. That coupling is the single strongest argument
+  different failures with different budgets.** For cache clients the
+  miss-degradation is measured only for HTTP `404` and `500` restore bodies
+  (ADR 0007's fault matrix); what a client does with connection refusal, a
+  TLS error or an endpoint that never answers is exactly the unmeasured
+  class ADR 0007 flagged, and this amendment inherits the flag rather than
+  papering over it — a dead pinned name lands the fleet in unmeasured
+  territory until stage B measures those shapes and sets the timeout and
+  retry budget. Artifact clients cannot degrade to anything measured or
+  otherwise: their upstream path runs THROUGH the proxy this design put in
+  front of them, so on an intercepted Worker the cache service becomes a
+  hard availability dependency of `actions/upload-artifact`. That coupling is the single strongest argument
   against intercepting the results host, and the amendment does not wave it
   past: stage B owes separate timeout/retry budgets and separate canaries
   for the two traffic classes, and the alternative — intercepting only the
