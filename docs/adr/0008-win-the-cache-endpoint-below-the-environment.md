@@ -4,189 +4,224 @@
 - Date: 2026-08-20
 - Owners: EraInfra
 - Amends: [ADR 0007](0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)
+- Related: [ADR 0009](0009-a-store-is-plugged-in-not-wired-in.md) (the store this points at)
 
-## The measurement that forces this
+## The measurement that forces this, and the protocol reality it runs into
 
 ADR 0007 refused to assume the one thing its delivery design needed: "whether an
 EraInfra-supplied value survives the runner's own injection is unmeasured here
-and is a stage-C prerequisite, not an assumption this ADR is allowed to make."
-That measurement now exists, taken in three runs of
-`.github/workflows/cache-env-probe.yml` on real `rc-e2e` Attempts:
+and is a stage-C prerequisite." Three runs of
+`.github/workflows/cache-env-probe.yml` on real `rc-e2e` Attempts settled it:
 
-- **Run 32109974600** found that a `run:` step and an action step are different
-  environments: the runner's `Runner.Worker` composes every **action** step's
-  environment from GitHub's job message, overwriting `ACTIONS_CACHE_URL`,
-  `ACTIONS_RESULTS_URL`, `ACTIONS_CACHE_SERVICE_V2` and `ACTIONS_RUNTIME_TOKEN`
-  regardless of what the process environment, a step `env:` block (T2) or
-  `$GITHUB_ENV` (T3) held.
-- **Run 32353754282** closed T0, the last workflow-shaped tier, with the full
-  v0.2.0-rc.8 seam live: `ERAINFRA_CACHE_SERVICE_V2=false` set on the Worker
-  reached the job's script-step environment intact — the agent → runtime →
-  MMDS → guest chain works, and nothing else can plant that variable in a
-  microVM job (#110 proved image `ENV`, PAM and unit `Environment=` lines all
-  dead there) — and the very same job's **action** step read
-  `ACTIONS_CACHE_SERVICE_V2=True` with GitHub's own cache URL and a real
-  2495-byte runtime token.
+- **Run 32109974600** found a `run:` step and an action step are different
+  environments — the runner composes every **action** step's environment from
+  GitHub's job message, overwriting `ACTIONS_CACHE_URL`, `ACTIONS_RESULTS_URL`,
+  `ACTIONS_CACHE_SERVICE_V2` and `ACTIONS_RUNTIME_TOKEN` regardless of the
+  process environment, a step `env:` block, or `$GITHUB_ENV`.
+- **Run 32353754282**, with the full v0.2.0-rc.8 seam live, closed the last
+  workflow-shaped tier: a value EraInfra set reached the job's script step
+  intact and was overwritten in the very same job's action step.
 
-Every cache client in ADR 0007's measured volume — `actions/cache`,
-`setup-node`, `setup-go` — is an action step. One is not always: BuildKit's
-`type=gha` can be driven by a bare `docker buildx build` in a `run:` step,
-where the seam's values DO survive — but on hosted, a run step holds no
-`ACTIONS_RUNTIME_TOKEN` either (measured: all four unset, run 32108617455),
-so such workflows already route the runtime environment through an action
-(`crazy-max/ghaction-github-runtime` or `docker/build-push-action`), which
-puts them back on the overwritten side. The claim this amendment rests on is
-therefore stated at its measured width: **the runner overwrites the four
-cache variables in every action step, and every client responsible for the
-329 MiB ADR 0007 counted reads its environment there.** A run-step BuildKit
-probe is cheap and stage A should run one before the script-step path is
-declared worthless rather than merely small.
+Every real cache client — `actions/cache`, `setup-node`, `setup-go`, buildx's
+`type=gha` — is an action step. **EraInfra can deliver any environment it likes,
+and the runner overwrites the four cache variables in every environment a cache
+client reads.** No workflow-shaped mechanism can carry the endpoint.
 
-The runner-environment-level delivery ADR 0007 decided on cannot carry the
-endpoint. Its store decision, security contract, two-generation requirement
-and fault-tolerance obligations are untouched; what this amendment replaces
-is only the sentence "at the runner-environment level."
+**And the protocol underneath is not what the earlier drafts assumed.** The
+2025 migration changed the target:
 
-One instrument note, recorded so the next reader does not re-fight it: the
-probe's "T0" row reads `/proc/1/environ`, which is Docker-shaped. On a microVM
-PID 1 is the guest's init and the row says `unavailable`; the T1 rows carry the
-microVM's T0 evidence.
+- **Cache v1 (`ACTIONS_CACHE_URL` → `artifactcache.actions.githubusercontent.com`)
+  was sunset in Feb 2025**; buildx/BuildKit were forced to v2 by Apr 2025. On
+  github.com today, cache is **v2 only**. Any design that leans on the v1
+  hostname, or offers "intercept v1 alone" as a fallback, is targeting a dead
+  endpoint.
+- **Cache v2 and Artifacts v4 share one hostname**:
+  `ACTIONS_RESULTS_URL` = `results-receiver.actions.githubusercontent.com`. They
+  are the same host, the same SNI, and can share one keep-alive/HTTP-2
+  connection; they are distinguished only by the **Twirp service path inside the
+  TLS session** — `github.actions.results.api.v1.CacheService/*` versus
+  `.../ArtifactService/*`. Both return **signed Azure Blob URLs**
+  (`*.blob.core.windows.net` + SAS); the bytes never touch results-receiver.
+
+Two consequences fall straight out and they shape the whole decision:
+
+1. **The cache/artifact coupling is inherent to v2, not a design choice.**
+   Because the two share a host and a connection, nothing at the DNS, SNI, or
+   TCP layer can select cache without also selecting artifacts. Any interception
+   that serves cache must terminate `results-receiver` TLS and route by the
+   inner Twirp path. An `https_proxy` transport does not escape this — a
+   `CONNECT results-receiver:443` is byte-identical for both.
+2. **The interception point is the Twirp metadata call, not the blob host.** We
+   serve `CacheService` by answering its create/get/finalize calls with signed
+   URLs pointing at **our** store; we never impersonate Azure. `apps/cache-service`
+   already implements exactly this surface (v2 Twirp + the Azure-block-to-S3
+   translator in `blob.go`).
 
 ## Decision
 
-**Intercept the cache hostnames inside the guest, at name resolution, and
-terminate their TLS at EraInfra's cache service. Do not modify the runner.**
+**Intercept `results-receiver.actions.githubusercontent.com` transparently at
+the guest network layer, terminate its TLS with a per-guest ephemeral CA, serve
+the cache Twirp path from EraInfra's cache service, and fail-open-forward
+everything else to real GitHub. Do not modify the runner. Require zero workflow
+change.**
 
-The values that win the environment war are hostnames GitHub controls:
-`ACTIONS_CACHE_URL` points at `artifactcache.actions.githubusercontent.com`
-and `ACTIONS_RESULTS_URL` at `results-receiver.actions.githubusercontent.com`.
-The runner decides what the variables say; it does not decide what those names
-resolve to inside a guest whose image, DNS and trust store are all
-EraInfra-built and digest-pinned. Concretely:
+This is the approach the one vendor doing transparent capture (Blacksmith) uses,
+for the reason it uses it: interception at the network layer catches every
+client including those inside `container:` jobs and nested Docker, with the
+pinned `actions/runner` left byte-identical to GitHub's — which is a property
+EraInfra's conformance story is built on. The rest of this section is the part
+Blacksmith does not document publicly: the trust model.
 
-1. **Name pinning in the guest.** `runner-center-guest` writes `/etc/hosts`
-   entries for exactly the two cache hostnames, pointing at the cache service
-   address it already receives over MMDS (`cache_url`, shipped in
-   v0.2.0-rc.8, becomes the interception target rather than an environment
-   value). No entry arrives when the Worker configures no cache, and the fleet
-   behaves exactly as today.
+### 1. Transparent interception, scoped to one name
 
-2. **A fleet CA that CANNOT sign more than two names.** The clients speak
-   HTTPS to GitHub's hostnames, so the service must present certificates for
-   them, and no public CA will issue those. The guest image carries an
-   EraInfra fleet CA in its system trust store, and the guest seam sets
-   `NODE_EXTRA_CA_CERTS` for the Node-based clients that ignore the system
-   store — a variable the job message does not carry, so the runner does not
-   overwrite it (measured class: T1 script and action rows agree on
-   everything outside the four cache variables). The CA's private key lives
-   with the cache service, never on a Worker.
+The guest resolves `results-receiver.actions.githubusercontent.com` to a local
+interceptor — an `/etc/hosts` entry the guest binary writes (it already edits
+`/etc/hosts` for its own name) pointing at the cache service address delivered
+over MMDS. No entry when the Worker configures no cache; the fleet behaves
+exactly as today. Every other name resolves and connects unchanged; a client
+that dials GitHub's real IPs directly reaches GitHub, which is degraded-to-
+upstream, not a breach.
 
-   "Signs exactly two hostnames" must be a property of the certificate, not a
-   promise about the key's handling: the CA carries a **critical X.509 Name
-   Constraints extension** permitting only the two cache DNS names, so a
-   compromised cache service holding the key still cannot mint a certificate
-   the guest would accept for any other host. The acceptance test is the
-   negative one: a CA-signed certificate for a third hostname is REJECTED by
-   the guest's TLS stack — both the system store path and the
-   `NODE_EXTRA_CA_CERTS` path, tested separately, because Node's constraint
-   enforcement is not the system's. If either path fails to enforce the
-   constraint, this design ships a fleet-wide MITM root and must not ship.
+### 2. A per-guest, per-boot ephemeral CA — not a fleet CA
 
-3. **The results host is shared, so the service proxies what it does not
-   serve — and that is new code, not an aspiration.** ADR 0007 already
-   measured that `ACTIONS_RESULTS_URL` carries both cache v2 and
-   `actions/upload-artifact` traffic behind the same `ACTIONS_RUNTIME_TOKEN`.
-   Today `apps/cache-service` answers unknown paths with `404`; under
-   interception that 404 IS a fleet-wide artifact outage. So the routing rule
-   is an acceptance condition: cache twirp paths are served locally,
-   everything else on the results host is reverse-proxied to an explicitly
-   configured upstream, and an `actions/upload-artifact` job on an
-   intercepted Worker is a standing integration test, not a canary that
-   exists only in prose. The v1 host serves cache alone and is intercepted
-   whole.
+The clients speak HTTPS to GitHub's hostname, so the interceptor must present a
+certificate for it, and no public CA will issue one. EraInfra mints a **fresh CA
+per guest boot on the host**, signs exactly one leaf covering the single
+intercepted name, gives it a lifetime bounded by the VM's, and keeps the CA
+private key host-side — it never enters the guest. The guest trusts it via the
+system store (`update-ca-certificates`) and `NODE_EXTRA_CA_CERTS` for the Node
+clients that ignore the system store.
 
-   The proxy is not an open forwarder, and the inbound request does not get
-   to steer it: inbound `Host` and TLS SNI are untrusted and must BOTH equal
-   the results hostname exactly, or the request is rejected; the upstream
-   `Host` and TLS `ServerName` come from fixed configuration, never copied
-   from the request; and the upstream dial resolves the real address itself,
-   so the guest's pinned resolution cannot loop the proxy back into itself.
-   Tests: an arbitrary inbound `Host` is rejected, and a request arriving on
-   the v1 cache hostname cannot be routed to the results upstream.
+Why per-guest rather than one fleet CA: a microVM is ephemeral, so the natural
+lifetime of a signing key is one VM. With a fleet CA, "the key leaked" is a
+fleet-wide MITM event; with a per-guest key that never leaves the host and dies
+with the VM, the worst case collapses to "an attacker who already owns this
+guest can MITM this same guest until it is recycled" — approximately zero
+marginal blast radius, since owning the guest already owns its traffic.
 
-4. **The repository claim is this amendment's open question, and it fails
-   closed until answered.** The intercepted requests arrive bearing the job
-   message's `ACTIONS_RUNTIME_TOKEN` — a JWT GitHub minted, which no job
-   authored. If its claims name the repository stably and its signature is
-   verifiable against a published key set, it is exactly the issuer-minted
-   claim ADR 0007's rule 1 demanded, and the fork-PR refusal (rule 2) reads
-   the same claims. But GitHub documents no verification contract for this
-   internal token, and the current service accepts only EraInfra's own HMAC
-   tokens (`cachetoken.Verifier`) — so treating the GitHub JWT as verified
-   identity is a **hypothesis that stage A must measure** (decode real
-   tokens across Attempts, repositories and fork PRs; establish which claims
-   are stable and whether the signature can be checked) before anything
-   scopes storage by it. If the measurement comes back unverifiable, the
-   fallback is EraInfra-minted identity bound out of band: the control plane
-   knows each Attempt's repository and event at `JobStarted`, and the seam
-   already delivers per-Attempt values to the guest — the binding mechanism
-   is then stage-A design work, and rules 1–2 hold whichever way. A request
-   whose repository identity the service cannot establish is REJECTED, never
-   defaulted — ADR 0007's own rule, restated because interception makes it
-   easy to forget. Either way the token is a live GitHub credential and the
-   service treats it as ADR 0007 treats bucket keys: used for verification
-   and upstream proxying, never logged, never stored beyond the request.
+The CA is name-constrained as **defense in depth**, and the constraint must
+cover **every name type, not just DNS**. Research on this exact stack (guest
+OpenSSL 3.x, the runner's .NET 8, Node 20/24, BuildKit's Go ≥1.21) confirmed all
+three client stacks **enforce** critical name constraints, including on a root
+in the trust-anchor position — the historical "constraints ignored on local
+roots" footgun lived in Chrome/Apple/NSS, not in OpenSSL, Go, or .NET's
+OpenSSL-backed chain. But a constraint permitting only two dNSNames leaves
+iPAddress, URI, and email SANs **unconstrained**, so the extension is critical
+and carries `excludedSubtrees` for `IP:0.0.0.0/0`, `IP:::/0`, and the email/URI
+space, permitting only the one DNS name. The negative test is a ship gate: a
+CA-signed certificate for any other name — a different hostname, a raw IP — is
+**rejected** by the guest, tested on both the system-store path and the
+`NODE_EXTRA_CA_CERTS` path, because Node's enforcement is not the system's.
+Version floors travel with it: the runner's .NET ≥6, guest OpenSSL ≥3.0.15-class
+patch level, BuildKit's Go ≥1.25.8/1.26.1 (the 2025–2026 name-constraint CVEs).
+If the negative test ever fails to reject, this ships a fleet-wide MITM root and
+must not ship.
+
+### 3. Serve cache, fail-open-forward the rest
+
+On the terminated `results-receiver` listener:
+
+- **`CacheService/*`** is served by EraInfra's cache service, which answers with
+  signed URLs pointing at the operator's store (ADR 0009). Downloads a job can
+  reach directly presign to that store; a store only the service can reach is
+  streamed (`DOWNLOAD_MODE=proxy`).
+- **`ArtifactService/*`, any unrecognized `CacheService` method, and any error
+  in our own path** are reverse-proxied to the real `results-receiver`, with the
+  request's original `Host`/SNI reconstructed against the real upstream (which
+  the proxy resolves itself, so the guest's pinned resolution cannot loop it
+  back). **Fail-open is the rule, not a fallback:** if the cache service is down
+  or errors, cache requests forward to real GitHub too, so a dead cache degrades
+  to GitHub's cache — a miss-cost, not an outage — and artifacts are never
+  affected. This is the answer to the coupling in §1: the coupling is inherent,
+  so it is made safe rather than eliminated.
+
+The inbound listener is not steerable: it only serves a request whose `Host`/SNI
+is exactly the intercepted name, and it never routes a request that arrived on
+one intercepted name to another's upstream.
+
+### 4. Identity comes from where the guest already knows it
+
+The chicken-and-egg the store review raised is real: the runner overwrites
+`ACTIONS_RUNTIME_TOKEN` per action step and the guest environment is composed at
+boot from MMDS, before `JobStarted` exists, so **no per-Attempt bearer can be
+delivered to the cache client through the environment.** Interception dissolves
+it: the cache service is per-guest and already holds the Attempt's identity from
+the MMDS boot context EraInfra set. It authorizes by that identity — the
+`Repository` claim and the token's permission bit (ADR 0007 rules 1–2), with
+`Attempt` carried for logs and revocation only, never as an authorization input
+(this matches `cachetoken`'s actual `Verify`, which never inspects `Attempt`).
+The client's inbound `ACTIONS_RUNTIME_TOKEN` is GitHub's, seen because we
+terminate TLS; it is used only to forward artifact/passthrough requests upstream
+and is never logged or stored. A request whose repository identity the service
+cannot establish is rejected, never defaulted.
+
+### 5. The container and builder gap is named, not waved
+
+Interception at the guest network layer reaches `container:` jobs for free — the
+reason to prefer it over a runner patch. The exception is **buildx's
+`type=gha`**: with the default docker-container driver, `buildkitd` runs in its
+own container with its own trust store and does not inherit the guest's
+`update-ca-certificates` output. The CA must be injected into the builder
+container (a `buildkitd.toml`/driver-opt step), or the `docker` driver used, or
+`type=gha` fails closed with `x509: unknown authority` — a cache-availability
+bug, not a security hole. Stage B owns making one of these the default.
 
 ## Consequences
 
-- **The one-line-change promise survives.** No workflow edit, no swap-in
-  action, no runner patch. The pinned `actions-runner:2.336.0` stays
-  byte-identical to GitHub's.
-- **A guest with a cache configured trusts a CA a guest without one does not.**
-  That is the honest cost of this design and it must stay visible: the
-  conformance fingerprint should measure the trust-store delta so the
-  allowlist carries it as a decision (`allow` traceable to this ADR), not as
-  drift nobody chose.
-- **Interception is scoped by construction.** The hosts entries name two
-  hostnames; every other name resolves as before; a job that dials the real
-  IPs directly gets GitHub, which is the degraded-to-upstream behaviour, not a
-  breach.
-- **A dead cache service degrades cache and BREAKS artifacts, and those are
-  different failures with different budgets.** For cache clients the
-  miss-degradation is measured only for HTTP `404` and `500` restore bodies
-  (ADR 0007's fault matrix); what a client does with connection refusal, a
-  TLS error or an endpoint that never answers is exactly the unmeasured
-  class ADR 0007 flagged, and this amendment inherits the flag rather than
-  papering over it — a dead pinned name lands the fleet in unmeasured
-  territory until stage B measures those shapes and sets the timeout and
-  retry budget. Artifact clients cannot degrade to anything measured or
-  otherwise: their upstream path runs THROUGH the proxy this design put in
-  front of them, so on an intercepted Worker the cache service becomes a
-  hard availability dependency of `actions/upload-artifact`. That coupling is the single strongest argument
-  against intercepting the results host, and the amendment does not wave it
-  past: stage B owes separate timeout/retry budgets and separate canaries
-  for the two traffic classes, and the alternative — intercepting only the
-  v1 host and letting v2 clients keep GitHub's cache — remains on the table
-  as the fallback if the artifact coupling proves unacceptable. ADR 0007's
-  unmeasured fault classes (refusal, hang) are prerequisites for enabling
-  interception at all.
+- **Zero workflow change, and the runner stays GitHub's exact bytes.** The
+  `runner_version` pin holds; the cleverness lives in the guest network layer
+  EraInfra fully owns. This is the property that made interception the right
+  call over patching the runner.
+- **A guest with a cache trusts a per-guest CA and pins one name.** Both are
+  decisions the conformance fingerprint must measure — a trust-store delta and a
+  `/etc/hosts` entry that appear only when a cache is configured — so the
+  allowlist carries them traceable to this ADR, not as drift.
+- **A dead cache service is a slower job, not a broken one**, and never a broken
+  artifact upload, by §3's fail-open rule. The unmeasured fault classes ADR 0007
+  flagged (refusal, TLS error, hang) become the interceptor's timeout budget,
+  which stage B owes before interception is enabled.
 - **Stage C's exit conditions carry over** — the end-to-end v2-selection test,
-  the restore-volume number that could still reverse ADR 0007, and now one
-  more: the artifact-passthrough canary above.
+  the restore-volume number that could still reverse ADR 0007 — plus the CA
+  negative-rejection test (§2), the artifact-passthrough integration test (§3),
+  and the buildkitd trust-delivery default (§5).
+
+## What would reverse this
+
+- **If the CA negative test cannot be made to pass** on all three stacks — a guest
+  accepting a CA-signed cert for a name outside the constraint — the design is a
+  MITM root and is withdrawn, not shipped with a warning.
+- **If GitHub separates cache back onto its own hostname**, the artifact coupling
+  and its fail-open proxy disappear and §3 simplifies to serving one host whole.
+- **If per-Attempt identity cannot be bound at the interceptor** — ADR 0009's and
+  ADR 0007's rule-1 reversal condition — the cache fails closed.
 
 ## Considered and rejected
 
-- **A runner job-started hook writing the variables:** measured dead — that is
-  T3, and the runner overwrites action steps after it (run 32109974600).
-- **Patching `Runner.Worker` in the image:** delivers the variables directly,
-  but the fleet stops running GitHub's runner and starts running a fork with a
-  security-relevant diff to maintain against every runner release. The pinned
-  runner's provenance is worth more than the proxy hop it saves.
-- **DNAT in the Worker's nftables instead of guest hosts entries:** same TLS
-  problem, less visibility — the redirect happens where the conformance
-  fingerprint cannot see it, and per-guest scoping (cache on, cache off) turns
-  into per-VM firewall state. The guest image is the layer this fleet already
-  proves things about.
-- **Accepting environment delivery for script steps only:** the seam already
-  does this for free, and it captures 0% of measured cache volume — every
-  byte of the 329 MiB ADR 0007 counted moves through action steps.
+- **Patch/fork the runner to override `ACTIONS_RESULTS_URL`** (Depot, Ubicloud,
+  RunsOn, falcondev): the field's more common path, and cheaper on the CA axis —
+  no trust anchor in the guest, our service can use an ordinary cert for a name
+  we own. Rejected for EraInfra specifically: it forks the one component whose
+  byte-identical provenance the conformance story asserts (`runner_version`),
+  needs `--disableupdate` and a re-patch per runner bump, and does not reach
+  `container:`/nested-Docker caching without extra env-propagation work — the
+  exact case network interception covers for free. We own the network layer;
+  keeping the runner pristine and doing the work below it is the EraInfra-native
+  trade.
+- **A single fleet CA** (what Blacksmith's design implies): rejected for the
+  blast radius §2 removes — a leaked key is fleet-wide instead of one recyclable
+  guest.
+- **`https_proxy` transport instead of `/etc/hosts`**: marginally cleaner (one
+  chokepoint, tunnels unrelated hosts with no cert) but does not change the
+  coupling (§1) or remove the CA (still terminates results-receiver). An
+  operational choice for stage B, not an architectural one; `/etc/hosts` is
+  simpler and the guest already writes it.
+- **A runner job-started hook / env tier**: measured dead — the runner overwrites
+  action steps after any of them (run 32109974600).
+- **Intercept the v1 host, or only v1**: v1 is sunset (Feb 2025); a dead target.
+- **SPKI/leaf pinning instead of a CA**: would require patching three
+  third-party client stacks that expose no uniform pinning hook; the trust-store
+  - name-constraint mechanism is the one knob all three honor.
+- **A swap-in `erainfra/cache` action**: ADR 0007 rejected it on measurement —
+  0% of this repo's own 329 MiB of restore volume flows through explicit
+  `actions/cache`; it is all `setup-node`/`setup-go`, which interception catches
+  and a swap-in does not.
