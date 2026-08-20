@@ -142,14 +142,28 @@ presign download failure cannot degrade to GitHub — it degrades to a **cache
 miss**, which the `@actions/cache` client already treats as non-fatal (a failed
 archive fetch returns "not restored" and the job redoes the work). The one shape
 that is _not_ a clean miss is a **hang**: a store that stalls holds the step until
-the job timeout. Presign therefore requires a store whose failures are _fast_
-(refusal / `404` / `500`) and a **short expiry plus connect/read timeout baked
-into the presigned URL**, so the worst case is a bounded miss, not a stall.
-`proxy` keeps this decision service-side — the service reads the store under its
-own timeout budget and returns a clean miss — which is the other half of why a
-non-job-reachable or latency-uncertain store must proxy. Stage B owes direct-`GET`
-tests for `404`, `500`, connection refusal, TLS failure, and timeout, each
-asserting a bounded miss rather than a hang.
+the job timeout. And here is the sharp edge — **EraInfra cannot bound that hang
+from the presigned URL.** `X-Amz-Expires` limits when the URL is _valid_; it sets
+no connect deadline, no read deadline, and cannot cancel a `GET` already in
+flight. The only thing that bounds a direct download is the _downloading client's_
+own HTTP timeout — and the client here is `@actions/cache`, whose transport
+deadlines EraInfra does not set. So presign's hang is not mitigable by us on the
+presign path; it is mitigable only by **store choice**: presign is reserved for
+stores whose availability and latency are effectively GitHub-grade (a public
+R2/S3 endpoint), where a stall is no more likely than against GitHub itself.
+
+**Any store that can stall must run `proxy`, and that is where the deadline is
+actually enforceable.** In proxy mode the cache service is in the data path and
+holds the read under its own server-side budget — the existing
+`ERAINFRA_CACHE_TRANSFER_TIMEOUT` (and `ERAINFRA_CACHE_LOOKUP_TIMEOUT` for the
+metadata leg) — so a stalled store becomes a **service-bounded** clean miss
+instead of a client-length hang. This is the concrete rule: **presign only for
+availability-grade job-reachable stores; proxy for everything else**, because
+proxy is the only mode whose wall-clock bound EraInfra owns. Stage B owes
+direct-`GET` tests for `404`, `500`, connection refusal, TLS failure, **and a
+wall-clock stalled-response**, each asserting a _bounded_ miss — service-bounded
+on the proxy path, and, on the presign path, documenting the client's own
+observed bound rather than asserting one EraInfra imposes.
 
 ### 4. Keeping bytes on the operator's hardware WITHOUT touching the isolation contract — and which box that should be
 
@@ -312,11 +326,13 @@ ADR 0006 regardless.
   fail-open forwards the _metadata_ lookup to real GitHub when the service is
   unavailable — but once a blob URL is issued, a failed blob fetch degrades to a
   **cache miss on both paths**, never to GitHub (that blob URL is already gone).
-  The paths differ only in where the miss is bounded: `proxy` decides it
-  service-side under a controlled timeout; `presign` relies on the client's own
-  handling of a direct `GET`, so the presigned URL must carry a short timeout to
-  guarantee a bounded miss rather than a hang. ADR 0007 measured `404` / `500`;
-  refusal, TLS error and the hang stay unmeasured until stage B sets the budget.
+  The paths differ in _who_ can bound the miss: `proxy` bounds it service-side
+  under `ERAINFRA_CACHE_TRANSFER_TIMEOUT`, a deadline EraInfra owns; `presign`
+  cannot — `X-Amz-Expires` bounds URL validity, not the in-flight `GET`, so the
+  only wall-clock bound is the `@actions/cache` client's own, which is why
+  presign is reserved for availability-grade stores and everything else proxies.
+  ADR 0007 measured `404` / `500`; refusal, TLS error and the stall stay
+  unmeasured until stage B sets the budget with a wall-clock test.
 
 ## What would reverse this
 
