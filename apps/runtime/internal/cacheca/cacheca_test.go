@@ -144,22 +144,43 @@ func TestForgedIntermediateIsRejected(t *testing.T) {
 	}
 	inter, _ := x509.ParseCertificate(interDER)
 
+	// The leaf uses the permitted host, so the DNS name constraint is satisfied
+	// and the ONLY thing that can reject the chain is the path-length limit.
 	leaf := forgeLeaf(t, inter, interKey, now, &x509.Certificate{
-		Subject:  pkix.Name{CommonName: "evil.example.com"},
-		DNSNames: []string{"evil.example.com"},
+		Subject:  pkix.Name{CommonName: CacheHost},
+		DNSNames: []string{CacheHost},
 	})
 
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	intermediates := x509.NewCertPool()
 	intermediates.AddCert(inter)
-	if _, err := leaf.Verify(x509.VerifyOptions{
+	_, err = leaf.Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: intermediates,
 		CurrentTime:   now,
-	}); err == nil {
-		t.Fatal("a leaf under a rogue intermediate verified; MaxPathLenZero is not enforced")
+	})
+	var invalid x509.CertificateInvalidError
+	if !errors.As(err, &invalid) || invalid.Reason != x509.TooManyIntermediates {
+		t.Fatalf("rejected for %q, want a TooManyIntermediates path-length failure", err)
 	}
+}
+
+// A permitted DNS domain matches subdomains too, so the exact-host limit is only
+// real if descendants are separately excluded. Forge a leaf for a subdomain and
+// require the same name-constraint rejection the honest host never triggers.
+func TestForgedLeafForASubdomainIsRejected(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	ca, caKey, err := newCA(now, testLifetime)
+	if err != nil {
+		t.Fatalf("newCA: %v", err)
+	}
+	sub := "child." + CacheHost
+	forged := forgeLeaf(t, ca, caKey, now, &x509.Certificate{
+		Subject:  pkix.Name{CommonName: sub},
+		DNSNames: []string{sub},
+	})
+	assertRejected(t, forged, ca, now, sub)
 }
 
 func TestValidityWindowTracksLifetime(t *testing.T) {

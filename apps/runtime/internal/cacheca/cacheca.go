@@ -112,6 +112,11 @@ func newCA(now time.Time, lifetime time.Duration) (*x509.Certificate, *ecdsa.Pri
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
 		PermittedDNSDomains:   []string{CacheHost},
+		// A permitted DNS domain without a leading dot matches the host AND its
+		// subdomains, so the permit above would also let a leaf for
+		// `child.<host>` through. The leading-dot exclusion matches subdomains
+		// but not the bare host, so the two together mean "exactly this host".
+		ExcludedDNSDomains: []string{"." + CacheHost},
 		// Everything below forbids a leaf from carrying that name type at all: the
 		// leaf Mint signs never does, and a leaked CA cannot add one on a
 		// conforming validator. An excluded range that covers the whole space is
