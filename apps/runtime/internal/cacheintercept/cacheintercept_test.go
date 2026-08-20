@@ -26,6 +26,7 @@ type wiring struct {
 	client      *http.Client
 	caPool      *x509.CertPool
 	listenerURL string
+	upstreamURL *url.URL
 }
 
 type recordedRequest struct {
@@ -92,7 +93,7 @@ func setup(t *testing.T, upstreamStatus int, upstreamBody string) *wiring {
 	}
 	t.Cleanup(client.CloseIdleConnections)
 
-	return &wiring{upstreamGot: got, client: client, caPool: caPool, listenerURL: ln.Addr().String()}
+	return &wiring{upstreamGot: got, client: client, caPool: caPool, listenerURL: ln.Addr().String(), upstreamURL: upstreamURL}
 }
 
 func TestForwardsTransparentlyToUpstream(t *testing.T) {
@@ -159,12 +160,33 @@ func TestLeafIsNotTrustedWithoutTheEphemeralCA(t *testing.T) {
 	}
 }
 
+// New must not keep the caller's URL: a later mutation of it would move the
+// forward target past the scheme and host validation.
+func TestUpstreamMutationAfterNewIsIgnored(t *testing.T) {
+	w := setup(t, http.StatusOK, "ok")
+	w.upstreamURL.Scheme = "http"
+	w.upstreamURL.Host = "wrong.invalid:1"
+
+	resp, err := w.client.Get("https://" + cacheca.CacheHost + "/")
+	if err != nil {
+		t.Fatalf("request failed after mutating the caller's URL: %v", err)
+	}
+	resp.Body.Close()
+	select {
+	case <-w.upstreamGot:
+		// Reached the original upstream: New copied the URL.
+	default:
+		t.Fatal("request did not reach the original upstream; New kept the caller's URL")
+	}
+}
+
 func TestNewRejectsBadArguments(t *testing.T) {
 	auth, err := cacheca.Mint(time.Now(), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	good, _ := url.Parse("https://" + cacheca.CacheHost)
+	cleartext, _ := url.Parse("http://" + cacheca.CacheHost)
 	rt := http.DefaultTransport
 
 	cases := map[string]struct {
@@ -176,6 +198,7 @@ func TestNewRejectsBadArguments(t *testing.T) {
 		"nil upstream":        {auth, nil, rt},
 		"relative upstream":   {auth, &url.URL{Path: "/x"}, rt},
 		"schemeless upstream": {auth, &url.URL{Host: "h"}, rt},
+		"cleartext upstream":  {auth, cleartext, rt},
 		"nil transport":       {auth, good, nil},
 	}
 	for name, c := range cases {

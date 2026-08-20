@@ -40,12 +40,18 @@ func New(auth *cacheca.Authority, upstream *url.URL, upstreamTransport http.Roun
 	if auth == nil {
 		return nil, fmt.Errorf("cacheintercept: nil authority")
 	}
-	if upstream == nil || upstream.Scheme == "" || upstream.Host == "" {
-		return nil, fmt.Errorf("cacheintercept: upstream must be an absolute URL, got %q", upstream)
+	// HTTPS only: the forward leg must carry the guest's cache traffic to GitHub
+	// over TLS, never in cleartext. `http` (or any other scheme) is a
+	// misconfiguration, not a downgrade the interceptor should silently accept.
+	if upstream == nil || upstream.Scheme != "https" || upstream.Host == "" {
+		return nil, fmt.Errorf("cacheintercept: upstream must be an absolute HTTPS URL, got %q", upstream)
 	}
 	if upstreamTransport == nil {
 		return nil, fmt.Errorf("cacheintercept: nil upstream transport")
 	}
+	// Copy the URL so a caller mutating it after New cannot move the forward
+	// target past the validation above.
+	upstreamCopy := *upstream
 
 	leaf, err := tls.X509KeyPair(auth.LeafCertPEM, auth.LeafKeyPEM)
 	if err != nil {
@@ -59,13 +65,13 @@ func New(auth *cacheca.Authority, upstream *url.URL, upstreamTransport http.Roun
 		// would hold it in host memory and stall the transfer.
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(upstream)
+			pr.SetURL(&upstreamCopy)
 			// The Host header and the upstream TLS SNI must name the host being
 			// dialed, not the interceptor. Deliberately NOT calling
 			// pr.SetXForwarded(): a transparent interceptor must look to GitHub
 			// exactly like the guest would have, and an X-Forwarded-For header
 			// would announce the proxy.
-			pr.Out.Host = upstream.Host
+			pr.Out.Host = upstreamCopy.Host
 		},
 	}
 
