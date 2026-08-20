@@ -23,6 +23,7 @@ const (
 	// serves itself. artifactPath is Artifacts v4 on the same host, which must
 	// forward to GitHub untouched.
 	cachePath    = "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL"
+	writePath    = "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry"
 	artifactPath = "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
 
 	// mintedToken is what the default test bearer returns; the guest's own token
@@ -360,10 +361,10 @@ func TestBearerErrorFailsOpenToGitHub(t *testing.T) {
 	}
 }
 
-// When the cache service is unreachable the interceptor fails open: it replays
-// the identical request to GitHub — same method, path, and body — with the
-// guest's own token back in place of the bearer, so the guest is no worse off
-// than talking to GitHub directly.
+// When the cache service is unreachable during an idempotent READ, the
+// interceptor fails open: it replays the identical request to GitHub — same
+// method, path, and body — with the guest's own token back in place of the
+// bearer, so the guest is no worse off than talking to GitHub directly.
 func TestCacheUnreachableFailsOpenToGitHub(t *testing.T) {
 	down := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("dial tcp: connection refused")
@@ -394,6 +395,35 @@ func TestCacheUnreachableFailsOpenToGitHub(t *testing.T) {
 	}
 	if got := recv(t, h.cache.got); got != nil {
 		t.Error("cache received a request although its transport failed")
+	}
+}
+
+// A WRITE must never be replayed on an ambiguous transport error. Here the cache
+// commits the write and only the response is lost; replaying it to GitHub would
+// double-commit behind the cache's back. The interceptor surfaces a failure
+// instead — a skipped save, which the cache client shrugs off — and GitHub is
+// never touched.
+func TestCacheWriteResponseLossDoesNotReplay(t *testing.T) {
+	committed := make(chan struct{}, 1)
+	lossy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		committed <- struct{}{}                                    // the cache processed (committed) the write...
+		return nil, errors.New("connection reset before response") // ...then the response was lost.
+	})
+	h := setup(t, options{withCache: true, githubBody: "gh", cacheTrans: lossy})
+
+	resp := h.do(t, http.MethodPost, writePath, `{"key":"k","version":"v"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 — a write must not be replayed", resp.StatusCode)
+	}
+
+	select {
+	case <-committed:
+	default:
+		t.Fatal("the cache transport was never exercised")
+	}
+	if got := recv(t, h.github.got); got != nil {
+		t.Error("a write whose response was lost was replayed to GitHub — risking a double commit")
 	}
 }
 

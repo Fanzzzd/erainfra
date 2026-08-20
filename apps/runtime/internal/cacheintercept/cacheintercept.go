@@ -11,16 +11,20 @@
 // (ADR 0009 §5): the guest's own GitHub token is replaced, never forwarded to
 // the cache service.
 //
-// When the cache service is unreachable the interceptor fails open: it replays
-// the same request to real GitHub, so a guest that trusts the interceptor is
-// never worse off than one talking to GitHub directly (ADR 0008 §3). The commit
-// point is whether the cache service produced any response — a transport failure
-// means nothing was committed on EraInfra's side, so a replay is safe whether the
-// request reads or writes, while any response (even a 404 miss) is the committed
-// answer and passes through untouched. Fail-open only fires before the first byte
-// reaches the guest; once a response has begun it cannot be taken back. The same
-// principle governs an unmintable bearer: rather than break the job, the request
-// goes to GitHub with the guest's own token, exactly as if there were no cache.
+// When the cache service is unreachable the interceptor fails open: a guest that
+// trusts it is never worse off than one talking to GitHub directly (ADR 0008 §3).
+// But a transport failure does not prove the cache service left the request
+// unprocessed — net/http makes no such guarantee, and the request may have been
+// committed with only the response lost — so a replay is safe only for a request
+// that cannot have changed state. An idempotent read (a cache lookup) is replayed
+// to GitHub; a write is left as a failure, which the cache client treats as a
+// skipped save: degraded, never divergent. Replaying a write could double-commit
+// behind the cache's back. A response that has already begun, or a 404 miss, is
+// the committed answer and passes through untouched — fail-open only fires before
+// the first byte reaches the guest. An unmintable bearer is the one pre-dispatch
+// case where any method is safe to forward, since the cache was never contacted:
+// rather than break the job, the request goes to GitHub with the guest's own
+// token, exactly as if there were no cache.
 package cacheintercept
 
 import (
@@ -82,7 +86,23 @@ type bearerContextKey struct{}
 // where a transport failure is recorded (not written) for serveCache to act on.
 type cacheOutcomeKey struct{}
 
+// cacheOutcome holds the cache proxy's transport error, if any. The error is
+// ambiguous — it does not distinguish a request that never dispatched from one
+// the cache committed before the response was lost — which is why serveCache only
+// replays reads on the strength of it.
 type cacheOutcome struct{ transportErr error }
+
+// replayableReadMethods are the CacheService RPCs with no side effects, so a
+// fail-open replay to GitHub after an ambiguous cache error cannot diverge state.
+// Everything else — the write RPCs (CreateCacheEntry, FinalizeCacheEntryUpload)
+// and any unrecognized method — is treated as unsafe to replay.
+var replayableReadMethods = map[string]bool{
+	"GetCacheEntryDownloadURL": true,
+}
+
+func isReplayableRead(path string) bool {
+	return replayableReadMethods[path[strings.LastIndex(path, "/")+1:]]
+}
 
 // trackingWriter reports whether any status or body has reached the guest, so
 // serveCache knows if a response has already begun — the point past which a
@@ -260,15 +280,18 @@ func (i *Interceptor) serveCache(w http.ResponseWriter, r *http.Request) {
 	tw := &trackingWriter{ResponseWriter: w}
 	i.cache.ServeHTTP(tw, cacheReq)
 
-	// Fail open only when the cache service never answered AND nothing has reached
-	// the guest yet. A response already begun is the committed answer; a 404 from
-	// the cache is a legitimate miss, not a failure, and passes straight through.
+	// The cache answered, or a response already reached the guest: that answer
+	// stands (a 404 is a legitimate miss, not a failure).
 	if outcome.transportErr == nil || tw.wrote {
 		return
 	}
-	if !replayable {
-		// The body is gone (streamed into the failed attempt); it cannot be replayed,
-		// so surface a miss the cache client already knows how to shrug off.
+
+	// The cache service never answered. The transport error is ambiguous — the
+	// request may have been committed with only the response lost — so replay only
+	// an idempotent read, whose repeat cannot diverge state. A write (or an
+	// unrecognized method, or a body too large to have been held) is surfaced as a
+	// failure; the cache client treats a failed save as a skipped save.
+	if !replayable || !isReplayableRead(r.URL.Path) {
 		http.Error(w, "cache unavailable", http.StatusBadGateway)
 		return
 	}
