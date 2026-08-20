@@ -1,0 +1,188 @@
+package cacheintercept
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/cacheca"
+)
+
+// wiring stands up a fake upstream, a minted authority, and the interceptor
+// serving over TLS, and returns a client that reaches the interceptor exactly as
+// a guest would: dialing it while believing it is the cache host and trusting
+// only the ephemeral CA.
+type wiring struct {
+	upstreamGot chan *recordedRequest
+	client      *http.Client
+	caPool      *x509.CertPool
+	listenerURL string
+}
+
+type recordedRequest struct {
+	method  string
+	path    string
+	body    string
+	xffSeen bool
+}
+
+func setup(t *testing.T, upstreamStatus int, upstreamBody string) *wiring {
+	t.Helper()
+	got := make(chan *recordedRequest, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, xff := r.Header["X-Forwarded-For"]
+		got <- &recordedRequest{method: r.Method, path: r.URL.Path, body: string(body), xffSeen: xff}
+		w.WriteHeader(upstreamStatus)
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth, err := cacheca.Mint(time.Now(), time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	ic, err := New(auth, upstreamURL, upstream.Client().Transport)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{
+		Handler:   ic,
+		TLSConfig: ic.TLSConfig(),
+		// The not-trusted test deliberately fails a handshake; keep the server's
+		// log of it out of the test output.
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
+	go func() { _ = srv.ServeTLS(ln, "", "") }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(auth.TrustAnchorPEM) {
+		t.Fatal("trust anchor did not parse")
+	}
+
+	// Dial the interceptor's listener while pretending to be the cache host, and
+	// trust only the ephemeral CA — the guest's exact posture.
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{RootCAs: caPool, ServerName: cacheca.CacheHost},
+		},
+	}
+	t.Cleanup(client.CloseIdleConnections)
+
+	return &wiring{upstreamGot: got, client: client, caPool: caPool, listenerURL: ln.Addr().String()}
+}
+
+func TestForwardsTransparentlyToUpstream(t *testing.T) {
+	w := setup(t, http.StatusTeapot, "brewed")
+
+	req, err := http.NewRequest(http.MethodPost,
+		"https://"+cacheca.CacheHost+"/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
+		strings.NewReader(`{"key":"abc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := w.client.Do(req)
+	if err != nil {
+		t.Fatalf("request through the interceptor failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusTeapot || string(body) != "brewed" {
+		t.Fatalf("response = %d %q, want 418 \"brewed\"", resp.StatusCode, body)
+	}
+
+	select {
+	case rec := <-w.upstreamGot:
+		if rec.method != http.MethodPost {
+			t.Errorf("upstream method = %s, want POST", rec.method)
+		}
+		if rec.path != "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL" {
+			t.Errorf("upstream path = %s", rec.path)
+		}
+		if rec.body != `{"key":"abc"}` {
+			t.Errorf("upstream body = %q", rec.body)
+		}
+		if rec.xffSeen {
+			t.Error("interceptor added X-Forwarded-For; a transparent forward must not announce itself")
+		}
+	default:
+		t.Fatal("upstream never received the forwarded request")
+	}
+}
+
+// A client that does not trust the ephemeral CA must not accept the leaf: the
+// interceptor's certificate is trusted only because the guest was handed the CA,
+// not because it chains to a public root.
+func TestLeafIsNotTrustedWithoutTheEphemeralCA(t *testing.T) {
+	w := setup(t, http.StatusOK, "ok")
+
+	stranger := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", w.listenerURL)
+			},
+			// Empty pool: trusts nothing but the system roots, which never signed
+			// this leaf.
+			TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool(), ServerName: cacheca.CacheHost},
+		},
+	}
+	defer stranger.CloseIdleConnections()
+
+	if _, err := stranger.Get("https://" + cacheca.CacheHost + "/"); err == nil {
+		t.Fatal("a client that does not trust the ephemeral CA accepted the leaf")
+	}
+}
+
+func TestNewRejectsBadArguments(t *testing.T) {
+	auth, err := cacheca.Mint(time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, _ := url.Parse("https://" + cacheca.CacheHost)
+	rt := http.DefaultTransport
+
+	cases := map[string]struct {
+		auth      *cacheca.Authority
+		upstream  *url.URL
+		transport http.RoundTripper
+	}{
+		"nil authority":       {nil, good, rt},
+		"nil upstream":        {auth, nil, rt},
+		"relative upstream":   {auth, &url.URL{Path: "/x"}, rt},
+		"schemeless upstream": {auth, &url.URL{Host: "h"}, rt},
+		"nil transport":       {auth, good, nil},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := New(c.auth, c.upstream, c.transport); err == nil {
+				t.Error("New accepted an invalid argument")
+			}
+		})
+	}
+}
