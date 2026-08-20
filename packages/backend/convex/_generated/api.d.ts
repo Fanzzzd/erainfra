@@ -30,6 +30,7 @@ import type * as githubApp from "../githubApp.js";
 import type * as githubAppConfig from "../githubAppConfig.js";
 import type * as http from "../http.js";
 import type * as installScript from "../installScript.js";
+import type * as installScriptPowerShell from "../installScriptPowerShell.js";
 import type * as isolation from "../isolation.js";
 import type * as jobs from "../jobs.js";
 import type * as machines from "../machines.js";
@@ -43,6 +44,7 @@ import type * as scheduler from "../scheduler.js";
 import type * as settings from "../settings.js";
 import type * as webhooks from "../webhooks.js";
 import type * as workerApi from "../workerApi.js";
+import type * as workerPolicy from "../workerPolicy.js";
 
 import type {
   ApiFromModules,
@@ -73,6 +75,7 @@ declare const fullApi: ApiFromModules<{
   githubAppConfig: typeof githubAppConfig;
   http: typeof http;
   installScript: typeof installScript;
+  installScriptPowerShell: typeof installScriptPowerShell;
   isolation: typeof isolation;
   jobs: typeof jobs;
   machines: typeof machines;
@@ -86,6 +89,7 @@ declare const fullApi: ApiFromModules<{
   settings: typeof settings;
   webhooks: typeof webhooks;
   workerApi: typeof workerApi;
+  workerPolicy: typeof workerPolicy;
 }>;
 
 /**

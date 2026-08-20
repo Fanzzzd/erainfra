@@ -37,6 +37,8 @@ import { renderInstallScript } from "../convex/installScript.ts";
 import {
   FIRECRACKER_HOST_PROVISIONER_B64,
   FIRECRACKER_HOST_PROVISIONER_SHA256,
+  FIRECRACKER_RUNTIME_UNIT_B64,
+  FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "../convex/provisionerFirecrackerHost.generated.ts";
 
 const SITE_URL = "https://example.convex.site";
@@ -1001,6 +1003,35 @@ describe("--role worker-host", () => {
     expect(createHash("sha256").update(repoScript).digest("hex")).toBe(
       FIRECRACKER_HOST_PROVISIONER_SHA256,
     );
+  });
+
+  // The provisioner refuses to install the runtime service without its unit file beside it, so a
+  // worker-host install that carried only the provisioner would march to the last step and stop
+  // there — which is exactly how this gap was found, on the first real host.
+  it("embeds deploy/systemd/runner-center-runtime.service byte for byte", () => {
+    const repoUnit = readFileSync(
+      path.resolve(
+        import.meta.dirname,
+        "..",
+        "..",
+        "..",
+        "deploy",
+        "systemd",
+        "runner-center-runtime.service",
+      ),
+    );
+    const embedded = Buffer.from(FIRECRACKER_RUNTIME_UNIT_B64.replaceAll("\n", ""), "base64");
+    expect(
+      embedded.equals(repoUnit),
+      "regenerate with: pnpm --filter @erainfra/backend embed-firecracker-provisioner",
+    ).toBe(true);
+    expect(createHash("sha256").update(repoUnit).digest("hex")).toBe(
+      FIRECRACKER_RUNTIME_UNIT_SHA256,
+    );
+    const script = renderInstallScript(SITE_URL, CURRENT);
+    expect(script).toContain("systemd/runner-center-runtime.service");
+    expect(script).toContain(FIRECRACKER_RUNTIME_UNIT_B64);
+    expect(script).toContain(FIRECRACKER_RUNTIME_UNIT_SHA256);
   });
 
   it("prints usage without needing root", () => {
