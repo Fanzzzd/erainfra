@@ -1030,6 +1030,8 @@ describe("--role worker-host", () => {
     );
     const script = renderInstallScript(SITE_URL, CURRENT);
     expect(script).toContain("systemd/runner-center-runtime.service");
+    expect(script).toContain(FIRECRACKER_RUNTIME_UNIT_B64);
+    expect(script).toContain(FIRECRACKER_RUNTIME_UNIT_SHA256);
   });
 
   it("prints usage without needing root", () => {
