@@ -651,6 +651,24 @@ net.ipv4.ip_local_port_range
 net.ipv4.tcp_syncookies
 SYSCTLS
 
+# vm.max_map_count is the one tunable above with a documented hard floor:
+# Elasticsearch and OpenSearch refuse to start below 262144, the value GitHub's
+# runners ship. The raw key may differ between legs (the microVM guest boots
+# higher); whether the floor holds is asserted per leg, so a guest kernel or
+# image change that drops below it fails on its own leg instead of passing as
+# an allowed difference.
+map_count=$(slurp /proc/sys/vm/max_map_count)
+case "$map_count" in
+  '' | *[!0-9]*) emit sysctl_vm_max_map_count_meets_floor unavailable ;;
+  *)
+    if [ "$map_count" -ge 262144 ]; then
+      emit sysctl_vm_max_map_count_meets_floor yes
+    else
+      emit sysctl_vm_max_map_count_meets_floor no
+    fi
+    ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Identity and privilege
 # ---------------------------------------------------------------------------
