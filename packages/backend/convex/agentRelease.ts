@@ -14,6 +14,16 @@ export type AgentRelease = {
    * scalar, for the same reason.
    */
   infraAgent: Record<string, string>;
+  /**
+   * SHA-256 of `erainfra-cache-service-<target>` — the cache service (ADR 0009), keyed by target:
+   * `linux-x86_64`.
+   *
+   * One target, not the Infra Agent's five: the cache service is a server an operator deploys on
+   * infrastructure they control, not a binary that must run on every customer box. Still a map
+   * rather than a scalar, so the same coverage and pin-match gates iterate it verbatim, and so a
+   * second target (an arm host) is a data change, not a shape change.
+   */
+  cacheService: Record<string, string>;
 };
 
 /**
@@ -53,6 +63,11 @@ export const AGENT_RELEASE: AgentRelease = {
     "darwin-arm64": "9ef5d2a22b937b19009cc187596967399a70da344968bf8fcc7dd9d28a839a8b",
     "windows-x86_64": "18ba699e7d53659096e0105afd63d6e38c90b6a214f877f72a2335c10f63363a",
   },
+  // Empty until the first release that publishes the cache-service binary populates it, exactly as
+  // `infraAgent` was introduced empty and filled at v0.2.0-rc.6. The coverage and pin-match gates
+  // only run on a version tag, so an empty map is safe on `main` and rejected the moment a release
+  // is cut without it.
+  cacheService: {},
 };
 
 /** The targets a release publishes an Infra Agent binary for, and `infraAgent` must cover. */
@@ -67,4 +82,12 @@ export const INFRA_AGENT_TARGETS = [
 /** The published asset name for a target. Windows is the only one that carries an extension. */
 export function infraAgentAssetName(target: string) {
   return `infra-agent-${target}${target.startsWith("windows-") ? ".exe" : ""}`;
+}
+
+/** The targets a release publishes a cache-service binary for, and `cacheService` must cover. */
+export const CACHE_SERVICE_TARGETS = ["linux-x86_64"] as const;
+
+/** The published asset name for a cache-service target. Linux-only, so never an extension. */
+export function cacheServiceAssetName(target: string) {
+  return `erainfra-cache-service-${target}`;
 }

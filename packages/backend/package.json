@@ -23,6 +23,7 @@
     "deploy": "static-hosting deploy --dist ../../apps/dashboard/dist --build-command \"pnpm --filter @erainfra/dashboard build\"",
     "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts",
     "print-infra-agent-pin": "node --experimental-strip-types scripts/print-infra-agent-pin.ts",
+    "print-cache-service-pin": "node --experimental-strip-types scripts/print-cache-service-pin.ts",
     "embed-firecracker-provisioner": "node --experimental-strip-types scripts/embed-firecracker-provisioner.ts"
   },
   "dependencies": {
