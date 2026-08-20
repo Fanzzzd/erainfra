@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -96,10 +97,20 @@ func setup(t *testing.T, upstreamStatus int, upstreamBody string) *wiring {
 	return &wiring{upstreamGot: got, client: client, caPool: caPool, listenerURL: ln.Addr().String(), upstreamURL: upstreamURL}
 }
 
+// reqCtx bounds a single request so a stalled interceptor or upstream fails the
+// test fast rather than blocking until the -timeout process deadline (t.Context
+// alone carries no per-request deadline).
+func reqCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func TestForwardsTransparentlyToUpstream(t *testing.T) {
 	w := setup(t, http.StatusTeapot, "brewed")
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+	req, err := http.NewRequestWithContext(reqCtx(t), http.MethodPost,
 		"https://"+cacheca.CacheHost+"/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
 		strings.NewReader(`{"key":"abc"}`))
 	if err != nil {
@@ -155,7 +166,7 @@ func TestLeafIsNotTrustedWithoutTheEphemeralCA(t *testing.T) {
 	}
 	defer stranger.CloseIdleConnections()
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+cacheca.CacheHost+"/", nil)
+	req, err := http.NewRequestWithContext(reqCtx(t), http.MethodGet, "https://"+cacheca.CacheHost+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +174,12 @@ func TestLeafIsNotTrustedWithoutTheEphemeralCA(t *testing.T) {
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatal("a client that does not trust the ephemeral CA accepted the leaf")
+	}
+	// Require the specific failure — the CA is unknown — so a refused connection
+	// or a shut-down server cannot masquerade as a successful rejection.
+	var unknownAuthority x509.UnknownAuthorityError
+	if !errors.As(err, &unknownAuthority) {
+		t.Fatalf("rejected for %q, want an unknown-certificate-authority failure", err)
 	}
 }
 
@@ -173,7 +190,7 @@ func TestUpstreamMutationAfterNewIsIgnored(t *testing.T) {
 	w.upstreamURL.Scheme = "http"
 	w.upstreamURL.Host = "wrong.invalid:1"
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+cacheca.CacheHost+"/", nil)
+	req, err := http.NewRequestWithContext(reqCtx(t), http.MethodGet, "https://"+cacheca.CacheHost+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
