@@ -244,11 +244,14 @@ eq "a v1 hierarchy is reported as v1" \
 eq "a hybrid hierarchy is reported as hybrid rather than as v1" \
   "$(grep '^cgroup_version=' "$WORK/fp-hybrid.txt")" cgroup_version=hybrid
 
-# The end of that argument: put the two through the REAL allowlist. The only
-# thing that may differ is cgroup_version, which has an entry; the limits
-# themselves must not surface as a difference at all.
+# The end of that argument, inverted by the #17 cutover: the limits
+# normalized from the two hierarchies still must not surface -- the eq
+# assertions above prove both legs carry identical limit keys -- but the
+# hierarchy VERSION now must. The fleet's last v1 host left with the Docker
+# executor and `allow cgroup_version` left with it, so a v1 leg reappearing
+# is a question for a person, and the report that asks it names the key.
 run_diff "$HERE/allowlist.txt" "$WORK/fp-v2.txt" "$WORK/fp-v1.txt"
-no_unallowlisted "a v2 leg and a v1 leg carrying the same limits pass the real diff"
+says "a v1 leg against the real allowlist goes red naming the hierarchy" "cgroup_version"
 
 # ---------------------------------------------------------------------------
 # The diff agrees when there is nothing to disagree about

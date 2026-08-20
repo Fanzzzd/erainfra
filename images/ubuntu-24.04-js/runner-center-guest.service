@@ -20,11 +20,15 @@ RestartSec=2s
 # unit, unset in every job. The one environment a job gets is written where a
 # test can read it, in the binary this unit starts.
 #
-# The runner inherits this service's resource limits: 65536 soft is what
-# ubuntu-latest grants (code that walks the fd range on fork stalls measurably
-# above it), 1048576 hard is #99's decision on the Docker path, kept identical
-# here so both executors hand a job the same ceiling.
-LimitNOFILE=65536:1048576
+# The runner inherits this service's resource limits, and it is a .NET
+# process: at startup the runtime raises its soft fd limit to the hard limit,
+# so whatever hard ceiling this line grants BECOMES every job's soft limit.
+# #99's Docker-path decision (65536 soft, 1048576 hard as raisable headroom)
+# died on that fact -- the first conformance run against it measured
+# soft=1048576 in the job, exactly the fd-range-walking stall the soft limit
+# was chosen to prevent. 65536 for both is what ubuntu-latest grants, and
+# parity, not headroom, is the promise.
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
