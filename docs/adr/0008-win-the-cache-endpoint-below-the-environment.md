@@ -30,11 +30,14 @@ client reads.** No workflow-shaped mechanism can carry the endpoint.
 **And the protocol underneath is not what the earlier drafts assumed.** The
 2025 migration changed the target:
 
-- **Cache v1 (`ACTIONS_CACHE_URL` → `artifactcache.actions.githubusercontent.com`)
-  was sunset in Feb 2025**; buildx/BuildKit were forced to v2 by Apr 2025. On
-  github.com today, cache is **v2 only**. Any design that leans on the v1
+- **The legacy cache service is gone.** GitHub's migration to the v2 cache
+  service began 2025-02-01, `actions/cache` v1/v2 client releases were retired
+  2025-03-01, and the legacy cache service was shut down 2025-04-15. A client
+  reaching for `ACTIONS_CACHE_URL` / `artifactcache.actions.githubusercontent.com`
+  now has nothing to talk to on github.com. Any design that leans on the v1
   hostname, or offers "intercept v1 alone" as a fallback, is targeting a dead
-  endpoint.
+  endpoint. (GitHub Enterprise Server lags this timeline; a GHES-targeting fleet
+  would still meet v1, which is why `apps/cache-service` keeps implementing it.)
 - **Cache v2 and Artifacts v4 share one hostname**:
   `ACTIONS_RESULTS_URL` = `results-receiver.actions.githubusercontent.com`. They
   are the same host, the same SNI, and can share one keep-alive/HTTP-2
@@ -72,15 +75,23 @@ pinned `actions/runner` left byte-identical to GitHub's — which is a property
 EraInfra's conformance story is built on. The rest of this section is the part
 Blacksmith does not document publicly: the trust model.
 
-### 1. Transparent interception, scoped to one name
+### 1. Transparent interception at the packet layer, scoped to one name
 
-The guest resolves `results-receiver.actions.githubusercontent.com` to a local
-interceptor — an `/etc/hosts` entry the guest binary writes (it already edits
-`/etc/hosts` for its own name) pointing at the cache service address delivered
-over MMDS. No entry when the Worker configures no cache; the fleet behaves
-exactly as today. Every other name resolves and connects unchanged; a client
-that dials GitHub's real IPs directly reaches GitHub, which is degraded-to-
-upstream, not a breach.
+The redirect must survive a `container:` job and a nested Docker daemon, because
+covering those is the entire reason this design was chosen over patching the
+runner. **`/etc/hosts` alone does not** — a container has its own resolver
+(Docker's `127.0.0.11`) and would resolve GitHub's real address and bypass the
+interceptor. So interception is at the guest **packet/DNS layer**, the way
+Blacksmith actually does it: a guest-local resolver answers the one intercepted
+name with the interceptor's address for every namespace that uses it, backed by
+an nftables rule that DNATs TCP/443 to that name's resolved addresses so a
+container using its own embedded DNS is still caught. The guest binary composes
+this at boot from the cache address delivered over MMDS; nothing is installed
+when the Worker configures no cache, and the fleet behaves exactly as today.
+Every other name resolves and connects unchanged; a client that reaches GitHub's
+real IPs by some path this does not cover reaches GitHub — degraded-to-upstream,
+not a breach. The ship gate is a test matrix: a plain job, a `container:` job,
+and a `type=gha` buildx step each land on the interceptor.
 
 ### 2. A per-guest, per-boot ephemeral CA — not a fleet CA
 
@@ -108,14 +119,17 @@ roots" footgun lived in Chrome/Apple/NSS, not in OpenSSL, Go, or .NET's
 OpenSSL-backed chain. But a constraint permitting only two dNSNames leaves
 iPAddress, URI, and email SANs **unconstrained**, so the extension is critical
 and carries `excludedSubtrees` for `IP:0.0.0.0/0`, `IP:::/0`, and the email/URI
-space, permitting only the one DNS name. The negative test is a ship gate: a
-CA-signed certificate for any other name — a different hostname, a raw IP — is
-**rejected** by the guest, tested on both the system-store path and the
-`NODE_EXTRA_CA_CERTS` path, because Node's enforcement is not the system's.
-Version floors travel with it: the runner's .NET ≥6, guest OpenSSL ≥3.0.15-class
-patch level, BuildKit's Go ≥1.25.8/1.26.1 (the 2025–2026 name-constraint CVEs).
-If the negative test ever fails to reject, this ships a fleet-wide MITM root and
-must not ship.
+space, permitting only the one DNS name. The negative test is a ship gate and
+covers **every constrained type**: a CA-signed certificate for a different
+hostname, a raw IP, a URI SAN, and an email SAN is each **rejected** by the
+guest, tested on the system-store path, the `NODE_EXTRA_CA_CERTS` path, and —
+once Stage B injects the CA there — the `buildkitd` trust path, because each
+stack's enforcement is its own. The version floors are **conformance
+prerequisites**, checked like any other fingerprint fact, not prose: the
+runner's .NET ≥6, guest OpenSSL ≥3.0.15-class patch level, BuildKit's Go
+≥1.25.8/1.26.1 (the 2025–2026 name-constraint CVEs). If the negative test ever
+fails to reject, or a floor is unmet, this ships a fleet-wide MITM root and must
+not ship.
 
 ### 3. Serve cache, fail-open-forward the rest
 
@@ -125,19 +139,46 @@ On the terminated `results-receiver` listener:
   signed URLs pointing at the operator's store (ADR 0009). Downloads a job can
   reach directly presign to that store; a store only the service can reach is
   streamed (`DOWNLOAD_MODE=proxy`).
-- **`ArtifactService/*`, any unrecognized `CacheService` method, and any error
-  in our own path** are reverse-proxied to the real `results-receiver`, with the
-  request's original `Host`/SNI reconstructed against the real upstream (which
-  the proxy resolves itself, so the guest's pinned resolution cannot loop it
-  back). **Fail-open is the rule, not a fallback:** if the cache service is down
-  or errors, cache requests forward to real GitHub too, so a dead cache degrades
-  to GitHub's cache — a miss-cost, not an outage — and artifacts are never
-  affected. This is the answer to the coupling in §1: the coupling is inherent,
-  so it is made safe rather than eliminated.
+- **`ArtifactService/*` and any unrecognized `CacheService` method** are
+  reverse-proxied to the real `results-receiver`, the request's original
+  `Host`/SNI reconstructed against the real upstream (which the proxy resolves
+  itself, so the guest's pinned resolution cannot loop it back).
 
-The inbound listener is not steerable: it only serves a request whose `Host`/SNI
-is exactly the intercepted name, and it never routes a request that arrived on
-one intercepted name to another's upstream.
+**Fail-open is an availability rule, and it has a precedence that the word
+"error" hides.** Not every failure may forward, because forwarding a request we
+have already acted on, or one we have refused, corrupts state or masks a denial:
+
+1. **Transport/backend-unavailable** — the store or index is unreachable, a
+   lookup times out, the request never mutated anything: forward to real GitHub.
+   A dead cache degrades to GitHub's cache, a miss-cost not an outage.
+2. **Identity, authorization, validation, or policy failure** — the repository
+   identity cannot be established (§4), a fork PR attempts a write, the request
+   is malformed: **fail closed.** Return the error to the client; never forward
+   it as a cache result and never synthesize a success. Forwarding an authz
+   decision to GitHub would let GitHub's answer paper over ours; the client
+   simply gets our denial.
+3. **A mutating call past its commit point** — `CreateCacheEntry`,
+   `FinalizeCacheEntryUpload`, and the v1 commit may have written a session, an
+   object, or the index before returning an error. Once a call **may** have
+   mutated, it must **not** also forward (that is the split-brain: an entry in
+   our store and GitHub's for one key). The commit point is defined per method,
+   forwarding is allowed only for failures proven to precede it, and everything
+   after is returned to the client — with idempotency keys so a client retry
+   after an ambiguous result converges rather than double-writes.
+
+So "fail-open" means exactly: transparently let GitHub answer a request we did
+not act on, and never fabricate a `200`. The inbound listener is likewise not
+steerable — it serves only a request whose `Host`/SNI is exactly the intercepted
+name, and never routes one intercepted name's request to another's upstream.
+
+**And the interceptor must be at least as available as the redirect that points
+at it.** The DNAT/resolver from §1 sends cache and artifact traffic to the
+interceptor before any of the above runs, so a dead interceptor fails both
+before they can forward. The redirect is therefore installed **only while the
+interceptor is confirmed listening**, and a guest-local supervisor removes the
+redirect if the interceptor stops — restoring direct-to-GitHub for every client
+in every namespace. The interceptor being down is a slower job (traffic goes
+straight to GitHub), never a broken artifact upload.
 
 ### 4. Identity comes from where the guest already knows it
 
@@ -176,14 +217,20 @@ bug, not a security hole. Stage B owns making one of these the default.
   decisions the conformance fingerprint must measure — a trust-store delta and a
   `/etc/hosts` entry that appear only when a cache is configured — so the
   allowlist carries them traceable to this ADR, not as drift.
-- **A dead cache service is a slower job, not a broken one**, and never a broken
-  artifact upload, by §3's fail-open rule. The unmeasured fault classes ADR 0007
-  flagged (refusal, TLS error, hang) become the interceptor's timeout budget,
-  which stage B owes before interception is enabled.
+- **A dead cache service — or a dead interceptor — is a slower job, not a broken
+  one**, and never a broken artifact upload, by §3's availability-precedence and
+  supervised-redirect rules. The unmeasured fault classes ADR 0007 flagged
+  (refusal, TLS error, hang) become the interceptor's timeout budget, which
+  stage B owes before interception is enabled.
+- **Authorization never fails open.** §3's precedence is the load-bearing safety
+  property: only requests EraInfra did not act on forward to GitHub, and no
+  failure is ever answered with a fabricated success.
 - **Stage C's exit conditions carry over** — the end-to-end v2-selection test,
   the restore-volume number that could still reverse ADR 0007 — plus the CA
-  negative-rejection test (§2), the artifact-passthrough integration test (§3),
-  and the buildkitd trust-delivery default (§5).
+  negative-rejection test across all SAN types and trust paths (§2), the
+  container/nested-buildx interception matrix (§1), the artifact-passthrough and
+  mutating-call commit-point tests (§3), and the buildkitd trust-delivery
+  default (§5).
 
 ## What would reverse this
 
