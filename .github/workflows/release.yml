@@ -61,6 +61,7 @@ jobs:
           import {
             AGENT_RELEASE,
             INFRA_AGENT_TARGETS,
+            CACHE_SERVICE_TARGETS,
           } from "./packages/backend/convex/agentRelease.ts";
 
           const version = process.env.GITHUB_REF_NAME?.replace(/^v/, "");
@@ -89,6 +90,21 @@ jobs:
           for (const [target, digest] of Object.entries(AGENT_RELEASE.infraAgent)) {
             if (!/^[a-f0-9]{64}$/.test(digest)) {
               throw new Error(`Infra Agent pin for ${target} is not a lowercase SHA-256 checksum`);
+            }
+          }
+          // The cache service (ADR 0009) is pinned by the same rule: a release publishes its binary,
+          // so a pin covering none of its targets would leave the service installing bytes nothing
+          // vouches for.
+          const cachePinned = Object.keys(AGENT_RELEASE.cacheService).sort();
+          const cacheExpected = [...CACHE_SERVICE_TARGETS].sort();
+          if (cachePinned.join(",") !== cacheExpected.join(",")) {
+            throw new Error(
+              `Cache service pin covers ${cachePinned.join(", ") || "no targets"}; expected ${cacheExpected.join(", ")}`,
+            );
+          }
+          for (const [target, digest] of Object.entries(AGENT_RELEASE.cacheService)) {
+            if (!/^[a-f0-9]{64}$/.test(digest)) {
+              throw new Error(`Cache service pin for ${target} is not a lowercase SHA-256 checksum`);
             }
           }
           appendFileSync(process.env.GITHUB_ENV, `PINNED_SHA256=${AGENT_RELEASE.sha256}\n`);
@@ -120,6 +136,8 @@ jobs:
             grep -Fx "runner-center-controller $VERSION ($GITHUB_SHA)"
           dist/release/infra-agent-linux-x86_64 version | \
             grep -Fx "infra-agent $VERSION"
+          dist/release/erainfra-cache-service-linux-x86_64 version | \
+            grep -Fx "erainfra-cache-service $VERSION ($GITHUB_SHA)"
 
       - name: Verify the archive is reproducible
         run: |
@@ -145,7 +163,8 @@ jobs:
             infra-agent-linux-arm64 \
             infra-agent-darwin-x86_64 \
             infra-agent-darwin-arm64 \
-            infra-agent-windows-x86_64.exe
+            infra-agent-windows-x86_64.exe \
+            erainfra-cache-service-linux-x86_64
           do
             cmp "dist/release/$asset" "dist/release-recheck/$asset"
             echo "identical  $asset  $(cut -d ' ' -f 1 < "dist/release/$asset.sha256")"
@@ -189,7 +208,7 @@ jobs:
 
       # Same rule as the archive: bytes that do not match what this deployment pins are not
       # published, because the installer will refuse them and a Node would have no way to onboard.
-      - name: Verify the Infra Agent binaries match the deployment pin
+      - name: Verify the Infra Agent and cache-service binaries match the deployment pin
         run: |
           node --experimental-strip-types --input-type=module <<'NODE'
           import { readFileSync } from "node:fs";
@@ -197,12 +216,23 @@ jobs:
             AGENT_RELEASE,
             INFRA_AGENT_TARGETS,
             infraAgentAssetName,
+            CACHE_SERVICE_TARGETS,
+            cacheServiceAssetName,
           } from "./packages/backend/convex/agentRelease.ts";
 
           for (const target of INFRA_AGENT_TARGETS) {
             const asset = infraAgentAssetName(target);
             const built = readFileSync(`dist/release/${asset}.sha256`, "utf8").split(" ")[0];
             const pinned = AGENT_RELEASE.infraAgent[target];
+            if (built !== pinned) {
+              throw new Error(`${asset} is ${built}, but this deployment pins ${pinned}`);
+            }
+            console.log(`${built}  ${asset}  matches the deployment pin`);
+          }
+          for (const target of CACHE_SERVICE_TARGETS) {
+            const asset = cacheServiceAssetName(target);
+            const built = readFileSync(`dist/release/${asset}.sha256`, "utf8").split(" ")[0];
+            const pinned = AGENT_RELEASE.cacheService[target];
             if (built !== pinned) {
               throw new Error(`${asset} is ${built}, but this deployment pins ${pinned}`);
             }
@@ -278,6 +308,7 @@ jobs:
             dist/release/runner-center-controller-* \
             dist/release/runner-center-runtime-* \
             dist/release/infra-agent-* \
+            dist/release/erainfra-cache-service-* \
             deploy/systemd/runner-center-runtime.service \
             deploy/systemd/runner-center-controller@.service \
             deploy/provision-firecracker-host.sh

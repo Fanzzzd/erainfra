@@ -332,8 +332,20 @@ function metaField(sandbox: Sandbox, key: string) {
     ?.slice(key.length + 1);
 }
 
-const CURRENT: AgentRelease = { repo: TEST_REPO, version: "1.4.2", sha256: "", infraAgent: {} };
-const OLDER: AgentRelease = { repo: TEST_REPO, version: "1.3.0", sha256: "", infraAgent: {} };
+const CURRENT: AgentRelease = {
+  repo: TEST_REPO,
+  version: "1.4.2",
+  sha256: "",
+  infraAgent: {},
+  cacheService: {},
+};
+const OLDER: AgentRelease = {
+  repo: TEST_REPO,
+  version: "1.3.0",
+  sha256: "",
+  infraAgent: {},
+  cacheService: {},
+};
 
 describe("install", () => {
   it("installs the immutable release asset this deployment pins", () => {

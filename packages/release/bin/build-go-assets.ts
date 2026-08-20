@@ -95,6 +95,17 @@ const targets: Target[] = [
     package: "./apps/infra-agent",
     ldflags: `-s -w -buildid= -X main.version=${version}`,
   })),
+  // The cache service (ADR 0009). One Linux target, not the Infra Agent's five: it is a server an
+  // operator deploys on infrastructure they control, not a binary that must run on every customer
+  // box. Same reproducible flags so the release workflow can build twice and cmp, and the
+  // controller's commitSHA stamp so `version` can prove which commit produced the shipped bytes.
+  {
+    os: "linux",
+    arch: "amd64",
+    output: path.join(releaseOut, assetName("erainfra-cache-service", "linux", "amd64")),
+    package: "./apps/cache-service/cmd/erainfra-cache-service",
+    ldflags: `-s -w -buildid= -X main.version=${version} -X main.commitSHA=${commit}`,
+  },
 ];
 
 rmSync(runtimeOut, { recursive: true, force: true });

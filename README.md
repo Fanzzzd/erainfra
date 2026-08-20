@@ -542,17 +542,21 @@ twice byte-for-byte, checks the deployment pin, attests the artifacts, and publi
 - Runtime binaries and SHA-256 sidecars for Linux x64/ARM64, plus the runtime and controller
   systemd units;
 - `infra-agent-<os>-<arch>` binaries and SHA-256 sidecars for Linux and macOS x64/ARM64 and
-  Windows x64 — the five targets a Node can be.
+  Windows x64 — the five targets a Node can be;
+- `erainfra-cache-service-linux-x86_64` and its SHA-256 sidecar — the cache service (ADR 0009),
+  one Linux target because it is a server an operator deploys, not a binary every Node runs.
 
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never
 overwritten; a correction is a new version.
 
-Both halves of `AGENT_RELEASE` are pinned on the release commit, before the tag: `sha256` from
-the deterministic archive, and `infraAgent` from `pnpm --filter @erainfra/release build-go-assets`
-followed by `pnpm --filter @erainfra/backend print-infra-agent-pin`, which reads the digests out
-of the sidecars so nobody transcribes five of them by hand. The workflow refuses to publish a tag
-whose pin disagrees with the bytes it just built, or whose Infra Agent pin covers only some of the
-five targets.
+All three parts of `AGENT_RELEASE` are pinned on the release commit, before the tag: `sha256` from
+the deterministic archive, and `infraAgent` and `cacheService` from
+`pnpm --filter @erainfra/release build-go-assets` followed by
+`pnpm --filter @erainfra/backend print-infra-agent-pin` and
+`pnpm --filter @erainfra/backend print-cache-service-pin`, which read the digests out of the
+sidecars so nobody transcribes them by hand. The workflow refuses to publish a tag whose pin
+disagrees with the bytes it just built, or whose Infra Agent or cache-service pin covers only some
+of its targets.
 
 ## Repository layout
 
