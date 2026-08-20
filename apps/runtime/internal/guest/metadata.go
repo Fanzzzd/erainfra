@@ -43,9 +43,15 @@ func (m Metadata) Validate() error {
 	// The host already validated these against provision-docker.sh's rules;
 	// re-checking at the reading edge means a compromised or confused MMDS
 	// value still cannot smuggle whitespace into the runner's environment.
-	if m.CacheURL != "" && !strings.HasPrefix(m.CacheURL, "http://") &&
-		!strings.HasPrefix(m.CacheURL, "https://") {
-		return errors.New("cache_url must be an absolute http(s) URL")
+	if m.CacheURL != "" {
+		if !strings.HasPrefix(m.CacheURL, "http://") &&
+			!strings.HasPrefix(m.CacheURL, "https://") {
+			return errors.New("cache_url must be an absolute http(s) URL")
+		}
+		_, rest, _ := strings.Cut(m.CacheURL, "://")
+		if host, _, _ := strings.Cut(rest, "/"); host == "" {
+			return errors.New("cache_url must name a host")
+		}
 	}
 	for _, r := range m.CacheURL {
 		if r <= ' ' || r == 0x7f {

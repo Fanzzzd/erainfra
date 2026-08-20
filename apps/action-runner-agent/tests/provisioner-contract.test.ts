@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
+  attemptEnvironment,
   attemptInvocation,
   dockerProvisionerPath,
   experimentInvocation,
@@ -366,6 +367,40 @@ describe("scale-set Attempt invocation", () => {
     const flagOnly = attemptInvocation({ ...base, cache: { serviceV2: "true" } });
     assert.equal(flagOnly.env.RC_CACHE_SERVICE_V2, "true");
     assert.equal("RC_CACHE_URL" in flagOnly.env, false);
+  });
+
+  // attemptInvocation deciding the variables is only half the seam: spawnAttempt
+  // merges the agent's own environment into the child's, so a stale value the
+  // agent process was started with would ride that merge into an attempt that
+  // configured no cache. attemptEnvironment strips all four names before the
+  // attempt's own decisions apply.
+  it("refuses cache variables the agent's own environment happened to hold", () => {
+    const names = [
+      "RC_CACHE_URL",
+      "RC_CACHE_SERVICE_V2",
+      "ERAINFRA_CACHE_URL",
+      "ERAINFRA_CACHE_SERVICE_V2",
+    ] as const;
+    const saved = names.map((name) => [name, process.env[name]] as const);
+    for (const name of names) process.env[name] = "https://stale.example/from-the-agent";
+    try {
+      // Unconfigured attempt: nothing inherited survives.
+      for (const name of names) assert.equal(name in attemptEnvironment({}), false);
+      // Partially configured attempt: only the configured half is present.
+      const partial = attemptEnvironment({ RC_CACHE_SERVICE_V2: "true" });
+      assert.equal(partial.RC_CACHE_SERVICE_V2, "true");
+      assert.equal("RC_CACHE_URL" in partial, false);
+      // Configured attempt: the attempt's decision wins, not the agent's env.
+      const configured = attemptEnvironment({ RC_CACHE_URL: "https://cache.lan/erainfra/" });
+      assert.equal(configured.RC_CACHE_URL, "https://cache.lan/erainfra/");
+      // Everything else still inherits.
+      assert.equal(attemptEnvironment({}).PATH, process.env.PATH);
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("reuses the validated Tart path for macOS Profiles", () => {

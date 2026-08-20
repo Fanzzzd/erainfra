@@ -99,6 +99,9 @@ func TestMetadataCacheEndpointIsCheckedAtTheReadingEdge(t *testing.T) {
 	for _, tweak := range []func(*Metadata){
 		func(m *Metadata) { m.CacheURL = "cache.internal" },
 		func(m *Metadata) { m.CacheURL = "https://cache.internal/a b" },
+		func(m *Metadata) { m.CacheURL = "https://" },
+		func(m *Metadata) { m.CacheURL = "http://" },
+		func(m *Metadata) { m.CacheURL = "https:///v1" },
 		func(m *Metadata) { m.CacheServiceV2 = "True" },
 	} {
 		metadata := valid

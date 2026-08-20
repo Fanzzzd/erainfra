@@ -91,6 +91,11 @@ func TestSpecCacheEndpointMirrorsTheDockerProvisionersRules(t *testing.T) {
 		// somewhere downstream; provision-docker.sh refuses it and so does this.
 		func(s *Spec) { s.CacheURL = "https://cache.example/a b" },
 		func(s *Spec) { s.CacheURL = "https://cache.example/\n" },
+		// A scheme with nothing after it satisfies a prefix check and
+		// configures nothing; the URL must name a host.
+		func(s *Spec) { s.CacheURL = "https://" },
+		func(s *Spec) { s.CacheURL = "http://" },
+		func(s *Spec) { s.CacheURL = "https:///cache" },
 		func(s *Spec) { s.CacheServiceV2 = "True" },
 		func(s *Spec) { s.CacheServiceV2 = "1" },
 	}

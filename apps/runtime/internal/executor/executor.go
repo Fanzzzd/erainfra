@@ -120,14 +120,20 @@ func (s Spec) Validate() error {
 }
 
 // validateCacheEndpoint applies provision-docker.sh's rules to the same two
-// values: an absolute http(s) URL with no whitespace or control characters,
-// and a flag that is exactly "true" or "false". A value with whitespace in it
-// is not a URL; it is the shape that turns one environment entry into two
-// somewhere downstream.
+// values -- an absolute http(s) URL with no whitespace or control characters,
+// and a flag that is exactly "true" or "false" -- plus one the shell's glob
+// cannot express: the URL must name a host. "https://" satisfies a prefix
+// check and configures nothing. A value with whitespace in it is not a URL;
+// it is the shape that turns one environment entry into two somewhere
+// downstream.
 func validateCacheEndpoint(cacheURL, serviceV2 string) error {
 	if cacheURL != "" {
 		if !strings.HasPrefix(cacheURL, "http://") && !strings.HasPrefix(cacheURL, "https://") {
 			return errors.New("cache URL must be an absolute http(s) URL")
+		}
+		_, rest, _ := strings.Cut(cacheURL, "://")
+		if host, _, _ := strings.Cut(rest, "/"); host == "" {
+			return errors.New("cache URL must name a host")
 		}
 		for _, r := range cacheURL {
 			if r <= ' ' || r == 0x7f {

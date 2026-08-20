@@ -205,10 +205,26 @@ export function attemptInvocation(
   return provisionInvocation(os, attempt.runnerName, attempt.imageRelease);
 }
 
+/**
+ * The cache seam's variables are decisions attemptInvocation makes, never
+ * inheritances. spawnAttempt merges the agent's own environment into the
+ * child's, so without this an RC_CACHE_URL the agent process happened to be
+ * started with would reach an attempt that configured no cache at all -- and
+ * the runtime downstream would trust it (#81).
+ */
+export function attemptEnvironment(env: Record<string, string>): NodeJS.ProcessEnv {
+  const inherited: NodeJS.ProcessEnv = { ...process.env };
+  delete inherited.RC_CACHE_URL;
+  delete inherited.RC_CACHE_SERVICE_V2;
+  delete inherited.ERAINFRA_CACHE_URL;
+  delete inherited.ERAINFRA_CACHE_SERVICE_V2;
+  return { ...inherited, ...env };
+}
+
 export function spawnAttempt(attempt: AttemptExecution) {
   const { file, args, env } = attemptInvocation(attempt);
   return execa(file, args, {
-    env: { ...process.env, ...env },
+    env: attemptEnvironment(env),
     input: attempt.jitConfig,
     stdout: "inherit",
     stderr: "inherit",
