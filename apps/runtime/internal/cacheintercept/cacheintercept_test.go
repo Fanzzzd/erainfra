@@ -99,7 +99,7 @@ func setup(t *testing.T, upstreamStatus int, upstreamBody string) *wiring {
 func TestForwardsTransparentlyToUpstream(t *testing.T) {
 	w := setup(t, http.StatusTeapot, "brewed")
 
-	req, err := http.NewRequest(http.MethodPost,
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
 		"https://"+cacheca.CacheHost+"/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL",
 		strings.NewReader(`{"key":"abc"}`))
 	if err != nil {
@@ -111,7 +111,7 @@ func TestForwardsTransparentlyToUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request through the interceptor failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusTeapot || string(body) != "brewed" {
@@ -155,7 +155,13 @@ func TestLeafIsNotTrustedWithoutTheEphemeralCA(t *testing.T) {
 	}
 	defer stranger.CloseIdleConnections()
 
-	if _, err := stranger.Get("https://" + cacheca.CacheHost + "/"); err == nil {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+cacheca.CacheHost+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := stranger.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("a client that does not trust the ephemeral CA accepted the leaf")
 	}
 }
@@ -167,11 +173,15 @@ func TestUpstreamMutationAfterNewIsIgnored(t *testing.T) {
 	w.upstreamURL.Scheme = "http"
 	w.upstreamURL.Host = "wrong.invalid:1"
 
-	resp, err := w.client.Get("https://" + cacheca.CacheHost + "/")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+cacheca.CacheHost+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := w.client.Do(req)
 	if err != nil {
 		t.Fatalf("request failed after mutating the caller's URL: %v", err)
 	}
-	resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	select {
 	case <-w.upstreamGot:
 		// Reached the original upstream: New copied the URL.
