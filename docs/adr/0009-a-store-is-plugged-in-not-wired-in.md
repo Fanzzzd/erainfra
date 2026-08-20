@@ -9,11 +9,15 @@
 ## What this decides, in one sentence
 
 An operator declares _where_ the cache bytes live — Cloudflare R2, any S3, or a
-MinIO/Garage the operator runs (including in a separate network namespace on the
-Worker host itself) — and EraInfra reaches it by wiring seams that already
-exist, not by adding a store-driver abstraction. The default keeps the bytes on
-the operator's own box without amending the verified isolation contract; R2 is a
-first-class alternative for operators who would rather not run a store.
+MinIO/Garage the operator runs — and EraInfra reaches it by wiring seams that
+already exist, not by adding a store-driver abstraction. The recommended default
+keeps the bytes on a box the operator runs but that does **not** run untrusted
+jobs — a small second host, a NAS, or R2 — because persistent writable cache
+state next to job execution is a strictly weaker posture than ADR 0007's
+"different host." A separate network namespace on the Worker host itself is a
+_supported opt-in_ for operators who want zero extra hardware and accept that
+tradeoff; it changes zero netpolicy code either way. R2 stays a first-class
+alternative for operators who would rather not run a store at all.
 
 ## Context: most of this is already built, and the map says exactly which parts
 
@@ -54,8 +58,10 @@ demanded. What is missing is not the pipe.
    `ACTIONS_RUNTIME_TOKEN` (its comment: the artifact service shares that
    token, so repointing it breaks `actions/upload-artifact`). **So setting
    `ERAINFRA_CACHE_URL` on a Worker today points every restore at a `401`.**
-   This is the same knot as ADR 0008's §4 identity question, and ADR 0008
-   unties it once for both by authorizing at the interceptor.
+   This is the same knot as ADR 0008's §4 identity question, and §5 unties it
+   once for both: the **interceptor** becomes the production `Issuer` caller,
+   minting the bearer from the MMDS identity it already holds — so "who mints"
+   has an answer, and it is not the client.
 
 2. **A colocated store is refused by verified code, not only by ADR 0007's
    prose.** `apps/runtime/internal/netpolicy/policy.go` denies `127.0.0.0/8`,
@@ -128,7 +134,24 @@ volume crosses the service in every topology.** The code defaults to `presign`
 while this ADR's default store is not job-reachable, so the install must set
 `proxy` for the default or the first restore fails on an unreachable URL.
 
-### 4. The default keeps bytes on the operator's box WITHOUT touching the isolation contract
+**A failed direct `GET` has no GitHub fallback, and that is presign's real
+price.** Once the metadata call returns a presigned store URL, the interceptor is
+out of the path: the job's `GET` goes straight to the store, ADR 0008's fail-open
+never sees it, and GitHub's own blob URL was already replaced at the lookup. So a
+presign download failure cannot degrade to GitHub — it degrades to a **cache
+miss**, which the `@actions/cache` client already treats as non-fatal (a failed
+archive fetch returns "not restored" and the job redoes the work). The one shape
+that is _not_ a clean miss is a **hang**: a store that stalls holds the step until
+the job timeout. Presign therefore requires a store whose failures are _fast_
+(refusal / `404` / `500`) and a **short expiry plus connect/read timeout baked
+into the presigned URL**, so the worst case is a bounded miss, not a stall.
+`proxy` keeps this decision service-side — the service reads the store under its
+own timeout budget and returns a clean miss — which is the other half of why a
+non-job-reachable or latency-uncertain store must proxy. Stage B owes direct-`GET`
+tests for `404`, `500`, connection refusal, TLS failure, and timeout, each
+asserting a bounded miss rather than a hang.
+
+### 4. Keeping bytes on the operator's hardware WITHOUT touching the isolation contract — and which box that should be
 
 The intuitive default — cache service and store on the Worker host itself — is
 the one the code makes hardest, and the store review proved it. The guest
@@ -144,47 +167,95 @@ source, and making it work means adding a rule to the input chain, which changes
 address is doubly inexpressible: it is host-input (dropped) and it sits inside
 the guest subnet, which `Validate` rejects for `AllowedDestinations`.
 
-So the default is the shape that keeps the bytes on the operator's box and
-changes **zero** netpolicy code: **the cache service and its store run in a
-distinct network namespace (or a small second host) at an address outside the
-guest subnet** — e.g. `172.30.0.2/32` in the Profile's `AllowedDestinations`,
-which rides the existing, already-verified forward-chain allow. This can be the
-Worker host physically (a separate netns on `ubuntu0`), so "on my own hardware,
-no cloud" is preserved, without amending the contract readiness checks. The
-store sits localhost-to-the-service inside that namespace; the guest reaches
-only the service, never the store.
+So the shape that keeps bytes on hardware the operator runs and changes **zero**
+netpolicy code is: **the cache service and its store run in a distinct network
+namespace at an address outside the guest subnet** — e.g. `172.30.0.2/32` in the
+Profile's `AllowedDestinations`, which rides the existing, already-verified
+forward-chain allow (it is ordered before `rc:deny-private`, so the explicit
+exception wins). The store sits localhost-to-the-service inside that namespace;
+the guest reaches only the service, never the store.
+
+That netns can live on two kinds of box, and the review drew a hard line between
+them:
+
+- **On a non-Worker box — the recommended default.** A small second host or a
+  NAS the operator runs, which does not execute untrusted jobs. This is ADR
+  0007's "different host" honored in full: a guest escape reaches nothing of the
+  cache.
+- **On the Worker host itself — a supported opt-in, not the default.** A separate
+  netns on `ubuntu0` preserves "on my own hardware, no cloud" and isolates
+  _reachability_ (the guest still cannot route to the store), but it does **not**
+  satisfy ADR 0007's intent: the store's persistent writable bytes, the S3
+  credentials, and the signing key now sit on a machine that runs untrusted jobs.
+  A microVM escape reaches them. The residual is bounded — the isolation boundary
+  here is hardware virtualization (Firecracker), so this is "a hypervisor or
+  kernel escape also gets the cache," not "any job gets the cache," a far higher
+  bar than the container escapes ADR 0007 was written against — but it is a real
+  weakening, and an operator opts into it deliberately rather than inheriting it
+  as a default. Naming it is the point: co-location is not free, and this ADR does
+  not pretend it is.
 
 The honest cost ordering the review established, stated so nobody re-derives it:
-**R2-direct ≈ separate-netns ≪ mesh ≪ colocated-on-the-Worker-host.** R2-direct
-is genuinely simplest (four env vars, presigned downloads bypass the service, no
-netpolicy work, no store image to pin) and stays a first-class option;
-separate-netns ties for cheapest while keeping bytes on-prem. Colocated-on-the-
-Worker-host is **not** offered as the default it once was — it is the most
-expensive path, and its only saving is credentials, which R2 aside is the
-smallest blocker in play.
+**R2-direct ≈ separate-netns-off-Worker ≪ mesh ≪ colocated-on-the-Worker-host's
+input chain.** R2-direct is genuinely simplest (four env vars, presigned
+downloads bypass the service, no netpolicy work, no store image to pin) and stays
+a first-class option; separate-netns-off-Worker ties for cheapest while keeping
+bytes on the operator's own hardware. Reaching a listener bound on the Worker
+host's own address is the one path still refused outright (below) — the
+separate-netns opt-in above is the safe way to keep bytes on that same physical
+box.
 
-### 5. Identity is solved at the interceptor, not by minting a bearer
+### 5. Identity is established at the interceptor and carried to the service as a minted bearer
 
 The store review found the chicken-and-egg that sinks "mint a per-Attempt token
-and hand it to the client": the runner overwrites `ACTIONS_RUNTIME_TOKEN` per
+and hand it to the _client_": the runner overwrites `ACTIONS_RUNTIME_TOKEN` per
 action step, and the guest environment is composed at boot from MMDS before
-`JobStarted` exists, so **no EraInfra bearer can be delivered to the cache
-client through any environment tier.** ADR 0008 §4 dissolves this — the
-interceptor is per-guest and already holds the Attempt's identity from the MMDS
-boot context, so it authorizes by that identity rather than by a token the
-client presents. "Stage 0" is therefore the ADR 0008 interceptor, not a token
-mint; store topology is downstream of it, and arguing store choice before the
-interceptor exists is choosing wallpaper before the door.
+`JobStarted` exists, so **no EraInfra bearer can reach the cache client through
+any environment tier.** But the cache service, as it stands, authenticates every
+v1 and v2 control request with `Authorization: Bearer <cache token>` and returns
+`401` without one (`server.go`'s `authenticate`/`require`). So the interceptor
+_authorizing_ the guest is necessary but not sufficient: the request that reaches
+the service must still carry a bearer the service's `Verify` accepts. Interceptor
+authorization alone does not satisfy that check.
 
-The authorization contract matches the code as it stands, not an invented
-invariant: `(*cachetoken.Issuer).Issue` exists (no `Mint`), and its `Verify`
+The two are joined by one move: **the interceptor is the production
+`cachetoken.Issuer` caller.** It already holds the Attempt's identity from the
+MMDS boot context; on each intercepted control request it mints a short-lived
+cache token from that identity with the shared signing key and sets it as the
+`Authorization` bearer before forwarding to the service. This reuses `Issue` /
+`Verify` **unchanged** — no new trust channel, no identity header the service
+must learn to trust, no second auth path to secure. It also answers this ADR's
+own "nobody mints a token" gap: the missing production caller _is_ the
+interceptor, and store topology is downstream of it. Arguing store choice before
+the interceptor exists is choosing wallpaper before the door.
+
+**Spoofing is closed by where the key lives, not by trusting a header.** The
+signing key is provisioned only to the interceptor (the minter) and the cache
+service (the verifier) and **never enters the guest** — so a job cannot forge a
+token the service's HMAC `Verify` accepts, and the service needs no notion of a
+"trusted source IP." The authorization contract matches the code, not an invented
+invariant: `(*cachetoken.Issuer).Issue` exists (no `Mint`), and `Verify`
 authorizes by the `Repository` claim and the permission bit. **`Attempt` is
 carried for logs and revocation only — `Verify` never inspects it** — so
 authorization must never key on it (that would give every Attempt its own scope
-and never hit). If a future revocation story needs `Attempt` to be present, that
-is a deliberate code change to `Issue`/`Verify`, not a fact this ADR can assert.
-A request whose `Repository` identity the interceptor cannot establish is
-rejected, never defaulted.
+and never hit). A request whose `Repository` identity the interceptor cannot
+establish from MMDS is rejected, never defaulted.
+
+**Signing-key provisioning and rotation are part of this decision, because the
+minter and verifier are now two processes that must agree on the key.** It is one
+symmetric HMAC secret. The controller is the provisioning authority (`config.go`:
+"the signer in stage C is the controller"); the installer writes it as a `0600`
+`_FILE`-backed secret to both sides — `SIGNING_KEY_FILE` on the cache service
+(§6) and the same value on the interceptor host. Rotation is overlap-based, and
+it **requires one deliberate change from today's single-key `Verify`: the
+verifier must accept a key _set_ (a small keyring, newest first), not a single
+key.** The procedure is then: add the new key to the verifier's set, switch the
+interceptor's minter to it, and once the longest token lifetime has elapsed so no
+in-flight token was signed by the old key, drop the old key. Until `Verify` takes
+a keyring, any key change is a hard cutover that fails every in-flight bearer, so
+the keyring is a stage-B prerequisite, not an existing capability. **End-to-end
+acceptance tests owe v1 and v2 requests exercised through the interceptor** —
+asserting a minted bearer passes `Verify` and a guest-forged bearer is refused.
 
 ### 6. The store becomes a fourth installer role
 
@@ -222,15 +293,30 @@ ADR 0006 regardless.
 - **The credential blocker was never the real one.** The job↔service seam
   (interception, identity, netpolicy reach to the service) is identical across
   every store choice, so R2 credentials are the smallest blocker in play. The
-  default keeps bytes on the operator's box with no credentials; R2 stays a
-  first-class option and is four env vars the day it is chosen.
+  recommended default keeps bytes on a box the operator runs but that runs no
+  jobs, with no cloud credentials; R2 stays a first-class option and is four env
+  vars the day it is chosen.
 - **A guest with a cache trusts a per-guest CA (0008) and reaches one more
   allowed destination (this ADR).** Both must show up in the conformance
   fingerprint as decisions traceable to these ADRs, not as drift.
-- **A dead store degrades cache the way ADR 0008's fail-open forward does** —
-  to real GitHub for the reached-directly case, and to a miss for the
-  proxied case — for the fault shapes ADR 0007 measured (`404`/`500`); refusal,
-  TLS error and hang stay unmeasured until stage B sets the budget.
+- **Readiness proving the _rule_ is not readiness proving the _path_.** `Verify`
+  today asserts the `AllowedDestinations` entry is present and comment-tagged —
+  that the policy _permits_ the cache service — but a permitted address can still
+  be unrouted, DNAT-less, or serving nothing. Stage B adds a **guest→service
+  reachability probe** that connects from inside the guest, through the selected
+  CNI/DNAT path, to the cache service's health endpoint and asserts a live
+  response — kept **separate** from the service→store self-check, so a store
+  relocation reads as a store fault and a dead service reads as a service fault,
+  never one masquerading as the other.
+- **GitHub fallback lives at the interceptor, not at the blob.** ADR 0008's
+  fail-open forwards the _metadata_ lookup to real GitHub when the service is
+  unavailable — but once a blob URL is issued, a failed blob fetch degrades to a
+  **cache miss on both paths**, never to GitHub (that blob URL is already gone).
+  The paths differ only in where the miss is bounded: `proxy` decides it
+  service-side under a controlled timeout; `presign` relies on the client's own
+  handling of a direct `GET`, so the presigned URL must carry a short timeout to
+  guarantee a bounded miss rather than a hang. ADR 0007 measured `404` / `500`;
+  refusal, TLS error and the hang stay unmeasured until stage B sets the budget.
 
 ## What would reverse this
 
@@ -256,13 +342,19 @@ ADR 0006 regardless.
   Convex one. A job is a network client of the cache service and nothing else;
   the store is the service's concern, never the job's.
 - **Colocated on the Worker host as the default** (an earlier draft's choice):
-  rejected once the code was read. The input chain has no allow mechanism, the
-  host gateway address is both host-input and inside the guest subnet
-  `Validate` rejects, and reaching a host listener would mean amending the
-  verified isolation contract (ExpectedRules + renderer + verifier +
-  IdentityHash). The separate-netns address keeps bytes on the same physical box
-  with zero contract change, so colocation-on-host buys nothing its safer
-  sibling does not.
+  rejected on two independent grounds. First, reaching a listener bound on the
+  host's _own_ address is not implementable without amending the contract: the
+  input chain has no allow mechanism, the host gateway address is both host-input
+  and inside the guest subnet `Validate` rejects, and a host listener would mean
+  changing the verified isolation contract (ExpectedRules + renderer + verifier +
+  IdentityHash). Second — and this is why even the separate-netns _placement_ on
+  the Worker host is an opt-in and not the recommended default (§4) — putting the
+  store's persistent writable bytes, credentials, and signing key on a machine
+  that runs untrusted jobs weakens ADR 0007's "different host" regardless of how
+  the reachability is drawn. The separate-netns shape removes the contract
+  problem; it does not remove the co-location problem, so the recommended default
+  is a non-Worker box or R2, and one-box-on-the-Worker-host is offered only to
+  operators who accept the named residual.
 - **Modifying `rc:deny-host-input` broadly to reach a store:** rejected. The
   rule is verified at readiness precisely so it cannot be quietly widened; the
   store is reached through the existing forward-chain allow to an address
