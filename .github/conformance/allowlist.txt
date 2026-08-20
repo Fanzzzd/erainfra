@@ -228,54 +228,32 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # continuously-checked statement that this platform tells a job the truth about
 # its own size, and a regression in either goes red on its own leg.
 
-# #87, fixed by #90 and not yet on the fleet. It is the only entry in this
-# section whose fix is already merged, and it keeps a `pending` line rather than
-# an `allow` one for a reason worth stating: what is recorded here is 64 MiB, and 64 MiB is
-# Docker's fixed default, which nobody chose. #90 chose half the Profile's
-# memory. Recording the default is not blessing it, and the day the release
-# reaches the fleet this line stops matching and goes red — at which point the
-# post-release pair is measured and THAT is what earns an `allow`.
-
-# #94 — the Image Release ships no locale and no tzdata, so the C library falls
-# back to ASCII and a named timezone does not resolve.
-pending locale_lang=unset 2026-11-16  # #94: unset here against C.UTF-8 on hosted, so Python open(), sort collation and every locale-formatted string differ. Fix is a locale in the Dockerfile, asserted in smoke.sh
-pending locale_charmap=ANSI_X3.4-1968 2026-11-16  # #94: the measured consequence of the line above
-pending locale_has_en_us_utf8=no 2026-11-16  # #94: no UTF-8 locale is generated in the image
-pending tz_name=unavailable 2026-11-16  # #94: neither /etc/timezone nor /etc/localtime exists, so the container is UTC by absence and Java ZoneId, Python zoneinfo and Intl with a named zone all fail rather than resolve
-
-# #95 — present on ubuntu-latest, absent from the Image Release. This is #48's
-# bug class on Linux. Each needs one of two answers before the date: it joins
-# the image with an assertion in smoke.sh, or it becomes a documented
-# non-promise with the reason a workflow may not assume it here.
-pending tool_ssh_present=no 2026-11-16  # #95: the sharpest of the seven — a git remote over SSH, an ssh:// submodule or any action that shells out to ssh fails here and works on hosted
-pending tool_python3_present=no 2026-11-16  # #95: a great many Actions shell out to python3 without declaring it, and setup-python does not help a step that already ran it
-pending tool_zstd_present=no 2026-11-16  # #95: costs money rather than correctness — actions/cache falls back to gzip without it, so every save and restore on this Profile is slower than the same step on hosted, silently
-pending tool_gh_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
-pending tool_go_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
-pending tool_pip3_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
-pending tool_rsync_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
+# #94 and #95 are gone from this section the only way entries leave it: the
+# defects died and a green run said so. #101 put the locale files, tzdata and
+# the seven assumed tools in the image (run 32333001234 measured every one
+# identical to hosted, and reported the pendings as covering nothing), and
+# smoke.sh asserts each at image build so a regression fails before it ships.
+# The same held for dev_shm_size_mib (#87/#90, now the `allow` above) and for
+# swappiness, locked memory and core size, which the #17 cutover itself healed
+# — the guest kernel's defaults match hosted where Docker's daemon did not.
 
 # #96 measured the Docker daemon's defaults and the Worker host's kernel
 # settings arriving through a gap nobody was looking at; the #17 cutover
 # replaced them with the guest kernel's defaults, which are pinned but mostly
-# memory-proportional — sized by the Profile's RAM rather than chosen. The
-# pendings below pin the measured guest values and are owned by #110, the
-# guest-environment seam where they become decisions. vm_max_map_count is the
-# one graduate: its guest value is chosen (pinned kernel and image) and its
-# floor is `require`d absolutely above.
+# memory-proportional — sized by the Profile's RAM rather than chosen. #112
+# then set LANG, the inotify pair and the open-files soft limit to hosted
+# parity at the one place the guest actually builds a job's environment, each
+# asserted at image build in smoke.sh. The pendings below are the remainder:
+# guest kernel values still sized by RAM rather than chosen, owned by #110,
+# plus #96's resolver shape and stack size. vm_max_map_count and
+# open-files-hard are the graduates: chosen values, recorded decisions,
+# `allow`ed with the trace on the line.
 allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). The value is chosen — the guest kernel and image are both pinned — and the floor that actually matters is asserted absolutely by `require sysctl_vm_max_map_count_meets_floor=yes` above, so this allow covers only the headroom, never a regression
-pending sysctl_fs_inotify_max_user_instances=128 2026-11-16  # #96: 128 against 1280 on hosted. Watch exhaustion in a bundler or test watcher surfaces as an opaque ENOSPC that has nothing to do with disk
-pending sysctl_fs_inotify_max_user_watches=15690 2026-11-16  # #110: the 6.1 guest kernel sizes watches at 1% of RAM, so a 2 GiB guest gets 15690 against 655360 hosted. A vite or jest watcher exhausts that fast, and the failure is an opaque ENOSPC. The guest boot should set this deliberately — the same guest-environment seam #110 needs for LANG
-pending sysctl_vm_swappiness=100 2026-11-16  # #96: 100 against 60 makes the host readier to swap a job out under pressure, which shows up as latency rather than failure
 pending sysctl_kernel_threads_max=15899 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 127574 hosted; a bound a 2 GiB job rarely reaches, but it should be a decision at the guest-environment seam, not an artifact of guest RAM
 pending sysctl_user_max_user_namespaces=7949 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 63787 hosted; same decision, same seam
-pending rlimit_max_locked_memory_soft=65536 2026-11-16  # #96: 64 KiB against 8 MiB on hosted. Some crypto libraries refuse to hold key material in unlockable memory and fall back or fail
-pending rlimit_max_locked_memory_hard=65536 2026-11-16  # #96: as above, hard limit
-pending rlimit_max_open_files_soft=524288 2026-11-16  # #110: the guest's systemd grants 524288 against 65536 hosted — LARGER is not automatically better; code that walks the fd range on fork stalls measurably at half a million. Parity means LimitNOFILE on the guest runner service, at the #110 seam
-pending rlimit_max_open_files_hard=524288 2026-11-16  # #110: as above, hard limit
+allow rlimit_max_open_files_hard  # LimitNOFILE=65536:1048576 on runner-center-guest.service, asserted at image build in smoke.sh. Soft is hosted parity and identical on both legs; the hard limit is #99's decision to keep headroom above hosted's 65536 rather than mirror it, so a job that needs to raise its own soft limit can. This allow covers exactly that chosen headroom
 pending rlimit_max_processes_soft=7949 2026-11-16  # #110: the Docker path measured unlimited — no blast-radius bound at all; the guest's memory-proportional 7949 against 63787 hosted is at least A bound, but a fork-heavy suite can reach it. Set it deliberately at the #110 seam
 pending rlimit_max_processes_hard=7949 2026-11-16  # #110: as above, hard limit
-pending rlimit_max_core_file_size_soft=unlimited 2026-11-16  # #96: unlimited here against 0 on hosted, so a crashing job writes a core dump into the container writable layer instead of being denied one
 pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
 pending rlimit_max_pending_signals_soft=7949 2026-11-16  # #110: memory-proportional guest default against 63787 hosted, same decision as max_processes, same seam
 pending rlimit_max_pending_signals_hard=7949 2026-11-16  # #110: as above, hard limit
