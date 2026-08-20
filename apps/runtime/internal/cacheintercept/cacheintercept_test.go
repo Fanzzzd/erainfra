@@ -23,6 +23,7 @@ const (
 	// serves itself. artifactPath is Artifacts v4 on the same host, which must
 	// forward to GitHub untouched.
 	cachePath    = "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL"
+	writePath    = "/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry"
 	artifactPath = "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
 
 	// mintedToken is what the default test bearer returns; the guest's own token
@@ -96,8 +97,16 @@ type options struct {
 	githubBody   string
 	cacheStatus  int
 	cacheBody    string
-	bearer       BearerFunc // nil defaults to returning mintedToken
+	bearer       BearerFunc        // nil defaults to returning mintedToken
+	cacheTrans   http.RoundTripper // nil uses the cache stand's transport; set to model an outage
 }
+
+// roundTripFunc is a transport that always fails, standing in for a cache service
+// that is down: RoundTrip errors before any response, the interceptor's fail-open
+// path.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func setup(t *testing.T, o options) *harness {
 	t.Helper()
@@ -121,6 +130,9 @@ func setup(t *testing.T, o options) *harness {
 		cache = newStand(t, false, orDefault(o.cacheStatus, http.StatusOK), o.cacheBody)
 		cfg.Cache = cache.url
 		cfg.CacheTransport = cache.transport
+		if o.cacheTrans != nil {
+			cfg.CacheTransport = o.cacheTrans
+		}
 		cfg.Bearer = o.bearer
 		if cfg.Bearer == nil {
 			cfg.Bearer = func(*http.Request) (string, error) { return mintedToken, nil }
@@ -318,22 +330,125 @@ func TestMarkerAsSubstringForwardsToGitHub(t *testing.T) {
 	}
 }
 
-// When the bearer cannot be minted the interceptor fails closed: it refuses the
-// cache request rather than serving under an unproven identity, and nothing
-// reaches the cache. The cache client reads the error as a miss.
-func TestBearerErrorFailsClosed(t *testing.T) {
+// When the bearer cannot be minted the interceptor fails open, not closed: it
+// will not serve cache under an unproven identity, but it must not be worse than
+// GitHub either, so the request goes to GitHub with the guest's own token and the
+// cache is never touched.
+func TestBearerErrorFailsOpenToGitHub(t *testing.T) {
 	h := setup(t, options{
-		withCache: true,
-		bearer:    func(*http.Request) (string, error) { return "", errors.New("no identity") },
+		withCache:    true,
+		githubStatus: http.StatusOK,
+		githubBody:   "gh",
+		bearer:       func(*http.Request) (string, error) { return "", errors.New("no identity") },
 	})
 
 	resp := h.do(t, http.MethodPost, cachePath, `{"key":"abc"}`)
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 (fail-closed)", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "gh" {
+		t.Fatalf("response = %d %q, want GitHub's 200 \"gh\"", resp.StatusCode, body)
+	}
+
+	rec := recv(t, h.github.got)
+	if rec == nil {
+		t.Fatal("an unmintable bearer did not fail open to GitHub")
+	}
+	if rec.auth != guestToken {
+		t.Errorf("Authorization = %q, want the guest token", rec.auth)
 	}
 	if got := recv(t, h.cache.got); got != nil {
 		t.Error("cache was reached despite an unavailable identity")
+	}
+}
+
+// When the cache service is unreachable during an idempotent READ, the
+// interceptor fails open: it replays the identical request to GitHub — same
+// method, path, and body — with the guest's own token back in place of the
+// bearer, so the guest is no worse off than talking to GitHub directly.
+func TestCacheUnreachableFailsOpenToGitHub(t *testing.T) {
+	down := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial tcp: connection refused")
+	})
+	h := setup(t, options{
+		withCache:    true,
+		githubStatus: http.StatusOK,
+		githubBody:   "gh-cache",
+		cacheTrans:   down,
+	})
+
+	resp := h.do(t, http.MethodPost, cachePath, `{"key":"abc"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "gh-cache" {
+		t.Fatalf("response = %d %q, want GitHub's after fail-open", resp.StatusCode, body)
+	}
+
+	rec := recv(t, h.github.got)
+	if rec == nil {
+		t.Fatal("a cache outage did not fail open to GitHub")
+	}
+	if rec.method != http.MethodPost || rec.path != cachePath || rec.body != `{"key":"abc"}` {
+		t.Errorf("GitHub got %s %s %q, want the replayed request verbatim", rec.method, rec.path, rec.body)
+	}
+	if rec.auth != guestToken {
+		t.Errorf("Authorization = %q, want the guest token restored (not the bearer)", rec.auth)
+	}
+	if got := recv(t, h.cache.got); got != nil {
+		t.Error("cache received a request although its transport failed")
+	}
+}
+
+// A WRITE must never be replayed on an ambiguous transport error. Here the cache
+// commits the write and only the response is lost; replaying it to GitHub would
+// double-commit behind the cache's back. The interceptor surfaces a failure
+// instead — a skipped save, which the cache client shrugs off — and GitHub is
+// never touched.
+func TestCacheWriteResponseLossDoesNotReplay(t *testing.T) {
+	committed := make(chan struct{}, 1)
+	lossy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		committed <- struct{}{}                                    // the cache processed (committed) the write...
+		return nil, errors.New("connection reset before response") // ...then the response was lost.
+	})
+	h := setup(t, options{withCache: true, githubBody: "gh", cacheTrans: lossy})
+
+	resp := h.do(t, http.MethodPost, writePath, `{"key":"k","version":"v"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 — a write must not be replayed", resp.StatusCode)
+	}
+
+	select {
+	case <-committed:
+	default:
+		t.Fatal("the cache transport was never exercised")
+	}
+	if got := recv(t, h.github.got); got != nil {
+		t.Error("a write whose response was lost was replayed to GitHub — risking a double commit")
+	}
+}
+
+// A 404 from the cache is a legitimate miss — a committed answer, not a failure.
+// It passes straight through to the guest and must NOT fall open to GitHub, which
+// would risk serving or double-writing behind the cache's back.
+func TestCacheMissDoesNotFailOpen(t *testing.T) {
+	h := setup(t, options{
+		withCache:   true,
+		cacheStatus: http.StatusNotFound,
+		cacheBody:   "miss",
+		githubBody:  "gh",
+	})
+
+	resp := h.do(t, http.MethodPost, cachePath, `{"key":"abc"}`)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNotFound || string(body) != "miss" {
+		t.Fatalf("response = %d %q, want the cache's 404 \"miss\"", resp.StatusCode, body)
+	}
+	if rec := recv(t, h.cache.got); rec == nil {
+		t.Fatal("cache never saw the request")
+	}
+	if got := recv(t, h.github.got); got != nil {
+		t.Error("a 404 miss fell open to GitHub; it is a committed answer")
 	}
 }
 
