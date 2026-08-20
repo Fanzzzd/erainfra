@@ -237,17 +237,19 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # memory-proportional — sized by the Profile's RAM rather than chosen. #112
 # then set LANG and the inotify pair to hosted parity at the one place the
 # guest actually builds a job's environment, each asserted at image build in
-# smoke.sh. The pendings below are the remainder: guest kernel values still
-# sized by RAM rather than chosen, owned by #110, plus #96's resolver shape
-# and stack size, plus the open-files pair in transit (its entry tells that
-# story). vm_max_map_count is the one graduate: a chosen value whose floor is
-# `require`d absolutely above.
+# smoke.sh. The open-files pair is gone entirely: #99's raisable-headroom
+# design met the .NET runner, which raises soft to hard at startup, so the
+# first run against it measured the headroom AS every job's soft limit
+# (32343905771) — LimitNOFILE=65536 on runner-center-guest.service is the
+# answer, both values hosted parity, and the transition pendings died with
+# the digest that carried it. The pendings below are the remainder: guest
+# kernel values still sized by RAM rather than chosen, owned by #110, plus
+# #96's resolver shape and stack size. vm_max_map_count is the one graduate:
+# a chosen value whose floor is `require`d absolutely above.
 allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). The value is chosen — the guest kernel and image are both pinned — and the floor that actually matters is asserted absolutely by `require sysctl_vm_max_map_count_meets_floor=yes` above, so this allow covers only the headroom, never a regression
 pending sysctl_kernel_threads_max=15899 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 127574 hosted; a bound a 2 GiB job rarely reaches, but it should be a decision at the guest-environment seam, not an artifact of guest RAM
 pending sysctl_user_max_user_namespaces=7949 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 63787 hosted; same decision, same seam
 pending pids_cgroup_max=2384 2026-11-16  # #110: 2384 against 19151 hosted — another memory-proportional guest default. The old allow traced this to provision-docker.sh's --pids-limit 4096, a flag that no longer runs anywhere; what the guest grants today nobody chose, so it moves back to the state that says so
-pending rlimit_max_open_files_soft=1048576 2026-11-16  # #110: #99 chose 65536 soft with 1048576 hard as raisable headroom, and the first run against it (32343905771) measured the headroom AS the soft limit — the runner is a .NET process and the runtime raises soft to hard at startup, handing every job the exact fd-range-walking stall the soft limit was chosen to prevent. The fix is LimitNOFILE=65536 on runner-center-guest.service, merged with this line; the digest that carries it kills this entry the way #87's died
-pending rlimit_max_open_files_hard=1048576 2026-11-16  # #110: as above — same unit line, same fix, same death
 pending rlimit_max_processes_soft=7949 2026-11-16  # #110: the Docker path measured unlimited — no blast-radius bound at all; the guest's memory-proportional 7949 against 63787 hosted is at least A bound, but a fork-heavy suite can reach it. Set it deliberately at the #110 seam
 pending rlimit_max_processes_hard=7949 2026-11-16  # #110: as above, hard limit
 pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
