@@ -17,11 +17,13 @@
 #   pending <key>=<value> <date>   seen, owned by an issue, and time-boxed
 #
 # The differ warns about `allow` entries that matched no difference in a run.
-# Most of those are rot and should go. A few are not: `runner_version` and
-# `runner_action_archive_cache` are traceable to decisions here and merely
-# happen to agree with GitHub's image this week, so they stay and the warning is
-# expected. "Settled" means the reason no longer holds, not that the values
-# matched once.
+# Most of those are rot and should go. A few are not: `runner_version` is
+# traceable to a decision here and merely happens to agree with GitHub's image
+# this week, so it stays and the warning is expected. "Settled" means the
+# reason no longer holds, not that the values matched once --
+# `runner_action_archive_cache` sat in this sentence until the provisioner its
+# reason lived in stopped running anywhere, which is the difference between
+# the two fates.
 #
 # `allow` and `pending` are different claims and the difference is the point.
 # `allow` says "we meant this"; it is permanent and it requires the difference
@@ -74,15 +76,11 @@ never-allow sysctl_vm_max_map_count_meets_floor  # the value may differ; clearin
 # ---------------------------------------------------------------------------
 allow kernel_release  # a GitHub-hosted job runs on Azure's kernel; a Profile runs on the Worker's, or on the guest kernel deploy/provision-firecracker-host.sh pins. Both are pinned deliberately and neither tracks the other
 allow virtualisation  # hosted is an Azure VM; the transitional Docker executor is a container and Firecracker is a microVM (ADR 0001)
-allow container_hint  # the Docker executor is a container by construction, and says so; it is the trusted-repository fallback until #17 cuts over
-allow cgroup_version  # the executor inherits the Worker host's cgroup hierarchy, and our hosts are not all on the same one; the numbers underneath it are read for v1 and v2 alike
-allow seccomp_mode  # the Docker executor runs under Docker's default seccomp profile; a hosted VM job runs unfiltered
-allow lsm_profile  # same reason: Docker applies its default AppArmor profile to the container
+allow lsm_profile  # a hosted job runs unconfined on Azure's kernel while the pinned 6.1 guest kernel reports `kernel` (run 32343905771); the LSM state is a property of the kernel each leg boots, and neither tracks the other. Docker's AppArmor profile, which this entry used to describe, died with the executor
 allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; the shared-kernel Docker executor exposes no device nodes at all, which #80's own evidence records as kvm=absent. Firecracker guests get real vCPUs instead (#17)
 allow dev_fuse  # measured absent on the fleet, and the same decision as dev_kvm above: provision-docker.sh passes no --device and no --cap-add, and the daily smoke canary fails if a host mount ever appears
 allow dev_net_tun  # same: no device node reaches an Attempt, which is what a shared-kernel boundary buys
 allow dev_vhost_vsock  # same
-allow dev_loop_control  # same; a job that needs to mount an image needs the Firecracker executor (#17)
 allow dev_dri  # same; no GPU is exposed to any Profile today. The five device keys are listed in #96 too, so the record of what a shared-kernel Attempt does not get lives in one place
 
 # ---------------------------------------------------------------------------
@@ -98,23 +96,22 @@ allow cpu_cpuinfo_count  # the Worker host's processor list, which /proc/cpuinfo
 allow cpu_affinity_count  # the scheduler affinity mask a Profile hands the job
 allow cpu_online_count  # the Worker host's online CPU set
 allow cpu_cgroup_cpuset_count  # the cpuset width the executor allocates per Attempt
-allow cpu_cgroup_quota_millicpu  # the CFS bandwidth quota, which is the Profile's vcpus on our side and unset on a hosted VM
-allow cpu_allowed_millicpu  # the resolved ceiling of the two above
+allow cpu_allowed_millicpu  # the resolved CPU ceiling, which is the Profile's vcpus on our side and the hosted VM's core count on GitHub's
 allow cpu_node_available_parallelism  # what Node reports, which follows the affinity mask
 allow mem_visible_mib  # the Worker host's RAM, which no Profile promises to match
 allow mem_allowed_mib  # the Profile's memoryMiB against whatever the hosted runner ships
-allow mem_cgroup_limit_mib  # the executor sets a memory ceiling per Attempt; a hosted VM has none
 allow mem_node_totalmem_mib  # the same host RAM read through os.totalmem()
 allow mem_swap_total_mib  # swap is a property of the Worker host, not of the Profile
 allow node_heap_limit_mib  # V8 sizes its default old space from total RAM, so this moves with the number above it; whether it FITS is the assertion, and it is not on this list
-allow pids_cgroup_max  # apps/action-runner-agent/provisioners/provision-docker.sh sets --pids-limit 4096 as a deliberate blast-radius bound
 
 # ---------------------------------------------------------------------------
 # Storage
 # ---------------------------------------------------------------------------
-allow workspace_fstype  # the Docker executor's writable layer is overlayfs and is destroyed with the Attempt; a hosted runner writes to the VM's own filesystem
-allow scratch_fstype  # same layer
-allow root_fstype  # same layer
+# The three *_fstype keys left this section the same way the free-space
+# buckets below did: the microVM guest writes to its own ext4 exactly as
+# hosted's VM does, so the overlayfs difference died with the Docker executor
+# and the entries covered nothing (run 32343905771).
+#
 # The three *_free_gib_pow2 keys had entries here until the first fleet run
 # measured both legs into the same 64 GiB bucket. Nothing in this repository
 # decides how much disk a Worker has, so an entry for it was speculation, and a
@@ -128,16 +125,13 @@ allow root_fstype  # same layer
 allow runner_environment  # `self-hosted` against `github-hosted` is the entire premise of the comparison
 allow runner_version  # GitHub updates the hosted runner continuously; images/ubuntu-24.04-js/Dockerfile pins actions/runner by version and SHA-256, and that pin is asserted there
 allow runner_image_os  # ImageOS is set by GitHub's image provisioning and by nothing of ours
-allow runner_action_archive_cache  # provision-docker.sh points the runner at the image's read-only /opt/action-cache so a job does not fetch its Actions over the network
 allow env_path  # the runner root and tool cache live at different paths in the two images. Whether a workflow can still FIND its tools is asserted by the tool_*_present keys, which are not on this list
 allow user_groups  # the Image Release creates the runner account with exactly the docker and sudo groups; GitHub's image adds a dozen more for tooling we deliberately do not ship
 allow user_gid  # images/ubuntu-24.04-js/Dockerfile creates the runner account with `useradd --gid docker`, so its primary group is docker rather than a same-named user group. That is what lets a job reach the Docker group without a second membership lookup
 allow toolcache_tools  # the Image Release is minimal on purpose (docs/research/blacksmith-runner-images.md): it carries the toolchain its Profiles were built for and is not advertised as GitHub-hosted-compatible
 allow toolcache_node_versions  # same: one pinned Node, seeded so actions/setup-node resolves it without a download
 allow tool_*_version  # our Image Release pins its toolchain and GitHub's floats, so version drift between the two is expected. A tool DISAPPEARING is not, and tool_*_present is not on this list -- that is the #48 bug class
-allow docker_daemon_reachable  # no Docker control socket is mounted into an Attempt, and the daily smoke canary fails if one ever is. A workflow that needs `docker build` cannot have it on this executor, and that is a decision rather than an accident
-allow docker_server_version  # follows from the line above
-allow cpu_nproc_matches_cpuinfo  # pre-positioned, and expected to match nothing until #83's release lands. /proc/cpuinfo is kernel-global and lists the host's processors; a cpuset cannot narrow it and only LXCFS (#93) could. The day the cpuset ships, nproc and the quota agree and THIS key starts differing — that is a known residue, not a regression, and nproc/sched_getaffinity is the honest interface every autosizing tool actually reads
+allow docker_server_version  # the Image Release ships dockerd inside the guest and pins it — 29.1.3 against hosted's floating 28.0.4 (run 32343905771). Version drift between a pinned toolchain and a floating one, the same class as tool_*_version. That a daemon is reachable AT ALL now matches hosted — the old docker_daemon_reachable allow, which recorded the Docker executor refusing to mount a control socket, died with that executor
 allow workspace_free_gib_pow2  # a Worker host's disk is not the one GitHub hands out, so the two legs land in different power-of-two buckets whenever they differ by more than a factor of two — measured 64 against 128 in one run and 64 against 64 in the run before it, with nothing having changed between them. The bucket exists so ONE machine reports the same number twice, not so two machines agree. What a job is actually entitled to is a floor, and that is required above rather than allowed here
 allow scratch_free_gib_pow2  # same, for RUNNER_TEMP
 allow dev_shm_size_mib  # both executors size /dev/shm at half the Profile's memory — provision-docker.sh via --shm-size (#90, shipped v0.2.0-rc.7), and the microVM guest's tmpfs default does the same arithmetic natively — while GitHub sizes it at half its runner's RAM, so the two differ exactly as the Profile's size differs from GitHub's 16 GiB. Measured: 1024 in the container (run 32102711080) and 997 in the guest (run 32330383534) on the 2 GiB rc-e2e Profile, against 7995 hosted. tmpfs size is a cap, not a reservation, so it grants no memory the limit did not already promise
@@ -156,27 +150,27 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # recorded because in each case it was a decision landing, not a mind changing.
 #
 #   cpu_nproc_matches_cpuinfo was prose here on the argument that allowlisting a
-#   difference nobody has measured is how a record becomes a wish. It is
-#   `allow`ed above now, because the measurement exists: on a production Worker
-#   (cgroup v1, Docker 28.1.1) a container run with `--cpus 8 --cpuset-cpus 0-7`
-#   reports nproc=8 and still lists all 64 host processors in /proc/cpuinfo.
-#   What has not happened yet is the RELEASE that puts that cpuset on the fleet
-#   -- the residue itself has been seen, so the entry records a measurement and
-#   not a wish. Pre-positioning it means the day cpu_visible_matches_allowed
-#   goes green and THIS key goes red, the swap reads as the documented handover
-#   it is rather than as a new defect.
+#   difference nobody has measured is how a record becomes a wish, then an
+#   `allow` once the cpuset residue was measured on a production Worker
+#   (nproc=8 against all 64 host processors in /proc/cpuinfo, cgroup v1,
+#   Docker 28.1.1). The #17 cutover ended the story a third way: a microVM
+#   guest's /proc/cpuinfo lists exactly its vCPUs, so the key agrees with
+#   itself on both legs, the allow covered nothing (run 32343905771), and the
+#   entry is gone. If the two ever disagree again, that is a machine lying
+#   about its size — the exact regression this job exists to catch — and it
+#   should go red unabsorbed.
 #
 #   dev_shm_size_mib went through all three states this file has, in order, and
 #   the history is worth keeping: prose while 64 MiB was an unowned Docker
 #   default nobody could call intended (#87), `pending dev_shm_size_mib=64`
-#   once it was measured and #90 owned it, and `allow` below now that a fleet
+#   once it was measured and #90 owned it, and `allow` above now that a fleet
 #   running #90's fix has been measured -- v0.2.0-rc.7 on rc-e2e reads 1024,
 #   half the Profile's 2 GiB, exactly what #90 chose (run 32102711080). The
 #   pending entry did its last job on that same run: it refused to cover the
 #   new value, because 1024 is a DIFFERENT divergence from the 64 it recorded.
 #
-# The two keys that fail today are not here either, and deliberately:
-# cpu_visible_matches_allowed and mem_visible_matches_allowed carry `require`
+# The two keys that once failed here are not in this section either, and
+# deliberately: cpu_visible_matches_allowed and mem_visible_matches_allowed carry `require`
 # and `never-allow` at the top of this file, which is stronger than silence --
 # silence lets a difference pass unnoticed if it stops differing for the wrong
 # reason, and `require` asserts it on every leg instead.
@@ -228,54 +222,34 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # continuously-checked statement that this platform tells a job the truth about
 # its own size, and a regression in either goes red on its own leg.
 
-# #87, fixed by #90 and not yet on the fleet. It is the only entry in this
-# section whose fix is already merged, and it keeps a `pending` line rather than
-# an `allow` one for a reason worth stating: what is recorded here is 64 MiB, and 64 MiB is
-# Docker's fixed default, which nobody chose. #90 chose half the Profile's
-# memory. Recording the default is not blessing it, and the day the release
-# reaches the fleet this line stops matching and goes red — at which point the
-# post-release pair is measured and THAT is what earns an `allow`.
-
-# #94 — the Image Release ships no locale and no tzdata, so the C library falls
-# back to ASCII and a named timezone does not resolve.
-pending locale_lang=unset 2026-11-16  # #94: unset here against C.UTF-8 on hosted, so Python open(), sort collation and every locale-formatted string differ. Fix is a locale in the Dockerfile, asserted in smoke.sh
-pending locale_charmap=ANSI_X3.4-1968 2026-11-16  # #94: the measured consequence of the line above
-pending locale_has_en_us_utf8=no 2026-11-16  # #94: no UTF-8 locale is generated in the image
-pending tz_name=unavailable 2026-11-16  # #94: neither /etc/timezone nor /etc/localtime exists, so the container is UTC by absence and Java ZoneId, Python zoneinfo and Intl with a named zone all fail rather than resolve
-
-# #95 — present on ubuntu-latest, absent from the Image Release. This is #48's
-# bug class on Linux. Each needs one of two answers before the date: it joins
-# the image with an assertion in smoke.sh, or it becomes a documented
-# non-promise with the reason a workflow may not assume it here.
-pending tool_ssh_present=no 2026-11-16  # #95: the sharpest of the seven — a git remote over SSH, an ssh:// submodule or any action that shells out to ssh fails here and works on hosted
-pending tool_python3_present=no 2026-11-16  # #95: a great many Actions shell out to python3 without declaring it, and setup-python does not help a step that already ran it
-pending tool_zstd_present=no 2026-11-16  # #95: costs money rather than correctness — actions/cache falls back to gzip without it, so every save and restore on this Profile is slower than the same step on hosted, silently
-pending tool_gh_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
-pending tool_go_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
-pending tool_pip3_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
-pending tool_rsync_present=no 2026-11-16  # #95: one ordinary workflow step from the same surprise; defensible as a non-promise for a JavaScript Profile, but that has to be written down rather than assumed
+# #94 and #95 are gone from this section the only way entries leave it: the
+# defects died and a green run said so. #101 put the locale files, tzdata and
+# the seven assumed tools in the image (run 32333001234 measured every one
+# identical to hosted, and reported the pendings as covering nothing), and
+# smoke.sh asserts each at image build so a regression fails before it ships.
+# The same held for dev_shm_size_mib (#87/#90, now the `allow` above) and for
+# swappiness, locked memory and core size, which the #17 cutover itself healed
+# — the guest kernel's defaults match hosted where Docker's daemon did not.
 
 # #96 measured the Docker daemon's defaults and the Worker host's kernel
 # settings arriving through a gap nobody was looking at; the #17 cutover
 # replaced them with the guest kernel's defaults, which are pinned but mostly
-# memory-proportional — sized by the Profile's RAM rather than chosen. The
-# pendings below pin the measured guest values and are owned by #110, the
-# guest-environment seam where they become decisions. vm_max_map_count is the
-# one graduate: its guest value is chosen (pinned kernel and image) and its
-# floor is `require`d absolutely above.
+# memory-proportional — sized by the Profile's RAM rather than chosen. #112
+# then set LANG and the inotify pair to hosted parity at the one place the
+# guest actually builds a job's environment, each asserted at image build in
+# smoke.sh. The pendings below are the remainder: guest kernel values still
+# sized by RAM rather than chosen, owned by #110, plus #96's resolver shape
+# and stack size, plus the open-files pair in transit (its entry tells that
+# story). vm_max_map_count is the one graduate: a chosen value whose floor is
+# `require`d absolutely above.
 allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). The value is chosen — the guest kernel and image are both pinned — and the floor that actually matters is asserted absolutely by `require sysctl_vm_max_map_count_meets_floor=yes` above, so this allow covers only the headroom, never a regression
-pending sysctl_fs_inotify_max_user_instances=128 2026-11-16  # #96: 128 against 1280 on hosted. Watch exhaustion in a bundler or test watcher surfaces as an opaque ENOSPC that has nothing to do with disk
-pending sysctl_fs_inotify_max_user_watches=15690 2026-11-16  # #110: the 6.1 guest kernel sizes watches at 1% of RAM, so a 2 GiB guest gets 15690 against 655360 hosted. A vite or jest watcher exhausts that fast, and the failure is an opaque ENOSPC. The guest boot should set this deliberately — the same guest-environment seam #110 needs for LANG
-pending sysctl_vm_swappiness=100 2026-11-16  # #96: 100 against 60 makes the host readier to swap a job out under pressure, which shows up as latency rather than failure
 pending sysctl_kernel_threads_max=15899 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 127574 hosted; a bound a 2 GiB job rarely reaches, but it should be a decision at the guest-environment seam, not an artifact of guest RAM
 pending sysctl_user_max_user_namespaces=7949 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 63787 hosted; same decision, same seam
-pending rlimit_max_locked_memory_soft=65536 2026-11-16  # #96: 64 KiB against 8 MiB on hosted. Some crypto libraries refuse to hold key material in unlockable memory and fall back or fail
-pending rlimit_max_locked_memory_hard=65536 2026-11-16  # #96: as above, hard limit
-pending rlimit_max_open_files_soft=524288 2026-11-16  # #110: the guest's systemd grants 524288 against 65536 hosted — LARGER is not automatically better; code that walks the fd range on fork stalls measurably at half a million. Parity means LimitNOFILE on the guest runner service, at the #110 seam
-pending rlimit_max_open_files_hard=524288 2026-11-16  # #110: as above, hard limit
+pending pids_cgroup_max=2384 2026-11-16  # #110: 2384 against 19151 hosted — another memory-proportional guest default. The old allow traced this to provision-docker.sh's --pids-limit 4096, a flag that no longer runs anywhere; what the guest grants today nobody chose, so it moves back to the state that says so
+pending rlimit_max_open_files_soft=1048576 2026-11-16  # #110: #99 chose 65536 soft with 1048576 hard as raisable headroom, and the first run against it (32343905771) measured the headroom AS the soft limit — the runner is a .NET process and the runtime raises soft to hard at startup, handing every job the exact fd-range-walking stall the soft limit was chosen to prevent. The fix is LimitNOFILE=65536 on runner-center-guest.service, merged with this line; the digest that carries it kills this entry the way #87's died
+pending rlimit_max_open_files_hard=1048576 2026-11-16  # #110: as above — same unit line, same fix, same death
 pending rlimit_max_processes_soft=7949 2026-11-16  # #110: the Docker path measured unlimited — no blast-radius bound at all; the guest's memory-proportional 7949 against 63787 hosted is at least A bound, but a fork-heavy suite can reach it. Set it deliberately at the #110 seam
 pending rlimit_max_processes_hard=7949 2026-11-16  # #110: as above, hard limit
-pending rlimit_max_core_file_size_soft=unlimited 2026-11-16  # #96: unlimited here against 0 on hosted, so a crashing job writes a core dump into the container writable layer instead of being denied one
 pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
 pending rlimit_max_pending_signals_soft=7949 2026-11-16  # #110: memory-proportional guest default against 63787 hosted, same decision as max_processes, same seam
 pending rlimit_max_pending_signals_hard=7949 2026-11-16  # #110: as above, hard limit
