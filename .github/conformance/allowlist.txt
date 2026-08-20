@@ -17,11 +17,13 @@
 #   pending <key>=<value> <date>   seen, owned by an issue, and time-boxed
 #
 # The differ warns about `allow` entries that matched no difference in a run.
-# Most of those are rot and should go. A few are not: `runner_version` and
-# `runner_action_archive_cache` are traceable to decisions here and merely
-# happen to agree with GitHub's image this week, so they stay and the warning is
-# expected. "Settled" means the reason no longer holds, not that the values
-# matched once.
+# Most of those are rot and should go. A few are not: `runner_version` is
+# traceable to a decision here and merely happens to agree with GitHub's image
+# this week, so it stays and the warning is expected. "Settled" means the
+# reason no longer holds, not that the values matched once --
+# `runner_action_archive_cache` sat in this sentence until the provisioner its
+# reason lived in stopped running anywhere, which is the difference between
+# the two fates.
 #
 # `allow` and `pending` are different claims and the difference is the point.
 # `allow` says "we meant this"; it is permanent and it requires the difference

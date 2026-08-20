@@ -251,7 +251,8 @@ eq "a hybrid hierarchy is reported as hybrid rather than as v1" \
 # executor and `allow cgroup_version` left with it, so a v1 leg reappearing
 # is a question for a person, and the report that asks it names the key.
 run_diff "$HERE/allowlist.txt" "$WORK/fp-v2.txt" "$WORK/fp-v1.txt"
-says "a v1 leg against the real allowlist goes red naming the hierarchy" "cgroup_version"
+eq "a v1 leg no longer passes the real diff" "$DIFF_STATUS" 1
+says "and the red names the hierarchy, not the limits normalized from it" "cgroup_version"
 
 # ---------------------------------------------------------------------------
 # The diff agrees when there is nothing to disagree about
