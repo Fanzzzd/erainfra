@@ -2,6 +2,8 @@ import type { AgentRelease } from "./agentRelease";
 import {
   FIRECRACKER_HOST_PROVISIONER_B64,
   FIRECRACKER_HOST_PROVISIONER_SHA256,
+  FIRECRACKER_RUNTIME_UNIT_B64,
+  FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "./provisionerFirecrackerHost.generated.ts";
 
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
@@ -430,6 +432,16 @@ WH_PROVISIONER_B64
   [ "$WH_PROVISIONER_SHA" = '__FIRECRACKER_PROVISIONER_SHA256__' ] ||
     wh_fail 'The embedded provisioner failed its checksum; the download of this script was corrupted'
   chmod 0755 "$WH_PROVISIONER"
+
+  # The runtime's systemd unit ships beside the provisioner in the repository, and the provisioner
+  # refuses to install the runtime service without it — so it travels beside it here too.
+  mkdir -p "$WH_TMP/systemd"
+  base64 -d > "$WH_TMP/systemd/runner-center-runtime.service" <<'WH_RUNTIME_UNIT_B64'
+__FIRECRACKER_RUNTIME_UNIT_B64__
+WH_RUNTIME_UNIT_B64
+  WH_UNIT_SHA=$(wh_sha256 "$WH_TMP/systemd/runner-center-runtime.service")
+  [ "$WH_UNIT_SHA" = '__FIRECRACKER_RUNTIME_UNIT_SHA256__' ] ||
+    wh_fail 'The embedded runtime unit failed its checksum; the download of this script was corrupted'
 
   if [ "$WH_UNINSTALL" -eq 1 ]; then
     bash "$WH_PROVISIONER" --uninstall
@@ -1335,19 +1347,19 @@ function renderPinnedDigests(infraAgent: AgentRelease["infraAgent"]) {
 }
 
 /**
- * The embedded Firecracker host provisioner, checked rather than trusted for the same reason the
+ * An embedded file for the worker-host role, checked rather than trusted for the same reason the
  * digests are: it lands inside a heredoc in a script an operator pipes to `sudo bash`. The base64
- * alphabet cannot contain the heredoc terminator (no underscore), so proving the charset proves
- * the heredoc cannot be broken out of.
+ * alphabet cannot contain the heredoc terminators (no underscore), so proving the charset proves
+ * the heredocs cannot be broken out of.
  */
-function renderedProvisionerB64() {
-  if (!/^[A-Za-z0-9+/=\n]+$/.test(FIRECRACKER_HOST_PROVISIONER_B64)) {
-    throw new Error("The embedded provisioner is not base64; regenerate it");
+function checkedEmbed(name: string, base64: string, sha256: string) {
+  if (!/^[A-Za-z0-9+/=\n]+$/.test(base64)) {
+    throw new Error(`The embedded ${name} is not base64; regenerate it`);
   }
-  if (!/^[0-9a-f]{64}$/.test(FIRECRACKER_HOST_PROVISIONER_SHA256)) {
-    throw new Error("The embedded provisioner checksum is not a lowercase SHA-256 digest");
+  if (!/^[0-9a-f]{64}$/.test(sha256)) {
+    throw new Error(`The embedded ${name} checksum is not a lowercase SHA-256 digest`);
   }
-  return FIRECRACKER_HOST_PROVISIONER_B64;
+  return base64;
 }
 
 export function renderInstallScript(siteUrl: string, release: AgentRelease) {
@@ -1356,6 +1368,18 @@ export function renderInstallScript(siteUrl: string, release: AgentRelease) {
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256)
     .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent))
-    .replaceAll("__FIRECRACKER_PROVISIONER_B64__", renderedProvisionerB64())
-    .replaceAll("__FIRECRACKER_PROVISIONER_SHA256__", FIRECRACKER_HOST_PROVISIONER_SHA256);
+    .replaceAll(
+      "__FIRECRACKER_PROVISIONER_B64__",
+      checkedEmbed(
+        "provisioner",
+        FIRECRACKER_HOST_PROVISIONER_B64,
+        FIRECRACKER_HOST_PROVISIONER_SHA256,
+      ),
+    )
+    .replaceAll("__FIRECRACKER_PROVISIONER_SHA256__", FIRECRACKER_HOST_PROVISIONER_SHA256)
+    .replaceAll(
+      "__FIRECRACKER_RUNTIME_UNIT_B64__",
+      checkedEmbed("runtime unit", FIRECRACKER_RUNTIME_UNIT_B64, FIRECRACKER_RUNTIME_UNIT_SHA256),
+    )
+    .replaceAll("__FIRECRACKER_RUNTIME_UNIT_SHA256__", FIRECRACKER_RUNTIME_UNIT_SHA256);
 }
