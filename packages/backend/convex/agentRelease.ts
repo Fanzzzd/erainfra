@@ -44,14 +44,14 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.7",
-  sha256: "eb01df92153f385c729391932261bfed198d64ac8cb6ba5e82fbc75163fedc8b",
+  version: "0.2.0-rc.8",
+  sha256: "e69c15d04a72c85b4a95e03864f6a641a10ad143e002cbb3b7cb8eec45e5454d",
   infraAgent: {
-    "linux-x86_64": "9ebfef5696545956c37a1a1b8539df42e5bec6f08f214ef0b9490409535862bf",
-    "linux-arm64": "0c8827106dc07c990f9bea0ae1b5f345a505c7c72708e6d7e6409d3b55bd9f9d",
-    "darwin-x86_64": "ebd72e99008633b63835f81a63cc631d1401b1cbaf4a646b553a81b7312ebf82",
-    "darwin-arm64": "9d18807eab987342bbb95416f30d33a6547d22c1329194aee37974c36c49a90b",
-    "windows-x86_64": "10ccf5e44ef9406ba317589496398de5c235f44958a1dd6c53568360fdcf391d",
+    "linux-x86_64": "1a84cd38183ba8344571795392501ba9de4bc351d1cc8ef7d23637c807728306",
+    "linux-arm64": "2d81b0caacee44fdb7e722ff852a9e087773fe9c5af0012d890bf84d261dbe60",
+    "darwin-x86_64": "f7007af9d71b4bb91542a5729576780118e6e1aca44bbdd284f5c7185412be1e",
+    "darwin-arm64": "9ef5d2a22b937b19009cc187596967399a70da344968bf8fcc7dd9d28a839a8b",
+    "windows-x86_64": "18ba699e7d53659096e0105afd63d6e38c90b6a214f877f72a2335c10f63363a",
   },
 };
 
