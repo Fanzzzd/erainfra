@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,8 @@ type Metadata struct {
 	JITConfig      string   `json:"runner_jit_config"`
 	Command        []string `json:"experiment_command"`
 	ResultToken    string   `json:"result_token"`
+	CacheURL       string   `json:"cache_url"`
+	CacheServiceV2 string   `json:"cache_service_v2"`
 	ShutdownOnExit bool     `json:"shutdown_on_exit"`
 }
 
@@ -36,6 +39,23 @@ func (m Metadata) Validate() error {
 		}
 	default:
 		return errors.New("unknown runner kind")
+	}
+	// The host already validated these against provision-docker.sh's rules;
+	// re-checking at the reading edge means a compromised or confused MMDS
+	// value still cannot smuggle whitespace into the runner's environment.
+	if m.CacheURL != "" && !strings.HasPrefix(m.CacheURL, "http://") &&
+		!strings.HasPrefix(m.CacheURL, "https://") {
+		return errors.New("cache_url must be an absolute http(s) URL")
+	}
+	for _, r := range m.CacheURL {
+		if r <= ' ' || r == 0x7f {
+			return errors.New("cache_url must not contain whitespace or control characters")
+		}
+	}
+	switch m.CacheServiceV2 {
+	case "", "true", "false":
+	default:
+		return errors.New(`cache_service_v2 must be exactly "true" or "false"`)
 	}
 	return nil
 }

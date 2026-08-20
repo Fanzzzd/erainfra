@@ -335,6 +335,39 @@ describe("scale-set Attempt invocation", () => {
     assert.doesNotMatch(JSON.stringify(invocation), /jit|secret/i);
   });
 
+  // The microVM half of the T0 seam: the same CacheEndpoint the Docker branch
+  // renames for provision-docker.sh becomes RC_CACHE_URL / RC_CACHE_SERVICE_V2
+  // for runner-center-runtime, which validates them against the same rules and
+  // carries them over MMDS into the runner's environment (#81, #110).
+  it("forwards the cache endpoint to the runtime, and only when configured", () => {
+    const base = {
+      attemptId: "attempt-1",
+      runnerName: "runner-a",
+      profile: "rc-linux-js",
+      executor: "firecracker" as const,
+      imageRelease:
+        "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      vcpus: 4,
+      memoryMiB: 8192,
+    };
+    for (const cache of [undefined, {}]) {
+      const { env } = attemptInvocation({ ...base, cache });
+      assert.equal(
+        Object.keys(env).some((name) => name.startsWith("RC_CACHE")),
+        false,
+      );
+    }
+    const { env } = attemptInvocation({
+      ...base,
+      cache: { url: "https://cache.lan/erainfra/", serviceV2: "false" },
+    });
+    assert.equal(env.RC_CACHE_URL, "https://cache.lan/erainfra/");
+    assert.equal(env.RC_CACHE_SERVICE_V2, "false");
+    const flagOnly = attemptInvocation({ ...base, cache: { serviceV2: "true" } });
+    assert.equal(flagOnly.env.RC_CACHE_SERVICE_V2, "true");
+    assert.equal("RC_CACHE_URL" in flagOnly.env, false);
+  });
+
   it("reuses the validated Tart path for macOS Profiles", () => {
     const invocation = attemptInvocation({
       attemptId: "attempt-2",

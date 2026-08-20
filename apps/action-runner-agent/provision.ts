@@ -154,6 +154,15 @@ export function attemptInvocation(
         RC_IMAGE_RELEASE: attempt.imageRelease,
         RC_VCPUS: String(attempt.vcpus),
         RC_MEMORY_MIB: String(attempt.memoryMiB),
+        // The same seam the Docker branch has below, on the microVM path: the
+        // runtime validates these against the same rules and carries them over
+        // MMDS into the runner's environment (#81, #110). Named explicitly for
+        // the same reason as there -- what a job is handed is a decision this
+        // function makes, not something the agent's environment happened to hold.
+        ...(attempt.cache?.url === undefined ? {} : { RC_CACHE_URL: attempt.cache.url }),
+        ...(attempt.cache?.serviceV2 === undefined
+          ? {}
+          : { RC_CACHE_SERVICE_V2: attempt.cache.serviceV2 }),
       },
     };
   }

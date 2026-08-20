@@ -14,12 +14,17 @@ User=root
 ExecStart=/usr/local/bin/runner-center-guest
 Restart=on-failure
 RestartSec=2s
-Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
-Environment=RUNNER_TOOL_CACHE=/opt/hostedtoolcache
-# The system manager starts every unit from a clean environment block, so the
-# image's own ENV never reaches a job through here. Without this line LANG is
-# unset for every step the runner spawns, and glibc answers ANSI_X3.4-1968.
-Environment=LANG=C.UTF-8
+# No Environment= lines, deliberately: runner-center-guest builds the runner's
+# environment from nothing (runnerEnv in its main_linux.go), so a value set
+# here never reaches a job. #110 measured exactly that -- LANG stated on this
+# unit, unset in every job. The one environment a job gets is written where a
+# test can read it, in the binary this unit starts.
+#
+# The runner inherits this service's resource limits: 65536 soft is what
+# ubuntu-latest grants (code that walks the fd range on fork stalls measurably
+# above it), 1048576 hard is #99's decision on the Docker path, kept identical
+# here so both executors hand a job the same ceiling.
+LimitNOFILE=65536:1048576
 
 [Install]
 WantedBy=multi-user.target

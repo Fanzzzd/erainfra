@@ -70,8 +70,10 @@ RUN apt-get update \
 # hand down PID 1's, so ENV alone never reaches a runner: /etc/locale.conf is what
 # that manager imports, /etc/default/locale is what PAM gives a login shell, and
 # ENV is what a plain `docker run` or `docker exec` against this image sees.
-# runner-center-guest.service carries the same value for the path that carries
-# every job; smoke.sh asserts all four agree.
+# The path that carries every job -- runner-center-guest spawning the runner --
+# states it a fourth time, in the runnerEnv list the binary builds from nothing;
+# an Environment= line on the unit measured as dead exactly there (#110).
+# smoke.sh asserts all four agree.
 RUN locale-gen en_US.UTF-8 \
   && printf 'LANG=C.UTF-8\n' > /etc/locale.conf \
   && printf 'LANG=C.UTF-8\n' > /etc/default/locale \
@@ -228,6 +230,7 @@ RUN case "$TARGETARCH" in \
 COPY --from=guest /out/runner-center-guest /usr/local/bin/runner-center-guest
 COPY images/ubuntu-24.04-js/runner-center-guest.service /etc/systemd/system/runner-center-guest.service
 COPY images/ubuntu-24.04-js/smoke.sh /usr/local/lib/runner-center/smoke.sh
+COPY images/ubuntu-24.04-js/sysctl-hosted-parity.conf /etc/sysctl.d/90-runner-center-hosted-parity.conf
 
 RUN chmod 0755 /usr/local/bin/runner-center-guest /usr/local/lib/runner-center/smoke.sh \
   && systemctl enable docker.service haveged.service runner-center-guest.service \

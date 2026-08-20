@@ -55,3 +55,50 @@ func TestProfileWarmPoolIsExplicitAndBounded(t *testing.T) {
 		t.Fatal("oversized warm pool was accepted")
 	}
 }
+
+func TestSpecCacheEndpointMirrorsTheDockerProvisionersRules(t *testing.T) {
+	valid := Spec{
+		Kind:         "ci",
+		AttemptID:    "attempt-1",
+		RunnerName:   "rc-linux-js-a",
+		Profile:      "rc-linux-js",
+		ImageRelease: "ghcr.io/fanzzzd/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		VCPUs:        4,
+		MemoryMiB:    8192,
+		JITConfig:    "single-use-secret",
+	}
+
+	accepted := []Spec{valid}
+	for _, tweak := range []func(*Spec){
+		func(s *Spec) { s.CacheURL = "http://cache.internal:8080" },
+		func(s *Spec) { s.CacheURL = "https://cache.example/v1"; s.CacheServiceV2 = "false" },
+		func(s *Spec) { s.CacheServiceV2 = "true" },
+	} {
+		spec := valid
+		tweak(&spec)
+		accepted = append(accepted, spec)
+	}
+	for _, spec := range accepted {
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("valid cache endpoint refused: %+v: %v", spec, err)
+		}
+	}
+
+	rejected := []func(*Spec){
+		func(s *Spec) { s.CacheURL = "cache.internal:8080" },
+		func(s *Spec) { s.CacheURL = "ftp://cache.internal" },
+		// Whitespace is the shape that turns one environment entry into two
+		// somewhere downstream; provision-docker.sh refuses it and so does this.
+		func(s *Spec) { s.CacheURL = "https://cache.example/a b" },
+		func(s *Spec) { s.CacheURL = "https://cache.example/\n" },
+		func(s *Spec) { s.CacheServiceV2 = "True" },
+		func(s *Spec) { s.CacheServiceV2 = "1" },
+	}
+	for _, tweak := range rejected {
+		spec := valid
+		tweak(&spec)
+		if err := spec.Validate(); err == nil {
+			t.Fatalf("invalid cache endpoint accepted: %+v", spec)
+		}
+	}
+}

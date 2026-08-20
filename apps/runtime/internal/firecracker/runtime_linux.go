@@ -601,6 +601,8 @@ func metadataFor(spec executor.Spec) map[string]any {
 					"runner_jit_config":  spec.JITConfig,
 					"experiment_command": spec.Command,
 					"result_token":       spec.ResultToken,
+					"cache_url":          spec.CacheURL,
+					"cache_service_v2":   spec.CacheServiceV2,
 					"shutdown_on_exit":   true,
 				},
 			},
