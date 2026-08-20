@@ -274,18 +274,32 @@ func (s *Server) completeMultipart(w http.ResponseWriter, r *http.Request, key, 
 		return
 	}
 	var assembled []byte
-	for _, part := range request.Parts {
+	firstPartSize := -1
+	for i, part := range request.Parts {
 		body, ok := staged[part.Number]
 		if !ok {
 			http.Error(w, "<Error><Code>InvalidPart</Code><Message>missing</Message></Error>", http.StatusBadRequest)
 			return
 		}
-		// S3 refuses any part but the last under 5 MiB, and the whole point of
-		// the coalescing in the client is to never send one. Enforce it here so
-		// a regression fails a test rather than a production upload.
-		if part.Number != request.Parts[len(request.Parts)-1].Number && len(body) < 5<<20 {
-			http.Error(w, "<Error><Code>EntityTooSmall</Code><Message>part</Message></Error>", http.StatusBadRequest)
-			return
+		isLast := i == len(request.Parts)-1
+		if !isLast {
+			// S3 refuses any part but the last under 5 MiB, and the whole point of
+			// the coalescing in the client is to never send one. Enforce it here so
+			// a regression fails a test rather than a production upload.
+			if len(body) < 5<<20 {
+				http.Error(w, "<Error><Code>EntityTooSmall</Code><Message>part</Message></Error>", http.StatusBadRequest)
+				return
+			}
+			// R2 (unlike S3) refuses a completion whose parts are not all the same
+			// size, the last excepted. The client coalesces to a uniform PartBytes
+			// precisely so a real R2 bucket accepts the stream; enforce it here so a
+			// regression fails a test rather than a production upload against R2.
+			if firstPartSize == -1 {
+				firstPartSize = len(body)
+			} else if len(body) != firstPartSize {
+				http.Error(w, "<Error><Code>InvalidPart</Code><Message>parts must be uniform in size</Message></Error>", http.StatusBadRequest)
+				return
+			}
 		}
 		assembled = append(assembled, body...)
 	}
