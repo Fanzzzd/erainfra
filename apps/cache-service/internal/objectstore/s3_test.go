@@ -121,6 +121,47 @@ func TestUploadCoalescesSmallBlocksIntoLegalParts(t *testing.T) {
 	}
 }
 
+// R2, unlike S3, refuses a completion whose parts are not all the same size.
+// An arbitrary chunk stream crosses the PartBytes threshold by a different
+// remainder each time, so flushing "everything buffered once we cross" produces
+// parts of differing sizes and fails against R2. The fake now enforces R2's
+// uniform-part rule, so this test — a deliberately irregular stream that no
+// single chunk size could have produced — fails if the client stops emitting
+// exact PartBytes parts.
+func TestUploadEmitsUniformPartsFromAnIrregularStream(t *testing.T) {
+	fake := fakes3.New()
+	defer fake.Close()
+	const partBytes = 8 << 20
+	store := newTestStore(t, fake, partBytes)
+
+	upload, err := store.NewUpload(context.Background(), "blobs/irregular")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sizes in MiB, none equal to PartBytes and some larger than it, so the
+	// straddle path (a single chunk split across two parts) is exercised too.
+	sizes := []int{3, 7, 2, 9, 4, 6, 5, 1, 10, 3}
+	want := make([]byte, 0)
+	for i, mib := range sizes {
+		block := bytes.Repeat([]byte{byte('a' + i)}, mib<<20)
+		if err := upload.AddPart(context.Background(), bytes.NewReader(block), int64(len(block))); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, block...)
+	}
+	if err := upload.Complete(context.Background()); err != nil {
+		t.Fatalf("Complete on an irregular stream failed (non-uniform parts?): %v", err)
+	}
+
+	got, ok := fake.Object("erainfra-cache/v1/blobs/irregular")
+	if !ok {
+		t.Fatal("object was not written")
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("assembled %d bytes, want %d", len(got), len(want))
+	}
+}
+
 func TestSmallUploadIsWrittenWhole(t *testing.T) {
 	fake := fakes3.New()
 	defer fake.Close()

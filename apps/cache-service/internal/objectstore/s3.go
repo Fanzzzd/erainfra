@@ -308,14 +308,24 @@ func (u *s3Upload) AddPart(ctx context.Context, body io.Reader, size int64) erro
 	}
 	u.pending = append(u.pending, pendingPart{body: body, size: size})
 	u.buffered += size
-	if u.buffered < u.store.config.PartBytes {
-		return nil
+	// Flush in whole PartBytes units, not "everything buffered once we cross the
+	// threshold". S3 tolerates parts of any size >= 5 MiB, but R2 refuses a
+	// completion whose parts are not all the same size, and an arbitrary chunk
+	// stream (BuildKit's 1 MiB Azure blocks) crosses the threshold by a different
+	// remainder each time. Emitting exact PartBytes parts and carrying the
+	// overshoot forward keeps every part but the last identical.
+	for u.buffered >= u.store.config.PartBytes {
+		if err := u.flush(ctx, u.store.config.PartBytes); err != nil {
+			return err
+		}
 	}
-	return u.flush(ctx)
+	return nil
 }
 
-func (u *s3Upload) flush(ctx context.Context) error {
-	if u.buffered == 0 {
+// flush uploads exactly n bytes as the next part, leaving any buffered remainder
+// for the next part. n must be <= u.buffered.
+func (u *s3Upload) flush(ctx context.Context, n int64) error {
+	if n <= 0 {
 		return nil
 	}
 	if u.uploadID == "" {
@@ -333,8 +343,7 @@ func (u *s3Upload) flush(ctx context.Context) error {
 	query.Set("uploadId", u.uploadID)
 
 	resp, err := u.store.do(ctx, http.MethodPut, u.store.objectURL(u.key), query, nil,
-		u.reader(), u.buffered, unsignedPayload)
-	u.pending, u.buffered = nil, 0
+		u.takeReaders(n), n, unsignedPayload)
 	if err != nil {
 		return err
 	}
@@ -350,11 +359,30 @@ func (u *s3Upload) flush(ctx context.Context) error {
 	return nil
 }
 
-func (u *s3Upload) reader() io.Reader {
+// takeReaders removes exactly n bytes from the front of the pending queue and
+// returns a reader over them, leaving the remainder as the new head. A part that
+// straddles the boundary is split: its first bytes go now and its underlying
+// reader stays as the remainder, so the caller must read the returned reader to
+// completion before the next takeReaders. n must be <= u.buffered.
+func (u *s3Upload) takeReaders(n int64) io.Reader {
 	readers := make([]io.Reader, 0, len(u.pending))
-	for _, part := range u.pending {
-		readers = append(readers, io.LimitReader(part.body, part.size))
+	var taken int64
+	i := 0
+	for i < len(u.pending) && taken < n {
+		part := u.pending[i]
+		want := n - taken
+		if part.size <= want {
+			readers = append(readers, io.LimitReader(part.body, part.size))
+			taken += part.size
+			i++
+			continue
+		}
+		readers = append(readers, io.LimitReader(part.body, want))
+		u.pending[i] = pendingPart{body: part.body, size: part.size - want}
+		break
 	}
+	u.pending = u.pending[i:]
+	u.buffered -= n
 	return io.MultiReader(readers...)
 }
 
@@ -390,9 +418,9 @@ func (u *s3Upload) Complete(ctx context.Context) error {
 		// Never grew past one part. Most cache entries land here: BuildKit's
 		// index blob is about 2 KiB (capture L070) and its empty-layer blob is
 		// 116 bytes (capture L058).
+		n := u.buffered
 		resp, err := u.store.do(ctx, http.MethodPut, u.store.objectURL(u.key), nil, nil,
-			u.reader(), u.buffered, unsignedPayload)
-		u.pending, u.buffered = nil, 0
+			u.takeReaders(n), n, unsignedPayload)
 		if err != nil {
 			return err
 		}
@@ -403,7 +431,10 @@ func (u *s3Upload) Complete(ctx context.Context) error {
 		u.done = true
 		return nil
 	}
-	if err := u.flush(ctx); err != nil {
+	// The remainder is the last part, which may be any size (S3's floor and R2's
+	// uniform-size rule both exempt it). It can also be zero when the stream ended
+	// on a PartBytes boundary, in which case the parts already uploaded stand.
+	if err := u.flush(ctx, u.buffered); err != nil {
 		return err
 	}
 
