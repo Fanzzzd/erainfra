@@ -147,6 +147,42 @@ func reportWarmReady() error {
 	return nil
 }
 
+// runnerEnv IS the runner's environment: built from nothing, so what a job is
+// handed is a decision this function makes and a test can read. Nothing from
+// the unit file or this process's own environment leaks through -- which is
+// also why an Environment= line on runner-center-guest.service can never reach
+// a job (#110 measured exactly that: LANG unset, glibc answering
+// ANSI_X3.4-1968 while the image's /etc/default/locale said C.UTF-8).
+func runnerEnv(metadata guest.Metadata, home, username string) []string {
+	env := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=" + home,
+		"USER=" + username,
+		"LOGNAME=" + username,
+		// Hosted parity: ubuntu-latest hands every job C.UTF-8, and a job that
+		// gets no LANG at all collates and encodes differently in ways that
+		// surface as test failures three layers away (#94, #110).
+		"LANG=C.UTF-8",
+		"RUNNER_TOOL_CACHE=" + toolCache,
+		"AGENT_TOOLSDIRECTORY=" + toolCache,
+		"ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=" + actionCache,
+	}
+	if metadata.Kind != "experiment" {
+		env = append(env, "ACTIONS_RUNNER_INPUT_JITCONFIG="+metadata.JITConfig)
+	}
+	// The T0 cache tier (#81): present before the runner starts, which is the
+	// only place a cache value can still be by probe run 32109974600. Only
+	// these two -- ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN are shared
+	// with the artifact service and are never written here.
+	if metadata.CacheURL != "" {
+		env = append(env, "ACTIONS_CACHE_URL="+metadata.CacheURL)
+	}
+	if metadata.CacheServiceV2 != "" {
+		env = append(env, "ACTIONS_CACHE_SERVICE_V2="+metadata.CacheServiceV2)
+	}
+	return env
+}
+
 func run(ctx context.Context) error {
 	if err := configureResolver(); err != nil {
 		return err
@@ -207,18 +243,7 @@ func run(ctx context.Context) error {
 	command.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups},
 	}
-	command.Env = []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME=" + runnerUser.HomeDir,
-		"USER=" + runnerUser.Username,
-		"LOGNAME=" + runnerUser.Username,
-		"RUNNER_TOOL_CACHE=" + toolCache,
-		"AGENT_TOOLSDIRECTORY=" + toolCache,
-		"ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=" + actionCache,
-	}
-	if metadata.Kind != "experiment" {
-		command.Env = append(command.Env, "ACTIONS_RUNNER_INPUT_JITCONFIG="+metadata.JITConfig)
-	}
+	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start GitHub runner: %w", err)
 	}

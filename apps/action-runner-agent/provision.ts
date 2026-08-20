@@ -154,6 +154,15 @@ export function attemptInvocation(
         RC_IMAGE_RELEASE: attempt.imageRelease,
         RC_VCPUS: String(attempt.vcpus),
         RC_MEMORY_MIB: String(attempt.memoryMiB),
+        // The same seam the Docker branch has below, on the microVM path: the
+        // runtime validates these against the same rules and carries them over
+        // MMDS into the runner's environment (#81, #110). Named explicitly for
+        // the same reason as there -- what a job is handed is a decision this
+        // function makes, not something the agent's environment happened to hold.
+        ...(attempt.cache?.url === undefined ? {} : { RC_CACHE_URL: attempt.cache.url }),
+        ...(attempt.cache?.serviceV2 === undefined
+          ? {}
+          : { RC_CACHE_SERVICE_V2: attempt.cache.serviceV2 }),
       },
     };
   }
@@ -196,10 +205,26 @@ export function attemptInvocation(
   return provisionInvocation(os, attempt.runnerName, attempt.imageRelease);
 }
 
+/**
+ * The cache seam's variables are decisions attemptInvocation makes, never
+ * inheritances. spawnAttempt merges the agent's own environment into the
+ * child's, so without this an RC_CACHE_URL the agent process happened to be
+ * started with would reach an attempt that configured no cache at all -- and
+ * the runtime downstream would trust it (#81).
+ */
+export function attemptEnvironment(env: Record<string, string>): NodeJS.ProcessEnv {
+  const inherited: NodeJS.ProcessEnv = { ...process.env };
+  delete inherited.RC_CACHE_URL;
+  delete inherited.RC_CACHE_SERVICE_V2;
+  delete inherited.ERAINFRA_CACHE_URL;
+  delete inherited.ERAINFRA_CACHE_SERVICE_V2;
+  return { ...inherited, ...env };
+}
+
 export function spawnAttempt(attempt: AttemptExecution) {
   const { file, args, env } = attemptInvocation(attempt);
   return execa(file, args, {
-    env: { ...process.env, ...env },
+    env: attemptEnvironment(env),
     input: attempt.jitConfig,
     stdout: "inherit",
     stderr: "inherit",

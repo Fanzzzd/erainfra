@@ -26,6 +26,12 @@ type Spec struct {
 	JITConfig    string
 	Command      []string
 	ResultToken  string
+	// The job cache endpoint this Worker offers, or empty. Empty is the
+	// default and composes exactly the environment a fleet without a cache
+	// composes. The rules mirror provision-docker.sh's, character for
+	// character: one seam, two executors, one set of decisions (#81).
+	CacheURL       string
+	CacheServiceV2 string
 }
 
 // Profile is the runtime-owned capacity contract for one immutable Image
@@ -106,6 +112,39 @@ func (s Spec) Validate() error {
 		}
 	default:
 		return errors.New("kind must be ci or experiment")
+	}
+	if err := validateCacheEndpoint(s.CacheURL, s.CacheServiceV2); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateCacheEndpoint applies provision-docker.sh's rules to the same two
+// values -- an absolute http(s) URL with no whitespace or control characters,
+// and a flag that is exactly "true" or "false" -- plus one the shell's glob
+// cannot express: the URL must name a host. "https://" satisfies a prefix
+// check and configures nothing. A value with whitespace in it is not a URL;
+// it is the shape that turns one environment entry into two somewhere
+// downstream.
+func validateCacheEndpoint(cacheURL, serviceV2 string) error {
+	if cacheURL != "" {
+		if !strings.HasPrefix(cacheURL, "http://") && !strings.HasPrefix(cacheURL, "https://") {
+			return errors.New("cache URL must be an absolute http(s) URL")
+		}
+		_, rest, _ := strings.Cut(cacheURL, "://")
+		if host, _, _ := strings.Cut(rest, "/"); host == "" {
+			return errors.New("cache URL must name a host")
+		}
+		for _, r := range cacheURL {
+			if r <= ' ' || r == 0x7f {
+				return errors.New("cache URL must not contain whitespace or control characters")
+			}
+		}
+	}
+	switch serviceV2 {
+	case "", "true", "false":
+	default:
+		return errors.New(`cache service v2 must be exactly "true" or "false"`)
 	}
 	return nil
 }

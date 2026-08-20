@@ -49,7 +49,16 @@ ls /opt/hostedtoolcache/go/1.25.3/*.complete >/dev/null
 test "${LANG:-unset}" = 'C.UTF-8'
 grep -Fxq 'LANG=C.UTF-8' /etc/locale.conf
 grep -Fxq 'LANG=C.UTF-8' /etc/default/locale
-grep -Fxq 'Environment=LANG=C.UTF-8' /etc/systemd/system/runner-center-guest.service
+# The fourth statement lives in the binary that spawns every runner: runnerEnv
+# builds the job environment from nothing, and a Go string literal is greppable,
+# so assert the spawn path itself carries the value rather than a unit line the
+# spawn path is proven to ignore (#110).
+grep -q 'LANG=C.UTF-8' /usr/local/bin/runner-center-guest
+# Hosted parity for the watcher tunables (#110); the live values are the
+# conformance job's to measure, the file that sets them is this image's to ship.
+grep -Fxq 'fs.inotify.max_user_watches=655360' /etc/sysctl.d/90-runner-center-hosted-parity.conf
+grep -Fxq 'fs.inotify.max_user_instances=1280' /etc/sysctl.d/90-runner-center-hosted-parity.conf
+grep -Fxq 'LimitNOFILE=65536:1048576' /etc/systemd/system/runner-center-guest.service
 # ubuntu-latest leaves LC_ALL unset; setting it here would be a new difference,
 # not a fix for this one.
 test -z "${LC_ALL:-}"

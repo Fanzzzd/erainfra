@@ -85,6 +85,33 @@ func TestMetadataAcceptsExperimentWithoutJIT(t *testing.T) {
 	}
 }
 
+func TestMetadataCacheEndpointIsCheckedAtTheReadingEdge(t *testing.T) {
+	valid := Metadata{RunnerName: "rc-a", JITConfig: "secret"}
+	valid.CacheURL = "https://cache.internal:8080/v1"
+	valid.CacheServiceV2 = "false"
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The host validated these already; the reading edge re-checks so a
+	// confused MMDS value still cannot put whitespace into the runner's
+	// environment.
+	for _, tweak := range []func(*Metadata){
+		func(m *Metadata) { m.CacheURL = "cache.internal" },
+		func(m *Metadata) { m.CacheURL = "https://cache.internal/a b" },
+		func(m *Metadata) { m.CacheURL = "https://" },
+		func(m *Metadata) { m.CacheURL = "http://" },
+		func(m *Metadata) { m.CacheURL = "https:///v1" },
+		func(m *Metadata) { m.CacheServiceV2 = "True" },
+	} {
+		metadata := valid
+		tweak(&metadata)
+		if err := metadata.Validate(); err == nil {
+			t.Fatalf("invalid cache endpoint accepted: %+v", metadata)
+		}
+	}
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""
