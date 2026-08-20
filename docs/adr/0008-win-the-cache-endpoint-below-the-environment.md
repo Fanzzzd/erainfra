@@ -28,14 +28,24 @@ That measurement now exists, taken in three runs of
   `ACTIONS_CACHE_SERVICE_V2=True` with GitHub's own cache URL and a real
   2495-byte runtime token.
 
-Every real cache client — `actions/cache`, `setup-node`, `setup-go`, buildx's
-`type=gha` — is an action step. So the finding is exact: **EraInfra can deliver
-any environment it likes to a job, and the runner will overwrite the four cache
-variables in every environment a cache client actually reads.** The
-runner-environment-level delivery ADR 0007 decided on cannot carry the
-endpoint. Its store decision, security contract, two-generation requirement and
-fault-tolerance obligations are untouched; what this amendment replaces is only
-the sentence "at the runner-environment level."
+Every cache client in ADR 0007's measured volume — `actions/cache`,
+`setup-node`, `setup-go` — is an action step. One is not always: BuildKit's
+`type=gha` can be driven by a bare `docker buildx build` in a `run:` step,
+where the seam's values DO survive — but on hosted, a run step holds no
+`ACTIONS_RUNTIME_TOKEN` either (measured: all four unset, run 32108617455),
+so such workflows already route the runtime environment through an action
+(`crazy-max/ghaction-github-runtime` or `docker/build-push-action`), which
+puts them back on the overwritten side. The claim this amendment rests on is
+therefore stated at its measured width: **the runner overwrites the four
+cache variables in every action step, and every client responsible for the
+329 MiB ADR 0007 counted reads its environment there.** A run-step BuildKit
+probe is cheap and stage A should run one before the script-step path is
+declared worthless rather than merely small.
+
+The runner-environment-level delivery ADR 0007 decided on cannot carry the
+endpoint. Its store decision, security contract, two-generation requirement
+and fault-tolerance obligations are untouched; what this amendment replaces
+is only the sentence "at the runner-environment level."
 
 One instrument note, recorded so the next reader does not re-fight it: the
 probe's "T0" row reads `/proc/1/environ`, which is Docker-shaped. On a microVM
@@ -61,37 +71,64 @@ EraInfra-built and digest-pinned. Concretely:
    value). No entry arrives when the Worker configures no cache, and the fleet
    behaves exactly as today.
 
-2. **A fleet CA that exists to sign two names.** The clients speak HTTPS to
-   GitHub's hostnames, so the service must present certificates for them, and
-   no public CA will issue those. The guest image carries an EraInfra fleet CA
-   in its system trust store, and the guest seam sets `NODE_EXTRA_CA_CERTS`
-   for the Node-based clients that ignore the system store — a variable the
-   job message does not carry, so the runner does not overwrite it (measured
-   class: T1 script and action rows agree on everything outside the four
-   cache variables). The CA's private key lives with the cache service, never
-   on a Worker, and signs exactly the two cache hostnames. A CA that signs
-   anything else has left this ADR's authorization.
+2. **A fleet CA that CANNOT sign more than two names.** The clients speak
+   HTTPS to GitHub's hostnames, so the service must present certificates for
+   them, and no public CA will issue those. The guest image carries an
+   EraInfra fleet CA in its system trust store, and the guest seam sets
+   `NODE_EXTRA_CA_CERTS` for the Node-based clients that ignore the system
+   store — a variable the job message does not carry, so the runner does not
+   overwrite it (measured class: T1 script and action rows agree on
+   everything outside the four cache variables). The CA's private key lives
+   with the cache service, never on a Worker.
+
+   "Signs exactly two hostnames" must be a property of the certificate, not a
+   promise about the key's handling: the CA carries a **critical X.509 Name
+   Constraints extension** permitting only the two cache DNS names, so a
+   compromised cache service holding the key still cannot mint a certificate
+   the guest would accept for any other host. The acceptance test is the
+   negative one: a CA-signed certificate for a third hostname is REJECTED by
+   the guest's TLS stack — both the system store path and the
+   `NODE_EXTRA_CA_CERTS` path, tested separately, because Node's constraint
+   enforcement is not the system's. If either path fails to enforce the
+   constraint, this design ships a fleet-wide MITM root and must not ship.
 
 3. **The results host is shared, so the service proxies what it does not
-   serve.** ADR 0007 already measured that `ACTIONS_RESULTS_URL` carries both
-   cache v2 and `actions/upload-artifact` traffic behind the same
-   `ACTIONS_RUNTIME_TOKEN`. Intercepting the hostname therefore obligates the
-   service to pass every non-cache path through to the real upstream
-   unmodified, or artifacts break fleet-wide — the exact accident ADR 0007
-   said the seam "is not allowed to make silently" now becomes a routing rule
-   with a test: cache twirp paths are served, everything else is reverse-
-   proxied, and an upload-artifact job on an intercepted Worker is a standing
-   canary. The v1 host serves cache alone and is intercepted whole.
+   serve — and that is new code, not an aspiration.** ADR 0007 already
+   measured that `ACTIONS_RESULTS_URL` carries both cache v2 and
+   `actions/upload-artifact` traffic behind the same `ACTIONS_RUNTIME_TOKEN`.
+   Today `apps/cache-service` answers unknown paths with `404`; under
+   interception that 404 IS a fleet-wide artifact outage. So the routing rule
+   is an acceptance condition: cache twirp paths are served locally,
+   everything else on the results host is reverse-proxied to an explicitly
+   configured upstream with the original `Host` and TLS SNI preserved (the
+   guest's pinned resolution must not leak into the upstream dial — the proxy
+   resolves the real address itself), and an `actions/upload-artifact` job on
+   an intercepted Worker is a standing integration test, not a canary that
+   exists only in prose. The v1 host serves cache alone and is intercepted
+   whole.
 
-4. **GitHub's own token becomes the repository claim.** The intercepted
-   requests arrive bearing the job message's `ACTIONS_RUNTIME_TOKEN` — a JWT
-   GitHub minted, carrying the repository and run identity ADR 0007's security
-   rule 1 demanded from "the issuer, not the job". Verifying its signature and
-   scoping entries by its claims satisfies rules 1 and 2 with a credential no
-   job authored; the fork-PR write refusal reads the same claims. The token is
-   also a live GitHub credential, so the service treats it as ADR 0007 treats
-   bucket keys: used for verification and upstream proxying, never logged,
-   never stored beyond the request.
+4. **The repository claim is this amendment's open question, and it fails
+   closed until answered.** The intercepted requests arrive bearing the job
+   message's `ACTIONS_RUNTIME_TOKEN` — a JWT GitHub minted, which no job
+   authored. If its claims name the repository stably and its signature is
+   verifiable against a published key set, it is exactly the issuer-minted
+   claim ADR 0007's rule 1 demanded, and the fork-PR refusal (rule 2) reads
+   the same claims. But GitHub documents no verification contract for this
+   internal token, and the current service accepts only EraInfra's own HMAC
+   tokens (`cachetoken.Verifier`) — so treating the GitHub JWT as verified
+   identity is a **hypothesis that stage A must measure** (decode real
+   tokens across Attempts, repositories and fork PRs; establish which claims
+   are stable and whether the signature can be checked) before anything
+   scopes storage by it. If the measurement comes back unverifiable, the
+   fallback is EraInfra-minted identity bound out of band: the control plane
+   knows each Attempt's repository and event at `JobStarted`, and the seam
+   already delivers per-Attempt values to the guest — the binding mechanism
+   is then stage-A design work, and rules 1–2 hold whichever way. A request
+   whose repository identity the service cannot establish is REJECTED, never
+   defaulted — ADR 0007's own rule, restated because interception makes it
+   easy to forget. Either way the token is a live GitHub credential and the
+   service treats it as ADR 0007 treats bucket keys: used for verification
+   and upstream proxying, never logged, never stored beyond the request.
 
 ## Consequences
 
@@ -106,10 +143,21 @@ EraInfra-built and digest-pinned. Concretely:
 - **Interception is scoped by construction.** The hosts entries name two
   hostnames; every other name resolves as before; a job that dials the real
   IPs directly gets GitHub, which is the degraded-to-upstream behaviour, not a
-  breach. If the cache service is down, the pinned names refuse connections
-  and clients degrade to misses — which lands exactly on ADR 0007's unmeasured
-  fault classes (refusal, hang), so the timeout-and-retry budget it owed
-  stage B is now a prerequisite for enabling interception at all.
+  breach.
+- **A dead cache service degrades cache and BREAKS artifacts, and those are
+  different failures with different budgets.** When the pinned names refuse
+  connections, cache clients degrade to misses — slower jobs. Artifact
+  clients cannot degrade to anything: their upstream path runs THROUGH the
+  proxy this design put in front of them, so on an intercepted Worker the
+  cache service becomes a hard availability dependency of
+  `actions/upload-artifact`. That coupling is the single strongest argument
+  against intercepting the results host, and the amendment does not wave it
+  past: stage B owes separate timeout/retry budgets and separate canaries
+  for the two traffic classes, and the alternative — intercepting only the
+  v1 host and letting v2 clients keep GitHub's cache — remains on the table
+  as the fallback if the artifact coupling proves unacceptable. ADR 0007's
+  unmeasured fault classes (refusal, hang) are prerequisites for enabling
+  interception at all.
 - **Stage C's exit conditions carry over** — the end-to-end v2-selection test,
   the restore-volume number that could still reverse ADR 0007, and now one
   more: the artifact-passthrough canary above.
