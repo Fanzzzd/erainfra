@@ -379,7 +379,6 @@ func (u *s3Upload) takeReaders(n int64) io.Reader {
 		}
 		readers = append(readers, io.LimitReader(part.body, want))
 		u.pending[i] = pendingPart{body: part.body, size: part.size - want}
-		taken += want
 		break
 	}
 	u.pending = u.pending[i:]
