@@ -34,6 +34,10 @@ import {
 } from "../convex/agentRelease.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
+import {
+  FIRECRACKER_HOST_PROVISIONER_B64,
+  FIRECRACKER_HOST_PROVISIONER_SHA256,
+} from "../convex/provisionerFirecrackerHost.generated.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
@@ -855,7 +859,9 @@ describe("--role parsing", () => {
       // to parse. Testing $# there took the rotated --token as the role name and handed the Worker
       // parser a bare rcreg_test — it rewrote the argument list instead of refusing.
       expect(result.status, args.join(" ")).toBe(1);
-      expect(result.stderr, args.join(" ")).toMatch(/--role requires a value: worker or node/);
+      expect(result.stderr, args.join(" ")).toMatch(
+        /--role requires a value: worker, node or worker-host/,
+      );
       expect(readLog(sandbox.npmLog), "nothing may be installed").toBe("");
     }
   });
@@ -969,5 +975,128 @@ describe("rendered SITE_URL", () => {
     const script = renderInstallScript(site.ok ? site.siteUrl : "", AGENT_RELEASE);
     expect(siteUrlAssignments(script)).toEqual(["https://example.convex.site"]);
     expect(script.includes("evil.example")).toBe(false);
+  });
+});
+
+describe("--role worker-host", () => {
+  // The provisioner travels embedded, so the one thing that must never drift is the byte-for-byte
+  // identity between the module a deploy ships and the script the repository maintains. Editing
+  // deploy/provision-firecracker-host.sh without regenerating fails here, not on a host.
+  it("embeds deploy/provision-firecracker-host.sh byte for byte", () => {
+    const repoScript = readFileSync(
+      path.resolve(
+        import.meta.dirname,
+        "..",
+        "..",
+        "..",
+        "deploy",
+        "provision-firecracker-host.sh",
+      ),
+    );
+    const embedded = Buffer.from(FIRECRACKER_HOST_PROVISIONER_B64.replaceAll("\n", ""), "base64");
+    expect(
+      embedded.equals(repoScript),
+      "regenerate with: pnpm --filter @erainfra/backend embed-firecracker-provisioner",
+    ).toBe(true);
+    expect(createHash("sha256").update(repoScript).digest("hex")).toBe(
+      FIRECRACKER_HOST_PROVISIONER_SHA256,
+    );
+  });
+
+  it("prints usage without needing root", () => {
+    const sandbox = createSandbox(CURRENT);
+    const result = run(sandbox, ["--role", "worker-host", "--help"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("one ephemeral Firecracker microVM per CI job");
+    expect(result.stdout).toContain("DESTROY");
+  });
+
+  it("refuses an unpinned deployment while the operator is still unprivileged", () => {
+    const sandbox = createSandbox(CURRENT); // CURRENT pins no archive checksum
+    const result = run(sandbox, ["--role", "worker-host"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("pins no agent release");
+    expect(result.stderr).not.toContain("must run as root");
+  });
+
+  it("refuses to run unprivileged, and names the sudo command", () => {
+    const sandbox = createSandbox({ ...CURRENT, sha256: "a".repeat(64) });
+    const result = run(sandbox, ["--role", "worker-host"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("must run as root");
+    expect(result.stderr).toContain(`${SITE_URL}/install | sudo bash -s -- --role worker-host`);
+  });
+
+  it("refuses a pool below the provisioner's floor before asking for root", () => {
+    const sandbox = createSandbox(CURRENT);
+    const result = run(sandbox, ["--role", "worker-host", "--pool-gib", "8"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("at least 32 GiB");
+  });
+
+  it("refuses half a device pair, and a device pair mixed with pool flags", () => {
+    const sandbox = createSandbox(CURRENT);
+    const half = run(sandbox, ["--role", "worker-host", "--data-device", "/dev/x"]);
+    expect(half.status).toBe(1);
+    expect(half.stderr).toContain("--data-device needs --meta-device");
+
+    const mixed = run(sandbox, [
+      "--role",
+      "worker-host",
+      "--data-device",
+      "/dev/x",
+      "--meta-device",
+      "/dev/y",
+      "--pool-gib",
+      "64",
+    ]);
+    expect(mixed.status).toBe(1);
+    expect(mixed.stderr).toContain("not both");
+  });
+
+  /** Fake root: id reports uid 0 and uname reports Linux, so the role runs to the handoff. */
+  function grantWorkerHostRoot(sandbox: Sandbox) {
+    writeExecutable(path.join(sandbox.root, "bin", "id"), `#!/usr/bin/env bash\nprintf '0\\n'\n`);
+    writeExecutable(
+      path.join(sandbox.root, "bin", "uname"),
+      `#!/usr/bin/env bash\ncase "$1" in -m) printf 'x86_64\\n' ;; *) printf 'Linux\\n' ;; esac\n`,
+    );
+  }
+
+  // The full path, to the exact seam where the real provisioner takes over: the pinned archive is
+  // downloaded and verified, the runtime inside is staged, the embedded provisioner decodes and
+  // passes its own checksum, and the forwarded --pool-dir reaches it — proven by the provisioner
+  // itself refusing the relative path with its own voice, before it touches the machine.
+  it("verifies the pinned archive and hands the runtime to the real provisioner", () => {
+    const sandbox = createSandbox(CURRENT);
+    const published = publishRelease(sandbox, CURRENT, "worker-host deep");
+    repin(sandbox, { ...CURRENT, sha256: published.sha256 });
+    grantWorkerHostRoot(sandbox);
+
+    const result = run(sandbox, [
+      "--role",
+      "worker-host",
+      "--pool-dir",
+      "relative/never-absolute",
+      "--worker-user",
+      "operator",
+    ]);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain(
+      "Verified the agent archive against the checksum pinned by this EraInfra deployment",
+    );
+    expect(result.stderr).toContain("error: --pool-dir must be an absolute path");
+  });
+
+  it("refuses an archive that does not match the pin, before any provisioning", () => {
+    const sandbox = createSandbox(CURRENT);
+    publishRelease(sandbox, CURRENT, "worker-host tamper");
+    repin(sandbox, { ...CURRENT, sha256: "b".repeat(64) });
+    grantWorkerHostRoot(sandbox);
+
+    const result = run(sandbox, ["--role", "worker-host"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Agent archive checksum verification failed");
+    expect(result.stderr).toContain("Nothing was installed");
   });
 });
