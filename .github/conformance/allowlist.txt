@@ -55,8 +55,8 @@
 #   differential job cannot see a defect that both legs share: if hosted and
 #   Profile were both misreporting their own size the two values would agree
 #   and the diff would go green. These are asserted absolutely, per leg.
-require cpu_visible_matches_allowed=yes  # a machine that reports more CPUs than its own quota allows lies to every build tool that autosizes; this is #80, and it is `no` on the fleet today because the deployed Worker runs 0.2.0-rc.6, which predates #83's cpuset allocator. Goes green when the next release reaches the Workers
-require mem_visible_matches_allowed=yes  # #93, measured live: a job promised 2 GiB reads 251 GiB from /proc/meminfo, a factor of 125. It stays red even after #83's release, because a cgroup limit does not rewrite a kernel-global file — LXCFS, or #17's microVMs, is the fix
+require cpu_visible_matches_allowed=yes  # a machine that reports more CPUs than its own quota allows lies to every build tool that autosizes; this is #80. Went green with #83's cpuset allocator (v0.2.0-rc.7), and became structural at the #17 cutover: a microVM guest has exactly its Profile's vCPUs and nothing else to misreport
+require mem_visible_matches_allowed=yes  # #93, measured live on the Docker path: a job promised 2 GiB read 251 GiB from /proc/meminfo, a factor of 125, because a cgroup limit does not rewrite a kernel-global file. Fixed by #17's microVMs — the guest's /proc/meminfo IS its allowed memory, measured 1993 == 1993 (run 32330383534)
 never-allow cpu_visible_matches_allowed  # the excusable difference is cpu_visible_nproc, which is allowed below; the agreement between what a job sees and what it may use is not
 never-allow mem_visible_matches_allowed  # same shape as the CPU key: sizes may differ between legs, a machine disagreeing with itself may not
 never-allow node_heap_within_allowed_mem  # Node sizes its default old space from total RAM, so a heap ceiling above the cgroup limit entitles a process to grow until the kernel kills it, and the OOM carries no stack
@@ -138,7 +138,7 @@ allow docker_server_version  # follows from the line above
 allow cpu_nproc_matches_cpuinfo  # pre-positioned, and expected to match nothing until #83's release lands. /proc/cpuinfo is kernel-global and lists the host's processors; a cpuset cannot narrow it and only LXCFS (#93) could. The day the cpuset ships, nproc and the quota agree and THIS key starts differing — that is a known residue, not a regression, and nproc/sched_getaffinity is the honest interface every autosizing tool actually reads
 allow workspace_free_gib_pow2  # a Worker host's disk is not the one GitHub hands out, so the two legs land in different power-of-two buckets whenever they differ by more than a factor of two — measured 64 against 128 in one run and 64 against 64 in the run before it, with nothing having changed between them. The bucket exists so ONE machine reports the same number twice, not so two machines agree. What a job is actually entitled to is a floor, and that is required above rather than allowed here
 allow scratch_free_gib_pow2  # same, for RUNNER_TEMP
-allow dev_shm_size_mib  # provision-docker.sh passes --shm-size at half the Profile's memory (#90, shipped v0.2.0-rc.7), and GitHub sizes /dev/shm at half its runner's RAM, so the two differ exactly as the Profile's size differs from GitHub's 16 GiB. Measured on the fleet: 1024 on the 2 GiB rc-e2e Profile against 7995 hosted (run 32102711080). tmpfs size is a cap, not a reservation, so it grants no memory the cgroup limit did not already promise
+allow dev_shm_size_mib  # both executors size /dev/shm at half the Profile's memory — provision-docker.sh via --shm-size (#90, shipped v0.2.0-rc.7), and the microVM guest's tmpfs default does the same arithmetic natively — while GitHub sizes it at half its runner's RAM, so the two differ exactly as the Profile's size differs from GitHub's 16 GiB. Measured: 1024 in the container (run 32102711080) and 997 in the guest (run 32330383534) on the 2 GiB rc-e2e Profile, against 7995 hosted. tmpfs size is a cap, not a reservation, so it grants no memory the limit did not already promise
 allow root_free_gib_pow2  # same, for the container's writable layer
 allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubuntu-24.04-js/Dockerfile) and GitHub's does not ship it at all, measured. A tool we have and they do not cannot break a workflow written for ubuntu-latest; the reverse can, which is why the rest of tool_*_present is not on this list
 
@@ -257,22 +257,24 @@ pending tool_rsync_present=no 2026-11-16  # #95: one ordinary workflow step from
 # #96 — the Docker daemon's defaults and the Worker host's kernel settings,
 # arriving through a gap nobody was looking at. Not one of these was chosen
 # here, which is exactly why none of them gets an `allow` line.
-pending sysctl_vm_max_map_count=65530 2026-11-16  # #96: the 5.4 kernel default against 262144 on hosted. Elasticsearch and OpenSearch refuse to start below 262144; the JVM and mmap-heavy builds degrade more quietly
+allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). Elasticsearch and OpenSearch refuse to start below 262144 — what a job is entitled to is a floor, and the guest clears hosted's by 4x
 pending sysctl_fs_inotify_max_user_instances=128 2026-11-16  # #96: 128 against 1280 on hosted. Watch exhaustion in a bundler or test watcher surfaces as an opaque ENOSPC that has nothing to do with disk
-pending sysctl_fs_inotify_max_user_watches=524288 2026-11-16  # #96: same subsystem, same failure, one level up
+pending sysctl_fs_inotify_max_user_watches=15690 2026-11-16  # #110: the 6.1 guest kernel sizes watches at 1% of RAM, so a 2 GiB guest gets 15690 against 655360 hosted. A vite or jest watcher exhausts that fast, and the failure is an opaque ENOSPC. The guest boot should set this deliberately — the same guest-environment seam #110 needs for LANG
 pending sysctl_vm_swappiness=100 2026-11-16  # #96: 100 against 60 makes the host readier to swap a job out under pressure, which shows up as latency rather than failure
-pending sysctl_kernel_threads_max=2059180 2026-11-16  # #96: a Worker host kernel setting nothing in this repository chose
-pending sysctl_user_max_user_namespaces=1029590 2026-11-16  # #96: a Worker host kernel setting nothing in this repository chose
+pending sysctl_kernel_threads_max=15899 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 127574 hosted; a bound a 2 GiB job rarely reaches, but it should be a decision at the guest-environment seam, not an artifact of guest RAM
+pending sysctl_user_max_user_namespaces=7949 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 63787 hosted; same decision, same seam
 pending rlimit_max_locked_memory_soft=65536 2026-11-16  # #96: 64 KiB against 8 MiB on hosted. Some crypto libraries refuse to hold key material in unlockable memory and fall back or fail
 pending rlimit_max_locked_memory_hard=65536 2026-11-16  # #96: as above, hard limit
-pending rlimit_max_open_files_soft=1048576 2026-11-16  # #96: LARGER than hosted, which is not automatically better — code that walks the fd range on fork stalls measurably at a million rather than sixty-five thousand
-pending rlimit_max_open_files_hard=1048576 2026-11-16  # #96: as above, hard limit
-pending rlimit_max_processes_soft=unlimited 2026-11-16  # #96: unlimited here against 63838 on hosted, so a blast-radius bound hosted has is simply absent here
-pending rlimit_max_processes_hard=unlimited 2026-11-16  # #96: as above, hard limit
+pending rlimit_max_open_files_soft=524288 2026-11-16  # #110: the guest's systemd grants 524288 against 65536 hosted — LARGER is not automatically better; code that walks the fd range on fork stalls measurably at half a million. Parity means LimitNOFILE on the guest runner service, at the #110 seam
+pending rlimit_max_open_files_hard=524288 2026-11-16  # #110: as above, hard limit
+pending rlimit_max_processes_soft=7949 2026-11-16  # #110: the Docker path measured unlimited — no blast-radius bound at all; the guest's memory-proportional 7949 against 63787 hosted is at least A bound, but a fork-heavy suite can reach it. Set it deliberately at the #110 seam
+pending rlimit_max_processes_hard=7949 2026-11-16  # #110: as above, hard limit
 pending rlimit_max_core_file_size_soft=unlimited 2026-11-16  # #96: unlimited here against 0 on hosted, so a crashing job writes a core dump into the container writable layer instead of being denied one
 pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
-pending rlimit_max_pending_signals_soft=1029590 2026-11-16  # #96: a Docker daemon default nothing in this repository chose, same gap as #87
-pending rlimit_max_pending_signals_hard=1029590 2026-11-16  # #96: a Docker daemon default nothing in this repository chose, same gap as #87
+pending rlimit_max_pending_signals_soft=7949 2026-11-16  # #110: memory-proportional guest default against 63787 hosted, same decision as max_processes, same seam
+pending rlimit_max_pending_signals_hard=7949 2026-11-16  # #110: as above, hard limit
+pending net_ipv6_disabled=unavailable 2026-11-16  # #110: the guest boots with ipv6.disable=1 (the job network policy is v4-only), so /proc/sys/net/ipv6 does not exist, while hosted has IPv6 up. Anything binding or dialing ::1 behaves differently. Either enable v6 in the guest with the policy extended to cover it, or freeze this divergence with a documented reason — a decision, not a leftover
+allow sysctl_kernel_unprivileged_userns_clone  # a Debian-specific knob that does not exist on the vanilla 6.1 guest kernel (measured unavailable against 1 hosted, run 32330383534). The capability it gates is on by default there — sysctl_user_max_user_namespaces measures non-zero in the same run — so the absent knob is a kernel-flavor difference, not a capability difference
 pending dns_nameserver_count=2 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
 pending dns_nameserver_loopback=no 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
 pending dns_options=unavailable 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
