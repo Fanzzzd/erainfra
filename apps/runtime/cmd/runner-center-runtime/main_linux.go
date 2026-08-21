@@ -197,6 +197,15 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		JITConfig:      strings.TrimSpace(string(payload)),
 		CacheURL:       strings.TrimSpace(os.Getenv("RC_CACHE_URL")),
 		CacheServiceV2: strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_V2")),
+		JobIdentity: executor.JobIdentity{
+			Repository:     strings.TrimSpace(os.Getenv("RC_JOB_REPOSITORY")),
+			HeadRepository: strings.TrimSpace(os.Getenv("RC_JOB_HEAD_REPOSITORY")),
+			Event:          strings.TrimSpace(os.Getenv("RC_JOB_EVENT")),
+			Ref:            strings.TrimSpace(os.Getenv("RC_JOB_REF")),
+			BaseRef:        strings.TrimSpace(os.Getenv("RC_JOB_BASE_REF")),
+			DefaultBranch:  strings.TrimSpace(os.Getenv("RC_JOB_DEFAULT_BRANCH")),
+			Attempt:        strings.TrimSpace(os.Getenv("RC_JOB_ATTEMPT")),
+		},
 	}
 	payload = nil
 	if err := spec.Validate(); err != nil {

@@ -1,6 +1,9 @@
 package executor
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSpecRequiresImmutableSafeInputs(t *testing.T) {
 	valid := Spec{
@@ -53,6 +56,52 @@ func TestProfileWarmPoolIsExplicitAndBounded(t *testing.T) {
 	profile.WarmPool = 17
 	if err := profile.Validate(); err == nil {
 		t.Fatal("oversized warm pool was accepted")
+	}
+}
+
+func TestSpecJobIdentityRejectsUnsafeFacts(t *testing.T) {
+	valid := Spec{
+		Kind:         "ci",
+		AttemptID:    "attempt-1",
+		RunnerName:   "rc-linux-js-a",
+		Profile:      "rc-linux-js",
+		ImageRelease: "ghcr.io/fanzzzd/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		VCPUs:        4,
+		MemoryMiB:    8192,
+		JITConfig:    "single-use-secret",
+	}
+
+	// Empty is always valid (a fleet without a cache), and ordinary facts pass.
+	for _, tweak := range []func(*Spec){
+		func(*Spec) {},
+		func(s *Spec) {
+			s.JobIdentity = JobIdentity{
+				Repository: "Fanzzzd/erainfra", HeadRepository: "someone/erainfra",
+				Event: "pull_request", Ref: "refs/pull/12/merge",
+				BaseRef: "refs/heads/main", DefaultBranch: "main", Attempt: "1",
+			}
+		},
+	} {
+		spec := valid
+		tweak(&spec)
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("valid job identity refused: %+v: %v", spec.JobIdentity, err)
+		}
+	}
+
+	// A fact that flows into a signed token and MMDS must not carry whitespace,
+	// control characters, or unbounded length.
+	for _, tweak := range []func(*Spec){
+		func(s *Spec) { s.JobIdentity.Repository = "Fanzzzd/era infra" },
+		func(s *Spec) { s.JobIdentity.Ref = "refs/heads/main\n" },
+		func(s *Spec) { s.JobIdentity.Event = "push\t" },
+		func(s *Spec) { s.JobIdentity.Repository = strings.Repeat("a", 257) },
+	} {
+		spec := valid
+		tweak(&spec)
+		if err := spec.Validate(); err == nil {
+			t.Fatalf("unsafe job identity accepted: %+v", spec.JobIdentity)
+		}
 	}
 }
 
