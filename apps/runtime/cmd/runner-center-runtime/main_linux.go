@@ -197,14 +197,17 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		JITConfig:      strings.TrimSpace(string(payload)),
 		CacheURL:       strings.TrimSpace(os.Getenv("RC_CACHE_URL")),
 		CacheServiceV2: strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_V2")),
+		// Raw, not trimmed: these flow into a signed token and the guest's MMDS,
+		// so a whitespace-padded value is a fault to reject, not to normalize away.
+		// Spec.Validate enforces the contract; an unset variable is empty and valid.
 		JobIdentity: executor.JobIdentity{
-			Repository:     strings.TrimSpace(os.Getenv("RC_JOB_REPOSITORY")),
-			HeadRepository: strings.TrimSpace(os.Getenv("RC_JOB_HEAD_REPOSITORY")),
-			Event:          strings.TrimSpace(os.Getenv("RC_JOB_EVENT")),
-			Ref:            strings.TrimSpace(os.Getenv("RC_JOB_REF")),
-			BaseRef:        strings.TrimSpace(os.Getenv("RC_JOB_BASE_REF")),
-			DefaultBranch:  strings.TrimSpace(os.Getenv("RC_JOB_DEFAULT_BRANCH")),
-			Attempt:        strings.TrimSpace(os.Getenv("RC_JOB_ATTEMPT")),
+			Repository:     os.Getenv("RC_JOB_REPOSITORY"),
+			HeadRepository: os.Getenv("RC_JOB_HEAD_REPOSITORY"),
+			Event:          os.Getenv("RC_JOB_EVENT"),
+			Ref:            os.Getenv("RC_JOB_REF"),
+			BaseRef:        os.Getenv("RC_JOB_BASE_REF"),
+			DefaultBranch:  os.Getenv("RC_JOB_DEFAULT_BRANCH"),
+			Attempt:        os.Getenv("RC_JOB_ATTEMPT"),
 		},
 	}
 	payload = nil

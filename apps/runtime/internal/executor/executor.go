@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -55,18 +57,26 @@ type JobIdentity struct {
 }
 
 // validate rejects values that cannot safely flow into a signed token and the
-// guest's MMDS. Empty is always valid; a set field must be printable, free of
-// whitespace and control characters, and bounded.
+// guest's MMDS. Empty is always valid; a set field must be valid UTF-8, at most
+// 256 runes, and every rune printable — no whitespace (ASCII or Unicode, e.g. a
+// no-break space), no control character, nothing non-printable. The bound counts
+// runes, not bytes, so a legitimate multibyte value is not rejected for its
+// encoding length.
 func (j JobIdentity) validate() error {
 	for _, f := range []string{
 		j.Repository, j.HeadRepository, j.Event,
 		j.Ref, j.BaseRef, j.DefaultBranch, j.Attempt,
 	} {
-		if len(f) > 256 {
+		if !utf8.ValidString(f) {
+			return errors.New("job identity fields must be valid UTF-8")
+		}
+		if utf8.RuneCountInString(f) > 256 {
 			return errors.New("job identity fields must be at most 256 characters")
 		}
-		if strings.ContainsFunc(f, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-			return errors.New("job identity fields must not contain whitespace or control characters")
+		if strings.ContainsFunc(f, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsControl(r) || !unicode.IsPrint(r)
+		}) {
+			return errors.New("job identity fields must not contain whitespace, control, or non-printable characters")
 		}
 	}
 	return nil

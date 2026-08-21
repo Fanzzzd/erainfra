@@ -71,7 +71,9 @@ func TestSpecJobIdentityRejectsUnsafeFacts(t *testing.T) {
 		JITConfig:    "single-use-secret",
 	}
 
-	// Empty is always valid (a fleet without a cache), and ordinary facts pass.
+	// Empty is always valid (a fleet without a cache), ordinary facts pass, and a
+	// legitimate multibyte value up to 256 runes is not rejected for its byte
+	// length.
 	for _, tweak := range []func(*Spec){
 		func(*Spec) {},
 		func(s *Spec) {
@@ -81,6 +83,8 @@ func TestSpecJobIdentityRejectsUnsafeFacts(t *testing.T) {
 				BaseRef: "refs/heads/main", DefaultBranch: "main", Attempt: "1",
 			}
 		},
+		// 256 runes, 512 bytes: within the rune bound, so accepted.
+		func(s *Spec) { s.JobIdentity.Ref = strings.Repeat("é", 256) },
 	} {
 		spec := valid
 		tweak(&spec)
@@ -89,13 +93,19 @@ func TestSpecJobIdentityRejectsUnsafeFacts(t *testing.T) {
 		}
 	}
 
-	// A fact that flows into a signed token and MMDS must not carry whitespace,
-	// control characters, or unbounded length.
+	// A fact that flows into a signed token and MMDS must not carry whitespace
+	// (ASCII or Unicode), a control character, non-printable or invalid UTF-8, or
+	// more than 256 runes.
 	for _, tweak := range []func(*Spec){
-		func(s *Spec) { s.JobIdentity.Repository = "Fanzzzd/era infra" },
-		func(s *Spec) { s.JobIdentity.Ref = "refs/heads/main\n" },
-		func(s *Spec) { s.JobIdentity.Event = "push\t" },
-		func(s *Spec) { s.JobIdentity.Repository = strings.Repeat("a", 257) },
+		func(s *Spec) { s.JobIdentity.Repository = "Fanzzzd/era infra" },      // ASCII space
+		func(s *Spec) { s.JobIdentity.Ref = "refs/heads/main\n" },             // ASCII control
+		func(s *Spec) { s.JobIdentity.Event = "push\t" },                      // ASCII tab
+		func(s *Spec) { s.JobIdentity.Repository = "Fanzzzd/era\u00a0infra" }, // no-break space
+		func(s *Spec) { s.JobIdentity.Ref = "refs/heads/main\u0085" },         // NEL (Unicode control)
+		func(s *Spec) { s.JobIdentity.Event = "push\x05" },                    // ^E
+		func(s *Spec) { s.JobIdentity.Repository = "bad\xffutf8" },            // invalid UTF-8
+		func(s *Spec) { s.JobIdentity.Repository = strings.Repeat("a", 257) }, // 257 ASCII runes
+		func(s *Spec) { s.JobIdentity.Ref = strings.Repeat("é", 257) },        // 257 multibyte runes
 	} {
 		spec := valid
 		tweak(&spec)
