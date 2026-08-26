@@ -434,3 +434,107 @@ Read the **T0** line in the job summary.
 The flag alone is the right thing to set for this: GitHub serves both generations, so it moves no
 traffic anywhere new and a wrong answer costs nothing. The capitalisation is the tell — the runner
 writes `True` and this writes `true`, so the two are never confusable in the report.
+
+---
+
+## 8. Turn on the Firecracker interceptor cache
+
+§7 ends on the outcome that decides everything: the runner overwrites all four cache variables from
+its own job message, so no Worker-side variable reaches a cache client. That is the `OVERWRITTEN`
+result, and what is left when a variable cannot win is intercepting the runner itself. This section
+is that interception, for the Firecracker fleet (ADR 0008, ADR 0009).
+
+A guest that is handed a cache resolves GitHub's one cache host, terminates its TLS locally against a
+CA it minted for this boot, and forwards the cache path to this service carrying a runner-auth
+bearer; everything else goes straight to GitHub. It works whichever way the §7 measurement came
+back, because it never relies on an environment variable surviving into an action step, and it is a
+guest mechanism, so it needs nothing in `provision-docker.sh`. A guest handed no cache runs exactly
+as one always did — direct to GitHub — so every part of this is inert until the last piece is set.
+
+### One key, three holders
+
+The HMAC signing key from §2 (`ERAINFRA_CACHE_SIGNING_KEY`, ≥32 bytes) is shared by exactly three
+processes, and a mismatch fails closed rather than serving a wrong scope:
+
+| holder             | variable                        | what it signs / verifies                           |
+| ------------------ | ------------------------------- | -------------------------------------------------- |
+| the cache service  | `ERAINFRA_CACHE_SIGNING_KEY`    | verifies the runner bearer and the controller push |
+| the controller     | `RC_CACHE_SIGNING_KEY`(`_FILE`) | signs the facts push                               |
+| the Worker runtime | `RC_CACHE_SIGNING_KEY`(`_FILE`) | mints the runner bearer at claim                   |
+
+The repository a warm VM will serve is unknown when it boots, so the bearer names only the runner.
+The controller pushes the repository, event and ref to the service at `JobStarted`, and the service
+scopes the bearer to that repository at request time. This is why the controller needs a URL and the
+runtime does not push anything. The controller names no head repository, base ref or default branch,
+so a `pull_request` job scopes to nothing and reads a cold cache — the safe direction — while every
+other event, a branch push included, gets read-write to its own ref.
+
+### Roll it out, in order
+
+Each step is inert on its own; the cache serves its first byte only once all four line up.
+
+1. **A runtime that mints the bearer.** The cache-minting runtime landed after v0.2.0-rc.8, so the
+   fleet's current agent does not have it. Cut the next agent release, `pnpm run deploy:control-plane`,
+   and `rc update` each Worker (see `deploy-control-plane.md`). One release-machinery item blocks
+   this and is called out under "The one open release step" below.
+
+2. **A guest image that carries the redirect.** The redirect ships in the guest image, not in the
+   agent archive, so it moves by repinning the Profile — not by the release tag. The image built from
+   the redirect merge (`06eb3bb`) is:
+
+   ```text
+   ghcr.io/fanzzzd/runner-center-ubuntu-24.04-js@sha256:2d7f1488ee1c4b27c9038bfd00f93cbef026e111517eaf530176e812968b649b
+   ```
+
+   Set that as `RC_IMAGE_RELEASE` in the Profile's `.env` and restart the controller, which patches
+   the `profiles` row; warm and new microVMs then boot the new guest. Confirm the running image
+   afterward — a Profile that silently kept the old digest is the most likely reason the redirect
+   never appears.
+
+3. **A runtime pointed at the service.** On each Worker's `runner-center-runtime.service`, set the
+   shared key and the service URL, and open egress to the service so the guest network policy does
+   not drop it:
+
+   ```bash
+   RC_CACHE_SIGNING_KEY_FILE=/etc/runner-center/cache-signing-key   # the §2 key, 0600, root
+   RC_CACHE_SERVICE_URL=https://cache.internal:8721                 # reachable from the guest subnet
+   RC_EGRESS_ALLOW=...,cache.internal                               # add the service host; keep the rest
+   ```
+
+   The service must sit where a guest job can reach it. A store or service on a Worker's own host is
+   dropped by the guest network policy (§1, Case A): reach it over the bridge as a routed
+   destination, never by holing the host-input drop. Restart the runtime.
+
+4. **A controller that pushes facts.** Set `RC_CACHE_FACTS_URL` (the same service, its admin path is
+   internal to the client) and `RC_CACHE_SIGNING_KEY` on the controller, both together or neither,
+   then `deploy:control-plane`. Without the push, every job scopes to nothing and reads a cold cache —
+   safe, but pointless.
+
+### Verify
+
+Dispatch one job that saves and restores a cache. In the service log (§5) a `cache entry saved`
+followed by a hit on the next run, both under `blobs/<owner>/<repo>/`, is the whole chain working:
+bearer minted, facts pushed, scope resolved, TLS terminated in the guest. In the guest, the runner's
+environment carries `NODE_EXTRA_CA_CERTS` pointing at the interceptor's CA; its absence means the
+redirect did not come up and the job fell back to GitHub, which is a slower success, never a failure.
+
+### Roll back
+
+Unset the runtime's `RC_CACHE_SIGNING_KEY_FILE` (or `RC_CACHE_SIGNING_KEY`, whichever step 3 set) and
+`RC_CACHE_SERVICE_URL` and restart it. The runtime then
+mints no bearer and hands the guest no service URL, the redirect stays inert, and jobs go direct to
+GitHub — the same fall-back a failed redirect already takes. Repinning the Profile to the previous
+image digest is the same edit as step 2. Nothing on a Worker is destroyed by either.
+
+### The one open release step
+
+Step 1's release is the first to publish the cache-service binary, so it is the first that must fill
+`AGENT_RELEASE.cacheService`. That digest is not free to pin: the cache-service binary stamps the
+release commit into itself (`-X main.commitSHA`, the same as the controller), so its checksum is a
+function of the commit — and the release gate rebuilds at the tagged commit and demands the pin
+match (`release.yml`, "Verify the Infra Agent and cache-service binaries match the deployment pin").
+A pin written into a commit cannot equal the checksum of a binary that embeds that commit's own hash.
+The archive `sha256`, which embeds the same commit-stamped controller, has carried this shape since
+it was introduced, so the release already has a way through; the cache-service target just has to
+join it. Resolve that in the release procedure before cutting step 1 — do not paper over it by
+tagging and retrying.
