@@ -6,11 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
@@ -63,6 +66,13 @@ func (c Config) validate() error {
 	return nil
 }
 
+// CachePublisher registers a runner's job facts with the cache service so the
+// service can scope that runner's cache to the job's repository. It is optional:
+// a controller with no cache configured leaves it nil and simply does not publish.
+type CachePublisher interface {
+	Push(ctx context.Context, facts cachefacts.Facts) error
+}
+
 // Scaler reconciles desired GitHub capacity against durable Attempts. The
 // mutex is not a state store; it only prevents overlapping reconciliations in
 // case the listener implementation becomes concurrent in a future release.
@@ -71,7 +81,25 @@ type Scaler struct {
 	store   fleet.Store
 	issuer  JITIssuer
 	newName func() (string, error)
+	cache   CachePublisher
+	logger  *slog.Logger
 	mu      sync.Mutex
+}
+
+// Option configures optional Scaler behaviour without widening the constructor
+// for every caller that does not use it.
+type Option func(*Scaler)
+
+// WithCachePublisher makes the Scaler publish each job's facts to the cache
+// service at JobStarted. The logger records a failed publish; a nil logger keeps
+// the Scaler's default.
+func WithCachePublisher(cache CachePublisher, logger *slog.Logger) Option {
+	return func(s *Scaler) {
+		s.cache = cache
+		if logger != nil {
+			s.logger = logger
+		}
+	}
 }
 
 func NewScaler(
@@ -79,6 +107,7 @@ func NewScaler(
 	store fleet.Store,
 	issuer JITIssuer,
 	newName func() (string, error),
+	opts ...Option,
 ) (*Scaler, error) {
 	if err := config.validate(); err != nil {
 		return nil, fmt.Errorf("invalid scaler config: %w", err)
@@ -92,7 +121,17 @@ func NewScaler(
 	if newName == nil {
 		return nil, errors.New("runner name generator is required")
 	}
-	return &Scaler{config: config, store: store, issuer: issuer, newName: newName}, nil
+	scaler := &Scaler{
+		config:  config,
+		store:   store,
+		issuer:  issuer,
+		newName: newName,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for _, opt := range opts {
+		opt(scaler)
+	}
+	return scaler, nil
 }
 
 func (s *Scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int) (int, error) {
@@ -211,6 +250,10 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 	if job == nil {
 		return errors.New("job started message is nil")
 	}
+	// Publish before recording the start so the facts are in place by the time
+	// the runner issues its first cache request. This is best effort: the cache
+	// is an optimization, so a publish failure must not fail the job.
+	s.publishCacheFacts(ctx, job)
 	return s.store.MarkJobStarted(ctx, fleet.JobStarted{
 		Profile:          s.config.Profile,
 		RunnerName:       job.RunnerName,
@@ -226,6 +269,54 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 		AssignedAt:       job.ScaleSetAssignTime,
 		RunnerAssignedAt: job.RunnerAssignTime,
 	})
+}
+
+// publishCacheFacts tells the cache service which repository this runner's job
+// belongs to. A failure is logged, not returned: the worst case is a cold cache,
+// which is exactly what the service already serves when facts are missing.
+func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted) {
+	if s.cache == nil {
+		return
+	}
+	// A head repository, base ref and default branch would let a pull request
+	// read the base branch's cache; the scale-set message carries none of them,
+	// so a fork or pull-request job scopes to nothing and reads a cold cache,
+	// which is the safe direction. Branch pushes — the common case — carry the
+	// ref and event that grant read-write to their own scope.
+	err := s.cache.Push(ctx, cachefacts.Facts{
+		Runner:     job.RunnerName,
+		Repository: repositorySlug(job.OwnerName, job.RepositoryName),
+		Event:      job.EventName,
+		Ref:        refFromWorkflowRef(job.JobWorkflowRef),
+	})
+	if err != nil {
+		s.logger.Warn("could not publish cache facts", "runner", job.RunnerName, "error", err)
+	}
+}
+
+// repositorySlug joins an owner and repository into the "owner/repo" the cache
+// service scopes against; the scale-set message carries the two halves apart.
+func repositorySlug(owner, repository string) string {
+	owner = strings.TrimSpace(owner)
+	repository = strings.TrimSpace(repository)
+	if owner == "" || repository == "" {
+		return ""
+	}
+	return owner + "/" + repository
+}
+
+// refFromWorkflowRef pulls the git ref out of a job's workflow ref, whose shape
+// is "{owner}/{repo}/{path}@{ref}" — for example
+// "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main". The ref is
+// whatever follows the last "@"; a workflow ref without one yields no ref, which
+// the cache service treats as unscopable and refuses.
+func refFromWorkflowRef(workflowRef string) string {
+	workflowRef = strings.TrimSpace(workflowRef)
+	at := strings.LastIndex(workflowRef, "@")
+	if at < 0 {
+		return ""
+	}
+	return workflowRef[at+1:]
 }
 
 func (s *Scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {

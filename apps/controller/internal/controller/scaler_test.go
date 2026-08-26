@@ -8,9 +8,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 )
+
+type fakeCache struct {
+	pushed []cachefacts.Facts
+	err    error
+}
+
+func (f *fakeCache) Push(_ context.Context, facts cachefacts.Facts) error {
+	f.pushed = append(f.pushed, facts)
+	return f.err
+}
 
 type fakeStore struct {
 	active       []fleet.Attempt
@@ -288,6 +299,79 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 	}
 	if len(store.completed) != 1 || store.completed[0].FinishedAt != finishedAt {
 		t.Fatalf("completed events = %#v", store.completed)
+	}
+}
+
+// A branch push is the common case: the controller learns the repository from the
+// owner and repository halves, the ref from the workflow ref, and publishes them
+// so the runner's cache scopes to its own repository with read-write.
+func TestScalerPublishesCacheFactsAtJobStart(t *testing.T) {
+	cache := &fakeCache{}
+	scaler, err := NewScaler(
+		validConfig("rc-linux-js", 1),
+		&fakeStore{},
+		&fakeIssuer{},
+		names("unused"),
+		WithCachePublisher(cache, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
+		RunnerName: "rc-linux-js-a",
+		JobMessageBase: scaleset.JobMessageBase{
+			RepositoryName: "EraInfra",
+			OwnerName:      "Fanzzzd",
+			JobWorkflowRef: "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
+			EventName:      "push",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := cachefacts.Facts{
+		Runner:     "rc-linux-js-a",
+		Repository: "Fanzzzd/EraInfra",
+		Event:      "push",
+		Ref:        "refs/heads/main",
+	}
+	if len(cache.pushed) != 1 || cache.pushed[0] != want {
+		t.Fatalf("pushed facts = %#v, want one %#v", cache.pushed, want)
+	}
+}
+
+// The cache is an optimization: a publish that fails is logged, but the job start
+// is still recorded, because the fleet accounting must not depend on the cache.
+func TestScalerToleratesCacheFactsFailure(t *testing.T) {
+	cache := &fakeCache{err: errors.New("cache down")}
+	store := &fakeStore{}
+	scaler, err := NewScaler(
+		validConfig("rc-linux-js", 1),
+		store,
+		&fakeIssuer{},
+		names("unused"),
+		WithCachePublisher(cache, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
+		RunnerName: "rc-linux-js-a",
+		JobMessageBase: scaleset.JobMessageBase{
+			RepositoryName: "EraInfra",
+			OwnerName:      "Fanzzzd",
+			JobWorkflowRef: "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
+			EventName:      "push",
+		},
+	})
+	if err != nil {
+		t.Fatalf("a cache publish failure failed the job: %v", err)
+	}
+	if len(store.started) != 1 {
+		t.Fatalf("job start was not recorded despite cache failure: %#v", store.started)
 	}
 }
 
