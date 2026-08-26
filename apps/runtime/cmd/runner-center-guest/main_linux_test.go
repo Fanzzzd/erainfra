@@ -45,7 +45,7 @@ func TestResolverConfigRejectsAnEmptyPublication(t *testing.T) {
 
 func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
-	env := runnerEnv(metadata, "/home/runner", "runner")
+	env := runnerEnv(metadata, "/home/runner", "runner", "")
 
 	want := map[string]string{
 		"LANG":                           "C.UTF-8",
@@ -65,7 +65,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 			t.Fatalf("runner env %s = %q, want %q", name, got[name], value)
 		}
 	}
-	for _, absent := range []string{"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN"} {
+	for _, absent := range []string{"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN", "NODE_EXTRA_CA_CERTS"} {
 		if _, present := got[absent]; present {
 			t.Fatalf("runner env carries %s with no cache endpoint configured", absent)
 		}
@@ -73,7 +73,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 
 	metadata.CacheURL = "https://cache.internal:8080"
 	metadata.CacheServiceV2 = "false"
-	env = runnerEnv(metadata, "/home/runner", "runner")
+	env = runnerEnv(metadata, "/home/runner", "runner", "")
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "ACTIONS_CACHE_URL=https://cache.internal:8080") ||
 		!strings.Contains(joined, "ACTIONS_CACHE_SERVICE_V2=false") {
@@ -82,5 +82,18 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 	// Shared with the artifact service; writing them would break uploads (#106).
 	if strings.Contains(joined, "ACTIONS_RESULTS_URL") || strings.Contains(joined, "ACTIONS_RUNTIME_TOKEN") {
 		t.Fatalf("runner env must never carry the artifact-service pair: %q", joined)
+	}
+}
+
+// A guest whose in-guest cache interceptor came up hands the runner the CA path
+// as NODE_EXTRA_CA_CERTS: Node ships its own trust store, so without it the
+// runner's cache client would reject the leaf the interceptor serves.
+func TestRunnerEnvCarriesTheCacheTrustAnchorWhenRedirected(t *testing.T) {
+	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
+
+	env := runnerEnv(metadata, "/home/runner", "runner", "/usr/local/share/ca-certificates/erainfra-cache.crt")
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/erainfra-cache.crt") {
+		t.Fatalf("redirected runner env missing the cache trust anchor: %q", joined)
 	}
 }

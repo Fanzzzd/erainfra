@@ -153,7 +153,7 @@ func reportWarmReady() error {
 // also why an Environment= line on runner-center-guest.service can never reach
 // a job (#110 measured exactly that: LANG unset, glibc answering
 // ANSI_X3.4-1968 while the image's /etc/default/locale said C.UTF-8).
-func runnerEnv(metadata guest.Metadata, home, username string) []string {
+func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string) []string {
 	env := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=" + home,
@@ -179,6 +179,13 @@ func runnerEnv(metadata guest.Metadata, home, username string) []string {
 	}
 	if metadata.CacheServiceV2 != "" {
 		env = append(env, "ACTIONS_CACHE_SERVICE_V2="+metadata.CacheServiceV2)
+	}
+	// When the in-guest cache interceptor is up, the runner's Node cache client
+	// has to trust the leaf it serves. Node ships its own trust store and ignores
+	// the system one update-ca-certificates rebuilt, so it is pointed at the CA
+	// directly. Empty when there is no interceptor, and empty changes nothing.
+	if cacheTrustAnchorPath != "" {
+		env = append(env, "NODE_EXTRA_CA_CERTS="+cacheTrustAnchorPath)
 	}
 	return env
 }
@@ -230,6 +237,21 @@ func run(ctx context.Context) error {
 		groups = append(groups, uint32(parsed))
 	}
 
+	// Point the runner's GitHub cache traffic at an in-guest interceptor when the
+	// host handed this VM a cache. Best-effort: a redirect that will not set up
+	// leaves the guest talking to GitHub directly, exactly as a guest without a
+	// cache does, rather than failing the job.
+	cacheTrustAnchorPath := ""
+	if metadata.CacheServiceURL != "" && metadata.CacheRunnerToken != "" {
+		caPath, stop, cacheErr := startCacheRedirect(ctx, metadata, uint32(uid))
+		if cacheErr != nil {
+			fmt.Fprintf(os.Stderr, "job cache redirect disabled: %v\n", cacheErr)
+		} else {
+			defer stop()
+			cacheTrustAnchorPath = caPath
+		}
+	}
+
 	var command *exec.Cmd
 	if metadata.Kind == "experiment" {
 		command = exec.CommandContext(ctx, metadata.Command[0], metadata.Command[1:]...)
@@ -243,7 +265,7 @@ func run(ctx context.Context) error {
 	command.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups},
 	}
-	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username)
+	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username, cacheTrustAnchorPath)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start GitHub runner: %w", err)
 	}
