@@ -463,9 +463,11 @@ processes, and a mismatch fails closed rather than serving a wrong scope:
 | the Worker runtime | `RC_CACHE_SIGNING_KEY`(`_FILE`) | mints the runner bearer at claim                   |
 
 The repository a warm VM will serve is unknown when it boots, so the bearer names only the runner.
-The controller pushes the repository and event to the service at `JobStarted`, and the service
+The controller pushes the repository, event and ref to the service at `JobStarted`, and the service
 scopes the bearer to that repository at request time. This is why the controller needs a URL and the
-runtime does not push anything.
+runtime does not push anything. A fork or pull-request job carries no head repository or base ref in
+the scale-set message, so it scopes to nothing and reads a cold cache — the safe direction. A branch
+push, the common case, carries the ref that grants read-write to its own scope.
 
 ### Roll it out, in order
 
@@ -480,7 +482,7 @@ Each step is inert on its own; the cache serves its first byte only once all fou
    agent archive, so it moves by repinning the Profile — not by the release tag. The image built from
    the redirect merge (`06eb3bb`) is:
 
-   ```
+   ```text
    ghcr.io/fanzzzd/runner-center-ubuntu-24.04-js@sha256:2d7f1488ee1c4b27c9038bfd00f93cbef026e111517eaf530176e812968b649b
    ```
 
@@ -518,7 +520,8 @@ redirect did not come up and the job fell back to GitHub, which is a slower succ
 
 ### Roll back
 
-Unset `RC_CACHE_SIGNING_KEY`/`RC_CACHE_SERVICE_URL` on the runtime and restart it. The runtime then
+Unset the runtime's `RC_CACHE_SIGNING_KEY_FILE` (or `RC_CACHE_SIGNING_KEY`, whichever step 3 set) and
+`RC_CACHE_SERVICE_URL` and restart it. The runtime then
 mints no bearer and hands the guest no service URL, the redirect stays inert, and jobs go direct to
 GitHub — the same fall-back a failed redirect already takes. Repinning the Profile to the previous
 image digest is the same edit as step 2. Nothing on a Worker is destroyed by either.
