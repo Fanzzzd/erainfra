@@ -465,9 +465,9 @@ processes, and a mismatch fails closed rather than serving a wrong scope:
 The repository a warm VM will serve is unknown when it boots, so the bearer names only the runner.
 The controller pushes the repository, event and ref to the service at `JobStarted`, and the service
 scopes the bearer to that repository at request time. This is why the controller needs a URL and the
-runtime does not push anything. A fork or pull-request job carries no head repository or base ref in
-the scale-set message, so it scopes to nothing and reads a cold cache — the safe direction. A branch
-push, the common case, carries the ref that grants read-write to its own scope.
+runtime does not push anything. The controller names no head repository, base ref or default branch,
+so a `pull_request` job scopes to nothing and reads a cold cache — the safe direction — while every
+other event, a branch push included, gets read-write to its own ref.
 
 ### Roll it out, in order
 
