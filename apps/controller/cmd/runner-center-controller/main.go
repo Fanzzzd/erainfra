@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/config"
 	rccontroller "github.com/Fanzzzd/erainfra/apps/controller/internal/controller"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/convexstore"
@@ -17,6 +19,13 @@ import (
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )
+
+// cacheFactsTTL is how long a pushed job's facts stay usable. It must outlive the
+// job so the cache keeps working for its whole run; GitHub's default job timeout
+// is six hours, and a longer-running job simply reads a cold cache past this
+// point. The entries are tiny and a runner name is never reused, so erring long
+// costs only trivial memory.
+const cacheFactsTTL = 6 * time.Hour
 
 var (
 	version   = "dev"
@@ -95,6 +104,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	scalerOpts, err := cacheOptions(cfg, logger)
+	if err != nil {
+		return err
+	}
 	scaler, err := rccontroller.NewScaler(
 		rccontroller.Config{
 			Profile:      cfg.Profile,
@@ -108,6 +121,7 @@ func run() error {
 		store,
 		issuer,
 		func() (string, error) { return githubscale.RunnerName(cfg.Profile) },
+		scalerOpts...,
 	)
 	if err != nil {
 		return err
@@ -133,6 +147,23 @@ func run() error {
 		return fmt.Errorf("run GitHub scale-set listener: %w", err)
 	}
 	return nil
+}
+
+// cacheOptions builds the Scaler's cache-publishing option when a cache service
+// is configured. With no RC_CACHE_FACTS_URL it returns nothing, and the
+// controller runs exactly as it did before the cache existed.
+func cacheOptions(cfg config.Config, logger *slog.Logger) ([]rccontroller.Option, error) {
+	if cfg.CacheFactsURL == "" {
+		return nil, nil
+	}
+	publisher, err := cachefacts.New(cfg.CacheFactsURL, []byte(cfg.CacheSigningKey), cacheFactsTTL)
+	if err != nil {
+		return nil, fmt.Errorf("configure cache facts client: %w", err)
+	}
+	logger.Info("cache facts publishing enabled", "url", cfg.CacheFactsURL)
+	return []rccontroller.Option{
+		rccontroller.WithCachePublisher(publisher, logger.WithGroup("cachefacts")),
+	}, nil
 }
 
 func newGitHubClient(cfg config.Config) (*scaleset.Client, error) {

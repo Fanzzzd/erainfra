@@ -31,6 +31,8 @@ type Config struct {
 	LogLevel        slog.Level
 	GitHubApp       *scaleset.GitHubAppAuth
 	GitHubToken     string
+	CacheFactsURL   string
+	CacheSigningKey string
 }
 
 func Load() (Config, error) {
@@ -74,6 +76,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	config.GitHubToken, err = readSecret("RC_GITHUB_TOKEN", "RC_GITHUB_TOKEN_FILE")
+	if err != nil {
+		return Config{}, err
+	}
+	config.CacheFactsURL = strings.TrimSpace(os.Getenv("RC_CACHE_FACTS_URL"))
+	config.CacheSigningKey, err = readSecret("RC_CACHE_SIGNING_KEY", "RC_CACHE_SIGNING_KEY_FILE")
 	if err != nil {
 		return Config{}, err
 	}
@@ -187,6 +194,14 @@ func (c Config) Validate() error {
 	}
 	if c.GitHubApp != nil && c.GitHubToken != "" {
 		return errors.New("configure GitHub App credentials or RC_GITHUB_TOKEN, not both")
+	}
+	// The cache is optional, but half of it is a misconfiguration: a URL with no
+	// key cannot sign a push, and a key with no URL has nowhere to send one.
+	if (c.CacheFactsURL == "") != (c.CacheSigningKey == "") {
+		return errors.New("RC_CACHE_FACTS_URL and RC_CACHE_SIGNING_KEY must be set together")
+	}
+	if c.CacheSigningKey != "" && len(c.CacheSigningKey) < 32 {
+		return errors.New("RC_CACHE_SIGNING_KEY must be at least 32 bytes")
 	}
 	return nil
 }

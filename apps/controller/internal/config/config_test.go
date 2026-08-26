@@ -35,6 +35,36 @@ func TestValidateFitPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateCacheFacts(t *testing.T) {
+	key := "erainfra-cache-service-signing-key-0123456789"
+
+	both := validConfig()
+	both.CacheFactsURL = "http://127.0.0.1:8721"
+	both.CacheSigningKey = key
+	if err := both.Validate(); err != nil {
+		t.Fatalf("a URL and key together should be valid: %v", err)
+	}
+
+	urlOnly := validConfig()
+	urlOnly.CacheFactsURL = "http://127.0.0.1:8721"
+	if err := urlOnly.Validate(); err == nil {
+		t.Fatal("a cache URL with no signing key was accepted")
+	}
+
+	keyOnly := validConfig()
+	keyOnly.CacheSigningKey = key
+	if err := keyOnly.Validate(); err == nil {
+		t.Fatal("a signing key with no cache URL was accepted")
+	}
+
+	shortKey := validConfig()
+	shortKey.CacheFactsURL = "http://127.0.0.1:8721"
+	shortKey.CacheSigningKey = "too-short"
+	if err := shortKey.Validate(); err == nil {
+		t.Fatal("a short signing key was accepted")
+	}
+}
+
 func TestValidateWarmPool(t *testing.T) {
 	config := validConfig()
 	config.MaxRunners = 4
