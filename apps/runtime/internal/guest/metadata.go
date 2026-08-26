@@ -21,7 +21,11 @@ type Metadata struct {
 	ResultToken    string   `json:"result_token"`
 	CacheURL       string   `json:"cache_url"`
 	CacheServiceV2 string   `json:"cache_service_v2"`
-	ShutdownOnExit bool     `json:"shutdown_on_exit"`
+	// CacheRunnerToken is the runner-auth bearer the in-guest cache interceptor
+	// presents to the cache service. Empty means no cache; the guest runs exactly
+	// as it did before the cache existed.
+	CacheRunnerToken string `json:"cache_runner_token,omitempty"`
+	ShutdownOnExit   bool   `json:"shutdown_on_exit"`
 }
 
 func (m Metadata) Validate() error {

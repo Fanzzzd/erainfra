@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/containerd/containerd"
@@ -30,11 +31,21 @@ import (
 type Runtime struct {
 	config Config
 	pool   *warmPoolManager
+	// cacheIssuer mints the runner-auth cache bearer, or is nil when no signing
+	// key is configured — a fleet without a cache. It is built once and safe for
+	// concurrent use.
+	cacheIssuer *cachetoken.Issuer
 
 	recoveryMu sync.Mutex
 	activeMu   sync.Mutex
 	active     map[string]*machineLease
 }
+
+// cacheBearerTTL is how long a minted runner-auth bearer stays valid. It must
+// outlive the job so the cache keeps working for its whole run; it matches the
+// controller's fact lifetime, and a longer-running job simply reads a cold cache
+// past this point.
+const cacheBearerTTL = 6 * time.Hour
 
 // Recover removes leases and private work directories left by a runtime process
 // that was killed before its normal per-Attempt cleanup completed. Serve calls
@@ -134,8 +145,31 @@ func New(config Config) (*Runtime, error) {
 		return nil, fmt.Errorf("invalid Firecracker configuration: %w", err)
 	}
 	runtime := &Runtime{config: config, active: make(map[string]*machineLease)}
+	if len(config.CacheSigningKey) > 0 {
+		issuer, err := cachetoken.NewIssuer(config.CacheSigningKey, cacheBearerTTL)
+		if err != nil {
+			return nil, fmt.Errorf("configure cache bearer issuer: %w", err)
+		}
+		runtime.cacheIssuer = issuer
+	}
 	runtime.pool = newWarmPoolManager(runtime.newWarmSlot)
 	return runtime, nil
+}
+
+// mintCacheBearer mints the runner-auth bearer for a claim, or returns empty when
+// no cache is configured or the runner name will not scope a token. It never
+// fails the claim: a cache the host cannot mint for is a cold cache, which is the
+// safe direction, so a mint error is logged and the Attempt proceeds.
+func (r *Runtime) mintCacheBearer(runnerName string) string {
+	if r.cacheIssuer == nil {
+		return ""
+	}
+	token, _, err := r.cacheIssuer.IssueRunner(runnerName)
+	if err != nil {
+		logrus.WithError(err).WithField("runner", runnerName).Warn("could not mint cache bearer")
+		return ""
+	}
+	return token
 }
 
 func (r *Runtime) activeLeases() map[string]*machineLease {
@@ -424,6 +458,10 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if _, err := r.Preflight(ctx); err != nil {
 		return nil, err
 	}
+	// Mint the runner-auth bearer here, at claim, where the runner name is known.
+	// Both the warm-claim and cold-boot paths below read it back out of the spec
+	// in metadataFor, so it rides the one MMDS write each path already makes.
+	spec.CacheRunnerToken = r.mintCacheBearer(spec.RunnerName)
 	lease, err := r.pool.Claim(ctx, spec)
 	if err == nil {
 		return lease, nil
@@ -603,6 +641,7 @@ func metadataFor(spec executor.Spec) map[string]any {
 					"result_token":       spec.ResultToken,
 					"cache_url":          spec.CacheURL,
 					"cache_service_v2":   spec.CacheServiceV2,
+					"cache_runner_token": spec.CacheRunnerToken,
 					"shutdown_on_exit":   true,
 				},
 			},

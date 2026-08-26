@@ -34,6 +34,13 @@ type Spec struct {
 	// character: one seam, two executors, one set of decisions (#81).
 	CacheURL       string
 	CacheServiceV2 string
+	// CacheRunnerToken is the runner-auth bearer the host mints at claim, or
+	// empty. It names only the runner, not a repository — a warm VM boots before
+	// its repository is known — so the cache service scopes it at request time
+	// from facts the controller pushed. The host sets it; a caller leaves it
+	// empty, and empty composes exactly the environment a fleet without a cache
+	// composes. It rides the same MMDS write as the rest of the metadata.
+	CacheRunnerToken string
 	// JobIdentity is empty unless this Attempt runs with the v2 job cache. The
 	// host mints the Attempt's scoped cache bearer from it; empty mints nothing,
 	// composing exactly the environment a fleet without a cache composes.

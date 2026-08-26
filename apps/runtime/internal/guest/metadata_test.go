@@ -49,6 +49,37 @@ func TestMetadataClientUsesMMDSv2WithoutLeakingJIT(t *testing.T) {
 	}
 }
 
+func TestMetadataCarriesTheRunnerBearer(t *testing.T) {
+	const bearer = "erainfra-cache-runner-v1.payload.signature"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/latest/api/token":
+			_, _ = response.Write([]byte("mmds-token"))
+		case "/latest/meta-data/runner-center":
+			_ = json.NewEncoder(response).Encode(Metadata{
+				RunnerName:       "runner-a",
+				JITConfig:        "jit",
+				CacheRunnerToken: bearer,
+				ShutdownOnExit:   true,
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	metadata, err := NewMetadataClient(server.URL, server.Client()).Fetch(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.CacheRunnerToken != bearer {
+		t.Fatalf("cache_runner_token = %q, want %q", metadata.CacheRunnerToken, bearer)
+	}
+	if err := metadata.Validate(); err != nil {
+		t.Fatalf("a bearer-carrying metadata failed validation: %v", err)
+	}
+}
+
 func TestMetadataClientWaitsForClaimUntilContextEnds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		http.Error(response, "not claimed", http.StatusNotFound)
