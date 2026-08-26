@@ -231,13 +231,35 @@ func (i *Issuer) now() time.Time {
 // claims that token carries. The claims are returned as well so the caller can
 // log what it granted without parsing its own token back.
 func (i *Issuer) Issue(facts JobFacts) (string, Claims, error) {
+	claims, err := Scope(facts)
+	if err != nil {
+		return "", Claims{}, err
+	}
+	now := i.now().UTC()
+	claims.IssuedAt = now.Unix()
+	claims.ExpiresAt = now.Add(i.ttl).Unix()
+
+	token, err := sign(i.key, claims)
+	if err != nil {
+		return "", Claims{}, err
+	}
+	return token, claims, nil
+}
+
+// Scope derives the claims a set of job facts authorizes — the repository, the
+// read and write ref scopes, and read-versus-write — without minting or timing a
+// token. It is the whole of ADR 0007 rule 2. It is exported because the decision
+// is made in two places over the same rule: Issue applies it at mint time, and
+// the cache service applies it at request time to the facts the controller pushed
+// for the runner, because a VM's repository is not known when it boots.
+func Scope(facts JobFacts) (Claims, error) {
 	repository := strings.TrimSpace(facts.Repository)
 	if err := ValidateRepository(repository); err != nil {
-		return "", Claims{}, err
+		return Claims{}, err
 	}
 	ref := strings.TrimSpace(facts.Ref)
 	if ref == "" {
-		return "", Claims{}, errors.New("cache token needs a ref")
+		return Claims{}, errors.New("cache token needs a ref")
 	}
 
 	claims := Claims{
@@ -288,15 +310,7 @@ func (i *Issuer) Issue(facts JobFacts) (string, Claims, error) {
 		claims.Permission = PermissionReadWrite
 	}
 
-	now := i.now().UTC()
-	claims.IssuedAt = now.Unix()
-	claims.ExpiresAt = now.Add(i.ttl).Unix()
-
-	token, err := sign(i.key, claims)
-	if err != nil {
-		return "", Claims{}, err
-	}
-	return token, claims, nil
+	return claims, nil
 }
 
 // IssueRunner mints a runner-auth token: it names the runner and nothing else.
