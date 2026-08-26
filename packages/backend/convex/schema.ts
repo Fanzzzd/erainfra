@@ -332,7 +332,10 @@ export default defineSchema({
     .index("by_profile_cleanupPending", ["profile", "runnerCleanupPending"])
     .index("by_state", ["state"])
     .index("by_state_cleanupPending_finishedAt", ["state", "runnerCleanupPending", "finishedAt"])
-    .index("by_machine_state", ["machineId", "state"]),
+    // The finishedAt column exists for the Worker poll: it bounds the
+    // completed range to the executor-drain window instead of the machine's
+    // whole history. Live-state lookups use the (machineId, state) prefix.
+    .index("by_machine_state_finishedAt", ["machineId", "state", "finishedAt"]),
 
   // Credentials are deliberately absent from every scheduler/reconcile scan.
   // A Worker point-reads this row exactly once while claiming its Attempt.
