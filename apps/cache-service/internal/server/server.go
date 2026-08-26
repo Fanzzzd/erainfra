@@ -68,6 +68,10 @@ type Server struct {
 	mu           sync.Mutex
 	reservations map[int64]*reservation
 	sessions     map[string]*session
+	// facts maps a runner name to the job facts the controller pushed for it.
+	// It is how a request's repository and permission are known, since a VM's
+	// repository is not known when it boots.
+	facts map[string]factsEntry
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -93,6 +97,7 @@ func New(cfg config.Config, store objectstore.Store, logger *slog.Logger) (*Serv
 		logger:       logger,
 		reservations: map[int64]*reservation{},
 		sessions:     map[string]*session{},
+		facts:        map[string]factsEntry{},
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 	}
@@ -152,6 +157,11 @@ func (s *Server) sweep() {
 					delete(s.sessions, id)
 				}
 			}
+			for runner, entry := range s.facts {
+				if now.After(entry.expires) {
+					delete(s.facts, runner)
+				}
+			}
 			s.mu.Unlock()
 		}
 	}
@@ -163,6 +173,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == healthPath:
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
+	case strings.Contains(path, adminFactsMarker):
+		s.serveRegisterFacts(w, r)
 	case strings.Contains(path, blobMarker):
 		s.serveBlob(w, r, after(path, blobMarker))
 	case strings.Contains(path, downloadMarker):
@@ -181,15 +193,18 @@ func after(path, marker string) string {
 	return strings.TrimPrefix(path[index+len(marker):], "/")
 }
 
-// authenticate turns the bearer token into claims. Every failure is the same
-// answer to the client and a distinct line in the log: a job learns only that
-// it is not authorised, and an operator learns which of malformed, forged and
-// expired it was.
+// authenticate turns the bearer token into claims. The token names a runner, not
+// a repository — the repository is not known when the runner's VM boots — so this
+// authenticates the runner, looks up the facts the controller pushed for it, and
+// scopes them here with the same rule the issuer would have applied at mint time.
+// Every failure is the same answer to the client and a distinct line in the log:
+// a job learns only that it is not authorised, and an operator learns which of
+// malformed, forged, expired, unknown-runner and unscopable it was.
 //
-// A restore that fails here is a 401 and not a silent miss on purpose. A miss
-// is what a working cache says about a key it does not have; a
-// misconfigured token would otherwise look exactly like a cache that is simply
-// always cold.
+// A restore that fails here is a 401 and not a silent miss on purpose. A miss is
+// what a working cache says about a key it does not have; a misconfigured token,
+// or facts that never arrived, would otherwise look exactly like a cache that is
+// simply always cold.
 func (s *Server) authenticate(r *http.Request) (cachetoken.Claims, bool) {
 	header := r.Header.Get("Authorization")
 	raw, found := strings.CutPrefix(header, "Bearer ")
@@ -200,9 +215,19 @@ func (s *Server) authenticate(r *http.Request) (cachetoken.Claims, bool) {
 		s.logger.Warn("cache request carried no bearer token", "path", r.URL.Path)
 		return cachetoken.Claims{}, false
 	}
-	claims, err := s.verify.Verify(strings.TrimSpace(raw), s.now())
+	runner, err := s.verify.VerifyRunner(strings.TrimSpace(raw), s.now())
 	if err != nil {
-		s.logger.Warn("cache token rejected", "path", r.URL.Path, "reason", err)
+		s.logger.Warn("cache runner token rejected", "path", r.URL.Path, "reason", err)
+		return cachetoken.Claims{}, false
+	}
+	facts, ok := s.lookupFacts(runner.Runner, s.now())
+	if !ok {
+		s.logger.Warn("no job facts for runner", "runner", runner.Runner, "path", r.URL.Path)
+		return cachetoken.Claims{}, false
+	}
+	claims, err := cachetoken.Scope(facts)
+	if err != nil {
+		s.logger.Warn("runner facts do not scope a cache", "runner", runner.Runner, "reason", err)
 		return cachetoken.Claims{}, false
 	}
 	return claims, true

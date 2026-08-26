@@ -36,6 +36,7 @@ type harness struct {
 
 	mu    sync.Mutex
 	clock time.Time
+	seq   int
 }
 
 func newHarness(t *testing.T, mutate func(*config.Config)) *harness {
@@ -118,9 +119,23 @@ func (h *harness) advance(by time.Duration) {
 	h.clock = h.clock.Add(by)
 }
 
+// token is how a test expresses "a request authorized for these facts". In
+// production the two halves arrive separately — the controller pushes the facts
+// at JobStarted and the host mints the runner token at claim — so the harness
+// does both: it registers the facts under a fresh runner and returns that
+// runner's token. The service scopes the request from the facts exactly as it
+// would in production.
 func (h *harness) token(facts cachetoken.JobFacts) string {
 	h.t.Helper()
-	token, _, err := h.issuer.Issue(facts)
+	h.mu.Lock()
+	h.seq++
+	runner := "rc-test-" + strconv.Itoa(h.seq)
+	h.mu.Unlock()
+
+	// Outlive the runner token (30m) so the token's own expiry is what a
+	// clock-advancing test trips, matching the old authorization token's lifetime.
+	h.server.registerFacts(runner, facts, h.now().Add(time.Hour))
+	token, _, err := h.issuer.IssueRunner(runner)
 	if err != nil {
 		h.t.Fatal(err)
 	}
