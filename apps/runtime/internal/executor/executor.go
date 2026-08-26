@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
 var (
@@ -41,52 +39,6 @@ type Spec struct {
 	// empty, and empty composes exactly the environment a fleet without a cache
 	// composes. It rides the same MMDS write as the rest of the metadata.
 	CacheRunnerToken string
-	// JobIdentity is empty unless this Attempt runs with the v2 job cache. The
-	// host mints the Attempt's scoped cache bearer from it; empty mints nothing,
-	// composing exactly the environment a fleet without a cache composes.
-	JobIdentity JobIdentity
-}
-
-// JobIdentity carries the GitHub facts the job-cache interceptor mints a scoped
-// bearer from (ADR 0009 §5): which repository this Attempt runs for, and enough
-// of the event to decide read versus write. It mirrors cachetoken.JobFacts, but
-// executor stays dependency-free — the host maps this to cachetoken.JobFacts
-// where the bearer is actually minted. Every field is optional; a fleet without
-// a cache leaves the whole struct zero.
-type JobIdentity struct {
-	Repository     string
-	HeadRepository string
-	Event          string
-	Ref            string
-	BaseRef        string
-	DefaultBranch  string
-	Attempt        string
-}
-
-// validate rejects values that cannot safely flow into a signed token and the
-// guest's MMDS. Empty is always valid; a set field must be valid UTF-8, at most
-// 256 runes, and every rune printable — no whitespace (ASCII or Unicode, e.g. a
-// no-break space), no control character, nothing non-printable. The bound counts
-// runes, not bytes, so a legitimate multibyte value is not rejected for its
-// encoding length.
-func (j JobIdentity) validate() error {
-	for _, f := range []string{
-		j.Repository, j.HeadRepository, j.Event,
-		j.Ref, j.BaseRef, j.DefaultBranch, j.Attempt,
-	} {
-		if !utf8.ValidString(f) {
-			return errors.New("job identity fields must be valid UTF-8")
-		}
-		if utf8.RuneCountInString(f) > 256 {
-			return errors.New("job identity fields must be at most 256 characters")
-		}
-		if strings.ContainsFunc(f, func(r rune) bool {
-			return unicode.IsSpace(r) || unicode.IsControl(r) || !unicode.IsPrint(r)
-		}) {
-			return errors.New("job identity fields must not contain whitespace, control, or non-printable characters")
-		}
-	}
-	return nil
 }
 
 // Profile is the runtime-owned capacity contract for one immutable Image
@@ -169,9 +121,6 @@ func (s Spec) Validate() error {
 		return errors.New("kind must be ci or experiment")
 	}
 	if err := validateCacheEndpoint(s.CacheURL, s.CacheServiceV2); err != nil {
-		return err
-	}
-	if err := s.JobIdentity.validate(); err != nil {
 		return err
 	}
 	return nil
