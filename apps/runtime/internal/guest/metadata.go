@@ -21,6 +21,9 @@ type Metadata struct {
 	ResultToken    string   `json:"result_token"`
 	CacheURL       string   `json:"cache_url"`
 	CacheServiceV2 string   `json:"cache_service_v2"`
+	// CacheServiceURL is where the in-guest interceptor forwards CacheService
+	// requests. Empty means no cache; the guest runs exactly as before.
+	CacheServiceURL string `json:"cache_service_url,omitempty"`
 	// CacheRunnerToken is the runner-auth bearer the in-guest cache interceptor
 	// presents to the cache service. Empty means no cache; the guest runs exactly
 	// as it did before the cache existed.

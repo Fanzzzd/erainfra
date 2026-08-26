@@ -641,6 +641,7 @@ func metadataFor(spec executor.Spec) map[string]any {
 					"result_token":       spec.ResultToken,
 					"cache_url":          spec.CacheURL,
 					"cache_service_v2":   spec.CacheServiceV2,
+					"cache_service_url":  spec.CacheServiceURL,
 					"cache_runner_token": spec.CacheRunnerToken,
 					"shutdown_on_exit":   true,
 				},

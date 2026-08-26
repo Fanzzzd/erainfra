@@ -32,6 +32,11 @@ type Spec struct {
 	// character: one seam, two executors, one set of decisions (#81).
 	CacheURL       string
 	CacheServiceV2 string
+	// CacheServiceURL is where the in-guest interceptor forwards CacheService
+	// requests — EraInfra's cache service on the Worker's internal network, or
+	// empty. It is operator configuration, not a secret, and empty composes
+	// exactly the environment a fleet without a cache composes.
+	CacheServiceURL string
 	// CacheRunnerToken is the runner-auth bearer the host mints at claim, or
 	// empty. It names only the runner, not a repository — a warm VM boots before
 	// its repository is known — so the cache service scopes it at request time

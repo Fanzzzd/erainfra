@@ -193,16 +193,17 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		return 2, err
 	}
 	spec := executor.Spec{
-		Kind:           "ci",
-		AttemptID:      strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID")),
-		RunnerName:     strings.TrimSpace(os.Getenv("RC_RUNNER_NAME")),
-		Profile:        strings.TrimSpace(os.Getenv("RC_PROFILE")),
-		ImageRelease:   strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
-		VCPUs:          vCPUs,
-		MemoryMiB:      memoryMiB,
-		JITConfig:      strings.TrimSpace(string(payload)),
-		CacheURL:       strings.TrimSpace(os.Getenv("RC_CACHE_URL")),
-		CacheServiceV2: strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_V2")),
+		Kind:            "ci",
+		AttemptID:       strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID")),
+		RunnerName:      strings.TrimSpace(os.Getenv("RC_RUNNER_NAME")),
+		Profile:         strings.TrimSpace(os.Getenv("RC_PROFILE")),
+		ImageRelease:    strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
+		VCPUs:           vCPUs,
+		MemoryMiB:       memoryMiB,
+		JITConfig:       strings.TrimSpace(string(payload)),
+		CacheURL:        strings.TrimSpace(os.Getenv("RC_CACHE_URL")),
+		CacheServiceV2:  strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_V2")),
+		CacheServiceURL: strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_URL")),
 	}
 	payload = nil
 	if err := spec.Validate(); err != nil {
