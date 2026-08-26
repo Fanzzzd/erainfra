@@ -329,3 +329,76 @@ func TestValidateRepository(t *testing.T) {
 		}
 	}
 }
+
+func TestRunnerTokenRoundTrip(t *testing.T) {
+	token, minted, err := newTestIssuer(t).IssueRunner("rc-linux-js-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := newTestVerifier(t).VerifyRunner(token, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Runner != "rc-linux-js-a" || claims.Runner != minted.Runner {
+		t.Errorf("verified runner %q, minted %q", claims.Runner, minted.Runner)
+	}
+	if claims.ExpiresAt != testNow.Add(30*time.Minute).Unix() {
+		t.Errorf("exp = %d, want the configured lifetime", claims.ExpiresAt)
+	}
+}
+
+func TestIssueRunnerRefusesUnsafeNames(t *testing.T) {
+	issuer := newTestIssuer(t)
+	for _, bad := range []string{"", "   ", "../escape", "has space", "rune\x00null"} {
+		if _, _, err := issuer.IssueRunner(bad); !errors.Is(err, ErrNoRunner) {
+			t.Errorf("IssueRunner(%q): err = %v, want ErrNoRunner", bad, err)
+		}
+	}
+}
+
+func TestVerifyRunnerRejectsForgedTamperedAndExpired(t *testing.T) {
+	token, _, err := newTestIssuer(t).IssueRunner("rc-linux-js-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := newTestVerifier(t)
+
+	if _, err := verifier.VerifyRunner(token, testNow.Add(2*time.Hour)); !errors.Is(err, ErrExpired) {
+		t.Errorf("expired: err = %v, want ErrExpired", err)
+	}
+	other, _ := NewVerifier([]byte("a-completely-different-key-0123456789-abcdef"))
+	if _, err := other.VerifyRunner(token, testNow); !errors.Is(err, ErrSignature) {
+		t.Errorf("wrong key: err = %v, want ErrSignature", err)
+	}
+	parts := strings.Split(token, ".")
+	tampered := parts[0] + "." + strings.Repeat("A", len(parts[1])) + "." + parts[2]
+	if _, err := verifier.VerifyRunner(tampered, testNow); !errors.Is(err, ErrSignature) {
+		t.Errorf("tampered: err = %v, want ErrSignature", err)
+	}
+}
+
+// The two token kinds share a key but not a wire format: a runner token must
+// never verify as an authorization token, nor the reverse. Otherwise a runner
+// token — which names only a runner — could be read as carrying a repository
+// scope, or an authorization token could stand in as proof of runner identity.
+func TestRunnerAndAuthorizationTokensDoNotCross(t *testing.T) {
+	issuer := newTestIssuer(t)
+	verifier := newTestVerifier(t)
+
+	authToken, _, err := issuer.Issue(JobFacts{
+		Repository: "Fanzzzd/erainfra", Event: "push", Ref: "refs/heads/main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerToken, _, err := issuer.IssueRunner("rc-linux-js-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := verifier.VerifyRunner(authToken, testNow); !errors.Is(err, ErrMalformed) {
+		t.Errorf("authorization token verified as a runner token: err = %v, want ErrMalformed", err)
+	}
+	if _, err := verifier.Verify(runnerToken, testNow); !errors.Is(err, ErrMalformed) {
+		t.Errorf("runner token verified as an authorization token: err = %v, want ErrMalformed", err)
+	}
+}

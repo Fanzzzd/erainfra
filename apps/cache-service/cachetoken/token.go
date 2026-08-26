@@ -40,6 +40,14 @@ const (
 // a different layout is rejected by this verifier rather than misparsed.
 const tokenPrefix = "erainfra-cache-v1"
 
+// runnerTokenPrefix versions the runner-auth token, distinct from tokenPrefix so
+// a runner token can never be parsed as an authorization token or the reverse.
+// The runner token exists because a VM's repository is unknown when it boots: the
+// scale set assigns the job to an already-running runner, so the host can mint an
+// identity ("this is runner X") but not a scope. The service resolves the scope
+// from the facts the controller pushed for X.
+const runnerTokenPrefix = "erainfra-cache-runner-v1"
+
 // MinSigningKeyLen is the shortest shared secret this package accepts. HMAC
 // tolerates short keys; an operator who pastes one has not built a secret.
 const MinSigningKeyLen = 32
@@ -49,6 +57,7 @@ var (
 	ErrSignature       = errors.New("cache token signature does not verify")
 	ErrExpired         = errors.New("cache token has expired")
 	ErrNoRepository    = errors.New("cache token carries no repository claim")
+	ErrNoRunner        = errors.New("cache runner token carries no runner claim")
 	ErrShortSigningKey = fmt.Errorf("cache signing key must be at least %d bytes", MinSigningKeyLen)
 )
 
@@ -57,6 +66,11 @@ var (
 // into a safe object-key segment is refused at the door rather than escaped
 // downstream.
 var repositorySegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// runnerNamePattern is the shape of a runner name — the same safe-identity charset
+// the executor uses for RunnerName, so a runner token key is safe to look facts up
+// by and safe to log.
+var runnerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // Claims is what the service gets to know about a job. Every field is minted
 // by the issuer; none of it is copied from a request body.
@@ -115,6 +129,31 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// RunnerClaims is the whole of a runner-auth token: which runner made the
+// request, and when the token was minted and expires. It carries no
+// authorization — no repository, no permission. The cache service verifies it to
+// learn the runner un-spoofably, then resolves that runner's repository and
+// permission from the facts the controller pushed at JobStarted. It exists
+// because those facts are not known when the runner's VM boots.
+type RunnerClaims struct {
+	Runner    string `json:"runner"`
+	IssuedAt  int64  `json:"iat"`
+	ExpiresAt int64  `json:"exp"`
+}
+
+// ValidateRunner refuses anything that is not a safe runner-name identity. Both
+// ends need the same answer to "is this a runner claim at all", so it is
+// exported and used by mint and verify alike.
+func ValidateRunner(runner string) error {
+	if runner == "" {
+		return ErrNoRunner
+	}
+	if !runnerNamePattern.MatchString(runner) {
+		return fmt.Errorf("%w: %q", ErrNoRunner, runner)
+	}
+	return nil
 }
 
 // JobFacts is what the controller knows at JobStarted. It is the whole input
@@ -260,6 +299,29 @@ func (i *Issuer) Issue(facts JobFacts) (string, Claims, error) {
 	return token, claims, nil
 }
 
+// IssueRunner mints a runner-auth token: it names the runner and nothing else.
+// The host mints it at claim time, when the runner name is known but the
+// repository is not, and it lives long enough to cover a whole job (the issuer's
+// ttl). The returned claims let the caller log what it minted without parsing its
+// own token back.
+func (i *Issuer) IssueRunner(runner string) (string, RunnerClaims, error) {
+	runner = strings.TrimSpace(runner)
+	if err := ValidateRunner(runner); err != nil {
+		return "", RunnerClaims{}, err
+	}
+	now := i.now().UTC()
+	claims := RunnerClaims{
+		Runner:    runner,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(i.ttl).Unix(),
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", RunnerClaims{}, err
+	}
+	return signPayload(i.key, runnerTokenPrefix, payload), claims, nil
+}
+
 // Verifier checks tokens. One per process; safe for concurrent use.
 type Verifier struct {
 	key []byte
@@ -281,20 +343,9 @@ func NewVerifier(signingKey []byte) (*Verifier, error) {
 // reporting it to the job, and a token that verifies but carries no repository
 // claim fails here rather than being defaulted to something (rule 1).
 func (v *Verifier) Verify(token string, now time.Time) (Claims, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != tokenPrefix {
-		return Claims{}, ErrMalformed
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, err := verifyPayload(v.key, tokenPrefix, token)
 	if err != nil {
-		return Claims{}, ErrMalformed
-	}
-	mac, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return Claims{}, ErrMalformed
-	}
-	if !hmac.Equal(mac, macOf(v.key, parts[0]+"."+parts[1])) {
-		return Claims{}, ErrSignature
+		return Claims{}, err
 	}
 
 	var claims Claims
@@ -309,6 +360,27 @@ func (v *Verifier) Verify(token string, now time.Time) (Claims, error) {
 	}
 	if claims.Permission != PermissionReadWrite {
 		claims.Permission = PermissionRead
+	}
+	return claims, nil
+}
+
+// VerifyRunner authenticates a runner-auth token and returns which runner it
+// names. Like Verify, every failure is a distinct sentinel, and a token that
+// verifies but names no runner fails here rather than being defaulted.
+func (v *Verifier) VerifyRunner(token string, now time.Time) (RunnerClaims, error) {
+	payload, err := verifyPayload(v.key, runnerTokenPrefix, token)
+	if err != nil {
+		return RunnerClaims{}, err
+	}
+	var claims RunnerClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return RunnerClaims{}, ErrMalformed
+	}
+	if err := ValidateRunner(claims.Runner); err != nil {
+		return RunnerClaims{}, ErrNoRunner
+	}
+	if claims.ExpiresAt == 0 || now.Add(-v.Leeway).Unix() > claims.ExpiresAt {
+		return RunnerClaims{}, ErrExpired
 	}
 	return claims, nil
 }
@@ -332,8 +404,37 @@ func sign(key []byte, claims Claims) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	signed := tokenPrefix + "." + base64.RawURLEncoding.EncodeToString(payload)
-	return signed + "." + base64.RawURLEncoding.EncodeToString(macOf(key, signed)), nil
+	return signPayload(key, tokenPrefix, payload), nil
+}
+
+// signPayload renders a prefixed, HMAC-signed token: prefix.base64(payload).base64(mac).
+// The prefix versions the wire format and keeps two token kinds over the same key
+// from being parsed as each other.
+func signPayload(key []byte, prefix string, payload []byte) string {
+	signed := prefix + "." + base64.RawURLEncoding.EncodeToString(payload)
+	return signed + "." + base64.RawURLEncoding.EncodeToString(macOf(key, signed))
+}
+
+// verifyPayload authenticates a prefixed, HMAC-signed token's wire format and
+// signature and returns its raw payload. The caller unmarshals it and applies its
+// own claim rules; a wrong prefix is a malformed token, never a silent accept.
+func verifyPayload(key []byte, prefix, token string) ([]byte, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] != prefix {
+		return nil, ErrMalformed
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	mac, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	if !hmac.Equal(mac, macOf(key, parts[0]+"."+parts[1])) {
+		return nil, ErrSignature
+	}
+	return payload, nil
 }
 
 func macOf(key []byte, signed string) []byte {
