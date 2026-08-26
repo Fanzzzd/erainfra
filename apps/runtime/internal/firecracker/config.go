@@ -33,6 +33,12 @@ type Config struct {
 	// before it may accept another Attempt. A thin-pool that fills mid-job fails
 	// the job with an unhelpful I/O error, so it is admission, not monitoring.
 	MinPoolFreeMiB int64
+	// CacheSigningKey is the secret the host mints each Attempt's runner-auth
+	// cache bearer with, or empty. Empty is the default and mints no bearer,
+	// composing exactly the environment a fleet without a cache composes. It is
+	// the same key the cache service and controller hold; a set key shorter than
+	// the token package's minimum fails New.
+	CacheSigningKey []byte
 }
 
 func DefaultConfig() Config {

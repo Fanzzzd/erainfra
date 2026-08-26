@@ -60,7 +60,13 @@ func run(ctx context.Context, args []string) (int, error) {
 		return verifyNetwork(ctx)
 	}
 	if args[0] == "serve" {
-		runtime, err := firecracker.New(runtimeConfig())
+		config := runtimeConfig()
+		key, err := cacheSigningKey()
+		if err != nil {
+			return 2, err
+		}
+		config.CacheSigningKey = key
+		runtime, err := firecracker.New(config)
 		if err != nil {
 			return 2, err
 		}
@@ -391,6 +397,27 @@ func runtimeConfig() firecracker.Config {
 		}
 	}
 	return config
+}
+
+// cacheSigningKey reads the shared cache signing key from RC_CACHE_SIGNING_KEY or
+// its _FILE variant. Both empty means no cache: the daemon mints no bearer and
+// composes exactly the environment a fleet without a cache composes. The key is a
+// long-lived host secret, so it is read only here in the long-running serve
+// daemon, never in a per-Attempt invocation.
+func cacheSigningKey() ([]byte, error) {
+	value := os.Getenv("RC_CACHE_SIGNING_KEY")
+	file := strings.TrimSpace(os.Getenv("RC_CACHE_SIGNING_KEY_FILE"))
+	if value != "" && file != "" {
+		return nil, errors.New("set RC_CACHE_SIGNING_KEY or RC_CACHE_SIGNING_KEY_FILE, not both")
+	}
+	if file != "" {
+		contents, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("read RC_CACHE_SIGNING_KEY_FILE: %w", err)
+		}
+		return []byte(strings.TrimSpace(string(contents))), nil
+	}
+	return []byte(strings.TrimSpace(value)), nil
 }
 
 // commaSeparated returns nil when the variable is unset, so an operator who
