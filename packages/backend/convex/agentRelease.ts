@@ -54,20 +54,21 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.8",
-  sha256: "e69c15d04a72c85b4a95e03864f6a641a10ad143e002cbb3b7cb8eec45e5454d",
+  version: "0.2.0-rc.9",
+  sha256: "98f298dfa2a58213b17baf952c26c8b5ae503d48f69f297b5f849013d20c8c38",
   infraAgent: {
-    "linux-x86_64": "1a84cd38183ba8344571795392501ba9de4bc351d1cc8ef7d23637c807728306",
-    "linux-arm64": "2d81b0caacee44fdb7e722ff852a9e087773fe9c5af0012d890bf84d261dbe60",
-    "darwin-x86_64": "f7007af9d71b4bb91542a5729576780118e6e1aca44bbdd284f5c7185412be1e",
-    "darwin-arm64": "9ef5d2a22b937b19009cc187596967399a70da344968bf8fcc7dd9d28a839a8b",
-    "windows-x86_64": "18ba699e7d53659096e0105afd63d6e38c90b6a214f877f72a2335c10f63363a",
+    "linux-x86_64": "42efce4dd20fcc07a7e45b70d885b77ae7433a1b0a1fdd7d430d9f5607cd6ca1",
+    "linux-arm64": "d123cfb34c06e9a2e1dc12b763a37bb116ca6bc66d98403506a0a08633f2c7c2",
+    "darwin-x86_64": "436ff5657f91e2ff6b71622c74447d123393531b78b93d16f25ddbdbd892fc8d",
+    "darwin-arm64": "3effa65b971e3c4196f2d34cdcca9a2df05330aa8217c0b814e08931906930af",
+    "windows-x86_64": "f0888aceb6a3bad78a03198e500ca68479879599bcb9c161a41eaffc9313f109",
   },
-  // Empty until the first release that publishes the cache-service binary populates it, exactly as
-  // `infraAgent` was introduced empty and filled at v0.2.0-rc.6. The coverage and pin-match gates
-  // only run on a version tag, so an empty map is safe on `main` and rejected the moment a release
-  // is cut without it.
-  cacheService: {},
+  // Populated at v0.2.0-rc.9, the first release to publish the cache-service binary (ADR 0009),
+  // exactly as `infraAgent` was filled at v0.2.0-rc.6. Version-only, so the digest is a pure
+  // function of source and version, not the release commit it is written into.
+  cacheService: {
+    "linux-x86_64": "ad12e47158cd17c6af58d973df112aebe943ac5e48793a9bdfc88828b8d1233b",
+  },
 };
 
 /** The targets a release publishes an Infra Agent binary for, and `infraAgent` must cover. */
