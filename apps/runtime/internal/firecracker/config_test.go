@@ -72,6 +72,40 @@ func TestConfigAcceptsDedicatedAttemptDirectories(t *testing.T) {
 	}
 }
 
+func TestConfigHoldsTheCacheURLAndKeyTogether(t *testing.T) {
+	// A URL with no key mints no bearer; a key with no URL injects no endpoint.
+	// Either half alone is a misconfiguration, not a smaller cache.
+	key := []byte(strings.Repeat("k", 32))
+
+	withURL := DefaultConfig()
+	withURL.CacheServiceURL = "https://cache.internal:8721"
+	if err := withURL.Validate(); err == nil {
+		t.Fatal("a cache service URL with no signing key was accepted")
+	}
+
+	withKey := DefaultConfig()
+	withKey.CacheSigningKey = key
+	if err := withKey.Validate(); err == nil {
+		t.Fatal("a signing key with no cache service URL was accepted")
+	}
+
+	both := DefaultConfig()
+	both.CacheServiceURL = "https://cache.internal:8721"
+	both.CacheSigningKey = key
+	if err := both.Validate(); err != nil {
+		t.Fatalf("a fully configured cache was rejected: %v", err)
+	}
+
+	// A set URL is still held to being an absolute http(s) URL that names a host,
+	// the same rule the per-Attempt path applies, so a typo fails at startup.
+	bad := DefaultConfig()
+	bad.CacheSigningKey = key
+	bad.CacheServiceURL = "cache.internal:8721"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("a cache service URL that is not an absolute http(s) URL was accepted")
+	}
+}
+
 func TestDefaultPoolHeadroomIsReachableForTheSmallestSupportedPool(t *testing.T) {
 	// The provisioner's smallest evaluation pool is 32 GiB. A default headroom
 	// requirement larger than that pool could never be satisfied, so the Worker

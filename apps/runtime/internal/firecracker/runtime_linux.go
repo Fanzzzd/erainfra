@@ -462,6 +462,12 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	// Both the warm-claim and cold-boot paths below read it back out of the spec
 	// in metadataFor, so it rides the one MMDS write each path already makes.
 	spec.CacheRunnerToken = r.mintCacheBearer(spec.RunnerName)
+	// The cache service endpoint is fleet-wide operator configuration, not a
+	// per-job decision, so it lives on the daemon next to the signing key rather
+	// than arriving in each spec. A spec that already names one still wins.
+	if spec.CacheServiceURL == "" {
+		spec.CacheServiceURL = r.config.CacheServiceURL
+	}
 	lease, err := r.pool.Claim(ctx, spec)
 	if err == nil {
 		return lease, nil
