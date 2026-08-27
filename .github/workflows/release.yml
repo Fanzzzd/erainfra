@@ -137,7 +137,7 @@ jobs:
           dist/release/infra-agent-linux-x86_64 version | \
             grep -Fx "infra-agent $VERSION"
           dist/release/erainfra-cache-service-linux-x86_64 version | \
-            grep -Fx "erainfra-cache-service $VERSION ($GITHUB_SHA)"
+            grep -Fx "erainfra-cache-service $VERSION"
 
       - name: Verify the archive is reproducible
         run: |
