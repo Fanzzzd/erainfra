@@ -3,6 +3,7 @@ package firecracker
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -127,7 +128,9 @@ func (c Config) Validate() error {
 // validateCacheEndpoint holds the cache service URL and signing key to the same
 // both-or-neither rule the controller applies to its own pair: either is useless
 // without the other, so a half-configured cache is a misconfiguration caught at
-// startup rather than a guest that silently reaches nothing.
+// startup rather than a guest that silently reaches nothing. The daemon injects
+// this URL into every claim after the spec is validated, so a URL that names no
+// host has to fail here or it never fails at all.
 func validateCacheEndpoint(serviceURL string, hasSigningKey bool) error {
 	serviceURL = strings.TrimSpace(serviceURL)
 	if (serviceURL != "") != hasSigningKey {
@@ -136,12 +139,9 @@ func validateCacheEndpoint(serviceURL string, hasSigningKey bool) error {
 	if serviceURL == "" {
 		return nil
 	}
-	if !strings.HasPrefix(serviceURL, "http://") && !strings.HasPrefix(serviceURL, "https://") {
-		return errors.New("cache service URL must be an absolute http(s) URL")
-	}
-	_, rest, _ := strings.Cut(serviceURL, "://")
-	if host, _, _ := strings.Cut(rest, "/"); host == "" {
-		return errors.New("cache service URL must name a host")
+	parsed, err := url.Parse(serviceURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("cache service URL must be an absolute http(s) URL that names a host")
 	}
 	return nil
 }

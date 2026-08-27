@@ -97,12 +97,21 @@ func TestConfigHoldsTheCacheURLAndKeyTogether(t *testing.T) {
 	}
 
 	// A set URL is still held to being an absolute http(s) URL that names a host,
-	// the same rule the per-Attempt path applies, so a typo fails at startup.
-	bad := DefaultConfig()
-	bad.CacheSigningKey = key
-	bad.CacheServiceURL = "cache.internal:8721"
-	if err := bad.Validate(); err == nil {
-		t.Fatal("a cache service URL that is not an absolute http(s) URL was accepted")
+	// the same rule the per-Attempt path applies, so a typo fails at startup. The
+	// daemon injects this value into every claim after the spec is validated, so a
+	// URL that slips through here is one no later check can catch.
+	for _, malformed := range []string{
+		"cache.internal:8721",  // no scheme
+		"ftp://cache.internal", // wrong scheme
+		"https://?x=1",         // scheme and query but no host
+		"https://",             // scheme but empty host
+	} {
+		bad := DefaultConfig()
+		bad.CacheSigningKey = key
+		bad.CacheServiceURL = malformed
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("malformed cache service URL %q was accepted", malformed)
+		}
 	}
 }
 
