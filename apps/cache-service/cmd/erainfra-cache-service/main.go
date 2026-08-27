@@ -22,14 +22,18 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/server"
 )
 
-var (
-	version   = "dev"
-	commitSHA = "unknown"
-)
+// version is stamped at build time with `-ldflags '-X main.version=<product
+// version>'` and nothing else. It carries no commit, exactly as infra-agent does:
+// AGENT_RELEASE pins this binary by digest ("filled exactly as infraAgent"), and a
+// commit stamp would make the digest a function of the release commit, which
+// cannot be written into the very commit whose checksum the release gate then
+// demands it match. The version maps to the release tag, so the commit stays
+// recoverable without embedding it.
+var version = "dev"
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "version" {
-		fmt.Printf("erainfra-cache-service %s (%s)\n", version, commitSHA)
+		fmt.Printf("erainfra-cache-service %s\n", version)
 		return
 	}
 	if err := run(); err != nil {
