@@ -3,6 +3,7 @@ package firecracker
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -39,6 +40,14 @@ type Config struct {
 	// the same key the cache service and controller hold; a set key shorter than
 	// the token package's minimum fails New.
 	CacheSigningKey []byte
+	// CacheServiceURL is EraInfra's cache service, the endpoint the in-guest
+	// interceptor forwards the cache path to. Empty is the default and injects
+	// nothing, composing exactly the environment a fleet without a cache
+	// composes. It is operator configuration, not a secret, and it lives here
+	// with the signing key because both are fleet-wide rather than per-job: a key
+	// with no URL mints a bearer nothing can use, and a URL with no key hands the
+	// guest an endpoint it has no bearer for, so Validate requires them together.
+	CacheServiceURL string
 }
 
 func DefaultConfig() Config {
@@ -109,6 +118,38 @@ func (c Config) Validate() error {
 	}
 	if c.MinPoolFreeMiB < 0 {
 		return errors.New("minimum pool headroom cannot be negative")
+	}
+	if err := validateCacheEndpoint(c.CacheServiceURL, len(c.CacheSigningKey) > 0); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateCacheEndpoint holds the cache service URL and signing key to the same
+// both-or-neither rule the controller applies to its own pair: either is useless
+// without the other, so a half-configured cache is a misconfiguration caught at
+// startup rather than a guest that silently reaches nothing. The daemon injects
+// this URL into every claim after the spec is validated, so a URL that names no
+// host has to fail here or it never fails at all.
+func validateCacheEndpoint(serviceURL string, hasSigningKey bool) error {
+	// Validate the exact bytes Start injects, not a trimmed copy: Runtime.Start
+	// hands config.CacheServiceURL to every claim unchanged, so a value that only
+	// looks valid after trimming would still reach a guest with the whitespace on
+	// it. Surrounding whitespace is a misconfiguration, not something to absorb.
+	if (serviceURL != "") != hasSigningKey {
+		return errors.New("cache service URL and signing key must be set together")
+	}
+	if serviceURL == "" {
+		return nil
+	}
+	for _, r := range serviceURL {
+		if r <= ' ' || r == 0x7f {
+			return errors.New("cache service URL must not contain whitespace or control characters")
+		}
+	}
+	parsed, err := url.Parse(serviceURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("cache service URL must be an absolute http(s) URL that names a host")
 	}
 	return nil
 }

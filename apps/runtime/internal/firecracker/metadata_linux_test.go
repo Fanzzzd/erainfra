@@ -53,6 +53,7 @@ func TestMetadataCarriesTheRunnerBearerToTheGuest(t *testing.T) {
 func TestNewMintsARunnerBearerTheServiceCanVerify(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CacheSigningKey = testCacheKey
+	cfg.CacheServiceURL = "https://cache.internal:8721"
 	runtime, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +91,7 @@ func TestMintCacheBearerFailsSafe(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.CacheSigningKey = testCacheKey
+	cfg.CacheServiceURL = "https://cache.internal:8721"
 	withKey, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +104,7 @@ func TestMintCacheBearerFailsSafe(t *testing.T) {
 func TestNewRejectsAShortCacheKey(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CacheSigningKey = []byte("too-short")
+	cfg.CacheServiceURL = "https://cache.internal:8721"
 	if _, err := New(cfg); err == nil {
 		t.Fatal("a short signing key was accepted")
 	}
