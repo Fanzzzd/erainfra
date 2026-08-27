@@ -1,6 +1,6 @@
 {
   "name": "@erainfra/runtime",
-  "version": "0.2.0-rc.8",
+  "version": "0.2.0-rc.9",
   "private": true,
   "scripts": {
     "build": "mkdir -p dist && go build -o dist/runner-center-guest ./cmd/runner-center-guest && go build -o dist/runner-center-runtime ./cmd/runner-center-runtime",
