@@ -132,12 +132,20 @@ func (c Config) Validate() error {
 // this URL into every claim after the spec is validated, so a URL that names no
 // host has to fail here or it never fails at all.
 func validateCacheEndpoint(serviceURL string, hasSigningKey bool) error {
-	serviceURL = strings.TrimSpace(serviceURL)
+	// Validate the exact bytes Start injects, not a trimmed copy: Runtime.Start
+	// hands config.CacheServiceURL to every claim unchanged, so a value that only
+	// looks valid after trimming would still reach a guest with the whitespace on
+	// it. Surrounding whitespace is a misconfiguration, not something to absorb.
 	if (serviceURL != "") != hasSigningKey {
 		return errors.New("cache service URL and signing key must be set together")
 	}
 	if serviceURL == "" {
 		return nil
+	}
+	for _, r := range serviceURL {
+		if r <= ' ' || r == 0x7f {
+			return errors.New("cache service URL must not contain whitespace or control characters")
+		}
 	}
 	parsed, err := url.Parse(serviceURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {

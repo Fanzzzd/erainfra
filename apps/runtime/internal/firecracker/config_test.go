@@ -101,10 +101,12 @@ func TestConfigHoldsTheCacheURLAndKeyTogether(t *testing.T) {
 	// daemon injects this value into every claim after the spec is validated, so a
 	// URL that slips through here is one no later check can catch.
 	for _, malformed := range []string{
-		"cache.internal:8721",  // no scheme
-		"ftp://cache.internal", // wrong scheme
-		"https://?x=1",         // scheme and query but no host
-		"https://",             // scheme but empty host
+		"cache.internal:8721",          // no scheme
+		"ftp://cache.internal",         // wrong scheme
+		"https://?x=1",                 // scheme and query but no host
+		"https://",                     // scheme but empty host
+		" https://cache.internal ",     // surrounding whitespace Start would inject verbatim
+		"https://cache.internal\n8721", // embedded control character
 	} {
 		bad := DefaultConfig()
 		bad.CacheSigningKey = key
