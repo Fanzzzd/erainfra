@@ -188,16 +188,31 @@ export const pendingAttempts = query({
   }),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    const ranges = await Promise.all(
-      [...liveAttemptStates, "completed" as const].map((state) =>
+    const now = Date.now();
+    // This subscription re-runs on every heartbeat (the lastSeen patch dirties
+    // the machines row), so the completed range must stay bounded: only the
+    // drain window matters, while the machine's full completed history grows
+    // without limit.
+    const ranges = await Promise.all([
+      ...liveAttemptStates.map((state) =>
         ctx.db
           .query("attempts")
-          .withIndex("by_machine_state", (q) => q.eq("machineId", machine._id).eq("state", state))
+          .withIndex("by_machine_state_finishedAt", (q) =>
+            q.eq("machineId", machine._id).eq("state", state),
+          )
           .collect(),
       ),
-    );
+      ctx.db
+        .query("attempts")
+        .withIndex("by_machine_state_finishedAt", (q) =>
+          q
+            .eq("machineId", machine._id)
+            .eq("state", "completed")
+            .gt("finishedAt", now - completedExecutorDrainMs),
+        )
+        .collect(),
+    ]);
     const owned = ranges.flat();
-    const now = Date.now();
     return {
       maxSlots: machine.maxSlots,
       attempts: owned
@@ -210,10 +225,7 @@ export const pendingAttempts = query({
             attempt.state === "preparing" ||
             attempt.state === "ready" ||
             attempt.state === "running" ||
-            (attempt.state === "completed" &&
-              attempt.executorFinishedAt === undefined &&
-              attempt.finishedAt !== undefined &&
-              now - attempt.finishedAt < completedExecutorDrainMs),
+            (attempt.state === "completed" && attempt.executorFinishedAt === undefined),
         )
         .map((attempt) => attempt._id),
     };
