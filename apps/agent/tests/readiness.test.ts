@@ -81,7 +81,11 @@ describe("prepareProfile", () => {
     }
   });
 
-  it("keeps Hyper-V unready and says why", async () => {
+  it("fails Hyper-V readiness on a non-Windows host with a named check", async () => {
+    // On a real Windows host the probe checks the Hyper-V module, the VM
+    // switch, the parent VHDX and the machine-scope credential; this suite
+    // runs on macOS/Linux CI, where readiness must still fail loudly instead
+    // of pretending a Hyper-V Profile could run here.
     const result = await prepareProfile({
       profile: "rc-win",
       executor: "hyperv",
@@ -90,7 +94,23 @@ describe("prepareProfile", () => {
       memoryMiB: 4096,
     });
     assert.equal(result.state, "failed");
-    assert.ok(result.checks.some((check) => check.name === "hyperv-validation" && !check.passed));
+    assert.equal(result.isolation, "hyperv-vm");
+    assert.equal(result.boundary, "guest-kernel");
+    assert.ok(result.checks.some((check) => check.name === "hyperv-host" && !check.passed));
+  });
+
+  it("rejects a Hyper-V Image Release that is not a safe VHDX name", async () => {
+    // The image name becomes %RC_HOME%\images\<name>.vhdx on the Worker; a
+    // path-traversal name must die at readiness, not at provision time.
+    const result = await prepareProfile({
+      profile: "rc-win",
+      executor: "hyperv",
+      imageRelease: "..\\..\\evil",
+      vcpus: 2,
+      memoryMiB: 4096,
+    });
+    assert.equal(result.state, "failed");
+    assert.ok(result.checks.some((check) => check.name === "parent-image" && !check.passed));
   });
 });
 

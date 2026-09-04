@@ -42,11 +42,10 @@ const MACOS_TAHOE_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest";
 // name of a parent VHDX the machine keeps under %RC_HOME%\images\<name>.vhdx.
 // provision-win.ps1 clones it into a differencing disk per job.
 //
-// Every Windows entry is preview-gated. The installer onboards macOS and Linux
-// only, and neither the Hyper-V provisioner nor the image builder has been run
-// against a real Windows host, so these labels must not look like capacity a
-// workflow can rely on. Drop `preview` once a supported Windows onboarding path
-// ships and the provisioner has been validated.
+// No longer preview-gated: `/install.ps1` onboards Windows hosts, and both the
+// image builder and the Hyper-V provisioner have been validated end to end on
+// a physical Hyper-V host (build from eval ISO, boot, PowerShell Direct,
+// runner exit-code propagation, teardown).
 const WINDOWS_2025_IMAGE = "rc-win2025";
 const WINDOWS_2022_IMAGE = "rc-win2022";
 
@@ -87,20 +86,17 @@ export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
   "windows-2022": {
     os: "win",
     image: WINDOWS_2022_IMAGE,
-    description: "Preview: Windows Server 2022 parent VHDX for Hyper-V.",
-    preview: true,
+    description: "Windows Server 2022 parent VHDX for Hyper-V.",
   },
   "windows-2025": {
     os: "win",
     image: WINDOWS_2025_IMAGE,
-    description: "Preview: Windows Server 2025 parent VHDX for Hyper-V.",
-    preview: true,
+    description: "Windows Server 2025 parent VHDX for Hyper-V.",
   },
   "rc-win": {
     os: "win",
     image: WINDOWS_2025_IMAGE,
-    description: "Preview: alias for the default Windows runner image.",
-    preview: true,
+    description: "Alias for the default Windows runner image.",
   },
 };
 

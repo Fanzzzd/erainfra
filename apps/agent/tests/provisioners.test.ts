@@ -84,7 +84,19 @@ describe("provision-win.ps1 exit codes", () => {
   });
 
   it("keeps runner output off the pipeline that carries the exit code", () => {
-    assert.match(provisionWin, /& \$runner 2>&1 \| ForEach-Object \{ Write-Host \$_ \}/);
+    assert.match(provisionWin, /& \$runner run 2>&1 \| ForEach-Object \{ Write-Host \$_ \}/);
+  });
+
+  // Regression, proven on hardware: run.cmd delegates to run-helper.cmd, which
+  // maps the listener's exit codes onto service semantics — a listener that
+  // exits 1 comes back as 0, so the control plane (which marks a job failed
+  // only on a non-zero exit) never sees runner failures. A bogus JIT config
+  // exits 0 through run.cmd and 1 through Runner.Listener.
+  it("invokes Runner.Listener directly, never the run.cmd service wrapper", () => {
+    assert.match(provisionWin, /bin\\Runner\.Listener\.exe/);
+    // The quoted form is the path construction; prose may still explain why
+    // the wrapper is off limits.
+    assert.doesNotMatch(provisionWin, /'run\.cmd'/);
   });
 
   it("selects the exit-code record by shape instead of by position", () => {
@@ -124,8 +136,22 @@ describe("provision-win.ps1 secret handling", () => {
   });
 
   it("no longer materialises the blob as runner config files", () => {
-    assert.doesNotMatch(provisionWin, /ProtectedData/);
+    // DPAPI appears only to Unprotect the stored guest credential; the JIT
+    // blob itself is never encrypted into a file the runner has to unpack.
+    assert.doesNotMatch(provisionWin, /ProtectedData\]::Protect\(/);
     assert.doesNotMatch(provisionWin, /WriteAllBytes/);
+  });
+
+  // Regression: the credential was user-scope DPAPI (Export-Clixml), written by
+  // the interactive administrator who built the image but read by the agent
+  // running as LocalSystem under its service wrapper — a boundary user-scope
+  // DPAPI cannot cross, so every provision failed at credential resolution.
+  it("reads the machine-scope DPAPI credential the image builder writes", () => {
+    assert.match(provisionWin, /\$image\.cred\.json/);
+    assert.match(provisionWin, /DataProtectionScope\]::LocalMachine/);
+    assert.match(provisionWin, /ProtectedData\]::Unprotect\(/);
+    assert.doesNotMatch(provisionWin, /Import-Clixml/);
+    assert.doesNotMatch(provisionWin, /cred\.xml/);
   });
 
   it("never writes the JIT configuration or a password to output", () => {
@@ -203,7 +229,9 @@ describe("build-image.ps1 runner pin", () => {
 
   it("validates the pin before it is interpolated into the guest script", () => {
     assert.match(buildImage, /\$RunnerVersion -notmatch '\^\\d\+\\\.\\d\+\\\.\\d\+\$'/);
-    assert.match(buildImage, /\$RunnerSha256 -notmatch '\^\[0-9a-fA-F\]\{64\}\$'/);
+    // Every SHA pin — runner and tools alike — flows through the same check.
+    assert.match(buildImage, /'-RunnerSha256'; Value = \$RunnerSha256/);
+    assert.match(buildImage, /\$pin\.Value -notmatch '\^\[0-9a-fA-F\]\{64\}\$'/);
   });
 
   it("verifies the downloaded archive and refuses to expand a mismatch", () => {
@@ -253,11 +281,15 @@ describe("build-image.ps1 image secrets", () => {
     assert.doesNotMatch(buildImage, /\$administratorPassword \| Export-Clixml/);
   });
 
-  it("keeps only the guest credential, DPAPI-protected", () => {
-    assert.match(
-      buildImage,
-      /\[pscredential\]::new\(\$GuestUser, \$GuestPassword\) \| Export-Clixml/,
-    );
+  it("keeps only the guest credential, machine-scope DPAPI-protected and ACLed", () => {
+    assert.match(buildImage, /DataProtectionScope\]::LocalMachine/);
+    assert.match(buildImage, /passwordProtected = \[Convert\]::ToBase64String/);
+    // By SID, not by name: group names are localized, and the agent that has
+    // to read this file back runs as LocalSystem (S-1-5-18).
+    assert.match(buildImage, /icacls \$credPath \/inheritance:r \/grant:r '\*S-1-5-18:F' '\*S-1-5-32-544:F'/);
+    // The piped form is the actual user-scope write; prose may still explain
+    // why it is gone.
+    assert.doesNotMatch(buildImage, /\| Export-Clixml/);
   });
 });
 
@@ -285,6 +317,45 @@ describe("build-image.ps1 operator input", () => {
   it("validates the names that become file paths and account names", () => {
     assert.match(buildImage, /\$ImageName -notmatch '\^\[A-Za-z0-9\]/);
     assert.match(buildImage, /\$GuestUser -notmatch '\^\[A-Za-z0-9\]/);
+  });
+});
+
+describe("build-image.ps1 Windows PowerShell 5.1 compatibility", () => {
+  // Regression, proven on hardware: RandomNumberGenerator::Fill is .NET
+  // Core-only and crashes instantly on the .NET Framework that Windows
+  // PowerShell 5.1 — the shell every stock Windows host runs this under — is
+  // built on.
+  it("generates passwords with an API that exists on .NET Framework", () => {
+    assert.match(buildImage, /RNGCryptoServiceProvider/);
+    assert.doesNotMatch(buildImage, /RandomNumberGenerator\]::Fill/);
+  });
+});
+
+describe("build-image.ps1 guest tooling", () => {
+  // Regression, proven on hardware: winget does not ship on Server 2022 and
+  // its msstore source fails certificate validation in a fresh Server 2025
+  // guest, so a "best effort" winget pass blessed images with no git, node or
+  // python — half-provisioned parents that jobs then failed on.
+  it("never invokes winget", () => {
+    assert.doesNotMatch(buildImage, /winget install|Get-Command winget/);
+  });
+
+  it("pins every tool by https URL and SHA-256 and verifies before running", () => {
+    for (const tool of ["Git", "Node", "Python"] as const) {
+      assert.match(buildImage, new RegExp(`\\[string\\] \\$${tool}InstallerUrl = 'https://`));
+      assert.match(buildImage, new RegExp(`\\[string\\] \\$${tool}Sha256 = '[0-9a-f]{64}'`));
+    }
+    assert.match(buildImage, /\$Label installer SHA-256 mismatch: expected \$Sha256, got \$actual/);
+    assert.match(buildImage, /\$Label installer failed with exit code/);
+  });
+
+  // $ErrorActionPreference='Stop' does not apply to native exit codes, and
+  // installer PATH edits only land in new sessions: the build must fail loudly
+  // when a tool is missing, not bless the image anyway.
+  it("proves each tool landed on the machine PATH before blessing the image", () => {
+    assert.match(buildImage, /GetEnvironmentVariable\('Path', 'Machine'\)/);
+    assert.match(buildImage, /'git\.exe', 'node\.exe', 'python\.exe'/);
+    assert.match(buildImage, /is not on the machine PATH after provisioning/);
   });
 });
 

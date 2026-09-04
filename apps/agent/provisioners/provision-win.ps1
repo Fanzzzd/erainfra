@@ -168,6 +168,12 @@ if ($orphans.Count -gt 0) {
 
 # DPAPI-protected credential written at image build time, overridable by env for
 # unattended rebuilds. Never put the password on a command line.
+#
+# The file is machine-scope DPAPI ({ user, passwordProtected } JSON): the agent
+# runs as LocalSystem under its service wrapper while build-image.ps1 runs as an
+# interactive administrator, and user-scope DPAPI written by one account cannot
+# be decrypted by the other. The builder ACLs the file to SYSTEM and
+# Administrators, which is the actual access boundary.
 function Resolve-GuestCredential {
     $user = [Environment]::GetEnvironmentVariable('IMAGE_USER')
     $password = [Environment]::GetEnvironmentVariable('IMAGE_PASSWORD')
@@ -176,11 +182,21 @@ function Resolve-GuestCredential {
         return [pscredential]::new($user, (ConvertTo-SecureString $password -AsPlainText -Force))
     }
 
-    $credentialPath = Join-Path $imageDir "$image.cred.xml"
+    $credentialPath = Join-Path $imageDir "$image.cred.json"
     if (-not (Test-Path -LiteralPath $credentialPath)) {
-        throw "No guest credential for $image. Set IMAGE_PASSWORD or create $credentialPath with Export-Clixml."
+        throw "No guest credential for $image. Set IMAGE_PASSWORD or rebuild the image so build-image.ps1 writes $credentialPath."
     }
-    return Import-Clixml -LiteralPath $credentialPath
+    $stored = Get-Content -LiteralPath $credentialPath -Raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($stored.user) -or [string]::IsNullOrWhiteSpace($stored.passwordProtected)) {
+        throw "$credentialPath is missing user or passwordProtected."
+    }
+    Add-Type -AssemblyName System.Security
+    $plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+        [Convert]::FromBase64String($stored.passwordProtected),
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    $secure = ConvertTo-SecureString ([Text.Encoding]::UTF8.GetString($plainBytes)) -AsPlainText -Force
+    return [pscredential]::new([string] $stored.user, $secure)
 }
 
 # Runs inside the guest. Everything it needs arrives through -ArgumentList, so
@@ -192,7 +208,13 @@ $guestScript = {
     # finish so the exit code can be reported instead of throwing.
     $ErrorActionPreference = 'Continue'
 
-    $runner = Join-Path $RunnerRoot 'run.cmd'
+    # Runner.Listener directly, never the run.cmd wrapper: run.cmd delegates to
+    # run-helper.cmd, which maps the listener's exit codes onto service
+    # semantics — a listener that exits 1 comes back as 0 (proven on hardware:
+    # a bogus JIT config exits 0 through run.cmd and 1 through the listener).
+    # The control plane marks a job failed only on a non-zero exit, so the
+    # wrapper would silently swallow every runner failure.
+    $runner = Join-Path $RunnerRoot 'bin\Runner.Listener.exe'
     if (-not (Test-Path -LiteralPath $runner)) {
         Write-Host "The image does not contain $runner"
         return [pscustomobject]@{ RcExitCode = 1 }
@@ -215,7 +237,7 @@ $guestScript = {
         # of the returned object collection, leaving one unambiguous exit-code
         # record. $LASTEXITCODE is captured immediately, before the finally block
         # below can run anything that would overwrite it.
-        & $runner 2>&1 | ForEach-Object { Write-Host $_ }
+        & $runner run 2>&1 | ForEach-Object { Write-Host $_ }
         $code = $LASTEXITCODE
         if ($null -eq $code) { $code = 1 }
         return [pscustomobject]@{ RcExitCode = [int] $code }
@@ -298,7 +320,7 @@ try {
     $chunk = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
     if ($chunk.Count -gt 0) { $returned += $chunk }
 
-    # `& run.cmd` writes to the pipeline as well, so pick the exit-code record
+    # The listener writes to the pipeline as well, so pick the exit-code record
     # out by shape rather than assuming it is the only thing that came back.
     $exitRecord = $returned |
         Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['RcExitCode'] } |

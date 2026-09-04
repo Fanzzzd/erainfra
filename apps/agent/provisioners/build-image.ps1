@@ -22,9 +22,12 @@
 #     the copy is gone and that no AutoLogon secret was left in the registry.
 #   - The built-in Administrator gets an independent throwaway password that is
 #     never recorded anywhere, and the account is disabled during provisioning.
-#   - The password that survives is the guest account's, stored DPAPI-encrypted
-#     next to the VHDX as <ImageName>.cred.xml, readable only by the account
-#     that ran this build -- the same account that runs the agent.
+#   - The password that survives is the guest account's, stored machine-scope
+#     DPAPI-encrypted next to the VHDX as <ImageName>.cred.json. Machine scope
+#     because the agent runs as LocalSystem under its service wrapper while
+#     this build runs as an interactive administrator, and user-scope DPAPI
+#     does not cross that boundary; the file is ACLed to SYSTEM and
+#     Administrators only.
 #   - Defender real-time monitoring stays ON unless -DisableDefenderRealtime is
 #     passed. Turning it off is a persistent, image-wide weakening; the choice
 #     is recorded in the image manifest.
@@ -53,6 +56,17 @@ param(
     # from the actions/runner release; update them together.
     [string] $RunnerVersion = '2.336.0',
     [string] $RunnerSha256 = 'd59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162',
+    # Baseline tooling GitHub's own hosted images also carry, pinned by URL and
+    # SHA-256 like the runner: winget cannot do this job — Server 2022 does not
+    # ship it, and on Server 2025 its msstore source fails certificate
+    # validation in a fresh guest — so the installers come straight from each
+    # vendor and a rebuilt image always contains exactly these bytes.
+    [string] $GitInstallerUrl = 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/Git-2.55.0.3-64-bit.exe',
+    [string] $GitSha256 = 'af12577d0fdff74243a5988197aa49b957d5044edc17004f6ddf0768996f1dca',
+    [string] $NodeInstallerUrl = 'https://nodejs.org/dist/v22.23.2/node-v22.23.2-x64.msi',
+    [string] $NodeSha256 = 'ce9572ae220c345fbae2340bbb4d084e8ca5e0fe093ee7067d43094ae23be989',
+    [string] $PythonInstallerUrl = 'https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe',
+    [string] $PythonSha256 = '9d9eb2709ef81bf5cd30db3c2096bdbc4ea10087c22e62f27d356b36f6ae9649',
     [switch] $DisableDefenderRealtime
 )
 
@@ -72,9 +86,15 @@ function ConvertTo-XmlText([string] $Value) {
 function New-RandomPassword([int] $Length = 24) {
     # No shell- or XML-hostile characters, so the value stays readable in logs
     # of failures without needing escaping. Callers still escape it for XML.
+    #
+    # RNGCryptoServiceProvider rather than RandomNumberGenerator::Fill: the
+    # latter is .NET Core-only and crashes instantly on the .NET Framework that
+    # Windows PowerShell 5.1 — the shell every stock Windows host runs this
+    # under — is built on.
     $alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_'
     $bytes = [byte[]]::new($Length)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     return -join ($bytes | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
 }
 
@@ -88,13 +108,29 @@ if ($GuestUser -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,19}$') {
 if ($RunnerVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw "-RunnerVersion must look like 2.336.0, got '$RunnerVersion'."
 }
-if ($RunnerSha256 -notmatch '^[0-9a-fA-F]{64}$') {
-    throw '-RunnerSha256 must be 64 hex characters.'
+foreach ($pin in @(
+        @{ Name = '-RunnerSha256'; Value = $RunnerSha256 },
+        @{ Name = '-GitSha256'; Value = $GitSha256 },
+        @{ Name = '-NodeSha256'; Value = $NodeSha256 },
+        @{ Name = '-PythonSha256'; Value = $PythonSha256 })) {
+    if ($pin.Value -notmatch '^[0-9a-fA-F]{64}$') {
+        throw "$($pin.Name) must be 64 hex characters."
+    }
+}
+# These are interpolated into single-quoted guest literals; the character class
+# has no quote in it, so the literal cannot be broken out of.
+foreach ($pin in @(
+        @{ Name = '-GitInstallerUrl'; Value = $GitInstallerUrl },
+        @{ Name = '-NodeInstallerUrl'; Value = $NodeInstallerUrl },
+        @{ Name = '-PythonInstallerUrl'; Value = $PythonInstallerUrl })) {
+    if ($pin.Value -notmatch '^https://[A-Za-z0-9./_+-]+$') {
+        throw "$($pin.Name) must be a plain https URL without quotes or spaces."
+    }
 }
 
 $imageDir = Join-Path $RcHome 'images'
 $vhdxPath = Join-Path $imageDir "$ImageName.vhdx"
-$credPath = Join-Path $imageDir "$ImageName.cred.xml"
+$credPath = Join-Path $imageDir "$ImageName.cred.json"
 $manifestPath = Join-Path $imageDir "$ImageName.image.json"
 $buildVm = "rcbuild-$ImageName"
 $mountRoot = Join-Path $RcHome "build\$ImageName"
@@ -195,6 +231,12 @@ try {
     $provisionPrelude = @"
 `$RcRunnerVersion = '$RunnerVersion'
 `$RcRunnerSha256 = '$RunnerSha256'
+`$RcGitUrl = '$GitInstallerUrl'
+`$RcGitSha256 = '$GitSha256'
+`$RcNodeUrl = '$NodeInstallerUrl'
+`$RcNodeSha256 = '$NodeSha256'
+`$RcPythonUrl = '$PythonInstallerUrl'
+`$RcPythonSha256 = '$PythonSha256'
 `$RcGuestUser = '$GuestUser'
 `$RcDisableDefenderRealtime = `$$($DisableDefenderRealtime.IsPresent)
 "@
@@ -233,15 +275,42 @@ try {
         Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
     }
 
-    # Best effort: winget is absent from Server images and unreliable under
-    # SYSTEM. Missing extra tooling must not fail the image.
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        foreach ($pkg in @('Git.Git', 'OpenJS.NodeJS.LTS', 'Python.Python.3.12')) {
-            winget install --id $pkg --silent --accept-source-agreements --accept-package-agreements --scope machine
-            "winget $pkg exit=$LASTEXITCODE"
+    # Baseline tooling aligned with GitHub's hosted images, fetched from each
+    # vendor's own distribution point and verified against the pinned SHA-256
+    # before it runs. Deliberately NOT best-effort: a matcher like `setup-node`
+    # assumes the tool cache exists, so an image quietly missing git or node is
+    # a half-provisioned image, and $ErrorActionPreference='Stop' does not
+    # apply to native installer exit codes — each one is checked by hand.
+    function Install-RcTool([string] $Label, [string] $Url, [string] $Sha256, [string[]] $Arguments) {
+        $file = Join-Path $env:TEMP ([IO.Path]::GetFileName($Url))
+        Invoke-WebRequest -Uri $Url -OutFile $file -UseBasicParsing
+        $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash
+        if ($actual -ne $Sha256.ToUpperInvariant()) {
+            Remove-Item $file -Force -ErrorAction SilentlyContinue
+            throw "$Label installer SHA-256 mismatch: expected $Sha256, got $actual"
         }
-    } else {
-        'winget is unavailable; skipping extra tooling'
+        if ($file -like '*.msi') {
+            $process = Start-Process msiexec.exe -ArgumentList (@('/i', $file) + $Arguments) -Wait -PassThru
+        } else {
+            $process = Start-Process -FilePath $file -ArgumentList $Arguments -Wait -PassThru
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "$Label installer failed with exit code $($process.ExitCode)"
+        }
+        Remove-Item $file -Force
+        "installed $Label from $Url"
+    }
+    Install-RcTool 'git' $RcGitUrl $RcGitSha256 @('/VERYSILENT', '/NORESTART', '/SP-')
+    Install-RcTool 'node' $RcNodeUrl $RcNodeSha256 @('/qn', '/norestart')
+    Install-RcTool 'python' $RcPythonUrl $RcPythonSha256 @('/quiet', 'InstallAllUsers=1', 'PrependPath=1', 'Include_test=0')
+
+    # Installer PATH edits only land in new sessions, so probe the machine
+    # PATH, not the one this process started with.
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    foreach ($exe in @('git.exe', 'node.exe', 'python.exe')) {
+        $found = @($machinePath.Split(';') | Where-Object { $_ -and (Test-Path (Join-Path $_ $exe)) })
+        if ($found.Count -eq 0) { throw "$exe is not on the machine PATH after provisioning" }
+        "$exe -> $($found[0])"
     }
 
     # Nobody has the built-in Administrator's throwaway password, and nobody
@@ -380,12 +449,32 @@ try {
         Write-Warning 'Could not inspect the image registry offline; the AutoLogon check was skipped. Run this build elevated to enable it.'
     }
 
-    [pscredential]::new($GuestUser, $GuestPassword) | Export-Clixml -Path $credPath
+    # Machine-scope DPAPI rather than user-scope Export-Clixml: the agent runs
+    # as LocalSystem under its service wrapper while images are built by an
+    # interactive administrator, and user-scope DPAPI material written by one
+    # account is unreadable by the other. Machine scope decrypts for any local
+    # process, so the file's ACL — SYSTEM and Administrators only, granted by
+    # SID because group names are localized — is the actual access boundary.
+    Add-Type -AssemblyName System.Security
+    $protectedPassword = [System.Security.Cryptography.ProtectedData]::Protect(
+        [Text.Encoding]::UTF8.GetBytes($plain),
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    @{ user = $GuestUser; passwordProtected = [Convert]::ToBase64String($protectedPassword) } |
+        ConvertTo-Json | Set-Content -Path $credPath -Encoding UTF8
+    & icacls $credPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed to lock down $credPath (exit $LASTEXITCODE)" }
+
     [pscustomobject]@{
         imageName = $ImageName
         guestUser = $GuestUser
         runnerVersion = $RunnerVersion
         runnerSha256 = $RunnerSha256.ToLowerInvariant()
+        tools = [pscustomobject]@{
+            git = $GitInstallerUrl
+            node = $NodeInstallerUrl
+            python = $PythonInstallerUrl
+        }
         defenderRealtimeDisabled = [bool] $DisableDefenderRealtime
         builtAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     } | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding UTF8
