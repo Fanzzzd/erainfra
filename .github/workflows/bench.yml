@@ -42,5 +42,7 @@ jobs:
       - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
         with:
           node-version: 22
+      - name: Egress probe
+        run: sh .github/bench/netprobe.sh "${{ matrix.leg }}-${{ matrix.repeat }}"
       - name: Benchmark
         run: sh .github/bench/bench.sh "${{ matrix.leg }}-${{ matrix.repeat }}"
