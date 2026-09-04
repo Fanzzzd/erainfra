@@ -35,6 +35,13 @@ type Runtime struct {
 	// key is configured — a fleet without a cache. It is built once and safe for
 	// concurrent use.
 	cacheIssuer *cachetoken.Issuer
+	// rootfsIoEngine is the block engine every guest's root drive is attached
+	// with, decided once from the host kernel: Async (io_uring) where the kernel
+	// allows it, Sync otherwise. rootfsIoEngineDetail is the one-line reason,
+	// reported by Preflight so an operator can see which engine a Worker runs
+	// and what kernel would change it.
+	rootfsIoEngine       string
+	rootfsIoEngineDetail string
 
 	recoveryMu sync.Mutex
 	activeMu   sync.Mutex
@@ -145,6 +152,7 @@ func New(config Config) (*Runtime, error) {
 		return nil, fmt.Errorf("invalid Firecracker configuration: %w", err)
 	}
 	runtime := &Runtime{config: config, active: make(map[string]*machineLease)}
+	runtime.rootfsIoEngine, runtime.rootfsIoEngineDetail = rootfsIoEngine(hostKernelRelease())
 	if len(config.CacheSigningKey) > 0 {
 		issuer, err := cachetoken.NewIssuer(config.CacheSigningKey, cacheBearerTTL)
 		if err != nil {
@@ -314,6 +322,11 @@ func (r *Runtime) Preflight(ctx context.Context) (executor.Report, error) {
 			storage.PoolFreeMiB, storage.PoolTotalMiB, r.config.ThinPoolName,
 		))
 	}
+
+	// Never a failure: Sync is a slower engine, not a broken one. The check
+	// exists so the choice is visible on the readiness report instead of being
+	// inferred from job timings.
+	report.Pass(executor.CheckRootfsIoEngine, r.rootfsIoEngineDetail)
 
 	if report.Cache.SharedWritable {
 		report.Fail(executor.CheckCache, errors.New(
@@ -590,6 +603,7 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 			PathOnHost:   fc.String(mounts[0].Source),
 			IsRootDevice: fc.Bool(true),
 			IsReadOnly:   fc.Bool(false),
+			IoEngine:     fc.String(r.rootfsIoEngine),
 		}},
 		NetworkInterfaces: []fc.NetworkInterface{{
 			AllowMMDS: true,
