@@ -8,19 +8,21 @@ import {
 
 const linuxMachine = { os: "linux", labels: [] } as const;
 const macMachine = { os: "mac", labels: [] } as const;
-// Windows is preview-gated, so the opted-in machine is the one that can match
-// anything at all; `winMachine` stands for a Windows host that did not opt in.
 const winMachine = { os: "win", labels: [] } as const;
-const previewWinMachine = { os: "win", labels: [PREVIEW_OPT_IN_LABEL] } as const;
 
 // Labels a workflow may rely on: a validated provisioner and an image a job has
 // actually been run on. Everything else belongs behind PREVIEW_OPT_IN_LABEL.
+// Windows graduated when /install.ps1 shipped and the Hyper-V provisioner and
+// image builder passed live validation on a physical host.
 const PRODUCTION_LABELS = [
   "ubuntu-22.04",
   "ubuntu-24.04",
   "rc-linux",
   "macos-15",
   "rc-mac",
+  "windows-2022",
+  "windows-2025",
+  "rc-win",
 ] as const;
 
 // The Sequoia digest the end-to-end Tart runs were executed against.
@@ -38,13 +40,13 @@ describe("findImageLabel", () => {
 });
 
 describe("selectImageForMachine", () => {
-  it("matches an opted-in Windows machine to the requested Windows image", () => {
-    const entry = selectImageForMachine(["self-hosted", "windows-2025"], previewWinMachine);
+  it("matches a Windows machine to the requested Windows image", () => {
+    const entry = selectImageForMachine(["self-hosted", "windows-2025"], winMachine);
     expect(entry?.image).toBe(IMAGE_CATALOG["windows-2025"]?.image);
   });
 
   it("distinguishes the two Windows images", () => {
-    const entry = selectImageForMachine(["self-hosted", "windows-2022"], previewWinMachine);
+    const entry = selectImageForMachine(["self-hosted", "windows-2022"], winMachine);
     expect(entry?.image).toBe(IMAGE_CATALOG["windows-2022"]?.image);
     expect(entry?.image).not.toBe(IMAGE_CATALOG["windows-2025"]?.image);
   });
@@ -52,38 +54,33 @@ describe("selectImageForMachine", () => {
   // Regression: a bare self-hosted job used to fall through to `undefined` on
   // Windows, so a registered Windows machine silently never got any work.
   it("falls back to the default image when the job names none", () => {
-    expect(selectImageForMachine(["self-hosted"], previewWinMachine)?.image).toBe("rc-win2025");
+    expect(selectImageForMachine(["self-hosted"], winMachine)?.image).toBe("rc-win2025");
     expect(selectImageForMachine(["self-hosted"], linuxMachine)).toBeDefined();
     expect(selectImageForMachine(["self-hosted"], macMachine)).toBeDefined();
   });
 
   it("refuses an image whose OS does not match the machine", () => {
-    expect(
-      selectImageForMachine(["self-hosted", "ubuntu-24.04"], previewWinMachine),
-    ).toBeUndefined();
+    expect(selectImageForMachine(["self-hosted", "ubuntu-24.04"], winMachine)).toBeUndefined();
     expect(selectImageForMachine(["self-hosted", "windows-2025"], linuxMachine)).toBeUndefined();
-    expect(selectImageForMachine(["self-hosted", "macos-15"], previewWinMachine)).toBeUndefined();
+    expect(selectImageForMachine(["self-hosted", "macos-15"], winMachine)).toBeUndefined();
   });
 
   it("requires the machine to carry every non-image capability label", () => {
-    const gpuWin = { os: "win", labels: [PREVIEW_OPT_IN_LABEL, "gpu"] } as const;
+    const gpuWin = { os: "win", labels: ["gpu"] } as const;
     expect(selectImageForMachine(["self-hosted", "rc-win", "gpu"], gpuWin)).toBeDefined();
-    expect(
-      selectImageForMachine(["self-hosted", "rc-win", "gpu"], previewWinMachine),
-    ).toBeUndefined();
+    expect(selectImageForMachine(["self-hosted", "rc-win", "gpu"], winMachine)).toBeUndefined();
   });
 
   it("treats rc-win as an alias of the default Windows image", () => {
-    expect(selectImageForMachine(["self-hosted", "rc-win"], previewWinMachine)?.image).toBe(
-      selectImageForMachine(["self-hosted", "windows-2025"], previewWinMachine)?.image,
+    expect(selectImageForMachine(["self-hosted", "rc-win"], winMachine)?.image).toBe(
+      selectImageForMachine(["self-hosted", "windows-2025"], winMachine)?.image,
     );
   });
 });
 
 describe("preview gating", () => {
-  // Windows has no supported onboarding path and an unvalidated provisioner, so
-  // its labels must not resolve for a machine that has not opted in. If this
-  // fails, the control plane is advertising capacity it cannot deliver.
+  // A preview label must not resolve for a machine that has not opted in. If
+  // this fails, the control plane is advertising capacity it cannot deliver.
   it("hides every preview image from a machine that has not opted in", () => {
     for (const [label, entry] of Object.entries(IMAGE_CATALOG)) {
       if (entry.preview !== true) continue;
@@ -91,18 +88,6 @@ describe("preview gating", () => {
         selectImageForMachine(["self-hosted", label], { os: entry.os, labels: [] }),
         `${label} matched a machine without ${PREVIEW_OPT_IN_LABEL}`,
       ).toBeUndefined();
-    }
-  });
-
-  it("hides the preview default from a machine that has not opted in", () => {
-    expect(selectImageForMachine(["self-hosted"], winMachine)).toBeUndefined();
-  });
-
-  it("keeps every Windows label preview-gated until Windows is supported", () => {
-    const windowsLabels = Object.entries(IMAGE_CATALOG).filter(([, entry]) => entry.os === "win");
-    expect(windowsLabels.length).toBeGreaterThan(0);
-    for (const [label, entry] of windowsLabels) {
-      expect(entry.preview, `${label} is not preview-gated`).toBe(true);
     }
   });
 

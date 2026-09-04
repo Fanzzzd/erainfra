@@ -62,12 +62,12 @@ can run one item instead of becoming unusable, while an undersized host still fa
 
 ## Support status
 
-| Platform            | Executor                           | Status                                                                |
-| ------------------- | ---------------------------------- | --------------------------------------------------------------------- |
-| Linux x64/ARM64     | Docker                             | Bootstrap path for trusted repositories; digest-pinned and ephemeral. |
-| Linux x64/ARM64     | Firecracker + containerd devmapper | Strong isolation path; requires KVM and dedicated runtime storage.    |
-| Apple Silicon macOS | Tart                               | Supported execution path, capped at two guests by default.            |
-| Windows x64         | Hyper-V                            | One-command onboarding; execution preview, never advertised ready.    |
+| Platform            | Executor                           | Status                                                                  |
+| ------------------- | ---------------------------------- | ----------------------------------------------------------------------- |
+| Linux x64/ARM64     | Docker                             | Bootstrap path for trusted repositories; digest-pinned and ephemeral.   |
+| Linux x64/ARM64     | Firecracker + containerd devmapper | Strong isolation path; requires KVM and dedicated runtime storage.      |
+| Apple Silicon macOS | Tart                               | Supported execution path, capped at two guests by default.              |
+| Windows x64         | Hyper-V                            | One-command onboarding; advertised ready once readiness proves Hyper-V. |
 
 Both Linux executors use the new Profile and scale-set protocol. Docker deliberately has no host
 bind mounts, privileged mode, Docker socket, or shared volume, but it shares the host kernel and
@@ -443,21 +443,22 @@ provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-S
 through `agent.previous` work exactly as they do on POSIX, and `rc.ps1` under
 `%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
 
-Persistence is a Scheduled Task registered **for the installing account, at logon** — not a Windows
-service, and the reason is a hard constraint rather than a preference. `build-image.ps1` stores the
-guest credential with `Export-Clixml`, which is user-scope DPAPI, and `provision-win.ps1` reads it
-back with `Import-Clixml`; DPAPI material written by one account cannot be decrypted by another. So
-**the account that runs the agent must be the account that built the image**, which rules out
-LocalSystem and rules out an S4U task token, neither of which can unlock that account's DPAPI master
-key. The cost is that the Worker starts at logon: on a dedicated Worker box, enable automatic logon.
-Moving to a boot-time service means first moving that credential to machine-scope DPAPI in both
-provisioner scripts.
+Persistence is a Scheduled Task registered **for the installing account, at logon**, not a Windows
+service. The task runs as the account whose `%USERPROFILE%` holds `RC_HOME` and the images. The
+cost is that the Worker starts at logon: on a dedicated Worker box, enable automatic logon.
+
+`build-image.ps1` stores the guest credential machine-scope DPAPI in `<name>.cred.json`, ACLed to
+SYSTEM and Administrators, so the agent does not have to run as the account that built the image
+(#89). An image built before that change carries a user-scope `<name>.cred.xml`; `provision-win.ps1`
+and the readiness probe still read it, and readiness decrypts it as the agent's own account so a
+credential written by a different account fails there with its true cause. Rebuild the image to get
+the machine-scope file.
 
 Hyper-V and its PowerShell module have to be enabled, and a parent VHDX has to exist under
-`%RC_HOME%\images\<name>.vhdx` — `provisioners/build-image.ps1` produces one. **Windows catalog
-labels remain preview-gated.** Onboarding is supported; execution is not yet validated, and the
-control plane still refuses to advertise a Hyper-V Worker as ready, so a Windows Worker enrols and
-reports in but is not scheduled onto.
+`%RC_HOME%\images\<name>.vhdx`; `provisioners/build-image.ps1` produces one. The control plane
+advertises a Hyper-V Profile ready once the Worker's readiness probe has proved the module, the VM
+switch, the parent VHDX and the guest credential; a Worker missing any of them enrols and reports the
+failed check but is not scheduled onto.
 
 ## Target a Profile from GitHub Actions
 

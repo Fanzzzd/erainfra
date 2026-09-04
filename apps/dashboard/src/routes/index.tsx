@@ -298,10 +298,10 @@ function MachinesPage() {
                         </p>
                         {installOs === "win" && (
                           <p className="text-xs leading-5 text-muted-foreground">
-                            Run it from an elevated PowerShell to get a boot-time Windows service;
-                            an unelevated shell gets a logon Scheduled Task instead. Windows job
-                            Profiles stay preview-gated either way, so a Windows Worker enrols but
-                            is not scheduled onto yet.
+                            The installer registers a Scheduled Task for the installing account, at
+                            logon. A Windows Worker is scheduled onto once readiness proves the
+                            Hyper-V module, the VM switch, a parent VHDX under
+                            %USERPROFILE%\.runner-center\images and its credential file.
                           </p>
                         )}
                       </div>
@@ -1303,9 +1303,6 @@ function isMachineOnline(lastSeen: number, now: number) {
 
 function formatOs(os: "linux" | "mac" | "win") {
   if (os === "mac") return "macOS";
-  // Onboarding a Windows Worker is supported since #49, but its images stay inert without the
-  // rc-preview opt-in label and the control plane still refuses to advertise a Hyper-V Worker as
-  // ready. Say so where they are listed, until that changes.
-  if (os === "win") return "Windows (preview)";
+  if (os === "win") return "Windows";
   return "linux";
 }
