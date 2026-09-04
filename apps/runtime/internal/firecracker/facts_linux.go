@@ -34,6 +34,17 @@ func hostHardware(kvmUsable bool) executor.Hardware {
 	return hardware
 }
 
+// hostKernelRelease is the running kernel's release string, "5.15.0-1071-generic"
+// style, or empty when uname fails; empty parses as no version and selects the
+// Sync engine, which is the safe direction.
+func hostKernelRelease() string {
+	var uname unix.Utsname
+	if err := unix.Uname(&uname); err != nil {
+		return ""
+	}
+	return unix.ByteSliceToString(uname.Release[:])
+}
+
 // cpuInfo reads the model name and the virtualization extension the host
 // advertises. An empty extension on x86 means KVM cannot be hardware accelerated
 // even if /dev/kvm happens to exist.
