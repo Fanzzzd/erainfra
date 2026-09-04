@@ -770,7 +770,7 @@ function Install-Worker {
     '    } else {',
     '      Write-Warning "No parent images at $images; build one with provisioners/build-image.ps1."',
     '    }',
-    '    Write-Warning "Windows Profiles stay preview-gated: the control plane does not advertise a Hyper-V Worker as ready until Hyper-V passes live validation."',
+    '    Write-Host "A Hyper-V Profile is advertised ready once readiness proves the Hyper-V module, the VM switch, the parent VHDX and its credential file on this Worker."',
     '  }',
     '  "logs" {',
     '    if ($Follow) {',
@@ -822,28 +822,23 @@ function Install-Worker {
   }
 
   # --- persistence -----------------------------------------------------------------------------
-  # A Scheduled Task registered for the CURRENT USER, at logon. Not a Windows service, and this is
-  # the constraint that decides it rather than a preference:
+  # A Scheduled Task registered for the CURRENT USER, at logon. Not a Windows service.
   #
-  #   provisioners/build-image.ps1 stores the guest credential with Export-Clixml, which is
-  #   USER-SCOPE DPAPI, and provisioners/provision-win.ps1 reads it back with Import-Clixml. DPAPI
-  #   material written by one account cannot be decrypted by another. So the account that runs this
-  #   agent MUST be the account that ran build-image.ps1, or every Hyper-V provision fails at
-  #   credential decryption with an error that reads like a corrupt file.
-  #
-  # That rules out LocalSystem, which is what a service wrapper would have run as, and it rules out
-  # a task registered with the S4U logon type: an S4U token carries no credentials, so it cannot
-  # unlock the user's DPAPI master key either. An interactive logon token can, which leaves exactly
-  # this. It is also what the Node role's own scheduled task already does.
+  # This was decided when provisioners/build-image.ps1 stored the guest credential with
+  # Export-Clixml, USER-SCOPE DPAPI, which only the account that ran the build can decrypt: that
+  # ruled out LocalSystem and an S4U task token, and left an interactive logon token. #89 moved the
+  # credential to machine-scope DPAPI (<image>.cred.json, ACLed to SYSTEM and Administrators), so
+  # the account no longer has to be the one that built the image. What still ties this to the
+  # installing account is RC_HOME under its %USERPROFILE%, where the images live; a boot-time
+  # service is its own change and needs a real Windows host to verify. Until then this is also what
+  # the Node role's own scheduled task already does.
   #
   # The cost is stated rather than hidden: this starts at LOGON, so an unattended reboot leaves the
-  # Worker down until someone signs in. On a dedicated Worker box, enable automatic logon. Changing
-  # this to a boot-time service means first moving the guest credential to machine-scope DPAPI in
-  # both provisioner scripts, which is its own change and needs a real Windows host to verify.
+  # Worker down until someone signs in. On a dedicated Worker box, enable automatic logon.
   $serviceKind = 'schtask'
   # The principal is named from the same environment that decided where RC_HOME lives. That is the
-  # point rather than a shortcut: %USERPROFILE% belongs to one account, the DPAPI credential is
-  # readable by one account, and this makes them provably the same one. Refuse rather than guess.
+  # point rather than a shortcut: %USERPROFILE% belongs to one account, and this makes the task run
+  # as the account whose profile holds the install. Refuse rather than guess.
   if (-not $env:USERNAME) {
     Fail 'USERNAME is not set, so this installer cannot name the account the agent has to run as.'
   }
@@ -897,7 +892,7 @@ function Install-Worker {
 
   Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
   Say "EraInfra $installVersion is connected. Dashboard: $siteUrl"
-  Warn 'Windows Profiles are preview-gated: the control plane does not advertise a Hyper-V Worker as ready until Hyper-V passes live validation, so this machine will not be scheduled onto yet.'
+  Say 'This Worker is scheduled onto once readiness proves the Hyper-V module, the VM switch, a parent VHDX under the images directory and its credential file. Build one with provisioners/build-image.ps1; rc.ps1 doctor shows what is missing.'
   exit 0
 }
 

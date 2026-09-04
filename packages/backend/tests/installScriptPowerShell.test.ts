@@ -209,12 +209,12 @@ describe("the rendered Windows installer", () => {
     expect(script).toMatch(/function Get-Sha256\(\$path\) \{\n {2}return \(Get-FileHash/);
   });
 
-  // The constraint that decides the persistence mechanism, and the one most likely to be "fixed"
-  // later by someone who reads "Scheduled Task at logon" as a limitation rather than a requirement.
-  // build-image.ps1 writes the guest credential with Export-Clixml (user-scope DPAPI) and
-  // provision-win.ps1 reads it with Import-Clixml, so the agent has to run as the account that
-  // built the image. LocalSystem cannot decrypt it, and neither can an S4U logon token.
-  it("runs the agent as the account that built the image, which DPAPI requires", () => {
+  // The persistence mechanism was decided by user-scope DPAPI: build-image.ps1 wrote the guest
+  // credential with Export-Clixml, so the agent had to run as the account that built the image.
+  // #89 moved the credential to machine scope, which lifts that constraint; what still ties the
+  // task to the installing account is RC_HOME under its %USERPROFILE%. A boot-time service is its
+  // own change, so the mechanism stays and the script states the current reason and the cost.
+  it("runs the agent as the installing account, from a logon task, and says why", () => {
     expect(script).toMatch(/New-ScheduledTaskPrincipal -UserId \$taskUser -LogonType Interactive/);
     expect(script).toMatch(/if \(-not \$env:USERNAME\) \{/);
     expect(script).not.toMatch(/LogonType S4U/);
@@ -222,9 +222,9 @@ describe("the rendered Windows installer", () => {
     // No Windows service, and therefore no third-party service wrapper in the supply chain.
     expect(script).not.toMatch(/winsw/i);
     expect(script).not.toMatch(/New-Service|sc\.exe/);
-    // The reason is in the script, not only in the PR that wrote it.
-    expect(script).toMatch(/Export-Clixml/);
-    expect(script).toMatch(/USER-SCOPE DPAPI/);
+    // The reason is in the script, not only in the PR that wrote it, and it is the current one.
+    expect(script).toMatch(/machine-scope DPAPI/);
+    expect(script).toMatch(/RC_HOME under its %USERPROFILE%/);
     // And the cost is stated rather than hidden.
     expect(script).toMatch(/starts at LOGON/);
   });
@@ -253,8 +253,9 @@ describe("the rendered Windows installer", () => {
     ).toThrow(/cannot be rendered/);
   });
 
-  it("says out loud that a Windows Worker is not schedulable yet", () => {
-    expect(script).toMatch(/Windows Profiles are preview-gated/);
+  it("says what readiness has to prove before a Windows Worker is scheduled onto", () => {
+    expect(script).toMatch(/scheduled onto once readiness proves the Hyper-V module/);
+    expect(script).not.toMatch(/preview-gated/);
   });
 });
 
@@ -952,7 +953,10 @@ describeAnalyzer("PSScriptAnalyzer", () => {
     return result;
   }
 
+  // describe.skip still runs this body to collect, so the probe has to be guarded too or a
+  // machine without pwsh fails the whole file at collection instead of skipping it.
   const hasAnalyzer =
+    PWSH !== undefined &&
     analyze(
       "if (Get-Module -ListAvailable PSScriptAnalyzer) { 'yes' } else { 'no' }",
     ).stdout.trim() === "yes";

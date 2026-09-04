@@ -26,9 +26,12 @@
 #     the copy is gone and that no AutoLogon secret was left in the registry.
 #   - The built-in Administrator gets an independent throwaway password that is
 #     never recorded anywhere, and the account is disabled during provisioning.
-#   - The password that survives is the guest account's, stored DPAPI-encrypted
-#     next to the VHDX as <ImageName>.cred.xml, readable only by the account
-#     that ran this build -- the same account that runs the agent.
+#   - The password that survives is the guest account's, stored machine-scope
+#     DPAPI-encrypted next to the VHDX as <ImageName>.cred.json. Machine scope
+#     because the agent runs as LocalSystem under its service wrapper while
+#     this build runs as an interactive administrator, and user-scope DPAPI
+#     does not cross that boundary; the file is ACLed to SYSTEM and
+#     Administrators only.
 #   - Defender real-time monitoring stays ON unless -DisableDefenderRealtime is
 #     passed. Turning it off is a persistent, image-wide weakening; the choice
 #     is recorded in the image manifest.
@@ -138,7 +141,7 @@ if ($PythonSha256 -notmatch '^[0-9a-fA-F]{64}$') {
 
 $imageDir = Join-Path $RcHome 'images'
 $vhdxPath = Join-Path $imageDir "$ImageName.vhdx"
-$credPath = Join-Path $imageDir "$ImageName.cred.xml"
+$credPath = Join-Path $imageDir "$ImageName.cred.json"
 $manifestPath = Join-Path $imageDir "$ImageName.image.json"
 $buildVm = "rcbuild-$ImageName"
 $mountRoot = Join-Path $RcHome "build\$ImageName"
@@ -557,7 +560,22 @@ try {
         Write-Warning 'Could not inspect the image registry offline; the AutoLogon check was skipped. Run this build elevated to enable it.'
     }
 
-    [pscredential]::new($GuestUser, $GuestPassword) | Export-Clixml -Path $credPath
+    # Machine-scope DPAPI rather than user-scope Export-Clixml: the agent runs
+    # as LocalSystem under its service wrapper while images are built by an
+    # interactive administrator, and user-scope DPAPI material written by one
+    # account is unreadable by the other. Machine scope decrypts for any local
+    # process, so the file's ACL -- SYSTEM and Administrators only, granted by
+    # SID because group names are localized -- is the actual access boundary.
+    Add-Type -AssemblyName System.Security
+    $protectedPassword = [System.Security.Cryptography.ProtectedData]::Protect(
+        [Text.Encoding]::UTF8.GetBytes($plain),
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    @{ user = $GuestUser; passwordProtected = [Convert]::ToBase64String($protectedPassword) } |
+        ConvertTo-Json | Set-Content -Path $credPath -Encoding UTF8
+    & icacls $credPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed to lock down $credPath (exit $LASTEXITCODE)" }
+
     [pscustomobject]@{
         imageName = $ImageName
         guestUser = $GuestUser
