@@ -42,12 +42,14 @@ const MACOS_TAHOE_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest";
 // name of a parent VHDX the machine keeps under %RC_HOME%\images\<name>.vhdx.
 // provision-win.ps1 clones it into a differencing disk per job.
 //
-// No longer preview-gated: `/install.ps1` onboards Windows hosts, and both the
-// image builder and the Hyper-V provisioner have been validated end to end on
-// a physical Hyper-V host (build from eval ISO, boot, PowerShell Direct,
-// runner exit-code propagation, teardown). readiness.ts advertises a `hyperv`
-// Profile ready only once its probe has proved the module, the switch, the
-// parent VHDX and the guest credential on that Worker.
+// No longer preview-gated. The gate existed so a label could not promise
+// capacity the control plane would refuse to advertise; `/install.ps1` now
+// onboards Windows hosts and readiness.ts advertises a `hyperv` Profile ready
+// only once its probe has proved the Hyper-V module, the VM switch, the parent
+// VHDX and the guest credential on that Worker, so an unready host is refused
+// per machine instead of per label. The provisioner scripts themselves have
+// still not run on a Windows host; their headers say so and
+// tests/provisioners.test.ts keeps them saying so until one does.
 const WINDOWS_2025_IMAGE = "rc-win2025";
 const WINDOWS_2022_IMAGE = "rc-win2022";
 
