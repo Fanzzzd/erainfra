@@ -242,19 +242,22 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # first run against it measured the headroom AS every job's soft limit
 # (32343905771) — LimitNOFILE=65536 on runner-center-guest.service is the
 # answer, both values hosted parity, and the transition pendings died with
-# the digest that carried it. The pendings below are the remainder: guest
-# kernel values still sized by RAM rather than chosen, owned by #110, plus
-# #96's resolver shape and stack size. vm_max_map_count is the one graduate:
-# a chosen value whose floor is `require`d absolutely above.
+# the digest that carried it. The RAM-derived kernel values that were #110's
+# pendings became allows on 2026-09-04, when every Linux Profile was sized to
+# GitHub's standard runner (4 vCPU, 16384 MiB) and the guest's numbers landed
+# within 0.4 % of hosted's: the decision #110 asked for was the Profile size.
+# The pendings below are what remains: #96's resolver shape and stack size,
+# and #110's IPv6. vm_max_map_count is the one graduate: a chosen value whose
+# floor is `require`d absolutely above.
 allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). The value is chosen — the guest kernel and image are both pinned — and the floor that actually matters is asserted absolutely by `require sysctl_vm_max_map_count_meets_floor=yes` above, so this allow covers only the headroom, never a regression
-pending sysctl_kernel_threads_max=15899 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 127574 hosted; a bound a 2 GiB job rarely reaches, but it should be a decision at the guest-environment seam, not an artifact of guest RAM
-pending sysctl_user_max_user_namespaces=7949 2026-11-16  # #110: memory-proportional kernel default on the 2 GiB guest against 63787 hosted; same decision, same seam
-pending pids_cgroup_max=2384 2026-11-16  # #110: 2384 against 19151 hosted — another memory-proportional guest default. The old allow traced this to provision-docker.sh's --pids-limit 4096, a flag that no longer runs anywhere; what the guest grants today nobody chose, so it moves back to the state that says so
-pending rlimit_max_processes_soft=7949 2026-11-16  # #110: the Docker path measured unlimited — no blast-radius bound at all; the guest's memory-proportional 7949 against 63787 hosted is at least A bound, but a fork-heavy suite can reach it. Set it deliberately at the #110 seam
-pending rlimit_max_processes_hard=7949 2026-11-16  # #110: as above, hard limit
+allow sysctl_kernel_threads_max  # measured 128106 against 127677 hosted (run 33827387238, attempt 2): the guest kernel derives this from RAM exactly as hosted's does, and since 2026-09-04 every Linux Profile is sized to GitHub's standard runner (RC_VCPUS=4, RC_MEMORY_MIB=16384); what is left is hosted's MemTotal sitting a few hundred MiB under 16384 because Azure reserves some, so the two legs land within 0.4 % of each other. Was #110's 15899 on the 2 GiB guest; the decision #110 asked for is the Profile size, and it is made
+allow sysctl_user_max_user_namespaces  # 64053 against 63838 hosted, same run, same derivation from RAM, same 0.4 %
+allow pids_cgroup_max  # 19215 against 19151 hosted, same run. The Docker-era --pids-limit 4096 is gone and the guest's bound is now the kernel's RAM-derived one, which at 16 GiB is the number hosted has
+allow rlimit_max_processes_soft  # 64053 against 63838 hosted, same run: a real blast-radius bound at hosted's size, no longer the 7949 a fork-heavy suite could reach
+allow rlimit_max_processes_hard  # as above, hard limit
 pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
-pending rlimit_max_pending_signals_soft=7949 2026-11-16  # #110: memory-proportional guest default against 63787 hosted, same decision as max_processes, same seam
-pending rlimit_max_pending_signals_hard=7949 2026-11-16  # #110: as above, hard limit
+allow rlimit_max_pending_signals_soft  # 64053 against 63838 hosted, same run, same derivation
+allow rlimit_max_pending_signals_hard  # as above, hard limit
 pending net_ipv6_disabled=unavailable 2026-11-16  # #110: the guest boots with ipv6.disable=1 (the job network policy is v4-only), so /proc/sys/net/ipv6 does not exist, while hosted has IPv6 up. Anything binding or dialing ::1 behaves differently. Either enable v6 in the guest with the policy extended to cover it, or freeze this divergence with a documented reason — a decision, not a leftover
 allow sysctl_kernel_unprivileged_userns_clone  # a Debian-specific knob that does not exist on the vanilla 6.1 guest kernel (measured unavailable against 1 hosted, run 32330383534). The capability it gates is on by default there — sysctl_user_max_user_namespaces measures non-zero in the same run — so the absent knob is a kernel-flavor difference, not a capability difference
 pending dns_nameserver_count=2 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
