@@ -39,6 +39,11 @@ const (
 	// reservation must belong to a live Attempt lease, or the network state is
 	// drifting and a restart (which runs Recover) is needed.
 	CheckCNIReservations = "cni-address-reservations"
+	// CheckRootfsIoEngine records which Firecracker block engine the root
+	// drive uses and why. It always passes: Sync on an old host kernel is
+	// slower, not unsafe, and the control plane does not require it, so a
+	// Worker on a runtime that predates the check is admitted unchanged.
+	CheckRootfsIoEngine = "rootfs-io-engine"
 )
 
 // Check is one named, independently reportable readiness condition.
