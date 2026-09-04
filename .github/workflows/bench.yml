@@ -1,10 +1,15 @@
 name: EraInfra executor benchmark
 
-# Manual only. Runs .github/bench/bench.sh on `ubuntu-latest` and on a Linux
-# Profile, twice each, so a slow job can be attributed to CPU, disk, or the
-# executor instead of argued about. The Docker leg of the same comparison runs
-# on a Worker host by hand; see the issue that dispatched this run.
+# Runs .github/bench/bench.sh on `ubuntu-latest` and on a Linux Profile, twice
+# each, so a slow job can be attributed to CPU, disk, or the executor instead
+# of argued about. The Docker leg of the same comparison runs on a Worker host
+# by hand; see the issue that dispatched this run. Triggers only when the
+# benchmark itself changes, or by hand once this file is on the default branch.
 on:
+  pull_request:
+    paths:
+      - .github/bench/**
+      - .github/workflows/bench.yml
   workflow_dispatch:
     inputs:
       profile:
@@ -18,7 +23,7 @@ permissions:
 jobs:
   bench:
     name: ${{ matrix.leg }} run ${{ matrix.repeat }}
-    runs-on: ${{ matrix.leg == 'hosted' && 'ubuntu-latest' || inputs.profile }}
+    runs-on: ${{ matrix.leg == 'hosted' && 'ubuntu-latest' || inputs.profile || 'rc-linux-js' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
