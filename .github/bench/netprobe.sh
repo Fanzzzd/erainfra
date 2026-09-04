@@ -37,7 +37,7 @@ report resolv "$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{prin
 # Path MTU: a 1472-byte payload plus headers is exactly 1500; a blackhole
 # between here and the internet shows up as loss on the DF probe only.
 if command -v ping >/dev/null 2>&1; then
-  report pmtu_1500_df "$(ping -M do -s 1472 -c 3 -W 2 1.1.1.1 2>&1 | grep -oE '[0-9]+ received|[0-9]+% packet loss|message too long' | tr '\n' ' ')"
+  report pmtu_1500_df "$(ping -M 'do' -s 1472 -c 3 -W 2 1.1.1.1 2>&1 | grep -oE '[0-9]+ received|[0-9]+% packet loss|message too long' | tr '\n' ' ')"
 else
   report pmtu_1500_df "ping absent"
 fi
