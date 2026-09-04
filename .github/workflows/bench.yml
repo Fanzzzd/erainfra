@@ -1,0 +1,39 @@
+name: EraInfra executor benchmark
+
+# Manual only. Runs .github/bench/bench.sh on `ubuntu-latest` and on a Linux
+# Profile, twice each, so a slow job can be attributed to CPU, disk, or the
+# executor instead of argued about. The Docker leg of the same comparison runs
+# on a Worker host by hand; see the issue that dispatched this run.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: The EraInfra Profile to benchmark against ubuntu-latest
+        default: rc-linux-js
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ${{ matrix.leg }} run ${{ matrix.repeat }}
+    runs-on: ${{ matrix.leg == 'hosted' && 'ubuntu-latest' || inputs.profile }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [hosted, profile]
+        repeat: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No `cache:` on either action: a warm dependency cache on one leg would
+      # measure actions/cache, not the machine.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
+        with:
+          node-version: 22
+      - name: Benchmark
+        run: sh .github/bench/bench.sh "${{ matrix.leg }}-${{ matrix.repeat }}"
