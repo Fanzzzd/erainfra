@@ -818,19 +818,112 @@ export async function prepareProfile(
         return { state: "failed", error: detail, ...facts() };
       }
     }
-    case "hyperv": {
-      const detail = "Hyper-V remains preview-only until a Windows Worker passes live validation";
-      return {
-        state: "failed",
-        error: detail,
-        isolation: "hyperv-vm",
-        boundary: "guest-kernel",
-        checks: [{ name: "hyperv-validation", passed: false, detail }],
-        cacheScope: "immutable-image",
-        cacheSharedWritable: false,
-      };
-    }
+    case "hyperv":
+      return prepareHyperV(profile);
   }
+}
+
+/**
+ * The exact prerequisites provision-win.ps1 dies on at job time, proven at
+ * readiness instead: the Hyper-V module, the VM switch, the parent VHDX under
+ * %RC_HOME%\images, and the machine-scope DPAPI credential its builder wrote.
+ * The probe reads its inputs from the same environment variables the
+ * provisioner honours, and the image name travels via the environment so a
+ * hostile Profile name never reaches a PowerShell command line.
+ *
+ * `<image>.cred.xml` is the user-scope credential images built before #89
+ * carry. It exists for every account and decrypts for one, so existence proves
+ * nothing; the probe decrypts it as the account this agent runs as, which is
+ * the account provision-win.ps1 will run as (CONTEXT.md rule 4 dual-read).
+ */
+const HYPERV_PROBE = `
+$ErrorActionPreference = 'SilentlyContinue'
+$checks = @()
+$image = $env:RC_PROBE_IMAGE
+$rcHome = if ($env:RC_HOME) { $env:RC_HOME } else { Join-Path $env:USERPROFILE '.runner-center' }
+$switchName = if ($env:VM_SWITCH) { $env:VM_SWITCH } else { 'Default Switch' }
+$module = [bool](Get-Command Get-VM -ErrorAction SilentlyContinue)
+$moduleDetail = if ($module) { 'Hyper-V PowerShell module present' } else { 'Enable the Microsoft-Hyper-V-All feature and reboot' }
+$checks += @{ name = 'hyperv-module'; passed = $module; detail = $moduleDetail }
+if ($module) {
+  $switch = [bool](Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue)
+  $checks += @{ name = 'vm-switch'; passed = $switch; detail = $switchName }
+}
+$imageDir = Join-Path $rcHome 'images'
+$parent = Join-Path $imageDir ($image + '.vhdx')
+$checks += @{ name = 'parent-image'; passed = [bool](Test-Path -LiteralPath $parent); detail = $parent }
+$cred = Join-Path $imageDir ($image + '.cred.json')
+$credXml = Join-Path $imageDir ($image + '.cred.xml')
+if (-not [string]::IsNullOrWhiteSpace($env:IMAGE_PASSWORD)) {
+  $checks += @{ name = 'guest-credential'; passed = $true; detail = 'IMAGE_PASSWORD' }
+} elseif (Test-Path -LiteralPath $cred) {
+  $checks += @{ name = 'guest-credential'; passed = $true; detail = $cred }
+} elseif (Test-Path -LiteralPath $credXml) {
+  $legacy = $null
+  try { $legacy = Import-Clixml -LiteralPath $credXml -ErrorAction Stop } catch { $legacy = $null }
+  $legacyOk = $null -ne $legacy
+  $legacyDetail = if ($legacyOk) { $credXml + ' (user-scope; rebuild the image so build-image.ps1 writes ' + $cred + ')' } else { $credXml + ' was written by a different account than this agent runs as; rebuild the image so build-image.ps1 writes ' + $cred }
+  $checks += @{ name = 'guest-credential'; passed = $legacyOk; detail = $legacyDetail }
+} else {
+  $checks += @{ name = 'guest-credential'; passed = $false; detail = $cred }
+}
+@{ checks = $checks } | ConvertTo-Json -Depth 4
+`;
+
+function hyperVFacts(checks: ReadinessCheck[]): ReadinessFacts {
+  return {
+    isolation: "hyperv-vm",
+    boundary: "guest-kernel",
+    checks,
+    // The parent VHDX is never written to; every job runs on a differencing
+    // child disk that is destroyed with the VM.
+    cacheScope: "immutable-image",
+    cacheSharedWritable: false,
+  };
+}
+
+function hyperVFailed(checks: ReadinessCheck[], error: string): ReadinessResult {
+  return { state: "failed", error, ...hyperVFacts(checks) };
+}
+
+async function prepareHyperV(profile: ProfileSpec): Promise<ReadinessResult> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(profile.imageRelease)) {
+    const detail = `Image Release '${profile.imageRelease}' is not a valid parent VHDX name`;
+    return hyperVFailed([{ name: "parent-image", passed: false, detail }], detail);
+  }
+  if (process.platform !== "win32") {
+    const detail = "this Worker is not a Windows host";
+    return hyperVFailed([{ name: "hyperv-host", passed: false, detail }], detail);
+  }
+
+  let checks: ReadinessCheck[] = [];
+  try {
+    const probe = await execa(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", HYPERV_PROBE],
+      {
+        env: { ...process.env, RC_PROBE_IMAGE: profile.imageRelease },
+        timeout: 60_000,
+      },
+    );
+    const report = parseRuntimeReport(probe.stdout);
+    checks = (report.checks ?? []).map((check) => ({
+      name: check.name,
+      passed: check.passed,
+      detail: check.detail,
+    }));
+    if (checks.length === 0) {
+      throw new Error("the Hyper-V probe returned no checks");
+    }
+  } catch (error) {
+    const detail = message(error);
+    return hyperVFailed([{ name: "hyperv-probe", passed: false, detail }], detail);
+  }
+
+  if (checks.some((check) => !check.passed)) {
+    return hyperVFailed(checks, failureOf(hyperVFacts(checks), ""));
+  }
+  return { state: "ready", ...hyperVFacts(checks) };
 }
 
 export async function removePreparedFirecrackerProfile(profile: string) {

@@ -42,15 +42,12 @@ const MACOS_TAHOE_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest";
 // name of a parent VHDX the machine keeps under %RC_HOME%\images\<name>.vhdx.
 // provision-win.ps1 clones it into a differencing disk per job.
 //
-// Every Windows entry is preview-gated, and stays that way. #49 shipped the
-// onboarding half — /install.ps1 -Role worker installs a Windows Worker from the
-// same pinned archive as every other platform — so the first of the two reasons
-// is gone. The second is not: neither the Hyper-V provisioner nor the image
-// builder has ever run against a real Windows host, and readiness.ts refuses to
-// report a `hyperv` Profile ready for exactly that reason. A label dropped here
-// would promise capacity the control plane still declines to advertise. Drop
-// `preview` when a Windows Worker has run a job end to end and that refusal is
-// lifted with it, not before.
+// No longer preview-gated: `/install.ps1` onboards Windows hosts, and both the
+// image builder and the Hyper-V provisioner have been validated end to end on
+// a physical Hyper-V host (build from eval ISO, boot, PowerShell Direct,
+// runner exit-code propagation, teardown). readiness.ts advertises a `hyperv`
+// Profile ready only once its probe has proved the module, the switch, the
+// parent VHDX and the guest credential on that Worker.
 const WINDOWS_2025_IMAGE = "rc-win2025";
 const WINDOWS_2022_IMAGE = "rc-win2022";
 
@@ -91,20 +88,17 @@ export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
   "windows-2022": {
     os: "win",
     image: WINDOWS_2022_IMAGE,
-    description: "Preview: Windows Server 2022 parent VHDX for Hyper-V.",
-    preview: true,
+    description: "Windows Server 2022 parent VHDX for Hyper-V.",
   },
   "windows-2025": {
     os: "win",
     image: WINDOWS_2025_IMAGE,
-    description: "Preview: Windows Server 2025 parent VHDX for Hyper-V.",
-    preview: true,
+    description: "Windows Server 2025 parent VHDX for Hyper-V.",
   },
   "rc-win": {
     os: "win",
     image: WINDOWS_2025_IMAGE,
-    description: "Preview: alias for the default Windows runner image.",
-    preview: true,
+    description: "Alias for the default Windows runner image.",
   },
 };
 

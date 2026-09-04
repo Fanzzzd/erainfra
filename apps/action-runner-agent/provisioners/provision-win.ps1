@@ -18,17 +18,19 @@
 #     config file. Runner.Listener clears that variable after consuming it, but
 #     another process running as the same guest user could inspect its environment
 #     during that brief window.
-#   - The guest credential comes from a DPAPI-protected file readable only by
-#     the account that built the image, which is the account that runs the
-#     agent. IMAGE_PASSWORD overrides it for unattended rebuilds and is the only
-#     way a password enters this script; it is never logged or put on argv.
+#   - The guest credential comes from a machine-scope DPAPI file the image
+#     builder ACLed to SYSTEM and Administrators, so the agent may run as a
+#     different account than the one that built the image. IMAGE_PASSWORD
+#     overrides it for unattended rebuilds and is the only way a password
+#     enters this script; it is never logged or put on argv.
 #   - Everything the job touches lives on the differencing child disk, which is
 #     destroyed in the finally block, by the PowerShell.Exiting handler, or by
 #     the orphan reaper on the next run.
 #
 # NOT VERIFIED ON A WINDOWS HOST. Nothing in this file has been executed against
-# real Hyper-V; it is covered only by the static checks in ../tests. Windows
-# catalog labels are preview-gated in the control plane for that reason.
+# real Hyper-V; it is covered only by the static checks in ../tests. readiness.ts
+# proves the prerequisites this script dies on (module, switch, parent VHDX,
+# credential) before the control plane advertises a Hyper-V Profile ready.
 #
 # Environment:
 #   RUNNER_NAME         (required) also used as the VM name
@@ -168,6 +170,18 @@ if ($orphans.Count -gt 0) {
 
 # DPAPI-protected credential written at image build time, overridable by env for
 # unattended rebuilds. Never put the password on a command line.
+#
+# The file is machine-scope DPAPI ({ user, passwordProtected } JSON): the agent
+# runs as LocalSystem under its service wrapper while build-image.ps1 runs as an
+# interactive administrator, and user-scope DPAPI written by one account cannot
+# be decrypted by the other. The builder ACLs the file to SYSTEM and
+# Administrators, which is the actual access boundary.
+#
+# <image>.cred.xml is the user-scope Export-Clixml file earlier builds wrote. An
+# image built before the switch still carries one, so it stays readable here
+# (CONTEXT.md rule 4: a name a deployed box holds is retired by dual-read, not by
+# rename). Nothing writes it any more, and a decryption failure names its true
+# cause -- a different account -- instead of reading like a corrupt file.
 function Resolve-GuestCredential {
     $user = [Environment]::GetEnvironmentVariable('IMAGE_USER')
     $password = [Environment]::GetEnvironmentVariable('IMAGE_PASSWORD')
@@ -176,11 +190,31 @@ function Resolve-GuestCredential {
         return [pscredential]::new($user, (ConvertTo-SecureString $password -AsPlainText -Force))
     }
 
-    $credentialPath = Join-Path $imageDir "$image.cred.xml"
-    if (-not (Test-Path -LiteralPath $credentialPath)) {
-        throw "No guest credential for $image. Set IMAGE_PASSWORD or create $credentialPath with Export-Clixml."
+    $credJson = Join-Path $imageDir "$image.cred.json"
+    if (Test-Path -LiteralPath $credJson) {
+        $stored = Get-Content -LiteralPath $credJson -Raw | ConvertFrom-Json
+        if ([string]::IsNullOrWhiteSpace($stored.user) -or [string]::IsNullOrWhiteSpace($stored.passwordProtected)) {
+            throw "$credJson is missing user or passwordProtected."
+        }
+        Add-Type -AssemblyName System.Security
+        $plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            [Convert]::FromBase64String($stored.passwordProtected),
+            $null,
+            [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+        $secure = ConvertTo-SecureString ([Text.Encoding]::UTF8.GetString($plainBytes)) -AsPlainText -Force
+        return [pscredential]::new([string] $stored.user, $secure)
     }
-    return Import-Clixml -LiteralPath $credentialPath
+
+    $credXml = Join-Path $imageDir "$image.cred.xml"
+    if (Test-Path -LiteralPath $credXml) {
+        Write-Host "Using the user-scope credential $credXml; rebuild $image so build-image.ps1 writes $credJson."
+        try {
+            return Import-Clixml -LiteralPath $credXml -ErrorAction Stop
+        } catch {
+            throw "$credXml was written by a different account than this agent runs as (user-scope DPAPI). Rebuild $image so build-image.ps1 writes $credJson, or set IMAGE_PASSWORD. $_"
+        }
+    }
+    throw "No guest credential for $image. Set IMAGE_PASSWORD or rebuild the image so build-image.ps1 writes $credJson."
 }
 
 # Runs inside the guest. Everything it needs arrives through -ArgumentList, so

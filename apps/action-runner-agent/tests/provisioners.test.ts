@@ -20,6 +20,7 @@ const provisionLinux = provisioner("provision-linux.sh");
 const provisionMac = provisioner("provision-mac.sh");
 const provisionDocker = provisioner("provision-docker.sh");
 const agentSource = readFileSync(new URL("../provision.ts", import.meta.url), "utf8");
+const readinessSource = readFileSync(new URL("../readiness.ts", import.meta.url), "utf8");
 
 // The runner archive pin, shared by the checksum and drift tests below.
 const PINNED_RUNNER_VERSION = "2.336.0";
@@ -251,8 +252,39 @@ describe("provision-win.ps1 secret handling", () => {
   });
 
   it("no longer materialises the blob as runner config files", () => {
-    assert.doesNotMatch(provisionWin, /ProtectedData/);
+    // DPAPI appears only to Unprotect the stored guest credential; the JIT
+    // blob itself is never encrypted into a file the runner has to unpack.
+    assert.doesNotMatch(provisionWin, /ProtectedData\]::Protect\(/);
     assert.doesNotMatch(provisionWin, /WriteAllBytes/);
+  });
+
+  // Regression (#89): the credential was user-scope DPAPI (Export-Clixml),
+  // written by the interactive administrator who built the image but read by
+  // the agent running as LocalSystem under its service wrapper -- a boundary
+  // user-scope DPAPI cannot cross, so every provision failed at credential
+  // resolution with an error that read like a corrupt file.
+  it("reads the machine-scope DPAPI credential the image builder writes", () => {
+    assert.match(provisionWin, /\$image\.cred\.json/);
+    assert.match(provisionWin, /DataProtectionScope\]::LocalMachine/);
+    assert.match(provisionWin, /ProtectedData\]::Unprotect\(/);
+  });
+
+  // <image>.cred.xml is a file a deployed Worker already holds, so it is retired
+  // by dual-read (CONTEXT.md rule 4): the machine-scope file wins, the legacy
+  // one is read only when it is the only one there, and the builder never
+  // writes it again.
+  it("falls back to the legacy user-scope credential and names the true cause", () => {
+    const code = codeOf(provisionWin);
+    const json = code.indexOf('$credJson = Join-Path $imageDir "$image.cred.json"');
+    const xml = code.indexOf('$credXml = Join-Path $imageDir "$image.cred.xml"');
+    const legacyRead = code.indexOf("Import-Clixml -LiteralPath $credXml");
+    assert.ok(json > 0, "the machine-scope credential is not consulted");
+    assert.ok(xml > json, "the legacy credential is consulted before the machine-scope one");
+    assert.ok(legacyRead > xml, "the legacy credential is never read");
+    assert.equal(code.split("Import-Clixml").length - 1, 1, "Import-Clixml outside the fallback");
+    assert.match(provisionWin, /written by a different account than this agent runs as/);
+    assert.doesNotMatch(buildImageCode, /cred\.xml/);
+    assert.doesNotMatch(buildImageCode, /Export-Clixml/);
   });
 
   it("never writes the JIT configuration or a password to output", () => {
@@ -606,11 +638,20 @@ describe("build-image.ps1 image secrets", () => {
     assert.doesNotMatch(buildImage, /\$administratorPassword \| Export-Clixml/);
   });
 
-  it("keeps only the guest credential, DPAPI-protected", () => {
+  it("keeps only the guest credential, machine-scope DPAPI-protected and ACLed", () => {
+    assert.match(buildImage, /\$credPath = Join-Path \$imageDir "\$ImageName\.cred\.json"/);
+    assert.match(buildImage, /DataProtectionScope\]::LocalMachine/);
+    assert.match(buildImage, /passwordProtected = \[Convert\]::ToBase64String/);
+    // By SID, not by name: group names are localized, and the agent that has
+    // to read this file back runs as LocalSystem (S-1-5-18).
     assert.match(
       buildImage,
-      /\[pscredential\]::new\(\$GuestUser, \$GuestPassword\) \| Export-Clixml/,
+      /icacls \$credPath \/inheritance:r \/grant:r '\*S-1-5-18:F' '\*S-1-5-32-544:F'/,
     );
+    assert.match(buildImage, /if \(\$LASTEXITCODE -ne 0\) \{ throw "icacls failed to lock down/);
+    // The piped form is the actual user-scope write; prose may still explain
+    // why it is gone.
+    assert.doesNotMatch(buildImage, /\| Export-Clixml/);
   });
 });
 
@@ -725,6 +766,54 @@ describe("agent invocation of the Windows provisioner", () => {
   it("runs the script non-interactively and past a Restricted policy", () => {
     assert.match(agentSource, /"-NonInteractive"/);
     assert.match(agentSource, /"-ExecutionPolicy", "Bypass"/);
+  });
+});
+
+describe("Hyper-V readiness probe", () => {
+  const probe = (() => {
+    const start = readinessSource.indexOf("const HYPERV_PROBE = `");
+    const end = readinessSource.indexOf("\n`;", start);
+    if (start < 0 || end < start) throw new Error("readiness.ts has no HYPERV_PROBE");
+    return readinessSource.slice(start, end);
+  })();
+
+  // The image name becomes a path under %RC_HOME%\images. It is validated
+  // against the same pattern provision-win.ps1's Assert-SafeName uses, and it
+  // travels through the environment so it never reaches a command line.
+  it("hands the probe its image name through the environment, never argv", () => {
+    assert.match(readinessSource, /RC_PROBE_IMAGE: profile\.imageRelease/);
+    assert.match(probe, /\$image = \$env:RC_PROBE_IMAGE/);
+    assert.match(readinessSource, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\{0,62\}\$/);
+    assert.match(provisionWin, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\{0,62\}\$/);
+  });
+
+  // The probe proves what provision-win.ps1 dies on: the module, the switch,
+  // the parent VHDX and a credential this account can actually use.
+  it("proves each prerequisite the provisioner would otherwise fail on", () => {
+    for (const check of ["hyperv-module", "vm-switch", "parent-image", "guest-credential"]) {
+      assert.match(probe, new RegExp(`name = '${check}'`), `${check} is not probed`);
+    }
+    assert.match(probe, /Get-VMSwitch -Name \$switchName/);
+    assert.match(probe, /\$image \+ '\.vhdx'/);
+    assert.match(probe, /\$image \+ '\.cred\.json'/);
+  });
+
+  // Same dual-read as the provisioner, and honest about the legacy file: it
+  // exists for every account and decrypts for one, so the probe decrypts it as
+  // the account the provisioner will run as rather than trusting Test-Path.
+  it("prefers the machine-scope credential and decrypts the legacy one to prove it", () => {
+    const json = probe.indexOf("Test-Path -LiteralPath $cred)");
+    const xml = probe.indexOf("Test-Path -LiteralPath $credXml)");
+    const decrypt = probe.indexOf("Import-Clixml -LiteralPath $credXml -ErrorAction Stop");
+    assert.ok(json > 0 && xml > json, "the legacy credential is consulted first");
+    assert.ok(decrypt > xml, "the legacy credential is trusted on existence alone");
+    assert.match(probe, /\$legacyOk = \$null -ne \$legacy/);
+    assert.match(probe, /passed = \$legacyOk/);
+  });
+
+  it("never lets a non-Windows host look ready for Hyper-V", () => {
+    assert.match(readinessSource, /process\.platform !== "win32"/);
+    assert.match(readinessSource, /this Worker is not a Windows host/);
   });
 });
 
