@@ -8,6 +8,7 @@ require (
 	github.com/containerd/containerd/api v1.8.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/containernetworking/cni v1.1.2
+	github.com/coreos/go-iptables v0.6.0
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/opencontainers/image-spec v1.1.1
