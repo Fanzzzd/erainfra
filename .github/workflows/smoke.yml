@@ -45,3 +45,16 @@ jobs:
           # Egress works; actions/checkout and tool downloads depend on it.
           curl -fsS -o /dev/null https://api.github.com
           echo "smoke OK"
+      # The one step the consumer's jobs spent their lost minutes in (#137):
+      # 154 to 214 s on 2026-08-20 against 19 s hosted. A checkout that takes
+      # longer than two minutes is the canary going red, not a slow day.
+      - name: Check out within two minutes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+      - name: The checkout is complete
+        run: |
+          set -euo pipefail
+          test -f README.md
+          git -C "$GITHUB_WORKSPACE" rev-parse --verify HEAD >/dev/null
