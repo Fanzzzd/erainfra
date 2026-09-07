@@ -93,6 +93,7 @@ function MachinesPage() {
   const machines = useQuery(api.machines.list);
   const attempts = useQuery(api.attempts.list);
   const profiles = useQuery(api.profiles.list);
+  const activity = useQuery(api.profiles.activity);
   const createRegistrationToken = useMutation(api.machines.createRegistrationToken);
   const now = useNow();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -439,23 +440,24 @@ function MachinesPage() {
             </code>
           </CardAction>
         </CardHeader>
-        <Table className="min-w-[1000px]">
+        <Table className="min-w-[1100px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[240px]">Profile / scale set</TableHead>
               <TableHead className="w-[190px]">Isolation boundary</TableHead>
               <TableHead className="w-[150px]">Resources</TableHead>
-              <TableHead className="w-[150px]">Ready Workers</TableHead>
-              <TableHead className="w-[130px]">Capacity</TableHead>
+              <TableHead className="w-[130px]">Ready Workers</TableHead>
+              <TableHead className="w-[110px]">Capacity</TableHead>
+              <TableHead className="w-[220px]">Last job</TableHead>
               <TableHead>Image Release</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {profiles === undefined ? (
-              <TableRowsSkeleton columns={6} rows={2} />
+              <TableRowsSkeleton columns={7} rows={2} />
             ) : profiles.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="p-0">
+                <TableCell colSpan={7} className="p-0">
                   <EmptyState
                     icon={ShieldCheck}
                     title="No Profiles registered"
@@ -465,7 +467,12 @@ function MachinesPage() {
               </TableRow>
             ) : (
               profiles.map((profile) => (
-                <ProfileRow key={profile._id} profile={profile} now={now} />
+                <ProfileRow
+                  key={profile._id}
+                  profile={profile}
+                  activity={activity?.find((entry) => entry.name === profile.name)}
+                  now={now}
+                />
               ))
             )}
           </TableBody>
@@ -918,6 +925,12 @@ function ActiveRuns({
 }
 
 type ProfileSummary = (typeof api.profiles.list)["_returnType"][number];
+type ProfileActivity = (typeof api.profiles.activity)["_returnType"][number];
+
+// A Profile that served a job this week is in use. One that did not, while it
+// has ready Workers, is capacity nobody is sending work to: a consumer that
+// moved to hosted during a rollout and was never moved back (#138).
+const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 const BOUNDARY_COPY = {
   "guest-kernel": {
@@ -940,12 +953,25 @@ const BOUNDARY_COPY = {
  * prerequisite each Worker proved, which is what turns "not ready" into an
  * actionable message.
  */
-function ProfileRow({ profile, now }: { profile: ProfileSummary; now: number }) {
+function ProfileRow({
+  profile,
+  activity,
+  now,
+}: {
+  profile: ProfileSummary;
+  activity: ProfileActivity | undefined;
+  now: number;
+}) {
   const [expanded, setExpanded] = useState(false);
   const panelId = useId();
   const guestKernel = profile.boundary === "guest-kernel";
   const boundary = BOUNDARY_COPY[profile.boundary];
   const unhealthy = profile.workers.filter((worker) => worker.state !== "ready");
+  const lastJob = activity?.lastJob;
+  const idle =
+    profile.readyWorkers > 0 &&
+    activity !== undefined &&
+    (lastJob === undefined || now - lastJob.at > ACTIVITY_WINDOW_MS);
 
   return (
     <>
@@ -1009,6 +1035,33 @@ function ProfileRow({ profile, now }: { profile: ProfileSummary; now: number }) 
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.freeSlots}/{profile.readySlots} free
         </TableCell>
+        <TableCell className="text-xs">
+          {activity === undefined ? (
+            <Skeleton className="h-3.5 w-28" />
+          ) : lastJob === undefined ? (
+            <span className={cn("text-muted-foreground", idle && "text-warning")}>
+              No job started here yet
+            </span>
+          ) : (
+            <>
+              <code
+                className="block max-w-[210px] truncate text-[11px] text-foreground"
+                title={lastJob.displayName ?? lastJob.repo}
+              >
+                {lastJob.repo}
+              </code>
+              <p
+                className={cn(
+                  "mt-0.5 tabular-nums text-[10px] text-subtle-foreground",
+                  idle && "text-warning",
+                )}
+              >
+                {formatRelativeTime(lastJob.at, now)} · {activity.jobsInWindow}
+                {activity.sampleExhausted && "+"} in 7 d
+              </p>
+            </>
+          )}
+        </TableCell>
         <TableCell>
           <code
             className="block max-w-[270px] truncate text-[10px] text-subtle-foreground"
@@ -1020,7 +1073,7 @@ function ProfileRow({ profile, now }: { profile: ProfileSummary; now: number }) 
       </TableRow>
       {expanded && (
         <TableRow className="hover:bg-transparent">
-          <TableCell colSpan={6} id={panelId} className="bg-sunken px-4 py-3.5">
+          <TableCell colSpan={7} id={panelId} className="bg-sunken px-4 py-3.5">
             {profile.workers.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No Worker has reported readiness for this Profile yet.

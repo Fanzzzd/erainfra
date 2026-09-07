@@ -52,8 +52,9 @@ const justifiedFullScans: Record<string, FullScanAllowance> = {
     reason: "The Profile dashboard needs the complete operator-managed Worker dimension.",
   },
   "profiles.ts:profiles": {
-    occurrences: 1,
-    reason: "Profiles are a small operator-authored configuration dimension shown in full.",
+    occurrences: 2,
+    reason:
+      "Profiles are a small operator-authored configuration dimension shown in full; the activity query walks the same dimension and reads a bounded window of Attempts per Profile through by_profile.",
   },
   "profiles.ts:readinessEvidence": {
     occurrences: 1,
