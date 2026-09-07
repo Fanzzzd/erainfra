@@ -54,20 +54,20 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.9",
-  sha256: "98f298dfa2a58213b17baf952c26c8b5ae503d48f69f297b5f849013d20c8c38",
+  version: "0.2.0-rc.10",
+  sha256: "4453d0cd2e43ae14069cbc21350b284875e24c4cd445ec975a7e5c7cc514a888",
   infraAgent: {
-    "linux-x86_64": "42efce4dd20fcc07a7e45b70d885b77ae7433a1b0a1fdd7d430d9f5607cd6ca1",
-    "linux-arm64": "d123cfb34c06e9a2e1dc12b763a37bb116ca6bc66d98403506a0a08633f2c7c2",
-    "darwin-x86_64": "436ff5657f91e2ff6b71622c74447d123393531b78b93d16f25ddbdbd892fc8d",
-    "darwin-arm64": "3effa65b971e3c4196f2d34cdcca9a2df05330aa8217c0b814e08931906930af",
-    "windows-x86_64": "f0888aceb6a3bad78a03198e500ca68479879599bcb9c161a41eaffc9313f109",
+    "linux-x86_64": "630ef2a8dcd2d5154d1307eed98644e1f019e74a04266688be747818beb20f04",
+    "linux-arm64": "ad5a77a2b69583c986ead79f82ba9572a3ae74a2f7d1a43de01bd32a9c09273c",
+    "darwin-x86_64": "72dd37884112e2640f98884ef047c1d2cad26066c7cc3a93677c2da9e1bced5f",
+    "darwin-arm64": "ea37cf06c802e6bb27361f9b2876be344639b859f73f135a66969a11af503ec2",
+    "windows-x86_64": "cd20b3181ee288d68794083d7e1a8797adc19c59e5cc0cca7e4c1a27b8a58516",
   },
   // Populated at v0.2.0-rc.9, the first release to publish the cache-service binary (ADR 0009),
   // exactly as `infraAgent` was filled at v0.2.0-rc.6. Version-only, so the digest is a pure
   // function of source and version, not the release commit it is written into.
   cacheService: {
-    "linux-x86_64": "ad12e47158cd17c6af58d973df112aebe943ac5e48793a9bdfc88828b8d1233b",
+    "linux-x86_64": "743a47bf00fdb2ca4b82020f9980e6c7bb097b6c91d93be98c76ef5ca77f20e3",
   },
 };
 
