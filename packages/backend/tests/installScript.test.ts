@@ -929,15 +929,17 @@ describe("--role worker", () => {
   });
 
   // Everything from `SITE_URL=` down is the Worker installer as it was before /install served two
-  // roles — 25 689 bytes, byte-identical to what main renders. The size is asserted because the
+  // roles — 25 690 bytes, byte-identical to what main renders. The size is asserted because the
   // Node half above it would otherwise hide an edit to the Worker half in a large diff; a
-  // deliberate change to the Worker path updates this number and says so.
+  // deliberate change to the Worker path updates this number and says so. The pinned version
+  // string is embedded once, so a release whose version has a different length moves it too
+  // (rc.9 to rc.10 was 25 689 to 25 690).
   it("keeps the Worker installer contiguous, below the dispatch and unentangled with it", () => {
     const script = renderInstallScript(SITE_URL, AGENT_RELEASE);
     const workerBody = script.slice(script.indexOf("SITE_URL='"));
     expect(workerBody).toMatch(/^SITE_URL='https:\/\/example\.convex\.site'\nAGENT_REPO=/);
     expect(workerBody).not.toMatch(/INSTALL_ROLE|node_install|node_pinned_digest|--role/);
-    expect(Buffer.byteLength(workerBody)).toBe(25_689);
+    expect(Buffer.byteLength(workerBody)).toBe(25_690);
   });
 });
 
