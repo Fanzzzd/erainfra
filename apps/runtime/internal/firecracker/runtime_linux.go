@@ -22,6 +22,7 @@ import (
 	"github.com/containerd/containerd/leases"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/errdefs"
+	"github.com/coreos/go-iptables/iptables"
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/opencontainers/image-spec/identity"
@@ -372,7 +373,8 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 }
 
 // checkAddressReservations fails readiness when host-local holds more guest
-// addresses than there are live Attempt leases.
+// addresses than there are live Attempt leases, or when iptables still carries
+// rules for a guest that has no lease.
 //
 // A reservation is created only while its Attempt's lease is held and is
 // normally released before the lease, so reservations can never legitimately
@@ -380,6 +382,11 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 // (#24); failing closed stops the Worker from accepting work while the drift
 // grows. Runtime-service startup reclaims everything under the single-daemon
 // lock, while Agent reconciliation selectively reclaims server-orphaned state.
+//
+// The rules are compared against leases too, never against reservations: a
+// normal teardown releases the reservation a moment before the masquerade
+// rule and the lease after both, so only the lease is a race-free witness
+// that a guest is still being torn down rather than forgotten (#143).
 func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor.Report) {
 	reservations, err := readReservations(
 		reservationDir(netpolicy.CNIDataDir, r.config.Network.Name),
@@ -388,7 +395,17 @@ func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list guest address reservations: %w", err))
 		return
 	}
-	if len(reservations) == 0 {
+	table, err := iptables.New()
+	if err != nil {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf("open iptables: %w", err))
+		return
+	}
+	nat, forward, err := listGuestRules(table, r.config.Network.Name)
+	if err != nil {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list guest network rules: %w", err))
+		return
+	}
+	if len(reservations) == 0 && len(nat) == 0 && len(forward) == 0 {
 		report.Pass(executor.CheckCNIReservations, "no guest addresses reserved")
 		return
 	}
@@ -403,13 +420,15 @@ func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list containerd leases: %w", err))
 		return
 	}
-	activeGuests := 0
+	leased := make(map[string]struct{})
 	for _, lease := range all {
-		if strings.HasPrefix(lease.ID, "runner-center/attempts/") ||
-			strings.HasPrefix(lease.ID, "runner-center/warm/") {
-			activeGuests++
+		if id, ok := strings.CutPrefix(lease.ID, attemptLeasePrefix); ok {
+			leased[id] = struct{}{}
+		} else if id, ok := strings.CutPrefix(lease.ID, warmLeasePrefix); ok {
+			leased[id] = struct{}{}
 		}
 	}
+	activeGuests := len(leased)
 	if len(reservations) > activeGuests {
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf(
 			"%d guest addresses reserved for %d running microVMs; teardown is leaking network state — restart the Worker or runner-center-runtime to reclaim it",
@@ -417,8 +436,25 @@ func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor
 		))
 		return
 	}
+	leasedIPs := make(map[string]struct{})
+	for _, reservation := range reservations {
+		if _, ok := leased[reservation.ContainerID]; ok {
+			leasedIPs[reservation.IP] = struct{}{}
+		}
+	}
+	strayNAT, strayForward := strayGuestRules(nat, forward, leasedIPs, func(containerID string) bool {
+		_, ok := leased[containerID]
+		return ok
+	})
+	if stray := len(strayNAT) + len(strayForward); stray > 0 {
+		report.Fail(executor.CheckCNIReservations, fmt.Errorf(
+			"%d iptables rules belong to microVMs that no longer exist (%d masquerade, %d forward); every guest packet walks them — restart runner-center-runtime to reclaim them",
+			stray, len(strayNAT), len(strayForward),
+		))
+		return
+	}
 	report.Pass(executor.CheckCNIReservations, fmt.Sprintf(
-		"%d guest addresses reserved for %d running microVMs",
+		"%d guest addresses reserved for %d running microVMs, no stray rules",
 		len(reservations), activeGuests,
 	))
 }

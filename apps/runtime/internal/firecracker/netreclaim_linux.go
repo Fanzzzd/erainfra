@@ -11,6 +11,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/containernetworking/cni/libcni"
+	"github.com/coreos/go-iptables/iptables"
 	"golang.org/x/sys/unix"
 )
 
@@ -28,8 +29,10 @@ import (
 // The real CNI DEL is the right tool, not raw file deletion: with the SDK's
 // cached ADD result the firewall and ptp plugins remove their own iptables
 // rules, and host-local frees the address. Files are removed by hand only as
-// the backstop when a DEL fails, because a stale rule is bounded clutter but
-// a stale reservation is a permanently lost address.
+// the backstop when a DEL fails, because a stale reservation is a permanently
+// lost address. The rules a failed or interrupted DEL left behind are then
+// swept directly, since nothing can run a DEL for a guest whose reservation,
+// cache and netns are gone (#143).
 func (r *Runtime) reclaimNetwork(ctx context.Context, policy recoveryPolicy) error {
 	reservations, err := readReservations(
 		reservationDir(netpolicy.CNIDataDir, r.config.Network.Name),
@@ -37,6 +40,21 @@ func (r *Runtime) reclaimNetwork(ctx context.Context, policy recoveryPolicy) err
 	if err != nil {
 		return fmt.Errorf("list guest address reservations: %w", err)
 	}
+	var cleanupErrors []error
+	if err := r.reclaimReservations(ctx, policy, reservations); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	if err := r.reclaimGuestRules(policy, reservations); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func (r *Runtime) reclaimReservations(
+	ctx context.Context,
+	policy recoveryPolicy,
+	reservations []cniReservation,
+) error {
 	if len(reservations) == 0 {
 		return nil
 	}
@@ -78,6 +96,34 @@ func (r *Runtime) reclaimNetwork(ctx context.Context, policy recoveryPolicy) err
 		}
 	}
 	return errors.Join(cleanupErrors...)
+}
+
+// reclaimGuestRules deletes the masquerade and forward rules of every guest
+// the policy does not preserve. Reservations are read before the DELs above
+// ran, so the addresses of preserved guests are known even where a DEL for
+// a neighbour has just released its own.
+func (r *Runtime) reclaimGuestRules(policy recoveryPolicy, reservations []cniReservation) error {
+	table, err := iptables.New()
+	if err != nil {
+		return fmt.Errorf("open iptables for recovery: %w", err)
+	}
+	nat, forward, err := listGuestRules(table, r.config.Network.Name)
+	if err != nil {
+		return fmt.Errorf("list guest network rules: %w", err)
+	}
+	preservedIPs := make(map[string]struct{})
+	for _, reservation := range reservations {
+		if !policy.recoverAttempt(reservation.ContainerID) {
+			preservedIPs[reservation.IP] = struct{}{}
+		}
+	}
+	strayNAT, strayForward := strayGuestRules(nat, forward, preservedIPs, func(containerID string) bool {
+		return !policy.recoverAttempt(containerID)
+	})
+	if err := deleteGuestRules(table, strayNAT, strayForward); err != nil {
+		return fmt.Errorf("reclaim guest network rules: %w", err)
+	}
+	return nil
 }
 
 // removeNetNS undoes the SDK's netns mount for one VM. Best-effort: the
