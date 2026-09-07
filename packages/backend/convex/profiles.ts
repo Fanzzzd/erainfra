@@ -196,3 +196,69 @@ export const list = query({
       });
   },
 });
+
+// How far back the activity query looks, and how many Attempts it reads per
+// Profile to get there. The window is read newest-first through the
+// by_profile index, so a Profile's whole history never enters the read set;
+// a Profile that ran more than this many Attempts in seven days reports the
+// sample size instead of a count.
+export const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60_000;
+export const ACTIVITY_SAMPLE = 100;
+
+/**
+ * What each Profile has actually served: the last job GitHub started on it,
+ * and how many in the last seven days. This is the signal that was missing
+ * when a consumer moved to `ubuntu-latest` during a rollout and nobody set it
+ * back for two weeks (#138). Only Attempts a job started on count; an Attempt
+ * without a repository was capacity that GitHub never used.
+ */
+export const activity = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      name: v.string(),
+      lastJob: v.optional(
+        v.object({
+          repo: v.string(),
+          at: v.number(),
+          displayName: v.optional(v.string()),
+        }),
+      ),
+      // Jobs started in the window, or the sample size when every sampled
+      // Attempt fell inside it.
+      jobsInWindow: v.number(),
+      sampleExhausted: v.boolean(),
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireDashboardAuth(ctx);
+    const since = Date.now() - ACTIVITY_WINDOW_MS;
+    const profiles = await ctx.db.query("profiles").collect();
+    return Promise.all(
+      profiles
+        .toSorted((left, right) => left.name.localeCompare(right.name))
+        .map(async (profile) => {
+          const recent = await ctx.db
+            .query("attempts")
+            .withIndex("by_profile", (q) => q.eq("profile", profile.name))
+            .order("desc")
+            .take(ACTIVITY_SAMPLE);
+          const jobs = recent.filter((attempt) => attempt.repo !== undefined);
+          const last = jobs[0];
+          const oldestSampled = recent.at(-1);
+          return {
+            name: profile.name,
+            lastJob:
+              last === undefined || last.repo === undefined
+                ? undefined
+                : { repo: last.repo, at: last.createdAt, displayName: last.displayName },
+            jobsInWindow: jobs.filter((attempt) => attempt.createdAt >= since).length,
+            sampleExhausted:
+              recent.length === ACTIVITY_SAMPLE &&
+              oldestSampled !== undefined &&
+              oldestSampled.createdAt >= since,
+          };
+        }),
+    );
+  },
+});
