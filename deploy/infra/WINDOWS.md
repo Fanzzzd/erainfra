@@ -18,9 +18,17 @@ RDP into the box, open **PowerShell**, and run:
 & ([scriptblock]::Create((irm https://<hub>/agent.ps1))) -Token <token> -Name <name> -Install
 ```
 
-It downloads the prebuilt agent from the hub (no build tools), starts it, and makes it survive reboot.
-The hub URL defaults to wherever the script was served from, so usually just `-Token` (and `-Name`)
-are needed. The agent dials OUT over WSS — no inbound port, works behind NAT.
+It takes the prebuilt agent from the hub (no build tools), **verifies it against the SHA-256 the
+control plane pins**, starts it, and makes it survive reboot. The hub URL defaults to wherever the
+script was served from, so usually just `-Token` (and `-Name`) are needed. The agent dials OUT over
+WSS — no inbound port, works behind NAT.
+
+The verification is not optional and there is no flag that skips it ([ADR
+0006](../../docs/adr/0006-one-onboarding-path-with-a-pinned-trust-root.md)): the hub serves the
+bytes, the control plane serves the checksum, and a mismatch stops the install with nothing written.
+That is why the hub needs `ERAINFRA_INSTALL_URL` set — without it, enrolment refuses rather than
+falling back to the unchecked download this script used to do. `-InstallUrl` overrides it for one
+run, and `-FromRelease` takes the bytes from the GitHub release instead of this hub's mirror.
 
 **Reboot-survival, no admin required.** `-Install` first tries a Scheduled Task; on a UAC-filtered
 local admin in a non-elevated shell that's Access-Denied, so it automatically falls back to a per-user

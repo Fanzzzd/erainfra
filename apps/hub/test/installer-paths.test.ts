@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApiServer } from "../src/server.ts";
 
@@ -86,6 +88,85 @@ test("the default installer paths resolve to real files and the routes serve the
     // route accepts as a name and the regex rejects as a binary.
     const badName = await app.inject({ method: "GET", url: "/agent-bin/hub.sh" });
     assert.equal(badName.statusCode, 400);
+  } finally {
+    await app.close();
+  }
+});
+
+// The enrollment scripts hand the install to the control plane's verified installer (ADR 0006), and
+// they learn which control plane from a second placeholder. Unset, they must refuse: falling back to
+// the unchecked download they used to do is the one behaviour the ADR exists to remove, and a
+// silently untemplated `<install>` is exactly how that would come back.
+const ENROLLMENT_SCRIPTS = ["agent.sh", "agent.ps1"];
+
+test("the enrollment scripts learn their control plane from ERAINFRA_INSTALL_URL", async () => {
+  delete process.env.PORTLESS_DEPLOY_DIR;
+  process.env.ERAINFRA_INSTALL_URL = "https://control.example/";
+  const app = createApiServer();
+  try {
+    for (const script of ENROLLMENT_SCRIPTS) {
+      assert.ok(
+        readFileSync(join(DEPLOY_DIR, script), "utf8").includes("<install>"),
+        `${script} no longer has an <install> placeholder to template`,
+      );
+      const res = await app.inject({
+        method: "GET",
+        url: `/${script}`,
+        headers: { host: "hub.example" },
+      });
+      assert.equal(res.statusCode, 200);
+      // Trailing slash normalised away, so the script's `$INSTALL_URL/install` stays well formed.
+      assert.ok(
+        res.body.includes("https://control.example"),
+        `${script} was served without its control plane templated in`,
+      );
+      assert.ok(!res.body.includes("control.example//"), `${script} doubled a slash`);
+      assert.ok(!res.body.includes("<install>"), `${script} left an untemplated <install> in it`);
+      // The placeholder appears exactly once in code, on purpose. A second occurrence — a guard
+      // comparing against its literal text, say — is rewritten by this same substitution, and a
+      // guard that ends up reading `$INSTALL_URL != <the configured url>` passes precisely when it
+      // should refuse. Comments are exempt: they are prose about the placeholder, not a use of it.
+      const codeUses = readFileSync(join(DEPLOY_DIR, script), "utf8")
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("#"))
+        .filter((line) => line.includes("<install>"));
+      assert.equal(
+        codeUses.length,
+        1,
+        `${script} uses <install> in ${codeUses.length} places; templating rewrites every one`,
+      );
+      assert.ok(
+        !res.body.includes('curl -fsSL "$url" -o "$BIN/portless-agent"'),
+        `${script} still downloads the agent without checking it`,
+      );
+    }
+  } finally {
+    await app.close();
+    delete process.env.ERAINFRA_INSTALL_URL;
+  }
+});
+
+test("with no control plane configured, enrollment refuses rather than installing unchecked bytes", async () => {
+  delete process.env.PORTLESS_DEPLOY_DIR;
+  delete process.env.ERAINFRA_INSTALL_URL;
+  const app = createApiServer();
+  try {
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent.sh",
+      headers: { host: "hub.example" },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(!res.body.includes("<install>"), "the placeholder survived into a served script");
+    assert.match(res.body, /no verified installer configured/);
+    // Running it with nothing configured stops before it fetches or installs anything.
+    const run = spawnSync("sh", ["-s", "--", "--token", "plt_test"], {
+      input: res.body,
+      encoding: "utf8",
+      env: { ...process.env, HOME: mkdtempSync(join(tmpdir(), "portless-enroll-")) },
+    });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /no verified installer configured/);
   } finally {
     await app.close();
   }

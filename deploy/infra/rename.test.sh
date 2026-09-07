@@ -129,8 +129,13 @@ grep -q 'agent-bin/portless-agent-' "$HERE/agent.sh" ||
   fail "agent.sh no longer downloads the frozen agent-bin path"
 grep -q 'agent-bin/portless-agent-windows' "$HERE/agent.ps1" ||
   fail "agent.ps1 no longer downloads the frozen agent-bin path"
-grep -q '/etc/systemd/system/portless-agent.service' "$HERE/agent.sh" ||
-  fail "agent.sh no longer installs the frozen systemd unit name"
+# The unit used to be agent.sh's to write; ADR 0006 moved the whole install — unit, env file,
+# runtime — into the control plane's verified installer, so the frozen name is asserted where it is
+# now written. If it disappears from BOTH places, a fleet's Nodes stop surviving reboots silently.
+grep -q '/etc/systemd/system/portless-agent.service' "$HERE/../../packages/backend/convex/installScript.ts" ||
+  fail "the verified installer no longer installs the frozen systemd unit name"
+grep -q 'TaskName "PortlessAgent"' "$HERE/../../packages/backend/convex/installScriptPowerShell.ts" ||
+  fail "the verified Windows installer no longer registers the frozen scheduled task name"
 grep -q 'v portless-data:/data' "$HERE/hub.sh" ||
   fail "hub.sh no longer mounts the portless-data volume — a renamed volume comes up EMPTY"
 grep -q 'name portless-registry' "$HERE/hub.sh" ||

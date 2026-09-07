@@ -2,16 +2,29 @@
 # Portless agent — ONE command turns a fresh Linux box into a ready deploy node.
 # It dials OUT to the hub over WSS (no inbound port, works behind NAT), installs the container
 # runtime if it's missing, and (when run as root) registers a systemd service so the node survives
-# reboots. Everything self-hosted: the agent binary comes from the hub, Docker from the distro repos.
+# reboots.
 #
 #   curl -fsSL <hub>/agent.sh | sudo sh -s -- --token <token> [--name <name>]   # full setup
 #   curl -fsSL <hub>/agent.sh | sh -s -- --token <token>                        # no-root: agent only
 #
+# What this script no longer does (ADR 0006): download a binary and run it. It used to fetch
+# $HOSTBASE/agent-bin/portless-agent-<target> with no integrity check of any kind, chmod +x it, and
+# start it as root. It now hands the job to the control plane's verified installer, which checks
+# what it downloaded against a SHA-256 the control plane pins and refuses to install on a mismatch.
+#
+# The bytes still come from this hub by default — --source points the payload at /agent-bin/ while
+# the script and the digest come from the control plane over TLS — so self-hosted and air-gapped
+# installs are unaffected. Populate the mirror with `build-agents.sh` from the same commit the
+# control plane pins; a mirror built from anything else is refused, by design.
+#
 # The hub URL defaults to wherever this script was served from, so usually just --token is needed.
 # Flags: --hub <url>  --token <tok>  --name <id>  --no-docker (skip runtime install)  --foreground
+#        --install-url <url> (the control plane serving /install; defaults to ERAINFRA_INSTALL_URL)
+#        --from-release (take the bytes from the GitHub release instead of this hub's mirror)
 set -eu
 
-# <hub> is templated by the server to the base URL this script was served from.
+# <hub> is templated by the server to the base URL this script was served from, and <install> to the
+# control plane this hub is configured against (ERAINFRA_INSTALL_URL).
 SERVED_FROM="<hub>"
 
 # --- retiring the "Portless" name, stage 1 (ADR 0004; CONTEXT.md rule 4) -----------------------
@@ -40,12 +53,17 @@ dual_env() { # dual_env NEW OLD [DEFAULT]
   fi
 }
 
-HUB=""; TOKEN="$(dual_env ERAINFRA_TOKEN PORTLESS_TOKEN)"; NAME=""; FOREGROUND=""; WANT_DOCKER=1
+HUB=""; TOKEN="$(dual_env ERAINFRA_TOKEN PORTLESS_TOKEN)"; NAME=""; FOREGROUND=""; WANT_DOCKER=1; FROM_RELEASE=0
+# ERAINFRA_INSTALL_URL is new in this change, so it gets only the new name: no deployed box holds a
+# PORTLESS_ spelling of it, and inventing one would freeze a retired alias for nothing (ADR 0004).
+INSTALL_URL="${ERAINFRA_INSTALL_URL:-<install>}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub)   HUB=$2; shift 2 ;;
     --token) TOKEN=$2; shift 2 ;;
     --name)  NAME=$2; shift 2 ;;
+    --install-url) INSTALL_URL=$2; shift 2 ;;
+    --from-release) FROM_RELEASE=1; shift ;;
     --no-docker) WANT_DOCKER=0; shift ;;
     --foreground) FOREGROUND=1; shift ;;
     *) shift ;;
@@ -59,7 +77,7 @@ PREFIX="$(dual_env ERAINFRA_PREFIX PORTLESS_PREFIX)"
 if [ -z "$PREFIX" ]; then
   if [ -d "$HOME/.erainfra" ]; then PREFIX="$HOME/.erainfra"; else PREFIX="$HOME/.portless"; fi
 fi
-BIN="$PREFIX/bin"; RUN="$PREFIX/run"
+BIN="$PREFIX/bin"
 log()  { printf '\033[36m[portless]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33m[portless] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m[portless] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -81,10 +99,6 @@ esac
 HOSTBASE=$(printf '%s' "$HTTP_BASE" | sed -E 's#^([a-z]+://[^/]+).*#\1#')
 [ -n "${WSS:-}" ] || WSS=$(printf '%s/agent' "$HOSTBASE" | sed -E 's#^http#ws#')
 
-# root? pick a sudo prefix for the privileged steps (runtime install + systemd service).
-if [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO="sudo"; fi
-priv() { if [ -z "$SUDO" ]; then "$@"; elif have sudo; then sudo "$@"; else return 1; fi; }
-
 detect_target() {
   os=$(uname -s); arch=$(uname -m)
   case "$os" in Linux) os=linux ;; Darwin) os=darwin ;; *) die "unsupported OS: $os" ;; esac
@@ -92,38 +106,29 @@ detect_target() {
   echo "${os}-${arch}"
 }
 
-# Bring up a container runtime if there isn't one. Best-effort: a failure here warns (so the box still
-# enrolls) rather than aborts — deploys just won't work until docker is on PATH. Self-hosted: distro
-# packages only (docker.io / docker), never get.docker.com or a Docker Hub convenience script.
-ensure_docker() {
-  [ "$WANT_DOCKER" = 1 ] || { log "skipping runtime install (--no-docker)"; return 0; }
-  if have docker; then log "container runtime present: $(docker --version 2>/dev/null)"; return 0; fi
-  if [ "$(uname -s)" = Darwin ]; then warn "no docker — on macOS install Docker Desktop manually; agent will still enroll"; return 0; fi
-  log "container runtime not found — installing from distro repos…"
-  if   have apt-get; then priv sh -c 'apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io' || { warn "runtime install failed (apt)"; return 0; }
-  elif have dnf;     then priv dnf install -y docker || { warn "runtime install failed (dnf)"; return 0; }
-  elif have yum;     then priv yum install -y docker || { warn "runtime install failed (yum)"; return 0; }
-  elif have apk;     then priv apk add --no-cache docker || { warn "runtime install failed (apk)"; return 0; }
-  elif have zypper;  then priv zypper -n install docker || { warn "runtime install failed (zypper)"; return 0; }
-  else warn "no supported package manager (apt/dnf/yum/apk/zypper) — install docker manually"; return 0; fi
-  # start + enable across init systems (systemd / openrc / sysv). ponytail: best-effort, any one wins.
-  if   have systemctl; then priv systemctl enable --now docker 2>/dev/null || priv service docker start 2>/dev/null || true
-  elif have rc-update; then priv rc-update add docker default 2>/dev/null || true; priv service docker start 2>/dev/null || true
-  else priv service docker start 2>/dev/null || true; fi
-  # last resort (e.g. a container with no init): start dockerd ourselves and give it a moment.
-  if ! priv docker info >/dev/null 2>&1 && have dockerd; then priv sh -c 'dockerd >/tmp/dockerd.log 2>&1 &'; sleep 3; fi
-  # let the invoking non-root user drive docker without sudo (effective next login).
-  [ -z "$SUDO" ] || priv usermod -aG docker "$(id -un)" 2>/dev/null || true
-  if have docker; then log "container runtime installed: $(docker --version 2>/dev/null || echo ok)"; else warn "docker still not on PATH — deploys will fail until it is"; fi
-}
-
+# Hand the install to the control plane's verified installer. The container runtime, the binary, the
+# systemd unit and the enrollment all happen in there — under one checksum check that this script
+# cannot skip, weaken or work around. What is passed in is where the bytes may come from, never
+# whether they are checked.
 install_agent() {
-  mkdir -p "$BIN"
   target=$(detect_target)
-  url="$HOSTBASE/agent-bin/portless-agent-${target}"
-  log "downloading agent ($target) from $url …"
-  curl -fsSL "$url" -o "$BIN/portless-agent" || die "download failed: $url (did you run build-agents.sh on the hub?)"
-  chmod +x "$BIN/portless-agent"
+  # Unconfigured is the empty string: the server templates <install> to ERAINFRA_INSTALL_URL, which
+  # is empty when unset. Nothing here compares against the placeholder text — the templating would
+  # rewrite that comparison too, and the guard would pass exactly when it should fail.
+  [ -n "$INSTALL_URL" ] ||
+    die "no verified installer configured: set ERAINFRA_INSTALL_URL on the hub, or pass --install-url https://<control-plane>. Enrolling without one would mean installing a binary nothing vouches for, which is what ADR 0006 retired."
+  have bash || die "bash is required by the verified installer (install bash, then re-run)"
+  set -- --role node --hub "$WSS" --token "$TOKEN"
+  [ -z "$NAME" ] || set -- "$@" --name "$NAME"
+  [ "$WANT_DOCKER" = 1 ] || set -- "$@" --no-docker
+  [ -z "$FOREGROUND" ] || set -- "$@" --foreground
+  if [ "$FROM_RELEASE" = 0 ]; then
+    # Self-hosted by default: the payload comes off this hub, the digest comes from the control
+    # plane. An air-gapped box keeps working, and the mirror is no longer something to trust.
+    set -- "$@" --source "$HOSTBASE/agent-bin/portless-agent-${target}"
+  fi
+  log "installing the verified agent via $INSTALL_URL/install …"
+  curl -fsSL "$INSTALL_URL/install" | bash -s -- "$@" || die "verified install failed. If the checksum did not match, this hub's /agent-bin mirror is not the release the control plane pins: rebuild it with build-agents.sh from that commit, or re-run with --from-release."
 }
 
 # dumbpipe (iroh) powers cross-node service links (backend on this box → db on another NAT'd box).
@@ -138,8 +143,12 @@ ensure_dumbpipe() {
   url="https://github.com/n0-computer/dumbpipe/releases/download/${DUMBPIPE_VERSION}/dumbpipe-${DUMBPIPE_VERSION}-${os}-${arch}.tar.gz"
   log "downloading dumbpipe ${DUMBPIPE_VERSION} (cross-node links)…"
   tmp=$(mktemp -d)
-  if curl -fsSL "$url" -o "$tmp/d.tgz" && tar -xzf "$tmp/d.tgz" -C "$tmp" 2>/dev/null && [ -f "$tmp/dumbpipe" ]; then
-    mv "$tmp/dumbpipe" "$BIN/dumbpipe" && chmod +x "$BIN/dumbpipe"
+  # mkdir here rather than relying on the agent install: that step is the verified installer's now,
+  # and it runs after this one. Report what actually happened — the old wording said "installed"
+  # whether or not the move worked.
+  if curl -fsSL "$url" -o "$tmp/d.tgz" && tar -xzf "$tmp/d.tgz" -C "$tmp" 2>/dev/null &&
+     [ -f "$tmp/dumbpipe" ] && mkdir -p "$BIN" && mv "$tmp/dumbpipe" "$BIN/dumbpipe"; then
+    chmod +x "$BIN/dumbpipe"
     log "installed dumbpipe -> $BIN/dumbpipe"
   else
     warn "dumbpipe download failed — cross-node service links disabled on this node (deploys unaffected)"
@@ -147,84 +156,9 @@ ensure_dumbpipe() {
   rm -rf "$tmp"
 }
 
-# Detect and report, never rename (ADR 0004 stage 1). A systemd unit is not a path a fallback can
-# chase: installing a second unit under a new name leaves the old one ENABLED and running, so the
-# box ends up with two agents dialling the same hub and the operator sees no error at all. So this
-# script keeps writing the frozen unit name and only refuses when a box is ALREADY half-migrated.
-# Nothing in this release can produce that state; the check is here for the release that renames,
-# and for a box someone migrated by hand.
-#
-# Deliberately not inside install_service: that call is `install_service 2>/dev/null` and falls back
-# to a nohup process on failure, which would swallow this message and start a THIRD agent.
-check_unit_rename() {
-  have systemctl || return 0
-  [ -f /etc/systemd/system/erainfra-agent.service ] || return 0
-  [ -f /etc/systemd/system/portless-agent.service ] || return 0
-  warn "this box has BOTH portless-agent.service and erainfra-agent.service"
-  die  "disable one before re-running:  systemctl disable --now erainfra-agent   # or portless-agent"
-}
-
-# systemd service (root only) → reconnects forever and survives reboot. Token lives in a 0600 env
-# file, never in a world-readable unit or argv.
-install_service() {
-  have systemctl || return 1
-  priv test -d /run/systemd/system || return 1   # systemd actually running (not just installed)
-  # /etc/portless/agent.env is an identifier a running Node already holds. Prefer the renamed
-  # directory only when it is ALREADY there; on every box today neither branch is a change.
-  ENVDIR=/etc/portless
-  [ -d /etc/erainfra ] && ENVDIR=/etc/erainfra
-  priv mkdir -p "$ENVDIR" || return 1
-  # The variable names inside stay frozen too — the agent dual-reads them, and this release writes
-  # no new name anywhere. Only the directory holding the file is allowed to have moved already.
-  printf 'PORTLESS_HUB=%s\nPORTLESS_TOKEN=%s\n' "$WSS" "$TOKEN" | priv tee "$ENVDIR/agent.env" >/dev/null || return 1
-  priv chmod 600 "$ENVDIR/agent.env"
-  nm=${NAME:-$(hostname)}
-  printf '%s\n' \
-    '[Unit]' \
-    'Description=Portless deploy agent' \
-    'After=network-online.target docker.service' \
-    'Wants=network-online.target' \
-    '[Service]' \
-    "EnvironmentFile=$ENVDIR/agent.env" \
-    "Environment=HOME=$HOME" \
-    "ExecStart=$BIN/portless-agent connect --name $nm" \
-    'Restart=always' \
-    'RestartSec=3' \
-    '[Install]' \
-    'WantedBy=multi-user.target' | priv tee /etc/systemd/system/portless-agent.service >/dev/null || return 1
-  priv systemctl daemon-reload
-  priv systemctl enable --now portless-agent >/dev/null 2>&1 || return 1
-  sleep 1
-  priv systemctl is-active --quiet portless-agent || { priv journalctl -u portless-agent -n 8 --no-pager >&2 || true; return 1; }
-  log "✅ systemd service 'portless-agent' active (auto-reconnect, survives reboot)"
-  log "   stop/remove: systemctl disable --now portless-agent"
-}
-
-check_unit_rename
-ensure_docker
-install_agent
+# The systemd unit, /etc/portless/agent.env and the container runtime install used to live here.
+# They are the verified installer's now — under the same frozen names, written only after the
+# checksum matches. Deleting this copy is what makes "the binary was never checked" unreachable
+# rather than merely discouraged.
 ensure_dumbpipe
-ARGS="connect --hub $WSS --token $TOKEN"
-[ -n "$NAME" ] && ARGS="$ARGS --name $NAME"
-
-if [ -n "$FOREGROUND" ]; then
-  log "connecting to $WSS (foreground)…"
-  exec "$BIN/portless-agent" $ARGS
-fi
-
-# Prefer a real service (reboot-survival) when we're root on a systemd box; else background w/ pidfile.
-if install_service 2>/dev/null; then
-  exit 0
-fi
-
-mkdir -p "$RUN"
-pidf="$RUN/agent.pid"; logf="$RUN/agent.log"
-[ -f "$pidf" ] && kill "$(cat "$pidf")" 2>/dev/null || true
-: > "$logf"
-nohup "$BIN/portless-agent" $ARGS >>"$logf" 2>&1 &
-echo $! > "$pidf"
-sleep 1
-kill -0 "$(cat "$pidf")" 2>/dev/null || { tail -5 "$logf" >&2; die "agent exited on startup"; }
-log "agent connected to $WSS (pid $(cat "$pidf"), logs: $logf)"
-grep -q "connected to" "$logf" 2>/dev/null && log "✅ registered with the hub" || log "starting… check $logf"
-warn "not reboot-persistent — re-run as root (sudo) for a systemd service"
+install_agent
