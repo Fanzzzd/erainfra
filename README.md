@@ -486,6 +486,12 @@ build cache such as Turborepo's works the same way. Both consume Actions storage
 than a warm immutable image, so prefer prewarming the Image Release for anything that changes
 rarely. A Profile on allowlist-only egress needs its cache endpoint declared with `--egress-allow`.
 
+Keep the label behind a repository variable with a hosted fallback, and agree on a queue limit with
+whoever operates the Profile: GitHub has no runner fallback of its own and cancels a queued
+self-hosted job only after 24 hours. Before an operation takes a Profile's only Worker away for
+longer than that limit, the operator follows
+[docs/runbooks/take-the-only-worker-away.md](docs/runbooks/take-the-only-worker-away.md).
+
 ## Legacy webhook delivery recovery
 
 Minute reconciliation calls `retryStalledDeliveries` for deliveries that reached Convex but remained

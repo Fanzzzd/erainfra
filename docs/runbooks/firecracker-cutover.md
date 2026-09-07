@@ -86,6 +86,10 @@ sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
 
 ## 3. Enrol or restart the Worker
 
+If this is the Profile's only Worker, its consumers have been queuing since step 2 began and will
+keep queuing until readiness is green. [Take the only Worker out of service](take-the-only-worker-away.md)
+says what to tell them before starting and what to set back afterwards.
+
 If the host is new, add it from **Machines → Add machine** in the dashboard and run the generated
 command. If it is already enrolled, restart the Agent so it re-runs readiness:
 

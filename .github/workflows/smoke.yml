@@ -45,3 +45,41 @@ jobs:
           # Egress works; actions/checkout and tool downloads depend on it.
           curl -fsS -o /dev/null https://api.github.com
           echo "smoke OK"
+      # Where a slow checkout spends its time. Measured on 2026-09-07 from
+      # both the guest and the Worker host: about a third of new TCP
+      # connections to github.com:443 (20.205.243.166, GitHub's Singapore
+      # edge) get no SYN-ACK for a fixed 30 or 60 s window, then complete
+      # normally; the API, codeload and GHCR edges in the same /29, npm,
+      # Cloudflare and Convex never stall, and the same probe from
+      # oracle-singapore-1 never stalls. That is ubuntu0's uplink, not the
+      # fleet, and it is what #137's checkout minutes were. The connect
+      # column is the one that shows it. Informational: the assertion is
+      # the bounded checkout below, so a failed probe is recorded, not fatal.
+      - name: Time the egress path
+        run: |
+          set -uo pipefail
+          fmt='%{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{time_total} %{size_download} %{speed_download}\n'
+          {
+            printf '\n### egress timing (seconds; bytes; bytes/s)\n\n'
+            printf '| target | lookup | connect | tls | first byte | total | bytes | speed |\n|---|---|---|---|---|---|---|---|\n'
+            for target in https://api.github.com/ https://codeload.github.com/Fanzzzd/erainfra/tar.gz/refs/heads/main https://github.com/Fanzzzd/erainfra/info/refs?service=git-upload-pack; do
+              line=$(curl -sS -o /dev/null --connect-timeout 150 -w "$fmt" "$target" 2>&1 | tail -1 || true)
+              printf '| %s | %s |\n' "${target#https://}" "$(printf '%s' "$line" | tr ' ' '|')"
+            done
+            start=$(date +%s.%N)
+            if git ls-remote --quiet https://github.com/Fanzzzd/erainfra HEAD >/dev/null 2>&1; then outcome=ok; else outcome=FAILED; fi
+            printf '| git ls-remote | | | | | %s | %s | |\n' "$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.3f", b - a }')" "$outcome"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      # The one step the consumer's jobs spent their lost minutes in (#137):
+      # 154 to 214 s on 2026-08-20 against 19 s hosted. A checkout that takes
+      # longer than two minutes is the canary going red, not a slow day.
+      - name: Check out within two minutes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+      - name: The checkout is complete
+        run: |
+          set -euo pipefail
+          test -f README.md
+          git -C "$GITHUB_WORKSPACE" rev-parse --verify HEAD >/dev/null
