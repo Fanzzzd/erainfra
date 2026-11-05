@@ -16,6 +16,7 @@ inputs:
     description: Path to write the tier snapshot to, one TAB-separated line per variable.
     required: true
 runs:
-  # The pinned runner is actions-runner 2.336.0, which ships node24.
+  # The pinned runner (RUNNER_VERSION in images/ubuntu-24.04-js/Dockerfile)
+  # ships node24.
   using: node24
   main: index.mjs

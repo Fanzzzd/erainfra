@@ -163,6 +163,7 @@ jobs:
           node --experimental-strip-types scripts/print-install-script.ts win \
             https://example.convex.site > "$RUNNER_TEMP/install.ps1"
           head -n 1 "$RUNNER_TEMP/install.ps1" | grep -qx '#Requires -Version 5.1'
+          # shellcheck disable=SC2016 # PowerShell, not bash, expands $null and $env:
           pwsh -NoProfile -Command '$null = [ScriptBlock]::Create((Get-Content -Raw $env:RUNNER_TEMP/install.ps1))'
       # The environment conformance workflow only runs on a pull request that
       # touches the provisioners, the images or readiness.ts, so its differ is

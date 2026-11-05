@@ -41,10 +41,10 @@ set -euo pipefail
 
 # --- Pinned upstream artifacts ----------------------------------------------
 # actions/runner osx-arm64. The checksum is the one published in the release
-# body of https://github.com/actions/runner/releases/tag/v2.336.0 and matches
+# body of https://github.com/actions/runner/releases/tag/v2.338.2 and matches
 # the asset digest reported by the GitHub releases API. Bump both together.
-RC_RUNNER_VERSION_DEFAULT="2.336.0"
-RC_RUNNER_SHA256_DEFAULT="8e8839c49b7060b6b2154f4931f815df330c27f167d53ef2239ee3dfce28b079"
+RC_RUNNER_VERSION_DEFAULT="2.338.2"
+RC_RUNNER_SHA256_DEFAULT="25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388"
 
 # Pinned by digest for the same reason the runner tarball is: `:latest` moves.
 # This is the image the end-to-end runs were executed against, and it must track

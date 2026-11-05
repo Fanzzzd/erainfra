@@ -23,8 +23,8 @@ const agentSource = readFileSync(new URL("../provision.ts", import.meta.url), "u
 const readinessSource = readFileSync(new URL("../readiness.ts", import.meta.url), "utf8");
 
 // The runner archive pin, shared by the checksum and drift tests below.
-const PINNED_RUNNER_VERSION = "2.336.0";
-const PINNED_RUNNER_SHA256 = "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162";
+const PINNED_RUNNER_VERSION = "2.338.2";
+const PINNED_RUNNER_SHA256 = "a1f17aa987fc8158bc7521d284912267a0d01b7c2c4684b33c86783b5e8221cc";
 
 // The tooling pins, in the same shape: a version, a digest of the vendor's own
 // artifact, and nothing resolved at build time.

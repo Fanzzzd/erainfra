@@ -142,6 +142,16 @@ describe("IMAGE_CATALOG", () => {
     }
   });
 
+  // A ghcr.io tag can be re-pushed, so a tag alone lets the image under every
+  // Docker Worker change without a commit here. The tag stays for the reader.
+  it("pins the Docker executor's runner image by release and digest", () => {
+    for (const label of ["ubuntu-22.04", "ubuntu-24.04", "rc-linux"] as const) {
+      expect(IMAGE_CATALOG[label]?.image, `${label} is not pinned by digest`).toMatch(
+        /^ghcr\.io\/actions\/actions-runner:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/,
+      );
+    }
+  });
+
   it("never points a production label at a floating tag", () => {
     for (const label of PRODUCTION_LABELS) {
       const image = IMAGE_CATALOG[label]?.image ?? "";

@@ -20,7 +20,12 @@ type ImageCatalogEntry = {
  */
 export const PREVIEW_OPT_IN_LABEL = "rc-preview";
 
-const ACTIONS_RUNNER_IMAGE = "ghcr.io/actions/actions-runner:2.336.0";
+// The Docker executor's runner image: the tag says which release it is, and the
+// digest is what Docker pulls, so a re-pushed tag cannot change the image under
+// a Worker. Kept equal to the runner pin in the provisioners and the Image
+// Release by .github/workflows/pin-bump.yml (scripts/pinbump).
+const ACTIONS_RUNNER_IMAGE =
+  "ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232";
 
 // Pinned by digest, not by `:latest`, because `:latest` is mutable and moves
 // without notice: this digest is the one four end-to-end Tart runs were executed

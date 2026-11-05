@@ -1,0 +1,28 @@
+{
+  "tag_name": "v2.199.0",
+  "draft": false,
+  "prerelease": false,
+  "body": "",
+  "assets": [
+    {
+      "name": "gh_2.199.0_linux_amd64.tar.gz",
+      "digest": "sha256:42e24b9f68d1982e4e7dc63bece234f194729b2734cb8b01bb37725a765c4457",
+      "browser_download_url": "https://github.com/cli/cli/releases/download/v2.199.0/gh_2.199.0_linux_amd64.tar.gz"
+    },
+    {
+      "name": "gh_2.199.0_linux_arm64.tar.gz",
+      "digest": "sha256:4d22bbc3820ef76259ff6bd791c0458a2010f47c8b2e9c7bda0c61a27e38bdc5",
+      "browser_download_url": "https://github.com/cli/cli/releases/download/v2.199.0/gh_2.199.0_linux_arm64.tar.gz"
+    },
+    {
+      "name": "gh_2.199.0_macOS_arm64.zip",
+      "digest": "sha256:e30c8bd35deaa03a711ff14a477861edd501774a3af2b9106967eb3f9f18d385",
+      "browser_download_url": "https://github.com/cli/cli/releases/download/v2.199.0/gh_2.199.0_macOS_arm64.zip"
+    },
+    {
+      "name": "gh_2.199.0_checksums.txt",
+      "digest": null,
+      "browser_download_url": "https://github.com/cli/cli/releases/download/v2.199.0/gh_2.199.0_checksums.txt"
+    }
+  ]
+}

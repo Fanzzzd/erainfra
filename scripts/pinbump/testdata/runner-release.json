@@ -1,0 +1,43 @@
+{
+  "tag_name": "v2.339.0",
+  "draft": false,
+  "prerelease": false,
+  "body": "## SHA-256 Checksums\r\nThe SHA-256 checksums for the packages included in this build are shown below:\r\n- actions-runner-win-x64-2.339.0.zip <!-- BEGIN SHA win-x64 -->4f8f253ab1b321dca9ea27c72f1beb7c9727e0dfad464a7b312b88eee1314a3a<!-- END SHA win-x64 -->\r\n- actions-runner-win-arm64-2.339.0.zip <!-- BEGIN SHA win-arm64 -->872faefffe23509f76c135f35c6506bc559436e738b17dbdd1de110143439ec4<!-- END SHA win-arm64 -->\r\n- actions-runner-osx-x64-2.339.0.tar.gz <!-- BEGIN SHA osx-x64 -->72e25f7cfa6e4068b45deb7685946d59c3ce90b26fadd0ebdbe78c4e379a2dc9<!-- END SHA osx-x64 -->\r\n- actions-runner-osx-arm64-2.339.0.tar.gz <!-- BEGIN SHA osx-arm64 -->cf26f363089d68c7b51e605f1b7137470006915967bb7909cd63c56e6846d860<!-- END SHA osx-arm64 -->\r\n- actions-runner-linux-x64-2.339.0.tar.gz <!-- BEGIN SHA linux-x64 -->434c47e3ba9a36e611bd068104639be9dbd89bdd29fc4e8e65ab9fe1a3507a01<!-- END SHA linux-x64 -->\r\n- actions-runner-linux-arm64-2.339.0.tar.gz <!-- BEGIN SHA linux-arm64 -->07d5be2ff55936520e64ac20129aadee61406732b42047a946d44c038eb7534a<!-- END SHA linux-arm64 -->\r\n- actions-runner-linux-arm-2.339.0.tar.gz <!-- BEGIN SHA linux-arm -->06844cc251948d40e47a791eaae22c9aaf8e51acbb38acc1175da228e9a83525<!-- END SHA linux-arm -->",
+  "assets": [
+    {
+      "name": "actions-runner-win-x64-2.339.0.zip",
+      "digest": "sha256:4f8f253ab1b321dca9ea27c72f1beb7c9727e0dfad464a7b312b88eee1314a3a",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-win-x64-2.339.0.zip"
+    },
+    {
+      "name": "actions-runner-win-arm64-2.339.0.zip",
+      "digest": "sha256:872faefffe23509f76c135f35c6506bc559436e738b17dbdd1de110143439ec4",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-win-arm64-2.339.0.zip"
+    },
+    {
+      "name": "actions-runner-osx-x64-2.339.0.tar.gz",
+      "digest": "sha256:72e25f7cfa6e4068b45deb7685946d59c3ce90b26fadd0ebdbe78c4e379a2dc9",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-osx-x64-2.339.0.tar.gz"
+    },
+    {
+      "name": "actions-runner-osx-arm64-2.339.0.tar.gz",
+      "digest": "sha256:cf26f363089d68c7b51e605f1b7137470006915967bb7909cd63c56e6846d860",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-osx-arm64-2.339.0.tar.gz"
+    },
+    {
+      "name": "actions-runner-linux-x64-2.339.0.tar.gz",
+      "digest": "sha256:434c47e3ba9a36e611bd068104639be9dbd89bdd29fc4e8e65ab9fe1a3507a01",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-linux-x64-2.339.0.tar.gz"
+    },
+    {
+      "name": "actions-runner-linux-arm64-2.339.0.tar.gz",
+      "digest": "sha256:07d5be2ff55936520e64ac20129aadee61406732b42047a946d44c038eb7534a",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-linux-arm64-2.339.0.tar.gz"
+    },
+    {
+      "name": "actions-runner-linux-arm-2.339.0.tar.gz",
+      "digest": "sha256:06844cc251948d40e47a791eaae22c9aaf8e51acbb38acc1175da228e9a83525",
+      "browser_download_url": "https://github.com/actions/runner/releases/download/v2.339.0/actions-runner-linux-arm-2.339.0.tar.gz"
+    }
+  ]
+}

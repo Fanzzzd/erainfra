@@ -19,12 +19,22 @@ on:
       - "go.sum"
       - ".github/workflows/images.yml"
   workflow_dispatch:
+  # A weekly rebuild of main from the same source. The Dockerfile pins every
+  # tool and the base image by digest, but `apt-get install` takes whatever the
+  # Ubuntu archive serves that day, so a rebuild is how security updates to
+  # those packages reach the image. It publishes a new digest and changes no
+  # pin: a Profile keeps the digest it was given until someone repins it.
+  schedule:
+    - cron: "41 6 * * 1" # Mondays 06:41 UTC
 
 permissions: {}
 
+# A push or pull request cancels an older run for the same ref. A scheduled
+# rebuild never cancels anything: it waits behind a push's publish instead of
+# throwing away that push's sha- tag.
 concurrency:
   group: runner-images-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   validate-ubuntu-24-04-js:
@@ -68,8 +78,11 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/runner-center-ubuntu-24.04-js
+          # A scheduled rebuild gets a dated tag instead of sha-<commit>, so a
+          # sha- tag keeps naming the one image its push built.
           tags: |
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,enable=${{ github.event_name != 'schedule' }}
+            type=schedule,prefix=weekly-,pattern={{date 'YYYYMMDD'}}
             type=raw,value=edge,enable={{is_default_branch}}
       - id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

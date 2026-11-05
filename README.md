@@ -195,7 +195,7 @@ HTTP request body. They never appear in argv or a host environment variable.
 `images/ubuntu-24.04-js` is the first minimal Linux Profile. It contains:
 
 - Ubuntu 24.04 and systemd;
-- actions/runner 2.336.0, checksum verified;
+- actions/runner 2.338.2, checksum verified;
 - Node.js 22.23.2 (the default `node`) and 24.22.1, and Go 1.25.3, in the hosted-toolcache layout,
   each checksum verified, so `setup-node` and `setup-go` resolve them without a download;
 - GitHub CLI 2.97.0, checksum verified;
@@ -209,10 +209,13 @@ HTTP request body. They never appear in argv or a host environment variable.
 - the small MMDSv2 guest bootstrap;
 - a locked root password and no SSH server.
 
-Run the **Runner image** workflow. It builds both Linux architectures, publishes to GHCR, emits
-SBOM/provenance attestations, and reports the immutable manifest digest. Use that full
+Run the **EraInfra runner images** workflow. It builds both Linux architectures, publishes to GHCR,
+emits SBOM/provenance attestations, and reports the immutable manifest digest. Use that full
 `ghcr.io/...@sha256:...` reference in the controller. The workflow deliberately does not upload a
-BuildKit cache to GitHub Actions storage.
+BuildKit cache to GitHub Actions storage. It also runs every Monday on `main` without a source
+change, so the Ubuntu packages `apt-get` installs pick up the archive's security updates; that
+build is tagged `weekly-<YYYYMMDD>` and `edge`. A rebuild publishes a new digest and changes
+nothing a Profile runs: a Profile moves only when you repin it.
 
 This Profile promises its explicit smoke-tested tools, not complete GitHub-hosted image parity.
 See [the image research](docs/research/blacksmith-runner-images.md) for why GitHub's minimal runner
@@ -232,6 +235,59 @@ A Profile is declarable only once a Worker serves it on _this_ repository. Scale
 per repository, so a leg for a Profile nobody serves here does not fail — it queues until the
 timeout, and a timeout reads exactly like a runner that died. `rc-linux-js` is deliberately not
 declared today for that reason, and is therefore not among what the job proves.
+
+### How pins move
+
+The image and the provisioners pin their toolchain by hand, each as a version plus a SHA-256:
+actions/runner (the image, `provision-mac.sh`, `build-image.ps1`, and the Docker executor's
+`ghcr.io/actions/actions-runner` image, which is pinned by digest), Node.js, Go, the GitHub CLI,
+and the four Actions the image pre-downloads. No package manager owns these, so the
+**Toolchain pin bump** workflow moves them. Every Monday it runs `scripts/pinbump`, which checks
+each pin against upstream and opens one pull request, on branch `automation/pin-bump`, that moves
+every pin with a newer release. Each checksum comes from upstream's own checksum source:
+
+| Pin            | Moves to                                         | Checksum source                                                                                                           |
+| -------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| actions/runner | the latest release                               | the release asset digest, which must match the SHA-256 table in the release body                                          |
+| Node.js        | the newest LTS patch of the major already pinned | `SHASUMS256.txt`, its signature checked with `gpgv` against [nodejs/release-keys](https://github.com/nodejs/release-keys) |
+| Go             | the newest patch of the minor in `go.mod`        | the `sha256` in `go.dev/dl/?mode=json`                                                                                    |
+| GitHub CLI     | the latest release                               | `checksums.txt`, which must match the release asset digests                                                               |
+| Seeded Actions | the newest release of the major already pinned   | none is published; the source archive is hashed once and the image build refuses any other bytes                          |
+
+A major or minor version move (Node.js 26, Go 1.27, `actions/checkout` v8) is never made
+automatically; the pull request lists it as a note. Run the same check by hand with
+`go run ./scripts/pinbump` (it needs `gpgv`), or limit it with `-only runner`.
+
+The runner pin has a deadline. GitHub's
+[self-hosted runner reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
+says a runner with automatic updates disabled must be updated within 30 days of a new release, and
+"If you do not perform a software update within 30 days, the GitHub Actions service will not
+queue jobs to your runner." The controller registers every scale set with automatic updates
+disabled (`DisableUpdate` in `apps/controller/internal/githubscale`), because a Runner that
+updated itself inside a one-job VM would download the update on every job and then throw it away.
+So, within 30 days of an actions/runner release, merge the bump pull request, publish the image
+and repin each Firecracker Profile to the new digest, deploy the control plane (the Docker
+executor's image is in its catalog), and cut an EraInfra release so Workers receive the new
+provisioners.
+
+Dependabot covers everything else weekly, grouped into one pull request per ecosystem and held
+for 7 days after a release before it is proposed: Actions used by the workflows, Go modules, the
+pnpm workspace, and the Action Runner Agent's own npm lockfile. It skips the four seeded Actions,
+which only `scripts/pinbump` can move together with the image.
+
+The bump needs a `PIN_BUMP_TOKEN` repository secret to work fully. Without it the workflow uses
+`GITHUB_TOKEN`, and two things change. GitHub does not start workflows for a pull request that
+token opens, so CI runs only after a maintainer closes and reopens the pull request; the pull
+request body says so. And that token cannot change files under `.github/workflows`, so the seeded
+Actions are left alone. To create the secret, make a fine-grained personal access token
+(**Settings → Developer settings → Fine-grained tokens**) with this repository as its only
+repository and these permissions: Contents read and write, Pull requests read and write, Workflows
+read and write. Save it under **Settings → Secrets and variables → Actions** as `PIN_BUMP_TOKEN`,
+and replace it before it expires. A GitHub App with the same three permissions also works, but the
+workflow would then need a step that mints its installation token.
+
+GitHub pauses scheduled workflows in a public repository after 60 days without activity. If the
+Monday pull request stops arriving, re-enable **Toolchain pin bump** under the Actions tab.
 
 ## Run a Profile controller
 

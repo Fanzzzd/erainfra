@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
 FROM docker.io/library/ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 
 ARG TARGETARCH
-ARG RUNNER_VERSION=2.336.0
+ARG RUNNER_VERSION=2.338.2
 ARG NODE_VERSION=22.23.2
 ARG NODE_24_VERSION=24.22.1
 ARG PNPM_VERSION=11.21.0
@@ -109,8 +109,8 @@ RUN getent group docker >/dev/null || groupadd --system docker \
   && passwd --lock root
 
 RUN case "$TARGETARCH" in \
-      amd64) runner_arch=x64; runner_sha=04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d ;; \
-      arm64) runner_arch=arm64; runner_sha=58b758e420b87093fbd4bfddd368074960053e2f1388f01848c82624b90f27d1 ;; \
+      amd64) runner_arch=x64; runner_sha=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40 ;; \
+      arm64) runner_arch=arm64; runner_sha=670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && install -d -o runner -g docker /opt/runner /opt/hostedtoolcache \

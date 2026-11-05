@@ -1,0 +1,102 @@
+# Version updates for everything a package manager can resolve. The toolchain
+# the image and provisioners pin by hand (actions/runner, Node.js, Go, gh, and
+# the Actions seeded in the image) is moved by .github/workflows/pin-bump.yml
+# instead, because each of those pins is a version plus a checksum in several
+# files and no Dependabot ecosystem edits that shape.
+#
+# Weekly, grouped, and behind a cooldown: a release is only proposed once it has
+# been public for a week, which is the window in which a hijacked package
+# version is usually caught and pulled.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ["*"]
+    ignore:
+      # images/ubuntu-24.04-js pre-downloads these four at the exact commits
+      # ci.yml pins, with each archive's SHA-256 written beside it, and
+      # packages/release/tests/image-contract.test.ts fails a pull request that
+      # moves a workflow pin without the image. Dependabot cannot edit the
+      # Dockerfile, so its PRs for these would always be red; pin-bump.yml moves
+      # the workflows and the image together.
+      - dependency-name: actions/checkout
+      - dependency-name: actions/setup-node
+      - dependency-name: actions/setup-go
+      - dependency-name: pnpm/action-setup
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The pnpm workspace: every package under apps/ and packages/ except the
+  # Action Runner Agent, which Workers install with plain npm from its own
+  # package-lock.json and which therefore has its own entry below. Updating it
+  # here would move package.json without that lockfile, and CI's `npm ci` step
+  # would fail the PR.
+  - package-ecosystem: npm
+    directory: /
+    exclude-paths:
+      - apps/action-runner-agent/**
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # @types/node follows the Node.js major the repository runs on (22), and
+      # a TypeScript major is a migration: apps/docs is held on TypeScript 5 by
+      # the next-compat catalog for a reason pnpm-workspace.yaml records.
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: npm
+    directory: /apps/action-runner-agent
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      agent-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
