@@ -31,6 +31,10 @@ type Store struct {
 	// ActivateProfile is consumed on the first successful acquire of a
 	// dedicated process. Later acquires respect an operator's pause.
 	ActivateProfile bool
+	// CanPublishCacheFacts tells Convex this process can publish cache facts. A
+	// Profile that publishes them is never leased to a candidate that cannot,
+	// because its runners would get no facts and every cache request would 401.
+	CanPublishCacheFacts bool
 }
 
 func New(baseURL, token string, client *http.Client) (*Store, error) {

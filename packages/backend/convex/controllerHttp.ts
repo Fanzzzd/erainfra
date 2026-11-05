@@ -209,6 +209,8 @@ export function parseLeaseRequest(payload: unknown) {
     !/^[A-Za-z0-9_.-]{1,64}$/.test(payload.profile.trim()) ||
     !instanceId(payload.instance) ||
     (payload.activate !== undefined && typeof payload.activate !== "boolean") ||
+    (payload.canPublishCacheFacts !== undefined &&
+      typeof payload.canPublishCacheFacts !== "boolean") ||
     !token(payload.hostname, 255)
   ) {
     return null;
@@ -218,6 +220,7 @@ export function parseLeaseRequest(payload: unknown) {
     instance: payload.instance,
     hostname: payload.hostname.trim(),
     activate: payload.activate === true,
+    canPublishCacheFacts: payload.canPublishCacheFacts === true,
   };
 }
 

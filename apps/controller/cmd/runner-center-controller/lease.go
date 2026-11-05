@@ -31,6 +31,7 @@ func serveLeased(ctx context.Context, cfg config.Config, logger *slog.Logger) er
 	// intentionally reviving a retired Profile. It never revives one again while
 	// this process runs, so an operator's retire stays paused even with standbys.
 	store.ActivateProfile = cfg.MachineToken == ""
+	store.CanPublishCacheFacts = cfg.CacheFactsURL != "" && cfg.CacheSigningKey != ""
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "controller"

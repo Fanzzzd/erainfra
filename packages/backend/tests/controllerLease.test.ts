@@ -536,6 +536,41 @@ describe("a Worker's machine token", () => {
     });
   });
 
+  it("never leases a cache-facts Profile to a standby that cannot publish the facts", async () => {
+    const t = convexTest(schema, modules);
+    await insertProfile(t, { githubConfigUrl: REPOSITORY_URL, githubCacheFacts: true });
+    await worker(t, GOOD_WORKER);
+    const ask = async (canPublishCacheFacts?: boolean) => {
+      const response = await post(
+        t,
+        "/controller/lease/acquire",
+        {
+          profile: CONTRACT.profile,
+          hostname: "worker",
+          instance: "instance-worker1",
+          ...(canPublishCacheFacts === undefined ? {} : { canPublishCacheFacts }),
+        },
+        { bearer: GOOD_WORKER },
+      );
+      expect(response.status).toBe(200);
+      return (await response.json()) as Acquired;
+    };
+    // Omitted means an older standby that never configured the cache: refused, like an explicit false.
+    expect(await ask()).toMatchObject({ granted: false, reason: "incapable" });
+    expect(await ask(false)).toMatchObject({ granted: false, reason: "incapable" });
+    const refused = await t.run((ctx) => ctx.db.query("controllerLeases").first());
+    expect(refused?.holder).toBeUndefined();
+    expect(await ask(true)).toMatchObject({ granted: true, epoch: 1 });
+  });
+
+  it("does not ask a standby for cache facts its Profile does not publish", async () => {
+    const t = await setup();
+    await worker(t, GOOD_WORKER);
+    expect(await acquire(t, "instance-worker1", { bearer: GOOD_WORKER })).toMatchObject({
+      granted: true,
+    });
+  });
+
   it("reports a standby heartbeat for a Profile its Worker serves, and records the credential", async () => {
     const t = await setup();
     await worker(t, GOOD_WORKER);

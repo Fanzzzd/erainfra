@@ -20,6 +20,11 @@ func (c Config) WithProfile(spec *fleet.ProfileSpec) (Config, error) {
 	if spec == nil || spec.Name != c.Profile {
 		return Config{}, errors.New("lease response has no matching Profile settings; register it once from a dedicated controller")
 	}
+	// Convex refuses the lease to a standby that cannot publish a Profile's cache
+	// facts; this is the same rule, kept for a backend that predates the check.
+	if spec.GitHubCacheFacts && (c.CacheFactsURL == "" || c.CacheSigningKey == "") {
+		return Config{}, errors.New("this Profile publishes cache facts; configure ERAINFRA_CACHE_FACTS_URL (or RC_CACHE_FACTS_URL) and the cache signing key on this standby")
+	}
 	c.RegistrationURL = spec.RegistrationURL
 	c.ScaleSetName = spec.ScaleSetName
 	c.RunnerGroup = spec.RunnerGroup

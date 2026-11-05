@@ -69,3 +69,30 @@ func TestLoadWorkerTokenFromFile(t *testing.T) {
 		t.Fatal("machine credential not loaded")
 	}
 }
+
+// A Profile registered with cache-facts publishing must not be served by a
+// standby that cannot publish them: its runners would get no facts, and the
+// cache service would answer 401 to every one of their cache requests.
+func TestStandbyRefusesACacheFactsProfileItCannotPublishFor(t *testing.T) {
+	dedicated := validConfig()
+	dedicated.CacheFactsURL = "https://cache.example/_erainfra/facts"
+	dedicated.CacheSigningKey = "0123456789abcdef0123456789abcdef"
+	spec := dedicated.ProfileSpec()
+	if !spec.GitHubCacheFacts {
+		t.Fatal("precondition: the dedicated host registers cache facts")
+	}
+	standby := Config{ConvexURL: "https://example.convex.site", Profile: "rc-linux-js", MachineToken: "0123456789abcdef0123456789abcdef"}
+	if _, err := standby.WithProfile(&spec); err == nil {
+		t.Fatal("standby accepted a cache-facts Profile it cannot publish facts for")
+	}
+	capable := standby
+	capable.CacheFactsURL = dedicated.CacheFactsURL
+	capable.CacheSigningKey = dedicated.CacheSigningKey
+	served, err := capable.WithProfile(&spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if served.CacheFactsURL != dedicated.CacheFactsURL {
+		t.Fatal("capable standby lost its cache facts URL")
+	}
+}

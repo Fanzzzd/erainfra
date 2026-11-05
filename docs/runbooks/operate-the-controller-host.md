@@ -94,8 +94,11 @@ curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role con
 It extracts only `MACHINE_TOKEN`, validates its 32 hex characters, and copies it to
 `/etc/runner-center/secrets/<profile>/machine-token`. The root-owned standby env file contains
 only the Convex site, Profile name and that token's file path. Do not pass image, size, GitHub,
-App or controller-token settings. A standby with the optional job-cache publisher also takes
-`--cache-facts-url` and `--cache-signing-key-file`, as the dedicated controller did.
+App or controller-token settings. If the Profile publishes cache facts (its dedicated controller
+had `RC_CACHE_FACTS_URL` set), the standby must also take `--cache-facts-url` and
+`--cache-signing-key-file`. Convex never leases such a Profile to a standby that lacks them: the
+runners it served would get no facts and every cache request would be refused. A standby refused
+for this reason stands by with reason `incapable`.
 
 The installer downloads the pinned binary, checks its SHA-256, installs the embedded unit and
 creates the unprivileged `runner-center-controller` account. It does not change the Worker,
