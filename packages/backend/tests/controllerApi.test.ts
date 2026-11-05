@@ -290,15 +290,24 @@ describe("POST /controller/profiles/pause", () => {
     try {
       const t = convexTest(schema, modules);
       await registerProfile(t);
-      const post = (body: unknown, authorization?: string) =>
-        t.fetch("/controller/profiles/pause", {
+      const post = async (body: unknown, authorization?: string) => {
+        const grant = await t.mutation(internal.controllerLease.acquire, {
+          profile: (body as { name: string }).name,
+          hostname: "retire-test",
+          instance: "retire-test-instance",
+          caller: { kind: "controllerToken", slot: "current" },
+        });
+        if (!grant.granted) throw new Error("retire test needs a lease");
+        return t.fetch("/controller/profiles/pause", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "X-EraInfra-Lease-Epoch": String(grant.epoch),
             ...(authorization === undefined ? {} : { Authorization: authorization }),
           },
           body: JSON.stringify(body),
         });
+      };
 
       expect((await post({ name: "rc-linux-js" })).status).toBe(401);
       expect((await post({ name: "rc-linux-js" }, "Bearer wrong")).status).toBe(401);

@@ -64,12 +64,21 @@ function report(fields: Report = {}): Report {
   };
 }
 
-function send(t: Harness, body: unknown, token: string | null = CURRENT) {
+async function send(t: Harness, body: unknown, token: string | null = CURRENT) {
+  const grant = await t.mutation(internal.controllerLease.acquire, {
+    profile: CONTRACT.profile,
+    hostname: "heartbeat-test",
+    instance: "heartbeat-test-instance",
+    activate: true,
+    caller: { kind: "controllerToken", slot: "current" },
+  });
+  if (!grant.granted) throw new Error("test heartbeat needs a lease");
   return t.fetch("/controller/heartbeat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
+      "X-EraInfra-Lease-Epoch": String(grant.epoch),
     },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });

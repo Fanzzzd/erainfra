@@ -11,13 +11,14 @@
 //   on silence is an outage. Upgrading a controller therefore cannot page anyone, and a Profile
 //   whose controller is gone for good stops paging when it is retired (paused).
 //
-// Several controllers may report for one Profile, one row per host. GitHub gives a scale set one
-// message session, so at most one of them is listening; the others wait in `conflict`.
+// Several controllers may report for one Profile, one row per host. The lease (ADR 0014) lets one
+// of them serve and the others report `standby`; GitHub's one-session rule backs it up, so at most
+// one is listening and a new holder whose predecessor's session lingers waits in `conflict`.
 
 /** Three missed 30-second reports. One slow request and one lost one do not flip the status. */
 export const CONTROLLER_OFFLINE_AFTER_MS = 90_000;
 
-export type ControllerSessionState = "starting" | "listening" | "conflict" | "stopped";
+export type ControllerSessionState = "starting" | "standby" | "listening" | "conflict" | "stopped";
 
 /** The fields of one controller's newest report that liveness is computed from. */
 export type ControllerHeartbeatRow = {
@@ -31,14 +32,16 @@ export type ControllerHeartbeatRow = {
   assignedJobs: number;
   runningJobs: number;
   lastError?: string;
-  tokenSlot: "current" | "next";
+  tokenSlot: "current" | "next" | "machine";
+  leaseRole?: "holder" | "standby";
+  leaseEpoch?: number;
 };
 
 /**
  * - `unknown`: no controller has ever reported for the Profile.
  * - `online`: a controller reported within the cutoff and holds the GitHub session.
- * - `waiting`: controllers are reporting, but none holds the session (starting, or refused it
- *   because another session exists).
+ * - `waiting`: controllers are reporting, but none holds the session (starting, standing by for
+ *   the lease, or refused the session because another one exists).
  * - `offline`: no controller has reported within the cutoff, or the only recent report is a stop.
  */
 export type ControllerStatus = "unknown" | "online" | "waiting" | "offline";

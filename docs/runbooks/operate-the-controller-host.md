@@ -1,53 +1,174 @@
-# Runbook: operate the controller host
+# Runbook: operate Profile controllers
 
-A Profile's controller is `runner-center-controller@<profile>`: one systemd unit per Profile,
-holding GitHub's scale-set message session and turning demand into Attempts. It runs no jobs and
-needs no KVM. Today it runs on a host that is not a Worker
-([ADR 0013](../adr/0013-run-controllers-off-the-workers.md)); the installer also puts it on a
-Worker host, which is where [ADR 0014](../adr/0014-controllers-run-on-the-workers-under-a-lease.md)
-is taking it.
+A Profile's controller is `runner-center-controller@<profile>`, one systemd unit per Profile. It
+turns GitHub scale-set demand into Attempts and runs no jobs. Controllers can run on Workers or on
+a dedicated Linux host. Convex gives one process the Profile's lease; every other process stands
+by ([ADR 0014](../adr/0014-controllers-run-on-the-workers-under-a-lease.md)).
 
-This runbook covers provisioning a host, updating it, adding and retiring Profiles, rotating
-secrets, monitoring, backing up, and rebuilding the host from scratch.
+The holder renews every 10 seconds, with a 30-second expiry. Every controller write carries its
+lease epoch. A stale write gets HTTP 412, which cancels the listener and closes the GitHub session.
+A controller that cannot renew stops when its last grant expires, even if GitHub remains reachable.
+A successor may then wait for GitHub to release its predecessor's abandoned session. The existing
+409 backoff starts at 10 seconds and doubles to 60 seconds, with jitter; GitHub can retain an
+abandoned session for minutes, so lease expiry alone is not a bound on resumed listening.
 
-What the installer puts on a host, and nothing else:
+A Worker with a fresh network benchmark score below 40 waits an extra 15 seconds after a lease
+becomes free. A better-connected standby gets the first chance; a lone poor Worker still serves.
+Missing or seven-day-old benchmark data gets no penalty. Convex owns all lease timings in
+`packages/backend/convex/controllerLease.ts`; controllers read them from the lease response.
 
-| Path                                                                  | Owner and mode                      | Holds                                                                           |
-| --------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
-| `/usr/local/lib/runner-center/runner-center-controller`               | root, 0755                          | the binary `AGENT_RELEASE` pins                                                 |
-| `/usr/local/lib/runner-center/runner-center-controller.bak-<version>` | root, 0755                          | the binary an `--update` replaced                                               |
-| `/etc/systemd/system/runner-center-controller@.service`               | root, 0644                          | the unit from the release                                                       |
-| `/etc/runner-center/profiles/<profile>.env`                           | root, 0600                          | the Profile's settings; secrets only as `*_FILE` paths                          |
-| `/etc/runner-center/secrets/<profile>/`                               | root:runner-center-controller, 0750 | `controller-token`, `github-app.pem` or `github-token`, and `cache-signing-key` |
-| the `runner-center-controller` account                                | system, no home, no login shell     | the identity the unit runs as                                                   |
+## Profile settings and credentials
 
-systemd reads the env file as root; the controller reads each `*_FILE` itself as
-`runner-center-controller`, which is why the secrets are group-readable by that account and by no
-one else (0640).
+Register a Profile once from a dedicated controller's existing env file. That holder publishes
+the executor, image, resources, pool and runner bounds, egress policy, GitHub registration URL,
+runner group, labels and whether it publishes cache facts. Standbys read that contract from
+Convex; they never register it or overwrite it. A Worker cannot take a Profile's lease until it
+has advertised readiness for the same executor, image and resources. A pre-lease Profile without
+a registered GitHub URL reports `profileIncomplete` until the upgraded dedicated controller
+registers it.
 
-## 1. Provision a host
+The dedicated host's env remains the bootstrap source. Restart it to publish a changed contract;
+do not keep a different contract in each standby's env file. There is no new dashboard editor or
+CLI Profile writer in this change.
 
-Any always-on Linux host with systemd works: a small VM, or a Worker host. It needs outbound HTTPS
-to `github.com`, `api.github.com`, GitHub's Actions service (`*.actions.githubusercontent.com`) and
-the deployment's `https://<deployment>.convex.site`. It needs no inbound port.
+A Worker standby uses its existing machine token. Convex resolves the machine ID from that token
+and accepts it on controller routes only while that machine holds the Profile's current lease.
+Standbys can report only their own liveness for Profiles their Worker serves. Workers cannot
+register, change or pause Profiles, even while holding the lease.
 
-The installer refuses until the deployment pins a controller release: `AGENT_RELEASE.controller` is
-first filled at the release after v0.2.0-rc.10. On an older deployment, install by hand as the
-README's "Run a Profile controller" describes.
+The holder obtains a short-lived GitHub App installation token from Convex. Configure these
+server-side environment variables in the Convex dashboard:
 
-Put each secret in a file first, readable by root only. Never paste a secret on a command line,
-where it lands in shell history and in `ps`:
+- `CONTROLLER_GITHUB_APP_CLIENT_ID`: the controller App's client ID.
+- `CONTROLLER_GITHUB_APP_PRIVATE_KEY`: that App's PEM RSA private key, PKCS#1 or PKCS#8. Real
+  newlines and escaped `\n` both work.
+
+Use the same controller App the dedicated host already uses, installed on the Profile's repository
+or organization with the [README permissions](../../README.md#github-permissions-the-controller-needs).
+The webhook App created by the dashboard's Manifest flow stays separate: its manifest lacks
+organization Self-hosted runners and Contents read. Reusing it would widen the webhook path's
+privileges. No key or App JWT is returned to a Worker.
+
+Each of the two GitHub calls behind a token request has a 10-second bound, so a GitHub stall
+answers the holder with 504 and it retries. Convex checks the lease again after GitHub answers and
+withholds the token if the lease changed meanwhile.
+
+Convex discovers the installation from the Profile's URL. A repository token names only that
+repository and requests Administration write. An organization token requests Self-hosted runners
+write. Actions, Metadata and Contents read are added only when the dedicated host registered
+cache-facts publishing and the holder requests it. The holder refreshes five minutes before
+expiry; a failed refresh keeps an unexpired token, never an expired one. Lease loss cancels the
+honest holder's listener and fences its Convex writes. It does not revoke an installation token
+already issued: a compromised host could reuse that scoped credential at GitHub until its
+one-hour expiry. The scale-set client keeps the same Actions session during refresh, through the adapter in
+`apps/controller/internal/githubscale/token.go`.
+
+Enterprise runner registrations cannot use a GitHub App. Keep those Profiles on a dedicated
+controller with `RC_GITHUB_TOKEN`; a Worker receives an explicit refusal for them. Dedicated
+hosts keep their existing `RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials and use the same lease
+as Workers. `CONTROLLER_TOKEN_NEXT` still overlaps the current token for rotation.
+
+## Install a Worker standby
+
+The Worker must already be enrolled and ready for the Profile. The installer needs Linux with
+systemd, outbound HTTPS to the Convex site and GitHub, and a release with
+`AGENT_RELEASE.controller` populated. Until a release pins the controller binary, the installer
+refuses rather than install unverifiable bytes.
+
+Run from the Worker's account, through sudo:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
+  --profile erainfra-4vcpu-ubuntu-2404 --no-prompt
+```
+
+Without `--controller-token-file`, the installer finds the Worker's env file at
+`<SUDO_USER home>/.runner-center/agent/.env`. If the account or path differs, name it explicitly:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
+  --profile erainfra-4vcpu-ubuntu-2404 \
+  --worker-env-file /home/klaus/.runner-center/agent/.env --no-prompt
+```
+
+It extracts only `MACHINE_TOKEN`, validates its 32 hex characters, and copies it to
+`/etc/runner-center/secrets/<profile>/machine-token`. The root-owned standby env file contains
+only the Convex site, Profile name and that token's file path. Do not pass image, size, GitHub,
+App or controller-token settings. A standby with the optional job-cache publisher also takes
+`--cache-facts-url` and `--cache-signing-key-file`, as the dedicated controller did.
+
+The installer downloads the pinned binary, checks its SHA-256, installs the embedded unit and
+creates the unprivileged `runner-center-controller` account. It does not change the Worker,
+its runtime, account or service. Shared `runner-center` directories keep their existing modes.
+
+| Path                                                    | Owner and mode                      | Holds                          |
+| ------------------------------------------------------- | ----------------------------------- | ------------------------------ |
+| `/usr/local/lib/runner-center/runner-center-controller` | root, 0755                          | pinned binary                  |
+| `/etc/systemd/system/runner-center-controller@.service` | root, 0644                          | release unit                   |
+| `/etc/runner-center/profiles/<profile>.env`             | root, 0600                          | settings and secret file paths |
+| `/etc/runner-center/secrets/<profile>/`                 | root:runner-center-controller, 0750 | secret files, 0640             |
+
+systemd reads the env as root. The controller account reads the secret files. After a Worker
+re-registers and changes its machine token, rerun with the same `--profile` and
+`--worker-env-file`: the repair path refreshes the token copy and keeps the env file.
+
+Check the service and the dashboard's Profiles table:
+
+```bash
+systemctl status runner-center-controller@erainfra-4vcpu-ubuntu-2404
+journalctl -u runner-center-controller@erainfra-4vcpu-ubuntu-2404 -n 50
+```
+
+While another controller holds the lease, the log says `controller standing by`, with the holder,
+retry delay and network penalty. After a grant it says `acquired controller lease`, then
+`runner scale-set controller started`. The tooltip shows the host, Worker credential, lease epoch
+and session state. A 409 means it has the lease but is waiting for GitHub's previous session.
+
+## Migrate a live Profile from the VM to Workers
+
+Do this per Profile. No command here retires the scale set.
+
+1. Prepare a controller release containing the lease code and pin it in the deployment. Stage the
+   binary on the VM, deploy the backend and restart the VM unit on that binary in one maintenance
+   window. The new backend refuses every unfenced write, including from old dedicated binaries;
+   there is no legacy bypass. GitHub queues demand during the short restart gap.
+2. Configure the controller App's client ID and key in Convex. Leave the VM's credentials in place
+   for rollback. Confirm the VM has acquired a lease, registered the GitHub URL and returned to
+   listening. Check each Profile separately.
+3. Install the standby on ubuntu0 with its Worker env file, as above. Wait for its heartbeat to
+   appear beside the VM's. It must log `controller standing by` and identify the VM as holder.
+   If it says `notReady` or `profileIncomplete`, fix that before proceeding.
+4. Stop the VM's unit, without running `retire`:
+
+   ```bash
+   sudo systemctl disable --now runner-center-controller@<profile>
+   ```
+
+5. Watch ubuntu0 acquire a higher epoch and start listening. A graceful stop closes the old
+   GitHub session before releasing the lease. A crash can add GitHub's lingering-session delay.
+   Confirm the dashboard shows ubuntu0 listening with the Worker credential and submit a small
+   workflow targeted at that Profile. Check its Attempt is created and reaches the Worker.
+6. Install another ready Worker's standby when available. Keep the VM env and credentials in an
+   encrypted backup until every Profile has taken over and survived a Worker restart.
+
+Rollback before retiring the VM: stop the Worker standby units for that Profile on **every**
+Worker, then start the VM unit on the lease-aware binary. Watch it acquire the lease and session.
+A dedicated host has no priority over a Worker, so leaving a Worker holder running will leave the
+VM standing by. Do not roll the controller binary back to a pre-lease release against this
+backend. To return to that release, stop every controller and roll the backend back as well in a
+maintenance window.
+
+## Dedicated host install and update
+
+A dedicated Linux/systemd host needs no KVM and no inbound ports. It needs outbound HTTPS to the
+Convex site, GitHub's API and Actions service. Put secrets in files first; never put their values
+on command lines or in shell history:
 
 ```bash
 umask 077
 mkdir -p ~/controller-secrets && cd ~/controller-secrets
 read -rs CONTROLLER_TOKEN && printf '%s' "$CONTROLLER_TOKEN" > controller-token && unset CONTROLLER_TOKEN
 cp /path/to/downloaded/app.private-key.pem github-app.pem
-```
-
-Then install the first Profile. Paths must be absolute:
-
-```bash
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
   --profile erainfra-4vcpu-ubuntu-2404 \
   --github-config-url https://github.com/OWNER/REPOSITORY \
@@ -56,41 +177,19 @@ curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role con
   --vcpus 4 --memory-mib 16384 --max-runners 16 \
   --controller-token-file "$PWD/controller-token" \
   --github-app-client-id <client-id> --github-app-installation-id <installation-id> \
-  --github-app-private-key-file "$PWD/github-app.pem"
+  --github-app-private-key-file "$PWD/github-app.pem" --no-prompt
 ```
 
-An enterprise scale set takes `--github-token-file` instead of the three App flags. A Profile that
-uses the job cache adds `--cache-facts-url` and `--cache-signing-key-file`
-([operate the job cache](operate-the-job-cache.md)). The other settings flags are `--warm-pool`,
-`--fit-policy`, `--min-runners`, `--scale-set-name`, `--labels` and `--runner-group`; `--help`
-lists them all. Run from a terminal, the installer asks for anything required that is missing;
-under automation, add `--no-prompt` so it fails with the list instead. It checks every value
-before it writes anything.
+`--controller-token-file` explicitly selects dedicated mode even on an enrolled Worker host.
+Enterprise scope takes `--github-token-file` instead of the App flags. For other Profile and cache
+flags, use `--help`. Delete the source secret directory after confirming the service is online.
 
-The installer verifies the binary against the pinned SHA-256 and changes nothing on a mismatch. On
-an air-gapped host, `--source file:///path/to/runner-center-controller-linux-x86_64` (or a mirror
-URL) moves where the bytes come from; the pinned digest still decides.
+Rerun with another `--profile` to add one. Rerun with only `--profile` to repair without changing
+its env. Use `--reconfigure` and the complete settings to replace that env. On a dedicated host,
+starting the unit deliberately registers the env contract and activates a paused Profile once.
+If it later loses its lease to retirement, the same process does not reactivate the Profile.
 
-On a Worker host, the installer creates `/usr/local/lib/runner-center` and `/etc/runner-center`
-only if they are missing, never changes their modes, and does not touch `runner-center-runtime`,
-the `runner-center` group, the Worker's account or `~/.runner-center`. The Firecracker host's
-`--uninstall` removes only its own files from `/usr/local/lib/runner-center`, so it leaves the
-controller in place.
-
-Check the result:
-
-```bash
-systemctl status runner-center-controller@erainfra-4vcpu-ubuntu-2404
-journalctl -u runner-center-controller@erainfra-4vcpu-ubuntu-2404 -n 50
-```
-
-The log says `runner scale-set controller started`, and within 30 seconds the dashboard's Profiles
-table shows the Profile's Controller as **Online**, with this host and version. Delete
-`~/controller-secrets` once the Profile is online; the installer keeps its own copies.
-
-## 2. Update
-
-The deployment's `AGENT_RELEASE` decides the version. After a control-plane deploy that moves it:
+Update running instances on either kind of host:
 
 ```bash
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update
@@ -106,10 +205,8 @@ The installer exits with an error even if recovery succeeds. If recovery also fa
 both failures and the backup paths for manual recovery. The previous unit is kept at
 `/etc/systemd/system/runner-center-controller@.service.bak-<old version>` alongside the binary
 backup, even after the installer exits. If either file cannot be restored, it skips restarts rather
-than starting the rejected build.
-
-Each restart closes the GitHub session and opens a new one. GitHub keeps queued jobs and offers
-them to the next session, so a restart delays intake by seconds and loses nothing.
+than starting the rejected build. `--source file:///path/to/binary` changes where the bytes come
+from, never which digest is accepted.
 
 To roll back by hand:
 
@@ -122,175 +219,64 @@ sudo systemctl daemon-reload
 sudo systemctl restart 'runner-center-controller@<profile>'   # each instance that should run
 ```
 
-The next `--update` moves it forward again.
+A pre-lease backup is not a compatible rollback against the lease-enforcing backend.
 
-## 3. Add, change or retire a Profile
+## Retire a Profile
 
-**Add.** Rerun the install command with the new `--profile` and its settings. The binary and unit
-are shared, so this only adds an env file, a secrets directory and an instance.
-
-**Change a setting.** Rerun with `--profile <name> --reconfigure` and the complete set of flags.
-Without `--reconfigure` the existing env file is kept, any settings given are ignored with a
-warning, and the instance is restarted on the binary and unit. Rerunning with only `--profile` is
-the repair command for one Profile.
-
-**Retire.** Stopping the unit is not enough: GitHub keeps the scale set and routes
-`runs-on: <profile>` jobs to it until it cancels them after 24 hours. Stop, then retire:
+Stop all its units, including Worker standbys. `retire --yes` needs to acquire the lease and
+refuses while another process holds it. Without `--yes` it only reads GitHub and reports:
 
 ```bash
-sudo systemctl disable --now runner-center-controller@<profile>
+sudo systemctl disable --now runner-center-controller@<profile>   # on every controller host
 sudo sh -c 'set -a; . /etc/runner-center/profiles/<profile>.env; \
-  exec /usr/local/lib/runner-center/runner-center-controller retire'        # report only
+  exec /usr/local/lib/runner-center/runner-center-controller retire'
 sudo sh -c 'set -a; . /etc/runner-center/profiles/<profile>.env; \
-  exec /usr/local/lib/runner-center/runner-center-controller retire --yes'  # delete and pause
+  exec /usr/local/lib/runner-center/runner-center-controller retire --yes'
 ```
 
-`retire --yes` deletes the scale set and pauses the Profile, so Workers stop prewarming it and the
-controller-silent alert stops watching it. Keep the env file and secrets in the backup until you
-are sure; then remove them:
+Run retirement from the dedicated host's saved configuration and credentials. A Worker credential
+cannot pause a Profile. The command checks GitHub's busy counters, pauses the Profile under its
+lease, then deletes the scale set while renewing that lease. `--force` overrides the busy check.
+Pausing first prevents another standby from recreating the scale set. If deletion fails, the
+Profile stays paused; retry `retire --yes`. Starting the dedicated unit deliberately reactivates
+it. Starting only a Worker standby does not.
 
-```bash
-sudo rm /etc/runner-center/profiles/<profile>.env
-sudo rm -r /etc/runner-center/secrets/<profile>
-```
+## Rotation, monitoring and recovery
 
-## 4. Rotate secrets
+**Controller token.** Set `CONTROLLER_TOKEN_NEXT` in Convex, replace each dedicated host's token
+file and restart it. In every Profile tooltip confirm those hosts report `CONTROLLER_TOKEN_NEXT`
+before promoting it to `CONTROLLER_TOKEN` and clearing NEXT. Worker credentials are unaffected.
+The two token slots belong to the same dedicated-host lease identity, so rotation does not
+create a second holder.
 
-### The controller token, without an outage
+**App key.** Generate a second key on the existing controller App. Replace
+`CONTROLLER_GITHUB_APP_PRIVATE_KEY` in Convex, replace the saved keys on any dedicated hosts still
+in use, restart those hosts and confirm operation before deleting the old key on GitHub.
+Workers use the new key at their next installation-token refresh. Restart one Worker holder to
+force a fresh mint and verify it can listen before deleting the old key; an already cached token
+alone does not prove the new key works. A PAT rotates only on its dedicated hosts. Cache-signing-key rotation must also update the cache service; follow
+[operate the job cache](operate-the-job-cache.md).
 
-The control plane accepts two controller tokens at once, `CONTROLLER_TOKEN` and the optional
-`CONTROLLER_TOKEN_NEXT`, and records which one each controller used. Set the variables in the
-Convex dashboard (Settings, Environment Variables) or with `npx convex env set … --prod` from
-`packages/backend`.
+**Monitor.** Heartbeats report every 30 seconds while holding the lease and on session changes.
+Standbys report on each acquire attempt, normally at most 45 seconds apart. Profiles show Online
+when a recent report is listening, Waiting for session when only starting/standby/conflict reports
+are live, and Offline after 90 seconds without a live report. The tooltip includes credential
+source and holder epoch. `/metrics` exposes `erainfra_controller_up` and
+`erainfra_controller_last_heartbeat_age_seconds`. Set a **No controller listening** alert, normally
+three minutes. A failed heartbeat no longer means the holder can serve forever: lease renewal
+is separate, and it stops at lease expiry if Convex is unreachable.
 
-1. Generate the new token on a trusted machine: `openssl rand -hex 32`.
-2. Set it as `CONTROLLER_TOKEN_NEXT`. Both tokens now work.
-3. On every controller host, for every Profile, replace the token file and restart the instance:
-
-   ```bash
-   sudo install -m 0600 /dev/null /etc/runner-center/secrets/<profile>/controller-token.new
-   sudo sh -c 'cat > /etc/runner-center/secrets/<profile>/controller-token.new'   # paste, then Ctrl-D
-   sudo chgrp runner-center-controller /etc/runner-center/secrets/<profile>/controller-token.new
-   sudo chmod 0640 /etc/runner-center/secrets/<profile>/controller-token.new
-   sudo mv /etc/runner-center/secrets/<profile>/controller-token.new \
-     /etc/runner-center/secrets/<profile>/controller-token
-   sudo systemctl restart runner-center-controller@<profile>
-   ```
-
-4. Wait until every controller reports with the new token. Hover each Profile's Controller cell:
-   every host must read `CONTROLLER_TOKEN_NEXT`. A controller you missed still reads
-   `CONTROLLER_TOKEN`.
-5. Set `CONTROLLER_TOKEN` to the new value, then remove `CONTROLLER_TOKEN_NEXT`. The hosts keep
-   working, because the token they present is now the current one. A controller still on the old
-   token starts getting 401 here, which is why step 4 comes first.
-
-Then take a new backup (section 6): the old one holds the withdrawn token.
-
-### The GitHub App private key
-
-A GitHub App can have several private keys at once. Generate a new key on the App's settings page,
-replace `/etc/runner-center/secrets/<profile>/github-app.pem` the way step 3 above replaces the
-token, restart the instance, confirm the Profile is Online, then delete the old key on GitHub.
-Every Profile that uses the same App needs the new file before the old key is deleted.
-
-A personal access token (`github-token`) rotates the same way: create the new token, replace the
-file, restart, confirm, then revoke the old token.
-
-### The cache signing key
-
-The controller signs cache facts with it and the cache service verifies them, so both sides change
-together. Follow [operate the job cache](operate-the-job-cache.md) for the service side; on the
-controller host replace `cache-signing-key` and restart. Jobs that start while the two disagree read
-a cold cache; nothing fails.
-
-## 5. Monitor
-
-Every controller reports a heartbeat every 30 seconds and whenever its session changes. The
-Profiles table's Controller column reads it:
-
-| Shows                   | Means                                                                                                                                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Online**              | A controller reported within 90 seconds and holds the GitHub session. The line below says when GitHub last answered its long poll.           |
-| **Waiting for session** | Controllers are reporting, but none holds the session: one is starting, or GitHub refused it because another session exists (see section 7). |
-| **Offline**             | No report for 90 seconds, or the last report was a stop. The tooltip carries the stop reason when there was one.                             |
-| **Not reporting**       | No controller has ever reported for this Profile, which is what a controller built before the heartbeat looks like. It is not alerted on.    |
-
-Set up one alert rule under Settings, Alerts: **No controller listening**, 3 minutes, every
-Profile. It fires when no controller has held an active Profile's session for that long, and
-resolves when one does again. `/metrics` carries the same signal as
-`erainfra_controller_up{profile}` and `erainfra_controller_last_heartbeat_age_seconds{profile}`,
-both absent until the Profile's first heartbeat.
-
-On the host:
-
-```bash
-systemctl list-units 'runner-center-controller@*'
-journalctl -u 'runner-center-controller@*' --since '1 hour ago' | grep -E '"level":"(WARN|ERROR)"'
-```
-
-`could not report controller heartbeat` means the controller cannot reach the control plane; it
-keeps serving jobs, but the dashboard will show it offline.
-
-## 6. Back up
-
-Back up what cannot be downloaded again: the env files and the secrets. The binary and unit come
-back from the installer.
+**Back up.** Encrypt the dedicated host's env files and secrets and keep the archive off-host:
 
 ```bash
 sudo tar -C /etc/runner-center -czf - profiles secrets |
   age -r <your age recipient> > controller-host-$(date +%F).tar.gz.age
 ```
 
-Store the encrypted archive off the host, in your password manager or secrets vault. Never put it,
-or any file under `/etc/runner-center/secrets`, in git, an issue, a chat or an unencrypted bucket:
-it holds the GitHub App key that registers runners for every Profile it serves. Take a new backup
-after adding a Profile, changing one with `--reconfigure`, or rotating a secret.
-
-## 7. Two controllers for one Profile
-
-GitHub gives a scale set one message session, so two controllers for one Profile never both take
-jobs. The second one's session request gets `409 Conflict`. It logs
-`another controller holds this scale set's message session; not listening, will retry`, reports
-`conflict`, and retries after 10 seconds, doubling to at most 60. It takes over within about a
-minute of the first controller closing its session.
-
-You see this in three situations, and only the last needs action:
-
-- **A restart after a crash.** A controller killed without closing its session (`kill -9`, power
-  loss) leaves it on GitHub for a few minutes. The restarted controller waits it out.
-- **A rebuild or a move to another host** (section 8), while the old host still runs. The new
-  controller waits until the old one stops.
-- **A forgotten controller.** If a Profile shows Waiting for session for longer than a few minutes,
-  something else holds its session: a controller on another host, or one started by hand. The
-  conflict message carries the session owner's name, `<hostname>:<profile>`. Stop that one.
-
-## 8. Rebuild from scratch
-
-When the host is lost or is being replaced:
-
-1. Provision a new host (section 1's prerequisites).
-2. Restore the backup into `/etc/runner-center`, owned by root rather than by whatever group ids
-   the old host used, then create the controller account and give it the secrets:
-
-   ```bash
-   age -d -i <your age identity> controller-host-<date>.tar.gz.age |
-     sudo tar --no-same-owner -C /etc/runner-center -xzf -
-   sudo useradd --system --user-group --no-create-home --home-dir /nonexistent \
-     --shell /usr/sbin/nologin runner-center-controller
-   sudo chmod 0600 /etc/runner-center/profiles/*.env
-   sudo chgrp -R runner-center-controller /etc/runner-center/secrets
-   sudo chmod 0750 /etc/runner-center/secrets /etc/runner-center/secrets/*
-   sudo chmod 0640 /etc/runner-center/secrets/*/*
-   ```
-
-3. For each Profile in the backup, run the installer with only `--profile <name> --no-prompt`. It
-   finds the restored env file and keeps it, installs the pinned binary and the unit, and starts
-   the instance.
-
-4. Confirm each Profile is Online on the dashboard with the new host's name.
-
-If the old host might still be running, stop its units first if you can reach it. If you cannot,
-the new controllers wait in `conflict` until the old ones stop or their sessions expire, so there
-is never a moment with two listeners. Without a backup, provision the host from scratch with a new
-controller token (section 4) and the App's key, using the settings the dashboard shows for each
-Profile.
+Never put the archive or `/etc/runner-center/secrets` in git or chat. Take a new backup after a
+Profile change or secret rotation. A lost Worker controller needs no controller-secret backup:
+re-enroll the Worker if necessary, wait for readiness, then rerun the standby installer. Restoring
+a dedicated host needs the saved envs and secrets with root ownership, env mode 0600, secret
+directories 0750 and secret files 0640 under the controller account's group; then rerun
+`--role controller --profile <name> --no-prompt` for each Profile. A replacement host competes for
+the lease; it cannot listen alongside a surviving old holder.

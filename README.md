@@ -405,10 +405,35 @@ Monday pull request stops arriving, re-enable **Toolchain pin bump** under the A
 
 ## Run a Profile controller
 
-One lightweight controller process owns one Profile. It can run on a small always-on host; it does
-not execute jobs or require KVM. A repository, organization, or enterprise URL is accepted.
+Controllers run on Workers or a dedicated host and need no KVM. For each Profile, Convex leases
+job intake to one process; the others stand by. The holder renews every 10 seconds, with a
+30-second expiry. Every controller write carries its epoch, and HTTP 412 stops a stale holder's
+listener immediately. Dedicated hosts using `CONTROLLER_TOKEN` or `CONTROLLER_TOKEN_NEXT` must
+hold the lease too. A fresh network score below 40 delays a Worker candidate by 15 seconds after
+the lease frees, giving better-connected Workers the first chance
+([ADR 0014](docs/adr/0014-controllers-run-on-the-workers-under-a-lease.md)).
 
-Install one with the control plane's installer, on a dedicated host or on a Worker host:
+A Worker standby uses its existing machine credential. It reads the complete Profile from Convex
+and gets a short-lived GitHub App installation token from Convex only while holding the lease.
+It receives no App key or shared controller token. Install it beside an already enrolled Worker:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
+  --profile erainfra-4vcpu-ubuntu-2404 --no-prompt
+```
+
+The installer reads `<SUDO_USER home>/.runner-center/agent/.env`, or an explicit
+`--worker-env-file /absolute/path/.env`, and copies only the machine token into a protected file.
+Image, resource and GitHub settings do not belong in a standby's env file. Register the Profile
+once from the upgraded dedicated controller before adding standbys. Configure
+`CONTROLLER_GITHUB_APP_CLIENT_ID` and `CONTROLLER_GITHUB_APP_PRIVATE_KEY` in Convex, using the
+controller App described below. A Profile without its GitHub URL registered remains in standby.
+The [controller runbook](docs/runbooks/operate-the-controller-host.md) covers the VM-to-ubuntu0
+migration, token setup, takeover checks and rollback. A backend with lease enforcement refuses
+old controller binaries; stage the binary upgrade and backend deployment together.
+
+A dedicated host keeps the existing local App or PAT path. `--controller-token-file` selects that
+mode, even on a Worker host:
 
 ```bash
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
@@ -467,15 +492,15 @@ such as `ubuntu-latest` — and warns about a legal name outside the scheme. `rc
 predate it and keep working; a Profile is renamed by registering the new name beside the old one,
 never in place, because GitHub holds the scale-set name.
 
-Today each controller runs on a host that is not a Worker
-([ADR 0013](docs/adr/0013-run-controllers-off-the-workers.md)), so a Worker reboot or rollout does not
-take job intake with it. [ADR 0014](docs/adr/0014-controllers-run-on-the-workers-under-a-lease.md)
-replaces that with standby controllers on every Worker and a per-Profile lease held in Convex, which
-removes the controller host; until that lands, keep the dedicated host.
+A dedicated controller publishes its env contract when it first acquires the lease after startup.
+Worker standbys never overwrite it. Existing deployments can keep the dedicated host while adding
+standbys, then stop its units once Worker takeover is verified. Enterprise runner registrations
+still require a dedicated host with `RC_GITHUB_TOKEN`, because GitHub Apps cannot register
+enterprise runners.
 
 Stopping a controller does not remove its scale set. GitHub keeps routing `runs-on: <profile>` jobs
-to it, and with no listener they wait until GitHub cancels them after 24 hours. Retire a Profile in
-two steps, on the controller host:
+to it, and with no listener they wait until GitHub cancels them after 24 hours. Stop its units on
+all controller hosts, including Worker standbys, then retire from the dedicated host's saved env:
 
 ```bash
 sudo systemctl disable --now runner-center-controller@rc-linux-js
@@ -485,17 +510,17 @@ sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
   exec /usr/local/lib/runner-center/runner-center-controller retire --yes'  # delete and pause
 ```
 
-`retire --yes` deletes the GitHub scale set and pauses the Profile in the control plane, so Workers
-stop prewarming and advertising it. It refuses when GitHub supplies no activity statistics, or still
-counts busy runners or assigned or running jobs. A dry run reports missing statistics as unknown.
-`--force` overrides either check for a scale set whose controller is gone for good. Starting the
-Profile's unit again re-registers both.
+`retire --yes` acquires the lease, checks GitHub's activity statistics, pauses the Profile and
+deletes the scale set while renewing its lease. Pausing first prevents a standby from recreating
+the scale set. It refuses while another controller holds the lease, when GitHub supplies no
+activity statistics, or while GitHub counts busy runners or assigned/running jobs. A dry run reports
+missing statistics as unknown. `--force` overrides the statistics and busy checks, never the lease.
+Starting a dedicated unit intentionally reactivates the Profile; starting a Worker standby does not.
 
-Two controllers for one Profile never both take jobs. GitHub gives a scale set one message session
-and refuses a second with `409 Conflict`. The second controller reports that it is waiting, retries
-every 10 to 60 seconds, and takes over within about a minute of the first one closing its session.
-A controller killed without closing its session leaves it on GitHub for a few minutes, so a restart
-after a crash can wait the same way.
+Only the lease holder opens a GitHub message session. GitHub independently refuses a second session
+with `409 Conflict`. A new holder whose predecessor died without closing its session retries with
+10-to-60-second backoff. GitHub can retain an abandoned session for minutes, so lease expiry does
+not promise listening resumes within 30 seconds.
 
 Every controller reports a heartbeat to the control plane every 30 seconds and whenever its
 session changes. The Profiles table shows it, and `/metrics` and the alerts read it; see
@@ -558,10 +583,21 @@ for `manage_runners:enterprise`; and
 which uses the same scale-set protocol, for Metadata and for "You cannot authenticate using a
 GitHub App for runners at the enterprise level."
 
-The controller does not use the App the dashboard's GitHub App setup creates. It authenticates
-only with its own `RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials, so the cache-facts permissions
-above belong on the controller's App, and the dashboard App's manifest stays as it is. That App
-serves the legacy `workflow_job` webhook path. Its manifest
+The controller App stays separate from the App the dashboard's GitHub App setup creates. Set its
+client ID and private key in Convex as `CONTROLLER_GITHUB_APP_CLIENT_ID` and
+`CONTROLLER_GITHUB_APP_PRIVATE_KEY` for Worker holders. Dedicated hosts can keep their existing
+`RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials. Reusing the webhook App would widen its manifest
+to organization runner management and Contents read, which its own work does not need.
+
+Convex looks up the controller App's installation for the registered URL and requests only the
+permissions above. Repository tokens name only that repository; organization tokens stay within
+that installation. Cache-facts read permissions require both the registered Profile setting and
+the holder's request. A Worker cannot ask for a different URL or a broader repository set. Tokens
+refresh five minutes before expiry. The adapter in `githubscale/token.go` changes the registration
+request's bearer without rebuilding the Actions client or dropping its message session; refresh
+failure never extends an expired credential. The App key never leaves Convex.
+
+The dashboard App serves the legacy `workflow_job` webhook path. Its manifest
 (`packages/backend/convex/githubAppConfig.ts`) asks for Repository: Administration, read and write,
 for `POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig`
 and `DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}`, and Repository: Actions, read-only,

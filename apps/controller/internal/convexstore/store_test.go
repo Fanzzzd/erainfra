@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -93,7 +94,7 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 	if err := store.RegisterProfile(t.Context(), profile); err != nil {
 		t.Fatal(err)
 	}
-	if registered != profile {
+	if !reflect.DeepEqual(registered, profile) {
 		t.Fatalf("registered = %#v, want %#v", registered, profile)
 	}
 	attempts, err := store.ListActiveAttempts(t.Context(), "rc linux/js")
