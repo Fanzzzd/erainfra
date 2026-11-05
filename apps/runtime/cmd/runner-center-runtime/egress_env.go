@@ -10,6 +10,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/internal/dualenv"
 )
 
 // profileEgressVariable carries the Profile's egress from the Worker to every
@@ -30,7 +31,7 @@ const maxProfileEgressBytes = 64 << 10
 // must be a valid policy, because silently falling back to public for a
 // Profile that asked for an allowlist would be failing open.
 func profileEgressEnv() (netpolicy.ProfileEgress, error) {
-	value := strings.TrimSpace(os.Getenv(profileEgressVariable))
+	value := strings.TrimSpace(dualenv.Value(profileEgressVariable))
 	if value == "" {
 		return netpolicy.ProfileEgress{}, nil
 	}
@@ -53,7 +54,7 @@ func profileEgressEnv() (netpolicy.ProfileEgress, error) {
 // does nothing when it is unset or there is no record. The file is created
 // fresh and owner-only: it names what a job connected to.
 func writeEgressRecord(record *executor.EgressRecord) error {
-	path := strings.TrimSpace(os.Getenv(egressRecordVariable))
+	path := strings.TrimSpace(dualenv.Value(egressRecordVariable))
 	if path == "" || record == nil {
 		return nil
 	}
