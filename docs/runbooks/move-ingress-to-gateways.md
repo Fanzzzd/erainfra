@@ -82,10 +82,13 @@ rollback below moves every App at once.
 Check a few Apps from outside, and watch the gateway journals and `/healthz` on every gateway Node
 for the next hour. The Hub keeps serving its own host and stays ready for a rollback.
 
-Until deploys run from Convex (the rest of phase 3), the gateways learn routes only from Convex,
-and the Hub's deploy pipeline and failover change only the Hub's database. Re-run the Hub importer
-after every Hub deploy that adds or moves a route; until you do, the gateways keep sending that
-App's traffic to where Convex last saw it.
+The gateways learn routes only from Convex. Deploy these Apps through Convex
+([phase 3a](../infra-management.md#deploy-and-failover-from-convex-phase-3a)), whose pipeline and
+failover write the route rows the gateways read. A deploy or failover on the Hub changes only the
+Hub's database: re-run the Hub importer after any Hub deploy that adds or moves a route, or the
+gateways keep sending that App's traffic to where Convex last saw it. A route row whose port is not
+the one allocated to that App on that Node is refused (503) rather than sent to whatever holds
+that port.
 
 ## Roll back
 
