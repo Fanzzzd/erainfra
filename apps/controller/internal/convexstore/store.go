@@ -55,6 +55,22 @@ func (s *Store) RegisterProfile(ctx context.Context, profile fleet.ProfileSpec) 
 	return s.doJSON(ctx, http.MethodPost, "/controller/profiles", profile, nil, true)
 }
 
+// PauseProfile marks a retired Profile paused, so Workers stop discovering,
+// prewarming and advertising it. It reports false when the control plane has
+// no such Profile, which is not an error for a retire: there is nothing left
+// to pause.
+func (s *Store) PauseProfile(ctx context.Context, name string) (bool, error) {
+	err := s.doJSON(ctx, http.MethodPost, "/controller/profiles/pause", map[string]string{"name": name}, nil, true)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) ListActiveAttempts(ctx context.Context, profile string) ([]fleet.Attempt, error) {
 	path := "/controller/attempts?profile=" + url.QueryEscape(profile)
 	var response struct {
@@ -251,13 +267,11 @@ func (s *Store) doJSON(
 		return errors.New("controller response exceeded 1 MiB")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		apiErr := &APIError{StatusCode: response.StatusCode, Status: response.Status}
 		if includeErrorBody {
-			message := strings.TrimSpace(string(data))
-			if message != "" {
-				return fmt.Errorf("controller API returned %s: %s", response.Status, message)
-			}
+			apiErr.Message = strings.TrimSpace(string(data))
 		}
-		return fmt.Errorf("controller API returned %s", response.Status)
+		return apiErr
 	}
 	if responseBody == nil || len(data) == 0 {
 		return nil
@@ -266,6 +280,22 @@ func (s *Store) doJSON(
 		return fmt.Errorf("decode controller response: %w", err)
 	}
 	return nil
+}
+
+// APIError is a non-2xx answer from the control plane. Message carries the
+// response body only where the caller allowed it (never for routes whose
+// failure body could echo a credential).
+type APIError struct {
+	StatusCode int
+	Status     string
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("controller API returned %s: %s", e.Status, e.Message)
+	}
+	return fmt.Sprintf("controller API returned %s", e.Status)
 }
 
 var _ fleet.Store = (*Store)(nil)

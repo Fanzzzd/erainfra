@@ -55,6 +55,26 @@ export const registerProfile = internalMutation({
   },
 });
 
+// The inverse of registerProfile, for a Profile whose scale set has been retired. A paused Profile
+// is invisible to Worker discovery, the scheduler and the /runs-on router, so Workers stop
+// prewarming and advertising it. Restarting the Profile's controller registers it as active
+// again, which is the intended way to bring a retired Profile back.
+export const pauseProfile = internalMutation({
+  args: { name: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("profiles")
+      .withIndex("by_name", (q) => q.eq("name", args.name))
+      .unique();
+    if (existing === null) return false;
+    if (existing.state !== "paused") {
+      await ctx.db.patch(existing._id, { state: "paused", updatedAt: Date.now() });
+    }
+    return true;
+  },
+});
+
 export const listActiveAttempts = internalQuery({
   args: { profile: v.string() },
   returns: v.array(
