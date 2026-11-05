@@ -115,3 +115,7 @@ a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
    Retiring those identifiers is migration work with its own rollout, sequenced after the merge.
    The npm package `@erainfra/agent` is frozen for a different reason: its `package.json` is packed
    into the attested release archive, so renaming it moves the published SHA-256.
+   The Worker side's `RC_*` variables, `runner-center-*` units and paths and the `rc` command are
+   frozen the same way. Each `RC_<NAME>` is also read as `ERAINFRA_<NAME>`, the new name first and a
+   disagreement refused, and `erainfra worker` runs `rc`; the names themselves move only through
+   [the phase-2 runbook](docs/runbooks/rename-phase-2.md).
