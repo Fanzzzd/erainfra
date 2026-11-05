@@ -188,9 +188,13 @@ func TestHelpListsEveryCommand(t *testing.T) {
 	h.expect(ExitOK, "attempts", "--help")
 	h.expect(ExitUsage, "deploy")
 	h.expect(ExitUsage, "jobs", "delete")
-	h.expect(ExitUsage, "worker", "status")
-	if !strings.Contains(h.stderr.String(), "reserved for Worker-local commands") {
-		t.Errorf("erainfra worker should explain the reservation, got %q", h.stderr.String())
+	h.expect(ExitOK, "worker", "--help")
+	if !strings.Contains(h.stdout.String(), "the same program as rc") {
+		t.Errorf("erainfra worker --help should say it runs rc, got %q", h.stdout.String())
+	}
+	h.expect(ExitOK, "--help")
+	if !strings.Contains(h.stdout.String(), "worker <command>") {
+		t.Errorf("top-level help does not mention erainfra worker")
 	}
 
 	h.expect(ExitOK, "version")
