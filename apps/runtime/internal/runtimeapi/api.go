@@ -14,9 +14,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"golang.org/x/sys/unix"
 )
 
@@ -61,6 +63,20 @@ type recoverRequest struct {
 type preflightResponse struct {
 	Report executor.Report `json:"report"`
 	Error  string          `json:"error,omitempty"`
+}
+
+type metricsRequest struct {
+	AttemptID string `json:"attemptId"`
+}
+
+// MetricsResponse is one Attempt's resource history as the runtime holds it.
+// Found is false when the runtime is not measuring the Attempt and has no
+// recent final Snapshot for it; Live is false once the Attempt has finished.
+type MetricsResponse struct {
+	Found    bool                `json:"found"`
+	Live     bool                `json:"live"`
+	Snapshot jobmetrics.Snapshot `json:"snapshot"`
+	Error    string              `json:"error,omitempty"`
 }
 
 type Client struct {
@@ -115,6 +131,15 @@ func (c *Client) RemoveProfile(ctx context.Context, profile string) error {
 // Firecracker state with the control plane's authoritative live set.
 func (c *Client) RecoverOrphans(ctx context.Context, liveAttemptIDs []string) error {
 	return c.do(ctx, "/v1/recover", recoverRequest{LiveAttemptIDs: liveAttemptIDs}, nil)
+}
+
+// Metrics reads an Attempt's resource history from the runtime service.
+func (c *Client) Metrics(ctx context.Context, attemptID string) (MetricsResponse, error) {
+	var response MetricsResponse
+	if err := c.do(ctx, "/v1/metrics", metricsRequest{AttemptID: attemptID}, &response); err != nil {
+		return MetricsResponse{}, err
+	}
+	return response, nil
 }
 
 func (c *Client) Execute(
@@ -255,8 +280,12 @@ func Serve(
 		return fmt.Errorf("set runtime socket permissions: %w", err)
 	}
 
+	// One Sampler per running Attempt, reading the VMM's host-side counters.
+	// Their history dies with this process, as does every VM they measured.
+	metrics := jobmetrics.NewRegistry(jobmetrics.DefaultSampleInterval)
+	defer metrics.Shutdown()
 	server := &http.Server{
-		Handler:           handler(runtime),
+		Handler:           handler(runtime, metrics),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		IdleTimeout:       30 * time.Second,
@@ -276,8 +305,21 @@ func Serve(
 	return err
 }
 
-func handler(runtime executor.Executor) http.Handler {
+func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/metrics", func(response http.ResponseWriter, request *http.Request) {
+		var input metricsRequest
+		if err := decodeRequest(request, &input); err != nil {
+			writeError(response, err)
+			return
+		}
+		if metrics == nil {
+			writeJSON(response, http.StatusOK, MetricsResponse{})
+			return
+		}
+		snapshot, live, found := metrics.Snapshot(input.AttemptID)
+		writeJSON(response, http.StatusOK, MetricsResponse{Found: found, Live: live, Snapshot: snapshot})
+	})
 	mux.HandleFunc("POST /v1/preflight", func(response http.ResponseWriter, request *http.Request) {
 		report, err := runtime.Preflight(request.Context())
 		payload := preflightResponse{Report: report}
@@ -365,12 +407,17 @@ func handler(runtime executor.Executor) http.Handler {
 			writeError(response, err)
 			return
 		}
+		finishMetrics := startMetrics(metrics, input.Spec, lease)
+		defer finishMetrics()
 		waitContext, cancelWait := context.WithTimeout(
 			request.Context(),
 			jobTimeout,
 		)
 		result, waitError := lease.Wait(waitContext)
 		cancelWait()
+		// Before the response, so the Worker's closing collection, which it
+		// makes as soon as this request returns, finds the final Snapshot.
+		finishMetrics()
 		if waitError == nil {
 			writeJSON(response, http.StatusOK, resultResponse{ExitCode: result.ExitCode})
 			return
@@ -385,6 +432,28 @@ func handler(runtime executor.Executor) http.Handler {
 		writeError(response, errors.Join(waitError, cleanupError))
 	})
 	return mux
+}
+
+// startMetrics begins sampling a CI Attempt's boundary and returns the call
+// that ends it. Measurement is best effort by construction: a Lease that
+// cannot be measured runs exactly as it would have, unmeasured.
+func startMetrics(metrics *jobmetrics.Registry, spec executor.Spec, lease executor.Lease) func() {
+	noop := func() {}
+	if metrics == nil || spec.Kind != "ci" {
+		return noop
+	}
+	measurable, ok := lease.(executor.Measurable)
+	if !ok {
+		return noop
+	}
+	source, err := measurable.ResourceSource()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Attempt %s runs unmeasured: %v\n", spec.AttemptID, err)
+		return noop
+	}
+	metrics.Start(spec.AttemptID, source)
+	var once sync.Once
+	return func() { once.Do(func() { metrics.Finish(spec.AttemptID) }) }
 }
 
 func decodeRequest(request *http.Request, output any) error {

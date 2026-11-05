@@ -43,7 +43,7 @@ func run(ctx context.Context, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, errors.New(
 			"usage: runner-center-runtime " +
-				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment",
+				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment|sample",
 		)
 	}
 	if args[0] == "version" {
@@ -128,6 +128,8 @@ func run(ctx context.Context, args []string) (int, error) {
 		return runAttempt(ctx, client)
 	case "experiment":
 		return runExperiment(ctx, client)
+	case "sample":
+		return runSample(ctx, client)
 	default:
 		return 2, fmt.Errorf("unknown command %q", args[0])
 	}

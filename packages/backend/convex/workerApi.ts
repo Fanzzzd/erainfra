@@ -12,6 +12,8 @@ import {
   normalizeBenchmark,
   resourceRecommendedSlots,
 } from "./benchmark";
+import { recordAttemptMetrics } from "./attemptMetrics";
+import { metricsSnapshotValidator } from "./attemptMetricsModel";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 
 const completedExecutorDrainMs = 30_000;
@@ -462,6 +464,25 @@ export const reportAttempt = mutation({
     });
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     return true;
+  },
+});
+
+/**
+ * A Worker's resource snapshot for an Attempt it runs: sent every 30 seconds while the Attempt
+ * runs and once more, `final`, after its executor exits. Never on the path that settles the
+ * Attempt; `reportAttempt` does not wait for it and a rejected upload costs only the chart.
+ */
+export const reportAttemptMetrics = mutation({
+  args: {
+    token: v.string(),
+    attemptId: v.id("attempts"),
+    final: v.boolean(),
+    snapshot: metricsSnapshotValidator,
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const machine = await machineForToken(ctx, args.token);
+    return await recordAttemptMetrics(ctx, machine._id, args);
   },
 });
 

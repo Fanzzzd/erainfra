@@ -17,6 +17,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/leases"
@@ -869,6 +870,29 @@ func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 	return executor.Result{ExitCode: exitCode}, nil
 }
 
+// ResourceSource measures this microVM from the host: the VMM process's CPU,
+// resident memory and block I/O, its tap device's traffic, and kernel OOM
+// lines on its serial console.
+func (l *machineLease) ResourceSource() (jobmetrics.Source, error) {
+	pid, err := l.machine.PID()
+	if err != nil {
+		return nil, err
+	}
+	var tap string
+	for _, networkInterface := range l.machine.Cfg.NetworkInterfaces {
+		if networkInterface.StaticConfiguration != nil {
+			tap = networkInterface.StaticConfiguration.HostDevName
+			break
+		}
+	}
+	return &jobmetrics.VMMSource{
+		ProcRoot: "/proc",
+		PID:      pid,
+		TapName:  tap,
+		Console:  &jobmetrics.ConsoleOOMScanner{Path: l.consolePath},
+	}, nil
+}
+
 func (l *machineLease) Cancel(ctx context.Context) error {
 	return l.cleanup(ctx, true)
 }
@@ -989,4 +1013,7 @@ func executableRegularFile(path string) error {
 	return nil
 }
 
-var _ executor.Executor = (*Runtime)(nil)
+var (
+	_ executor.Executor   = (*Runtime)(nil)
+	_ executor.Measurable = (*machineLease)(nil)
+)

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 )
 
 var (
@@ -168,6 +170,13 @@ type Result struct {
 type Lease interface {
 	Wait(ctx context.Context) (Result, error)
 	Cancel(ctx context.Context) error
+}
+
+// Measurable is a Lease whose boundary the host can measure from outside it.
+// A Lease that is not Measurable still runs; its Attempt has no resource
+// chart.
+type Measurable interface {
+	ResourceSource() (jobmetrics.Source, error)
 }
 
 type Executor interface {
