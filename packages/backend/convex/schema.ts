@@ -9,9 +9,33 @@ import {
 } from "./benchmark";
 import { alertConditionValidator } from "./alertRules";
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
+import { infraTables, permissionRoleValidator } from "./infra/tables";
 
 export default defineSchema({
   ...authTables,
+
+  // Convex Auth's users table, extended with the permission role the Hub's accounts carried
+  // (infra/policy.ts). A row written before roles existed has no `role` and reads as `owner`,
+  // which is what every such account could do. `createdAt` and `legacyHubId` are set for
+  // accounts the Hub importer created, whose Hub creation time and id are kept.
+  users: defineTable({
+    name: v.optional(v.string()),
+    image: v.optional(v.string()),
+    email: v.optional(v.string()),
+    emailVerificationTime: v.optional(v.number()),
+    phone: v.optional(v.string()),
+    phoneVerificationTime: v.optional(v.number()),
+    isAnonymous: v.optional(v.boolean()),
+    role: v.optional(permissionRoleValidator),
+    createdAt: v.optional(v.number()),
+    legacyHubId: v.optional(v.string()),
+  })
+    .index("email", ["email"])
+    .index("phone", ["phone"])
+    .index("by_legacyHubId", ["legacyHubId"])
+    .index("by_role", ["role"]),
+
+  ...infraTables,
 
   // Single-use permission to create exactly one dashboard account. Sign-up is
   // closed unless the caller presents a live grant: `bootstrap` grants are
@@ -27,6 +51,10 @@ export default defineSchema({
     // Which admin issued an invite. Absent for bootstrap grants, which by
     // definition predate every account.
     invitedBy: v.optional(v.id("users")),
+    // The permission role the invited account gets. Absent on bootstrap grants
+    // (the first account is always the owner) and on invites issued before
+    // roles existed, which created accounts with every permission.
+    role: v.optional(permissionRoleValidator),
   }).index("by_tokenHash", ["tokenHash"]),
 
   // Bearer credentials for the operator API (/api/v1/*) and `GET /metrics`,
@@ -204,6 +232,18 @@ export default defineSchema({
         labels: v.array(v.string()),
         runnerName: v.optional(v.string()),
         conclusion: v.optional(v.string()),
+      }),
+    ),
+    // A push delivery for push-to-deploy (infra/git.ts). Recorded here rather
+    // than in a table of its own so one X-GitHub-Delivery id is seen once
+    // whichever surface it is for, and reconcile's retention covers both.
+    push: v.optional(
+      v.object({
+        repo: v.string(),
+        branch: v.string(),
+        sha: v.string(),
+        outcome: v.union(v.literal("queued"), v.literal("no-binding")),
+        deploymentId: v.optional(v.id("appDeployments")),
       }),
     ),
     attempts: v.number(),

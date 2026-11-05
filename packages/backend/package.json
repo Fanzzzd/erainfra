@@ -27,13 +27,15 @@
     "print-cache-service-pin": "node --experimental-strip-types scripts/print-cache-service-pin.ts",
     "print-controller-pin": "node --experimental-strip-types scripts/print-controller-pin.ts",
     "embed-firecracker-provisioner": "node --experimental-strip-types scripts/embed-firecracker-provisioner.ts",
-    "embed-controller-unit": "node --experimental-strip-types scripts/embed-controller-unit.ts"
+    "embed-controller-unit": "node --experimental-strip-types scripts/embed-controller-unit.ts",
+    "import-hub-state": "node --experimental-strip-types scripts/import-hub-state.ts"
   },
   "dependencies": {
     "@auth/core": "0.41.3",
     "@convex-dev/auth": "0.0.94",
     "@convex-dev/static-hosting": "0.2.1",
     "convex": "catalog:",
+    "lucia": "3.2.2",
     "octokit": "5.0.5"
   },
   "devDependencies": {

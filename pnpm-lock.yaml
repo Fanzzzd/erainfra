@@ -316,6 +316,9 @@ importers:
       convex:
         specifier: 'catalog:'
         version: 1.43.0(react@19.2.8)
+      lucia:
+        specifier: 3.2.2
+        version: 3.2.2
       octokit:
         specifier: 5.0.5
         version: 5.0.5

@@ -1,11 +1,14 @@
 import { Password } from "@convex-dev/auth/providers/Password";
 import { convexAuth } from "@convex-dev/auth/server";
+import { Scrypt } from "lucia";
 import {
   INVALID_CREDENTIALS,
   isPasswordRequirementsError,
   validatePasswordRequirements,
 } from "./authPolicy";
 import { consumeSignupGrant, SIGNUP_REFUSED } from "./bootstrap";
+import { insertUser } from "./infra/access";
+import { isHubPasswordHash, verifyHubPassword } from "./infra/hubPassword";
 
 /**
  * `profile` runs for every flow and its return value is what reaches
@@ -24,6 +27,15 @@ const passwordProvider = Password({
   },
   // Runs before any account lookup, on "signUp" and "reset-verification".
   validatePasswordRequirements,
+  // New and reset passwords get Convex Auth's default hash. An account the Hub importer brought
+  // over keeps the Hub's scrypt hash until its password is next reset, and signs in with it.
+  crypto: {
+    hashSecret: async (password) => await new Scrypt().hash(password),
+    verifySecret: async (password, hash) =>
+      isHubPasswordHash(hash)
+        ? await verifyHubPassword(password, hash)
+        : await new Scrypt().verify(hash, password),
+  },
 });
 
 type Authorize = (params: Record<string, unknown>, ctx: unknown) => Promise<unknown>;
@@ -102,15 +114,18 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       }
 
       const profile = args.profile as { email?: unknown; signupGrant?: unknown };
-      await consumeSignupGrant(ctx, profile.signupGrant);
+      const grant = await consumeSignupGrant(ctx, profile.signupGrant);
 
       if (typeof profile.email !== "string" || profile.email.length === 0) {
         throw new Error(SIGNUP_REFUSED);
       }
 
-      return await ctx.db.insert("users", {
+      // insertUser makes the first account the owner and refuses a second account for an email.
+      // An invite issued before roles existed carries none; the accounts those created could do
+      // everything an admin can, so that is what they still get.
+      return await insertUser(ctx, {
         email: profile.email,
-        emailVerificationTime: undefined,
+        role: grant.role ?? (grant.kind === "bootstrap" ? "owner" : "admin"),
       });
     },
   },

@@ -1,7 +1,10 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { mutation, type MutationCtx } from "./_generated/server";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { currentUser } from "./infra/access";
+import { effectiveRole, mayAssignRole, type PermissionRole } from "./infra/policy";
+import { permissionRoleValidator } from "./infra/tables";
 import {
   constantTimeEqual,
   GRANT_TTL_MS,
@@ -38,6 +41,7 @@ async function issueGrant(
   ctx: MutationCtx,
   kind: "bootstrap" | "invite",
   invitedBy?: Awaited<ReturnType<typeof getAuthUserId>>,
+  role?: PermissionRole,
 ) {
   const token = newGrantToken();
   const now = Date.now();
@@ -48,6 +52,7 @@ async function issueGrant(
     createdAt: now,
     expiresAt,
     ...(invitedBy === undefined || invitedBy === null ? {} : { invitedBy }),
+    ...(role === undefined ? {} : { role }),
   });
   return { grantToken: token, expiresAt };
 }
@@ -129,13 +134,23 @@ export const claim = mutation({
 /**
  * The only way to open sign-up once the instance has an admin. The returned
  * token is shown to the inviting admin once; it is never readable again.
+ *
+ * `role` is the permission role the new account gets (infra/policy.ts); an
+ * admin cannot invite an owner. Without it the account is an admin, which is
+ * what every invited account was before roles existed.
  */
 export const invite = mutation({
-  args: {},
+  args: { role: v.optional(permissionRoleValidator) },
   returns: v.object({ grantToken: v.string(), expiresAt: v.number() }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     await requireDashboardAuth(ctx);
-    return await issueGrant(ctx, "invite", await getAuthUserId(ctx));
+    const role = args.role ?? "admin";
+    const inviter = await currentUser(ctx);
+    const inviterRole = effectiveRole(inviter?.role);
+    if (!mayAssignRole(inviterRole, role, role)) {
+      throw new ConvexError(`The ${inviterRole} role cannot invite an ${role}`);
+    }
+    return await issueGrant(ctx, "invite", await getAuthUserId(ctx), role);
   },
 });
 

@@ -96,6 +96,85 @@ inside the same trust domain.
 `PORTLESS_GH_*` on the hub, bind a repo (`portless bind owner/repo`). Public repos also work without
 an App via `portless redeploy`.
 
+## State in Convex
+
+[ADR 0016](adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md) moves the Hub's state out of
+`portless.db` and into the Convex deployment that already runs the CI control plane. The code is in
+`packages/backend/convex/infra/`. Until the last migration step the Hub stays the source of truth
+and Convex holds a copy.
+
+| Hub table      | Convex table                   | Invariant, now kept by a transaction                                             |
+| -------------- | ------------------------------ | -------------------------------------------------------------------------------- |
+| `users`        | `users` (Convex Auth)          | unique email; the first account is the owner; the last owner cannot be removed   |
+| `api_tokens`   | `apiTokens`, `nodeCredentials` | one token system; each Node gets its own credential                              |
+| `routes`       | `appRoutes`                    |                                                                                  |
+| `apps`         | `apps`                         |                                                                                  |
+| `links`        | `meshLinks`                    |                                                                                  |
+| `ports`        | `portAllocations`              | one port per (Node, key), stable across redeploys; one key per (Node, port)      |
+| `secrets`      | `appSecrets`, `appDataKeys`    | envelope-encrypted; no query returns a value                                     |
+| `git_bindings` | `gitBindings`                  | (repository, branch) unique; at most 200                                         |
+| `deployments`  | `appDeployments`               | newest 1000 kept; a run whose lease lapsed is failed by a cron                   |
+| `audit`        | `auditEvents`, `infraCounters` | a gapless sequence in commit order; a dangerous action is audited before it runs |
+| (none)         | `nodes`                        | one row per Node, keyed by its iroh EndpointId once phase 1 registers one        |
+| (none)         | `appLeases`                    | one deploy or failover per App at a time; a stale holder is refused by its epoch |
+| (none)         | `webhookDeliveries`            | a push delivery queues at most one deploy, keyed by `X-GitHub-Delivery`          |
+
+Other tables reference a Node by its Convex id, not its name, so a Node's identity can move from the
+name it announced to the Hub to its iroh EndpointId without rewriting them.
+
+**One identity system.** Hub accounts become Convex Auth accounts with a permission role
+(`owner`, `admin`, `operator`, `viewer`) and the Hub's permission table (`infra/policy.ts`; the
+Hub's `agent.run` is `node.run`). An account created before roles existed reads as `owner`, which is
+what it could already do. The CI dashboard's functions admit `owner` and `admin` only, so an imported
+`viewer` cannot use them. Dashboard API tokens keep their scopes: `read` grants what a Hub viewer
+had, `admin` adds deploying and running Node operations, and no token administers accounts. A Node
+authenticates with an `erainfra_node_` credential that an admin issues for that one Node, replacing
+the shared `operator` token. An imported account signs in with its Hub password; the Hub's scrypt
+hash is verified as is until the password is next reset.
+
+**Secrets** are encrypted with a random data key per App, and the data keys are encrypted with a
+master key you hold in the Convex environment. Generate one and set it before importing:
+
+```sh
+pnpm convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"
+```
+
+Keep a copy somewhere safe. Without it the stored secrets cannot be decrypted, and Convex fails
+closed rather than generating a new one. A value leaves Convex only through the internal
+`infra/secrets:forNodeDeploy`, for a deploy that targets the asking Node and still holds its App's
+lease.
+
+### Migration order
+
+1. Phase 1: `erainfra-mesh` replaces dumbpipe, still brokered by the Hub.
+2. Phase 2a (now): Convex holds the state and its invariants, and the importer copies the Hub into
+   it. Nothing reads the copy yet.
+3. Phase 2b: the Infra Agent dials Convex with its Node credential, registers its EndpointId, and
+   reads secrets for deploys addressed to it.
+4. Phase 3: gateway ingress, the deploy pipeline and failover run from Convex, the CLI and dashboard
+   follow, and the Hub is retired.
+
+Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
+inside the `portless-data` volume). Start with `--dry-run`, which reads everything and sends nothing:
+
+```sh
+CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
+  pnpm --filter @erainfra/backend import-hub-state \
+    --db /abs/path/portless.db --secret-key /abs/path/secret.key --dry-run
+```
+
+Drop `--dry-run` to import. A run is safe to repeat: rows are keyed on the Hub's keys, so each run
+makes Convex match the Hub, and re-run it right before each later phase switches a reader over. It
+keeps port numbers, audit order and timestamps, Hub ids (`legacyId`, `legacyHubId`, `hubSeq`),
+creation times, password hashes and secret values (re-encrypted). It refuses, without writing that
+batch, a port another key already holds on the same Node or a binding that would duplicate one. It
+does not copy:
+
+- sessions: people sign in to the dashboard again;
+- Hub API tokens (`plt_…`): the importer lists each one. Replace CLI tokens with dashboard API
+  tokens, and give each Node its own credential in phase 2b;
+- the AI transcript archive (`chat_*`), which is not control state and stays on the Hub for now.
+
 ## Develop
 
 Run from the repository root — this is one workspace with the rest of EraInfra, so scope the

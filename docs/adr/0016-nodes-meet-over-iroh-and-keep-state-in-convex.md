@@ -111,7 +111,9 @@ the Hub's web app folds into the EraInfra dashboard.
 - The migration is phased so a running Hub keeps working throughout:
   1. `erainfra-mesh` with persistent keys and the fleet allowlist replaces dumbpipe, still brokered
      by the Hub;
-  2. Node identity and Hub state move into Convex, and the Infra Agent dials Convex;
+  2. Node identity and Hub state move into Convex, and the Infra Agent dials Convex. This lands in
+     two parts: 2a puts the state and its invariants in Convex with an importer that copies a
+     running Hub (docs/infra-management.md); 2b has the Infra Agent dial Convex;
   3. gateway ingress, the deploy pipeline and failover run from Convex, the CLI and UI follow, and the
      Hub is retired.
 - Identifiers a running Node or Hub already holds (`PORTLESS_*`, `/etc/portless/agent.env`,
