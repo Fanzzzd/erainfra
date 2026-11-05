@@ -170,7 +170,8 @@ func (m *meshLoop) tick(ctx context.Context) {
 				}
 				m.fail("publish", "publishing the mesh endpoint failed, retrying in %s: %v", m.o.MinPublishGap, err)
 			} else {
-				m.published, m.publishedAt, m.stateDue = &addr, now, true
+				// Taken after the publication finished: a heartbeat sent later reflects it.
+				m.published, m.publishedAt, m.stateDue = &addr, m.now(), true
 				m.o.Logf("connect-convex: published mesh endpoint %s (%d relay, %d direct addresses)", key, len(addr.RelayURLs), len(addr.DirectAddrs))
 			}
 		}
@@ -204,7 +205,7 @@ func (m *meshLoop) refusalCleared(key string, reg registration) bool {
 }
 
 func (m *meshLoop) refuse(code, key, registered string, now time.Time) {
-	m.refusal = &endpointRefusal{code: code, key: key, registered: registered, at: now, reminded: now}
+	m.refusal = &endpointRefusal{code: code, key: key, registered: registered, at: m.now(), reminded: now}
 	m.published = nil
 	m.logRefusal()
 }

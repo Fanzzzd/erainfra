@@ -117,14 +117,14 @@ type Client struct {
 // registration is the Node's EndpointId as the last heartbeat reported it.
 type registration struct {
 	known bool
-	id    string // "" when no key is registered
-	at    time.Time
+	id    string    // "" when no key is registered
+	at    time.Time // when the heartbeat was sent, so it reflects every write that finished before
 }
 
-func (c *Client) setRegistered(id string) {
+func (c *Client) setRegistered(id string, sent time.Time) {
 	c.regMu.Lock()
 	defer c.regMu.Unlock()
-	c.registered = registration{known: true, id: id, at: c.now()}
+	c.registered = registration{known: true, id: id, at: sent}
 }
 func (c *Client) registration() registration {
 	c.regMu.Lock()
@@ -243,6 +243,7 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 			NodeID     string  `json:"nodeId"`
 			EndpointID *string `json:"endpointId"`
 		}
+		sent := c.now()
 		if err := c.request(ctx, "POST", "heartbeat", map[string]string{"version": c.cfg.Version}, &hb); err != nil {
 			return false, err
 		}
@@ -263,7 +264,7 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 		if hb.EndpointID != nil {
 			registered = *hb.EndpointID
 		}
-		c.setRegistered(registered)
+		c.setRegistered(registered, sent)
 	}
 	// The mesh snapshot is not fetched here: a bad link or an unavailable mesh state must not
 	// stop this Node from running its commands (see RunMesh).
