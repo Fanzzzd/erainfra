@@ -1,6 +1,13 @@
 import { ConvexError, v, type Infer } from "convex/values";
+import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
-import { internalMutation, internalQuery, mutation, type QueryCtx } from "../_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  type MutationCtx,
+  type QueryCtx,
+} from "../_generated/server";
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
 import { assertAppLease } from "./leases";
@@ -8,28 +15,43 @@ import { requireNode } from "./nodes";
 import { COMMAND_TTL_MS, commandOutcome, nodeCommand, validateOperation } from "./nodeCommandModel";
 import { secretsForNodeDeploy } from "./secrets";
 import { validateDockerArgs } from "./dockerArgs";
+import { canonicalJson } from "./plan";
+import { MAX_SPEC_BYTES } from "./spec";
 
+export type NodeCommand = Infer<typeof nodeCommand>;
+
+// Long enough for a pipeline step key: deployment id, step, a 63-character service name, Node id.
 function keyOK(key: string) {
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key))
+  if (!/^[A-Za-z0-9._:-]{1,192}$/.test(key))
     throw new ConvexError("Invalid idempotency key/claim owner");
+}
+/** The lease operation a command must run under: failover deploys under failover, all else under deploy. */
+function leaseOperation(command: NodeCommand) {
+  return command.kind === "deploy" ? (command.operation ?? "deploy") : "deploy";
 }
 async function appFence(ctx: QueryCtx, row: Doc<"nodeCommands">) {
   if (row.app !== undefined && row.appEpoch !== undefined) {
     const lease = await assertAppLease(ctx, row.app, row.appEpoch, Date.now());
-    if (row.command.kind === "deploy" && lease.operation !== (row.command.operation ?? "deploy"))
+    if (row.command.kind !== "operate" && lease.operation !== leaseOperation(row.command))
       throw new ConvexError("App lease operation does not match command");
   }
 }
-async function deploymentSpec(
+/**
+ * The run a command belongs to, while it is live. A deploy command must come from one of the run's
+ * target Nodes, the only Nodes that may read its secrets; a spec or build command from its build
+ * Node, which receives the source and never a secret.
+ */
+async function activeDeployment(
   ctx: QueryCtx,
   deploymentId: Id<"appDeployments">,
   nodeId: Id<"nodes">,
-  operation: "deploy" | "failover" = "deploy",
+  operation: "deploy" | "failover",
+  role: "deploy" | "build" = "deploy",
 ) {
   const dep = await ctx.db.get(deploymentId);
   if (
     !dep ||
-    !dep.targetNodeIds.includes(nodeId) ||
+    (role === "deploy" ? !dep.targetNodeIds.includes(nodeId) : dep.buildNodeId !== nodeId) ||
     dep.leaseEpoch === undefined ||
     dep.stage === "done" ||
     dep.stage === "failed"
@@ -39,10 +61,24 @@ async function deploymentSpec(
   const lease = await assertAppLease(ctx, dep.app, dep.leaseEpoch, Date.now());
   if (lease.operation !== operation)
     throw new ConvexError("App lease operation does not match command");
-  const app = await ctx.db
+  return dep;
+}
+async function deploymentSpec(
+  ctx: QueryCtx,
+  deploymentId: Id<"appDeployments">,
+  nodeId: Id<"nodes">,
+  operation: "deploy" | "failover" = "deploy",
+) {
+  const dep = await activeDeployment(ctx, deploymentId, nodeId, operation);
+  // A pipeline run deploys its own plan; the stored App is only rewritten once every Node is up.
+  // A run without a plan (enqueued by hand) deploys the stored App specification.
+  const stored = await ctx.db
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", dep.app))
     .unique();
+  const app = dep.plan
+    ? { name: dep.app, nodeId: dep.plan.nodeId, services: dep.plan.services }
+    : stored;
   if (!app) throw new ConvexError("A stored App specification is required");
   const services = app.services.filter((s) => (s.nodeId ?? app.nodeId) === nodeId);
   if (!services.length || services.length > 32)
@@ -68,12 +104,62 @@ async function deploymentSpec(
   return { dep, app, services };
 }
 
+/**
+ * Insert a Node command, or return the one already queued under the same (Node, idempotency key).
+ * Shared by the human enqueue and by the deploy pipeline. A key names one intended operation step;
+ * reusing it for different work is refused, so a retried enqueue can never queue a second effect.
+ */
+export async function insertNodeCommand(
+  ctx: MutationCtx,
+  input: {
+    nodeId: Id<"nodes">;
+    idempotencyKey: string;
+    command: NodeCommand;
+    app?: string;
+    appEpoch?: number;
+    deploymentId?: Id<"appDeployments">;
+  },
+) {
+  keyOK(input.idempotencyKey);
+  const prior = await ctx.db
+    .query("nodeCommands")
+    .withIndex("by_node_key", (q) =>
+      q.eq("nodeId", input.nodeId).eq("idempotencyKey", input.idempotencyKey),
+    )
+    .unique();
+  if (prior) {
+    if (canonicalJson(prior.command) !== canonicalJson(input.command))
+      throw new ConvexError("Idempotency key reused for different command");
+    return { id: prior._id, created: false };
+  }
+  const queued = await ctx.db
+    .query("nodeCommands")
+    .withIndex("by_node_status", (q) => q.eq("nodeId", input.nodeId).eq("status", "pending"))
+    .take(201);
+  if (queued.length >= 200) throw new ConvexError("Node command queue is full");
+  const id = await ctx.db.insert("nodeCommands", {
+    nodeId: input.nodeId,
+    idempotencyKey: input.idempotencyKey,
+    command: input.command,
+    ...(input.app === undefined ? {} : { app: input.app }),
+    ...(input.appEpoch === undefined ? {} : { appEpoch: input.appEpoch }),
+    ...(input.deploymentId === undefined ? {} : { deploymentId: input.deploymentId }),
+    createdAt: Date.now(),
+    status: "pending",
+    unsettled: true,
+    epoch: 0,
+  });
+  return { id, created: true };
+}
+
 // The only public enqueue path: a human permission check, durable audit, and (for deployment)
 // a live App lease checked in this same transaction. No unchecked internal enqueue endpoint.
 export const enqueue = mutation({
   args: { nodeId: v.id("nodes"), idempotencyKey: v.string(), command: nodeCommand },
   returns: v.id("nodeCommands"),
   handler: async (ctx, args) => {
+    if (args.command.kind === "spec" || args.command.kind === "build")
+      throw new ConvexError("Spec and build commands are issued by the deploy pipeline only");
     const { actor } = await requirePermission(
       ctx,
       args.command.kind === "operate" ? "node.run" : "app.deploy",
@@ -87,7 +173,7 @@ export const enqueue = mutation({
       )
       .unique();
     if (prior) {
-      if (JSON.stringify(prior.command) !== JSON.stringify(args.command))
+      if (canonicalJson(prior.command) !== canonicalJson(args.command))
         throw new ConvexError("Idempotency key reused for different command");
       return prior._id;
     }
@@ -104,20 +190,7 @@ export const enqueue = mutation({
       app = spec.dep.app;
       appEpoch = spec.dep.leaseEpoch;
     }
-    const queued = await ctx.db
-      .query("nodeCommands")
-      .withIndex("by_node_status", (q) => q.eq("nodeId", args.nodeId).eq("status", "pending"))
-      .take(201);
-    if (queued.length >= 200) throw new ConvexError("Node command queue is full");
-    const id = await ctx.db.insert("nodeCommands", {
-      ...args,
-      app,
-      appEpoch,
-      createdAt: Date.now(),
-      status: "pending",
-      unsettled: true,
-      epoch: 0,
-    });
+    const { id } = await insertNodeCommand(ctx, { ...args, app, appEpoch });
     await appendAudit(ctx, {
       actor,
       action: "nodes.enqueue",
@@ -150,6 +223,10 @@ export const cancel = mutation({
         target: row._id,
         outcome: "success",
       });
+      if (row.deploymentId !== undefined)
+        await ctx.scheduler.runAfter(0, internal.infra.pipeline.tick, {
+          deploymentId: row.deploymentId,
+        });
     }
     return null;
   },
@@ -223,7 +300,7 @@ export const renew = internalMutation({
   },
 });
 export const report = internalMutation({
-  args: { ...claimFields, outcome: commandOutcome },
+  args: { ...claimFields, outcome: commandOutcome, spec: v.optional(v.string()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     // Permit retry of the exact terminal report, but never a stale epoch or another owner.
@@ -231,11 +308,19 @@ export const report = internalMutation({
     if (row.status === args.outcome && row.owner === args.owner && row.epoch === args.epoch)
       return null;
     await claimed(ctx, args);
+    if (args.spec !== undefined) {
+      // Only a spec command returns data, and only with a success outcome.
+      if (row.command.kind !== "spec" || args.outcome !== "success")
+        throw new ConvexError("Only a successful spec command reports a spec");
+      if (new TextEncoder().encode(args.spec).length > MAX_SPEC_BYTES)
+        throw new ConvexError("Spec file too large");
+    }
     await ctx.db.patch(row._id, {
       status: args.outcome,
       unsettled: false,
       outcome: args.outcome,
       finishedAt: Date.now(),
+      ...(args.spec === undefined ? {} : { specText: args.spec }),
     });
     await appendAudit(ctx, {
       actor: `node:${row.nodeId}`,
@@ -244,15 +329,71 @@ export const report = internalMutation({
       outcome: args.outcome === "success" ? "success" : "failure",
       meta: { outcome: args.outcome, epoch: args.epoch },
     });
+    // The run moves on as soon as its step settles, not at the next pulse.
+    if (row.deploymentId !== undefined)
+      await ctx.scheduler.runAfter(0, internal.infra.pipeline.tick, {
+        deploymentId: row.deploymentId,
+      });
     return null;
   },
 });
+
+/**
+ * Where a build Node fetches a run's source. An upload is a Convex file-storage URL: a capability
+ * URL, handed only to the claimant of a live command and deleted with the blob when the run ends,
+ * so it stops working with the run. A repository source carries no credential here; the HTTP route
+ * mints a read-only token for that one repository after this claim check (infra/nodeHttp.ts).
+ */
+async function sourceOf(ctx: QueryCtx, dep: Doc<"appDeployments">) {
+  const source = dep.source;
+  if (source === undefined) throw new ConvexError("This deployment has no source");
+  if (source.kind === "upload") {
+    if (dep.sourceDeleted) throw new ConvexError("This deployment's upload is gone");
+    const url = await ctx.storage.getUrl(source.storageId);
+    if (url === null) throw new ConvexError("This deployment's upload is gone");
+    return { kind: "upload" as const, url };
+  }
+  return { kind: "git" as const, repo: source.repo, ref: source.ref, sha: source.sha ?? "" };
+}
+
 export const payload = internalQuery({
   args: claimFields,
   handler: async (ctx, args) => {
     const row = await claimed(ctx, args);
     if (row.command.kind === "operate")
       return { kind: "operate" as const, operation: row.command.operation };
+    if (row.command.kind === "spec") {
+      const dep = await activeDeployment(
+        ctx,
+        row.command.deploymentId,
+        row.nodeId,
+        "deploy",
+        "build",
+      );
+      if (dep.stage !== "reading-spec") throw new ConvexError("Deployment is past its spec step");
+      return { kind: "spec" as const, source: await sourceOf(ctx, dep) };
+    }
+    if (row.command.kind === "build") {
+      const dep = await activeDeployment(
+        ctx,
+        row.command.deploymentId,
+        row.nodeId,
+        "deploy",
+        "build",
+      );
+      const service = row.command.service;
+      const build = dep.plan?.builds.find((b) => b.service === service);
+      if (dep.stage !== "building" || build === undefined)
+        throw new ConvexError("Deployment has no such build step");
+      return {
+        kind: "build" as const,
+        app: dep.app,
+        service,
+        source: await sourceOf(ctx, dep),
+        dir: build.dir,
+        image: build.image,
+      };
+    }
     const spec = await deploymentSpec(
       ctx,
       row.command.deploymentId,
@@ -290,4 +431,3 @@ export const payload = internalQuery({
     return result;
   },
 });
-export type NodeCommand = Infer<typeof nodeCommand>;

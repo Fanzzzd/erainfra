@@ -2,7 +2,9 @@ import { defineTable } from "convex/server";
 import { ConvexError, v } from "convex/values";
 
 // The Go agent repeats this allowlist at the execution boundary (agent.Resolve). No raw argv,
-// scripts, build-source URLs or caller-provided environment can cross this API.
+// scripts, build-source URLs or caller-provided environment can cross this API. A spec or build
+// command names only its deployment (and service); the claimant's payload carries the source,
+// built server-side from the deployment row.
 export const nodeOperation = v.object({ name: v.string(), args: v.record(v.string(), v.string()) });
 export const nodeCommand = v.union(
   v.object({ kind: v.literal("operate"), operation: nodeOperation }),
@@ -11,6 +13,14 @@ export const nodeCommand = v.union(
     kind: v.literal("deploy"),
     deploymentId: v.id("appDeployments"),
     operation: v.optional(v.union(v.literal("deploy"), v.literal("failover"))),
+  }),
+  // Pipeline-only (infra/pipeline.ts): read the spec file out of the deployment's source.
+  v.object({ kind: v.literal("spec"), deploymentId: v.id("appDeployments") }),
+  // Pipeline-only: build one service of the deployment and push its image.
+  v.object({
+    kind: v.literal("build"),
+    deploymentId: v.id("appDeployments"),
+    service: v.string(),
   }),
 );
 export const commandOutcome = v.union(
@@ -49,8 +59,14 @@ export const nodeTransportTables = {
     // Outcomes only. Never stdout, stderr, environment or exception text: those can hold secrets.
     outcome: v.optional(commandOutcome),
     finishedAt: v.optional(v.number()),
+    // The pipeline run this command is a step of, so the run finds its steps by index.
+    deploymentId: v.optional(v.id("appDeployments")),
+    // A spec command's one result: the spec file's text, which comes from the repository and is
+    // not secret. Absent with a success outcome means the source has no spec file.
+    specText: v.optional(v.string()),
   })
     .index("by_node", ["nodeId"])
+    .index("by_deployment", ["deploymentId"])
     .index("by_node_unsettled", ["nodeId", "unsettled"])
     .index("by_node_key", ["nodeId", "idempotencyKey"])
     .index("by_node_status", ["nodeId", "status"]),

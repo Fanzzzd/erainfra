@@ -129,10 +129,10 @@ Other tables reference a Node by its Convex id, not its name, so a Node's identi
 name it announced to the Hub to its iroh EndpointId without rewriting them.
 
 App lease epochs fence Convex state transitions only. They cannot cancel an old holder's in-flight
-runtime request or guarantee exactly-once external side effects. Before enabling the deploy and
-failover command paths, those paths must carry stable operation/step idempotency keys, and the
-runtime must reject stale fencing epochs and deduplicate retries. Phase 2a does not implement that
-runtime protocol.
+runtime request or guarantee exactly-once external side effects. The deploy pipeline and failover
+([Deploy and failover from Convex](#deploy-and-failover-from-convex-phase-3a)) therefore give every
+Node step a deterministic idempotency key, and the Infra Agent's journal replays the recorded
+outcome of a re-delivered step instead of running it again.
 
 **One identity system.** Hub accounts become Convex Auth accounts with a permission role
 (`owner`, `admin`, `operator`, `viewer`) and the Hub's permission table (`infra/policy.ts`; the
@@ -188,8 +188,10 @@ secret values themselves need not change.
 3. Phase 2b (opt-in): the Infra Agent dials Convex with its Node credential, proves and registers
    its EndpointId, links to other Nodes from Convex's mesh snapshot, and reads secrets for deploys
    addressed to it. See [Opt-in Convex Node transport](#opt-in-convex-node-transport-phase-2b).
-4. Phase 3: gateway ingress, the deploy pipeline and failover run from Convex, the CLI and dashboard
-   follow, and the Hub is retired.
+4. Phase 3a (now): the deploy pipeline, push-to-deploy and failover run from Convex for Nodes in
+   `connect-convex` mode.
+5. Phase 3b: gateway ingress serves public traffic from the `appRoutes` table.
+6. Phase 3c: the CLI and dashboard move to Convex, and the Hub is retired.
 
 Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
 inside the `portless-data` volume). Start with `--dry-run`, which reads everything and sends nothing:
@@ -233,7 +235,9 @@ them and a refused run writes nothing. The error names every scope it could not 
 publishes its `erainfra-mesh` endpoint to Convex with a proof that it holds the key, and links to
 other Nodes from the mesh snapshot Convex derives for it. Existing `connect` processes,
 `PORTLESS_*` settings, service units and installer defaults do not change. Use it on test Nodes
-first: the Hub still does ingress, deploys and failover (see [What still needs the Hub](#what-still-needs-the-hub)).
+first. Deploys and failover for these Nodes run from Convex
+([phase 3a](#deploy-and-failover-from-convex-phase-3a)); gateway ingress and the CLI and dashboard
+still need the Hub (see [What still needs the Hub](#what-still-needs-the-hub)).
 
 ### Set up a Node
 
@@ -348,15 +352,14 @@ new one; that keeps the endpoint.
 
 ### What still needs the Hub
 
-Phase 3 moves these to Convex. Until then they run only on the Hub, and a `connect-convex` Node
-takes no part in them:
+Deploys, push-to-deploy and failover for `connect-convex` Nodes run from Convex
+([phase 3a](#deploy-and-failover-from-convex-phase-3a)). These still run only on the Hub, and a
+`connect-convex` Node takes no part in them:
 
-- gateway ingress: public `<app>.<domain>` routes reach a Node over the Hub's data channel;
-- the deploy pipeline: builds, push-to-deploy and `portless deploy`. The Convex command path runs
-  a deployment only for an existing active deployment and live App lease, and nothing creates one
-  yet;
-- failover scheduling;
-- declaring links and the `portless` CLI and dashboard, which talk to the Hub;
+- gateway ingress: public `<app>.<domain>` routes reach a Node over the Hub's data channel (phase
+  3b);
+- declaring standalone links, and the `portless` CLI and dashboard, which talk to the Hub (phase
+  3c);
 - links to Nodes still in Hub mode, and legacy dumbpipe links.
 
 ### Roll back to Hub mode
@@ -381,24 +384,25 @@ per-Node credential, derives the Node from its digest, and checks revocation aga
 transaction. No request accepts a Node id to select a different Node. Operator API tokens are
 refused here; Node credentials are refused on the operator API.
 
-| Method | Path                 | Purpose                                                         |
-| ------ | -------------------- | --------------------------------------------------------------- |
-| POST   | `heartbeat`          | publish Infra Agent version/liveness                            |
-| GET    | `state?revision=…`   | conditional full mesh snapshot; unchanged responses omit data   |
-| GET    | `commands?cursor=…`  | at most 25 unsettled commands; opaque pagination cursor         |
-| POST   | `commands/claim`     | atomically claim one addressed command, returning its epoch     |
-| POST   | `commands/renew`     | renew a live claim, with owner and epoch                        |
-| POST   | `commands/payload`   | claim-gated operation or placed deployment services and secrets |
-| POST   | `commands/result`    | report only `success`, `failure` or `unknown`                   |
-| POST   | `endpoint/challenge` | request a one-use key-possession challenge for an EndpointAddr  |
-| POST   | `endpoint`           | publish that address with its signed challenge                  |
+| Method | Path                 | Purpose                                                             |
+| ------ | -------------------- | ------------------------------------------------------------------- |
+| POST   | `heartbeat`          | publish Infra Agent version/liveness                                |
+| GET    | `state?revision=…`   | conditional full mesh snapshot; unchanged responses omit data       |
+| GET    | `commands?cursor=…`  | at most 25 unsettled commands; opaque pagination cursor             |
+| POST   | `commands/claim`     | atomically claim one addressed command, returning its epoch         |
+| POST   | `commands/renew`     | renew a live claim, with owner and epoch                            |
+| POST   | `commands/payload`   | claim-gated operation, deploy services and secrets, or build source |
+| POST   | `commands/result`    | `success`, `failure` or `unknown`; a spec step also sends its text  |
+| POST   | `endpoint/challenge` | request a one-use key-possession challenge for an EndpointAddr      |
+| POST   | `endpoint`           | publish that address with its signed challenge                      |
 
 Humans enqueue through `infra/nodeCommands:enqueue`, with `node.run` for the existing Go operation
 allowlist or `app.deploy` for deployment commands. The enqueue and durable audit row commit in one
 transaction. A deployment command references an active deployment on the target Node, uses the
 stored App specification, and requires the matching live App lease epoch and operation
-(`deploy` or `failover`). This API does not start the phase-3 pipeline or create a deployment for
-it. No raw argv, script, caller environment or source/build URL is accepted. The server and Go
+(`deploy` or `failover`). The deploy pipeline queues its own spec, build and deploy steps; spec and
+build commands cannot be enqueued by hand. No raw argv, script, caller environment or source/build
+URL is accepted. The server and Go
 executor both validate operations and Docker arguments. Use a stable idempotency key per intended
 operation/step, such as App revision plus Node and step. Reusing a key for different work is refused.
 
@@ -411,7 +415,8 @@ append-only journal fsyncs acceptance before an effect and its outcome before re
 accepted-but-unfinished work becomes `unknown`; a restart/deploy with an interrupted outcome is
 never automatically repeated. Failed result delivery replays the journaled outcome, not the effect.
 No output, environment or secret is journaled or uploaded as a result. Child output capture is
-bounded to 16 KiB per subprocess, HTTP bodies to 256 KiB, and execution to 10 minutes.
+bounded to 16 KiB per subprocess, HTTP bodies to 256 KiB, and execution to 10 minutes (15 for a
+build, 2 for reading a spec).
 
 Keep the state directory across upgrades, outages and rollbacks. It is locked against another local
 process and bound to the Convex origin and Node. Do not enroll a second machine with the same Node
@@ -434,6 +439,8 @@ state feed before enabling this path at scale.
 
 The full desired snapshot is `convexnode.DesiredMesh` in the Go client:
 `{v:1,fleet:[{id,relay_urls,direct_addrs}],relays:{relays,n0_fallback},exposures,links}`.
+A link's `listen` is a loopback `IP:PORT`. Version 2 adds one more form, `bridge:<port>`, for an
+App dependency link ([Image registry and cross-Node links](#image-registry-and-cross-node-links)).
 It is derived only from standalone `meshLinks` and declared App dependency links involving this
 Node. Each exposure has the exact declared consumers' `allowed_peers`, never the whole fleet; a
 missing or empty grant denies everyone. A peer appears in `fleet` and in any `allowed_peers` only
@@ -453,6 +460,178 @@ the sidecar signs those exact bytes with the endpoint key, which never leaves it
 pure-JavaScript `@noble/curves` (strict, not ZIP-215). The three sides check the same domain prefix
 and 4096-byte limit. The heartbeat returns the Node's registered `endpointId`, or `null`, so the
 agent can tell a key it may publish from one Convex will refuse.
+
+## Deploy and failover from Convex (phase 3a)
+
+For Nodes in `connect-convex` mode, Convex runs the deploy pipeline the Hub ran
+(`packages/backend/convex/infra/pipeline.ts`), push-to-deploy, and failover. A Node still connected
+to the Hub is not touched by any of it.
+
+### The pipeline
+
+A deployment row moves through `queued`, `reading-spec`, `planning`, `building`, `deploying`,
+`linking` and ends `done` or `failed`. The stages are the Hub's, with planning made its own stage:
+
+1. **reading-spec**: the build Node fetches the source and returns `erainfra.yaml` or
+   `portless.yaml`. With neither, the run needs a `port` and deploys one service from the root.
+2. **planning**: Convex validates the spec with the Hub's rules, places each service (its `node:` or
+   the default Node), takes host ports from the port allocator, which returns the same port for the
+   same (Node, key) on every redeploy, and fixes the image tags from the commit or the deployment id.
+3. **building**: one build per `build:` service, in order, on the build Node: `docker build` when
+   the context has a Dockerfile, otherwise a `nixpacks` binary already on the Node's PATH, then
+   `docker push`.
+4. **deploying**: each Node starts its group of services, all Nodes at once.
+5. **linking**: Convex records the App, then flips its routes, then records the cross-Node links in
+   the App row, from which each Node's mesh state is derived.
+
+A run holds its App's lease from the moment it leaves `queued` until it ends, so a second deploy of
+the same App waits in `queued` and starts when the first ends. Every stage write is fenced on the
+run's lease epoch. A run that lost its lease is failed, and the Node steps it queued are refused.
+
+Every step that touches a Node is a Node command whose idempotency key is
+`<deploymentId>:<step>:<nodeId>`. Queuing a step twice returns the command already queued. A Node
+that reports a build or deploy and loses the reply reports the same outcome again from its journal
+when Convex re-delivers the command; the build or deploy does not run twice. If the Infra Agent dies
+mid-step, the outcome is `unknown` and the run fails rather than repeating the step. Reading the spec
+has no effect on the Node, so a re-delivered spec step is read again.
+
+A step fails the run when its command fails or ends `unknown`, when its Node misses heartbeats for
+the window below, or when it outlives its timeout: 2 minutes for the spec, 15 for a build, 5 for a
+deploy, plus 5 minutes queued behind other commands on that Node. A cron every 10 seconds moves
+runs that are waiting, renews their leases and starts queued runs; a Node's report moves its run at
+once. The stale-run sweep that replaced the Hub's boot-time `failStale` fails any run whose lease
+lapsed anyway.
+
+### Deploy through the operator API
+
+The routes are on the `/api/v1` operator API with dashboard API tokens. Deploying needs an `admin`
+token; reading needs `read` or `admin`. Every upload and deploy request, accepted or refused, is
+written to the audit log with the token's name as the actor.
+
+```sh
+SITE=https://<deployment>.convex.site
+TOKEN=erainfra_…   # admin
+tar -czf /tmp/src.tgz -C ./my-app .
+UPLOAD=$(curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "$SITE/api/v1/deployments/uploads" | jq -r .uploadUrl)
+STORAGE=$(curl -fsS -X POST -H "Content-Type: application/gzip" --data-binary @/tmp/src.tgz "$UPLOAD" | jq -r .storageId)
+curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"app\":\"my-app\",\"upload\":\"$STORAGE\",\"node\":\"node-a\"}" "$SITE/api/v1/deployments"
+curl -fsS -H "Authorization: Bearer $TOKEN" "$SITE/api/v1/deployments/<id>"
+curl -fsS -H "Authorization: Bearer $TOKEN" "$SITE/api/v1/deployments?app=my-app&limit=20"
+```
+
+A deploy request names the App and exactly one source: `upload` (a storage id from the upload) or
+`repo` with an optional `branch` (default `main`) and `sha`. `port` is the container port for a
+source with no spec file; `buildNode` and `node` name the build Node and the Node unpinned services
+land on, and default to the first live Node by name. The spec's `app:`, when set, must match the
+request's App. Uploads are limited to 256 MiB.
+
+The build Node fetches an upload through the Convex file-storage URL in its claimed command payload.
+That URL carries no credential, is given only to the Node holding the step's live claim, and stops
+working when the run ends, because the upload is deleted then. An upload URL that is never used
+for a deploy expires after an hour; the file is not deleted.
+
+### Push-to-deploy
+
+Create a GitHub App for deploys (not the CI App the dashboard creates, which has no Contents
+permission): Repository Contents read, subscribed to `push`, webhook URL `<site>/github/webhook`.
+Install it on the repositories you deploy, then set its credentials in the Convex environment under
+the names the Hub reads. Its webhook secret must differ from the CI App's: `/github/webhook` picks
+the secret by event type before it checks the signature, so a `push` verifies only against
+`ERAINFRA_GH_WEBHOOK_SECRET` and a `workflow_job` only against the CI App's secret. A holder of one
+cannot trigger the other's work. With no deploy secret set, every push is refused.
+
+```sh
+pnpm convex env set ERAINFRA_GH_APP_ID <app id>
+pnpm convex env set ERAINFRA_GH_APP_KEY "$(cat app.private-key.pem)"
+pnpm convex env set ERAINFRA_GH_WEBHOOK_SECRET <webhook secret>
+```
+
+Bind a branch with `infra/git:bind`. A push to it queues one run per `X-GitHub-Delivery`: the
+delivery row and the run commit in one transaction, so a redelivery or a duplicate delivery queues
+nothing. The run builds the pushed commit, not whatever the branch points at when the build starts.
+For each spec and build step, Convex mints a one-hour installation token for that one repository
+with Contents read and puts it in the claimed payload. The Node passes it to `git` as an HTTP
+header in the child's environment, never in argv or `.git/config`, and Convex never stores it. With
+no deploy App configured, or the App not installed on the repository, public repositories still
+deploy without a token. The binding records the last run's result.
+
+### Image registry and cross-Node links
+
+The Hub's model carries over: one `registry:2` container on a Node you choose, reached by every
+other Node at the same loopback address over an `erainfra-mesh` link, so Docker treats it as a local
+registry and no daemon needs configuring. Set both in the Convex environment:
+
+```sh
+pnpm convex env set ERAINFRA_REGISTRY 127.0.0.1:5000      # where builds push and Nodes pull
+pnpm convex env set ERAINFRA_REGISTRY_NODE <node name>    # the Node running the registry
+```
+
+During planning, before any build, the pipeline records a standalone link `registry-<node>` from
+the registry Node to the build Node and to every Node that starts a service. Each Node's mesh
+snapshot carries it: the registry Node exposes `127.0.0.1:5000` to that one peer, and the other Node
+listens on `127.0.0.1:5000`. The links stay after the run, so a later failover can pull too. A run
+fails instead of overwriting a link of that name that someone declared. Leave
+`ERAINFRA_REGISTRY_NODE` unset to use a registry every Node reaches by itself, such as one with TLS
+at `registry.example.com` (`docker login` on each Node when it is private); nothing is linked then.
+
+A `needs:` dependency on another Node becomes a link in the App row. The provider Node exposes the
+dependency's loopback host port to the consumer Node only. The consuming service is started with
+`--add-host=host.docker.internal:host-gateway` and reaches the dependency at
+`host.docker.internal:<port>`, the port injected as `<NEED>_PORT`.
+
+The consumer Node listens on the address `host-gateway` resolves to, not on every interface. That
+address is reachable from the host and its containers only, so the dependency never appears on the
+Node's LAN or public address. Convex cannot know the address, so the snapshot names the scope,
+`listen: "bridge:<port>"` (snapshot version 2), and the Infra Agent resolves it on the Node the
+way Docker does. The [dockerd reference](https://docs.docker.com/reference/cli/dockerd/) says
+`host-gateway` resolves to the IPv4 address of the default bridge unless `host-gateway-ips` (or
+the older `host-gateway-ip`) is set. So the Infra Agent reads those keys from
+`/etc/docker/daemon.json` first, then asks `docker network inspect bridge` for its gateway,
+usually `172.17.0.1`. If neither gives an IPv4 address, or the address is loopback or unspecified,
+the link stays closed. The agent logs `mesh link <name> stays closed: …` once a minute and retries
+at each state poll; it never binds `0.0.0.0` instead. A daemon given `--host-gateway-ip` on its
+command line rather than in daemon.json is not visible to the agent; move the setting into
+daemon.json. An Infra Agent that only understands snapshot version 1 refuses a version-2 snapshot
+and keeps its last one. Convex sends version 2 only to a Node that consumes such a link.
+
+Both ends must run `connect-convex` with a proven endpoint ([Set up a Node](#set-up-a-node)). A
+Node without one is left out of its peers' snapshots, and the link stays down.
+
+### Failover
+
+A cron every 10 seconds (`infra/failover.ts`) decides from heartbeats. A healthy Infra Agent
+heartbeats at most about 40 seconds apart. A Node is failed over only when:
+
+1. a check finds it silent for three whole heartbeat intervals (120 seconds), and
+2. a later check, at least 20 seconds after the first, still finds no heartbeat.
+
+One late heartbeat, or one dropped connection, never triggers it. The Hub failed a Node over 20
+seconds after its WebSocket closed, which moved Apps off Nodes that were still serving them. A
+heartbeat between the two checks clears the suspicion, and one outage fails over once.
+
+Each App with any service on the lost Node gets a failover run of the same pipeline. It takes the
+App's lease (waiting for a deploy that holds it), moves every service on the lost Node to a
+surviving Node, chosen round robin by name, re-plans ports, environment and links from the stored
+spec, and redeploys the images the App already runs, without a rebuild, on each Node whose services
+changed. Only then are the App row and its routes flipped. Every moved service records its new
+Node. The Hub moved a group by its primary Node only and left `services[].node` pointing at the lost
+Node. Convex also queues the removal of the moved containers on the lost Node, which runs if it
+comes back, so a Node that was only partitioned does not keep serving a second copy. A later deploy
+to that Node cancels the queued removal.
+
+Failover redeploys stateless services only, as on the Hub: a database moved to another Node starts
+with that Node's volume. Apps copied from the Hub have no stored spec and are not failed over until
+deployed once through Convex. Set `ERAINFRA_FAILOVER=0` in the Convex environment to turn automatic
+failover off.
+
+### What still needs the Hub
+
+- Public traffic: routes are recorded in `appRoutes`, but gateway ingress that serves them is phase
+  3b. Until then the Hub's tunnel and data plane serve `<app>.<zone>`.
+- The `portless` CLI, MCP server and the Hub dashboard (phase 3c). The Convex surface today is the
+  operator API above and the internal functions.
+- Links to a Node still in Hub mode, which never publishes an endpoint to Convex.
 
 ## Develop
 

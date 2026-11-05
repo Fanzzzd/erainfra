@@ -1,11 +1,12 @@
 // Deploy pipeline records (the Hub's `deployments`) and App-scoped coordination for deploy and
 // failover. Their Convex progress/placement writes are fenced on the App lease epoch (leases.ts).
-// This does not make runtime side effects exactly once: the future command path needs stable
-// operation/step idempotency keys and runtime-side fencing too.
+// The pipeline that drives these rows is infra/pipeline.ts; it explains how Node-side effects are
+// made safe, which the lease alone cannot do.
 //
 // The Hub marked in-flight deploys failed at boot (`failStale`), because a restart killed them.
 // There is no boot here; `sweepStale` runs on a schedule and fails any run whose lease lapsed.
 import { ConvexError, v } from "convex/values";
+import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, query, type MutationCtx } from "../_generated/server";
 import { requirePermission } from "./access";
@@ -176,6 +177,12 @@ export const sweepStale = internalMutation({
         }
         if (reason !== null) {
           await ctx.db.patch(row._id, { stage: "failed", error: reason, finishedAt: now });
+          // A pipeline run also cancels its queued Node steps, deletes its upload and lets the
+          // next queued run of its App start.
+          if (row.operation !== undefined)
+            await ctx.scheduler.runAfter(0, internal.infra.pipeline.afterSweep, {
+              deploymentId: row._id,
+            });
           failed += 1;
         }
       }
@@ -219,7 +226,18 @@ export const completeFailover = internalMutation({
       .unique();
     const routeNames =
       app === null ? [args.app] : app.services.flatMap((s) => (s.route ? [s.route] : []));
-    if (app !== null) await ctx.db.patch(app._id, { nodeId: args.toNodeId, updatedAt: Date.now() });
+    if (app !== null) {
+      // Move every service that ran on the lost Node, by its own placement, not only the App's
+      // primary Node: the Hub moved the primary and left services[].node pointing at the lost one.
+      const services = app.services.map((s) =>
+        (s.nodeId ?? app.nodeId) === args.fromNodeId ? { ...s, nodeId: args.toNodeId } : s,
+      );
+      await ctx.db.patch(app._id, {
+        nodeId: app.nodeId === args.fromNodeId ? args.toNodeId : app.nodeId,
+        services,
+        updatedAt: Date.now(),
+      });
+    }
     for (const name of routeNames) {
       const route = await ctx.db
         .query("appRoutes")

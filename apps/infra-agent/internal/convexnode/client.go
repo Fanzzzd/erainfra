@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -44,24 +45,73 @@ func ValidateMode(mode, hub, convexURL, credential string) error {
 	return nil
 }
 
+// Payload is a claimed command's work, built by Convex from its own rows. Spec and build payloads
+// come from the deploy pipeline (packages/backend/convex/infra/pipeline.ts): a source to fetch, a
+// build context inside it and the image to push. None of them carries argv.
 type Payload struct {
-	Kind      string          `json:"kind"`
-	Operation agent.Operation `json:"operation"`
-	App       string          `json:"app"`
-	Services  []agent.Service `json:"services"`
+	Kind      string             `json:"kind"`
+	Operation agent.Operation    `json:"operation"`
+	App       string             `json:"app"`
+	Services  []agent.Service    `json:"services"`
+	Service   string             `json:"service"`
+	Source    agent.ConvexSource `json:"source"`
+	Dir       string             `json:"dir"`
+	Image     string             `json:"image"`
 }
 type Executor interface {
 	Execute(context.Context, Payload) string
 }
 
+// SpecReader is the spec step. It is separate from Execute because it is the one step that
+// returns data, and because it has no effect on the Node, a re-delivered spec command is read
+// again rather than replayed from the journal.
+type SpecReader interface {
+	ReadSpec(context.Context, Payload) (string, error)
+}
+
 // LocalExecutor reuses the existing Go allowlist and deployment implementation. Outputs are
 // deliberately discarded: logs/child errors may contain secrets and are not command results.
-type LocalExecutor struct{ Runner agent.ShellRunner }
+type LocalExecutor struct {
+	Runner  agent.ShellRunner
+	Builder agent.ConvexBuilder
+}
+
+var buildDirPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{0,255}$`)
+
+func validSource(s agent.ConvexSource) bool {
+	return (s.Kind == "upload" && s.URL != "") || (s.Kind == "git" && s.Repo != "" && s.Ref != "")
+}
+
+func (e LocalExecutor) ReadSpec(ctx context.Context, p Payload) (string, error) {
+	if p.Kind != "spec" || !validSource(p.Source) {
+		return "", errors.New("invalid spec payload")
+	}
+	e.Runner.OutputLimit = 16 * 1024
+	spec, err := e.Builder.ReadConvexSpec(ctx, e.Runner, p.Source)
+	if err != nil {
+		// The error names the step, never the source URL or token.
+		fmt.Fprintf(os.Stderr, "[erainfra] reading the spec failed: %v\n", err)
+	}
+	return spec, err
+}
 
 func (e LocalExecutor) Execute(ctx context.Context, p Payload) string {
 	e.Runner.OutputLimit = 16 * 1024
 	var err error
 	switch p.Kind {
+	case "build":
+		if !appNamePattern.MatchString(p.App) || !appNamePattern.MatchString(p.Service) || !validSource(p.Source) ||
+			!buildDirPattern.MatchString(p.Dir) || strings.HasPrefix(p.Dir, "/") || strings.Contains(p.Dir, "..") ||
+			agent.ValidateImageRef(p.Image) != nil {
+			return "failure"
+		}
+		var out string
+		out, err = e.Builder.BuildConvexImage(ctx, e.Runner, p.Source, p.Dir, p.Image)
+		if err != nil {
+			// Build output is the repository's own; it stays in this Node's log and is never
+			// uploaded. Bounded by OutputLimit.
+			fmt.Fprintf(os.Stderr, "[erainfra] build %s/%s failed: %v\n%s\n", p.App, p.Service, err, out)
+		}
 	case "operate":
 		var cmd agent.Command
 		cmd, err = agent.Resolve(p.Operation)
@@ -306,6 +356,13 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 		return err
 	}
 	claim := commandClaim{CommandID: cmd.ID, Owner: c.owner, Epoch: lease.Epoch}
+	if cmd.Kind == "spec" {
+		return c.executeSpec(ctx, cmd, claim)
+	}
+	// The journal is what makes a Node-side effect happen at most once per idempotency key. Convex
+	// leases fence only Convex writes; a command can be re-delivered after a lost result or a
+	// restart, and its deterministic key (deployment, step, Node for pipeline steps) finds the
+	// outcome recorded here, which is reported again instead of building or deploying twice.
 	key := c.nodeID + ":" + cmd.Key
 	outcome, exists, err := c.journal.lookup(key, cmd.ID)
 	if err != nil {
@@ -322,33 +379,9 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 		if err = c.journal.append(key, cmd.ID, "accepted"); err != nil {
 			return err
 		}
-		execution, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		stopped := make(chan struct{})
-		go func() {
-			defer close(stopped)
-			ticker := time.NewTicker(c.RenewInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-execution.Done():
-					return
-				case <-ticker.C:
-					if err := c.request(execution, "POST", "commands/renew", claim, nil); err != nil {
-						cancel()
-						return
-					}
-				}
-			}
-		}()
-		outcome = c.exec.Execute(execution, payload)
-		if execution.Err() != nil {
-			outcome = "unknown"
-		}
-		cancel()
-		<-stopped
-		if outcome != "success" && outcome != "failure" {
-			outcome = "unknown"
-		}
+		outcome = c.withClaim(ctx, claim, executionLimit(cmd.Kind), func(execution context.Context) string {
+			return c.exec.Execute(execution, payload)
+		})
 		if err = c.journal.append(key, cmd.ID, outcome); err != nil {
 			return err
 		}
@@ -361,6 +394,91 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 		Outcome string `json:"outcome"`
 	}{claim, outcome}, nil)
 }
+
+// executionLimit bounds one command's run. A build gets the Hub's 15 minutes; everything else
+// keeps the 10 minutes this transport has always allowed.
+func executionLimit(kind string) time.Duration {
+	switch kind {
+	case "build":
+		return 15 * time.Minute
+	case "spec":
+		return 2 * time.Minute
+	default:
+		return 10 * time.Minute
+	}
+}
+
+// withClaim runs fn while renewing the claim, and cancels it the moment a renewal is refused (a
+// cancelled command, a lost App lease or a stale claim). An interrupted run is "unknown".
+func (c *Client) withClaim(ctx context.Context, claim commandClaim, limit time.Duration, fn func(context.Context) string) string {
+	execution, cancel := context.WithTimeout(ctx, limit)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(c.RenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-execution.Done():
+				return
+			case <-ticker.C:
+				if err := c.request(execution, "POST", "commands/renew", claim, nil); err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	outcome := fn(execution)
+	if execution.Err() != nil {
+		outcome = "unknown"
+	}
+	cancel()
+	<-stopped
+	if outcome != "success" && outcome != "failure" {
+		outcome = "unknown"
+	}
+	return outcome
+}
+
+// executeSpec reads the spec file out of a run's source. Reading has no effect on the Node, so it
+// is not journaled: a re-delivered spec command reads the source again, which is also the only way
+// to report the text, since the journal never stores command data.
+func (c *Client) executeSpec(ctx context.Context, cmd pendingCommand, claim commandClaim) error {
+	var payload Payload
+	if err := c.request(ctx, "POST", "commands/payload", claim, &payload); err != nil {
+		return err
+	}
+	if payload.Kind != cmd.Kind {
+		return errors.New("command kind mismatch")
+	}
+	reader, ok := c.exec.(SpecReader)
+	var spec string
+	outcome := "failure"
+	if ok {
+		outcome = c.withClaim(ctx, claim, executionLimit("spec"), func(execution context.Context) string {
+			text, err := reader.ReadSpec(execution, payload)
+			if err != nil {
+				return "failure"
+			}
+			spec = text
+			return "success"
+		})
+	}
+	result := map[string]any{"commandId": claim.CommandID, "owner": claim.Owner, "epoch": claim.Epoch, "outcome": outcome}
+	if outcome == "success" && spec != "" {
+		if len(spec) > maxSpecBytes {
+			result["outcome"] = "failure"
+		} else {
+			result["spec"] = spec
+		}
+	}
+	return c.request(ctx, "POST", "commands/result", result, nil)
+}
+
+// maxSpecBytes matches the control plane's spec limit (spec.MAX_SPEC_BYTES).
+const maxSpecBytes = 64 * 1024
+
 func idleDelay(previous time.Duration, busy bool) time.Duration {
 	if busy {
 		return time.Second

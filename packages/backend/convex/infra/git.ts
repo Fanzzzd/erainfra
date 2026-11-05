@@ -17,7 +17,7 @@ import {
 } from "../_generated/server";
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
-import { createDeployment } from "./deployments";
+import { createRun } from "./pipeline";
 import { MAX_GIT_BINDINGS, repoKey } from "./policy";
 
 export async function findBinding(ctx: QueryCtx, repo: string, branch: string) {
@@ -130,8 +130,8 @@ export const list = query({
 
 /**
  * Record a verified push delivery and queue its deploy. Keyed by X-GitHub-Delivery: a redelivery
- * returns `duplicate` and queues nothing. The HTTP route that verifies the signature and calls
- * this arrives with the deploy pipeline in phase 3; the dedup is in place before it.
+ * returns `duplicate` and queues nothing. Called by the /github/webhook route after it verified the
+ * signature (http.ts).
  */
 export const acceptPush = internalMutation({
   args: {
@@ -168,10 +168,22 @@ export const acceptPush = internalMutation({
       return { outcome: "no-binding" as const };
     }
 
-    const deploymentId = await createDeployment(ctx, {
+    // The run and the delivery row commit together, so one delivery starts at most one run even
+    // when GitHub redelivers it or two copies arrive at once.
+    const deploymentId = await createRun(ctx, {
       app: binding.app,
-      targetNodeIds: binding.deployNodeId === undefined ? [] : [binding.deployNodeId],
-      trigger: { kind: "git", sha: args.sha, deliveryId: args.deliveryId },
+      operation: "deploy",
+      trigger: { kind: "git", sha: args.sha, deliveryId: args.deliveryId, actor: "github:push" },
+      source: {
+        kind: "git",
+        repo: binding.repo,
+        ref: args.branch,
+        ...(/^[0-9a-f]{40}$/.test(args.sha) ? { sha: args.sha } : {}),
+      },
+      ...(binding.buildNodeId === undefined ? {} : { buildNodeId: binding.buildNodeId }),
+      ...(binding.deployNodeId === undefined ? {} : { defaultNodeId: binding.deployNodeId }),
+      ...(binding.port === undefined ? {} : { port: binding.port }),
+      gitBindingId: binding._id,
     });
     await ctx.db.insert("webhookDeliveries", {
       deliveryId: args.deliveryId,

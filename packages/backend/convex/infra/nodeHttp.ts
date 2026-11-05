@@ -7,6 +7,29 @@ import { bearerToken } from "../apiTokenPolicy";
 import { isWellFormedNodeCredential } from "./policy";
 import { MAX_BODY_BYTES } from "./nodeCommandModel";
 import { ENDPOINT_REFUSALS } from "./nodeState";
+import { deployAppConfig, mintRepoReadToken } from "./githubDeploy";
+
+/**
+ * A spec or build payload from a repository gets a read-only token for that one repository, minted
+ * here because a query cannot call GitHub. The claim check already ran in the payload query. With
+ * no deploy App configured, or the App not installed on the repository, the Node clones without
+ * one, which works for a public repository.
+ */
+async function withRepoToken(result: unknown) {
+  const p = result as { kind?: string; source?: { kind?: string; repo?: string } } | null;
+  if ((p?.kind !== "spec" && p?.kind !== "build") || p.source?.kind !== "git") return result;
+  const app = deployAppConfig(process.env);
+  if (app === null) return result;
+  const minted = await mintRepoReadToken({
+    app,
+    repo: p.source.repo!,
+    now: Date.now(),
+    fetch: globalThis.fetch,
+  });
+  if (minted.ok) return { ...p, source: { ...p.source, token: minted.token } };
+  if (minted.reason === "not-installed") return result;
+  throw new Error("GitHub token unavailable");
+}
 
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -81,7 +104,7 @@ export function registerNodeRoutes(http: HttpRouter) {
             "commands/claim": ["commandId", "owner"],
             "commands/renew": ["commandId", "owner", "epoch"],
             "commands/payload": ["commandId", "owner", "epoch"],
-            "commands/result": ["commandId", "owner", "epoch", "outcome"],
+            "commands/result": ["commandId", "owner", "epoch", "outcome", "spec"],
           };
           if (
             Object.keys(b).some((k) => !fields[path].includes(k)) ||
@@ -125,12 +148,15 @@ export function registerNodeRoutes(http: HttpRouter) {
               result = await ctx.runMutation(internal.infra.nodeCommands.renew, claim);
               break;
             case "commands/payload":
-              result = await ctx.runQuery(internal.infra.nodeCommands.payload, claim);
+              result = await withRepoToken(
+                await ctx.runQuery(internal.infra.nodeCommands.payload, claim),
+              );
               break;
             case "commands/result":
               result = await ctx.runMutation(internal.infra.nodeCommands.report, {
                 ...claim,
                 outcome: b.outcome as "success" | "failure" | "unknown",
+                ...(b.spec === undefined ? {} : { spec: b.spec as string }),
               });
               break;
             case "endpoint/challenge":

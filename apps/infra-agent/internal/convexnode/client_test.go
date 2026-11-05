@@ -33,6 +33,10 @@ type fakeAPI struct {
 	reportFail, renewFail, huge bool
 	claims                      int
 	refusedFirst                bool
+	// kind is the one queued command's kind; empty is an operate command.
+	kind string
+	// spec is the spec text the last result carried.
+	spec string
 }
 
 func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +66,11 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"cursor": nil, "commands": []any{}})
 			return
 		}
-		commands := []any{map[string]string{"id": "cmd-1", "idempotencyKey": "restart-1", "kind": "operate"}}
+		kind := f.kind
+		if kind == "" {
+			kind = "operate"
+		}
+		commands := []any{map[string]string{"id": "cmd-1", "idempotencyKey": "restart-1", "kind": kind}}
 		if f.refusedFirst {
 			commands = append([]any{map[string]string{"id": "stale-app", "idempotencyKey": "stale-1", "kind": "deploy"}}, commands...)
 		}
@@ -82,6 +90,11 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		f.claims++
 		send(map[string]any{"epoch": f.claims, "leaseUntil": time.Now().Add(time.Minute).UnixMilli()})
 	case "/api/v1/nodes/commands/payload":
+		if f.kind == "build" || f.kind == "spec" {
+			send(map[string]any{"kind": f.kind, "app": "shop", "service": "web", "dir": "", "image": "127.0.0.1:5000/shop-web:abc",
+				"source": map[string]any{"kind": "upload", "url": "https://deployment.convex.cloud/api/storage/abc"}})
+			return
+		}
 		send(map[string]any{"kind": "operate", "operation": map[string]any{"name": "systemctl.restart", "args": map[string]string{"unit": "portless-agent"}}})
 	case "/api/v1/nodes/commands/renew":
 		if f.renewFail {
@@ -100,7 +113,8 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.result, _ = b["outcome"].(string)
-		if len(b) != 4 {
+		f.spec, _ = b["spec"].(string)
+		if len(b) != 4 && (len(b) != 5 || f.spec == "") {
 			w.WriteHeader(400)
 			return
 		}

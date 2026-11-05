@@ -158,7 +158,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
   const apps = await ctx.db.query("apps").take(501);
   if (standalone.length > 500 || apps.length > 500)
     throw new ConvexError("Mesh configuration exceeds the 500-App/link snapshot limit");
-  const links = [...standalone, ...apps.flatMap((a) => a.links)];
+  // App dependency links (from the deploy pipeline's plan) are marked so their consumer listens
+  // where a container can reach it; standalone links stay on loopback.
+  const links = [
+    ...standalone.map((l) => ({ ...l, forApp: false })),
+    ...apps.flatMap((a) => a.links.map((l) => ({ ...l, forApp: true }))),
+  ];
   if (links.length > 2000) throw new ConvexError("Mesh link limit exceeded");
   const relevant = links.filter(
     (l) =>
@@ -213,7 +218,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
         name: link.name,
         peer: peer.meshAddress.id,
         service: link.name,
-        listen: `127.0.0.1:${link.localPort}`,
+        // A service reaches its dependency at host.docker.internal:<localPort>, which
+        // `--add-host host.docker.internal:host-gateway` resolves to the Docker bridge gateway.
+        // Convex cannot know that address, so an App link names the scope, `bridge:<port>`, and
+        // the Infra Agent binds the Node's own gateway address: reachable from the host and its
+        // containers, never from the Node's other networks. The Hub bound these on 0.0.0.0.
+        listen: link.forApp ? `bridge:${link.localPort}` : `127.0.0.1:${link.localPort}`,
       };
       const previous = outgoing.get(link.name);
       if (previous && JSON.stringify(previous) !== JSON.stringify(next)) {
@@ -223,8 +233,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     }
   }
   const self = await ctx.db.get(nodeId);
+  const listeners = [...outgoing.values()].toSorted((a, b) => a.name.localeCompare(b.name));
   return {
-    v: 1,
+    // Version 2 adds a scoped listener, `bridge:<port>`, which a version-1 Infra Agent cannot
+    // bind. It refuses a version it does not know and keeps its last snapshot, so it fails closed;
+    // a snapshot without a scoped listener stays version 1 for those agents.
+    v: listeners.some((l) => l.listen.startsWith("bridge:")) ? 2 : 1,
     // Full replacement snapshot. The future sidecar reconciler must unexpose/unlink absent names.
     fleet: [...peers.values()].toSorted((a, b) => a.id.localeCompare(b.id)),
     relays: {
@@ -234,7 +248,7 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     exposures: [...expose.values()]
       .map((e) => ({ ...e, allowed_peers: e.allowed_peers.toSorted() }))
       .toSorted((a, b) => a.name.localeCompare(b.name)),
-    links: [...outgoing.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
+    links: listeners,
   };
 }
 export const state = internalQuery({

@@ -17,6 +17,7 @@ export const permissionRoleValidator = v.union(
 export const deployStageValidator = v.union(
   v.literal("queued"),
   v.literal("reading-spec"),
+  v.literal("planning"),
   v.literal("building"),
   v.literal("deploying"),
   v.literal("linking"),
@@ -64,6 +65,49 @@ export const appLinkValidator = v.object({
   localPort: v.number(),
 });
 
+/** A validated App spec (infra/spec.ts), stored so failover can re-plan without the source. */
+export const specServiceValidator = v.object({
+  name: v.string(),
+  build: v.optional(v.string()),
+  image: v.optional(v.string()),
+  port: v.optional(v.number()),
+  route: v.optional(v.string()),
+  env: v.record(v.string(), v.string()),
+  volumes: v.array(v.string()),
+  node: v.optional(v.string()),
+  needs: v.array(v.string()),
+});
+export const appSpecValidator = v.object({
+  app: v.string(),
+  services: v.array(specServiceValidator),
+});
+
+/**
+ * Where a pipeline run's source comes from. An upload is a Convex file-storage object the operator
+ * uploaded through /api/v1, deleted when the run ends. A repository source names the repository,
+ * the branch and, for a push, the exact commit.
+ */
+export const deploySourceValidator = v.union(
+  v.object({ kind: v.literal("upload"), storageId: v.id("_storage") }),
+  v.object({
+    kind: v.literal("git"),
+    repo: v.string(),
+    ref: v.string(),
+    sha: v.optional(v.string()),
+  }),
+);
+
+/** What the planning step decided: every service with its Node, the links, and what to build. */
+export const deployPlanValidator = v.object({
+  nodeId: v.id("nodes"),
+  services: v.array(appServiceValidator),
+  links: v.array(appLinkValidator),
+  builds: v.array(v.object({ service: v.string(), dir: v.string(), image: v.string() })),
+  // The Nodes whose services this run (re)starts. Failover leaves untouched groups alone.
+  deployNodeIds: v.array(v.id("nodes")),
+  urls: v.array(v.string()),
+});
+
 export const infraTables = {
   // A machine that runs deployed Apps (CONTEXT.md). `name` is the agent id the Hub knew it by;
   // `endpointId` is the iroh key phase 1 gives it, which becomes its identity once registered.
@@ -85,6 +129,11 @@ export const infraTables = {
     endpointProvenAt: v.optional(v.number()),
     lastSeenAt: v.optional(v.number()),
     infraAgentVersion: v.optional(v.string()),
+    // Failover bookkeeping (infra/failover.ts). `failoverSuspectAt` is when a check first found the
+    // Node silent past the missed-heartbeat window; `failoverHandledSeenAt` is the `lastSeenAt` of
+    // the silence a failover already ran for, so one outage fails over once.
+    failoverSuspectAt: v.optional(v.number()),
+    failoverHandledSeenAt: v.optional(v.number()),
   })
     .index("by_name", ["name"])
     .index("by_endpointId", ["endpointId"]),
@@ -110,6 +159,9 @@ export const infraTables = {
     nodeId: v.id("nodes"),
     services: v.array(appServiceValidator),
     links: v.array(appLinkValidator),
+    // The spec the last pipeline run deployed. Failover re-plans from it; an App without one (copied
+    // from the Hub) must go through the pipeline once before Convex can fail it over.
+    spec: v.optional(appSpecValidator),
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
@@ -222,12 +274,30 @@ export const infraTables = {
           v.literal("upload"),
           v.literal("manual"),
           v.literal("hub-import"),
+          v.literal("failover"),
         ),
         sha: v.optional(v.string()),
         deliveryId: v.optional(v.string()),
+        actor: v.optional(v.string()),
       }),
     ),
     legacyId: v.optional(v.string()),
+    // Pipeline runs (infra/pipeline.ts). A row without `operation` predates the pipeline or was
+    // copied from the Hub, and the pipeline never touches it.
+    operation: v.optional(v.union(v.literal("deploy"), v.literal("failover"))),
+    source: v.optional(deploySourceValidator),
+    sourceDeleted: v.optional(v.boolean()),
+    buildNodeId: v.optional(v.id("nodes")),
+    defaultNodeId: v.optional(v.id("nodes")),
+    // Container port for a repository with no spec file.
+    port: v.optional(v.number()),
+    spec: v.optional(appSpecValidator),
+    plan: v.optional(deployPlanValidator),
+    // When the current stage began, for its timeout.
+    stageStartedAt: v.optional(v.number()),
+    gitBindingId: v.optional(v.id("gitBindings")),
+    // Failover runs: the Node the App is moving off, and the survivor chosen when it was queued.
+    failover: v.optional(v.object({ lostNodeId: v.id("nodes"), toNodeId: v.id("nodes") })),
   })
     .index("by_startedAt", ["startedAt"])
     .index("by_app_startedAt", ["app", "startedAt"])

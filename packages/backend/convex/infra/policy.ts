@@ -151,6 +151,7 @@ export const DEPLOYMENTS_KEPT = 1000;
 export const DEPLOY_STAGES = [
   "queued",
   "reading-spec",
+  "planning",
   "building",
   "deploying",
   "linking",
@@ -168,6 +169,43 @@ export function isTerminalStage(stage: DeployStage) {
 
 /** Long enough to cover one pipeline step; the holder renews between steps. */
 export const APP_LEASE_TTL_MS = 60_000;
+
+// ---------------------------------------------------------------------------
+// Node liveness, from the heartbeats a connect-convex Infra Agent sends
+
+/**
+ * The longest a healthy Node goes between heartbeats. The Infra Agent heartbeats on a poll at
+ * least 15 seconds after the last one, and an idle poll waits up to 30 seconds plus 20% jitter, so
+ * about 36 seconds; the rest is network latency.
+ */
+export const HEARTBEAT_INTERVAL_BOUND_MS = 40_000;
+
+/**
+ * How many heartbeats in a row a Node must miss before Convex treats it as gone. One late or lost
+ * heartbeat, or one dropped connection, is never enough: the Hub failed a Node over 20 seconds
+ * after one WebSocket closed, which moved Apps off a Node that was still serving them.
+ */
+export const MISSED_HEARTBEATS = 3;
+
+/** The silence that marks a Node as gone: MISSED_HEARTBEATS whole intervals. */
+export const NODE_SILENCE_MS = HEARTBEAT_INTERVAL_BOUND_MS * MISSED_HEARTBEATS;
+
+/**
+ * After a check first finds a Node silent past NODE_SILENCE_MS, a later check must still find it
+ * silent at least this long afterwards before failover runs. The Hub's 20-second grace, kept as a
+ * second, independent observation of the same outage.
+ */
+export const FAILOVER_GRACE_MS = 20_000;
+
+/** Whether a Node has heartbeated recently enough to be given work. */
+export function isNodeLive(lastSeenAt: number | undefined, now: number) {
+  return lastSeenAt !== undefined && now - lastSeenAt <= NODE_SILENCE_MS;
+}
+
+/** Whether a Node that has heartbeated before has now been silent for the whole window. */
+export function isNodeSilent(lastSeenAt: number | undefined, now: number) {
+  return lastSeenAt !== undefined && now - lastSeenAt > NODE_SILENCE_MS;
+}
 
 export type LeaseRow = {
   holder?: string;
