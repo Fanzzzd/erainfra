@@ -142,17 +142,22 @@ takes the journal's lock. A released key no longer protects its command from run
 release only keys whose command Convex shows finished or cancelled, and for an unknown outcome
 only after you have checked the workload on this Node.`
 
+// journalUsageError prints the usage text as the error, so a mistyped command shows it.
+type journalUsageError struct{}
+
+func (journalUsageError) Error() string { return journalUsage }
+
 // runJournal is the operator's way out of a full journal (docs/infra-management.md, "When the
 // journal is full").
 func runJournal(args []string, out io.Writer) error {
 	if len(args) == 0 || (args[0] != "list" && args[0] != "release") {
-		return errors.New(journalUsage)
+		return journalUsageError{}
 	}
 	fs := flag.NewFlagSet("journal "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	state := fs.String("state-dir", os.Getenv("ERAINFRA_NODE_STATE_DIR"), "the connect-convex state directory")
 	if err := fs.Parse(args[1:]); err != nil {
-		return fmt.Errorf("%v\n%s", err, journalUsage)
+		return fmt.Errorf("%v\n%w", err, journalUsageError{})
 	}
 	if *state == "" || !filepath.IsAbs(*state) {
 		return errors.New("an absolute --state-dir (or ERAINFRA_NODE_STATE_DIR) is required")
@@ -160,7 +165,7 @@ func runJournal(args []string, out io.Writer) error {
 	switch args[0] {
 	case "list":
 		if fs.NArg() != 0 {
-			return errors.New(journalUsage)
+			return journalUsageError{}
 		}
 		entries, err := convexnode.ListJournal(*state)
 		if err != nil {
@@ -175,7 +180,7 @@ func runJournal(args []string, out io.Writer) error {
 		return nil
 	default:
 		if fs.NArg() == 0 {
-			return errors.New(journalUsage)
+			return journalUsageError{}
 		}
 		if err := convexnode.ReleaseJournalKeys(*state, fs.Args()); err != nil {
 			return err

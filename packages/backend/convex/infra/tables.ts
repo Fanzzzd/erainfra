@@ -140,6 +140,13 @@ export const infraTables = {
     endpointProvenAt: v.optional(v.number()),
     lastSeenAt: v.optional(v.number()),
     infraAgentVersion: v.optional(v.string()),
+    // Command health from the last heartbeat (nodeState.heartbeat). `commandsBlocked` is set while
+    // the Node is online but cannot run commands, with `commandsBlockedSince` the first heartbeat
+    // that said so. `journalKeys` of `journalKeyLimit` is how full its execution journal is.
+    commandsBlocked: v.optional(v.string()),
+    commandsBlockedSince: v.optional(v.number()),
+    journalKeys: v.optional(v.number()),
+    journalKeyLimit: v.optional(v.number()),
     // Failover bookkeeping (infra/failover.ts). `failoverSuspectAt` is when a check first found the
     // Node silent past the missed-heartbeat window; `failoverHandledSeenAt` is the `lastSeenAt` of
     // the silence a failover already ran for, so one outage fails over once.

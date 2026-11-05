@@ -16,11 +16,35 @@ import {
 } from "./ingress";
 
 export const heartbeat = internalMutation({
-  args: { credential: v.string(), version: v.string() },
+  args: {
+    credential: v.string(),
+    version: v.string(),
+    // Absent: the last command poll succeeded, or the agent predates the field.
+    commandsBlocked: v.optional(v.string()),
+    journalKeys: v.optional(v.number()),
+    journalKeyLimit: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
     const { nodeId } = await requireNode(ctx, args.credential);
     if (args.version.length > 100) throw new ConvexError("Version too long");
-    await ctx.db.patch(nodeId, { lastSeenAt: Date.now(), infraAgentVersion: args.version });
+    if (args.commandsBlocked !== undefined && !/^[a-z_]{1,40}$/.test(args.commandsBlocked))
+      throw new ConvexError("Invalid commandsBlocked reason");
+    for (const count of [args.journalKeys, args.journalKeyLimit])
+      if (count !== undefined && !(Number.isInteger(count) && count >= 0 && count <= 1_000_000))
+        throw new ConvexError("Invalid journal count");
+    const now = Date.now();
+    const before = await ctx.db.get(nodeId);
+    const blocked = args.commandsBlocked;
+    await ctx.db.patch(nodeId, {
+      lastSeenAt: now,
+      infraAgentVersion: args.version,
+      commandsBlocked: blocked,
+      // Since the Node first reported any block, so an alert measures how long it has lasted.
+      commandsBlockedSince:
+        blocked === undefined ? undefined : (before?.commandsBlockedSince ?? now),
+      journalKeys: args.journalKeys,
+      journalKeyLimit: args.journalKeyLimit,
+    });
     const node = await ctx.db.get(nodeId);
     // The Node's own registered key (public), so the Infra Agent can tell a key it may publish
     // from one Convex will refuse, and notice an operator reset, without retrying a refusal.

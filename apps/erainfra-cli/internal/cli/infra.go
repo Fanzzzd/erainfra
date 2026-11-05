@@ -42,6 +42,10 @@ type nodeRow struct {
 	} `json:"endpoint"`
 	PlacementRoles  []string `json:"placementRoles"`
 	LiveCredentials int      `json:"liveCredentials"`
+	// Commands is absent from a control plane older than the command health report.
+	Commands struct {
+		Blocked *string `json:"blocked"`
+	} `json:"commands"`
 }
 
 var nodesListCommand = command{
@@ -51,7 +55,10 @@ var nodesListCommand = command{
 TRANSPORT is convex once the Node's Infra Agent has heartbeated in connect-convex
 mode, and hub while only the Hub drives it. MESH is proven when the Node signed a
 challenge with its erainfra-mesh key; only a proven Node is granted mesh links.
-CREDS counts live Node credentials; a Node with none is out of the mesh.`,
+CREDS counts live Node credentials; a Node with none is out of the mesh.
+STATUS "online, blocked: <reason>" is a Node that heartbeats but cannot run its
+builds, deploys or operations, for example journal_full (see "When the journal
+is full" in docs/infra-management.md).`,
 	run: func(ctx context.Context, a *App, in invocation) error {
 		c, _, err := a.connect()
 		if err != nil {
@@ -81,6 +88,9 @@ CREDS counts live Node credentials; a Node with none is out of the mesh.`,
 			status := "offline"
 			if n.Online {
 				status = "online"
+				if n.Commands.Blocked != nil {
+					status = "online, blocked: " + *n.Commands.Blocked
+				}
 			}
 			mesh := "none"
 			if n.Endpoint.Proven {

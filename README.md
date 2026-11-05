@@ -1171,6 +1171,10 @@ workflow, Runner or job id.
 | `erainfra_machine_benchmark_timestamp_seconds`      | `machine`                              | When the benchmark ran. Older than seven days, the scheduler ignores it.                                                   |
 | `erainfra_controller_up`                            | `profile`                              | 1 when a controller reported in the last 90 seconds and holds the GitHub session. Absent until the first heartbeat.        |
 | `erainfra_controller_last_heartbeat_age_seconds`    | `profile`                              | Seconds since any of the Profile's controllers reported. Absent until the first heartbeat.                                 |
+| `erainfra_node_online`                              | `node`                                 | 1 when the infrastructure Node's Infra Agent heartbeated in `connect-convex` mode recently. Absent for Hub-only Nodes.     |
+| `erainfra_node_commands_blocked`                    | `node`, `reason`                       | 1 while the Node reports it cannot run commands (`journal_full`, `journal_error`, `command_api`, `command_error`), else 0. |
+| `erainfra_node_commands_blocked_seconds`            | `node`, `reason`                       | Seconds since the Node first reported the block. Absent while it can run commands.                                         |
+| `erainfra_node_journal_keys` / `_key_limit`         | `node`                                 | Keys in the Node's execution journal, and the limit at which it refuses new builds, deploys and operations.                |
 | `erainfra_alerts_firing`                            | `rule`                                 | Firing incidents per enabled alert rule.                                                                                   |
 | `erainfra_scrape_truncated`                         |                                        | 1 when a read cap (1,000 Profiles, Workers, readiness rows, or live Attempts per state) was reached.                       |
 
@@ -1193,6 +1197,10 @@ groups:
       - alert: ErainfraControllerDown
         expr: erainfra_controller_up == 0 and on (profile) erainfra_profile_info{state="active"} == 1
         for: 3m
+      - alert: ErainfraNodeCommandsBlocked
+        expr: erainfra_node_commands_blocked_seconds > 600 and on (node) erainfra_node_online == 1
+      - alert: ErainfraNodeJournalNearlyFull
+        expr: erainfra_node_journal_keys > 0.9 * erainfra_node_journal_key_limit
 ```
 
 ### Alerts
@@ -1210,6 +1218,7 @@ minute against the same fleet state `/metrics` reads.
 | Consecutive failed Attempts         | Profile        | The newest N finished Attempts (in the last 24 hours, cancellations skipped) all failed.                                           |
 | Attempt running too long            | Profile        | An Attempt has been running for N minutes.                                                                                         |
 | No controller listening             | Profile        | No controller has held an active Profile's GitHub session for N minutes (2 or more; 3 by default). See below.                      |
+| Node unable to run commands         | Node           | An online `connect-convex` Node has reported for N minutes that it cannot run commands. A Profile scope does not narrow this rule. |
 
 A dead controller creates no Attempts, so without its own signal it looks like an idle Profile.
 Every controller reports a heartbeat to the control plane every 30 seconds and whenever its session

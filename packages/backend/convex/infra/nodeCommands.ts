@@ -13,7 +13,13 @@ import { appendAudit } from "./auditLog";
 import { assertAppLease } from "./leases";
 import { recordLogOutput } from "./logOutput";
 import { requireNode } from "./nodes";
-import { COMMAND_TTL_MS, commandOutcome, nodeCommand, validateOperation } from "./nodeCommandModel";
+import {
+  COMMAND_TTL_MS,
+  commandOutcome,
+  commandStatus,
+  nodeCommand,
+  validateOperation,
+} from "./nodeCommandModel";
 import { secretsForNodeDeploy } from "./secrets";
 import { validateDockerArgs } from "./dockerArgs";
 import { canonicalJson } from "./plan";
@@ -357,6 +363,43 @@ export const report = internalMutation({
         deploymentId: row.deploymentId,
       });
     return null;
+  },
+});
+
+/** How many command ids one status request may name (the Go agent's sweepBatch). */
+export const MAX_STATUS_IDS = 200;
+
+/**
+ * The status of commands this Node holds journal keys for. The Infra Agent forgets a key once
+ * its command is terminal here with the outcome it recorded: `claim` refuses a terminal command,
+ * and no path moves a terminal row back to pending or deletes it, so that command can never be
+ * delivered again. A command of another Node, or an id that is not a command, reads `missing`,
+ * so a Node learns nothing about commands it does not own. Statuses only: no command data.
+ */
+export const statuses = internalQuery({
+  args: { credential: v.string(), commandIds: v.array(v.string()) },
+  returns: v.object({
+    commands: v.array(
+      v.object({
+        id: v.string(),
+        status: v.union(commandStatus, v.literal("missing")),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    const { nodeId } = await requireNode(ctx, args.credential);
+    if (args.commandIds.length > MAX_STATUS_IDS) throw new ConvexError("Too many command ids");
+    const commands = [];
+    for (const raw of args.commandIds) {
+      if (raw.length > 64) throw new ConvexError("Invalid command id");
+      const id = ctx.db.normalizeId("nodeCommands", raw);
+      const row = id === null ? null : await ctx.db.get(id);
+      commands.push({
+        id: raw,
+        status: row !== null && row.nodeId === nodeId ? row.status : ("missing" as const),
+      });
+    }
+    return { commands };
   },
 });
 

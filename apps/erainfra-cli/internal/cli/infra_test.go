@@ -68,11 +68,14 @@ func TestNodesListShowsTransportAndMeshProof(t *testing.T) {
 	h.api.on("GET /api/v1/nodes", 200, `{"nodes":[
 	  {"name":"edge-1","transport":"convex","online":true,"lastSeenAt":"2026-11-05T11:59:30Z","infraAgentVersion":"0.3.0",
 	   "endpoint":{"id":"abcdef0123456789","proven":true},"placementRoles":["gateway"],"liveCredentials":1},
+	  {"name":"edge-2","transport":"convex","online":true,"lastSeenAt":"2026-11-05T11:59:30Z","infraAgentVersion":"0.3.1",
+	   "endpoint":{"id":null,"proven":false},"liveCredentials":1,
+	   "commands":{"blocked":"journal_full","blockedSince":"2026-11-05T11:00:00Z","journalKeys":10000,"journalKeyLimit":10000}},
 	  {"name":"old-box","transport":"hub","online":false,"lastSeenAt":null,"infraAgentVersion":null,
 	   "endpoint":{"id":null,"proven":false},"liveCredentials":0}]}`)
 	h.expect(ExitOK, "nodes", "list")
 	out := h.stdout.String()
-	for _, want := range []string{"TRANSPORT", "edge-1", "convex", "online", "30s ago", "proven abcdef0123…", "gateway", "old-box", "hub", "offline", "none"} {
+	for _, want := range []string{"TRANSPORT", "edge-1", "convex", "online", "30s ago", "proven abcdef0123…", "gateway", "online, blocked: journal_full", "old-box", "hub", "offline", "none"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("nodes list lacks %q:\n%s", want, out)
 		}

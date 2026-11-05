@@ -50,6 +50,7 @@ export function nodeJson(node: NodeView) {
     lastSeenAt: iso(node.lastSeenAt),
     createdAt: iso(node.createdAt),
     endpoint: { ...node.endpoint, provenAt: iso(node.endpoint.provenAt) },
+    commands: { ...node.commands, blockedSince: iso(node.commands.blockedSince) },
     credentials: node.credentials.map((c) => ({
       ...c,
       createdAt: iso(c.createdAt),

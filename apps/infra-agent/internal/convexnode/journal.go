@@ -234,10 +234,17 @@ func parseJournal(f io.Reader, tolerateTail bool) (map[string]record, int, error
 	return records, lines, nil
 }
 
+// Close leaves a file of live records only, so an older Infra Agent, which does not know the
+// settled record, can still open the journal after a clean stop.
 func (j *Journal) Close() error {
 	var err error
+	if j.file != nil && j.lines > len(j.records) {
+		err = j.rewrite()
+	}
 	if j.file != nil {
-		err = j.file.Close()
+		if closeErr := j.file.Close(); err == nil {
+			err = closeErr
+		}
 		j.file = nil
 	}
 	if j.lock != nil {

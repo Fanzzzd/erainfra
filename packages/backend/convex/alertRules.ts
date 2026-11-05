@@ -5,6 +5,7 @@
 import { v, type Infer } from "convex/values";
 import { CONTROLLER_OFFLINE_AFTER_MS, controllerSilentForMs } from "./controllerLiveness";
 import type { FleetObservation, ObservedProfile } from "./fleetObservation";
+import { COMMANDS_BLOCKED_REASONS } from "./infra/nodeCommandModel";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 export const alertConditionValidator = v.union(
@@ -32,6 +33,11 @@ export const alertConditionValidator = v.union(
   // reporting, or reports but cannot get the session. A Profile no controller has ever reported
   // for is not tracked (controllerLiveness.ts), so controllers older than the heartbeat never fire.
   v.object({ kind: v.literal("controller-silent"), minutes: v.number() }),
+  // An online infrastructure Node has reported for `minutes` that it cannot run commands: its
+  // execution journal is full or unwritable, or its command requests fail. Such a Node keeps
+  // heartbeating, so worker-offline and failover never see it. Nodes belong to no Profile, so a
+  // Profile scope does not narrow this rule.
+  v.object({ kind: v.literal("node-commands-blocked"), minutes: v.number() }),
 );
 
 export type AlertCondition = Infer<typeof alertConditionValidator>;
@@ -52,6 +58,7 @@ export const ALERT_CONDITION_KINDS = [
   "consecutive-failures",
   "attempt-duration",
   "controller-silent",
+  "node-commands-blocked",
 ] as const satisfies readonly AlertConditionKind[];
 
 /** The threshold a new controller-silent rule starts from. */
@@ -79,6 +86,7 @@ export function conditionError(condition: AlertCondition): string | undefined {
     }
     case "queue-backlog":
     case "attempt-duration":
+    case "node-commands-blocked":
       return integerIn(condition.minutes, 1, 7 * 24 * 60)
         ? undefined
         : "Minutes must be a whole number from 1 to 10080";
@@ -241,6 +249,27 @@ export function evaluateCondition(
         ];
       });
     }
+    case "node-commands-blocked": {
+      const thresholdMs = condition.minutes * 60_000;
+      return observation.nodes.flatMap((node) => {
+        const since = node.commandsBlockedSince;
+        // An offline Node's last report is stale; failover and the Nodes page cover it.
+        if (!node.online || node.commandsBlocked === undefined || since === undefined) return [];
+        if (now - since < thresholdMs) return [];
+        const keys =
+          node.journalKeys === undefined
+            ? ""
+            : ` Its journal holds ${node.journalKeys}${
+                node.journalKeyLimit === undefined ? "" : ` of ${node.journalKeyLimit}`
+              } keys.`;
+        return [
+          {
+            subject: node.name,
+            summary: `Node ${node.name} has not been able to run commands for ${formatAge(now - since)}: ${describeBlocked(node.commandsBlocked)}.${keys}`,
+          },
+        ];
+      });
+    }
     case "attempt-duration": {
       const thresholdMs = condition.minutes * 60_000;
       return profilesInScope(observation, scope).flatMap((profile) => {
@@ -304,5 +333,13 @@ export function describeCondition(condition: AlertCondition) {
       return `Attempt running longer than ${condition.minutes}m`;
     case "controller-silent":
       return `No controller listening for ${condition.minutes}m`;
+    case "node-commands-blocked":
+      return `Node unable to run commands for ${condition.minutes}m`;
   }
+}
+
+function describeBlocked(reason: string) {
+  return Object.hasOwn(COMMANDS_BLOCKED_REASONS, reason)
+    ? `${COMMANDS_BLOCKED_REASONS[reason as keyof typeof COMMANDS_BLOCKED_REASONS]} (${reason})`
+    : reason;
 }

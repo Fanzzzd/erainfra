@@ -138,6 +138,13 @@ func TestAcknowledgedReportsAreSettledAndTheFileStaysBounded(t *testing.T) {
 	if int64(len(strings.Join(lines, "\n"))+1) != c.journal.bytes || len(lines) != c.journal.lines {
 		t.Fatalf("in-memory size disagrees with the file: %d lines on disk, %d counted", len(lines), c.journal.lines)
 	}
+	// A clean stop leaves no settled records, which an older Infra Agent would refuse to read.
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "execution.jsonl")); strings.Contains(string(data), outcomeSettled) {
+		t.Fatalf("settled records left after Close:\n%s", data)
+	}
 }
 
 // Compaction only forgets a key once Convex has the same terminal outcome. Anything Convex can

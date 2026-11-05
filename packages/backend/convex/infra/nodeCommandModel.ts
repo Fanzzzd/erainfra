@@ -44,6 +44,20 @@ export const meshAddress = v.object({
   relay_urls: v.array(v.string()),
   direct_addrs: v.array(v.string()),
 });
+/**
+ * Why a Node that heartbeats cannot run its commands, as the Infra Agent reports it in
+ * `commandsBlocked` (convexnode.blockedReason in apps/infra-agent). Known codes get a description
+ * in alerts; any other short code is stored as sent, so a newer agent can report a new reason
+ * without a control-plane change.
+ */
+export const COMMANDS_BLOCKED_REASONS = {
+  journal_full:
+    "its execution journal is full of outcomes nobody has checked, so new builds, deploys and operations are refused",
+  journal_error: "its execution journal cannot be written",
+  command_api: "the Node API refuses or fails its command requests",
+  command_error: "running its commands fails",
+} as const;
+
 export const COMMAND_TTL_MS = 60_000;
 export const MAX_BODY_BYTES = 256 * 1024;
 export const nodeTransportTables = {

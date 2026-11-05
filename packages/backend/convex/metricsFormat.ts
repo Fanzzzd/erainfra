@@ -3,7 +3,7 @@
 // Convex bindings so the format can be tested line by line.
 //
 // Naming follows https://prometheus.io/docs/practices/naming/: an `erainfra_` prefix, base units
-// (`_seconds`), and labels only from small operator-owned sets (profile, machine, executor, state,
+// (`_seconds`), and labels only from small operator-owned sets (profile, machine, node, executor, state, reason,
 // result). Nothing here is labelled by repository, branch, workflow, runner or job id; those grow
 // without bound and belong in the Runs page.
 //
@@ -286,6 +286,47 @@ export function buildMetricFamilies(
     }
   }
 
+  const nodeOnline = family(
+    "erainfra_node_online",
+    "1 when the infrastructure Node's Infra Agent heartbeated over the Node API (connect-convex) within the silence window. Absent for a Node only the Hub drives.",
+  );
+  const nodeBlocked = family(
+    "erainfra_node_commands_blocked",
+    'Gauge: 1 while the Node reports that it cannot run commands, by reason (journal_full, journal_error, command_api, command_error); 0 with reason="" otherwise. Read it with erainfra_node_online: an offline Node reports nothing.',
+  );
+  const nodeBlockedSeconds = family(
+    "erainfra_node_commands_blocked_seconds",
+    "Seconds since the Node first reported that it cannot run commands, at scrape time. Absent while it can.",
+  );
+  const nodeJournalKeys = family(
+    "erainfra_node_journal_keys",
+    "Keys in the Node's execution journal: commands Convex may still deliver, and outcomes an operator has not checked. New builds, deploys and operations stop at erainfra_node_journal_key_limit. Absent until the Infra Agent reports it.",
+  );
+  const nodeJournalLimit = family(
+    "erainfra_node_journal_key_limit",
+    "The Node's execution journal key limit. Absent until the Infra Agent reports it.",
+  );
+  for (const node of observation.nodes) {
+    const labels = { node: node.name };
+    nodeOnline.samples.push({ labels, value: node.online ? 1 : 0 });
+    nodeBlocked.samples.push({
+      labels: { node: node.name, reason: node.commandsBlocked ?? "" },
+      value: node.commandsBlocked === undefined ? 0 : 1,
+    });
+    if (node.commandsBlocked !== undefined && node.commandsBlockedSince !== undefined) {
+      nodeBlockedSeconds.samples.push({
+        labels: { node: node.name, reason: node.commandsBlocked },
+        value: Math.max(0, now - node.commandsBlockedSince) / 1_000,
+      });
+    }
+    if (node.journalKeys !== undefined) {
+      nodeJournalKeys.samples.push({ labels, value: node.journalKeys });
+    }
+    if (node.journalKeyLimit !== undefined) {
+      nodeJournalLimit.samples.push({ labels, value: node.journalKeyLimit });
+    }
+  }
+
   const alertsFiring = family(
     "erainfra_alerts_firing",
     "Open firing alert incidents by rule name, from the dashboard's alert rules.",
@@ -336,6 +377,11 @@ export function buildMetricFamilies(
     slotsUsed,
     benchmarkScore,
     benchmarkTimestamp,
+    nodeOnline,
+    nodeBlocked,
+    nodeBlockedSeconds,
+    nodeJournalKeys,
+    nodeJournalLimit,
     alertsFiring,
     truncated,
   ];

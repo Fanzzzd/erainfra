@@ -237,6 +237,8 @@ describe("GET /metrics exposition", () => {
       "arch",
       "slot_policy",
       "rule",
+      "node",
+      "reason",
     ]);
     for (const sample of parsed.series) {
       for (const key of Object.keys(sample.labels)) expect(allowed.has(key), key).toBe(true);
@@ -367,6 +369,48 @@ describe("GET /metrics exposition", () => {
       (NOW - 60 * MINUTE) / 1000,
     );
     expect(valueOf(parsed, "erainfra_scrape_truncated")).toBe(0);
+  });
+
+  it("reports each Convex-transport Node's command health and journal", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const base = { createdAt: NOW - 60 * MINUTE, source: "enrolled" as const };
+      await ctx.db.insert("nodes", {
+        ...base,
+        name: "edge-1",
+        lastSeenAt: NOW - 5_000,
+        commandsBlocked: "journal_full",
+        commandsBlockedSince: NOW - 90_000,
+        journalKeys: 10_000,
+        journalKeyLimit: 10_000,
+      });
+      await ctx.db.insert("nodes", {
+        ...base,
+        name: "edge-2",
+        lastSeenAt: NOW - 5_000,
+        journalKeys: 3,
+        journalKeyLimit: 10_000,
+      });
+      // Only the Hub drives this one: no Node API heartbeat, so no series.
+      await ctx.db.insert("nodes", { ...base, name: "hub-box" });
+    });
+    const { token } = await mint(t);
+    const parsed = parseExposition(await (await scrape(t, `Bearer ${token}`)).text());
+    expect(valueOf(parsed, "erainfra_node_online", { node: "edge-1" })).toBe(1);
+    expect(
+      valueOf(parsed, "erainfra_node_commands_blocked", { node: "edge-1", reason: "journal_full" }),
+    ).toBe(1);
+    expect(valueOf(parsed, "erainfra_node_commands_blocked", { node: "edge-2", reason: "" })).toBe(
+      0,
+    );
+    expect(valueOf(parsed, "erainfra_node_commands_blocked_seconds", { node: "edge-1" })).toBe(90);
+    expect(
+      parsed.series.filter((s) => s.name === "erainfra_node_commands_blocked_seconds").length,
+    ).toBe(1);
+    expect(valueOf(parsed, "erainfra_node_journal_keys", { node: "edge-1" })).toBe(10_000);
+    expect(valueOf(parsed, "erainfra_node_journal_keys", { node: "edge-2" })).toBe(3);
+    expect(valueOf(parsed, "erainfra_node_journal_key_limit", { node: "edge-2" })).toBe(10_000);
+    expect(parsed.series.some((s) => s.labels.node === "hub-box")).toBe(false);
   });
 
   it("counts open firing incidents per enabled rule, with zero for a quiet rule", async () => {

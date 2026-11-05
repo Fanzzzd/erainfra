@@ -211,6 +211,7 @@ function NodesPage() {
                           ? "Never on Convex"
                           : `${online ? "Online" : "Offline"} · ${formatRelativeTime(node.lastSeenAt, now)}`}
                       </span>
+                      <CommandHealth commands={node.commands} now={now} />
                     </TableCell>
                     <TableCell>
                       {node.endpoint.proven ? (
@@ -279,8 +280,50 @@ function NodesPage() {
       <p className="text-xs leading-5 text-muted-foreground">
         A Node is on Convex once its Infra Agent heartbeats in <code>connect-convex</code> mode, and
         is granted mesh peers only with a proven endpoint and a live credential. Set placement roles
-        with <code>erainfra nodes set-roles</code>.
+        with <code>erainfra nodes set-roles</code>. A Node marked <em>commands blocked</em> is
+        online but refuses or fails its builds, deploys and operations; the reasons and the recovery
+        are in docs/infra-management.md, under &ldquo;When the journal is full&rdquo;.
       </p>
     </div>
+  );
+}
+
+const BLOCKED_LABEL: Record<string, string> = {
+  journal_full: "journal full",
+  journal_error: "journal unwritable",
+  command_api: "command requests failing",
+  command_error: "commands failing",
+};
+
+type NodeCommands = {
+  blocked: string | null;
+  blockedSince: number | null;
+  journalKeys: number | null;
+  journalKeyLimit: number | null;
+};
+
+/** What the Node's last heartbeat said about running commands and its execution journal. */
+function CommandHealth({ commands, now }: { commands: NodeCommands; now: number }) {
+  const { blocked, blockedSince, journalKeys, journalKeyLimit } = commands;
+  // A journal past nine tenths is worth a look before it refuses work.
+  const nearlyFull =
+    journalKeys !== null && journalKeyLimit !== null && journalKeys >= journalKeyLimit * 0.9;
+  return (
+    <>
+      {blocked !== null && (
+        <Badge variant="destructive" className="mt-1" title={blocked}>
+          Commands blocked: {BLOCKED_LABEL[blocked] ?? blocked}
+          {blockedSince !== null && ` · ${formatRelativeTime(blockedSince, now)}`}
+        </Badge>
+      )}
+      {journalKeys !== null && (
+        <p
+          className={`mt-0.5 text-[10px] ${nearlyFull ? "text-warning" : "text-subtle-foreground"}`}
+        >
+          journal {journalKeys}
+          {journalKeyLimit !== null && ` / ${journalKeyLimit}`} keys
+        </p>
+      )}
+    </>
   );
 }

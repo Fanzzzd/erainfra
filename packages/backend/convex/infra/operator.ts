@@ -93,6 +93,15 @@ async function nodeView(ctx: QueryCtx, node: Node, now: number) {
     online: isNodeLive(node.lastSeenAt, now),
     lastSeenAt: node.lastSeenAt ?? null,
     infraAgentVersion: node.infraAgentVersion ?? null,
+    // Command health from the last heartbeat. `blocked` is a reason code while the Node is online
+    // but cannot run commands (nodeState.COMMANDS_BLOCKED_REASONS); null when it can, or when its
+    // agent predates the report.
+    commands: {
+      blocked: node.commandsBlocked ?? null,
+      blockedSince: node.commandsBlocked === undefined ? null : (node.commandsBlockedSince ?? null),
+      journalKeys: node.journalKeys ?? null,
+      journalKeyLimit: node.journalKeyLimit ?? null,
+    },
     createdAt: node.createdAt,
     endpoint: {
       id: node.endpointId ?? null,
