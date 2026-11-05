@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build-go-assets": "node --experimental-strip-types bin/build-go-assets.ts",
+    "build-mesh-assets": "node --experimental-strip-types bin/build-mesh-assets.ts",
     "package-agent": "node --experimental-strip-types bin/package-agent.ts",
     "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"

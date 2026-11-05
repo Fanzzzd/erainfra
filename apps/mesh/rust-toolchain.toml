@@ -1,0 +1,6 @@
+# One toolchain for CI, the release build and contributors: rustup reads this file and installs
+# exactly this compiler, so a release is never built by whatever stable happened to be current.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

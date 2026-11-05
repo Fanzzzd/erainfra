@@ -17,3 +17,6 @@ dist/
 # Cross-compiled Infra Agent binaries, written by deploy/infra/build-agents.sh on a hub box.
 # Scoped rather than a bare `bin/` — packages/release/bin holds tracked source.
 deploy/infra/bin/
+
+# Cargo's build output for apps/mesh, including the release script's per-output target directories.
+apps/mesh/target/

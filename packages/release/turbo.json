@@ -5,7 +5,13 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/.github/workflows/ci.yml",
+        "$TURBO_ROOT$/.github/workflows/release.yml",
+        "$TURBO_ROOT$/package.json",
         "$TURBO_ROOT$/apps/*/package.json",
+        "$TURBO_ROOT$/apps/mesh/Cargo.toml",
+        "$TURBO_ROOT$/apps/mesh/Cargo.lock",
+        "$TURBO_ROOT$/apps/mesh/rust-toolchain.toml",
+        "$TURBO_ROOT$/packages/backend/convex/agentRelease.ts",
         "$TURBO_ROOT$/apps/runtime/cmd/runner-center-guest/main_linux.go",
         "$TURBO_ROOT$/images/ubuntu-24.04-js/**"
       ]
