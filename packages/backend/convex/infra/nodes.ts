@@ -24,7 +24,7 @@ import {
   newNodeCredential,
   NODE_CREDENTIAL_PREFIX,
 } from "./policy";
-import { endpointAddrValidator } from "./tables";
+import { endpointAddrValidator, placementRoleValidator } from "./tables";
 
 const HINT_LENGTH = NODE_CREDENTIAL_PREFIX.length + 8;
 
@@ -174,6 +174,32 @@ export const resetEndpoint = mutation({
   },
 });
 
+/**
+ * Set a Node's placement roles. Marking a Node `gateway` gives it, on its next snapshot, the
+ * route table and a mesh link to every routed App, and adds it to the `allowed_peers` of each
+ * App's ingress exposure (infra/ingress.ts). Removing the role revokes both on the next snapshot.
+ * Only an owner or admin may do this; a Node cannot declare its own roles.
+ */
+export const setPlacementRoles = mutation({
+  args: { nodeId: v.id("nodes"), roles: v.array(placementRoleValidator) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { actor } = await requirePermission(ctx, "account.admin");
+    const node = await ctx.db.get(args.nodeId);
+    if (node === null) throw new ConvexError("No such Node");
+    const roles = [...new Set(args.roles)].toSorted();
+    await ctx.db.patch(node._id, { placementRoles: roles });
+    await appendAudit(ctx, {
+      actor,
+      action: "nodes.setPlacementRoles",
+      target: node.name,
+      outcome: "success",
+      meta: { from: node.placementRoles ?? [], to: roles },
+    });
+    return null;
+  },
+});
+
 /** Shared by every Node API transaction; revocation is checked again at commit, not cached. */
 export async function authenticateNode(ctx: QueryCtx, credential: string) {
   if (!isWellFormedNodeCredential(credential)) return null;
@@ -259,6 +285,7 @@ export const list = query({
       endpointId: v.optional(v.string()),
       endpointAddr: v.optional(endpointAddrValidator),
       endpointUpdatedAt: v.optional(v.number()),
+      placementRoles: v.array(placementRoleValidator),
       credentials: v.array(
         v.object({
           _id: v.id("nodeCredentials"),
@@ -287,6 +314,7 @@ export const list = query({
           endpointId: node.endpointId,
           endpointAddr: node.endpointAddr,
           endpointUpdatedAt: node.endpointUpdatedAt,
+          placementRoles: node.placementRoles ?? [],
           credentials: credentials.map((credential) => ({
             _id: credential._id,
             hint: credential.hint,

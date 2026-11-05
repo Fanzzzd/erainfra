@@ -5,6 +5,13 @@ import { internalMutation, internalQuery, type QueryCtx } from "../_generated/se
 import { hasLiveCredential, requireNode } from "./nodes";
 import { meshAddress } from "./nodeCommandModel";
 import { hashApiToken } from "../apiTokenPolicy";
+import {
+  INGRESS_MAX_CONNECTIONS,
+  INGRESS_ROUTE_LIMIT,
+  ingressPorts,
+  ingressServiceName,
+  isRouteLabel,
+} from "./ingress";
 
 export const heartbeat = internalMutation({
   args: { credential: v.string(), version: v.string() },
@@ -188,18 +195,9 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     )
       throw new ConvexError("Invalid stored mesh link");
     const peerId = link.providerNodeId === nodeId ? link.consumerNodeId : link.providerNodeId;
-    const peer = await ctx.db.get(peerId);
-    // A peer is granted only while its endpoint key is proven and it still holds a live
-    // credential. Revoking the last credential also clears the endpoint (nodes.revokeCredential);
-    // this check keeps a revoked Node out even if a row predates that rule.
-    if (
-      !peer?.meshAddress ||
-      peer.endpointProvenAt === undefined ||
-      peer.endpointId !== peer.meshAddress.id ||
-      !(await hasLiveCredential(ctx, peer._id))
-    )
-      continue;
-    peers.set(peer.meshAddress.id, peer.meshAddress);
+    const peer = await grantable(ctx, await ctx.db.get(peerId));
+    if (peer === null) continue;
+    peers.set(peer.id, peer);
     if (link.providerNodeId === nodeId) {
       const target = `127.0.0.1:${link.providerPort}`;
       const previous = expose.get(link.name);
@@ -210,13 +208,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
         target,
         allowed_peers: [],
       };
-      if (!exposure.allowed_peers.includes(peer.meshAddress.id))
-        exposure.allowed_peers.push(peer.meshAddress.id);
+      if (!exposure.allowed_peers.includes(peer.id)) exposure.allowed_peers.push(peer.id);
       expose.set(link.name, exposure);
     } else {
       const next = {
         name: link.name,
-        peer: peer.meshAddress.id,
+        peer: peer.id,
         service: link.name,
         // A service reaches its dependency at host.docker.internal:<localPort>, which
         // `--add-host host.docker.internal:host-gateway` resolves to the Docker bridge gateway.
@@ -233,7 +230,14 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     }
   }
   const self = await ctx.db.get(nodeId);
-  const listeners = [...outgoing.values()].toSorted((a, b) => a.name.localeCompare(b.name));
+  const ingress = await ingressFor(ctx, nodeId, self?.placementRoles?.includes("gateway") ?? false);
+  for (const peer of ingress.peers) peers.set(peer.id, peer);
+  for (const name of [...ingress.exposures.map((e) => e.name), ...ingress.links.map((l) => l.name)])
+    if (expose.has(name) || outgoing.has(name))
+      throw new ConvexError("Mesh link name collides with an ingress name");
+  const listeners = [...outgoing.values(), ...ingress.links].toSorted((a, b) =>
+    a.name.localeCompare(b.name),
+  );
   return {
     // Version 2 adds a scoped listener, `bridge:<port>`, which a version-1 Infra Agent cannot
     // bind. It refuses a version it does not know and keeps its last snapshot, so it fails closed;
@@ -245,12 +249,135 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
       relays: self?.meshAddress?.relay_urls ?? [],
       n0_fallback: false,
     },
-    exposures: [...expose.values()]
-      .map((e) => ({ ...e, allowed_peers: e.allowed_peers.toSorted() }))
-      .toSorted((a, b) => a.name.localeCompare(b.name)),
+    exposures: [
+      ...[...expose.values()].map((e) => ({ ...e, allowed_peers: e.allowed_peers.toSorted() })),
+      ...ingress.exposures,
+    ].toSorted((a, b) => a.name.localeCompare(b.name)),
     links: listeners,
+    // Present only on a gateway Node: the routes its proxy serves, under the same revision as the
+    // links that carry them. An absent `ingress` means "serve no routes".
+    ...(ingress.routes === null ? {} : { ingress: { routes: ingress.routes } }),
   };
 }
+
+type MeshAddress = NonNullable<Doc<"nodes">["meshAddress"]>;
+
+/**
+ * A Node's mesh address, if it may be granted anything: its endpoint key is proven and it still
+ * holds a live credential. Revoking the last credential also clears the endpoint
+ * (nodes.revokeCredential); the credential check keeps a revoked Node out even if a row predates
+ * that rule.
+ */
+async function grantable(ctx: QueryCtx, node: Doc<"nodes"> | null): Promise<MeshAddress | null> {
+  if (
+    !node?.meshAddress ||
+    node.endpointProvenAt === undefined ||
+    node.endpointId !== node.meshAddress.id ||
+    !(await hasLiveCredential(ctx, node._id))
+  )
+    return null;
+  return node.meshAddress;
+}
+
+/**
+ * The ingress part of a Node's snapshot (infra/ingress.ts). An App Node gets, per routed App, an
+ * exposure whose `allowed_peers` are exactly the grantable gateways. A gateway gets one link per
+ * route and the route table; a route whose Node cannot be granted stays in the table with no
+ * upstream, so the proxy answers 503 rather than 404 for an App that exists. A route served on the
+ * gateway itself needs no link.
+ */
+async function ingressFor(ctx: QueryCtx, nodeId: Id<"nodes">, isGateway: boolean) {
+  const none = {
+    peers: [] as MeshAddress[],
+    exposures: [] as IngressExposure[],
+    links: [] as IngressLink[],
+    routes: isGateway ? ([] as { host: string; upstream: string | null }[]) : null,
+  };
+  const nodes = await ctx.db.query("nodes").take(1001);
+  if (nodes.length > 1000) throw new ConvexError("Ingress exceeds the 1000-Node snapshot limit");
+  const gatewayNodes = nodes.filter((n) => n.placementRoles?.includes("gateway"));
+  if (gatewayNodes.length === 0) return none;
+  const rows = await ctx.db.query("appRoutes").take(INGRESS_ROUTE_LIMIT + 1);
+  if (rows.length > INGRESS_ROUTE_LIMIT)
+    throw new ConvexError(`Ingress exceeds the ${INGRESS_ROUTE_LIMIT}-route snapshot limit`);
+  const routes = rows.filter(
+    (r) => isRouteLabel(r.name) && Number.isInteger(r.port) && r.port > 0 && r.port <= 65535,
+  );
+  const ports = ingressPorts(routes.map((r) => ({ name: r.name, createdAt: r._creationTime })));
+  const peers = new Map<string, MeshAddress>();
+  const exposures: IngressExposure[] = [];
+  const links: IngressLink[] = [];
+
+  // Provider side: this Node hosts routed Apps, and the gateways (other than itself) reach them.
+  const hosted = routes.filter((r) => r.nodeId === nodeId);
+  if (hosted.length > 0) {
+    const allowed: MeshAddress[] = [];
+    for (const gateway of gatewayNodes) {
+      if (gateway._id === nodeId) continue;
+      const address = await grantable(ctx, gateway);
+      if (address !== null) allowed.push(address);
+    }
+    if (allowed.length > 0) {
+      for (const peer of allowed) peers.set(peer.id, peer);
+      const ids = allowed.map((p) => p.id).toSorted();
+      for (const route of hosted)
+        exposures.push({
+          name: ingressServiceName(route.name),
+          target: `127.0.0.1:${route.port}`,
+          allowed_peers: ids,
+          max_connections: INGRESS_MAX_CONNECTIONS,
+        });
+    }
+  }
+
+  // Consumer side: this Node is a gateway and links to every routed App's Node.
+  if (!isGateway) return { peers: [...peers.values()], exposures, links, routes: null };
+  const table: { host: string; upstream: string | null }[] = [];
+  const appNodes = new Map<Id<"nodes">, MeshAddress | null>();
+  for (const route of routes) {
+    if (route.nodeId === nodeId) {
+      table.push({ host: route.name, upstream: `127.0.0.1:${route.port}` });
+      continue;
+    }
+    if (!appNodes.has(route.nodeId))
+      appNodes.set(route.nodeId, await grantable(ctx, await ctx.db.get(route.nodeId)));
+    const target = appNodes.get(route.nodeId) ?? null;
+    if (target === null) {
+      table.push({ host: route.name, upstream: null });
+      continue;
+    }
+    peers.set(target.id, target);
+    const listen = `127.0.0.1:${ports.get(route.name)}`;
+    const name = ingressServiceName(route.name);
+    links.push({
+      name,
+      peer: target.id,
+      service: name,
+      listen,
+      max_connections: INGRESS_MAX_CONNECTIONS,
+    });
+    table.push({ host: route.name, upstream: listen });
+  }
+  return {
+    peers: [...peers.values()],
+    exposures,
+    links,
+    routes: table.toSorted((a, b) => a.host.localeCompare(b.host)),
+  };
+}
+type IngressExposure = {
+  name: string;
+  target: string;
+  allowed_peers: string[];
+  max_connections: number;
+};
+type IngressLink = {
+  name: string;
+  peer: string;
+  service: string;
+  listen: string;
+  max_connections: number;
+};
 export const state = internalQuery({
   args: { credential: v.string(), revision: v.optional(v.string()) },
   handler: async (ctx, args) => {
