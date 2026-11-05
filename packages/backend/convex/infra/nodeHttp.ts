@@ -104,7 +104,15 @@ export function registerNodeRoutes(http: HttpRouter) {
             "commands/claim": ["commandId", "owner"],
             "commands/renew": ["commandId", "owner", "epoch"],
             "commands/payload": ["commandId", "owner", "epoch"],
-            "commands/result": ["commandId", "owner", "epoch", "outcome", "spec", "output", "truncated"],
+            "commands/result": [
+              "commandId",
+              "owner",
+              "epoch",
+              "outcome",
+              "spec",
+              "output",
+              "truncated",
+            ],
           };
           if (
             Object.keys(b).some((k) => !fields[path].includes(k)) ||

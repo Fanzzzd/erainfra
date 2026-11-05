@@ -104,7 +104,11 @@ function fields(
       want === "object"
         ? value !== null && typeof value === "object" && !Array.isArray(value)
         : typeof value === want;
-    if (!ok) return { ok: false, error: `${key} must be ${want === "object" ? "an object" : `a ${want}`}` };
+    if (!ok)
+      return {
+        ok: false,
+        error: `${key} must be ${want === "object" ? "an object" : `a ${want}`}`,
+      };
   }
   for (const key of required) {
     if (body[key] === undefined) return { ok: false, error: `${key} is required` };
@@ -336,7 +340,9 @@ export function registerInfraRoutes(http: HttpRouter) {
               name: rest[1],
               ...(service === null ? {} : { service }),
             });
-            return result.ok ? apiJson({ app, name: rest[1], ...result.value }, 200) : refused(result.error);
+            return result.ok
+              ? apiJson({ app, name: rest[1], ...result.value }, 200)
+              : refused(result.error);
           },
         };
       return null;
@@ -423,7 +429,13 @@ export function registerInfraRoutes(http: HttpRouter) {
       if (!check.ok) return apiError(400, "invalid_request", check.error);
       const result = await ctx.runMutation(internal.infra.logs.request, {
         caller,
-        ...(body as { app?: string; service?: string; node?: string; unit?: string; lines?: number }),
+        ...(body as {
+          app?: string;
+          service?: string;
+          node?: string;
+          unit?: string;
+          lines?: number;
+        }),
       });
       if (!result.ok) return refused(result.error);
       return apiJson(
@@ -456,7 +468,10 @@ export function registerInfraRoutes(http: HttpRouter) {
                     "No log tail with that id for this token: it was read, it expired, or it never existed",
                   );
                 case "pending":
-                  return apiJson({ logs: { id, state: "pending", expiresAt: iso(tail.expiresAt) } }, 202);
+                  return apiJson(
+                    { logs: { id, state: "pending", expiresAt: iso(tail.expiresAt) } },
+                    202,
+                  );
                 default:
                   return apiJson({ logs: { id, ...tail } }, 200);
               }

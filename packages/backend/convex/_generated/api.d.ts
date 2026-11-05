@@ -72,6 +72,7 @@ import type * as infra_pipeline from "../infra/pipeline.js";
 import type * as infra_plan from "../infra/plan.js";
 import type * as infra_spec from "../infra/spec.js";
 import type * as infra_logs from "../infra/logs.js";
+import type * as infra_logOutput from "../infra/logOutput.js";
 import type * as infra_operator from "../infra/operator.js";
 import type * as infra_operatorRoutes from "../infra/operatorRoutes.js";
 import type * as installScript from "../installScript.js";
@@ -167,6 +168,7 @@ declare const fullApi: ApiFromModules<{
   "infra/plan": typeof infra_plan;
   "infra/spec": typeof infra_spec;
   "infra/logs": typeof infra_logs;
+  "infra/logOutput": typeof infra_logOutput;
   "infra/operator": typeof infra_operator;
   "infra/operatorRoutes": typeof infra_operatorRoutes;
   installScript: typeof installScript;

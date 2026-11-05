@@ -1011,7 +1011,9 @@ ${c.bold("ai")}
   chats [search <q>|show <id>]    browse / full-text search every past AI session
   chats autosync                  keep syncing automatically (launchd/cron, every 15 min)
   mcp                             MCP server over stdio (for Claude Code / Codex):
-                                  claude mcp add portless -- portless mcp`);
+                                  claude mcp add portless -- portless mcp
+
+${c.dim("portless talks to a Hub. With state in Convex (connect-convex Nodes), use the erainfra CLI: erainfra --help")}`);
   },
 };
 

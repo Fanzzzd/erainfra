@@ -11,7 +11,7 @@ import {
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
 import { assertAppLease } from "./leases";
-import { recordLogOutput } from "./logs";
+import { recordLogOutput } from "./logOutput";
 import { requireNode } from "./nodes";
 import { COMMAND_TTL_MS, commandOutcome, nodeCommand, validateOperation } from "./nodeCommandModel";
 import { secretsForNodeDeploy } from "./secrets";

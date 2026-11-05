@@ -260,6 +260,8 @@ export type LinkView = Awaited<ReturnType<typeof listLinkViews>>[number];
  * `state` is derived, not observed: Convex does not see traffic, only endpoint proofs and
  * heartbeats. `active` means both ends are on the mesh and heartbeating.
  */
+const nodeLabel = (n: Node | null) => n?.name ?? "a removed Node";
+
 export async function listLinkViews(ctx: QueryCtx, now: number) {
   const cache = new Map<Id<"nodes">, { node: Node | null; ready: boolean }>();
   const about = async (id: Id<"nodes">) => {
@@ -281,7 +283,12 @@ export async function listLinkViews(ctx: QueryCtx, now: number) {
       createdBy: l.createdBy ?? null,
     })),
     ...apps.flatMap((a) =>
-      a.links.map((l) => ({ ...l, kind: "app" as const, app: a.name, createdBy: "deploy" as const })),
+      a.links.map((l) => ({
+        ...l,
+        kind: "app" as const,
+        app: a.name,
+        createdBy: "deploy" as const,
+      })),
     ),
   ];
   const views = [];
@@ -291,16 +298,15 @@ export async function listLinkViews(ctx: QueryCtx, now: number) {
     const transport = provider.ready && consumer.ready ? ("mesh" as const) : ("legacy" as const);
     let state: "active" | "degraded" | "pending" = "active";
     let reason: string | null = null;
-    const label = (n: Node | null) => n?.name ?? "a removed Node";
     if (transport === "legacy") {
       state = "pending";
-      const missing = [provider, consumer].filter((e) => !e.ready).map((e) => label(e.node));
+      const missing = [provider, consumer].filter((e) => !e.ready).map((e) => nodeLabel(e.node));
       reason = `${missing.join(" and ")} ${missing.length > 1 ? "have" : "has"} no proven mesh endpoint (Hub mode, no sidecar, or credential revoked)`;
     } else {
       const silent = [provider, consumer].filter((e) => !isNodeLive(e.node?.lastSeenAt, now));
       if (silent.length > 0) {
         state = "degraded";
-        reason = `${silent.map((e) => label(e.node)).join(" and ")} stopped heartbeating`;
+        reason = `${silent.map((e) => nodeLabel(e.node)).join(" and ")} stopped heartbeating`;
       }
     }
     views.push({
@@ -314,8 +320,7 @@ export async function listLinkViews(ctx: QueryCtx, now: number) {
       localPort: link.localPort,
       // Where the consumer listens: a standalone link on loopback, an App link on the Docker
       // bridge gateway its containers reach as host.docker.internal (nodeState.ts).
-      listen:
-        link.kind === "app" ? `bridge:${link.localPort}` : `127.0.0.1:${link.localPort}`,
+      listen: link.kind === "app" ? `bridge:${link.localPort}` : `127.0.0.1:${link.localPort}`,
       transport,
       state,
       reason,
@@ -399,7 +404,9 @@ export async function declareLink(
     (l) => l.name !== name && l.consumerNodeId === consumer._id && l.localPort === localPort,
   );
   if (clash !== undefined) {
-    throw new ConvexError(`${consumer.name} already listens on port ${localPort} for ${clash.name}`);
+    throw new ConvexError(
+      `${consumer.name} already listens on port ${localPort} for ${clash.name}`,
+    );
   }
   if (existing === null && standalone.length >= MAX_STANDALONE_LINKS) {
     throw new ConvexError(`A fleet carries at most ${MAX_STANDALONE_LINKS} standalone links`);
@@ -522,7 +529,10 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
       await insertNodeCommand(ctx, {
         nodeId,
         idempotencyKey: `${removal}:${container}`,
-        command: { kind: "operate", operation: { name: "container.remove", args: { name: container } } },
+        command: {
+          kind: "operate",
+          operation: { name: "container.remove", args: { name: container } },
+        },
       });
       queuedCommands.push({ node: node.name, container });
     }
@@ -725,23 +735,28 @@ export const apiRevoke = internalMutation({
   args: { caller: apiCallerValidator, node: v.string(), credential: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "node.admin");
-    return await audited(ctx, { actor, action: "nodes.revokeCredential", target: args.node }, async () => {
-      const node = await requireNodeNamed(ctx, args.node);
-      const credentials = await ctx.db
-        .query("nodeCredentials")
-        .withIndex("by_node", (q) => q.eq("nodeId", node._id))
-        .take(50);
-      const chosen =
-        args.credential === undefined
-          ? credentials.filter((c) => c.revokedAt === undefined)
-          : credentials.filter((c) => c._id === args.credential || c.hint === args.credential);
-      if (args.credential !== undefined && chosen.length === 0) {
-        throw new ConvexError(`${node.name} has no credential ${args.credential}`);
-      }
-      const revoked = [];
-      for (const c of chosen) if (await revokeNodeCredential(ctx, c._id, actor)) revoked.push(c.hint);
-      return { node: node.name, revoked };
-    });
+    return await audited(
+      ctx,
+      { actor, action: "nodes.revokeCredential", target: args.node },
+      async () => {
+        const node = await requireNodeNamed(ctx, args.node);
+        const credentials = await ctx.db
+          .query("nodeCredentials")
+          .withIndex("by_node", (q) => q.eq("nodeId", node._id))
+          .take(50);
+        const chosen =
+          args.credential === undefined
+            ? credentials.filter((c) => c.revokedAt === undefined)
+            : credentials.filter((c) => c._id === args.credential || c.hint === args.credential);
+        if (args.credential !== undefined && chosen.length === 0) {
+          throw new ConvexError(`${node.name} has no credential ${args.credential}`);
+        }
+        const revoked = [];
+        for (const c of chosen)
+          if (await revokeNodeCredential(ctx, c._id, actor)) revoked.push(c.hint);
+        return { node: node.name, revoked };
+      },
+    );
   },
 });
 
@@ -749,11 +764,15 @@ export const apiResetEndpoint = internalMutation({
   args: { caller: apiCallerValidator, node: v.string() },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "node.admin");
-    return await audited(ctx, { actor, action: "nodes.resetEndpoint", target: args.node }, async () => {
-      const node = await requireNodeNamed(ctx, args.node);
-      await resetNodeEndpoint(ctx, node._id, actor);
-      return { node: node.name };
-    });
+    return await audited(
+      ctx,
+      { actor, action: "nodes.resetEndpoint", target: args.node },
+      async () => {
+        const node = await requireNodeNamed(ctx, args.node);
+        await resetNodeEndpoint(ctx, node._id, actor);
+        return { node: node.name };
+      },
+    );
   },
 });
 

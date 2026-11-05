@@ -219,7 +219,12 @@ describe("Nodes", () => {
     const actions = (await f.audit()).map((r) => [r.actor, r.action, r.target, r.outcome]);
     expect(actions).toEqual([
       ["token:ci-admin", "nodes.enroll", "edge-1", "success"],
-      ["token:ci-admin", "nodes.revokeCredential", expect.stringMatching(/^erainfra_node_/), "success"],
+      [
+        "token:ci-admin",
+        "nodes.revokeCredential",
+        expect.stringMatching(/^erainfra_node_/),
+        "success",
+      ],
       ["token:ci-admin", "nodes.resetEndpoint", "edge-1", "success"],
     ]);
   });
@@ -247,7 +252,9 @@ describe("Nodes", () => {
     expect(revoked.body.revoked).toEqual([hint]);
     const [node] = (await f.call("GET", "/nodes", f.read)).body.nodes;
     expect(node).toMatchObject({ liveCredentials: 1, endpoint: { proven: true } });
-    expect((await f.call("POST", "/nodes/edge-1/revoke", f.admin, { credential: "nope" })).status).toBe(404);
+    expect(
+      (await f.call("POST", "/nodes/edge-1/revoke", f.admin, { credential: "nope" })).status,
+    ).toBe(404);
   });
 });
 
@@ -255,8 +262,11 @@ describe("env", () => {
   it("sets, lists masked and unsets with a structured scope, never returning a value", async () => {
     const f = await fixture();
     expect(
-      (await f.call("PUT", "/apps/shop/env", f.admin, { vars: { DATABASE_URL: "postgres://s3cret" } }))
-        .status,
+      (
+        await f.call("PUT", "/apps/shop/env", f.admin, {
+          vars: { DATABASE_URL: "postgres://s3cret" },
+        })
+      ).status,
     ).toBe(200);
     const set = await f.call("PUT", "/apps/shop/env", f.admin, {
       vars: { API_KEY: "k-123" },
@@ -273,12 +283,14 @@ describe("env", () => {
 
     // Unsetting the App-wide name leaves the service's alone, and the reverse.
     expect((await f.call("DELETE", "/apps/shop/env/API_KEY", f.admin)).body.removed).toBe(false);
-    expect((await f.call("DELETE", "/apps/shop/env/API_KEY?service=web", f.admin)).body.removed).toBe(
-      true,
-    );
+    expect(
+      (await f.call("DELETE", "/apps/shop/env/API_KEY?service=web", f.admin)).body.removed,
+    ).toBe(true);
     expect((await f.call("GET", "/apps/shop/env", f.read)).body.env.services).toEqual({});
 
-    expect((await f.call("PUT", "/apps/shop/env", f.admin, { vars: { "1BAD": "x" } })).status).toBe(400);
+    expect((await f.call("PUT", "/apps/shop/env", f.admin, { vars: { "1BAD": "x" } })).status).toBe(
+      400,
+    );
     expect((await f.call("PUT", "/apps/shop/env", f.admin, { vars: { A: 1 } })).status).toBe(400);
     expect((await f.call("DELETE", "/apps/shop/env/A?scope=web", f.admin)).status).toBe(400);
 
@@ -341,7 +353,11 @@ describe("links", () => {
     expect((await f.call("DELETE", "/links/node-a-8080-node-b", f.admin)).status).toBe(200);
     expect((await f.call("GET", "/links", f.read)).body.links).toEqual([]);
     expect((await f.call("DELETE", "/links/node-a-8080-node-b", f.admin)).status).toBe(404);
-    expect((await f.audit()).filter((r) => r.action.startsWith("mesh.")).map((r) => [r.action, r.outcome])).toEqual([
+    expect(
+      (await f.audit())
+        .filter((r) => r.action.startsWith("mesh."))
+        .map((r) => [r.action, r.outcome]),
+    ).toEqual([
       ["mesh.link", "success"],
       ["mesh.unlink", "success"],
       ["mesh.unlink", "deny"],
@@ -353,24 +369,48 @@ describe("links", () => {
     await liveNode(f, "node-a");
     await liveNode(f, "node-b");
     const link = (body: Record<string, unknown>) => f.call("POST", "/links", f.admin, body);
-    expect((await link({ provider: "node-a", providerPort: 5432, consumer: "node-b", name: "db" })).status).toBe(201);
+    expect(
+      (await link({ provider: "node-a", providerPort: 5432, consumer: "node-b", name: "db" }))
+        .status,
+    ).toBe(201);
     // Same consumer port under another name.
-    const clash = await link({ provider: "node-a", providerPort: 6000, consumer: "node-b", localPort: 5432 });
+    const clash = await link({
+      provider: "node-a",
+      providerPort: 6000,
+      consumer: "node-b",
+      localPort: 5432,
+    });
     expect(clash.status).toBe(400);
     expect(clash.body.error.message).toContain("already listens on port 5432");
-    expect((await link({ provider: "node-a", providerPort: 1, consumer: "node-a" })).status).toBe(400);
-    expect((await link({ provider: "node-a", providerPort: 70000, consumer: "node-b" })).status).toBe(400);
-    expect((await link({ provider: "ghost", providerPort: 1, consumer: "node-b" })).status).toBe(404);
-    expect((await link({ provider: "node-a", providerPort: 1, consumer: "node-b", name: "Bad_Name" })).status).toBe(400);
+    expect((await link({ provider: "node-a", providerPort: 1, consumer: "node-a" })).status).toBe(
+      400,
+    );
+    expect(
+      (await link({ provider: "node-a", providerPort: 70000, consumer: "node-b" })).status,
+    ).toBe(400);
+    expect((await link({ provider: "ghost", providerPort: 1, consumer: "node-b" })).status).toBe(
+      404,
+    );
+    expect(
+      (await link({ provider: "node-a", providerPort: 1, consumer: "node-b", name: "Bad_Name" }))
+        .status,
+    ).toBe(400);
     // Re-declaring a name re-points it, as on the Hub.
-    const again = await link({ provider: "node-a", providerPort: 5433, consumer: "node-b", name: "db" });
+    const again = await link({
+      provider: "node-a",
+      providerPort: 5433,
+      consumer: "node-b",
+      name: "db",
+    });
     expect(again.body.link.replaced).toBe(true);
     // A link the deploy pipeline manages is not the operator's to re-point.
     await f.t.run(async (ctx) => {
       const row = await ctx.db.query("meshLinks").first();
       await ctx.db.patch(row!._id, { createdBy: "deploy" });
     });
-    expect((await link({ provider: "node-a", providerPort: 1, consumer: "node-b", name: "db" })).status).toBe(400);
+    expect(
+      (await link({ provider: "node-a", providerPort: 1, consumer: "node-b", name: "db" })).status,
+    ).toBe(400);
   });
 });
 
@@ -399,7 +439,11 @@ describe("Apps", () => {
       url: "https://shop.apps.example.test",
     });
     const status = await f.call("GET", "/apps/shop", f.read);
-    expect(status.body.app).toMatchObject({ name: "shop", deployments: [], env: { app: [], services: {} } });
+    expect(status.body.app).toMatchObject({
+      name: "shop",
+      deployments: [],
+      env: { app: [], services: {} },
+    });
     expect((await f.call("GET", "/apps/nope", f.read)).status).toBe(404);
 
     const removed = await f.call("DELETE", "/apps/shop", f.admin);
@@ -412,7 +456,10 @@ describe("Apps", () => {
     expect(queued.map((c) => c.command)).toEqual([
       { kind: "operate", operation: { name: "container.remove", args: { name: "shop-web" } } },
       { kind: "operate", operation: { name: "container.remove", args: { name: "shop-worker" } } },
-      { kind: "operate", operation: { name: "container.network.remove", args: { name: "shop-net" } } },
+      {
+        kind: "operate",
+        operation: { name: "container.network.remove", args: { name: "shop-net" } },
+      },
     ]);
     const left = await f.t.run(async (ctx) => ({
       apps: await ctx.db.query("apps").collect(),
@@ -448,29 +495,32 @@ describe("Apps", () => {
     expect((await f.call("DELETE", "/apps/shop", f.admin)).status).toBe(409);
     expect(await f.t.run((ctx) => ctx.db.query("apps").collect())).toHaveLength(1);
     expect(await f.t.run((ctx) => ctx.db.query("nodeCommands").collect())).toEqual([]);
-    expect((await f.audit()).filter((r) => r.action === "apps.remove").map((r) => r.outcome)).toEqual([
-      "deny",
-      "deny",
-    ]);
+    expect(
+      (await f.audit()).filter((r) => r.action === "apps.remove").map((r) => r.outcome),
+    ).toEqual(["deny", "deny"]);
     expect((await f.call("DELETE", "/apps/ghost", f.admin)).status).toBe(404);
   });
 });
 
-describe("log tails", () => {
-  async function request(f: Fixture, body: Record<string, unknown>, token = f.admin) {
-    return await f.call("POST", "/logs", token, body);
-  }
-  async function runOnNode(f: Fixture, credential: string, report: Record<string, unknown>) {
-    const { commands } = await (await f.node("commands", credential)).json();
-    expect(commands).toHaveLength(1);
-    expect(commands[0].kind).toBe("logs");
-    const claim = await (await f.node("commands/claim", credential, { commandId: commands[0].id, owner: "o" })).json();
-    const ids = { commandId: commands[0].id, owner: "o", epoch: claim.epoch };
-    const payload = await (await f.node("commands/payload", credential, ids)).json();
-    const result = await f.node("commands/result", credential, { ...ids, ...report });
-    return { payload, result };
-  }
+async function request(f: Fixture, body: Record<string, unknown>, token = f.admin) {
+  return await f.call("POST", "/logs", token, body);
+}
 
+/** Claim the one queued logs command as the Node, read its payload and report `report`. */
+async function runOnNode(f: Fixture, credential: string, report: Record<string, unknown>) {
+  const { commands } = await (await f.node("commands", credential)).json();
+  expect(commands).toHaveLength(1);
+  expect(commands[0].kind).toBe("logs");
+  const claim = await (
+    await f.node("commands/claim", credential, { commandId: commands[0].id, owner: "o" })
+  ).json();
+  const ids = { commandId: commands[0].id, owner: "o", epoch: claim.epoch };
+  const payload = await (await f.node("commands/payload", credential, ids)).json();
+  const result = await f.node("commands/result", credential, { ...ids, ...report });
+  return { payload, result };
+}
+
+describe("log tails", () => {
   it("delivers a bounded tail once, to the requesting token only", async () => {
     const f = await fixture();
     const a = await liveNode(f, "node-a");
@@ -529,11 +579,15 @@ describe("log tails", () => {
     expect((await request(f, { app: "shop", service: "web", lines: 1001 })).status).toBe(400);
     expect((await request(f, { app: "shop", service: "web", lines: 0 })).status).toBe(400);
     // Several services: the request must name one.
-    expect((await request(f, { app: "shop" })).body.error.message).toContain("name one (web, worker)");
+    expect((await request(f, { app: "shop" })).body.error.message).toContain(
+      "name one (web, worker)",
+    );
     expect((await request(f, { app: "shop", service: "db" })).status).toBe(400);
     expect((await request(f, { app: "ghost" })).status).toBe(404);
     expect((await request(f, { node: "node-a", unit: "sshd" })).status).toBe(400);
-    expect((await request(f, { app: "shop", node: "node-a", unit: "portless-agent" })).status).toBe(400);
+    expect((await request(f, { app: "shop", node: "node-a", unit: "portless-agent" })).status).toBe(
+      400,
+    );
     expect((await request(f, { app: "shop", service: "web", argv: "x" })).status).toBe(400);
 
     // A Node that never connected to Convex (still on the Hub) is refused up front.
@@ -559,7 +613,9 @@ describe("log tails", () => {
     expect((await f.call("GET", `/logs/${asked.body.logs.id}`, f.admin)).status).toBe(202);
 
     // Output is accepted only from a logs command.
-    const denied = (await f.audit()).filter((r) => r.action === "logs.request" && r.outcome === "deny");
+    const denied = (await f.audit()).filter(
+      (r) => r.action === "logs.request" && r.outcome === "deny",
+    );
     expect(denied).toHaveLength(8);
   });
 
@@ -609,7 +665,9 @@ describe("log tails", () => {
       idempotencyKey: "hostname",
       command: { kind: "operate", operation: { name: "system.hostname", args: {} } },
     });
-    const claim = await (await f.node("commands/claim", a.credential, { commandId: id, owner: "o" })).json();
+    const claim = await (
+      await f.node("commands/claim", a.credential, { commandId: id, owner: "o" })
+    ).json();
     const result = await f.node("commands/result", a.credential, {
       commandId: id,
       owner: "o",

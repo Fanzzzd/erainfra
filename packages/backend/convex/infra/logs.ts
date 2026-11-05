@@ -25,8 +25,7 @@ import { isNodeLive } from "./policy";
 /** The most lines one tail returns. `docker logs --tail` is capped at 1000 by the allowlist. */
 export const MAX_LOG_LINES = 1000;
 export const DEFAULT_LOG_LINES = 100;
-/** The most output kept, from the end. The Node truncates; Convex refuses anything larger. */
-export const MAX_LOG_BYTES = 128 * 1024;
+export { MAX_LOG_BYTES } from "./logOutput";
 /** How long an unread tail lives. Long enough to wait behind a deploy step, short for a secret. */
 export const LOG_TTL_MS = 5 * 60_000;
 
@@ -100,7 +99,10 @@ async function resolveTarget(
   return { nodeId: node._id, target: { kind: "unit", unit: input.unit } };
 }
 
-function operationFor(target: Target, lines: number): { name: string; args: Record<string, string> } {
+function operationFor(
+  target: Target,
+  lines: number,
+): { name: string; args: Record<string, string> } {
   return target.kind === "container"
     ? { name: "container.logs", args: { name: target.container, lines: String(lines) } }
     : { name: "service.logs", args: { unit: target.unit, lines: String(lines) } };
@@ -121,7 +123,8 @@ export const request = internalMutation({
   },
   handler: async (ctx, { caller, ...args }) => {
     const { actor } = requireTokenPermission(caller, "node.run");
-    const describe = args.app ?? (args.node === undefined ? undefined : `${args.node}/${args.unit}`);
+    const describe =
+      args.app ?? (args.node === undefined ? undefined : `${args.node}/${args.unit}`);
     let resolved: { nodeId: Id<"nodes">; target: Target; lines: number; node: Doc<"nodes"> };
     try {
       const lines = args.lines ?? DEFAULT_LOG_LINES;
@@ -175,7 +178,12 @@ export const request = internalMutation({
       action: "logs.request",
       target: describe!,
       outcome: "attempt",
-      meta: { logTailId: id, node: resolved.node.name, target: resolved.target, lines: resolved.lines },
+      meta: {
+        logTailId: id,
+        node: resolved.node.name,
+        target: resolved.target,
+        lines: resolved.lines,
+      },
     });
     return {
       ok: true as const,
@@ -239,7 +247,11 @@ async function discard(ctx: MutationCtx, row: Doc<"logTails">) {
   if (row.commandId === undefined) return;
   const command = await ctx.db.get(row.commandId);
   if (command !== null && (command.status === "pending" || command.status === "running")) {
-    await ctx.db.patch(command._id, { status: "cancelled", unsettled: false, finishedAt: Date.now() });
+    await ctx.db.patch(command._id, {
+      status: "cancelled",
+      unsettled: false,
+      finishedAt: Date.now(),
+    });
   }
 }
 
@@ -253,47 +265,3 @@ export const expire = internalMutation({
     return null;
   },
 });
-
-/**
- * Called from nodeCommands.report for a `logs` command, in the same transaction as the result.
- * `output` is base64 so arbitrary bytes survive JSON; it is decoded as UTF-8 with replacement.
- */
-export async function recordLogOutput(
-  ctx: MutationCtx,
-  command: Doc<"nodeCommands">,
-  result: { outcome: "success" | "failure" | "unknown"; output?: string; truncated?: boolean },
-) {
-  const row = await ctx.db
-    .query("logTails")
-    .withIndex("by_command", (q) => q.eq("commandId", command._id))
-    .unique();
-  // Expired or already read: nothing to keep, and the output is dropped.
-  if (row === null || row.state !== "pending") return;
-  if (result.outcome !== "success") {
-    await ctx.db.patch(row._id, { state: "failed" });
-    return;
-  }
-  const bytes = decodeBase64(result.output ?? "");
-  if (bytes === null || bytes.length > MAX_LOG_BYTES) {
-    throw new ConvexError("Log output is not base64 of at most 128 KiB");
-  }
-  await ctx.db.patch(row._id, {
-    state: "ready",
-    text: new TextDecoder("utf-8", { fatal: false }).decode(bytes),
-    truncated: result.truncated === true,
-  });
-}
-
-/** The longest base64 text MAX_LOG_BYTES encodes to. */
-export const MAX_LOG_BASE64 = Math.ceil(MAX_LOG_BYTES / 3) * 4;
-
-function decodeBase64(text: string) {
-  if (text.length > MAX_LOG_BASE64 || !/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0) {
-    return null;
-  }
-  try {
-    return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
-  } catch {
-    return null;
-  }
-}
