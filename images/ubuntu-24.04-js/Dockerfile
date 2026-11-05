@@ -156,6 +156,14 @@ RUN install -d \
 
 # Populate the exact tool-cache layout actions/setup-node probes. Workflows can
 # keep using the official action without downloading Node on every fresh VM.
+#
+# pnpm keeps its default store, under the runner's home, exactly as on
+# ubuntu-latest. The image used to point it at /runner-cache/pnpm, a
+# Profile-local volume that no executor mounts any more (ADR 0002: nothing
+# writable survives a job). The override outlived the volume and cost more than
+# nothing: actions/cache versions an entry by its path, so a store saved on a
+# hosted runner could never be restored here, and every job reinstalled from
+# the registry.
 RUN case "$TARGETARCH" in \
       amd64) node_arch=x64; node_sha=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307 ;; \
       arm64) node_arch=arm64; node_sha=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8 ;; \
@@ -174,14 +182,6 @@ RUN case "$TARGETARCH" in \
   && ln -s "$node_dir/bin/npm" /usr/local/bin/npm \
   && ln -s "$node_dir/bin/npx" /usr/local/bin/npx \
   && npm install --global --prefix /usr/local "pnpm@${PNPM_VERSION}" \
-  && install -d -o runner -g docker /home/runner/.config/pnpm /runner-cache/pnpm \
-  && printf 'storeDir: /runner-cache/pnpm\nverifyStoreIntegrity: true\n' \
-    > /home/runner/.config/pnpm/config.yaml \
-  && printf 'store-dir=/runner-cache/pnpm\nverify-store-integrity=true\n' \
-    > /home/runner/.config/pnpm/rc \
-  && chown runner:docker \
-    /home/runner/.config/pnpm/config.yaml \
-    /home/runner/.config/pnpm/rc \
   && node --version \
   && pnpm --version \
   && chown -R runner:docker /opt/hostedtoolcache

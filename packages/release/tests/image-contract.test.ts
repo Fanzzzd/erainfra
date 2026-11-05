@@ -48,12 +48,14 @@ describe("Linux Image Release action cache", () => {
     assert.match(guest, /ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/);
   });
 
-  it("puts pnpm in the Profile-local trusted cache mount", () => {
-    assert.match(dockerfile, /storeDir: \/runner-cache\/pnpm/);
-    assert.match(dockerfile, /verifyStoreIntegrity: true/);
-    assert.match(dockerfile, /> \/home\/runner\/\.config\/pnpm\/config\.yaml/);
-    assert.match(dockerfile, /store-dir=\/runner-cache\/pnpm/);
-    assert.match(dockerfile, /verify-store-integrity=true/);
-    assert.match(dockerfile, /> \/home\/runner\/\.config\/pnpm\/rc/);
+  it("leaves pnpm's store where ubuntu-latest has it", () => {
+    // actions/cache versions an entry by its path, so a relocated store can
+    // never restore an entry a hosted runner saved.
+    const instructions = dockerfile
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    assert.doesNotMatch(instructions, /runner-cache/);
+    assert.doesNotMatch(instructions, /store-?[dD]ir/);
   });
 });

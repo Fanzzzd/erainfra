@@ -75,7 +75,10 @@ test "$(readlink /etc/localtime)" = '/usr/share/zoneinfo/Etc/UTC'
 # The point of tzdata is that a NAMED zone resolves rather than falling back to
 # UTC. Asia/Tokyo observes no DST, so this is the same answer on every date.
 test "$(TZ=Asia/Tokyo date +%z)" = '+0900'
-test "$(sudo -u runner HOME=/home/runner pnpm config get store-dir)" = '/runner-cache/pnpm'
-test "$(stat -c '%U:%G' /runner-cache/pnpm)" = 'runner:docker'
+# No store-dir override: pnpm's default store, under the runner's home, is what
+# ubuntu-latest has, and actions/cache keys an entry by its path.
+store_dir=$(sudo -u runner HOME=/home/runner pnpm config get store-dir)
+case "$store_dir" in '' | undefined | /home/runner/*) ;; *) echo "pnpm store-dir is overridden: $store_dir" >&2; exit 1 ;; esac
+test ! -e /runner-cache
 test "$(stat -c '%a' /etc/sudoers.d/runner)" = 440
 ! getent shadow root | cut -d: -f2 | grep -Eq '^([^!*]|$)'
