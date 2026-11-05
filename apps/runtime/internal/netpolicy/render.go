@@ -197,8 +197,8 @@ func (p Policy) ExpectedRules() map[string][]string {
 	return rules
 }
 
-// RuntimeSets are the per-guest sets the runtime owns. Verify requires each to
-// exist but never inspects its elements, which are live guest state.
+// RuntimeSets are the per-guest sets the runtime owns. Verify checks their
+// definitions but never inspects their elements, which are live guest state.
 func RuntimeSets() []string {
 	return []string{
 		ObservedSetName, RestrictedSetName, AllowCIDRSetName, AllowDNSSetName, FlowSetName, BlockedSetName,

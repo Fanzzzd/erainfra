@@ -69,6 +69,15 @@ restart.
 | `job-network-policy` failed after an upgrade                           | The table is from an older runtime. Re-run the host provisioner.                                                                                                                                                |
 | Worker shows degraded with "network.egress does not match"             | The Profile's egress changed after the Worker last reported. It clears on the next readiness refresh.                                                                                                           |
 
+Readiness checks the live rule matches, operators, set references, verdicts and DNS redirect
+port, plus chain priorities and policies and set definitions. Keeping a rule's comment while
+changing its effect fails `job-network-policy`. Counters, handles and live element expiry do not
+change the policy.
+
+If CNI reuses an address while teardown is still running, registration waits for that address's
+kernel cleanup. A failed cleanup refuses boot at that address for every Profile, including public
+Profiles, until a retry purges the old permissions. Other addresses do not wait behind it.
+
 To check by hand on a Worker (root), while an allowlist job runs:
 
 ```bash
