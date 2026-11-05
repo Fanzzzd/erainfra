@@ -22,6 +22,37 @@ async function registerProfile(t: TestConvex<typeof schema>) {
   });
 }
 
+describe("Profile registration", () => {
+  it("clears cache read permission when a current registration disables cache facts, but preserves legacy settings", async () => {
+    const t = convexTest(schema, modules);
+    const registration = {
+      name: "rc-linux-js",
+      scaleSetName: "rc-linux-js",
+      ...CONTRACT,
+      minRunners: 0,
+      maxRunners: 4,
+      githubConfigUrl: "https://github.com/acme/widgets",
+    };
+    await t.mutation(internal.controllerApi.registerProfile, {
+      ...registration,
+      githubCacheFacts: true,
+      labels: ["custom"],
+    });
+    // A controller predating these fields must not erase them.
+    await registerProfile(t);
+    expect(await t.run((ctx) => ctx.db.query("profiles").unique())).toMatchObject({
+      githubCacheFacts: true,
+      labels: ["custom"],
+    });
+    // Go omits a false bool on the wire. A current registration therefore has
+    // to clear the permission explicitly, not leave the previous true value.
+    await t.mutation(internal.controllerApi.registerProfile, registration);
+    const stored = await t.run((ctx) => ctx.db.query("profiles").unique());
+    expect(stored?.githubCacheFacts).toBe(false);
+    expect(stored?.labels).toBeUndefined();
+  });
+});
+
 describe("scale-set Attempt protocol", () => {
   it("creates an idempotent active Attempt without returning JIT", async () => {
     const t = convexTest(schema, modules);

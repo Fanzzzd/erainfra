@@ -76,14 +76,15 @@ export const registerProfile = internalMutation({
       ...args,
       // A controller that predates these fields sends none. Keep what a newer one published rather
       // than erase the settings a standby depends on.
-      ...(args.githubConfigUrl === undefined
-        ? {
-            githubConfigUrl: existing?.githubConfigUrl,
-            githubCacheFacts: existing?.githubCacheFacts,
-            runnerGroup: existing?.runnerGroup,
-            labels: existing?.labels,
-          }
-        : {}),
+      githubConfigUrl: args.githubConfigUrl ?? existing?.githubConfigUrl,
+      // Current registrations replace the whole GitHub contract. In particular Go omits a false
+      // bool, so an absent flag must clear a previously granted cache-read permission.
+      githubCacheFacts:
+        args.githubConfigUrl === undefined
+          ? existing?.githubCacheFacts
+          : args.githubCacheFacts === true,
+      runnerGroup: args.githubConfigUrl === undefined ? existing?.runnerGroup : args.runnerGroup,
+      labels: args.githubConfigUrl === undefined ? existing?.labels : args.labels,
       fitPolicy: args.fitPolicy ?? "balanced",
       warmPool: args.warmPool ?? 0,
       // Public is stored as no field at all, the same shape every Profile
