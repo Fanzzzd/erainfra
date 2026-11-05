@@ -742,6 +742,25 @@ else
   emit env_proxy_set no
 fi
 
+# What a guest with the job cache redirect installed hands every job (ADR 0012):
+# the cache host pinned in /etc/hosts, and three variables pointing the clients
+# that ignore the system store at the interceptor's CA. Values are reduced to
+# set/unset because the paths are the guest's to choose; that they exist at all
+# is the difference from ubuntu-latest.
+for trust_var in NODE_EXTRA_CA_CERTS REQUESTS_CA_BUNDLE SSL_CERT_FILE; do
+  trust_key=env_$(printf '%s' "$trust_var" | tr '[:upper:]' '[:lower:]')
+  if [ -n "$(printenv "$trust_var" 2>/dev/null || true)" ]; then
+    emit "$trust_key" set
+  else
+    emit "$trust_key" unset
+  fi
+done
+if grep -q '# erainfra-cache-interceptor$' /etc/hosts 2>/dev/null; then
+  emit cache_host_pinned yes
+else
+  emit cache_host_pinned no
+fi
+
 # ---------------------------------------------------------------------------
 # Tooling a workflow may reasonably assume
 # ---------------------------------------------------------------------------

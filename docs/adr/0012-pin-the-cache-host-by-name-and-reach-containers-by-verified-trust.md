@@ -1,4 +1,4 @@
-# ADR 0011: Pin the cache host by name, and reach containers only by verified trust
+# ADR 0012: Pin the cache host by name, and reach containers only by verified trust
 
 - Status: Accepted
 - Date: 2026-11-05
@@ -50,7 +50,8 @@ CA is trusted.**
 - **On the guest itself**, the cache host is pinned in `/etc/hosts` to the
   interceptor at `100.64.0.1:443`. Every process on the guest, as any user,
   resolves through that file and trusts the CA through the system store
-  (OpenSSL, Go, .NET, curl) or `NODE_EXTRA_CA_CERTS` (the runner's Node). The
+  (OpenSSL, Go, .NET, curl) or the trust variables listed under Consequences
+  (Node, Python requests, httpx), kept across `sudo` by a drop-in. The
   interceptor reaches GitHub through a resolver that never reads `/etc/hosts`:
   it records the cache host's addresses and CNAME target before the pin is
   written, then resolves the CNAME target, which nothing pins. No packet rule
@@ -95,19 +96,32 @@ pin cannot be removed) stops the watcher and with it the redirect.
   Docker layer cache needs two action swaps, and actuated's mirror needs a
   workflow step, so the opt-in is within what workflows moving from either
   already accept.
-- **Processes run as root are now redirected too**, where the UID rule excluded
-  them. They trust the CA through the system store. A root process with its
-  own bundled trust store and no `NODE_EXTRA_CA_CERTS` (`sudo node`, Python
-  `requests` with certifi, a JVM) fails TLS to the cache host. The UID rule had
-  the same failure for the runner user, so this widens the set of users, not
-  the kind of client.
+- **Every client on the guest is redirected, as any user, and has to trust the
+  CA.** The cache host also serves Artifacts v4, so a client that does not
+  trust it fails artifact calls as well as cache calls. While the redirect is
+  installed the runner is handed `NODE_EXTRA_CA_CERTS` (the CA, for Node),
+  `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` (the rebuilt system bundle, for
+  Python requests, pip, httpx and OpenSSL builds with their own default path),
+  and a sudoers drop-in keeps all three across `sudo`. OpenSSL, Go, .NET and
+  curl already read the system store. Each variable is a measured difference
+  from ubuntu-latest with an allowlist reason, so variables that would cover
+  no additional client (`CURL_CA_BUNDLE`, `SSL_CERT_DIR`) are not set. What
+  remains uncovered is a client with its own root list and no variable for a
+  PEM file: the JVM, and binaries built with compiled-in roots. The README
+  gives a one-line `keytool` opt-in, and a one-line opt-out that removes the
+  guest pin for the rest of a job.
+- **Non-cache traffic is a passthrough.** Everything outside the CacheService
+  path, artifacts included, is forwarded with its method, path, query,
+  headers and body unchanged and without `X-Forwarded-*`. Compression is left
+  to the client and GitHub: the forward transport neither adds
+  `Accept-Encoding` nor decodes a reply on its own.
 - **The residual race is a few milliseconds per host-network container.** A
   host-network container that does not trust the CA carries the guest's pin
   from its start until the watcher removes it. A process that calls the cache
   host in that window fails TLS once.
-- **The conformance fingerprint gains one fact to allowlist** when a cache is
-  configured: an `/etc/hosts` line ending `# erainfra-cache-interceptor`, as
-  ADR 0008's Consequences anticipated.
+- **The conformance fingerprint measures what the redirect changes**:
+  `cache_host_pinned` and the three trust variables, each allowlisted with its
+  reason, as ADR 0008's Consequences anticipated.
 
 ## Considered and rejected
 

@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
 )
 
 const (
@@ -191,12 +192,13 @@ func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath str
 	if metadata.CacheServiceV2 != "" {
 		env = append(env, "ACTIONS_CACHE_SERVICE_V2="+metadata.CacheServiceV2)
 	}
-	// When the in-guest cache interceptor is up, the runner's Node cache client
-	// has to trust the leaf it serves. Node ships its own trust store and ignores
-	// the system one update-ca-certificates rebuilt, so it is pointed at the CA
-	// directly. Empty when there is no interceptor, and empty changes nothing.
+	// When the in-guest cache interceptor is up, every client the job runs has
+	// to trust the leaf it serves. The system store already holds the CA; these
+	// point the clients that ignore it (Node, Python requests, httpx) at the CA
+	// or the rebuilt bundle. guestcache.TrustEnv says which and why. Empty when
+	// there is no interceptor, and empty changes nothing.
 	if cacheTrustAnchorPath != "" {
-		env = append(env, "NODE_EXTRA_CA_CERTS="+cacheTrustAnchorPath)
+		env = append(env, guestcache.TrustEnv(cacheTrustAnchorPath)...)
 	}
 	return env
 }

@@ -533,7 +533,7 @@ is that interception, for the Firecracker fleet (ADR 0008, ADR 0009).
 A guest that is handed a cache pins GitHub's one cache host in its `/etc/hosts` to an interceptor on
 `100.64.0.1:443`, terminates that host's TLS locally against a CA it minted for this boot, and
 forwards the cache path to this service carrying a runner-auth bearer; everything else goes straight
-to GitHub (ADR 0011 says why the redirect is a name pin and not a packet rule). It works whichever
+to GitHub (ADR 0012 says why the redirect is a name pin and not a packet rule). It works whichever
 way the §7 measurement came back, because it never relies on an environment variable surviving into
 an action step, and it is a guest mechanism, so it needs nothing in `provision-docker.sh`. A guest
 handed no cache runs exactly as one always did — direct to GitHub — so every part of this is inert
@@ -629,8 +629,10 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 Dispatch one job that saves and restores a cache. In the service log (§5) a `cache entry saved`
 followed by a hit on the next run, both under `blobs/<owner>/<repo>/`, is the whole chain working:
 bearer minted, facts pushed, scope resolved, TLS terminated in the guest. In the guest, the runner's
-environment carries `NODE_EXTRA_CA_CERTS` pointing at the interceptor's CA and `/etc/hosts` ends with
-a line marked `# erainfra-cache-interceptor`; their absence means the redirect did not come up and
+environment carries `NODE_EXTRA_CA_CERTS` pointing at the interceptor's CA, `REQUESTS_CA_BUNDLE`
+and `SSL_CERT_FILE` pointing at `/etc/ssl/certs/ca-certificates.crt`, `/etc/sudoers.d/erainfra-cache`
+keeps those three across `sudo`, and `/etc/hosts` ends with a line marked
+`# erainfra-cache-interceptor`. Their absence means the redirect did not come up and
 the job fell back to GitHub, which is a slower success, never a failure. The guest journal
 (`journalctl -u runner-center-guest`) says why: `job cache redirect disabled: ...` at claim, or
 `job cache redirect withdrawn: ...` if it came down mid-job.

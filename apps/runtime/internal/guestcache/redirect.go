@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -42,6 +44,12 @@ type RedirectConfig struct {
 	// Watch starts the container watcher for the minted CA. Required: without
 	// it a host-network container would inherit the guest's pin unseen.
 	Watch func(ctx context.Context, caPEM []byte) (ContainerWatcher, error)
+	// SudoersDir is /etc/sudoers.d, where a drop-in keeps TrustEnv's variables
+	// across sudo while the redirect is up. Empty skips it (tests that do not
+	// exercise it). ValidateSudoers checks a staged drop-in (visudo -cf) and is
+	// required when SudoersDir is set.
+	SudoersDir      string
+	ValidateSudoers func(ctx context.Context, path string) error
 	// Discover finds the real upstream before the pin hides it. Nil means
 	// DiscoverUpstream.
 	Discover func(ctx context.Context, host string) (*Upstream, error)
@@ -106,6 +114,13 @@ func StartRedirect(ctx context.Context, cfg RedirectConfig) (_ *Redirect, err er
 	if err := hostspin.UnpinFile(cfg.HostsFile); err != nil {
 		return nil, fmt.Errorf("clear a stale cache pin: %w", err)
 	}
+	// Same for its sudoers drop-in: the trust variables are kept across sudo
+	// only while a redirect is installed.
+	if cfg.SudoersDir != "" {
+		if err := os.Remove(filepath.Join(cfg.SudoersDir, sudoersDropIn)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("clear a stale sudoers drop-in: %w", err)
+		}
+	}
 	upstream, err := discover(ctx, cacheca.CacheHost)
 	if err != nil {
 		return nil, err
@@ -144,6 +159,14 @@ func StartRedirect(ctx context.Context, cfg RedirectConfig) (_ *Redirect, err er
 		return nil, fmt.Errorf("watch containers: %w", err)
 	}
 	unwind = append(unwind, watcher.Close)
+
+	if cfg.SudoersDir != "" {
+		removeDropIn, err := InstallSudoersDropIn(ctx, cfg.SudoersDir, cfg.ValidateSudoers)
+		if err != nil {
+			return nil, err
+		}
+		unwind = append(unwind, removeDropIn)
+	}
 
 	if err := hostspin.PinFile(cfg.HostsFile, pinAddr, cacheca.CacheHost); err != nil {
 		return nil, fmt.Errorf("pin %s: %w", cacheca.CacheHost, err)

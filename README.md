@@ -663,10 +663,34 @@ On a Firecracker Profile whose Workers run EraInfra's job cache, `actions/cache`
 reach it only when they opt in, because a container image does not trust the guest's per-boot CA: a
 buildx builder for `type=gha` adds one `driver-opts` line, and a `container:` job mounts the CA. Both
 are in [the job cache runbook](docs/runbooks/operate-the-job-cache.md#docker-builds-and-container-jobs),
-and [ADR 0011](docs/adr/0011-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)
+and [ADR 0012](docs/adr/0012-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)
 says why. Workers can also give guests a Docker Hub pull-through mirror
 ([runbook](docs/runbooks/operate-the-registry-mirror.md)); dockerd and buildx builders use it with
 no workflow change and fall back to Docker Hub when it is down.
+
+The cache host also serves Artifacts v4 (`upload-artifact` and `download-artifact` v4+), so every
+client on the guest that talks to it has to trust the guest's CA. The interceptor serves only the
+cache path; every other request, artifacts included, goes to GitHub with its method, path, query,
+headers and body unchanged, and GitHub's reply comes back the same way. While the redirect is
+installed, the guest makes these clients trust the CA with no workflow change, as the runner user
+and through `sudo`:
+
+- OpenSSL, Go, .NET and curl, through the system store `update-ca-certificates` rebuilds;
+- Node, through `NODE_EXTRA_CA_CERTS`;
+- Python `requests` and `pip`, through `REQUESTS_CA_BUNDLE`, and `httpx` and conda's OpenSSL,
+  through `SSL_CERT_FILE`, both pointing at the rebuilt system bundle.
+
+A Java client is not covered: the JVM reads its own truststore and has no variable for a PEM file.
+A job whose JVM calls the cache host itself, a Gradle build cache plugin that uses the Actions cache
+for example, adds one step after `setup-java`, which does nothing where no cache is configured:
+
+```bash
+f=/usr/local/share/ca-certificates/erainfra-cache.crt; [ -f "$f" ] && keytool -importcert -noprompt -cacerts -storepass changeit -alias erainfra-cache -file "$f"
+```
+
+The same holds for a binary with a compiled-in root list, such as a Rust tool built with
+`webpki-roots`. Any job can instead send all of its own cache and artifact traffic straight to
+GitHub for the rest of the job: `sudo sed -i '/# erainfra-cache-interceptor$/d' /etc/hosts`.
 
 ### Fall back to GitHub-hosted runners
 

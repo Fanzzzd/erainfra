@@ -48,8 +48,9 @@ const (
 // Every process on the guest itself resolves through /etc/hosts, so the
 // runner, its actions, and anything they start, as any user, reach the
 // interceptor. They trust it through the system store that
-// update-ca-certificates rebuilds (OpenSSL, Go, .NET, curl) or, for Node,
-// through NODE_EXTRA_CA_CERTS. The interceptor's own forward to GitHub
+// update-ca-certificates rebuilds (OpenSSL, Go, .NET, curl) or through the
+// variables in guestcache.TrustEnv (Node, Python requests, httpx), which a
+// sudoers drop-in keeps across sudo. The interceptor's own forward to GitHub
 // resolves through guestcache.Upstream, which never reads /etc/hosts, so it
 // cannot loop back into itself.
 func startCacheRedirect(ctx context.Context, md guest.Metadata) (caPath string, stop func(), err error) {
@@ -79,6 +80,12 @@ func startCacheRedirect(ctx context.Context, md guest.Metadata) (caPath string, 
 				ReadFile: guestdocker.ReadInContainer,
 				Logf:     logf,
 			})
+		},
+		// sudo resets the environment, so without this `sudo pip install` or
+		// `sudo node` would drop the trust variables and fail TLS as root.
+		SudoersDir: "/etc/sudoers.d",
+		ValidateSudoers: func(ctx context.Context, path string) error {
+			return runCmd(ctx, "visudo", "-cf", path)
 		},
 		Logf: logf,
 	})

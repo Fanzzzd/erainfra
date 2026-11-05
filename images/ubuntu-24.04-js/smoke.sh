@@ -23,8 +23,10 @@ docker buildx version >/dev/null
 # started, with `systemctl reload docker.service`: dockerd re-reads
 # registry-mirrors on SIGHUP, and the unit's ExecReload is what sends it.
 grep -Eqs '^ExecReload=.*HUP' /usr/lib/systemd/system/docker.service /lib/systemd/system/docker.service
-# The job cache redirect adds its listen address to loopback with ip(8).
+# The job cache redirect adds its listen address to loopback with ip(8), and
+# checks its sudoers drop-in with visudo before sudo can read it.
 command -v ip >/dev/null
+command -v visudo >/dev/null
 command -v node >/dev/null
 command -v npm >/dev/null
 command -v pnpm >/dev/null

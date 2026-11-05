@@ -115,9 +115,17 @@ func (u *Upstream) candidates(ctx context.Context) []net.IP {
 
 // Transport is an HTTP transport whose connections go through DialContext.
 // TLS still verifies against, and sends SNI for, the cache host's own name.
+//
+// Compression is disabled so the forward is a passthrough. Left on, Go's
+// transport adds Accept-Encoding: gzip to a request whose client asked for no
+// encoding and then decodes the reply, so the client would receive bytes
+// GitHub never sent it. With it off, a client's Accept-Encoding reaches
+// GitHub as the client wrote it and the reply comes back encoded or not
+// exactly as GitHub chose.
 func (u *Upstream) Transport() *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DialContext = u.DialContext
+	transport.DisableCompression = true
 	return transport
 }
