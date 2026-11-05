@@ -99,10 +99,56 @@ export const revokeCredential = mutation({
         target: credential.hint,
         outcome: "success",
       });
+      // Revoking the last live credential revokes the Node's mesh identity with it. Re-enrolling
+      // the Node issues a new credential, and the Node must then prove its endpoint key again
+      // before any peer is granted to it. Rotation (issue the new credential, then revoke the old
+      // one) never reaches this branch, so it keeps the endpoint.
+      const node = await ctx.db.get(credential.nodeId);
+      if (node !== null && !(await hasLiveCredential(ctx, node._id))) {
+        await clearEndpoint(ctx, node._id);
+        if (node.endpointId !== undefined) {
+          await appendAudit(ctx, {
+            actor,
+            action: "nodes.resetEndpoint",
+            target: node.name,
+            outcome: "success",
+            meta: { endpointId: node.endpointId, reason: "last credential revoked" },
+          });
+        }
+      }
     }
     return null;
   },
 });
+
+/** Whether any unrevoked credential is bound to this Node. */
+export async function hasLiveCredential(ctx: QueryCtx, nodeId: Id<"nodes">) {
+  const live = await ctx.db
+    .query("nodeCredentials")
+    .withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+    .filter((q) => q.eq(q.field("revokedAt"), undefined))
+    .first();
+  return live !== null;
+}
+
+/**
+ * Forget a Node's endpoint registration and every challenge issued for it, so a challenge signed
+ * before the reset cannot restore the old key afterwards.
+ */
+async function clearEndpoint(ctx: MutationCtx, nodeId: Id<"nodes">) {
+  await ctx.db.patch(nodeId, {
+    endpointId: undefined,
+    endpointAddr: undefined,
+    endpointUpdatedAt: undefined,
+    meshAddress: undefined,
+    endpointProvenAt: undefined,
+  });
+  const pending = await ctx.db
+    .query("nodeEndpointChallenges")
+    .withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+    .take(16);
+  for (const row of pending) await ctx.db.delete(row._id);
+}
 
 /**
  * Clear a Node's registered EndpointId, so it can register a new key. Needed when a Node lost its
@@ -116,13 +162,7 @@ export const resetEndpoint = mutation({
     const { actor } = await requirePermission(ctx, "account.admin");
     const node = await ctx.db.get(args.nodeId);
     if (node === null) throw new ConvexError("No such Node");
-    await ctx.db.patch(node._id, {
-      endpointId: undefined,
-      endpointAddr: undefined,
-      endpointUpdatedAt: undefined,
-      meshAddress: undefined,
-      endpointProvenAt: undefined,
-    });
+    await clearEndpoint(ctx, node._id);
     await appendAudit(ctx, {
       actor,
       action: "nodes.resetEndpoint",

@@ -428,10 +428,9 @@ describe("mesh possession and desired state", () => {
     );
   });
   it("returns only declared peers and per-exposure consumers, in #181's address shape", async () => {
-    const { t, a, b } = await fixture();
-    const c = await t.run((ctx) =>
-      ctx.db.insert("nodes", { name: "unrelated", createdAt: T0, source: "enrolled" }),
-    );
+    const { t, human, a, b } = await fixture();
+    // Enrolled, so it holds a live credential: a peer without one is never granted.
+    const { nodeId: c } = await human.mutation(api.infra.nodes.enroll, { name: "unrelated" });
     await t.run(async (ctx) => {
       for (const [nodeId, hex] of [
         [a.nodeId, "aa"],
