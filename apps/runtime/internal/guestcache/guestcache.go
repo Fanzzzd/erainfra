@@ -138,9 +138,16 @@ func Start(cfg Config) (*Interceptor, error) {
 	return interceptor, nil
 }
 
-// Close stops the interceptor.
+// Close stops the interceptor. The listener is closed here as well as by
+// Shutdown: a Close that lands before the serving goroutine has registered the
+// listener with the server would otherwise leave the port open until that
+// goroutine runs, and a teardown that returns must have stopped listening.
 func (i *Interceptor) Close(ctx context.Context) error {
-	return i.server.Shutdown(ctx)
+	err := i.server.Shutdown(ctx)
+	if closeErr := i.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		err = errors.Join(err, closeErr)
+	}
+	return err
 }
 
 // Wait returns when the interceptor's server stops, with the reason. A caller
