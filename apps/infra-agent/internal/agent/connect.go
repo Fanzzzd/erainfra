@@ -160,8 +160,16 @@ func (r ShellRunner) Deploy(ctx context.Context, image, name string, args []stri
 		defer removeSecretPath(ef)
 		args = append([]string{"--env-file", ef}, args...) // before args, so a platform -e PORT still wins
 	}
-	_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace any prior container with this name
-	runArgs := append([]string{"run", "-d", "--name", name}, args...)
+	// The Hub names a single-container App's container after the App. Replace only that App's.
+	if err := r.ownContainer(ctx, name, name, ""); err != nil {
+		return b.String(), err
+	}
+	if err := r.ownVolumes(ctx, name, args); err != nil {
+		return b.String(), err
+	}
+	_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace the prior container of this App
+	runArgs := append([]string{"run", "-d", "--name", name}, ownershipLabels(name, "")...)
+	runArgs = append(runArgs, args...)
 	runArgs = append(runArgs, image)
 	out, err := r.combinedOutput(exec.CommandContext(ctx, d, runArgs...))
 	b.Write(out)
@@ -199,6 +207,16 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 	}
 	d := r.cli()
 	net := app + "-net"
+	// Every name this App's services take must be this App's before anything is replaced, so a
+	// refusal leaves the Node as it was (ownership.go).
+	for _, s := range services {
+		if err := r.ownContainer(ctx, app+"-"+s.Name, app, s.Name); err != nil {
+			return "", err
+		}
+		if err := r.ownVolumes(ctx, app, s.Args); err != nil {
+			return "", err
+		}
+	}
 	var b strings.Builder
 	// Ensure the shared network. `network create` errors if it already exists — that's fine on
 	// re-deploy, so only surface a failure when the network still isn't there afterwards.
@@ -217,6 +235,7 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 			}
 		}
 		run := []string{"run", "-d", "--name", name, "--network", net, "--network-alias", s.Name, "--restart", "unless-stopped"}
+		run = append(run, ownershipLabels(app, s.Name)...)
 		if len(s.Env) > 0 {
 			ef, err := writeEnvFile(s.Env)
 			if err != nil {
@@ -227,7 +246,7 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 		}
 		run = append(run, s.Args...)
 		run = append(run, s.Image)
-		_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace any prior container with this name
+		_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace this service's prior container
 		out, err := r.combinedOutput(exec.CommandContext(ctx, d, run...))
 		b.Write(out)
 		if err != nil {

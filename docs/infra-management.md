@@ -509,6 +509,63 @@ runs that are waiting, renews their leases and starts queued runs; a Node's repo
 once. The stale-run sweep that replaced the Hub's boot-time `failStale` fails any run whose lease
 lapsed anyway.
 
+### Names and ownership
+
+A deploy derives every runtime name by joining the App's name with another name:
+
+| Name                       | Form                                                            |
+| -------------------------- | --------------------------------------------------------------- |
+| container                  | `<app>-<service>`                                               |
+| built image                | `<registry>/<app>-<service>:<tag>`                              |
+| named volume               | `<app>-<volume>`                                                |
+| network                    | `<app>-net`                                                     |
+| cross-Node mesh link       | first 30 characters of `<app>`, `-`, first 30 of the dependency |
+| route label, `route: true` | `<app>` when one service is routed, otherwise `<app>-<service>` |
+
+App, service and volume names may all contain `-`, so two Apps can derive the same name. App `shop`
+with service `web-api` and App `shop-web` with service `api` both get container `shop-web-api`. App
+`shop` with volume `db-data` and App `shop-db` with volume `data` both get volume `shop-db-data`.
+Deployed Nodes already hold these names, so the scheme does not change. Instead, each name has one
+owner:
+
+- **Planning refuses a taken name.** Convex compares every name the plan derives with the names
+  every other App holds: its App row (containers, volumes from the Docker args, links, routes, and
+  network), its route rows, the plan of any of its runs still in flight, and standalone links. A run
+  whose plan derives a name another App holds fails at planning, before any Node is asked to do
+  anything, with an error that names both Apps and the name. Rename the App, or the service, volume
+  or dependency that derives it. The check is fleet-wide, not per Node, because failover moves
+  services between Nodes. Apps that only share a prefix, such as `shop` and `shop-staging`, deploy
+  normally as long as no derived name is equal.
+- **A route label has an owner.** Each route row records the App and service it belongs to. Only
+  that App may move it, between its services or onto another Node by redeploy or failover. A spec
+  that names another App's label (`route: shop` in App `evil`) fails at planning. Route rows written
+  before ownership was recorded take the owner from the one App row whose service routes at the
+  label, or are a single-container App the Hub deployed when no App row does. When two App rows
+  route at one label, the gateways serve it 503 and log why, and neither App may deploy with it
+  until one of them stops routing there or is removed. The Hub import names each route's owner from
+  the Hub's Apps and refuses a label two Hub Apps route at.
+- **Removal and retirement use exact names.** `apps remove` removes the containers recorded in the
+  App's own row. Given a name with no App row, it removes a container only when the route of that
+  name is a single-container App the Hub deployed. A route label that belongs to another App's
+  service is refused. A deploy cancels the queued failover retirements of exactly the containers it
+  starts, never every container with the App's prefix.
+- **The Infra Agent labels what it creates.** Each container gets `erainfra.app=<app>` and
+  `erainfra.service=<service>`, and each named volume it creates gets `erainfra.app=<app>`. Before
+  replacing a container, the Infra Agent checks that the existing one is this App's service: its
+  labels must match. An unlabelled container is one the Hub created, and it is accepted only when it
+  is attached to `<app>-net` with the service name as its alias, which is how the Hub started every
+  App service, and which no other App's container can match. A single-container App's unlabelled
+  container must be on Docker's default network only. Any other container is refused and left
+  running, and the deploy fails with the reason. A volume labelled for another App is refused. An
+  unlabelled volume is mounted as before, since nothing on it tells which App created it. Planning
+  is what keeps another App from deriving its name.
+
+To adopt a container the Infra Agent refused, first confirm on the Node that it belongs to the App
+being deployed (`docker inspect <name>`, look at its image and networks). Then remove it with
+`docker rm -f <name>` and deploy the App again. The new container carries the labels. The App's
+volumes are not touched. If the container belongs to another App, rename one of the two Apps
+instead.
+
 ### Deploy through the operator API
 
 The routes are on the `/api/v1` operator API with dashboard API tokens. Deploying needs an `admin`
@@ -947,7 +1004,9 @@ forgets its routes, port allocations and App row in the same transaction. Each N
 containers when it next polls; one that is offline does it when it returns. The App's env and git
 bindings stay: unset or unbind them separately. Removal is refused while a deploy or failover of
 the App is queued or holds its lease, and when the App runs on a Node that has not connected to
-Convex. Remove that App on the Hub with `portless remove` until its Node switches.
+Convex. Remove that App on the Hub with `portless remove` until its Node switches. A name that is
+another App's route label, such as `shop-web` for App `shop`'s routed service `web`, is not an App
+and is refused (see [Names and ownership](#names-and-ownership)).
 
 ### Env
 

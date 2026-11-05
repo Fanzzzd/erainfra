@@ -10,6 +10,7 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, query, type MutationCtx } from "../_generated/server";
 import { requirePermission } from "./access";
+import { loadRouteOwner } from "./apps";
 import { appendAudit } from "./auditLog";
 import { bumpCounter, readCounter, writeCounter } from "./counters";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
@@ -275,7 +276,10 @@ export const completeFailover = internalMutation({
         .query("appRoutes")
         .withIndex("by_name", (q) => q.eq("name", s.route!))
         .unique();
-      if (route !== null && route.nodeId === args.fromNodeId) {
+      // Only this App's own route moves with it.
+      if (route === null || route.nodeId !== args.fromNodeId) continue;
+      const owner = await loadRouteOwner(ctx, route);
+      if (owner !== "ambiguous" && owner.app === app.name) {
         await ctx.db.patch(route._id, {
           nodeId: args.toNodeId,
           ...(s.port === undefined ? {} : { port: s.port }),

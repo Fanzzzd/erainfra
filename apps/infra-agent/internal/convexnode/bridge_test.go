@@ -26,7 +26,10 @@ func TestDeployStartsContainersWithTheHostGatewayEntry(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls.log")
 	docker := filepath.Join(dir, "docker")
-	if err := os.WriteFile(docker, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '"+log+"'\n"), 0o755); err != nil {
+	// Nothing exists yet: `inspect` finds no container.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\n" +
+		"[ \"$2\" = inspect ] && [ \"$1\" != image ] && { echo \"Error: No such object: $3\" >&2; exit 1; }\nexit 0\n"
+	if err := os.WriteFile(docker, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	p := Payload{Kind: "deploy", App: "shop", Services: []agent.Service{{

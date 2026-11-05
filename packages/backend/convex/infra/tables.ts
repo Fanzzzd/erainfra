@@ -181,12 +181,18 @@ export const infraTables = {
     .index("by_name", ["name"])
     .index("by_node", ["nodeId"]),
 
-  // Hub `routes`: a public hostname label and the Node, image and port serving it.
+  // Hub `routes`: a public hostname label and the Node, image and port serving it. `app` and
+  // `service` name the owner: only that App may move or replace the row (apps.ts `upsertRoute`).
+  // A row without `service` is a single-container App the Hub deployed, whose container is the
+  // label. Rows written before ownership was recorded have neither; their owner is derived from the
+  // App rows (apps.ts `ownerOfRoute`).
   appRoutes: defineTable({
     name: v.string(),
     nodeId: v.id("nodes"),
     image: v.string(),
     port: v.number(),
+    app: v.optional(v.string()),
+    service: v.optional(v.string()),
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])

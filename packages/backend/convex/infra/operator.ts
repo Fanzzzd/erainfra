@@ -17,7 +17,7 @@ import {
   type QueryCtx,
 } from "../_generated/server";
 import { apiCallerValidator, requirePermission, requireTokenPermission } from "./access";
-import { upsertMeshLink } from "./apps";
+import { isSingleContainerRoute, loadRouteOwner, ownerOfRoute, upsertMeshLink } from "./apps";
 import { appendAudit } from "./auditLog";
 import { insertNodeCommand } from "./nodeCommands";
 import { INGRESS_PORT_END, INGRESS_PORT_START } from "./ingress";
@@ -237,11 +237,11 @@ export async function listAppViews(ctx: QueryCtx, now: number) {
   const names = new Map<Id<"nodes">, Node | null>();
   const apps = await ctx.db.query("apps").take(500);
   const views = await Promise.all(apps.map((app) => appView(ctx, { app }, names, now)));
-  // A route no App row owns is a single-container App the Hub deployed (its legacy path).
-  const owned = new Set(apps.flatMap((a) => a.services.flatMap((s) => (s.route ? [s.route] : []))));
+  // A route that is its own owner is a single-container App the Hub deployed (its legacy path).
   const routes = await ctx.db.query("appRoutes").take(500);
   for (const route of routes) {
-    if (owned.has(route.name) || apps.some((a) => a.name === route.name)) continue;
+    if (!isSingleContainerRoute(route, ownerOfRoute(route, apps))) continue;
+    if (apps.some((a) => a.name === route.name)) continue;
     views.push(await appView(ctx, { route }, names, now));
   }
   return views.toSorted((a, b) => a.name.localeCompare(b.name));
@@ -258,7 +258,9 @@ export async function appStatus(ctx: QueryCtx, name: string, now: number) {
     .query("appRoutes")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
-  return route === null ? null : await appView(ctx, { route }, names, now);
+  if (route === null || !isSingleContainerRoute(route, await loadRouteOwner(ctx, route)))
+    return null;
+  return await appView(ctx, { route }, names, now);
 }
 
 export type LinkView = Awaited<ReturnType<typeof listLinkViews>>[number];
@@ -491,10 +493,25 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
-  const route = await ctx.db
+  const labelled = await ctx.db
     .query("appRoutes")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
+  // Without an App row, a route of this name is an App only when it is a single-container App the
+  // Hub deployed. A label another App's service routes at (App `shop`'s `shop-web`) is that App's,
+  // and removing it here would remove that App's container.
+  let route: Doc<"appRoutes"> | null = null;
+  if (app === null && labelled !== null) {
+    const owner = await loadRouteOwner(ctx, labelled);
+    if (!isSingleContainerRoute(labelled, owner)) {
+      throw new ConvexError(
+        owner === "ambiguous"
+          ? `No App named ${name}; the route ${name} is claimed by more than one App`
+          : `No App named ${name}; the route ${name} belongs to App "${owner.app}"`,
+      );
+    }
+    route = labelled;
+  }
   if (app === null && route === null) throw new ConvexError(`No App named ${name}`);
 
   const now = Date.now();
@@ -566,14 +583,20 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
     }
   }
 
-  const routes = new Set<string>(route === null ? [] : [route.name]);
-  for (const s of app?.services ?? []) if (s.route) routes.add(s.route);
-  for (const label of routes) {
+  const labels = new Set<string>(labelled === null ? [] : [labelled.name]);
+  for (const s of app?.services ?? []) if (s.route) labels.add(s.route);
+  const routes: string[] = [];
+  for (const label of labels) {
     const row = await ctx.db
       .query("appRoutes")
       .withIndex("by_name", (q) => q.eq("name", label))
       .unique();
-    if (row !== null) await ctx.db.delete(row._id);
+    if (row === null) continue;
+    // Only this App's own route rows go.
+    const owner = await loadRouteOwner(ctx, row);
+    if (owner === "ambiguous" || owner.app !== name) continue;
+    await ctx.db.delete(row._id);
+    routes.push(label);
   }
   if (app !== null) await ctx.db.delete(app._id);
   const ports = await releaseAppPorts(ctx, name);
@@ -582,9 +605,9 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
     action: "apps.remove",
     target: name,
     outcome: "success",
-    meta: { containers: queuedCommands, routes: [...routes], ports },
+    meta: { containers: queuedCommands, routes, ports },
   });
-  return { app: name, containers: queuedCommands, routes: [...routes] };
+  return { app: name, containers: queuedCommands, routes };
 }
 
 // ---------------------------------------------------------------------------

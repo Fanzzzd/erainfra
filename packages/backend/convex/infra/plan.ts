@@ -40,7 +40,11 @@ export interface DeployPlan {
   builds: PlannedBuild[];
 }
 
-/** Mesh link name: unique per (App, dependency), truncated to a valid label. */
+/**
+ * Mesh link name for an App's dependency, truncated to a valid label. Not unique by construction:
+ * the `-` join and the truncation can give two Apps one name, so the pipeline refuses a plan whose
+ * link name another App holds (namespace.ts). The scheme stays: deployed Nodes hold these names.
+ */
 export function linkName(app: string, need: string) {
   return `${app.slice(0, 30)}-${need.slice(0, 30)}`.slice(0, 63);
 }
@@ -84,6 +88,14 @@ export async function planDeploy(input: {
   const crossNeeded = new Set<string>();
   for (const s of spec.services)
     for (const need of s.needs) if (nodeOf.get(s.name) !== nodeOf.get(need)) crossNeeded.add(need);
+  // Port keys are `<app>/<service>` and `<app>/link-<need>`: a service named `link-<need>` would
+  // share its key, and so its port, with the link that surfaces `<need>`.
+  for (const need of crossNeeded)
+    if (spec.services.some((s) => s.name === `link-${need}`))
+      return {
+        ok: false,
+        error: `service "link-${need}": the name is reserved while a service on another Node needs "${need}"`,
+      };
 
   const builds: PlannedBuild[] = [];
   const services: PlannedService[] = [];

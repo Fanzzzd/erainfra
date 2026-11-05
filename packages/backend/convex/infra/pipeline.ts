@@ -28,6 +28,7 @@ import { appendAudit } from "./auditLog";
 import { upsertApp, upsertMeshLink, upsertRoute } from "./apps";
 import { createDeployment } from "./deployments";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
+import { namespaceRefusal } from "./namespace";
 import { insertNodeCommand, type NodeCommand } from "./nodeCommands";
 import { changedNodes, planDeploy } from "./plan";
 import { isNodeLive, isTerminalStage, leaseAdmits, type DeployStage } from "./policy";
@@ -416,6 +417,10 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   }
   if (!planned.ok) return await fail(ctx, run, { error: planned.error });
   const plan = planned.plan;
+  // Every name the plan derives (containers, volumes, network, links, routes) must be this App's
+  // or nobody's (namespace.ts). Checked before anything reaches a Node.
+  const taken = await namespaceRefusal(ctx, run.app, plan);
+  if (taken !== null) return await fail(ctx, run, { error: taken });
   const deployNodeIds =
     before === null
       ? [...new Set(plan.services.map((s) => s.nodeId))]
@@ -439,7 +444,12 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   if (registryError !== null) return await fail(ctx, run, { error: registryError });
   // A container retirement queued for a Node by an earlier failover must not remove what this run
   // is about to start there.
-  for (const nodeId of deployNodeIds) await cancelRetirements(ctx, run.app, nodeId);
+  for (const nodeId of deployNodeIds)
+    await cancelRetirements(
+      ctx,
+      nodeId,
+      plan.services.filter((s) => s.nodeId === nodeId).map((s) => containerName(run.app, s.name)),
+    );
   const stored = { ...plan, deployNodeIds, urls };
   if (plan.builds.length > 0)
     return await moveTo(ctx, run, "building", `building ${plan.builds.length} service(s)`, {
@@ -504,8 +514,15 @@ async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
 
 const retireKey = (run: Id<"appDeployments">, service: string, nodeId: Id<"nodes">) =>
   `${run}:retire-${service}:${nodeId}`;
+const containerName = (app: string, service: string) => `${app}-${service}`;
 
-async function cancelRetirements(ctx: MutationCtx, app: string, nodeId: Id<"nodes">) {
+/**
+ * Cancel the queued retirements of exactly the containers this run starts on a Node. Matched by
+ * exact name, never by an `<app>-` prefix: another App's containers can share that prefix (App
+ * `shop-web`'s are `shop-web-*`), and the namespace check makes each exact name one App's.
+ */
+async function cancelRetirements(ctx: MutationCtx, nodeId: Id<"nodes">, containers: string[]) {
+  const names = new Set(containers);
   const pending = await ctx.db
     .query("nodeCommands")
     .withIndex("by_node_status", (q) => q.eq("nodeId", nodeId).eq("status", "pending"))
@@ -514,7 +531,7 @@ async function cancelRetirements(ctx: MutationCtx, app: string, nodeId: Id<"node
     if (
       row.command.kind === "operate" &&
       row.command.operation.name === "container.remove" &&
-      (row.command.operation.args.name ?? "").startsWith(`${app}-`) &&
+      names.has(row.command.operation.args.name ?? "") &&
       row.idempotencyKey.includes(":retire-")
     )
       await ctx.db.patch(row._id, {
@@ -539,6 +556,13 @@ async function commit(ctx: MutationCtx, run: Run) {
   // one transaction under the App lease epoch. Gateway ingress serves a route only while the two
   // agree with the port allocation (nodeState.ts), so a route never names a port another App holds.
   await assertAppLease(ctx, run.app, run.leaseEpoch!, Date.now());
+  // Planning checked the names. This catches a route or name another writer (a Hub import) took
+  // since: the run fails instead of taking it.
+  const taken = await namespaceRefusal(ctx, run.app, plan);
+  if (taken !== null) {
+    await fail(ctx, run, { error: taken });
+    return;
+  }
   const before = await ctx.db
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", run.app))
@@ -558,6 +582,8 @@ async function commit(ctx: MutationCtx, run: Run) {
         nodeId: s.nodeId ?? plan.nodeId,
         image: s.image,
         port: s.port,
+        app: run.app,
+        service: s.name,
       });
   if (run.operation === "failover" && before !== null) {
     // The lost Node may only be partitioned, still running the old containers. Queue their removal
@@ -572,7 +598,7 @@ async function commit(ctx: MutationCtx, run: Run) {
         idempotencyKey: retireKey(run._id, s.name, lost),
         command: {
           kind: "operate",
-          operation: { name: "container.remove", args: { name: `${run.app}-${s.name}` } },
+          operation: { name: "container.remove", args: { name: containerName(run.app, s.name) } },
         },
       }).catch(() => undefined);
     }

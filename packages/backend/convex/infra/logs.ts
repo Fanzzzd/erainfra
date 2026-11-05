@@ -17,6 +17,7 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, type MutationCtx } from "../_generated/server";
 import { apiCallerValidator, requireTokenPermission } from "./access";
+import { isSingleContainerRoute, loadRouteOwner } from "./apps";
 import { appendAudit } from "./auditLog";
 import { insertNodeCommand } from "./nodeCommands";
 import { validateOperation } from "./nodeCommandModel";
@@ -75,7 +76,9 @@ async function resolveTarget(
       .query("appRoutes")
       .withIndex("by_name", (q) => q.eq("name", input.app!))
       .unique();
-    if (route === null) throw new ConvexError(`No App named ${input.app}`);
+    // Only a route that is its own owner names a container; another App's label does not.
+    if (route === null || !isSingleContainerRoute(route, await loadRouteOwner(ctx, route)))
+      throw new ConvexError(`No App named ${input.app}`);
     if (input.service !== undefined && input.service !== route.name) {
       throw new ConvexError(`${route.name} has no service ${input.service}`);
     }

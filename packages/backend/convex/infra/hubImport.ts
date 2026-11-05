@@ -59,7 +59,15 @@ export const importBatchValidator = v.union(
   v.object({
     kind: v.literal("routes"),
     rows: v.array(
-      v.object({ name: v.string(), node: v.string(), image: v.string(), port: v.number() }),
+      v.object({
+        name: v.string(),
+        node: v.string(),
+        image: v.string(),
+        port: v.number(),
+        // The owner the importer resolved from the Hub's Apps (resolveHubRouteOwners).
+        app: v.string(),
+        service: v.optional(v.string()),
+      }),
     ),
   }),
   v.object({
@@ -254,6 +262,8 @@ export const apply = internalMutation({
             nodeId: await node(ctx, row.node),
             image: row.image,
             port: row.port,
+            app: row.app,
+            ...(row.service === undefined ? {} : { service: row.service }),
           });
         }
         break;
