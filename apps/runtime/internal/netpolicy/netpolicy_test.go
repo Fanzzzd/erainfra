@@ -2,6 +2,7 @@ package netpolicy
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -219,39 +220,56 @@ func TestPublicEgressHasNoDefaultDenyButAllowlistDoes(t *testing.T) {
 // provisioned host.
 func liveTable(t *testing.T, chains map[string][]string, guests, allowed []string) []byte {
 	t.Helper()
-	entries := []any{
-		map[string]any{"table": map[string]any{"family": "inet", "name": TableName}},
-		map[string]any{"set": map[string]any{
-			"family": "inet", "table": TableName, "name": GuestSetName,
-			"elem": prefixElements(guests),
-		}},
-		map[string]any{"set": map[string]any{
-			"family": "inet", "table": TableName, "name": AllowSetName,
-			"elem": prefixElements(allowed),
-		}},
+	body, err := os.ReadFile("testdata/nft-1.0.9-live-table.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range RuntimeSets() {
-		entries = append(entries, map[string]any{"set": map[string]any{
-			"family": "inet", "table": TableName, "name": name,
-		}})
+	var document map[string][]map[string]any
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatal(err)
 	}
-	specs := DefaultPolicy("runner-center").ExpectedChains()
+	entries := []any{}
+	ruleByComment := map[string]map[string]any{}
+	chainByName := map[string]map[string]any{}
+	for _, item := range document["nftables"] {
+		if rule, ok := item["rule"].(map[string]any); ok {
+			ruleByComment[rule["comment"].(string)] = rule
+			continue
+		}
+		if chain, ok := item["chain"].(map[string]any); ok {
+			chainByName[chain["name"].(string)] = chain
+			continue
+		}
+		if set, ok := item["set"].(map[string]any); ok {
+			switch set["name"] {
+			case GuestSetName:
+				set["elem"] = prefixElements(guests)
+			case AllowSetName:
+				set["elem"] = prefixElements(allowed)
+			}
+		}
+		entries = append(entries, item)
+	}
+	// The host-wide allowlist adds this rule; the public-host fixture does not.
+	ruleByComment[RuleDenyDefault] = map[string]any{
+		"family": "inet", "table": TableName, "chain": "forward", "comment": RuleDenyDefault,
+		"expr": []any{
+			map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"payload": map[string]any{"protocol": "ip", "field": "saddr"}}, "right": "@rc_guests"}},
+			map[string]any{"drop": nil},
+		},
+	}
 	for _, chain := range []string{"forward", RestrictedChain, "prerouting", "input"} {
 		comments, ok := chains[chain]
 		if !ok {
 			continue
 		}
-		description := map[string]any{"family": "inet", "table": TableName, "name": chain}
-		if spec := specs[chain]; spec.Hook != "" {
-			description["type"] = spec.Type
-			description["hook"] = spec.Hook
-			description["policy"] = "accept"
-		}
-		entries = append(entries, map[string]any{"chain": description})
+		entries = append(entries, map[string]any{"chain": chainByName[chain]})
 		for _, comment := range comments {
-			entries = append(entries, map[string]any{"rule": map[string]any{
-				"family": "inet", "table": TableName, "chain": chain, "comment": comment,
-			}})
+			rule := ruleByComment[comment]
+			if rule == nil {
+				rule = map[string]any{"family": "inet", "table": TableName, "chain": chain, "comment": comment}
+			}
+			entries = append(entries, map[string]any{"rule": rule})
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{"nftables": entries})

@@ -171,11 +171,13 @@ func (r *Resolver) answer(ctx context.Context, source netip.Addr, query *dns.Msg
 		// are admitted first. If they cannot be, the answer would be a lie the
 		// guest cannot use: fail the query instead.
 		_, timeout := admitTimeout(longest)
-		if err := r.guard.applier.Apply(ctx, netpolicy.ResolvedBatch(source, admitted, timeout)); err != nil {
-			return failure(query, dns.RcodeServerFailure)
-		}
+		// Remember attempted writes too: cancellation can hide a committed nft
+		// transaction. Idempotent teardown must remove these even after SERVFAIL.
 		for _, address := range admitted {
 			registered.resolved[address] = struct{}{}
+		}
+		if err := r.guard.applier.Apply(ctx, netpolicy.ResolvedBatch(source, admitted, timeout)); err != nil {
+			return failure(query, dns.RcodeServerFailure)
 		}
 	}
 	upstream.Id = query.Id

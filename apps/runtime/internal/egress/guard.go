@@ -41,11 +41,41 @@ type Guard struct {
 	applier  Applier
 	resolver *Resolver
 
-	mu     sync.Mutex
-	guests map[netip.Addr]*guest
+	mu       sync.Mutex
+	guests   map[netip.Addr]*guest
+	barriers map[netip.Addr]*addressBarrier
 	// stale is state whose removal failed. Its address must not carry anyone
 	// else's policy until it is gone.
 	stale map[netip.Addr]netpolicy.GuestEgressState
+}
+
+// addressBarrier fences the complete kernel transition for one address, even
+// while no guest is published or failed cleanup is being recorded. References
+// include waiters so a barrier cannot disappear while another user holds it.
+type addressBarrier struct {
+	mu    sync.Mutex
+	users int
+}
+
+func (g *Guard) lockAddress(address netip.Addr) func() {
+	g.mu.Lock()
+	barrier := g.barriers[address]
+	if barrier == nil {
+		barrier = &addressBarrier{}
+		g.barriers[address] = barrier
+	}
+	barrier.users++
+	g.mu.Unlock()
+	barrier.mu.Lock()
+	return func() {
+		barrier.mu.Unlock()
+		g.mu.Lock()
+		barrier.users--
+		if barrier.users == 0 {
+			delete(g.barriers, address)
+		}
+		g.mu.Unlock()
+	}
 }
 
 // guest is one registered guest. mu serializes the resolver admitting
@@ -66,10 +96,11 @@ type guest struct {
 
 func NewGuard(host netpolicy.Policy, applier Applier) *Guard {
 	guard := &Guard{
-		host:    host,
-		applier: applier,
-		guests:  make(map[netip.Addr]*guest),
-		stale:   make(map[netip.Addr]netpolicy.GuestEgressState),
+		host:     host,
+		applier:  applier,
+		guests:   make(map[netip.Addr]*guest),
+		barriers: make(map[netip.Addr]*addressBarrier),
+		stale:    make(map[netip.Addr]netpolicy.GuestEgressState),
 	}
 	guard.resolver = newResolver(guard, host.Nameservers)
 	return guard
@@ -87,22 +118,32 @@ func (g *Guard) Register(
 	owner string,
 	effective netpolicy.EffectiveEgress,
 ) error {
+	unlock := g.lockAddress(address)
+	defer unlock()
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if previous, ok := g.guests[address]; ok {
-		// host-local handed out an address whose last guest was never torn
-		// down here. Its record is lost, but its permissions must not survive.
-		delete(g.guests, address)
+	previous := g.guests[address]
+	delete(g.guests, address)
+	g.mu.Unlock()
+	if previous != nil {
+		// Closing under the DNS admission lock waits for any in-flight kernel
+		// insertion and captures every permission it installed before closing.
 		previous.mu.Lock()
-		previous.closed = true
-		g.stale[address] = previous.state
+		state := previous.closeLocked()
 		previous.mu.Unlock()
+		g.mu.Lock()
+		g.stale[address] = state
+		g.mu.Unlock()
 	}
-	if state, ok := g.stale[address]; ok {
-		if err := g.purge(ctx, state); err != nil {
+	g.mu.Lock()
+	stale, dirty := g.stale[address]
+	g.mu.Unlock()
+	if dirty {
+		if err := g.purge(ctx, stale); err != nil {
 			return fmt.Errorf("remove stale egress state for %s before reusing it: %w", address, err)
 		}
+		g.mu.Lock()
 		delete(g.stale, address)
+		g.mu.Unlock()
 	}
 	batch, state, err := netpolicy.RegistrationBatch(address, effective)
 	if err != nil {
@@ -112,9 +153,14 @@ func (g *Guard) Register(
 		return nil
 	}
 	if err := g.applier.Apply(ctx, batch); err != nil {
-		// A failed transaction wrote nothing, so there is nothing to undo.
+		// An error may be a lost acknowledgement after an atomic commit.
+		// Keep the full attempted state fenced until an idempotent purge succeeds.
+		g.mu.Lock()
+		g.stale[address] = state
+		g.mu.Unlock()
 		return fmt.Errorf("install %s egress for guest %s: %w", effective.Mode, address, err)
 	}
+	g.mu.Lock()
 	g.guests[address] = &guest{
 		owner:     owner,
 		effective: effective,
@@ -124,6 +170,7 @@ func (g *Guard) Register(
 		names:     make(map[string]*executor.EgressNameSeen),
 		addrNames: make(map[netip.Addr]string),
 	}
+	g.mu.Unlock()
 	return nil
 }
 
@@ -159,6 +206,8 @@ func (g *Guard) listFlows(ctx context.Context, address netip.Addr) (flows, block
 // Claim hands a parked guest to an Attempt. What the guest did while parked
 // belongs to no Attempt, so its record starts empty.
 func (g *Guard) Claim(ctx context.Context, address netip.Addr, previousOwner, owner string) error {
+	unlock := g.lockAddress(address)
+	defer unlock()
 	g.mu.Lock()
 	registered, ok := g.guests[address]
 	g.mu.Unlock()
@@ -190,24 +239,23 @@ func (g *Guard) Claim(ctx context.Context, address netip.Addr, previousOwner, ow
 // that fails is returned as an error and remembered, and the address is purged
 // before it is registered again.
 func (g *Guard) Unregister(ctx context.Context, address netip.Addr, owner string) (*executor.EgressRecord, error) {
-	g.mu.Lock()
-	registered, ok := g.guests[address]
-	if !ok || registered.owner != owner {
-		g.mu.Unlock()
+	unlock := g.lockAddress(address)
+	defer unlock()
+	registered := g.lookup(address)
+	if registered == nil {
 		return nil, nil
 	}
-	delete(g.guests, address)
-	g.mu.Unlock()
-
 	registered.mu.Lock()
-	registered.closed = true
-	state := registered.state
-	for resolved := range registered.resolved {
-		state.Resolved = append(state.Resolved, resolved)
+	if registered.owner != owner {
+		registered.mu.Unlock()
+		return nil, nil
 	}
-	slices.SortFunc(state.Resolved, func(left, right netip.Addr) int { return left.Compare(right) })
+	state := registered.closeLocked()
 	record := registered.recordLocked()
 	registered.mu.Unlock()
+	g.mu.Lock()
+	delete(g.guests, address)
+	g.mu.Unlock()
 
 	flows, blocked, listErr := g.listFlows(ctx, address)
 	if listErr != nil {
@@ -231,6 +279,18 @@ func (g *Guard) Unregister(ctx context.Context, address netip.Addr, owner string
 		g.mu.Unlock()
 	}
 	return record, nil
+}
+
+// closeLocked snapshots all permissions after DNS insertions have drained.
+// The caller holds registered.mu and the address barrier until cleanup ends.
+func (registered *guest) closeLocked() netpolicy.GuestEgressState {
+	registered.closed = true
+	state := registered.state
+	for resolved := range registered.resolved {
+		state.Resolved = append(state.Resolved, resolved)
+	}
+	slices.SortFunc(state.Resolved, func(left, right netip.Addr) int { return left.Compare(right) })
+	return state
 }
 
 // Health reports whether the guard can enforce audit and allowlist egress

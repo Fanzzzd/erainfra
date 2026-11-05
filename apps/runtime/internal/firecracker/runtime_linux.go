@@ -712,7 +712,9 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 	// handler, and the guest runs nothing until InstanceStart, which follows
 	// every FcInit handler. Registering here therefore puts the guest into its
 	// Profile's sets before its first packet, and a guest whose sets cannot be
-	// written never starts.
+	// written never starts. The SDK may already have released a previous VM's
+	// CNI reservation before its lease cleanup runs. Register fences that address
+	// through old kernel cleanup and retries, even for a public replacement.
 	var guestAddress netip.Addr
 	machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.Handler{
 		Name: "erainfra.RegisterGuestEgress",
@@ -1048,10 +1050,10 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 			cancelExit()
 		}
 		if l.guestAddress.IsValid() {
-			// The guest is gone, so its record is complete. A removal that fails
-			// does not fail the job: the guard keeps the state as stale, purges
-			// it before the address is reused, and reports the Worker unhealthy
-			// for audit and allowlist Profiles until it is gone.
+			// SDK Wait includes CNI release, so the address may already have been
+			// allocated again. Guard serializes cleanup and registration per address;
+			// an old owner cannot delete a replacement's state. Failed cleanup keeps
+			// the address fenced from every Profile's boot until its purge succeeds.
 			egressContext, cancelEgress := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			record, err := l.egress.Unregister(egressContext, l.guestAddress, l.egressOwner)
 			cancelEgress()

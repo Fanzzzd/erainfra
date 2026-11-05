@@ -1,6 +1,7 @@
 package netpolicy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -63,33 +64,50 @@ func differingKeys(expected, actual map[string]any) []string {
 }
 
 // nftDocument is the subset of `nft --json list table ...` output the policy
-// depends on. Unknown fields are ignored so a newer nftables release that adds
-// keys does not fail an otherwise correct host.
+// depends on. Volatile handles, counters and live element expiry are not policy.
+// Rule expressions, chain configuration and set definitions are policy.
 type nftDocument struct {
 	Nftables []struct {
-		Table *struct {
-			Family string `json:"family"`
-			Name   string `json:"name"`
+		Metainfo json.RawMessage `json:"metainfo,omitempty"`
+		Table    *struct {
+			Family  string          `json:"family"`
+			Name    string          `json:"name"`
+			Handle  json.RawMessage `json:"handle,omitempty"`
+			Comment string          `json:"comment,omitempty"`
+			Flags   []string        `json:"flags,omitempty"`
 		} `json:"table,omitempty"`
 		Chain *struct {
-			Family string `json:"family"`
-			Table  string `json:"table"`
-			Name   string `json:"name"`
-			Type   string `json:"type"`
-			Hook   string `json:"hook"`
-			Policy string `json:"policy"`
+			Handle   json.RawMessage `json:"handle,omitempty"`
+			Comment  string          `json:"comment,omitempty"`
+			Family   string          `json:"family"`
+			Table    string          `json:"table"`
+			Name     string          `json:"name"`
+			Type     string          `json:"type"`
+			Hook     string          `json:"hook"`
+			Policy   string          `json:"policy"`
+			Priority *int            `json:"prio"`
+			Device   string          `json:"dev"`
+			Flags    []string        `json:"flags"`
 		} `json:"chain,omitempty"`
 		Rule *struct {
-			Family  string `json:"family"`
-			Table   string `json:"table"`
-			Chain   string `json:"chain"`
-			Comment string `json:"comment"`
+			Handle  json.RawMessage `json:"handle,omitempty"`
+			Family  string          `json:"family"`
+			Table   string          `json:"table"`
+			Chain   string          `json:"chain"`
+			Comment string          `json:"comment"`
+			Expr    []any           `json:"expr"`
 		} `json:"rule,omitempty"`
 		Set *struct {
-			Family string `json:"family"`
-			Table  string `json:"table"`
-			Name   string `json:"name"`
-			Elem   []any  `json:"elem"`
+			Handle  json.RawMessage `json:"handle,omitempty"`
+			Comment string          `json:"comment,omitempty"`
+			Family  string          `json:"family"`
+			Table   string          `json:"table"`
+			Name    string          `json:"name"`
+			Elem    []any           `json:"elem"`
+			Type    any             `json:"type"`
+			Flags   []string        `json:"flags"`
+			Timeout int             `json:"timeout"`
+			Size    int             `json:"size"`
 		} `json:"set,omitempty"`
 	} `json:"nftables"`
 }
@@ -100,18 +118,31 @@ type nftDocument struct {
 // the policy installs carries a stable comment, and the check requires each
 // chain to contain exactly its expected comments in order: a removed rule, a
 // reordered rule and an inserted uncommented rule all fail, which is what makes
-// a host's isolation verifiable rather than assumed.
+// a host's isolation verifiable rather than assumed. Each rule's normalized
+// expressions must also match the enforcement contract, not merely its comment.
 func (p Policy) VerifyNftables(listOutput []byte) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
 	var document nftDocument
+	// Reject unknown enforcement fields instead of assuming a newer nft option
+	// is harmless. Expression maps are compared in full below; handles and live
+	// element metadata are deliberately opaque. Unmarshal also rejects trailing
+	// data, which a single Decoder.Decode would otherwise leave unread.
 	if err := json.Unmarshal(listOutput, &document); err != nil {
 		return fmt.Errorf("decode nftables state: %w", err)
 	}
+	decoder := json.NewDecoder(bytes.NewReader(listOutput))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("decode nftables enforcement fields: %w", err)
+	}
 
 	tableFound := false
-	type liveChain struct{ chainType, hook string }
+	type liveChain struct {
+		chainType, hook, policy string
+		priority                *int
+	}
 	chains := map[string]liveChain{}
 	rules := map[string][]string{}
 	sets := map[string][]string{}
@@ -119,13 +150,22 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 		switch {
 		case entry.Table != nil:
 			if entry.Table.Family == "inet" && entry.Table.Name == TableName {
+				if tableFound || len(entry.Table.Flags) != 0 {
+					return fmt.Errorf("nftables table %s has unexpected flags or duplicate metadata", TableName)
+				}
 				tableFound = true
 			}
 		case entry.Chain != nil:
 			if entry.Chain.Family != "inet" || entry.Chain.Table != TableName {
 				continue
 			}
-			chains[entry.Chain.Name] = liveChain{chainType: entry.Chain.Type, hook: entry.Chain.Hook}
+			if _, exists := chains[entry.Chain.Name]; exists {
+				return fmt.Errorf("duplicate nftables chain %q", entry.Chain.Name)
+			}
+			if entry.Chain.Device != "" || len(entry.Chain.Flags) != 0 {
+				return fmt.Errorf("nftables chain %q has unexpected device or flags", entry.Chain.Name)
+			}
+			chains[entry.Chain.Name] = liveChain{chainType: entry.Chain.Type, hook: entry.Chain.Hook, policy: entry.Chain.Policy, priority: entry.Chain.Priority}
 		case entry.Rule != nil:
 			if entry.Rule.Family != "inet" || entry.Rule.Table != TableName {
 				continue
@@ -137,12 +177,25 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 					entry.Rule.Chain,
 				)
 			}
+			if err := verifyExpressions(entry.Rule.Comment, entry.Rule.Expr); err != nil {
+				return err
+			}
 			rules[entry.Rule.Chain] = append(rules[entry.Rule.Chain], entry.Rule.Comment)
 		case entry.Set != nil:
 			if entry.Set.Family != "inet" || entry.Set.Table != TableName {
 				continue
 			}
-			sets[entry.Set.Name] = setPrefixes(entry.Set.Elem)
+			if _, exists := sets[entry.Set.Name]; exists {
+				return fmt.Errorf("duplicate nftables set %q", entry.Set.Name)
+			}
+			if err := verifySetDefinition(entry.Set.Name, entry.Set.Type, entry.Set.Flags, entry.Set.Timeout, entry.Set.Size); err != nil {
+				return err
+			}
+			prefixes := setPrefixes(entry.Set.Elem)
+			if (entry.Set.Name == GuestSetName || entry.Set.Name == AllowSetName) && len(prefixes) != len(entry.Set.Elem) {
+				return fmt.Errorf("nftables set %q contains an unrecognized static permission", entry.Set.Name)
+			}
+			sets[entry.Set.Name] = prefixes
 		}
 	}
 	if !tableFound {
@@ -170,6 +223,19 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 		if live.hook != expected.Hook {
 			return fmt.Errorf("nftables chain %q must hook %q, not %q", chain, expected.Hook, live.hook)
 		}
+		if expected.Hook == "" {
+			if live.priority != nil || live.policy != "" {
+				return fmt.Errorf("regular nftables chain %q has base-chain configuration", chain)
+			}
+		} else {
+			priority := -10
+			if expected.Hook == "prerouting" {
+				priority = -100
+			}
+			if live.priority == nil || *live.priority != priority || live.policy != "accept" {
+				return fmt.Errorf("nftables chain %q has an unexpected priority or policy", chain)
+			}
+		}
 		if !slices.Equal(rules[chain], expected.Rules) {
 			return fmt.Errorf(
 				"nftables chain %q enforces [%s] but this Profile requires [%s]",
@@ -196,9 +262,9 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 	if err := verifySet(sets, AllowSetName, p.allowedOrEmpty()); err != nil {
 		return err
 	}
-	// The per-guest sets hold live state, so only their presence is part of the
-	// contract. A missing one would make every Profile egress rule fail to load
-	// or match nothing.
+	// The per-guest sets hold live state; their definitions, not their elements,
+	// are part of the static contract. A missing one would make Profile egress
+	// rules fail to load or match nothing.
 	for _, name := range RuntimeSets() {
 		if _, ok := sets[name]; !ok {
 			return fmt.Errorf("nftables set %q is missing from table inet %s", name, TableName)
