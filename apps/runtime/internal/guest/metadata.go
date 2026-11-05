@@ -150,7 +150,7 @@ func (c *MetadataClient) fetchOnce(ctx context.Context) (Metadata, error) {
 }
 
 func readResponse(response *http.Response, expectedStatus int) ([]byte, error) {
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if response.StatusCode != expectedStatus {
 		return nil, fmt.Errorf("unexpected HTTP status %d", response.StatusCode)
 	}

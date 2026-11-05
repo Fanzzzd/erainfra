@@ -53,7 +53,7 @@ func cpuInfo() (model string, virtualization string) {
 	if err != nil {
 		return "", ""
 	}
-	defer file.Close()
+	defer file.Close() //nolint:errcheck // read-only file; a close error loses nothing
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		key, value, found := strings.Cut(scanner.Text(), ":")

@@ -205,7 +205,8 @@ func TestHungStoreAnswersUploadsWithinTheTransferBudget(t *testing.T) {
 // against real clients. It is bounded here for the same reason as the hang: a
 // restore that cannot reach the store is a miss.
 func TestUnreachableStoreAnswersRestoresAsAMiss(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,11 +244,12 @@ func TestAStalledRequestBodyIsCutAtTheControlBudget(t *testing.T) {
 	token := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
 
 	address := strings.TrimPrefix(h.http.URL, "http://")
-	conn, err := net.Dial("tcp", address)
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // the test is over; nothing is left to send
 
 	// Announce a body and then never finish it.
 	request := "POST " + v1Path("caches") + " HTTP/1.1\r\n" +

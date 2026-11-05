@@ -419,7 +419,7 @@ func TestRule4DownloadURLIsOneObjectOneMethodAndShortLived(t *testing.T) {
 	}
 
 	// The method is inside the signature, so the same URL cannot write.
-	replay, err := http.NewRequest(http.MethodPut, hit.ArchiveLocation, strings.NewReader("poison"))
+	replay, err := http.NewRequestWithContext(t.Context(), http.MethodPut, hit.ArchiveLocation, strings.NewReader("poison"))
 	if err != nil {
 		t.Fatal(err)
 	}

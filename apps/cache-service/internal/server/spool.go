@@ -248,12 +248,6 @@ func (s *session) block(id string) (stagedBlock, bool) {
 	return block, ok
 }
 
-func (s *session) stagedBytes() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.staged
-}
-
 func (s *session) commit(blob string, size int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

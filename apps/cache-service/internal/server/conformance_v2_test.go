@@ -99,7 +99,7 @@ func urlEscape(value string) string {
 			c == '-' || c == '_' || c == '.' || c == '~':
 			out.WriteByte(c)
 		default:
-			out.WriteString(fmt.Sprintf("%%%02X", c))
+			fmt.Fprintf(&out, "%%%02X", c)
 		}
 	}
 	return out.String()

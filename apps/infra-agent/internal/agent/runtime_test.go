@@ -30,22 +30,23 @@ func TestBuildHeartbeat(t *testing.T) {
 }
 
 func TestBenchmarkTCPReachableAndUnreachable(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	ln, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer ln.Close() //nolint:errcheck // the test is over
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 
-	ok := BenchmarkTCP(ln.Addr().String(), 3, time.Second)
+	ok := BenchmarkTCP(t.Context(), ln.Addr().String(), 3, time.Second)
 	if !ok.Reachable {
 		t.Fatalf("expected reachable target, got %+v", ok)
 	}
@@ -53,7 +54,7 @@ func TestBenchmarkTCPReachableAndUnreachable(t *testing.T) {
 		t.Fatalf("expected non-negative rtt, got %v", ok.RTTms)
 	}
 
-	bad := BenchmarkTCP("127.0.0.1:1", 2, 200*time.Millisecond)
+	bad := BenchmarkTCP(t.Context(), "127.0.0.1:1", 2, 200*time.Millisecond)
 	if bad.Reachable {
 		t.Fatalf("expected unreachable for closed port, got %+v", bad)
 	}

@@ -102,7 +102,8 @@ func unixClient(t *testing.T, runtime executor.Executor) *Client {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(directory) })
 	socket := filepath.Join(directory, "runtime.sock")
-	listener, err := net.Listen("unix", socket)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +195,8 @@ func TestExecuteTimeoutCancelsLeaseAndReturns124(t *testing.T) {
 func TestInvalidRequestDoesNotEchoJITSecret(t *testing.T) {
 	runtime := &fakeExecutor{}
 	response := httptest.NewRecorder()
-	request, err := http.NewRequest(
+	request, err := http.NewRequestWithContext(
+		t.Context(),
 		http.MethodPost,
 		"/v1/execute",
 		strings.NewReader(`{"spec":{"JITConfig":"do-not-echo"},"bootTimeoutSeconds":1,"jobTimeoutSeconds":1}`),

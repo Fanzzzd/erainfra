@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -57,24 +58,25 @@ var dataClient = &http.Client{Timeout: 30 * time.Second}
 
 // ConnectData dials the hub's data channel and serves reverse-proxied requests forever, reconnecting
 // on drop (mirrors Connect's backoff). reg supplies app->port; nil-safe (proxying just 502s).
-func ConnectData(hubURL, token, agentID string, reg *Registry) {
+func ConnectData(ctx context.Context, hubURL, token, agentID string, reg *Registry) {
 	for {
-		if err := connectDataOnce(hubURL, token, agentID, reg); err != nil {
+		if err := connectDataOnce(ctx, hubURL, token, agentID, reg); err != nil {
 			fmt.Printf("[agent/data] disconnected: %v — retrying in 3s\n", err)
 		}
 		time.Sleep(3 * time.Second)
 	}
 }
 
-func connectDataOnce(hubURL, token, agentID string, reg *Registry) error {
+func connectDataOnce(ctx context.Context, hubURL, token, agentID string, reg *Registry) error {
 	h := http.Header{}
 	if token != "" {
 		h.Set("Authorization", "Bearer "+token)
 	}
-	c, _, err := websocket.DefaultDialer.Dial(hubURL, h)
+	c, _, err := websocket.DefaultDialer.DialContext(ctx, hubURL, h)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+	//nolint:errcheck // the connection is being torn down either way; the caller logs the cause
 	defer c.Close()
 	c.SetReadLimit(dataMaxBody + (1 << 20)) // body + framing headroom; bounds memory on a hostile peer
 	d := &dataConn{c: c}
@@ -112,11 +114,11 @@ func connectDataOnce(hubURL, token, agentID string, reg *Registry) error {
 		if m.Type != "req" {
 			continue
 		}
-		go handleProxyReq(d, m, reg) // concurrent: one slow upstream must not block other streams
+		go handleProxyReq(ctx, d, m, reg) // concurrent: one slow upstream must not block other streams
 	}
 }
 
-func handleProxyReq(d *dataConn, m dataReqMsg, reg *Registry) {
+func handleProxyReq(ctx context.Context, d *dataConn, m dataReqMsg, reg *Registry) {
 	sendErr := func(e string) { _ = d.writeJSON(map[string]any{"type": "err", "id": m.ID, "error": e}) }
 
 	if reg == nil {
@@ -135,7 +137,7 @@ func handleProxyReq(d *dataConn, m dataReqMsg, reg *Registry) {
 	}
 	// Target is ALWAYS loopback + the agent-recorded port. The hub frame never carries a host:port.
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, m.Path)
-	req, err := http.NewRequest(strings.ToUpper(m.Method), url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(m.Method), url, bytes.NewReader(body))
 	if err != nil {
 		sendErr("bad request: " + err.Error())
 		return
@@ -156,7 +158,7 @@ func handleProxyReq(d *dataConn, m dataReqMsg, reg *Registry) {
 		sendErr("upstream: " + err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	rb, err := io.ReadAll(io.LimitReader(resp.Body, dataMaxBody))
 	if err != nil {
 		sendErr("read upstream: " + err.Error())

@@ -96,7 +96,7 @@ func TestRefSegmentIsPathSafeAndInjective(t *testing.T) {
 func TestRecencySuffixSortsNewestFirst(t *testing.T) {
 	older := recencySuffix(1_000_000)
 	newer := recencySuffix(2_000_000)
-	if !(newer < older) {
+	if newer >= older {
 		t.Fatalf("newer suffix %q should sort before older %q", newer, older)
 	}
 	if len(newer) != 16 || len(older) != 16 {

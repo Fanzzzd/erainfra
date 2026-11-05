@@ -108,7 +108,7 @@ func (s *Server) putWholeBlob(ctx context.Context, w http.ResponseWriter, r *htt
 			s.blobWriteFailed(w, r, err)
 			return
 		}
-		defer file.Close()
+		defer file.Close() //nolint:errcheck // read-only file; a close error loses nothing
 		if err := s.streamParts(ctx, upload, file, spooled); err != nil {
 			_ = upload.Abort(ctx)
 			s.blobWriteFailed(w, r, err)
@@ -306,7 +306,7 @@ func writeSpoolFile(path string, body io.Reader, limit int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer file.Close() //nolint:errcheck // file.Sync below reports write failures; close after fsync loses nothing
 	written, err := io.Copy(file, io.LimitReader(body, limit+1))
 	if err != nil {
 		return written, err

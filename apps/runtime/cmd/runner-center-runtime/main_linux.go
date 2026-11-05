@@ -206,7 +206,9 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		CacheServiceV2:  strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_V2")),
 		CacheServiceURL: strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_URL")),
 	}
-	payload = nil
+	// The raw bytes are a runner credential and spec holds its own copy, so
+	// overwrite them; dropping the reference alone leaves them in memory.
+	clear(payload)
 	if err := spec.Validate(); err != nil {
 		return 2, err
 	}
@@ -233,7 +235,7 @@ func runExperiment(ctx context.Context, client *runtimeapi.Client) (int, error) 
 		return 2, fmt.Errorf("read Experiment command: %w", err)
 	}
 	if len(payload) > maxExperimentBytes {
-		return 2, errors.New("Experiment command exceeds 16 KiB")
+		return 2, errors.New("Experiment command exceeds 16 KiB") //nolint:staticcheck // ST1005: Experiment is a capitalized domain term here, like Attempt
 	}
 	var command []string
 	if err := json.Unmarshal(payload, &command); err != nil {

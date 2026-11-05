@@ -56,7 +56,7 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request, rest stri
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
 		return
 	}
-	defer body.Close()
+	defer body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if size >= 0 {

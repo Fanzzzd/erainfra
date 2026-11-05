@@ -209,6 +209,30 @@ func TestWarmPoolReduceRemoveAndShutdown(t *testing.T) {
 	}
 }
 
+// The thin-pool headroom check sizes against every Profile's warm pool at once,
+// with the Profile being configured counted at its new target rather than its
+// current one.
+func TestWarmPoolTotalTargetCountsTheReconfiguredProfileOnce(t *testing.T) {
+	pool := newWarmPoolManager(func(context.Context, executor.Profile, uint64) (warmSlot, error) {
+		return newFakeWarmSlot(), nil
+	})
+	large := testProfile(3)
+	large.Name = "large"
+	for _, profile := range []executor.Profile{testProfile(2), large} {
+		if _, err := pool.Configure(t.Context(), profile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := pool.totalTargetWith(testProfile(5)); got != 8 {
+		t.Fatalf("reconfigured total = %d, want 5 (linux, new target) + 3 (large)", got)
+	}
+	added := testProfile(1)
+	added.Name = "added"
+	if got := pool.totalTargetWith(added); got != 6 {
+		t.Fatalf("added total = %d, want 1 (added) + 2 (linux) + 3 (large)", got)
+	}
+}
+
 func TestWarmPoolRemovalDrainsIdleWithoutInterruptingClaim(t *testing.T) {
 	pool := newWarmPoolManager(func(context.Context, executor.Profile, uint64) (warmSlot, error) {
 		return newFakeWarmSlot(), nil

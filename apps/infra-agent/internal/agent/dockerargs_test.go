@@ -86,7 +86,7 @@ func TestRunCmdRejectsHostSentinelMountBeforeRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	reply := RunCmd(
+	reply := RunCmd(t.Context(),
 		cmdMsg{ID: "sentinel", Cmd: "deploy", Image: "busybox", Name: "probe", Args: []string{"-v", sentinel + ":/sentinel"}},
 		fakeRunner{depOut: secret, deployCalled: &called},
 	)

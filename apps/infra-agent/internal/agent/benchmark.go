@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"net"
 	"time"
 )
@@ -17,16 +18,17 @@ type BenchmarkResult struct {
 }
 
 // BenchmarkTCP measures TCP connect latency to target ("host:port") over N samples.
-func BenchmarkTCP(target string, samples int, timeout time.Duration) BenchmarkResult {
+func BenchmarkTCP(ctx context.Context, target string, samples int, timeout time.Duration) BenchmarkResult {
 	if samples <= 0 {
 		samples = 3
 	}
 	res := BenchmarkResult{Target: target, Samples: samples}
+	dialer := net.Dialer{Timeout: timeout}
 	var sum, min float64
 	ok := 0
 	for i := 0; i < samples; i++ {
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", target, timeout)
+		conn, err := dialer.DialContext(ctx, "tcp", target)
 		if err != nil {
 			continue
 		}

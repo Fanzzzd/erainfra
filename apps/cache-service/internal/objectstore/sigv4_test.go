@@ -23,7 +23,7 @@ var (
 )
 
 func TestSignRequestMatchesTheGetObjectExample(t *testing.T) {
-	req, err := http.NewRequest(http.MethodGet, "https://examplebucket.s3.amazonaws.com/test.txt", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://examplebucket.s3.amazonaws.com/test.txt", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

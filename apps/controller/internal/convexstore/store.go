@@ -29,7 +29,7 @@ type Store struct {
 func New(baseURL, token string, client *http.Client) (*Store, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, errors.New("Convex URL must be an absolute HTTPS URL")
+		return nil, errors.New("Convex URL must be an absolute HTTPS URL") //nolint:staticcheck // ST1005: Convex is a product name
 	}
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("controller token is required")
@@ -240,7 +240,7 @@ func (s *Store) doJSON(
 	if err != nil {
 		return fmt.Errorf("send controller request: %w", err)
 	}
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 
 	limited := io.LimitReader(response.Body, maxResponseBytes+1)
 	data, err := io.ReadAll(limited)
