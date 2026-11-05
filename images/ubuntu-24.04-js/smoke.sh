@@ -35,6 +35,11 @@ zstd --version >/dev/null
 rsync --version >/dev/null
 ldconfig -p | grep -F 'libatomic.so.1' >/dev/null
 node --version | grep -Fxq 'v22.23.2'
+# The second Node is in the tool cache for setup-node, not on PATH: the default
+# above must stay 22, and setup-node only takes 24 without a download if the
+# .complete marker is beside it.
+ls /opt/hostedtoolcache/node/24.22.1/*.complete >/dev/null
+/opt/hostedtoolcache/node/24.22.1/*/bin/node --version | grep -Fxq 'v24.22.1'
 pnpm --version | grep -Fxq '11.21.0'
 # A tool answering is not the pinned tool shipping. go and gh are pinned in the
 # Dockerfile, so assert the pin rather than that something by that name exists.
