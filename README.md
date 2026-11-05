@@ -241,7 +241,7 @@ records the design.
 
 ## Develop locally
 
-Requirements: Node.js 22+, pnpm 11, Go 1.25.3+, and a Convex account or local deployment.
+Requirements: Node.js 22+, pnpm 11, Go 1.27.3+, and a Convex account or local deployment.
 
 ```bash
 pnpm install
@@ -255,18 +255,28 @@ pnpm check
 go test ./...
 go vet ./...
 GOOS=linux golangci-lint run ./...
+go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+GOOS=linux govulncheck ./...
 ```
 
 `pnpm check` is the JavaScript gate for the whole workspace: lint, formatting, type checking, and
-tests. The last line needs golangci-lint v2.12.2, the version CI pins. It reads `.golangci.yml`,
-which adds `noctx` and `nolintlint` to the default linters. `GOOS=linux` lints the code that ships;
-the module also lints clean with `GOOS=darwin`. A `//nolint` must name its linter and give a reason:
-`//nolint:errcheck // read-only body; a close error loses nothing`.
+tests. The golangci-lint line needs golangci-lint v2.15.0, the version CI pins. It reads
+`.golangci.yml`, which adds `noctx` and `nolintlint` to the default linters. `GOOS=linux` lints the
+code that ships; the module also lints clean with `GOOS=darwin`. A `//nolint` must name its linter
+and give a reason: `//nolint:errcheck // read-only body; a close error loses nothing`.
+
+govulncheck fails when shipped code calls a function with a known vulnerability, in a dependency or
+in the Go standard library of the `go` on your PATH. An advisory in a package the code imports but
+never calls is listed without failing. CI runs it for every OS a release ships Go binaries for:
+`GOOS=linux` and `GOOS=darwin` over `./...`, and `GOOS=windows` over the Infra Agent and the CLI,
+the only Windows binaries. The release workflow scans every published binary again with
+`govulncheck -mode binary`. Most findings are fixed by moving Go to its newest patch
+(`go run ./scripts/pinbump -only go`, or `-go-line 1.N` for a new minor) or by `go get` of the
+fixed module version the report names.
 
 CI also runs the production build, lints, tests and vets the Go module, compiles both shipped Linux
-architectures, asserts that the Infra Agent still links exactly one dependency, refuses any rename of
-an identifier a customer's machine already holds, and verifies that the npm lockfile used by
-installed Workers is current.
+architectures, runs govulncheck, refuses any rename of an identifier a customer's machine already
+holds, and verifies that the npm lockfile used by installed Workers is current.
 
 `apps/mesh` is a Rust crate with its own gate. rustup installs the compiler that
 `apps/mesh/rust-toolchain.toml` pins:
@@ -310,7 +320,7 @@ HTTP request body. They never appear in argv or a host environment variable.
 
 - Ubuntu 24.04 and systemd;
 - actions/runner 2.338.2, checksum verified;
-- Node.js 22.23.2 (the default `node`) and 24.22.1, and Go 1.25.3, in the hosted-toolcache layout,
+- Node.js 22.23.2 (the default `node`) and 24.22.1, and Go 1.27.3, in the hosted-toolcache layout,
   each checksum verified, so `setup-node` and `setup-go` resolve them without a download;
 - GitHub CLI 2.97.0, checksum verified;
 - an official runner action-archive cache seeded with the exact checkout, pnpm, setup-node, and

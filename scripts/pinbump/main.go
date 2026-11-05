@@ -12,6 +12,7 @@
 //	go run ./scripts/pinbump                 # every pin
 //	go run ./scripts/pinbump -only runner    # one group
 //	go run ./scripts/pinbump -skip actions -summary body.md
+//	go run ./scripts/pinbump -only go -go-line 1.27   # Go onto a new minor
 //
 // GITHUB_TOKEN, when set, authenticates GitHub API reads (rate limit only).
 package main
@@ -143,6 +144,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	skipFlag := fs.String("skip", "", "comma-separated groups to leave alone")
 	summary := fs.String("summary", "", "also write the Markdown summary to this file")
 	keyring := fs.String("node-keyring", "", "gpgv keyring of Node.js release keys (default: download nodejs/release-keys)")
+	goLine := fs.String("go-line", "", "MAJOR.MINOR Go line to move to (default: stay on the line go.mod is on)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -169,7 +171,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	up := newHTTPUpstream(os.Getenv("GITHUB_TOKEN"))
 	verifier := &gpgvVerifier{up: up, keyring: *keyring}
 	defer verifier.close()
-	b := &bumper{up: up, tree: newTree(*repo), verifyNode: verifier.verify, cache: map[string][]byte{}}
+	b := &bumper{up: up, tree: newTree(*repo), verifyNode: verifier.verify, cache: map[string][]byte{}, goLine: *goLine}
 
 	res := run(ctx, b, only, skip)
 	if err := b.tree.flush(); err != nil {

@@ -57,11 +57,11 @@ done
 pnpm --version | grep -Fxq '11.21.0'
 # A tool answering is not the pinned tool shipping. go and gh are pinned in the
 # Dockerfile, so assert the pin rather than that something by that name exists.
-go version | grep -Eq '^go version go1\.25\.3 '
+go version | grep -Eq '^go version go1\.27\.3 '
 gh --version | grep -Eq '^gh version 2\.97\.0( |$)'
 # actions/setup-go only skips its download if the marker beside the version
 # directory is there, which is the whole reason Go lives in the tool cache.
-ls /opt/hostedtoolcache/go/1.25.3/*.complete >/dev/null
+ls /opt/hostedtoolcache/go/1.27.3/*.complete >/dev/null
 # The C library answers ASCII unless a locale says otherwise, and each of these
 # is a different way a job can arrive: the image's own environment, the systemd
 # system manager, a PAM login shell, and the unit that runs every job.

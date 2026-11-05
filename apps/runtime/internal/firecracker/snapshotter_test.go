@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	api "github.com/containerd/containerd/api/services/introspection/v1"
-	"github.com/containerd/containerd/filters"
+	"github.com/containerd/containerd/v2/pkg/filters"
 )
 
 // containerd's introspection service builds its matcher with

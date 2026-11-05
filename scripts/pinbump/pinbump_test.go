@@ -14,7 +14,7 @@ import (
 
 // The fixtures in testdata are upstream responses for releases newer than
 // anything pinned: actions/runner 2.339.0, Node.js 22.99.0 and 24.99.1, Go
-// 1.25.99, gh 2.199.0, actions/setup-node v7.2.0, pnpm/action-setup v6.2.0.
+// 1.27.99, gh 2.199.0, actions/setup-node v7.2.0, pnpm/action-setup v6.2.0.
 // Every checksum in them is sha256(<file name>), so a test can say which
 // artifact's checksum landed where.
 func fixtureSHA(name string) string { return sha256Hex([]byte(name)) }
@@ -30,6 +30,10 @@ const (
 	checkoutSHA   = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 	nodeKeyringOK = "signature ok"
 )
+
+// golangNextDigest is the builder image of Go 1.28.1, the newer minor the
+// fixture lists, which only -go-line moves to.
+const golangNextDigest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 
 type fakeUpstream struct {
 	routes  map[string][]byte
@@ -81,7 +85,8 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		},
 		digests: map[string]string{
 			"ghcr.io/actions/actions-runner:" + runnerV: runnerDigest,
-			"docker.io/library/golang:1.25.99-bookworm": golangDigest,
+			"docker.io/library/golang:1.27.99-bookworm": golangDigest,
+			"docker.io/library/golang:1.28.1-bookworm":  golangNextDigest,
 		},
 	}
 	var actions map[string]json.RawMessage
@@ -178,6 +183,17 @@ func bumpTree(t *testing.T, dir string, up upstream, verify func(context.Context
 	return res
 }
 
+// bumpGoLine runs only the Go target, as `-only go -go-line <line>` does.
+func bumpGoLine(t *testing.T, dir, line string) result {
+	t.Helper()
+	b := &bumper{up: newFakeUpstream(t), tree: newTree(dir), verifyNode: fakeVerify, cache: map[string][]byte{}, goLine: line}
+	res := run(context.Background(), b, map[string]bool{"go": true}, nil)
+	if err := b.tree.flush(); err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
 func readFile(t *testing.T, dir, rel string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
@@ -261,13 +277,13 @@ func TestBumpsEveryPinInTheRealTree(t *testing.T) {
 
 	// Go: the newest patch of go.mod's minor, in go.mod, the builder stage
 	// and the tool cache together; the newer minor is reported, not taken.
-	mustContain(t, dir, goModPath, "\ngo 1.25.99\n")
+	mustContain(t, dir, goModPath, "\ngo 1.27.99\n")
 	mustContain(t, dir, dockerfilePath,
-		"FROM docker.io/library/golang:1.25.99-bookworm@"+golangDigest+" AS guest",
-		"ARG GO_VERSION=1.25.99",
-		"go_dist=amd64; go_sha="+fixtureSHA("go1.25.99.linux-amd64.tar.gz"),
-		"go_dist=arm64; go_sha="+fixtureSHA("go1.25.99.linux-arm64.tar.gz"))
-	mustContain(t, dir, smokePath, `go1\.25\.99 `, "/opt/hostedtoolcache/go/1.25.99/")
+		"FROM docker.io/library/golang:1.27.99-bookworm@"+golangDigest+" AS guest",
+		"ARG GO_VERSION=1.27.99",
+		"go_dist=amd64; go_sha="+fixtureSHA("go1.27.99.linux-amd64.tar.gz"),
+		"go_dist=arm64; go_sha="+fixtureSHA("go1.27.99.linux-arm64.tar.gz"))
+	mustContain(t, dir, smokePath, `go1\.27\.99 `, "/opt/hostedtoolcache/go/1.27.99/")
 
 	// gh.
 	mustContain(t, dir, dockerfilePath,
@@ -313,7 +329,7 @@ func TestBumpsEveryPinInTheRealTree(t *testing.T) {
 	}
 
 	notes := strings.Join(res.notes, "\n")
-	for _, want := range []string{"Go 1.27.1 is out", "actions/checkout v8.0.0 is out", "Payable's workflows"} {
+	for _, want := range []string{"Go 1.28.1 is out", "-go-line 1.28", "actions/checkout v8.0.0 is out", "Payable's workflows"} {
 		if !strings.Contains(notes, want) {
 			t.Errorf("notes miss %q:\n%s", want, notes)
 		}
@@ -418,6 +434,53 @@ func TestGoModAndTheImageMustAgree(t *testing.T) {
 	res := bumpTree(t, dir, newFakeUpstream(t), fakeVerify, "go")
 	if len(res.failed) != 1 || !strings.Contains(res.failed[0], "meant to be one version") {
 		t.Fatalf("want a go.mod/image disagreement, got %v", res.failed)
+	}
+}
+
+func TestGoLineMovesEveryGoPinToTheNewMinor(t *testing.T) {
+	dir := copyTree(t)
+	oldGo, _ := argValue(readFile(t, dir, dockerfilePath), "GO_VERSION")
+
+	res := bumpGoLine(t, dir, "1.28")
+
+	if len(res.failed) > 0 {
+		t.Fatalf("failures: %v", res.failed)
+	}
+	mustContain(t, dir, goModPath, "\ngo 1.28.1\n")
+	mustContain(t, dir, dockerfilePath,
+		"FROM docker.io/library/golang:1.28.1-bookworm@"+golangNextDigest+" AS guest",
+		"ARG GO_VERSION=1.28.1",
+		"go_dist=amd64; go_sha="+fixtureSHA("go1.28.1.linux-amd64.tar.gz"),
+		"go_dist=arm64; go_sha="+fixtureSHA("go1.28.1.linux-arm64.tar.gz"))
+	mustContain(t, dir, smokePath, `go1\.28\.1 `, "/opt/hostedtoolcache/go/1.28.1/")
+	mustContain(t, dir, readmePath, "Go 1.28.1")
+	for _, rel := range []string{dockerfilePath, smokePath, readmePath, goModPath} {
+		if _, n := replaceStandalone(readFile(t, dir, rel), oldGo, "x"); n > 0 {
+			t.Errorf("%s still carries Go %s", rel, oldGo)
+		}
+	}
+	// On the newest minor there is nothing newer to report.
+	if notes := strings.Join(res.notes, "\n"); strings.Contains(notes, "is out") {
+		t.Errorf("unexpected note after moving to the newest minor:\n%s", notes)
+	}
+}
+
+func TestGoLineRefusesALineGoNoLongerSupports(t *testing.T) {
+	dir := copyTree(t)
+	// The fixture's newest stable minor is 1.28 (1.29rc1 does not count), so
+	// 1.27 and 1.28 are supported and 1.26 is not, although go.dev lists it.
+	for line, want := range map[string]string{
+		"1.26":   "no longer supported",
+		"1.28.1": "not a MAJOR.MINOR Go line",
+		"1.30":   "no stable Go 1.30 release",
+	} {
+		res := bumpGoLine(t, dir, line)
+		if len(res.failed) != 1 || !strings.Contains(res.failed[0], want) {
+			t.Errorf("-go-line %s: want a failure mentioning %q, got %v", line, want, res.failed)
+		}
+		if len(res.files) != 0 {
+			t.Errorf("-go-line %s changed %v", line, res.files)
+		}
 	}
 }
 

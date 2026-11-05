@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.19
 
-FROM docker.io/library/golang:1.25.3-bookworm@sha256:4f43b271f9673eb7bd0cb3a49cc17b08d8d6ee110277e26dbacc93c43a5a7793 AS guest
+FROM docker.io/library/golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS guest
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -15,7 +15,7 @@ ARG RUNNER_VERSION=2.338.2
 ARG NODE_VERSION=22.23.2
 ARG NODE_24_VERSION=24.22.1
 ARG PNPM_VERSION=11.21.0
-ARG GO_VERSION=1.25.3
+ARG GO_VERSION=1.27.3
 ARG GH_VERSION=2.97.0
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -217,8 +217,8 @@ RUN case "$TARGETARCH" in \
 # file, so the Go that compiles runner-center-guest and the Go a workflow gets
 # are one version rather than two that drift apart unwatched.
 RUN case "$TARGETARCH" in \
-      amd64) go_arch=x64; go_dist=amd64; go_sha=0335f314b6e7bfe08c3d0cfaa7c19db961b7b99fb20be62b0a826c992ad14e0f ;; \
-      arm64) go_arch=arm64; go_dist=arm64; go_sha=1d42ebc84999b5e2069f5e31b67d6fc5d67308adad3e178d5a2ee2c9ff2001f5 ;; \
+      amd64) go_arch=x64; go_dist=amd64; go_sha=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;; \
+      arm64) go_arch=arm64; go_dist=arm64; go_sha=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && go_dir="/opt/hostedtoolcache/go/${GO_VERSION}/${go_arch}" \
