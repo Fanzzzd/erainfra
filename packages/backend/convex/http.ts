@@ -362,6 +362,31 @@ http.route({
 });
 
 http.route({
+  path: "/controller/profiles/pause",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const unauthorized = controllerAuthFailure(request);
+    if (unauthorized !== null) return unauthorized;
+
+    const body = await requestJson(request);
+    const name =
+      body.ok &&
+      typeof body.payload === "object" &&
+      body.payload !== null &&
+      typeof (body.payload as { name?: unknown }).name === "string"
+        ? (body.payload as { name: string }).name.trim()
+        : "";
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
+      return jsonResponse({ error: "Invalid Profile" }, 400);
+    }
+    const found = await ctx.runMutation(internal.controllerApi.pauseProfile, { name });
+    return found
+      ? new Response(null, { status: 204 })
+      : jsonResponse({ error: "Unknown Profile" }, 404);
+  }),
+});
+
+http.route({
   path: "/controller/attempts",
   method: "GET",
   handler: httpAction(async (ctx, request) => {

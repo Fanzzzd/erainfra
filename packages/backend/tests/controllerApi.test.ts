@@ -243,3 +243,77 @@ describe("scale-set Attempt protocol", () => {
     ).toEqual([]);
   });
 });
+
+describe("retiring a Profile", () => {
+  it("pauses a registered Profile so Worker discovery stops seeing it, and a re-register revives it", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    expect(await t.mutation(internal.controllerApi.pauseProfile, { name: "rc-linux-js" })).toBe(
+      true,
+    );
+    const paused = await t.run((ctx) =>
+      ctx.db
+        .query("profiles")
+        .withIndex("by_name", (q) => q.eq("name", "rc-linux-js"))
+        .unique(),
+    );
+    expect(paused?.state).toBe("paused");
+    const active = await t.run((ctx) =>
+      ctx.db
+        .query("profiles")
+        .withIndex("by_state", (q) => q.eq("state", "active"))
+        .collect(),
+    );
+    expect(active).toHaveLength(0);
+
+    await registerProfile(t);
+    const revived = await t.run((ctx) =>
+      ctx.db
+        .query("profiles")
+        .withIndex("by_name", (q) => q.eq("name", "rc-linux-js"))
+        .unique(),
+    );
+    expect(revived?.state).toBe("active");
+  });
+
+  it("reports an unknown Profile instead of inventing one", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.mutation(internal.controllerApi.pauseProfile, { name: "nope" })).toBe(false);
+  });
+});
+
+describe("POST /controller/profiles/pause", () => {
+  const token = "controller-token-for-pause";
+
+  it("pauses with the controller token, and refuses without it or for an unknown Profile", async () => {
+    process.env.CONTROLLER_TOKEN = token;
+    try {
+      const t = convexTest(schema, modules);
+      await registerProfile(t);
+      const post = (body: unknown, authorization?: string) =>
+        t.fetch("/controller/profiles/pause", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(authorization === undefined ? {} : { Authorization: authorization }),
+          },
+          body: JSON.stringify(body),
+        });
+
+      expect((await post({ name: "rc-linux-js" })).status).toBe(401);
+      expect((await post({ name: "rc-linux-js" }, "Bearer wrong")).status).toBe(401);
+      expect((await post({ name: "../x" }, `Bearer ${token}`)).status).toBe(400);
+      expect((await post({ name: "nope" }, `Bearer ${token}`)).status).toBe(404);
+      expect((await post({ name: "rc-linux-js" }, `Bearer ${token}`)).status).toBe(204);
+      const row = await t.run((ctx) =>
+        ctx.db
+          .query("profiles")
+          .withIndex("by_name", (q) => q.eq("name", "rc-linux-js"))
+          .unique(),
+      );
+      expect(row?.state).toBe("paused");
+    } finally {
+      delete process.env.CONTROLLER_TOKEN;
+    }
+  });
+});

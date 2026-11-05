@@ -214,3 +214,38 @@ func TestOptionalInt64OmitsUnavailableGitHubRequestID(t *testing.T) {
 		t.Fatalf("optionalInt64(unsafe JS integer) = %q", actual)
 	}
 }
+
+func TestPauseProfileTreatsAnUnknownProfileAsNothingToDo(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/controller/profiles/pause" || request.Header.Get("Authorization") != "Bearer controller-secret" {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		switch body["name"] {
+		case "rc-linux-js":
+			response.WriteHeader(http.StatusNoContent)
+		case "gone":
+			http.Error(response, `{"error":"Unknown Profile"}`, http.StatusNotFound)
+		default:
+			http.Error(response, "boom", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	store, err := New(server.URL, "controller-secret", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.PauseProfile(t.Context(), "rc-linux-js"); err != nil || !found {
+		t.Fatalf("pause = %v, %v", found, err)
+	}
+	if found, err := store.PauseProfile(t.Context(), "gone"); err != nil || found {
+		t.Fatalf("unknown = %v, %v", found, err)
+	}
+	if _, err := store.PauseProfile(t.Context(), "other"); err == nil {
+		t.Fatal("a 500 must be an error")
+	}
+}

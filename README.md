@@ -389,6 +389,27 @@ such as `ubuntu-latest` — and warns about a legal name outside the scheme. `rc
 predate it and keep working; a Profile is renamed by registering the new name beside the old one,
 never in place, because GitHub holds the scale-set name.
 
+Run controllers on a host that is not a Worker
+([ADR 0013](docs/adr/0013-run-controllers-off-the-workers.md)): a Worker reboot or rollout must not
+take job intake with it.
+
+Stopping a controller does not remove its scale set. GitHub keeps routing `runs-on: <profile>` jobs
+to it, and with no listener they wait until GitHub cancels them after 24 hours. Retire a Profile in
+two steps, on the controller host:
+
+```bash
+sudo systemctl disable --now runner-center-controller@rc-linux-js
+sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
+  exec /usr/local/lib/runner-center/runner-center-controller retire'        # report only
+sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
+  exec /usr/local/lib/runner-center/runner-center-controller retire --yes'  # delete and pause
+```
+
+`retire --yes` deletes the GitHub scale set and pauses the Profile in the control plane, so Workers
+stop prewarming and advertising it. It refuses while GitHub still counts busy runners or assigned
+or running jobs on the scale set; `--force` overrides that for a scale set whose controller is gone
+for good. Starting the Profile's unit again re-registers both.
+
 `RC_WARM_POOL` is an explicit Firecracker-only performance opt-in. Its target
 counts both parked and currently claimed single-use microVMs, and each one
 reserves a Worker slot, vCPUs, memory, a CNI address, and devmapper headroom.

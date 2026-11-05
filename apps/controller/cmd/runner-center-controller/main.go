@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -36,6 +37,13 @@ var (
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "version" {
 		fmt.Printf("runner-center-controller %s (%s)\n", version, commitSHA)
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "retire" {
+		if err := retire(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	if err := run(); err != nil {
@@ -185,6 +193,69 @@ func cacheOptions(cfg config.Config, logger *slog.Logger) ([]rccontroller.Option
 		rccontroller.WithCachePublisher(publisher, logger.WithGroup("cachefacts")),
 		rccontroller.WithWorkflowRuns(runs),
 	}, nil
+}
+
+// retire deletes the Profile's GitHub scale set and pauses the Profile in the
+// control plane. It reads the same environment as the service, so an operator
+// runs it with the Profile's env file loaded after stopping that Profile's unit.
+// Without --yes it only reports what it would do.
+func retire(args []string) error {
+	flags := flag.NewFlagSet("retire", flag.ContinueOnError)
+	apply := flags.Bool("yes", false, "delete the scale set and pause the Profile; without it, only report")
+	force := flags.Bool("force", false, "delete even while GitHub still counts busy runners or jobs on the scale set")
+	flags.Usage = func() {
+		_, _ = fmt.Fprintln(flags.Output(), "usage: runner-center-controller retire [--yes] [--force]")
+		_, _ = fmt.Fprintln(flags.Output(), "Deletes the GitHub scale set named by RC_SCALE_SET_NAME (default RC_PROFILE) and pauses the Profile.")
+		_, _ = fmt.Fprintln(flags.Output(), "Stop the Profile's controller unit first, or it re-registers both within seconds.")
+		flags.PrintDefaults()
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	client, err := newGitHubClient(cfg)
+	if err != nil {
+		return fmt.Errorf("configure GitHub client: %w", err)
+	}
+	plan, err := githubscale.Retire(ctx, client, cfg.ScaleSetName, cfg.RunnerGroup, *apply, *force)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !plan.Found:
+		fmt.Printf("no scale set named %q is registered at %s\n", plan.Name, cfg.RegistrationURL)
+	case !*apply:
+		fmt.Printf("would delete scale set %q (id %d): %d busy runner(s), %d assigned, %d running job(s)\n",
+			plan.Name, plan.ID, plan.BusyRunners, plan.AssignedJobs, plan.RunningJobs)
+	default:
+		fmt.Printf("deleted scale set %q (id %d)\n", plan.Name, plan.ID)
+	}
+	if !*apply {
+		fmt.Printf("would pause Profile %q in the control plane; rerun with --yes to do both\n", cfg.Profile)
+		return nil
+	}
+	store, err := convexstore.New(cfg.ConvexURL, cfg.ControllerToken, nil)
+	if err != nil {
+		return fmt.Errorf("configure Fleet client: %w", err)
+	}
+	found, err := store.PauseProfile(ctx, cfg.Profile)
+	if err != nil {
+		return fmt.Errorf("pause Profile %q: %w", cfg.Profile, err)
+	}
+	if found {
+		fmt.Printf("paused Profile %q; Workers stop advertising it on their next refresh\n", cfg.Profile)
+	} else {
+		fmt.Printf("the control plane has no Profile %q; nothing to pause\n", cfg.Profile)
+	}
+	return nil
 }
 
 func newGitHubClient(cfg config.Config) (*scaleset.Client, error) {
