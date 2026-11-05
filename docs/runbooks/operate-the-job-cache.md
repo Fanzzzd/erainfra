@@ -7,10 +7,10 @@ the whole reason [ADR 0007](../adr/0007-serve-the-actions-cache-protocol-from-an
 can add a cache without touching ADR 0002's isolation contract.
 
 **What this runbook covers:** choosing and provisioning the store, running the service, eviction and
-the lifecycle rule behind it (§4), the two Worker-side variables that offer the endpoint to jobs
-(§7), and listing or deleting a repository's entries (§9). **What it does not cover:** the per-Attempt token, and adding the cache endpoint to
-`apps/runtime/internal/netpolicy`'s allowed egress destinations. Until those land, this service runs
-and answers, and §7 has a measurement to pass before it is worth pointing anything at it.
+the lifecycle rule behind it (§4), the Docker-path variables that offer the endpoint to jobs and the
+measurement that showed they cannot reach a cache client (§7), turning on the Firecracker
+interceptor, which is how jobs actually reach the service (§8), and listing or deleting a
+repository's entries (§9).
 
 ---
 
@@ -583,10 +583,10 @@ A successful push logs `published cache facts` with the ref, base ref and defaul
 
 Each step is inert on its own; the cache serves its first byte only once all four line up.
 
-1. **A runtime that mints the bearer.** The cache-minting runtime landed after v0.2.0-rc.8, so the
-   fleet's current agent does not have it. Cut the next agent release, `pnpm run deploy:control-plane`,
-   and `rc update` each Worker (see `deploy-control-plane.md`). One release-machinery item blocks
-   this and is called out under "The one open release step" below.
+1. **A runtime that mints the bearer.** v0.2.0-rc.9 and later carry it, along with the guest
+   redirect and the daemon-wide `RC_CACHE_SERVICE_URL`. A Worker on an older release needs
+   `pnpm run deploy:control-plane` for the newer pin and then `rc update` (see
+   `deploy-control-plane.md`).
 
 2. **A guest image that carries the redirect.** The redirect ships in the guest image, not in the
    agent archive, so it moves by repinning the Profile — not by the release tag. The image built from
@@ -608,10 +608,11 @@ Each step is inert on its own; the cache serves its first byte only once all fou
    ```bash
    RC_CACHE_SIGNING_KEY_FILE=/etc/runner-center/cache-signing-key   # the §2 key, 0600, root
    RC_CACHE_SERVICE_URL=https://cache.internal:8721                 # reachable from the guest subnet
-   RC_EGRESS_ALLOW=...,cache.internal                               # add the service host; keep the rest
+   RC_EGRESS_ALLOW=...,10.0.0.5/32                                  # the service's address as a CIDR; keep the rest
    ```
 
-   The service must sit where a guest job can reach it. A store or service on a Worker's own host is
+   `RC_EGRESS_ALLOW` takes IPv4 CIDRs only (`netpolicy.Policy.Validate` refuses a hostname), so
+   name the address `cache.internal` resolves to. The service must sit where a guest job can reach it. A store or service on a Worker's own host is
    dropped by the guest network policy (§1, Case A): reach it over the bridge as a routed
    destination, never by holing the host-input drop. Restart the runtime.
 
@@ -637,18 +638,13 @@ mints no bearer and hands the guest no service URL, the redirect stays inert, an
 GitHub — the same fall-back a failed redirect already takes. Repinning the Profile to the previous
 image digest is the same edit as step 2. Nothing on a Worker is destroyed by either.
 
-### The one open release step
+### The release step that used to block this
 
-Step 1's release is the first to publish the cache-service binary, so it is the first that must fill
-`AGENT_RELEASE.cacheService`. That digest is not free to pin: the cache-service binary stamps the
-release commit into itself (`-X main.commitSHA`, the same as the controller), so its checksum is a
-function of the commit — and the release gate rebuilds at the tagged commit and demands the pin
-match (`release.yml`, "Verify the Infra Agent and cache-service binaries match the deployment pin").
-A pin written into a commit cannot equal the checksum of a binary that embeds that commit's own hash.
-The archive `sha256`, which embeds the same commit-stamped controller, has carried this shape since
-it was introduced, so the release already has a way through; the cache-service target just has to
-join it. Resolve that in the release procedure before cutting step 1 — do not paper over it by
-tagging and retrying.
+Step 1 once had a release-machinery blocker: the cache-service binary stamped the release commit
+into itself, so its checksum depended on the commit that had to carry its pin, and no pin could
+match. #134 stamps it with the version instead, and v0.2.0-rc.9 was the first release to publish and
+pin `erainfra-cache-service-linux-x86_64`. Nothing in the release procedure needs special handling
+for it now.
 
 ---
 

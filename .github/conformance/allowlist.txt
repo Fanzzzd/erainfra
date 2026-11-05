@@ -246,24 +246,32 @@ allow tool_pnpm_present  # the Image Release installs pnpm 11.21.0 (images/ubunt
 # pendings became allows on 2026-09-04, when every Linux Profile was sized to
 # GitHub's standard runner (4 vCPU, 16384 MiB) and the guest's numbers landed
 # within 0.4 % of hosted's: the decision #110 asked for was the Profile size.
-# The pendings below are what remains: #96's resolver shape and stack size,
-# and #110's IPv6. vm_max_map_count is the one graduate: a chosen value whose
-# floor is `require`d absolutely above.
+# #96's resolver shape and stack size and #110's IPv6 were the last pendings
+# here, and on 2026-11-05 each got its decision, by the rule at the top of this
+# file and with ubuntu-latest parity as the target unless the isolation
+# contract forbids it. The stack is fixed at the source: LimitSTACK on
+# runner-center-guest.service, asserted in smoke.sh, so its pending is now a
+# transition that dies when the Profiles are repinned to an image carrying it.
+# IPv6 and the four resolver keys are allows, each traceable to code that
+# chose the value. dns_options is half a fix: the guest now asks for edns0 the
+# way the Docker executor already did, and trust-ad stays off on purpose.
+# vm_max_map_count is the one earlier graduate: a chosen value whose floor is
+# `require`d absolutely above.
 allow sysctl_vm_max_map_count  # the microVM guest boots at 1048576 against 262144 on hosted (run 32330383534; the Docker path measured the 5.4 host default 65530, which is why this was a pending). The value is chosen — the guest kernel and image are both pinned — and the floor that actually matters is asserted absolutely by `require sysctl_vm_max_map_count_meets_floor=yes` above, so this allow covers only the headroom, never a regression
 allow sysctl_kernel_threads_max  # measured 128106 against 127677 hosted (run 33827387238, attempt 2): the guest kernel derives this from RAM exactly as hosted's does, and since 2026-09-04 every Linux Profile is sized to GitHub's standard runner (RC_VCPUS=4, RC_MEMORY_MIB=16384); what is left is hosted's MemTotal sitting a few hundred MiB under 16384 because Azure reserves some, so the two legs land within 0.4 % of each other. Was #110's 15899 on the 2 GiB guest; the decision #110 asked for is the Profile size, and it is made
 allow sysctl_user_max_user_namespaces  # 64053 against 63838 hosted, same run, same derivation from RAM, same 0.4 %
 allow pids_cgroup_max  # 19215 against 19151 hosted, same run. The Docker-era --pids-limit 4096 is gone and the guest's bound is now the kernel's RAM-derived one, which at 16 GiB is the number hosted has
 allow rlimit_max_processes_soft  # 64053 against 63838 hosted, same run: a real blast-radius bound at hosted's size, no longer the 7949 a fork-heavy suite could reach
 allow rlimit_max_processes_hard  # as above, hard limit
-pending rlimit_max_stack_size_soft=8388608 2026-11-16  # #96: 8 MiB against 16 MiB on hosted; deeply recursive builds and some parsers notice
+pending rlimit_max_stack_size_soft=8388608 2026-12-05  # #96: decided and fixed at the source. LimitSTACK=16777216:infinity on images/ubuntu-24.04-js/runner-center-guest.service gives every job hosted's 16 MiB soft stack, the same pair the Docker executor passes as --ulimit stack=16777216:-1, and smoke.sh asserts the line at image build. This is a transition pending: the fleet keeps measuring the image it is pinned to, so the line covers nothing once the Profiles are repinned to an image built from that change, and goes red if the repin never happens
 allow rlimit_max_pending_signals_soft  # 64053 against 63838 hosted, same run, same derivation
 allow rlimit_max_pending_signals_hard  # as above, hard limit
-pending net_ipv6_disabled=unavailable 2026-11-16  # #110: the guest boots with ipv6.disable=1 (the job network policy is v4-only), so /proc/sys/net/ipv6 does not exist, while hosted has IPv6 up. Anything binding or dialing ::1 behaves differently. Either enable v6 in the guest with the policy extended to cover it, or freeze this divergence with a documented reason — a decision, not a leftover
+allow net_ipv6_disabled  # the isolation contract forbids hosted parity here. Guests boot with ipv6.disable=1 because the job network policy is IPv4 nftables and a dual-stack guest could route around it (apps/runtime/internal/firecracker/config.go, ADR 0002); netpolicy.RequiredKernelArgs puts the argument in the policy identity and readiness refuses a kernel command line without it. So /proc/sys/net/ipv6 does not exist (unavailable) against 0 on hosted. Hosted offers less than `0` suggests: GitHub-hosted runners have no IPv6 egress (actions/runner-images#668), so the reachable difference is ::1 on loopback. A job that binds or dials ::1 fails here and must use 127.0.0.1. Revisit only together with an IPv6 job network policy
 allow sysctl_kernel_unprivileged_userns_clone  # a Debian-specific knob that does not exist on the vanilla 6.1 guest kernel (measured unavailable against 1 hosted, run 32330383534). The capability it gates is on by default there — sysctl_user_max_user_namespaces measures non-zero in the same run — so the absent knob is a kernel-flavor difference, not a capability difference
-pending dns_nameserver_count=2 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
-pending dns_nameserver_loopback=no 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
-pending dns_options=unavailable 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
-pending dns_search_domain_count=0 2026-11-16  # #96: the resolver shape a container inherits rather than one anyone picked. All four dns_resolves_* probes are identical and green on both legs; short-name resolution and edns0 retry behaviour are what differ
+allow dns_nameserver_count  # the guest writes exactly the resolvers its Profile's network policy names (netpolicy.Policy.Nameservers, default 1.1.1.1 and 9.9.9.9, each validated as reachable under that policy), copied from the kernel's ip= publication by resolverConfig in runner-center-guest. Hosted's single nameserver is its local systemd-resolved stub with its own upstreams behind it; two direct resolvers give glibc the same failover. All four dns_resolves_* probes are identical on both legs
+allow dns_nameserver_loopback  # same decision: no stub resolver runs in the guest, so nothing listens on 127.0.0.53 and the resolvers the policy verifies are the ones a job talks to. provision-docker.sh records the same choice for the Docker executor: hosted's stub belongs to systemd-resolved inside that VM and is not reproduced
+allow dns_options  # edns0 is asked for, as on hosted: resolverConfig in runner-center-guest writes `options edns0` (and provision-docker.sh passes --dns-option edns0), so a large answer is not truncated and retried over TCP. Measured unavailable until the Profiles are repinned to a guest carrying that change, edns0 after. trust-ad is deliberately left out against hosted's edns0,trust-ad: it makes glibc believe the AD bit, which is only sound for a trusted resolver on a trusted path, and hosted's is systemd-resolved on loopback while the guest's are across the network
+allow dns_search_domain_count  # no search domain, by decision: netpolicy.Policy has no search field, so a guest gets none, and provision-docker.sh passes --dns-search . for the same reason. A search domain makes a bare name in a workflow resolve through a suffix the Worker's network supplies, so `registry` would reach an operator's internal host on one Worker and NXDOMAIN on the next. Hosted's one search domain is its Azure-internal suffix, which means nothing outside Azure
 
 # Transition pendings for the Docker CLI plugins. This branch adds docker-compose-v2 and
 # docker-buildx to the Image Release, but the fleet keeps measuring the image it is pinned to until

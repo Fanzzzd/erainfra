@@ -1,6 +1,6 @@
 # ADR 0008: Win the cache endpoint below the environment
 
-- Status: Proposed
+- Status: Accepted, implemented in part (see the 2026-11-05 status update at the end)
 - Date: 2026-08-20
 - Owners: EraInfra
 - Amends: [ADR 0007](0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)
@@ -92,6 +92,10 @@ Every other name resolves and connects unchanged; a client that reaches GitHub's
 real IPs by some path this does not cover reaches GitHub — degraded-to-upstream,
 not a breach. The ship gate is a test matrix: a plain job, a `container:` job,
 and a `type=gha` buildx step each land on the interceptor.
+
+**Status update, 2026-11-05:** the redirect that shipped matches only the runner
+user's traffic, so `container:` jobs and buildx do not land on the interceptor,
+and the test matrix above was not built. See the status update at the end.
 
 ### 2. A per-guest, per-boot ephemeral CA — not a fleet CA
 
@@ -207,6 +211,9 @@ container (a `buildkitd.toml`/driver-opt step), or the `docker` driver used, or
 `type=gha` fails closed with `x509: unknown authority` — a cache-availability
 bug, not a security hole. Stage B owns making one of these the default.
 
+**Status update, 2026-11-05:** the first sentence of this section did not hold
+for the redirect that shipped. See the status update at the end.
+
 ## Consequences
 
 - **Zero workflow change, and the runner stays GitHub's exact bytes.** The
@@ -272,3 +279,64 @@ bug, not a security hole. Stage B owns making one of these the default.
   0% of this repo's own 329 MiB of restore volume flows through explicit
   `actions/cache`; it is all `setup-node`/`setup-go`, which interception catches
   and a swap-in does not.
+
+## Status update, 2026-11-05: what shipped and what remains
+
+The decision stands: transparent interception in the guest, a per-guest CA, the
+cache path served by EraInfra's cache service, and everything else forwarded to
+GitHub, with no runner patch and no workflow change. It shipped in #120 to #135
+and every release since v0.2.0-rc.9 carries it. Several mechanisms above were built
+differently or not yet built, and this section records which. The sections
+above are left as decided.
+
+**The redirect is narrower than §1 and covers no containers.**
+`apps/runtime/cmd/runner-center-guest/cache_linux.go` resolves the cache host's
+IPv4 addresses once, then adds one iptables `nat OUTPUT` DNAT rule per address,
+matched with `-m owner --uid-owner` on the runner's UID. The guest uses
+iptables-legacy because the pinned 6.1 guest kernel has no nf_tables. There is
+no guest-local resolver and no `/etc/hosts` pin. Container traffic leaves
+through the Docker bridge and never crosses the guest's OUTPUT chain, so
+`container:` jobs, service containers, nested Docker and buildkitd reach
+GitHub's cache directly. The code comment states this exclusion was chosen on
+purpose: a container image does not trust the guest's CA, so redirecting it
+would turn a cache hit into a TLS failure. Processes the job runs as root, for
+example through `sudo`, are not redirected either. In each case the outcome is
+§1's "degraded-to-upstream, not a breach". So §1's claim and §5's first sentence,
+that network-layer interception reaches `container:` jobs for free, describe
+the design and not the shipped code.
+
+**The CA is minted inside the guest, not on the host.** `guestcache.Start`
+calls `cacheca.Mint` in the guest daemon when the redirect comes up, with a
+12-hour lifetime. The private key lives in the memory of that root process
+for the life of the VM. §2's blast-radius argument still holds, because the key
+is per guest and dies with it, and someone who holds root in the guest already
+holds its traffic. The statement that the key "never enters the guest" does not
+hold. The name constraints are as §2 decided: exactly the one host,
+subdomains excluded, every IP, email and URI SAN excluded, and path length
+zero. `apps/runtime/internal/cacheca/cacheca_test.go` proves them against Go's
+verifier only. The negative tests on the OpenSSL system store and on
+`NODE_EXTRA_CA_CERTS`, and the version floors as conformance keys, were not
+built.
+
+**Fail-open follows §3, with one change to rule 2.** The interceptor
+(`apps/runtime/internal/cacheintercept`) forwards a read to GitHub when the
+cache service cannot be reached, and never replays a write whose outcome is
+ambiguous, so a lost response becomes a skipped save. A miss from the cache
+service is returned to the client and is not forwarded. When the interceptor
+cannot produce the runner bearer, it does not answer with an error. It forwards
+the request to GitHub with the job's own token and does not touch the cache.
+Identity is still never defaulted. The cache service resolves the repository
+from facts the controller pushes at `JobStarted` (ADR 0007), and it answers a
+bearer it cannot verify with `401`.
+
+**Still open, as follow-ups:**
+
+- Interception for container traffic: a CA and redirect for `container:` jobs
+  and service containers, and the CA injected into buildkitd so `type=gha`
+  reaches the cache service (§5).
+- The test matrix §1 made the ship gate: a plain job, a `container:` job and a
+  `type=gha` buildx step, each landing on the interceptor.
+- The CA negative tests on the OpenSSL and Node trust paths, and the version
+  floors as conformance keys (§2).
+- The trust-store delta and redirect as conformance-measured facts, as the
+  Consequences section asks.

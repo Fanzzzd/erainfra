@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -174,6 +175,18 @@ func (c Config) Validate() error {
 	if err := ProfileNameError(c.ScaleSetName); err != nil {
 		return fmt.Errorf("RC_SCALE_SET_NAME: %w", err)
 	}
+	scope, err := RegistrationScope(c.RegistrationURL)
+	if err != nil {
+		return err
+	}
+	// GitHub: "You cannot authenticate using a GitHub App for runners at the
+	// enterprise level." The registration-token endpoint for an enterprise takes
+	// a personal access token (classic) with manage_runners:enterprise.
+	if scope == ScopeEnterprise && c.GitHubApp != nil {
+		return errors.New(
+			"a GitHub App cannot register enterprise runners; set RC_GITHUB_TOKEN to a personal access token (classic) with the manage_runners:enterprise scope",
+		)
+	}
 	if c.MinRunners < 0 || c.MaxRunners < 1 || c.MinRunners > c.MaxRunners {
 		return errors.New("runner bounds require 0 <= RC_MIN_RUNNERS <= RC_MAX_RUNNERS and RC_MAX_RUNNERS >= 1")
 	}
@@ -210,6 +223,60 @@ func (c Config) Validate() error {
 		return errors.New("RC_CACHE_SIGNING_KEY must be at least 32 bytes")
 	}
 	return nil
+}
+
+// Scope is the level a scale set is registered at, read from
+// RC_GITHUB_CONFIG_URL. It decides which GitHub permission the controller's
+// credential needs (README, "GitHub permissions the controller needs").
+type Scope string
+
+const (
+	ScopeRepository   Scope = "repository"
+	ScopeOrganization Scope = "organization"
+	ScopeEnterprise   Scope = "enterprise"
+)
+
+// RegistrationScope classifies a GitHub config URL by the same path rules the
+// scale-set client applies (github.com/actions/scaleset, config.go): one path
+// segment is an organization, `enterprises/<slug>` is an enterprise, and any
+// other two segments are a repository. That client does not check the scheme,
+// host, query or depth, so a URL it would misread is refused here, at startup,
+// rather than at the first registration-token call.
+func RegistrationScope(raw string) (Scope, error) {
+	invalid := func(reason string) error {
+		return fmt.Errorf(
+			"RC_GITHUB_CONFIG_URL %q %s; use https://<host>/<owner>/<repository>, https://<host>/<organization>, or https://<host>/enterprises/<enterprise>",
+			raw, reason,
+		)
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", invalid("is not a URL")
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", invalid("needs an https:// scheme")
+	}
+	if parsed.Host == "" {
+		return "", invalid("has no host")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", invalid("must not carry credentials, a query or a fragment")
+	}
+	path := strings.Trim(parsed.Path, "/")
+	if path == "" {
+		return "", invalid("names no repository, organization or enterprise")
+	}
+	segments := strings.Split(path, "/")
+	switch {
+	case len(segments) == 1:
+		return ScopeOrganization, nil
+	case len(segments) == 2 && strings.EqualFold(segments[0], "enterprises"):
+		return ScopeEnterprise, nil
+	case len(segments) == 2:
+		return ScopeRepository, nil
+	default:
+		return "", invalid("has too many path segments")
+	}
 }
 
 func readSecret(valueEnv, fileEnv string) (string, error) {

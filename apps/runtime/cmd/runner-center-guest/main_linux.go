@@ -53,6 +53,16 @@ func main() {
 // boot argument, which the kernel records at /proc/net/pnp. Copying them from
 // there keeps the Profile the single source of truth rather than baking
 // resolvers into the image.
+//
+// The options line is decided here rather than inherited, and it is the
+// Docker executor's decision (provision-docker.sh): edns0, because
+// ubuntu-latest sets it and without it glibc advertises a 512-byte UDP limit,
+// so a large TXT, SRV or DNSSEC-signed answer comes back truncated and is
+// retried over TCP. trust-ad is deliberately left out even though
+// ubuntu-latest has it. It makes glibc believe the AD bit in a reply, which is
+// only sound for a trusted resolver on a trusted path; hosted's is
+// systemd-resolved on loopback, and this guest's are the Profile's resolvers
+// across the network.
 func resolverConfig(published []byte) (string, error) {
 	var directives []string
 	for _, line := range strings.Split(string(published), "\n") {
@@ -70,6 +80,7 @@ func resolverConfig(published []byte) (string, error) {
 			"the guest kernel published no resolver, so the Profile's nameservers never reached this VM",
 		)
 	}
+	directives = append(directives, "options edns0")
 	return strings.Join(directives, "\n") + "\n", nil
 }
 
