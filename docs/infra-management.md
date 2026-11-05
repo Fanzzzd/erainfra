@@ -185,8 +185,9 @@ secret values themselves need not change.
    migration and rollback are in [secure-node-mesh.md](runbooks/secure-node-mesh.md).
 2. Phase 2a (now): Convex holds the state and its invariants, and the importer copies the Hub into
    it. Existing Hub-mode Nodes do not read the copy.
-3. Phase 2b: the Infra Agent dials Convex with its Node credential, registers its EndpointId, and
-   reads secrets for deploys addressed to it.
+3. Phase 2b (opt-in): the Infra Agent dials Convex with its Node credential, proves and registers
+   its EndpointId, links to other Nodes from Convex's mesh snapshot, and reads secrets for deploys
+   addressed to it. See [Opt-in Convex Node transport](#opt-in-convex-node-transport-phase-2b).
 4. Phase 3: gateway ingress, the deploy pipeline and failover run from Convex, the CLI and dashboard
    follow, and the Hub is retired.
 
@@ -228,32 +229,150 @@ them and a refused run writes nothing. The error names every scope it could not 
 
 ## Opt-in Convex Node transport (phase 2b)
 
-`connect-convex` is a separate Infra Agent mode. Existing `connect` processes, `PORTLESS_*`
-settings, service units and installer defaults do not change. No live Hub database is imported by
-this mode. Use it on a test Node with state deliberately created in Convex. Gateway ingress, the
-build/deploy pipeline, failover scheduling and the CLI/dashboard migration remain phase 3 work.
+`connect-convex` is a separate Infra Agent mode. In it the Infra Agent takes commands from Convex,
+publishes its `erainfra-mesh` endpoint to Convex with a proof that it holds the key, and links to
+other Nodes from the mesh snapshot Convex derives for it. Existing `connect` processes,
+`PORTLESS_*` settings, service units and installer defaults do not change. Use it on test Nodes
+first: the Hub still does ingress, deploys and failover (see [What still needs the Hub](#what-still-needs-the-hub)).
 
-Build the Infra Agent from a checkout containing this mode, or use a release that includes it.
-An authenticated owner/admin issues a credential with `infra/nodes:enroll`. Put the returned
-`erainfra_node_…` value in a 0600 file. This credential is for one Node, not an operator or shared
-fleet token. On Linux/macOS, stop any existing Hub-connected process before starting the opt-in
-process, use a private persistent directory, and keep the credential out of argv:
+### Set up a Node
 
-```sh
-install -d -m 0700 /var/lib/erainfra-node
-# Write the enrollment credential to /etc/erainfra-node.credential, mode 0600.
-env -u PORTLESS_HUB -u ERAINFRA_HUB \
-  ERAINFRA_CONVEX_SITE=https://<deployment>.convex.site \
-  ./infra-agent connect-convex \
-    --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node
+Run these steps for each Node. Both ends of a link must run `connect-convex`: a Node in Hub mode
+never publishes an endpoint to Convex, so Convex never names it as a peer.
+
+1. **Enroll the Node.** An owner or admin calls `infra/nodes:enroll` with the Node's name. The CLI
+   runs a function as a signed-in person with `--identity`, whose `subject` is your `users` row id
+   (shown in the Convex dashboard's data view) followed by `|` and any session label:
+
+   ```sh
+   npx convex run infra/nodes:enroll '{"name":"edge-1"}' \
+     --identity '{"subject":"<users _id>|cli"}'
+   ```
+
+   The result holds the `nodeId` and an `erainfra_node_…` credential, shown once. Enrolling a name
+   again issues another credential for the same Node.
+
+2. **Store the credential** on the Node in a 0600 file, for example
+   `/etc/erainfra-node.credential`. It is for this one Node, not an operator or fleet token.
+
+3. **Give the Node a sidecar.** Build `erainfra-mesh` (`cargo build --release` in `apps/mesh`) or
+   take it from a release that ships it, then pick one:
+   - As an ordinary user, set `ERAINFRA_MESH_BIN=/path/to/erainfra-mesh`. The Infra Agent creates
+     the endpoint key on first start and supervises the sidecar under
+     `$ERAINFRA_PREFIX/run/mesh-control/sidecar` (default `~/.portless`). Keep that directory: the
+     key in it is the Node's mesh identity.
+   - With the `erainfra-mesh.service` that `/install --role node --mesh` sets up (see
+     [secure-node-mesh.md](runbooks/secure-node-mesh.md)), stop and disable the Hub-mode
+     `portless-agent.service`, then set `ERAINFRA_MESH_SOCKET=/run/erainfra-mesh/control.sock` and
+     `ERAINFRA_MESH_CONTROL_DIR=/var/lib/erainfra/mesh-control`.
+
+   With neither variable set, `connect-convex` still runs commands, but it publishes no endpoint
+   and the Node has no mesh links. Windows is not supported for the sidecar in this mode.
+
+4. **Pick the relay policy.** Each Node reads it from its own environment, with the names the Hub
+   uses: `ERAINFRA_MESH_RELAYS` (a JSON array of `https` relay URLs, default `[]`),
+   `ERAINFRA_MESH_RELAY_TOKEN` and `ERAINFRA_MESH_N0_FALLBACK` (`true` or `false`, default
+   `false`). Convex stores no relay token, so the snapshot's `relays` field is ignored. Two Nodes
+   that are both behind NAT need a relay.
+
+5. **Start the agent** with a private persistent state directory and the credential out of argv:
+
+   ```sh
+   install -d -m 0700 /var/lib/erainfra-node
+   env -u PORTLESS_HUB -u ERAINFRA_HUB \
+     ERAINFRA_CONVEX_SITE=https://<deployment>.convex.site \
+     ERAINFRA_MESH_BIN=/usr/local/bin/erainfra-mesh \
+     ./infra-agent connect-convex \
+       --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node
+   ```
+
+   `ERAINFRA_NODE_CREDENTIAL_FILE` and `ERAINFRA_NODE_STATE_DIR` can supply the two paths instead.
+   `ERAINFRA_NODE_CREDENTIAL` is an alternative to the file, not an additional credential. Both
+   modes refuse mixed Hub/Convex configuration, and there is no fallback to a Hub token. The journal
+   requires private POSIX permissions and directory fsync. This command does not install a service.
+
+   Within a few seconds the log shows `published mesh endpoint <EndpointId>`, then
+   `applied mesh snapshot <revision> (<n> peers, <n> exposures, <n> links)`. The applied snapshot,
+   without any relay token, is also written to `desired.json` in the state directory.
+
+6. **Declare links.** Convex has no link command before phase 3. Declare the link on the Hub
+   (`portless link`, or `needs:` in an App) and re-run the Hub importer (above). Each Node picks
+   the change up on its next snapshot poll.
+
+A Hub-mode agent and a `connect-convex` agent can never drive one sidecar at the same time. Each
+takes an exclusive lock on `controller.lock` in its control directory and another on the directory
+that holds the sidecar's socket, so the second one exits at startup with
+`mesh already has a controller`, even when the two use different control directories.
+
+### Endpoint publication and the snapshot
+
+The agent publishes the sidecar's `status.addr`, `{id, relay_urls, direct_addrs}`, the shape
+`set_fleet` takes. Each publication is three steps: `endpoint/challenge` with the address, the
+sidecar's `sign_challenge` over the returned message, and `endpoint` with the signature. Addresses
+are sorted and cut to Convex's limits (8 relay URLs, 16 direct addresses of at most 128 bytes).
+The agent reads the sidecar's status every 5 seconds. It publishes a changed address once the
+address has held for 3 seconds, and at most once every 30 seconds, so a Node switching networks
+publishes once rather than on every poll.
+
+Nothing is applied to the sidecar until this process has published its key. After that the agent
+asks for `state?revision=<last applied>` every 10 seconds. An unchanged revision returns no data and
+applies nothing. A new one goes through the same Reconciler Hub mode uses, which removes exposures
+and links missing from the snapshot before granting new ones. If the sidecar loses its exposures or
+links (a restart without its state file), the agent applies the last snapshot again. A snapshot
+Convex refuses, for example one with conflicting link names, keeps the last applied one and is
+logged; commands keep running, because the mesh loop is separate from command polling.
+
+A Node's EndpointId is fixed once registered. If the sidecar presents another key (a lost or
+replaced `endpoint.key`), Convex refuses it with `endpoint_key_changed` and the agent logs, every
+ten minutes:
+
+```text
+connect-convex: ERROR: Convex refused mesh key <new>: this Node is registered as <old>. ...
 ```
 
-`ERAINFRA_NODE_CREDENTIAL_FILE` and `ERAINFRA_NODE_STATE_DIR` can supply the two paths instead.
-`ERAINFRA_NODE_CREDENTIAL` is an alternative to the file, not an additional credential. Both modes
-refuse mixed Hub/Convex configuration. There is no fallback to a Hub token or a simultaneous Hub
-data channel. The journal requires private POSIX permissions and directory fsync; Windows opt-in
-needs separate ACL/durability validation before support. This command does not install a service
-or switch an existing service's defaults.
+It does not retry. The Node's mesh links stay down until either the original key is restored or an
+owner/admin confirms the change with
+`npx convex run infra/nodes:resetEndpoint '{"nodeId":"<id>"}' --identity '…'`. The agent sees the
+reset in its next heartbeat and publishes the new key; peers pick it up on their next snapshot. A
+key already registered to another Node is refused with `endpoint_in_use`; give the Node its own key
+(a copied key file is the usual cause) and restart the agent.
+
+### Revoke or re-enroll a Node
+
+`infra/nodes:revokeCredential` takes effect on the Node's next request. Revoking a Node's last
+live credential also clears its endpoint registration, so it drops out of every peer's snapshot at
+once and peers close its connections when they apply it. Enrolling the Node again issues a new
+credential, and the Node must prove a key again before any peer is granted to it. To rotate a
+credential without a gap, enroll again first and revoke the old credential after the Node uses the
+new one; that keeps the endpoint.
+
+### What still needs the Hub
+
+Phase 3 moves these to Convex. Until then they run only on the Hub, and a `connect-convex` Node
+takes no part in them:
+
+- gateway ingress: public `<app>.<domain>` routes reach a Node over the Hub's data channel;
+- the deploy pipeline: builds, push-to-deploy and `portless deploy`. The Convex command path runs
+  a deployment only for an existing active deployment and live App lease, and nothing creates one
+  yet;
+- failover scheduling;
+- declaring links and the `portless` CLI and dashboard, which talk to the Hub;
+- links to Nodes still in Hub mode, and legacy dumbpipe links.
+
+### Roll back to Hub mode
+
+1. Stop `connect-convex`. Its sidecar keeps running if it is the systemd service; a supervised one
+   stops with the agent.
+2. Restore the original `connect` command or re-enable `portless-agent.service`, with its
+   `ERAINFRA_HUB`/`PORTLESS_HUB` and token, and unset `ERAINFRA_CONVEX_SITE` and the
+   `ERAINFRA_NODE_*` variables. Keep `ERAINFRA_MESH_SOCKET` or `ERAINFRA_MESH_BIN` if the Node
+   should stay on the mesh: Hub mode drives the same sidecar, key and EndpointId, and its next
+   healer pass replaces the Convex grants with the Hub's.
+3. Keep the state directory and its journal. Do not run both modes against the same workloads: the
+   Hub cannot observe Convex command leases or journal outcomes.
+
+Peers still in `connect-convex` mode keep this Node in their snapshots while its credential is live.
+Revoke its credentials if it should leave the Convex mesh.
 
 ### Node API and execution
 
@@ -316,28 +435,24 @@ state feed before enabling this path at scale.
 The full desired snapshot is `convexnode.DesiredMesh` in the Go client:
 `{v:1,fleet:[{id,relay_urls,direct_addrs}],relays:{relays,n0_fallback},exposures,links}`.
 It is derived only from standalone `meshLinks` and declared App dependency links involving this
-Node. Each exposure has the exact declared consumers' `allowed_peers`, never the whole fleet.
-Peers without a successful key-possession proof are omitted. Addresses retain all relay URLs in
+Node. Each exposure has the exact declared consumers' `allowed_peers`, never the whole fleet; a
+missing or empty grant denies everyone. A peer appears in `fleet` and in any `allowed_peers` only
+while its endpoint was registered through a verified challenge (`endpointProvenAt`) and it still
+holds an unrevoked credential. An EndpointId recorded without a proof, as the phase-2a
+`registerEndpoint` does, never grants anything. Addresses retain all relay URLs in
 `nodes.meshAddress`; the phase-2a singular `endpointAddr.relayUrl/directAddresses` has an explicit
 legacy conversion and is never silently treated as the Rust wire shape.
-
-A future reconciler maps this snapshot to #181's NDJSON v1 `set_fleet`, `set_relays`, `expose` and
-`link`, and removes absent names with `unexpose`/`unlink`. Missing/empty grants deny all. This PR
-only saves `desired.json`; it does not launch or configure a sidecar, gateway or ingress proxy.
-The phase-1b worker owns the reusable Go mesh client/reconciler and legacy Hub adapter.
 
 Endpoint registration signs a server-generated UTF-8 message of at most 4096 bytes:
 `erainfra/node-endpoint/v1\n` followed by JSON containing the authenticated Node id, credential id,
 random 256-bit nonce and exact `{id,relay_urls,direct_addrs}` address. The challenge expires after
-60 seconds and is consumed once. Its Ed25519 signature is verified with pinned pure-JavaScript
-`@noble/curves`; no unverified EndpointId is accepted through HTTP. The coordinated sidecar
-extension is `{v:1,op:"sign_challenge",message}` returning a base64 `signature` and `endpoint_id`.
-The registration path remains provisional until that sidecar operation/client is integrated; the
-Go poller does not publish `status` as if it proved key possession.
-
-To roll back, stop `connect-convex`, unset its configuration, and restore the original Hub `connect`
-command and environment. Keep the Node journal even while the Hub serves it. Do not run both
-controllers against the same workloads: the Hub cannot observe Convex leases or journal outcomes.
+60 seconds and is consumed once; an endpoint reset deletes any challenge still outstanding. The
+Infra Agent passes the message to the sidecar's `{v:1,op:"sign_challenge",message}` unchanged, and
+the sidecar signs those exact bytes with the endpoint key, which never leaves it. The result is
+`{endpoint_id, signature}` with a standard base64 Ed25519 signature. Convex verifies it with pinned
+pure-JavaScript `@noble/curves` (strict, not ZIP-215). The three sides check the same domain prefix
+and 4096-byte limit. The heartbeat returns the Node's registered `endpointId`, or `null`, so the
+agent can tell a key it may publish from one Convex will refuse.
 
 ## Develop
 
