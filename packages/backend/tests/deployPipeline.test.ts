@@ -1,0 +1,666 @@
+// The App deploy pipeline and failover run from Convex (infra/pipeline.ts, infra/failover.ts),
+// driven end to end through the operator API and the Node API, with Infra Agents simulated by the
+// test. Nothing here reaches a network.
+import { generateKeyPairSync } from "node:crypto";
+import { convexTest } from "convex-test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api, internal } from "../convex/_generated/api";
+import type { Id } from "../convex/_generated/dataModel";
+import schema from "../convex/schema";
+import { implicitSpec, parseSpec } from "../convex/infra/spec";
+import { FAILOVER_GRACE_MS, NODE_SILENCE_MS } from "../convex/infra/policy";
+
+const modules = import.meta.glob("../convex/**/*.ts");
+const T0 = Date.parse("2026-11-06T00:00:00Z");
+
+const SHOP_SPEC = `
+services:
+  web:
+    build: .
+    port: 3000
+    route: true
+    needs: [db]
+    env: { NODE_ENV: production }
+  db:
+    image: 127.0.0.1:5000/postgres:16
+    port: 5432
+    node: node-b
+    volumes: [pgdata:/var/lib/postgresql/data]
+`;
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(T0);
+  process.env.ERAINFRA_SECRETS_MASTER_KEY = "22".repeat(32);
+  process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  for (const name of [
+    "ERAINFRA_SECRETS_MASTER_KEY",
+    "ERAINFRA_APP_DOMAIN",
+    "ERAINFRA_GH_APP_ID",
+    "ERAINFRA_GH_APP_KEY",
+    "ERAINFRA_GH_WEBHOOK_SECRET",
+  ])
+    delete process.env[name];
+});
+
+type Outcome = "success" | "failure" | "unknown";
+type Cmd = { id: Id<"nodeCommands">; idempotencyKey: string; kind: string };
+
+async function setup(names = ["node-a", "node-b", "node-c"]) {
+  const t = convexTest(schema, modules);
+  const owner = await t.run((ctx) => ctx.db.insert("users", { email: "o@x.dev", role: "owner" }));
+  const human = t.withIdentity({ subject: `${owner}|session` });
+  const nodes: Record<string, { nodeId: Id<"nodes">; credential: string }> = {};
+  for (const name of names) nodes[name] = await human.mutation(api.infra.nodes.enroll, { name });
+  const admin = (await human.mutation(api.apiTokens.create, { name: "ci", scope: "admin" })).token;
+  const reader = (await human.mutation(api.apiTokens.create, { name: "ro", scope: "read" })).token;
+
+  const beat = async (...which: string[]) => {
+    for (const name of which.length ? which : names)
+      await t.mutation(internal.infra.nodeState.heartbeat, {
+        credential: nodes[name].credential,
+        version: "test",
+      });
+  };
+  // Let every scheduled tick and kick run. They sit on real zero-delay timers.
+  const settle = () => t.finishAllScheduledFunctions(() => {});
+  const nodeApi = (path: string, name: string, data?: unknown) =>
+    t.fetch(`/api/v1/nodes/${path}`, {
+      method: data === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: `Bearer ${nodes[name].credential}`,
+        "Content-Type": "application/json",
+      },
+      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+    });
+  const operator = (path: string, token: string, data?: unknown) =>
+    t.fetch(`/api/v1/${path}`, {
+      method: data === undefined ? "GET" : "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+    });
+  const pending = async (name: string): Promise<Cmd[]> =>
+    (
+      await t.query(internal.infra.nodeState.pending, {
+        credential: nodes[name].credential,
+        cursor: null,
+      })
+    ).commands as Cmd[];
+
+  /**
+   * One poll of a simulated Infra Agent over the real Node HTTP API: claim each unsettled command,
+   * fetch its payload, let `decide` say how it went, report. Returns what it saw.
+   */
+  const agent = async (
+    name: string,
+    decide: (payload: any, cmd: Cmd) => { outcome: Outcome; spec?: string } = () => ({
+      outcome: "success",
+    }),
+  ) => {
+    const seen: Array<{ cmd: Cmd; payload: any }> = [];
+    for (const cmd of await pending(name)) {
+      const claim = await nodeApi("commands/claim", name, { commandId: cmd.id, owner: name });
+      expect(claim.status).toBe(200);
+      const { epoch } = (await claim.json()) as { epoch: number };
+      const body = { commandId: cmd.id, owner: name, epoch };
+      const payload = await nodeApi("commands/payload", name, body);
+      expect(payload.status).toBe(200);
+      const p = await payload.json();
+      seen.push({ cmd, payload: p });
+      const result = decide(p, cmd);
+      const reported = await nodeApi("commands/result", name, { ...body, ...result });
+      expect(reported.status).toBe(200);
+    }
+    await settle();
+    return seen;
+  };
+  const deployment = (id: string) =>
+    t.run(async (ctx) => (await ctx.db.get(id as Id<"appDeployments">))!);
+  const upload = async (bytes = "source-tarball") =>
+    await t.run((ctx) => ctx.storage.store(new Blob([bytes])));
+  const startUpload = async (app: string, storageId: string, extra: object = {}) => {
+    const res = await operator("deployments", admin, {
+      app,
+      upload: storageId,
+      buildNode: "node-a",
+      node: "node-a",
+      ...extra,
+    });
+    expect(res.status).toBe(202);
+    const id = ((await res.json()) as { deployment: { id: string } }).deployment.id;
+    await settle();
+    return id;
+  };
+
+  /** Drive a full deploy of the shop App from an upload to `done`. */
+  const deployShop = async () => {
+    const id = await startUpload("shop", await upload());
+    await agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    await agent("node-a"); // build web
+    await agent("node-a"); // deploy web
+    await agent("node-b"); // deploy db
+    return id;
+  };
+  return {
+    t,
+    human,
+    nodes,
+    admin,
+    reader,
+    beat,
+    settle,
+    nodeApi,
+    operator,
+    pending,
+    agent,
+    deployment,
+    upload,
+    startUpload,
+    deployShop,
+  };
+}
+
+describe("spec parsing", () => {
+  it("keeps the Hub's rules: route naming, needs, named volumes only, strict keys", () => {
+    const parsed = parseSpec(SHOP_SPEC, "shop");
+    expect(parsed).toMatchObject({ ok: true });
+    if (!parsed.ok) return;
+    expect(parsed.spec.services.map((s) => [s.name, s.route ?? null])).toEqual([
+      ["web", "shop"],
+      ["db", null],
+    ]);
+    expect(parseSpec("services:\n  web:\n    image: x\n    volumes: [/etc:/etc]\n", "a")).toMatchObject({
+      ok: false,
+    });
+    expect(parseSpec("services:\n  web:\n    image: x\n    privileged: true\n", "a")).toEqual({
+      ok: false,
+      error: 'portless.yaml: services.web: Unrecognized key: "privileged"',
+    });
+    expect(parseSpec("services:\n  web:\n    build: ../x\n", "a")).toMatchObject({ ok: false });
+    expect(parseSpec("services:\n  web:\n    image: x\n    needs: [db]\n", "a")).toEqual({
+      ok: false,
+      error: 'service "web": needs unknown service "db"',
+    });
+    expect(implicitSpec("a", 8080).services[0]).toMatchObject({ route: "a", port: 8080 });
+  });
+});
+
+describe("deploy pipeline", () => {
+  it("runs spec, plan, build, deploy and link, each step a keyed Node command", async () => {
+    const s = await setup();
+    await s.beat();
+    await s.human.mutation(api.infra.secrets.set, { app: "shop", vars: { API_KEY: "k-1" } });
+    await s.human.mutation(api.infra.secrets.set, {
+      app: "shop",
+      service: "db",
+      vars: { POSTGRES_PASSWORD: "pw" },
+    });
+    const storageId = await s.upload();
+    const id = await s.startUpload("shop", storageId);
+    expect((await s.deployment(id)).stage).toBe("reading-spec");
+
+    const spec = await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    expect(spec).toHaveLength(1);
+    expect(spec[0].cmd.idempotencyKey).toBe(`${id}:spec:${s.nodes["node-a"].nodeId}`);
+    // The build Node fetches the upload through a URL in its claimed payload, not a credential.
+    expect(spec[0].payload).toMatchObject({ kind: "spec", source: { kind: "upload" } });
+    expect(spec[0].payload.source.url).toMatch(/^https?:\/\//);
+    expect((await s.deployment(id)).stage).toBe("building");
+
+    const build = await s.agent("node-a");
+    expect(build.map((b) => b.payload)).toEqual([
+      {
+        kind: "build",
+        app: "shop",
+        service: "web",
+        source: { kind: "upload", url: spec[0].payload.source.url },
+        dir: "",
+        image: `127.0.0.1:5000/shop-web:${id.slice(0, 12)}`,
+      },
+    ]);
+    expect((await s.deployment(id)).stage).toBe("deploying");
+
+    const onA = await s.agent("node-a");
+    const onB = await s.agent("node-b");
+    expect(onA[0].cmd.idempotencyKey).toBe(`${id}:deploy:${s.nodes["node-a"].nodeId}`);
+    const web = onA[0].payload.services[0];
+    expect(web).toMatchObject({ name: "web", route: "shop" });
+    expect(web.env).toMatchObject({
+      PORT: "3000",
+      NODE_ENV: "production",
+      API_KEY: "k-1",
+      DB_HOST: "host.docker.internal",
+    });
+    // A service-private secret reaches only the Node running that service.
+    expect(web.env.POSTGRES_PASSWORD).toBeUndefined();
+    expect(onB[0].payload.services[0].env).toMatchObject({ POSTGRES_PASSWORD: "pw", API_KEY: "k-1" });
+
+    const done = await s.deployment(id);
+    expect(done).toMatchObject({ stage: "done", urls: ["https://shop.apps.example.com"] });
+    const state = await s.t.run(async (ctx) => ({
+      app: await ctx.db
+        .query("apps")
+        .withIndex("by_name", (q) => q.eq("name", "shop"))
+        .unique(),
+      route: await ctx.db
+        .query("appRoutes")
+        .withIndex("by_name", (q) => q.eq("name", "shop"))
+        .unique(),
+      lease: await ctx.db
+        .query("appLeases")
+        .withIndex("by_app", (q) => q.eq("app", "shop"))
+        .unique(),
+      upload: await ctx.storage.get(storageId),
+      commands: await ctx.db
+        .query("nodeCommands")
+        .withIndex("by_deployment", (q) => q.eq("deploymentId", id as Id<"appDeployments">))
+        .collect(),
+      audit: (await ctx.db.query("auditEvents").collect()).map((e) => [e.action, e.outcome]),
+    }));
+    expect(state.app?.services.map((x) => [x.name, x.nodeId])).toEqual([
+      ["web", s.nodes["node-a"].nodeId],
+      ["db", s.nodes["node-b"].nodeId],
+    ]);
+    expect(state.app?.links).toEqual([
+      expect.objectContaining({
+        name: "shop-db",
+        providerNodeId: s.nodes["node-b"].nodeId,
+        consumerNodeId: s.nodes["node-a"].nodeId,
+        localPort: Number(web.env.DB_PORT),
+      }),
+    ]);
+    expect(state.app?.spec?.services).toHaveLength(2);
+    expect(state.route).toMatchObject({ nodeId: s.nodes["node-a"].nodeId, port: web.port });
+    expect(state.lease?.holder).toBeUndefined();
+    expect(state.upload).toBeNull();
+    expect(state.commands.map((c) => c.status)).toEqual([
+      "success",
+      "success",
+      "success",
+      "success",
+    ]);
+    expect(state.audit).toContainEqual(["apps.deploy.request", "attempt"]);
+    expect(state.audit).toContainEqual(["apps.deploy", "success"]);
+
+    // Ticking a finished run again enqueues nothing.
+    await s.t.mutation(internal.infra.pipeline.tick, { deploymentId: id as Id<"appDeployments"> });
+    expect(await s.pending("node-a")).toEqual([]);
+
+    // Status and history through the operator API, readable with a read token.
+    const got = await s.operator(`deployments/${id}`, s.reader);
+    expect(got.status).toBe(200);
+    expect(await got.json()).toMatchObject({
+      deployment: { id, app: "shop", stage: "done", buildNode: "node-a" },
+    });
+    const listed = (await (await s.operator("deployments?app=shop", s.reader)).json()) as {
+      deployments: Array<{ id: string }>;
+    };
+    expect(listed.deployments.map((d) => d.id)).toEqual([id]);
+
+    // A redeploy gets the same host ports back: they are stable per (Node, key).
+    await s.beat();
+    const again = await s.startUpload("shop", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    await s.agent("node-a");
+    const redeployed = await s.agent("node-a");
+    await s.agent("node-b");
+    expect((await s.deployment(again)).stage).toBe("done");
+    expect(redeployed[0].payload.services[0]).toMatchObject({ port: web.port });
+    expect(redeployed[0].payload.services[0].env.DB_PORT).toBe(web.env.DB_PORT);
+  });
+
+  it("fails the run when a step fails, cancels what is left and frees the App", async () => {
+    const s = await setup();
+    await s.beat();
+    const storageId = await s.upload();
+    const id = await s.startUpload("shop", storageId);
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    await s.agent("node-a", () => ({ outcome: "failure" }));
+    const run = await s.deployment(id);
+    expect(run).toMatchObject({ stage: "failed", detail: "building" });
+    expect(run.error).toContain("build-web failed on node-a");
+    const after = await s.t.run(async (ctx) => ({
+      app: await ctx.db.query("apps").first(),
+      lease: await ctx.db.query("appLeases").first(),
+      upload: await ctx.storage.get(storageId),
+    }));
+    expect(after.app).toBeNull();
+    expect(after.lease?.holder).toBeUndefined();
+    expect(after.upload).toBeNull();
+    expect(await s.pending("node-b")).toEqual([]);
+  });
+
+  it("fails a run whose build Node stops heartbeating, and a run with an unknown outcome", async () => {
+    const s = await setup();
+    await s.beat();
+    const id = await s.startUpload("shop", await s.upload());
+    // The pulse keeps the run's lease while it waits; node-a stays silent.
+    for (let at = T0 + 10_000; at <= T0 + NODE_SILENCE_MS + 10_000; at += 10_000) {
+      vi.setSystemTime(at);
+      await s.beat("node-b", "node-c");
+      await s.t.mutation(internal.infra.pipeline.pulse, {});
+      await s.settle();
+    }
+    expect(await s.deployment(id)).toMatchObject({
+      stage: "failed",
+      error: "node-a has stopped sending heartbeats",
+    });
+
+    await s.beat();
+    const second = await s.startUpload("shop", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "unknown" }));
+    expect((await s.deployment(second)).error).toContain("unknown outcome");
+  });
+
+  it("refuses a stale epoch once another holder takes the App's lease mid-run", async () => {
+    const s = await setup();
+    await s.beat();
+    const first = await s.startUpload("shop", await s.upload());
+    const [cmd] = await s.pending("node-a");
+    const claim = await s.t.mutation(internal.infra.nodeCommands.claim, {
+      credential: s.nodes["node-a"].credential,
+      commandId: cmd.id,
+      owner: "agent",
+    });
+    // The coordinator stalls past the lease TTL; another operation takes the App.
+    vi.setSystemTime(T0 + 61_000);
+    await s.beat();
+    const taken = await s.t.mutation(internal.infra.leases.acquire, {
+      app: "shop",
+      holder: "failover:elsewhere",
+      operation: "failover",
+    });
+    expect(taken).toMatchObject({ grant: true, epoch: 2 });
+
+    // The Node's step for the old epoch can no longer fetch its payload or report.
+    const body = {
+      credential: s.nodes["node-a"].credential,
+      commandId: cmd.id,
+      owner: "agent",
+      epoch: claim.epoch,
+    };
+    await s.t.mutation(internal.infra.nodeCommands.renew, body).catch(() => undefined);
+    await expect(s.t.query(internal.infra.nodeCommands.payload, body)).rejects.toThrow(/Stale/);
+    await expect(
+      s.t.mutation(internal.infra.nodeCommands.report, {
+        ...body,
+        outcome: "success",
+        spec: SHOP_SPEC,
+      }),
+    ).rejects.toThrow(/Stale/);
+
+    // The run's own tick refuses to advance on the old epoch and fails the run instead.
+    await s.t.mutation(internal.infra.pipeline.tick, { deploymentId: first as Id<"appDeployments"> });
+    expect(await s.deployment(first)).toMatchObject({
+      stage: "failed",
+      error: "lost its App lease mid-run",
+    });
+    const lease = await s.t.run((ctx) => ctx.db.query("appLeases").first());
+    expect(lease).toMatchObject({ holder: "failover:elsewhere", epoch: 2 });
+    expect(await s.t.run((ctx) => ctx.db.query("apps").first())).toBeNull();
+  });
+
+  it("runs two deploys of one App one after the other", async () => {
+    const s = await setup();
+    await s.beat();
+    const one = await s.startUpload("shop", await s.upload("one"));
+    const two = await s.startUpload("shop", await s.upload("two"));
+    expect((await s.deployment(one)).stage).toBe("reading-spec");
+    expect((await s.deployment(two)).stage).toBe("queued");
+    // The second gets no Node step while the first holds the lease, however often it is ticked.
+    await s.t.mutation(internal.infra.pipeline.pulse, {});
+    await s.settle();
+    expect((await s.deployment(two)).stage).toBe("queued");
+    expect((await s.pending("node-a")).map((c) => c.idempotencyKey)).toEqual([
+      `${one}:spec:${s.nodes["node-a"].nodeId}`,
+    ]);
+
+    await s.agent("node-a", () => ({ outcome: "failure" }));
+    expect((await s.deployment(one)).stage).toBe("failed");
+    expect((await s.deployment(two)).stage).toBe("reading-spec");
+    expect((await s.deployment(two)).leaseEpoch).toBe((await s.deployment(one)).leaseEpoch! + 1);
+  });
+
+  it("refuses deploy requests without an admin token and audits refusals", async () => {
+    const s = await setup();
+    expect((await s.operator("deployments/uploads", s.reader, {})).status).toBe(403);
+    expect((await s.operator("deployments", s.reader, { app: "shop" })).status).toBe(403);
+    const created = await s.operator("deployments/uploads", s.admin, {});
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as { uploadUrl: string }).uploadUrl).toMatch(/^https?:\/\//);
+    const bad = await s.operator("deployments", s.admin, { app: "shop", upload: "nope" });
+    expect(bad.status).toBe(400);
+    expect(await s.operator("deployments", s.admin, { app: "shop", argv: ["sh"] })).toMatchObject({
+      status: 400,
+    });
+    const audit = await s.t.run((ctx) => ctx.db.query("auditEvents").collect());
+    const byTokens = audit.filter((e) => e.actor.startsWith("token:"));
+    expect(byTokens.map((e) => [e.actor, e.action, e.outcome])).toEqual([
+      ["token:ci", "apps.deploy.upload", "success"],
+      ["token:ci", "apps.deploy.request", "deny"],
+    ]);
+  });
+});
+
+async function sign(secret: string, body: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return `sha256=${Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+describe("push-to-deploy", () => {
+  it("deploys once per delivery and lends the build Node a read-only token for one repository", async () => {
+    const s = await setup();
+    await s.beat();
+    const binding = await s.human.mutation(api.infra.git.bind, {
+      repo: "acme/shop",
+      branch: "main",
+      app: "shop",
+      buildNodeId: s.nodes["node-a"].nodeId,
+      deployNodeId: s.nodes["node-a"].nodeId,
+    });
+    process.env.ERAINFRA_GH_WEBHOOK_SECRET = "whsec";
+    const sha = "a".repeat(40);
+    const body = JSON.stringify({
+      ref: "refs/heads/main",
+      after: sha,
+      repository: { full_name: "acme/shop" },
+    });
+    const deliver = async () =>
+      await s.t.fetch("/github/webhook", {
+        method: "POST",
+        headers: {
+          "X-GitHub-Event": "push",
+          "X-GitHub-Delivery": "delivery-1",
+          "X-Hub-Signature-256": await sign("whsec", body),
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+    expect(await (await deliver()).text()).toBe("Accepted");
+    expect(await (await deliver()).text()).toBe("Duplicate");
+    await s.settle();
+    const runs = await s.t.run((ctx) => ctx.db.query("appDeployments").collect());
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      stage: "reading-spec",
+      source: { kind: "git", repo: "acme/shop", ref: "main", sha },
+      gitBindingId: binding,
+    });
+
+    // With the deploy App configured, the claimed payload carries a token minted for this one
+    // repository with Contents read, and the token is stored nowhere in Convex.
+    const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    process.env.ERAINFRA_GH_APP_ID = "12345";
+    process.env.ERAINFRA_GH_APP_KEY = pair.privateKey
+      .export({ format: "pem", type: "pkcs8" })
+      .toString();
+    const calls: Array<{ url: string; body?: unknown }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, body: init.body ? JSON.parse(init.body as string) : undefined });
+      if (url.endsWith("/repos/acme/shop/installation"))
+        return new Response(JSON.stringify({ id: 77 }), { status: 200 });
+      return new Response(JSON.stringify({ token: "ghs_minted", expires_at: "2026-11-06T01:00:00Z" }), {
+        status: 201,
+      });
+    });
+    const seen = await s.agent("node-a", () => ({
+      outcome: "success",
+      spec: "services:\n  web:\n    build: .\n    port: 8080\n    route: true\n",
+    }));
+    expect(seen[0].payload.source).toEqual({
+      kind: "git",
+      repo: "acme/shop",
+      ref: "main",
+      sha,
+      token: "ghs_minted",
+    });
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://api.github.com/repos/acme/shop/installation",
+      "https://api.github.com/app/installations/77/access_tokens",
+    ]);
+    expect(calls[1].body).toEqual({ repositories: ["shop"], permissions: { contents: "read" } });
+    const dump = JSON.stringify(
+      await s.t.run(async (ctx) => [
+        await ctx.db.query("nodeCommands").collect(),
+        await ctx.db.query("appDeployments").collect(),
+        await ctx.db.query("auditEvents").collect(),
+      ]),
+    );
+    expect(dump).not.toContain("ghs_minted");
+
+    await s.agent("node-a"); // build
+    await s.agent("node-a"); // deploy
+    const status = await s.t.run((ctx) => ctx.db.get(binding));
+    expect(status?.lastStatus).toMatchObject({ sha, ok: true, stage: "done" });
+  });
+});
+
+describe("failover", () => {
+  it("waits for a missed-heartbeat window and a grace period, not one gap", async () => {
+    const s = await setup();
+    await s.beat();
+    await s.deployShop();
+    const check = () => s.t.mutation(internal.infra.failover.check, {});
+
+    // Two heartbeat intervals without node-a: a late or lost beat, not an outage.
+    vi.setSystemTime(T0 + 80_000);
+    await s.beat("node-b", "node-c");
+    expect(await check()).toEqual([]);
+    // Past the window: suspected, but nothing moves on one observation.
+    vi.setSystemTime(T0 + NODE_SILENCE_MS + 5_000);
+    await s.beat("node-b", "node-c");
+    expect(await check()).toEqual([]);
+    vi.setSystemTime(T0 + NODE_SILENCE_MS + 5_000 + FAILOVER_GRACE_MS - 1_000);
+    expect(await check()).toEqual([]);
+    // node-a comes back within the grace period: the suspicion is dropped.
+    await s.beat("node-a");
+    expect(await check()).toEqual([]);
+    vi.setSystemTime(T0 + NODE_SILENCE_MS + 5_000 + FAILOVER_GRACE_MS + 1_000);
+    expect(await check()).toEqual([]);
+    const runs = await s.t.run((ctx) => ctx.db.query("appDeployments").collect());
+    expect(runs.filter((r) => r.operation === "failover")).toEqual([]);
+  });
+
+  it("moves every service off a lost primary Node, then flips the route", async () => {
+    const s = await setup();
+    await s.beat();
+    await s.deployShop();
+    const a = s.nodes["node-a"].nodeId;
+    const b = s.nodes["node-b"].nodeId;
+
+    let now = T0 + NODE_SILENCE_MS + 1_000;
+    vi.setSystemTime(now);
+    await s.beat("node-b", "node-c");
+    expect(await s.t.mutation(internal.infra.failover.check, {})).toEqual([]);
+    now += FAILOVER_GRACE_MS;
+    vi.setSystemTime(now);
+    await s.beat("node-b", "node-c");
+    const [runId] = await s.t.mutation(internal.infra.failover.check, {});
+    expect(runId).toBeDefined();
+    await s.settle();
+    // One outage fails over once.
+    expect(await s.t.mutation(internal.infra.failover.check, {})).toEqual([]);
+
+    const run = await s.deployment(runId);
+    expect(run).toMatchObject({ operation: "failover", stage: "deploying" });
+    // node-b is the first survivor by name. web joins db there, so only node-b redeploys.
+    expect(run.plan?.deployNodeIds).toEqual([b]);
+    expect(await s.pending("node-c")).toEqual([]);
+    const lease = await s.t.run((ctx) => ctx.db.query("appLeases").first());
+    expect(lease).toMatchObject({ operation: "failover" });
+
+    const routeBefore = await s.t.run((ctx) => ctx.db.query("appRoutes").first());
+    expect(routeBefore?.nodeId).toBe(a);
+    const onB = await s.agent("node-b");
+    expect(onB[0].payload.services.map((x: { name: string; image: string }) => x.name)).toEqual([
+      "web",
+      "db",
+    ]);
+    // No rebuild: the image already built is redeployed.
+    expect(onB[0].payload.services[0].image).toMatch(/^127\.0\.0\.1:5000\/shop-web:/);
+    expect(onB[0].payload.services[0].env).toMatchObject({ DB_HOST: "db", DB_PORT: "5432" });
+
+    expect((await s.deployment(runId)).stage).toBe("done");
+    const after = await s.t.run(async (ctx) => ({
+      app: await ctx.db.query("apps").first(),
+      route: await ctx.db.query("appRoutes").first(),
+      retire: await ctx.db
+        .query("nodeCommands")
+        .withIndex("by_node_status", (q) => q.eq("nodeId", a).eq("status", "pending"))
+        .collect(),
+    }));
+    expect(after.app?.nodeId).toBe(b);
+    expect(after.app?.services.map((x) => [x.name, x.nodeId])).toEqual([
+      ["web", b],
+      ["db", b],
+    ]);
+    expect(after.app?.links).toEqual([]);
+    expect(after.route?.nodeId).toBe(b);
+    // The lost Node, if it was only partitioned, removes its copy when it returns.
+    expect(after.retire.map((c) => c.command)).toEqual([
+      { kind: "operate", operation: { name: "container.remove", args: { name: "shop-web" } } },
+    ]);
+  });
+
+  it("moves a service on a lost secondary Node and records each service's new Node", async () => {
+    const s = await setup();
+    await s.beat();
+    await s.deployShop();
+    const a = s.nodes["node-a"].nodeId;
+    const c = s.nodes["node-c"].nodeId;
+    // node-b (db only; the App's primary is node-a) is lost. The Hub keyed group failover on the
+    // primary Node alone and would not have moved db at all.
+    let now = T0 + NODE_SILENCE_MS + 1_000;
+    vi.setSystemTime(now);
+    await s.beat("node-a", "node-c");
+    await s.t.mutation(internal.infra.failover.check, {});
+    now += FAILOVER_GRACE_MS;
+    vi.setSystemTime(now);
+    await s.beat("node-a", "node-c");
+    const [runId] = await s.t.mutation(internal.infra.failover.check, {});
+    await s.settle();
+    const run = await s.deployment(runId);
+    // node-a is the first survivor; db joins web there.
+    expect(run.failover).toMatchObject({ toNodeId: a });
+    await s.agent("node-a");
+    expect((await s.deployment(runId)).stage).toBe("done");
+    const app = await s.t.run((ctx) => ctx.db.query("apps").first());
+    expect(app?.nodeId).toBe(a);
+    expect(app?.services.map((x) => [x.name, x.nodeId])).toEqual([
+      ["web", a],
+      ["db", a],
+    ]);
+    expect(app?.services.some((x) => x.nodeId === c)).toBe(false);
+  });
+});
