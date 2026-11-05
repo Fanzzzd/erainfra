@@ -1,6 +1,6 @@
 # ADR 0013: Run controllers off the Workers
 
-- Status: Accepted
+- Status: Superseded by [ADR 0014](0014-controllers-run-on-the-workers-under-a-lease.md)
 - Date: 2026-11-05
 - Owners: EraInfra
 

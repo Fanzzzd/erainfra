@@ -389,9 +389,11 @@ such as `ubuntu-latest` — and warns about a legal name outside the scheme. `rc
 predate it and keep working; a Profile is renamed by registering the new name beside the old one,
 never in place, because GitHub holds the scale-set name.
 
-Run controllers on a host that is not a Worker
-([ADR 0013](docs/adr/0013-run-controllers-off-the-workers.md)): a Worker reboot or rollout must not
-take job intake with it.
+Today each controller runs on a host that is not a Worker
+([ADR 0013](docs/adr/0013-run-controllers-off-the-workers.md)), so a Worker reboot or rollout does not
+take job intake with it. [ADR 0014](docs/adr/0014-controllers-run-on-the-workers-under-a-lease.md)
+replaces that with standby controllers on every Worker and a per-Profile lease held in Convex, which
+removes the controller host; until that lands, keep the dedicated host.
 
 Stopping a controller does not remove its scale set. GitHub keeps routing `runs-on: <profile>` jobs
 to it, and with no listener they wait until GitHub cancels them after 24 hours. Retire a Profile in
