@@ -554,7 +554,27 @@ pnpm convex env set ERAINFRA_GH_APP_KEY "$(cat app.private-key.pem)"
 pnpm convex env set ERAINFRA_GH_WEBHOOK_SECRET <webhook secret>
 ```
 
-Bind a branch with `infra/git:bind`. A push to it queues one run per `X-GitHub-Delivery`: the
+Bind a branch with an admin token, from the CLI or the operator API:
+
+```sh
+erainfra git bind acme/web main --app web                       # first live Node builds and runs it
+erainfra git bind acme/web release/1.2 --app web-rc --build-node edge-1 --deploy-node edge-2 --port 3000
+erainfra git bindings                                           # repository, branch, App, Nodes, last run
+erainfra git unbind acme/web release/1.2
+```
+
+`POST /api/v1/git/bindings` takes `{repo, branch, app, buildNode?, deployNode?, port?}`, with Nodes
+by name. `DELETE /api/v1/git/bindings?repo=<owner/name>&branch=<branch>` removes one; the branch is
+a query parameter because it may contain `/`. `--port` is for a repository without a
+`portless.yaml`. The App need not exist: the first push creates it. Convex refuses a branch git
+would refuse or one written as `refs/heads/…`, since neither can match a push. It answers 409 to a
+second binding of the same repository branch (repository names ignore case) and to a binding past
+the 200th. A binding does nothing until the deploy App's webhook above reaches
+`/github/webhook` and verifies against `ERAINFRA_GH_WEBHOOK_SECRET`. The dashboard functions
+`infra/git:bind`, `unbind` and `list` run the same code for a signed-in operator, admin or owner;
+`npx convex run` carries no user, so it cannot bind.
+
+A push to a bound branch queues one run per `X-GitHub-Delivery`: the
 delivery row and the run commit in one transaction, so a redelivery or a duplicate delivery queues
 nothing. The run builds the pushed commit, not whatever the branch points at when the build starts.
 For each spec and build step, Convex mints a one-hour installation token for that one repository
@@ -890,6 +910,10 @@ erainfra links add gpu-box:8080 web-box     # web-box reaches gpu-box's 8080 at 
 erainfra links list                         # transport and state
 erainfra links remove gpu-box-8080-web-box
 
+erainfra git bind acme/web main --app web   # deploy web on every push to main
+erainfra git bindings
+erainfra git unbind acme/web main
+
 erainfra logs my-app --service web --lines 200
 erainfra logs --node edge-1 --unit erainfra-mesh.service
 ```
@@ -974,7 +998,8 @@ expire before it runs. An Infra Agent older than this change answers a logs comm
 
 All on the Convex site origin, with `Authorization: Bearer <API token>`. Errors are
 `{"error":{"code","message"}}`: 400 for a refused request, 401 without a valid token, 403 for a
-token without the scope, 404 for a name that does not exist, 409 while a deploy holds the App.
+token without the scope, 404 for a name that does not exist, 409 while a deploy holds the App and
+for a git binding that exists already or would pass the limit.
 
 | Route                                                                                                | Scope      | Does                                                                |
 | ---------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------- |
@@ -992,6 +1017,9 @@ token without the scope, 404 for a name that does not exist, 409 while a deploy 
 | `GET /api/v1/links`                                                                                  | read       | links with transport, state and reason                              |
 | `POST /api/v1/links`                                                                                 | admin      | `{provider, providerPort, consumer, localPort?, name?}`             |
 | `DELETE /api/v1/links/<name>`                                                                        | admin      | removes a standalone link                                           |
+| `GET /api/v1/git/bindings`                                                                           | read       | push-to-deploy bindings with Nodes by name and the last run         |
+| `POST /api/v1/git/bindings`                                                                          | admin      | `{repo, branch, app, buildNode?, deployNode?, port?}`; 201          |
+| `DELETE /api/v1/git/bindings?repo=<owner/name>&branch=<branch>`                                      | admin      | removes a binding                                                   |
 | `POST /api/v1/logs`                                                                                  | admin      | `{app, service?, lines?}` or `{node, unit, lines?}`; 202            |
 | `GET /api/v1/logs/<id>`                                                                              | admin      | 202 pending, 200 once, then 404                                     |
 
