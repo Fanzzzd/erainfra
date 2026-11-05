@@ -518,6 +518,10 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if spec.CacheServiceURL == "" {
 		spec.CacheServiceURL = r.config.CacheServiceURL
 	}
+	// The same holds for the registry mirror.
+	if spec.RegistryMirrorURL == "" {
+		spec.RegistryMirrorURL = r.config.RegistryMirrorURL
+	}
 	lease, err := r.pool.Claim(ctx, spec)
 	if err == nil {
 		return lease, nil
@@ -691,16 +695,17 @@ func metadataFor(spec executor.Spec) map[string]any {
 		"latest": map[string]any{
 			"meta-data": map[string]any{
 				"runner-center": map[string]any{
-					"kind":               spec.Kind,
-					"runner_name":        spec.RunnerName,
-					"runner_jit_config":  spec.JITConfig,
-					"experiment_command": spec.Command,
-					"result_token":       spec.ResultToken,
-					"cache_url":          spec.CacheURL,
-					"cache_service_v2":   spec.CacheServiceV2,
-					"cache_service_url":  spec.CacheServiceURL,
-					"cache_runner_token": spec.CacheRunnerToken,
-					"shutdown_on_exit":   true,
+					"kind":                spec.Kind,
+					"runner_name":         spec.RunnerName,
+					"runner_jit_config":   spec.JITConfig,
+					"experiment_command":  spec.Command,
+					"result_token":        spec.ResultToken,
+					"cache_url":           spec.CacheURL,
+					"cache_service_v2":    spec.CacheServiceV2,
+					"cache_service_url":   spec.CacheServiceURL,
+					"cache_runner_token":  spec.CacheRunnerToken,
+					"registry_mirror_url": spec.RegistryMirrorURL,
+					"shutdown_on_exit":    true,
 				},
 			},
 		},

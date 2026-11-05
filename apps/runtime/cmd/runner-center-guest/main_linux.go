@@ -248,13 +248,13 @@ func run(ctx context.Context) error {
 		groups = append(groups, uint32(parsed))
 	}
 
-	// Point the runner's GitHub cache traffic at an in-guest interceptor when the
-	// host handed this VM a cache. Best-effort: a redirect that will not set up
-	// leaves the guest talking to GitHub directly, exactly as a guest without a
-	// cache does, rather than failing the job.
+	// Point GitHub's cache host at an in-guest interceptor when the host handed
+	// this VM a cache. Best-effort: a redirect that will not set up leaves the
+	// guest talking to GitHub directly, exactly as a guest without a cache does,
+	// rather than failing the job.
 	cacheTrustAnchorPath := ""
 	if metadata.CacheServiceURL != "" && metadata.CacheRunnerToken != "" {
-		caPath, stop, cacheErr := startCacheRedirect(ctx, metadata, uint32(uid))
+		caPath, stop, cacheErr := startCacheRedirect(ctx, metadata)
 		if cacheErr != nil {
 			fmt.Fprintf(os.Stderr, "job cache redirect disabled: %v\n", cacheErr)
 		} else {
@@ -262,6 +262,7 @@ func run(ctx context.Context) error {
 			cacheTrustAnchorPath = caPath
 		}
 	}
+	configureGuestDocker(ctx, metadata.RegistryMirrorURL, cacheTrustAnchorPath, runnerUser.HomeDir, int(uid), int(gid))
 
 	var command *exec.Cmd
 	if metadata.Kind == "experiment" {

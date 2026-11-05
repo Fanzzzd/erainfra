@@ -658,6 +658,16 @@ a warm immutable image, so prefer prewarming the Image Release for anything that
 Worker on allowlist-only egress needs every cache endpoint its jobs reach declared, as a CIDR, in
 `--egress-allow`.
 
+On a Firecracker Profile whose Workers run EraInfra's job cache, `actions/cache`, `setup-node`,
+`setup-go` and anything else the runner starts reach it with no workflow change. Docker containers
+reach it only when they opt in, because a container image does not trust the guest's per-boot CA: a
+buildx builder for `type=gha` adds one `driver-opts` line, and a `container:` job mounts the CA. Both
+are in [the job cache runbook](docs/runbooks/operate-the-job-cache.md#docker-builds-and-container-jobs),
+and [ADR 0011](docs/adr/0011-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)
+says why. Workers can also give guests a Docker Hub pull-through mirror
+([runbook](docs/runbooks/operate-the-registry-mirror.md)); dockerd and buildx builders use it with
+no workflow change and fall back to Docker Hub when it is down.
+
 ### Fall back to GitHub-hosted runners
 
 GitHub has no runner fallback of its own: a job queued on a Profile label waits for that Profile,

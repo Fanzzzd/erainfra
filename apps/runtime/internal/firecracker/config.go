@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
 )
 
 type Config struct {
@@ -48,6 +49,12 @@ type Config struct {
 	// with no URL mints a bearer nothing can use, and a URL with no key hands the
 	// guest an endpoint it has no bearer for, so Validate requires them together.
 	CacheServiceURL string
+	// RegistryMirrorURL is a pull-through mirror for Docker Hub that guests
+	// can reach (RC_REGISTRY_MIRROR_URL), or empty. The guest writes it into
+	// dockerd's registry-mirrors and BuildKit's default configuration at
+	// claim. It needs no key: a mirror serves public images, the same bytes
+	// to every job, which is also why it must never hold credentials.
+	RegistryMirrorURL string
 }
 
 func DefaultConfig() Config {
@@ -121,6 +128,14 @@ func (c Config) Validate() error {
 	}
 	if err := validateCacheEndpoint(c.CacheServiceURL, len(c.CacheSigningKey) > 0); err != nil {
 		return err
+	}
+	// Caught at startup like the cache URL: the daemon injects this into every
+	// claim, and a value dockerd rejects in daemon.json would otherwise first
+	// surface as a guest whose dockerd will not restart.
+	if c.RegistryMirrorURL != "" {
+		if err := registrymirror.Validate(c.RegistryMirrorURL); err != nil {
+			return fmt.Errorf("RC_REGISTRY_MIRROR_URL: %w", err)
+		}
 	}
 	return nil
 }

@@ -19,6 +19,12 @@ command -v docker >/dev/null
 # `docker buildx build` fails outright without them.
 docker compose version >/dev/null
 docker buildx version >/dev/null
+# runner-center-guest applies a registry mirror at claim, after dockerd has
+# started, with `systemctl reload docker.service`: dockerd re-reads
+# registry-mirrors on SIGHUP, and the unit's ExecReload is what sends it.
+grep -Eqs '^ExecReload=.*HUP' /usr/lib/systemd/system/docker.service /lib/systemd/system/docker.service
+# The job cache redirect adds its listen address to loopback with ip(8).
+command -v ip >/dev/null
 command -v node >/dev/null
 command -v npm >/dev/null
 command -v pnpm >/dev/null

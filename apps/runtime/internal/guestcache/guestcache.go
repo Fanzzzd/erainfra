@@ -42,9 +42,9 @@ type Config struct {
 	GitHubURL string
 	// GitHubTransport reaches the real cache host. It must resolve that host to
 	// GitHub's real address, not the guest's pinned one, so a redirect that points
-	// the host at this interceptor cannot loop back into it. Nil defaults to a
-	// transport over the system resolver, which is correct until a redirect pins
-	// the host.
+	// the host at this interceptor cannot loop back into it; StartRedirect passes
+	// Upstream.Transport for that. Nil defaults to a transport over the system
+	// resolver, which is correct only while nothing pins the host.
 	GitHubTransport http.RoundTripper
 	// CacheTransport reaches the cache service. Nil defaults to a plain transport.
 	CacheTransport http.RoundTripper

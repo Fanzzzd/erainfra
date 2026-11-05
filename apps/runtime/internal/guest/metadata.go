@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
 )
 
 const maxMetadataBytes = 1 << 20
@@ -28,7 +30,11 @@ type Metadata struct {
 	// presents to the cache service. Empty means no cache; the guest runs exactly
 	// as it did before the cache existed.
 	CacheRunnerToken string `json:"cache_runner_token,omitempty"`
-	ShutdownOnExit   bool   `json:"shutdown_on_exit"`
+	// RegistryMirrorURL is the host-side pull-through mirror for Docker Hub
+	// that the guest writes into dockerd's registry-mirrors and BuildKit's
+	// default configuration. Empty means no mirror; pulls go to Docker Hub.
+	RegistryMirrorURL string `json:"registry_mirror_url,omitempty"`
+	ShutdownOnExit    bool   `json:"shutdown_on_exit"`
 }
 
 func (m Metadata) Validate() error {
@@ -69,6 +75,13 @@ func (m Metadata) Validate() error {
 	case "", "true", "false":
 	default:
 		return errors.New(`cache_service_v2 must be exactly "true" or "false"`)
+	}
+	// Checked again here because it is written into daemon.json, and a value
+	// dockerd rejects there keeps dockerd from starting after its next restart.
+	if m.RegistryMirrorURL != "" {
+		if err := registrymirror.Validate(m.RegistryMirrorURL); err != nil {
+			return fmt.Errorf("registry_mirror_url: %w", err)
+		}
 	}
 	return nil
 }
