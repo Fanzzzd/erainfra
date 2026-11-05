@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { dualEnv } from "./dual-env.ts";
 
 export const BENCHMARK_VERSION = 1;
 export const BENCHMARK_REFRESH_MS = 24 * 60 * 60_000;
@@ -229,14 +230,14 @@ export async function runWorkerBenchmark(options: BenchmarkOptions = {}): Promis
       report,
       await measureDiskCombined(
         options.directory ??
-          process.env.RC_BENCHMARK_DIR ??
+          dualEnv("RC_BENCHMARK_DIR") ??
           join(homedir(), ".runner-center", "benchmarks"),
         options.diskBytes ?? 32 * MEBIBYTE,
       ),
     );
     report.packageLinkOpsPerSec = await measurePackageLinkFanout(
       options.directory ??
-        process.env.RC_BENCHMARK_DIR ??
+        dualEnv("RC_BENCHMARK_DIR") ??
         join(homedir(), ".runner-center", "benchmarks"),
       options.packageFiles ?? 512,
     );

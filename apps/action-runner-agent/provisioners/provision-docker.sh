@@ -5,6 +5,29 @@
 
 set -euo pipefail
 
+# The dual-name read (docs/runbooks/rename-phase-2.md, section 1), the sh copy of
+# internal/dualenv: ERAINFRA_<NAME> wins over RC_<NAME>, an empty value counts as
+# unset, and the two set to different values stop the script naming both. It
+# resolves in place, so every RC_ read below stays as it was. Each copy of this
+# function is identical; apps/action-runner-agent/tests/dual-env-sh.test.ts
+# compares them and runs one.
+dual_env_resolve() {
+  eval "_de_new=\${ERAINFRA_${1#RC_}-}"
+  eval "_de_old=\${$1-}"
+  if [ -n "$_de_new" ] && [ -n "$_de_old" ] && [ "$_de_new" != "$_de_old" ]; then
+    printf 'error: ERAINFRA_%s and %s are both set, to different values; remove one, or give both the same value.\n' \
+      "${1#RC_}" "$1" >&2
+    exit 2
+  fi
+  if [ -n "$_de_new" ]; then
+    eval "$1=\$_de_new"
+  fi
+}
+
+for _de_name in RC_PROFILE RC_VCPUS RC_MEMORY_MIB RC_CPUSET_CPUS RC_JOB_TIMEOUT_S RC_DNS_SERVERS; do
+  dual_env_resolve "$_de_name"
+done
+
 : "${RUNNER_NAME:?RUNNER_NAME is required}"
 : "${RC_PROFILE:?RC_PROFILE is required}"
 : "${IMAGE:?IMAGE is required}"

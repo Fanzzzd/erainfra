@@ -75,3 +75,23 @@ describe("the job cache endpoint an Agent offers", () => {
     }
   });
 });
+
+describe("the dual-name environment at Agent startup", () => {
+  it("starts with the legacy name, the new name, or both agreeing", async () => {
+    await load({ RC_RUNTIME_SOCKET: "/run/runner-center/runtime.sock" });
+    await load({ ERAINFRA_RUNTIME_SOCKET: "/run/runner-center/runtime.sock" });
+    await load({
+      RC_RUNTIME_SOCKET: "/run/runner-center/runtime.sock",
+      ERAINFRA_RUNTIME_SOCKET: "/run/runner-center/runtime.sock",
+    });
+  });
+
+  // Refused at import, before the Agent registers or claims anything, rather
+  // than at the first Attempt whose child process happens to read the name.
+  it("refuses to start when the two names disagree, naming both", async () => {
+    await refuses(
+      { RC_READY_FILE: "/home/w/.runner-center/agent.ready", ERAINFRA_READY_FILE: "/tmp/ready" },
+      /ERAINFRA_READY_FILE and RC_READY_FILE are both set/,
+    );
+  });
+});

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runtimeapi"
+	"github.com/Fanzzzd/erainfra/internal/dualenv"
 )
 
 // runSample streams one Attempt's resource Snapshot to stdout as JSON lines
@@ -39,7 +40,7 @@ func runSample(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		cancel()
 	}()
 	every := jobmetrics.DefaultReportInterval
-	if value := strings.TrimSpace(os.Getenv("RC_METRICS_REPORT_S")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_METRICS_REPORT_S")); value != "" {
 		seconds, err := strconv.Atoi(value)
 		if err != nil || seconds < 1 || seconds > 3600 {
 			return 2, errors.New("RC_METRICS_REPORT_S must be between 1 and 3600")
@@ -47,9 +48,9 @@ func runSample(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		every = time.Duration(seconds) * time.Second
 	}
 
-	switch strings.TrimSpace(os.Getenv("RC_EXECUTOR")) {
+	switch strings.TrimSpace(dualenv.Value("RC_EXECUTOR")) {
 	case "firecracker":
-		attemptID := strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID"))
+		attemptID := strings.TrimSpace(dualenv.Value("RC_ATTEMPT_ID"))
 		if attemptID == "" {
 			return 2, errors.New("RC_ATTEMPT_ID is required")
 		}
@@ -65,7 +66,7 @@ func runSample(ctx context.Context, client *runtimeapi.Client) (int, error) {
 		}
 		return 0, nil
 	case "docker":
-		name := strings.TrimSpace(os.Getenv("RC_RUNNER_NAME"))
+		name := strings.TrimSpace(dualenv.Value("RC_RUNNER_NAME"))
 		if name == "" {
 			return 2, errors.New("RC_RUNNER_NAME is required")
 		}

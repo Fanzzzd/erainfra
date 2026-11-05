@@ -783,7 +783,31 @@ run_job() {
 # Entry point
 # ---------------------------------------------------------------------------
 
+# The dual-name read (docs/runbooks/rename-phase-2.md, section 1), the sh copy of
+# internal/dualenv: ERAINFRA_<NAME> wins over RC_<NAME>, an empty value counts as
+# unset, and the two set to different values stop the script naming both. It
+# resolves in place, so every RC_ read below stays as it was. Each copy of this
+# function is identical; apps/action-runner-agent/tests/dual-env-sh.test.ts
+# compares them and runs one.
+dual_env_resolve() {
+  eval "_de_new=\${ERAINFRA_${1#RC_}-}"
+  eval "_de_old=\${$1-}"
+  if [ -n "$_de_new" ] && [ -n "$_de_old" ] && [ "$_de_new" != "$_de_old" ]; then
+    printf 'error: ERAINFRA_%s and %s are both set, to different values; remove one, or give both the same value.\n' \
+      "${1#RC_}" "$1" >&2
+    exit 2
+  fi
+  if [ -n "$_de_new" ]; then
+    eval "$1=\$_de_new"
+  fi
+}
+
 main() {
+  for _de_name in RC_HOME RC_MAC_RUNNER_VERSION RC_MAC_RUNNER_SHA256 RC_MAC_GUEST_USER \
+    RC_MAC_GUEST_PASSWORD RC_BOOT_TIMEOUT_S RC_MAC_BOOT_TIMEOUT_S RC_MAC_ATTEST_TIMEOUT_S \
+    RC_JOB_TIMEOUT_S RC_MAC_JOB_TIMEOUT_S RC_MAC_MAX_CONCURRENT_VMS; do
+    dual_env_resolve "$_de_name"
+  done
   RUNNER_NAME="${RUNNER_NAME:-}"
   [ -n "$RUNNER_NAME" ] || die "RUNNER_NAME is required."
 
@@ -850,6 +874,7 @@ main() {
 
 # Sourced by the test suite with RC_PROVISION_MAC_LIB_ONLY=1 to exercise the
 # functions above without booting anything.
+dual_env_resolve RC_PROVISION_MAC_LIB_ONLY
 if [ "${RC_PROVISION_MAC_LIB_ONLY:-0}" != "1" ]; then
   main "$@"
 fi

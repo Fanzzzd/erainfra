@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -35,6 +38,12 @@ type App struct {
 	LookPath func(string) (string, error)
 	// RunGH runs the GitHub CLI and returns its standard output.
 	RunGH func(ctx context.Context, path string, args []string, stderr io.Writer) ([]byte, error)
+	// OS, HomeDir, Stat and RunLocal are what `erainfra worker` needs to find and
+	// run the Worker-local tool.
+	OS       string
+	HomeDir  func() (string, error)
+	Stat     func(string) (fs.FileInfo, error)
+	RunLocal func(ctx context.Context, program string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
 }
 
 // NewApp wires App to the real process.
@@ -53,6 +62,10 @@ func NewApp(version string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 			cmd.Stderr = stderr
 			return cmd.Output()
 		},
+		OS:       runtime.GOOS,
+		HomeDir:  os.UserHomeDir,
+		Stat:     os.Stat,
+		RunLocal: runLocal,
 	}
 }
 
@@ -101,6 +114,9 @@ Usage:
 
 Commands:
 %s
+On a Worker:
+  worker <command>      run the Worker's own tool, the same program as rc (status, doctor, logs, update)
+
 Global flags:
   --format table|json   output format (default table); json is a stable shape for scripts
   --json                same as --format json
@@ -168,11 +184,7 @@ func (a *App) Run(ctx context.Context, argv []string) int {
 		argv = []string{"version"}
 	}
 	if argv[0] == "worker" {
-		// Reserved for the Worker-local tool's rename (ADR 0011), so it cannot
-		// quietly come to mean something else here first.
-		_, _ = fmt.Fprintln(a.Stderr, "erainfra: `erainfra worker` is reserved for Worker-local commands, "+
-			"which are `rc <command>` on the Worker for now. For the fleet, use `erainfra workers list`.")
-		return ExitUsage
+		return a.runWorker(ctx, argv[1:])
 	}
 	if alias, ok := groupAliases[argv[0]]; ok {
 		argv = append([]string{alias}, argv[1:]...)

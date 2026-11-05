@@ -1045,6 +1045,29 @@ CTL_UNIT_B64
     fi
   }
 
+  # One setting from a kept env file, under either of its names (docs/runbooks/rename-phase-2.md,
+  # section 1): ERAINFRA_<NAME> wins over RC_<NAME>, an empty value counts as unset, and the two
+  # set to different values stop the install naming both, never printing either value. The last
+  # assignment of a name wins, as it does for systemd's EnvironmentFile=. This installer still
+  # writes only RC_ names; this is how a rerun keeps working on an env file an operator has
+  # started moving to the new names. Sets CTL_ENV_NAME and CTL_ENV_VALUE.
+  ctl_env_file_value() { # ctl_env_file_value SUFFIX
+    ctl_new=$($CTL_SUDO sed -n "s/^ERAINFRA_$1=//p" "$CTL_ENV_FILE" | tail -n 1) ||
+      ctl_fail "Cannot read $CTL_ENV_FILE"
+    ctl_old=$($CTL_SUDO sed -n "s/^RC_$1=//p" "$CTL_ENV_FILE" | tail -n 1) ||
+      ctl_fail "Cannot read $CTL_ENV_FILE"
+    if [ -n "$ctl_new" ] && [ -n "$ctl_old" ] && [ "$ctl_new" != "$ctl_old" ]; then
+      ctl_fail "ERAINFRA_$1 and RC_$1 in $CTL_ENV_FILE are both set, to different values; remove one, or give both the same value"
+    fi
+    if [ -n "$ctl_new" ]; then
+      CTL_ENV_NAME="ERAINFRA_$1"
+      CTL_ENV_VALUE=$ctl_new
+    else
+      CTL_ENV_NAME="RC_$1"
+      CTL_ENV_VALUE=$ctl_old
+    fi
+  }
+
   # Which controller this is. A controller token makes it a dedicated host, exactly as before; with
   # no token, a Worker's credential makes it a standby. A kept env file already says which it is,
   # and for a standby the rerun refreshes the token copy, because a Worker that re-registers gets a
@@ -1058,11 +1081,12 @@ CTL_UNIT_B64
     elif [ -n "$CTL_WORKER_ENV_FILE" ]; then
       ctl_warn 'Ignored --worker-env-file: with --controller-token-file this is a dedicated controller host, which signs in with the controller token.'
     fi
-  elif $CTL_SUDO grep -q '^RC_MACHINE_TOKEN_FILE=' "$CTL_ENV_FILE"; then
+  elif $CTL_SUDO grep -Eq '^(ERAINFRA|RC)_MACHINE_TOKEN_FILE=' "$CTL_ENV_FILE"; then
     CTL_STANDBY=1
-    CTL_MACHINE_TOKEN_PATH=$($CTL_SUDO sed -n 's/^RC_MACHINE_TOKEN_FILE=//p' "$CTL_ENV_FILE")
-    [ -n "$CTL_MACHINE_TOKEN_PATH" ] || ctl_fail "RC_MACHINE_TOKEN_FILE in $CTL_ENV_FILE is empty"
-    ctl_absolute RC_MACHINE_TOKEN_FILE "$CTL_MACHINE_TOKEN_PATH"
+    ctl_env_file_value MACHINE_TOKEN_FILE
+    CTL_MACHINE_TOKEN_PATH=$CTL_ENV_VALUE
+    [ -n "$CTL_MACHINE_TOKEN_PATH" ] || ctl_fail "$CTL_ENV_NAME in $CTL_ENV_FILE is empty"
+    ctl_absolute "$CTL_ENV_NAME" "$CTL_MACHINE_TOKEN_PATH"
     ctl_find_worker_token
     [ -z "$CTL_MACHINE_TOKEN" ] || CTL_REFRESH_TOKEN=1
   fi

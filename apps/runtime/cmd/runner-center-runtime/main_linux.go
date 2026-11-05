@@ -21,6 +21,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/firecracker"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runtimeapi"
+	"github.com/Fanzzzd/erainfra/internal/dualenv"
 )
 
 const maxJITBytes = 1 << 20
@@ -50,6 +51,12 @@ func run(ctx context.Context, args []string) (int, error) {
 		fmt.Printf("runner-center-runtime %s\n", version)
 		return 0, nil
 	}
+	// Every subcommand below reads RC_<NAME> or ERAINFRA_<NAME>, the new name first. Two names
+	// that disagree are refused here, before any of them is read, rather than resolved silently
+	// (docs/runbooks/rename-phase-2.md, section 1).
+	if err := dualenv.Check(); err != nil {
+		return 2, err
+	}
 	// The provisioner renders both halves of the job network policy from the
 	// same build that later verifies them, so an installed host can never drift
 	// from what Preflight demands. Neither command needs the runtime socket.
@@ -66,8 +73,8 @@ func run(ctx context.Context, args []string) (int, error) {
 			return 2, err
 		}
 		config.CacheSigningKey = key
-		config.CacheServiceURL = strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_URL"))
-		config.RegistryMirrorURL = strings.TrimSpace(os.Getenv("RC_REGISTRY_MIRROR_URL"))
+		config.CacheServiceURL = strings.TrimSpace(dualenv.Value("RC_CACHE_SERVICE_URL"))
+		config.RegistryMirrorURL = strings.TrimSpace(dualenv.Value("RC_REGISTRY_MIRROR_URL"))
 		runtime, err := firecracker.New(config)
 		if err != nil {
 			return 2, err
@@ -83,7 +90,7 @@ func run(ctx context.Context, args []string) (int, error) {
 		if _, err := runtime.Preflight(ctx, netpolicy.ProfileEgress{}); err != nil {
 			return 1, err
 		}
-		group := strings.TrimSpace(os.Getenv("RC_RUNTIME_GROUP"))
+		group := strings.TrimSpace(dualenv.Value("RC_RUNTIME_GROUP"))
 		if group == "" {
 			group = "runner-center"
 		}
@@ -127,7 +134,7 @@ func run(ctx context.Context, args []string) (int, error) {
 		}
 		return 0, nil
 	case "remove-profile":
-		profile := strings.TrimSpace(os.Getenv("RC_PROFILE"))
+		profile := strings.TrimSpace(dualenv.Value("RC_PROFILE"))
 		if profile == "" {
 			return 2, errors.New("RC_PROFILE is required")
 		}
@@ -184,8 +191,8 @@ func profileEnv() (executor.Profile, error) {
 		return executor.Profile{}, err
 	}
 	profile := executor.Profile{
-		Name:         strings.TrimSpace(os.Getenv("RC_PROFILE")),
-		ImageRelease: strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
+		Name:         strings.TrimSpace(dualenv.Value("RC_PROFILE")),
+		ImageRelease: strings.TrimSpace(dualenv.Value("RC_IMAGE_RELEASE")),
 		VCPUs:        vCPUs,
 		MemoryMiB:    memoryMiB,
 		WarmPool:     warmPool,
@@ -220,16 +227,16 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 	spec := executor.Spec{
 		Egress:          egress,
 		Kind:            "ci",
-		AttemptID:       strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID")),
-		RunnerName:      strings.TrimSpace(os.Getenv("RC_RUNNER_NAME")),
-		Profile:         strings.TrimSpace(os.Getenv("RC_PROFILE")),
-		ImageRelease:    strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
+		AttemptID:       strings.TrimSpace(dualenv.Value("RC_ATTEMPT_ID")),
+		RunnerName:      strings.TrimSpace(dualenv.Value("RC_RUNNER_NAME")),
+		Profile:         strings.TrimSpace(dualenv.Value("RC_PROFILE")),
+		ImageRelease:    strings.TrimSpace(dualenv.Value("RC_IMAGE_RELEASE")),
 		VCPUs:           vCPUs,
 		MemoryMiB:       memoryMiB,
 		JITConfig:       strings.TrimSpace(string(payload)),
-		CacheURL:        strings.TrimSpace(os.Getenv("RC_CACHE_URL")),
-		CacheServiceV2:  strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_V2")),
-		CacheServiceURL: strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_URL")),
+		CacheURL:        strings.TrimSpace(dualenv.Value("RC_CACHE_URL")),
+		CacheServiceV2:  strings.TrimSpace(dualenv.Value("RC_CACHE_SERVICE_V2")),
+		CacheServiceURL: strings.TrimSpace(dualenv.Value("RC_CACHE_SERVICE_URL")),
 	}
 	// The raw bytes are a runner credential and spec holds its own copy, so
 	// overwrite them; dropping the reference alone leaves them in memory.
@@ -290,10 +297,10 @@ func runExperiment(ctx context.Context, client *runtimeapi.Client) (int, error) 
 	spec := executor.Spec{
 		Egress:       egress,
 		Kind:         "experiment",
-		AttemptID:    strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID")),
-		RunnerName:   strings.TrimSpace(os.Getenv("RC_RUNNER_NAME")),
-		Profile:      strings.TrimSpace(os.Getenv("RC_PROFILE")),
-		ImageRelease: strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
+		AttemptID:    strings.TrimSpace(dualenv.Value("RC_ATTEMPT_ID")),
+		RunnerName:   strings.TrimSpace(dualenv.Value("RC_RUNNER_NAME")),
+		Profile:      strings.TrimSpace(dualenv.Value("RC_PROFILE")),
+		ImageRelease: strings.TrimSpace(dualenv.Value("RC_IMAGE_RELEASE")),
 		VCPUs:        vCPUs,
 		MemoryMiB:    memoryMiB,
 		Command:      command,
@@ -383,7 +390,7 @@ func verifyNetwork(ctx context.Context) (int, error) {
 }
 
 func runtimeSocket() string {
-	if value := strings.TrimSpace(os.Getenv("RC_RUNTIME_SOCKET")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_RUNTIME_SOCKET")); value != "" {
 		return value
 	}
 	return "/run/runner-center/runtime.sock"
@@ -392,7 +399,7 @@ func runtimeSocket() string {
 func runtimeConfig() firecracker.Config {
 	config := firecracker.DefaultConfig()
 	setIfPresent := func(destination *string, name string) {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		if value := strings.TrimSpace(dualenv.Value(name)); value != "" {
 			*destination = value
 		}
 	}
@@ -409,7 +416,7 @@ func runtimeConfig() firecracker.Config {
 	setIfPresent(&config.ThinPoolName, "RC_THIN_POOL")
 	setIfPresent(&config.Network.Name, "RC_CNI_NAME")
 	setIfPresent(&config.Network.Subnet, "RC_NETWORK_SUBNET")
-	if value := strings.TrimSpace(os.Getenv("RC_EGRESS_MODE")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_EGRESS_MODE")); value != "" {
 		config.Network.EgressMode = netpolicy.EgressMode(value)
 	}
 	if value := commaSeparated("RC_EGRESS_ALLOW"); value != nil {
@@ -418,7 +425,7 @@ func runtimeConfig() firecracker.Config {
 	if value := commaSeparated("RC_NAMESERVERS"); value != nil {
 		config.Network.Nameservers = value
 	}
-	if value := strings.TrimSpace(os.Getenv("RC_MIN_POOL_FREE_MIB")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_MIN_POOL_FREE_MIB")); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
 			config.MinPoolFreeMiB = parsed
 		}
@@ -432,8 +439,8 @@ func runtimeConfig() firecracker.Config {
 // long-lived host secret, so it is read only here in the long-running serve
 // daemon, never in a per-Attempt invocation.
 func cacheSigningKey() ([]byte, error) {
-	value := os.Getenv("RC_CACHE_SIGNING_KEY")
-	file := strings.TrimSpace(os.Getenv("RC_CACHE_SIGNING_KEY_FILE"))
+	value := dualenv.Value("RC_CACHE_SIGNING_KEY")
+	file := strings.TrimSpace(dualenv.Value("RC_CACHE_SIGNING_KEY_FILE"))
 	if value != "" && file != "" {
 		return nil, errors.New("set RC_CACHE_SIGNING_KEY or RC_CACHE_SIGNING_KEY_FILE, not both")
 	}
@@ -450,7 +457,7 @@ func cacheSigningKey() ([]byte, error) {
 // commaSeparated returns nil when the variable is unset, so an operator who
 // sets nothing keeps the built-in policy rather than an empty list.
 func commaSeparated(name string) []string {
-	raw := strings.TrimSpace(os.Getenv(name))
+	raw := strings.TrimSpace(dualenv.Value(name))
 	if raw == "" {
 		return nil
 	}
@@ -464,7 +471,7 @@ func commaSeparated(name string) []string {
 }
 
 func positiveInt64Env(name string) (int64, error) {
-	value := strings.TrimSpace(os.Getenv(name))
+	value := strings.TrimSpace(dualenv.Value(name))
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
@@ -473,7 +480,7 @@ func positiveInt64Env(name string) (int64, error) {
 }
 
 func nonnegativeIntEnv(name string) (int, error) {
-	value := strings.TrimSpace(os.Getenv(name))
+	value := strings.TrimSpace(dualenv.Value(name))
 	if value == "" {
 		return 0, nil
 	}
@@ -485,7 +492,7 @@ func nonnegativeIntEnv(name string) (int, error) {
 }
 
 func durationEnv(name string, fallback time.Duration) (time.Duration, error) {
-	value := strings.TrimSpace(os.Getenv(name))
+	value := strings.TrimSpace(dualenv.Value(name))
 	if value == "" {
 		return fallback, nil
 	}

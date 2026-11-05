@@ -206,7 +206,8 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
 ### Egress policy
 
 Egress is part of the Profile, like its executor and size. The controller publishes it from
-`RC_EGRESS_MODE`, `RC_EGRESS_PRESETS` and `RC_EGRESS_ALLOW` in its environment, and every Worker
+`ERAINFRA_EGRESS_MODE`, `ERAINFRA_EGRESS_PRESETS` and `ERAINFRA_EGRESS_ALLOW` in its environment
+(the `RC_` names still work; see [Environment variable names](#environment-variable-names)), and every Worker
 renders and verifies it for that Profile's guests. Three modes exist:
 
 | Mode        | What a guest can reach                                     | What is recorded per Attempt                      |
@@ -216,8 +217,8 @@ renders and verifies it for that Profile's guests. Three modes exist:
 | `allowlist` | only the listed domains and CIDRs                          | the same, with each refused name and flow marked  |
 
 A Profile without the setting is `public`, which is what every Profile was before.
-`RC_EGRESS_ALLOW` takes domains (`registry.npmjs.org`, `*.example.com`) and IPv4 CIDRs or
-addresses. `RC_EGRESS_PRESETS=github` expands to the domains GitHub lists for
+`ERAINFRA_EGRESS_ALLOW` takes domains (`registry.npmjs.org`, `*.example.com`) and IPv4 CIDRs or
+addresses. `ERAINFRA_EGRESS_PRESETS=github` expands to the domains GitHub lists for
 [self-hosted runner communication](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#communication-requirements),
 plus `*.githubusercontent.com`. The Worker's cache service and Docker Hub registry mirror, when it has them, are always allowed.
 
@@ -230,7 +231,8 @@ Because the set follows DNS, an allowed name that moves to a new address keeps w
 chain behind an allowed name is followed. The record comes from the resolver and from a kernel set
 the forward chain fills, so nothing in it depends on the guest.
 
-The host operator's `RC_EGRESS_MODE` and `RC_EGRESS_ALLOW` in `runtime.env` still apply, and the
+The host operator's `RC_EGRESS_MODE` and `RC_EGRESS_ALLOW` in `runtime.env` (or their `ERAINFRA_`
+names) still apply, and the
 stricter layer wins: the effective mode is the stricter of the two, a host allowlist keeps denying
 everything it does not list, and a Profile cannot open a private or host range unless the operator
 lists it too. A Worker that cannot run the resolver or write the per-guest sets fails its
@@ -478,26 +480,30 @@ up and rebuild are in
 The installer's flags map one to one to the environment the controller reads. To run it by hand:
 
 ```bash
-export RC_CONVEX_URL=https://<deployment>.convex.site
-export RC_CONTROLLER_TOKEN_FILE=/etc/runner-center/controller-token
-export RC_GITHUB_CONFIG_URL=https://github.com/OWNER/REPOSITORY
-export RC_PROFILE=rc-linux-js
-export RC_EXECUTOR=docker # bootstrap trusted CI; promote to firecracker after host provisioning
-export RC_IMAGE_RELEASE=ghcr.io/OWNER/runner-center-ubuntu-24.04-js@sha256:<digest>
-export RC_VCPUS=4
-export RC_MEMORY_MIB=16384 # 4 vCPU and 16 GiB is GitHub's standard Linux runner; a Profile sized to it inherits the same RAM-derived kernel limits
-export RC_WARM_POOL=2 # Firecracker only; 0 disables resident warm capacity
-export RC_FIT_POLICY=balanced # balanced, cpu, network, or io
-export RC_MIN_RUNNERS=0
-export RC_MAX_RUNNERS=16
+export ERAINFRA_CONVEX_URL=https://<deployment>.convex.site
+export ERAINFRA_CONTROLLER_TOKEN_FILE=/etc/runner-center/controller-token
+export ERAINFRA_GITHUB_CONFIG_URL=https://github.com/OWNER/REPOSITORY
+export ERAINFRA_PROFILE=erainfra-4vcpu-ubuntu-2404
+export ERAINFRA_EXECUTOR=docker # bootstrap trusted CI; promote to firecracker after host provisioning
+export ERAINFRA_IMAGE_RELEASE=ghcr.io/OWNER/runner-center-ubuntu-24.04-js@sha256:<digest>
+export ERAINFRA_VCPUS=4
+export ERAINFRA_MEMORY_MIB=16384 # 4 vCPU and 16 GiB is GitHub's standard Linux runner; a Profile sized to it inherits the same RAM-derived kernel limits
+export ERAINFRA_WARM_POOL=2 # Firecracker only; 0 disables resident warm capacity
+export ERAINFRA_FIT_POLICY=balanced # balanced, cpu, network, or io
+export ERAINFRA_MIN_RUNNERS=0
+export ERAINFRA_MAX_RUNNERS=16
 
-# Prefer a GitHub App. An enterprise URL needs RC_GITHUB_TOKEN instead (see the permissions below).
-export RC_GITHUB_APP_CLIENT_ID=<client-id>
-export RC_GITHUB_APP_INSTALLATION_ID=<installation-id>
-export RC_GITHUB_APP_PRIVATE_KEY_FILE=/etc/runner-center/github-app.pem
+# Prefer a GitHub App. An enterprise URL needs ERAINFRA_GITHUB_TOKEN instead (see the permissions below).
+export ERAINFRA_GITHUB_APP_CLIENT_ID=<client-id>
+export ERAINFRA_GITHUB_APP_INSTALLATION_ID=<installation-id>
+export ERAINFRA_GITHUB_APP_PRIVATE_KEY_FILE=/etc/runner-center/github-app.pem
 
 runner-center-controller
 ```
+
+Each of these is also read under its `RC_` name, which is what the installer writes into
+`/etc/runner-center/profiles/<profile>.env` and what every running controller holds; see
+[Environment variable names](#environment-variable-names).
 
 Name a new Profile `erainfra-<N>vcpu-<os><version>[-arm]`, for example `erainfra-4vcpu-ubuntu-2404`
 ([ADR 0010](docs/adr/0010-name-profiles-the-way-runner-vendors-name-labels.md)). The controller
@@ -509,7 +515,7 @@ never in place, because GitHub holds the scale-set name.
 A dedicated controller publishes its env contract when it first acquires the lease after startup.
 Worker standbys never overwrite it. Existing deployments can keep the dedicated host while adding
 standbys, then stop its units once Worker takeover is verified. Enterprise runner registrations
-still require a dedicated host with `RC_GITHUB_TOKEN`, because GitHub Apps cannot register
+still require a dedicated host with `ERAINFRA_GITHUB_TOKEN` (or `RC_GITHUB_TOKEN`), because GitHub Apps cannot register
 enterprise runners.
 
 Stopping a controller does not remove its scale set. GitHub keeps routing `runs-on: <profile>` jobs
@@ -540,7 +546,7 @@ Every controller reports a heartbeat to the control plane every 30 seconds and w
 session changes. The Profiles table shows it, and `/metrics` and the alerts read it; see
 [Monitor the fleet](#monitor-the-fleet).
 
-`RC_WARM_POOL` is an explicit Firecracker-only performance opt-in. Its target
+`ERAINFRA_WARM_POOL` (or `RC_WARM_POOL`) is an explicit Firecracker-only performance opt-in. Its target
 counts both parked and currently claimed single-use microVMs, and each one
 reserves a Worker slot, vCPUs, memory, a CNI address, and devmapper headroom.
 Start small and validate it on one KVM Worker using
@@ -550,23 +556,23 @@ Profiles must leave it at zero.
 ### GitHub permissions the controller needs
 
 Registering the scale set takes one GitHub REST call that needs a permission: the controller
-creates a runner registration token at the scope `RC_GITHUB_CONFIG_URL` names. The scale-set client
+creates a runner registration token at the scope `ERAINFRA_GITHUB_CONFIG_URL` names. The scale-set client
 exchanges that token for an Actions service session, and every later scale-set operation goes
 through that session, not the REST API: creating or updating the scale set, issuing JIT
 configurations, removing runners, and polling for jobs. Minting a GitHub App installation token is
 signed with the App's own key and needs no permission.
 
-| `RC_GITHUB_CONFIG_URL`                      | GitHub App                                        | Personal access token                                                    |
-| ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
-| `https://github.com/OWNER/REPOSITORY`       | Repository: Administration, read and write        | fine-grained: the same; classic: `repo`                                  |
-| `https://github.com/ORGANIZATION`           | Organization: Self-hosted runners, read and write | fine-grained: the same; classic: `admin:org`                             |
-| `https://github.com/enterprises/ENTERPRISE` | not possible; the controller refuses it at start  | classic only, with `manage_runners:enterprise`, set as `RC_GITHUB_TOKEN` |
+| `ERAINFRA_GITHUB_CONFIG_URL`                | GitHub App                                        | Personal access token                                                          |
+| ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `https://github.com/OWNER/REPOSITORY`       | Repository: Administration, read and write        | fine-grained: the same; classic: `repo`                                        |
+| `https://github.com/ORGANIZATION`           | Organization: Self-hosted runners, read and write | fine-grained: the same; classic: `admin:org`                                   |
+| `https://github.com/enterprises/ENTERPRISE` | not possible; the controller refuses it at start  | classic only, with `manage_runners:enterprise`, set as `ERAINFRA_GITHUB_TOKEN` |
 
 An organization scale set needs no Administration permission. GitHub gives every App with a
 repository permission read-only Metadata. A GitHub Enterprise Server host follows the same path
 rules, so `https://ghes.example/ORGANIZATION` is an organization scope.
 
-A controller that pushes cache facts (`RC_CACHE_FACTS_URL` set) also reads three repository
+A controller that pushes cache facts (`ERAINFRA_CACHE_FACTS_URL` set) also reads three repository
 endpoints at `JobStarted` for [the job cache](#the-job-cache), with the same credentials. An
 organization or enterprise scale set needs these on every repository whose jobs it serves.
 
@@ -600,7 +606,8 @@ GitHub App for runners at the enterprise level."
 The controller App stays separate from the App the dashboard's GitHub App setup creates. Set its
 client ID and private key in Convex as `CONTROLLER_GITHUB_APP_CLIENT_ID` and
 `CONTROLLER_GITHUB_APP_PRIVATE_KEY` for Worker holders. Dedicated hosts can keep their existing
-`RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials. Reusing the webhook App would widen its manifest
+`RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials (`ERAINFRA_GITHUB_APP_*` and `ERAINFRA_GITHUB_TOKEN`
+are the same settings). Reusing the webhook App would widen its manifest
 to organization runner management and Contents read, which its own work does not need.
 
 Convex looks up the controller App's installation for the registered URL and requests only the
@@ -656,6 +663,10 @@ rc restart
 rc update
 ```
 
+Where the [`erainfra` CLI](#read-the-fleet-from-the-command-line) is installed on the Worker,
+`erainfra worker <command>` runs the same commands: it runs `~/.runner-center/bin/rc` with the same
+arguments, output and exit code. `rc` keeps working unchanged and stays the stable path for scripts.
+
 The Worker runs a bounded benchmark at enrollment and daily while idle: SHA-256 CPU throughput,
 memory copy throughput, write/read/fsync plus a 512-file package-link fan-out on
 `~/.runner-center/benchmarks`, and unauthenticated
@@ -686,7 +697,7 @@ unswappable pages works, and a process bound of four per MiB of the Profile's me
 kernel's own RLIMIT_NPROC rule applied to what the job was sold instead of to the Worker's RAM
 (#96). The container's nameservers are named on the command line and `edns0` is asked for; no search
 domain is set, so a bare name in a workflow cannot resolve through whatever suffix a Worker's network
-happens to supply. `RC_DNS_SERVERS` (comma-separated) overrides the resolvers the Worker reads from
+happens to supply. `ERAINFRA_DNS_SERVERS` or `RC_DNS_SERVERS` (comma-separated) overrides the resolvers the Worker reads from
 systemd-resolved or `/etc/resolv.conf`; a host where neither yields an address a container can reach
 refuses the Attempt rather than letting the daemon guess one.
 
@@ -801,7 +812,7 @@ release shipped; nothing is compiled on the machine.
 A fresh Windows Server has no Node.js, so the installer fetches the official Node 22 `win-x64`
 build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before running it —
 the same source and the same check the POSIX installer already uses when a host has no runtime.
-Everything lands under `%USERPROFILE%\.runner-center`, which is the `RC_HOME` the Hyper-V
+Everything lands under `%USERPROFILE%\.runner-center`, which is the `ERAINFRA_HOME` (or `RC_HOME`) the Hyper-V
 provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-Sha256`, and rollback
 through `agent.previous` work exactly as they do on POSIX, and `rc.ps1` under
 `%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
@@ -916,12 +927,33 @@ Agree on a queue limit with whoever operates the Profile. Before an operation ta
 only Worker away for longer than that limit, the operator follows
 [docs/runbooks/take-the-only-worker-away.md](docs/runbooks/take-the-only-worker-away.md).
 
+## Environment variable names
+
+The controller, the runtime, the Action Runner Agent and its provisioners read every setting under
+two names: `ERAINFRA_<NAME>` and the older `RC_<NAME>`, for example `ERAINFRA_PROFILE` and
+`RC_PROFILE`. The `_FILE` variants of secrets follow the same rule. In every component:
+
+- `ERAINFRA_<NAME>` wins when both are set.
+- An empty value counts as unset, under either name.
+- Both set to different values stops the process at startup with an error that names both
+  variables. Neither value is printed, because several of these are secrets.
+
+The installers and the Agent still write the `RC_` names, and every machine installed so far holds
+them, so an existing Worker or controller needs no change. Use the `ERAINFRA_` names in new
+configuration. [Runbook: machine-side rename](docs/runbooks/rename-phase-2.md) covers moving an
+existing env file and lists what keeps its `runner-center` name.
+
+Two sets of names are outside this rule. A job still sees `RC_VCPUS` and `RC_MEMORY_MIB` in its own
+environment, because workflows read them. The cache service's settings were `ERAINFRA_CACHE_*` from
+the start.
+
 ## Read the fleet from the command line
 
 `erainfra` is the operator CLI. It reads Profiles, Workers and jobs through the control plane's
 operator API, the way the Blacksmith CLI and actuated-cli read theirs, and prints a table or stable
 JSON. It is a single static binary with no dependencies. `rc` on a Worker remains the tool for that
-one machine (`rc status`, `rc logs -f`, `rc update`); [ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)
+one machine (`rc status`, `rc logs -f`, `rc update`), and `erainfra worker <command>` runs it from
+this CLI on the Worker; [ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)
 explains the split.
 
 Install it from a release (releases after v0.2.0-rc.10; Linux, macOS and Windows, x64 and ARM64

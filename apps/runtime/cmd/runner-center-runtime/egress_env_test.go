@@ -77,3 +77,14 @@ func TestWriteEgressRecordWritesAnOwnerOnlyFileOnce(t *testing.T) {
 		t.Fatal("no path configured means nothing to write")
 	}
 }
+
+// The Agent writes RC_PROFILE_EGRESS during the dual-name release, but a runtime must already read
+// the name the next release writes, or that release could not ship before every runtime updated.
+func TestProfileEgressEnvReadsTheNewName(t *testing.T) {
+	t.Setenv(profileEgressVariable, "")
+	t.Setenv("ERAINFRA_PROFILE_EGRESS", `{"mode":"allowlist","presets":["github"]}`)
+	egress, err := profileEgressEnv()
+	if err != nil || egress.Mode != netpolicy.EgressAllowlist {
+		t.Fatalf("ERAINFRA_PROFILE_EGRESS alone = %+v, %v; want the allowlist", egress, err)
+	}
+}

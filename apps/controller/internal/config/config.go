@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/internal/dualenv"
 	"github.com/actions/scaleset"
 )
 
@@ -60,15 +61,21 @@ func (e Egress) Published() bool {
 	return e.Mode != "" || len(e.Presets)+len(e.Domains)+len(e.CIDRs) > 0
 }
 
+// Load reads the controller's configuration. Every RC_<NAME> it reads is also accepted as
+// ERAINFRA_<NAME>, which wins; the two set to different values is refused before anything else is
+// read (docs/runbooks/rename-phase-2.md, section 1).
 func Load() (Config, error) {
+	if err := dualenv.Check(); err != nil {
+		return Config{}, err
+	}
 	config := Config{
-		ConvexURL:       strings.TrimSpace(os.Getenv("RC_CONVEX_URL")),
-		RegistrationURL: strings.TrimSpace(os.Getenv("RC_GITHUB_CONFIG_URL")),
-		Profile:         strings.TrimSpace(os.Getenv("RC_PROFILE")),
-		Executor:        strings.TrimSpace(os.Getenv("RC_EXECUTOR")),
-		ImageRelease:    strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
-		ScaleSetName:    strings.TrimSpace(os.Getenv("RC_SCALE_SET_NAME")),
-		RunnerGroup:     strings.TrimSpace(os.Getenv("RC_RUNNER_GROUP")),
+		ConvexURL:       strings.TrimSpace(dualenv.Value("RC_CONVEX_URL")),
+		RegistrationURL: strings.TrimSpace(dualenv.Value("RC_GITHUB_CONFIG_URL")),
+		Profile:         strings.TrimSpace(dualenv.Value("RC_PROFILE")),
+		Executor:        strings.TrimSpace(dualenv.Value("RC_EXECUTOR")),
+		ImageRelease:    strings.TrimSpace(dualenv.Value("RC_IMAGE_RELEASE")),
+		ScaleSetName:    strings.TrimSpace(dualenv.Value("RC_SCALE_SET_NAME")),
+		RunnerGroup:     strings.TrimSpace(dualenv.Value("RC_RUNNER_GROUP")),
 		MinRunners:      0,
 		MaxRunners:      1,
 		VCPUs:           2,
@@ -77,7 +84,7 @@ func Load() (Config, error) {
 		WarmPool:        0,
 		LogLevel:        slog.LevelInfo,
 	}
-	if value := strings.ToLower(strings.TrimSpace(os.Getenv("RC_FIT_POLICY"))); value != "" {
+	if value := strings.ToLower(strings.TrimSpace(dualenv.Value("RC_FIT_POLICY"))); value != "" {
 		config.FitPolicy = value
 	}
 	if config.ScaleSetName == "" {
@@ -86,7 +93,7 @@ func Load() (Config, error) {
 	if config.RunnerGroup == "" {
 		config.RunnerGroup = scaleset.DefaultRunnerGroup
 	}
-	for _, label := range strings.Split(os.Getenv("RC_LABELS"), ",") {
+	for _, label := range strings.Split(dualenv.Value("RC_LABELS"), ",") {
 		if value := strings.TrimSpace(label); value != "" {
 			config.Labels = append(config.Labels, value)
 		}
@@ -108,7 +115,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	config.CacheFactsURL = strings.TrimSpace(os.Getenv("RC_CACHE_FACTS_URL"))
+	config.CacheFactsURL = strings.TrimSpace(dualenv.Value("RC_CACHE_FACTS_URL"))
 	config.CacheSigningKey, err = readSecret("RC_CACHE_SIGNING_KEY", "RC_CACHE_SIGNING_KEY_FILE")
 	if err != nil {
 		return Config{}, err
@@ -118,40 +125,40 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	if value := strings.TrimSpace(os.Getenv("RC_MIN_RUNNERS")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_MIN_RUNNERS")); value != "" {
 		config.MinRunners, err = strconv.Atoi(value)
 		if err != nil {
 			return Config{}, fmt.Errorf("RC_MIN_RUNNERS must be an integer: %w", err)
 		}
 	}
-	if value := strings.TrimSpace(os.Getenv("RC_MAX_RUNNERS")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_MAX_RUNNERS")); value != "" {
 		config.MaxRunners, err = strconv.Atoi(value)
 		if err != nil {
 			return Config{}, fmt.Errorf("RC_MAX_RUNNERS must be an integer: %w", err)
 		}
 	}
-	if value := strings.TrimSpace(os.Getenv("RC_VCPUS")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_VCPUS")); value != "" {
 		config.VCPUs, err = strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return Config{}, fmt.Errorf("RC_VCPUS must be an integer: %w", err)
 		}
 	}
-	if value := strings.TrimSpace(os.Getenv("RC_MEMORY_MIB")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_MEMORY_MIB")); value != "" {
 		config.MemoryMiB, err = strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return Config{}, fmt.Errorf("RC_MEMORY_MIB must be an integer: %w", err)
 		}
 	}
 	config.Egress = parseEgress(
-		os.Getenv("RC_EGRESS_MODE"), os.Getenv("RC_EGRESS_PRESETS"), os.Getenv("RC_EGRESS_ALLOW"),
+		dualenv.Value("RC_EGRESS_MODE"), dualenv.Value("RC_EGRESS_PRESETS"), dualenv.Value("RC_EGRESS_ALLOW"),
 	)
-	if value := strings.TrimSpace(os.Getenv("RC_WARM_POOL")); value != "" {
+	if value := strings.TrimSpace(dualenv.Value("RC_WARM_POOL")); value != "" {
 		config.WarmPool, err = strconv.Atoi(value)
 		if err != nil {
 			return Config{}, fmt.Errorf("RC_WARM_POOL must be an integer: %w", err)
 		}
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("RC_LOG_LEVEL"))) {
+	switch strings.ToLower(strings.TrimSpace(dualenv.Value("RC_LOG_LEVEL"))) {
 	case "", "info":
 	case "debug":
 		config.LogLevel = slog.LevelDebug
@@ -163,8 +170,8 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("RC_LOG_LEVEL must be debug, info, warn, or error")
 	}
 
-	clientID := strings.TrimSpace(os.Getenv("RC_GITHUB_APP_CLIENT_ID"))
-	installation := strings.TrimSpace(os.Getenv("RC_GITHUB_APP_INSTALLATION_ID"))
+	clientID := strings.TrimSpace(dualenv.Value("RC_GITHUB_APP_CLIENT_ID"))
+	installation := strings.TrimSpace(dualenv.Value("RC_GITHUB_APP_INSTALLATION_ID"))
 	if clientID != "" || installation != "" || privateKey != "" {
 		installationID, parseErr := strconv.ParseInt(installation, 10, 64)
 		if parseErr != nil || installationID <= 0 {
@@ -437,8 +444,8 @@ func RegistrationScope(raw string) (Scope, error) {
 }
 
 func readSecret(valueEnv, fileEnv string) (string, error) {
-	value := os.Getenv(valueEnv)
-	filename := strings.TrimSpace(os.Getenv(fileEnv))
+	value := dualenv.Value(valueEnv)
+	filename := strings.TrimSpace(dualenv.Value(fileEnv))
 	if value != "" && filename != "" {
 		return "", fmt.Errorf("configure %s or %s, not both", valueEnv, fileEnv)
 	}

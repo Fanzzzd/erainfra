@@ -59,6 +59,25 @@ CONTAINERD_STATE='/run/runner-center-containerd'
 CONTAINERD_ROOT="$RC_STATE_DIR/containerd"
 CONTAINERD_SOCKET="$CONTAINERD_STATE/containerd.sock"
 
+# The dual-name read (docs/runbooks/rename-phase-2.md, section 1), the sh copy of
+# internal/dualenv: ERAINFRA_<NAME> wins over RC_<NAME>, an empty value counts as
+# unset, and the two set to different values stop the script naming both. It
+# resolves in place, so every RC_ read below stays as it was. Each copy of this
+# function is identical; apps/action-runner-agent/tests/dual-env-sh.test.ts
+# compares them and runs one.
+dual_env_resolve() {
+  eval "_de_new=\${ERAINFRA_${1#RC_}-}"
+  eval "_de_old=\${$1-}"
+  if [ -n "$_de_new" ] && [ -n "$_de_old" ] && [ "$_de_new" != "$_de_old" ]; then
+    printf 'error: ERAINFRA_%s and %s are both set, to different values; remove one, or give both the same value.\n' \
+      "${1#RC_}" "$1" >&2
+    exit 2
+  fi
+  if [ -n "$_de_new" ]; then
+    eval "$1=\$_de_new"
+  fi
+}
+
 RUNTIME_BINARY=''
 DATA_DEVICE=''
 META_DEVICE=''
@@ -549,6 +568,9 @@ set -a
 # shellcheck disable=SC1090
 . "$RC_RUNTIME_ENV"
 set +a
+# The runtime reads ERAINFRA_CNI_NAME first too, so the conflist is named after
+# the same network it will look for.
+dual_env_resolve RC_CNI_NAME
 network_name=${RC_CNI_NAME:-runner-center}
 "$RC_LIB_DIR/runner-center-runtime" render-cni > "$TMP_DIR/conflist" ||
   fail 'the runtime could not render the CNI configuration'

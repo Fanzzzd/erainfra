@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { execa } from "execa";
+import { dualEnv, runtimeBinary } from "./dual-env.ts";
 import type { ProfileSpec } from "./readiness.js";
 
 const DEFAULT_RUNTIME_SOCKET = "/run/runner-center/runtime.sock";
@@ -16,7 +17,7 @@ type RecoveryOptions = {
 };
 
 export function runtimeSocketPath() {
-  return process.env.RC_RUNTIME_SOCKET?.trim() || DEFAULT_RUNTIME_SOCKET;
+  return dualEnv("RC_RUNTIME_SOCKET")?.trim() || DEFAULT_RUNTIME_SOCKET;
 }
 
 async function isSocket(path: string) {
@@ -47,7 +48,7 @@ export async function recoverFirecrackerOrphans(
   if (!(await (options.socketAvailable ?? isSocket)(socket))) return false;
 
   const live = [...new Set(liveAttemptIds)];
-  const binary = process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime";
+  const binary = runtimeBinary();
   await (options.run ?? execa)(binary, ["recover"], {
     input: JSON.stringify(live),
     timeout: RECOVERY_TIMEOUT_MS,

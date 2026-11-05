@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
+import { childEnvironment, runtimeBinary } from "./dual-env.ts";
 
 /**
  * Per-Attempt resource metrics, from the Worker's side.
@@ -116,18 +117,13 @@ export function startAttemptMetrics(options: AttemptMetricsOptions): AttemptMetr
 
   let child: SamplerProcess;
   try {
-    child = (options.spawnSampler ?? defaultSpawn)(
-      process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime",
-      ["sample"],
-      {
-        env: {
-          ...process.env,
-          RC_EXECUTOR: options.executor,
-          RC_ATTEMPT_ID: options.attemptId,
-          RC_RUNNER_NAME: options.runnerName,
-        },
-      },
-    );
+    child = (options.spawnSampler ?? defaultSpawn)(runtimeBinary(), ["sample"], {
+      env: childEnvironment({
+        RC_EXECUTOR: options.executor,
+        RC_ATTEMPT_ID: options.attemptId,
+        RC_RUNNER_NAME: options.runnerName,
+      }),
+    });
   } catch (error) {
     log(`${label}: sampler did not start: ${String(error)}`);
     return noMetrics;
