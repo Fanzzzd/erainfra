@@ -259,6 +259,13 @@ export RC_GITHUB_APP_PRIVATE_KEY_FILE=/etc/runner-center/github-app.pem
 runner-center-controller
 ```
 
+Name a new Profile `erainfra-<N>vcpu-<os><version>[-arm]`, for example `erainfra-4vcpu-ubuntu-2404`
+([ADR 0010](docs/adr/0010-name-profiles-the-way-runner-vendors-name-labels.md)). The controller
+refuses a name GitHub would misread — uppercase, longer than 45 characters, or a GitHub-hosted label
+such as `ubuntu-latest` — and warns about a legal name outside the scheme. `rc-linux-js` and `rc-e2e`
+predate it and keep working; a Profile is renamed by registering the new name beside the old one,
+never in place, because GitHub holds the scale-set name.
+
 `RC_WARM_POOL` is an explicit Firecracker-only performance opt-in. Its target
 counts both parked and currently claimed single-use microVMs, and each one
 reserves a Worker slot, vCPUs, memory, a CNI address, and devmapper headroom.

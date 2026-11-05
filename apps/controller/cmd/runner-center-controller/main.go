@@ -50,6 +50,10 @@ func run() error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	if !config.ProfileNameFollowsScheme(cfg.Profile) {
+		logger.Warn("profile name does not follow ADR 0010; it is still served, and a renamed Profile is registered beside it rather than renamed in place",
+			"profile", cfg.Profile, "scheme", "erainfra-<N>vcpu-<os><version>[-arm][-<M>gb]")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
