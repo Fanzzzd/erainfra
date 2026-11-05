@@ -315,6 +315,17 @@ chunking, the `204`-versus-`{"ok":false}` miss shapes, the prefix-match requirem
 `size_bytes`-as-string-or-number divergence and the `x-ms-request-id` requirement are all in the
 capture and are all citable.
 
+**Rules 2 and 3 need facts that `JobStarted` does not carry, so the controller reads them from
+GitHub.** Added 2026-11-05. `JobStarted` names the repository and event, but its workflow ref is
+the ref of the workflow _file_: a job inside a reusable workflow called at `@main` carries `main`
+whatever branch was pushed, and scoping by it gave a feature-branch push read-write on `main`'s
+entries. It carries no base ref, default branch or head repository at all, so rule 3 could not hold
+and every pull request read cold. The controller now reads the job's workflow run from the REST API
+at `JobStarted` and derives the ref, base ref, default branch and head repository from it, following
+GitHub's documented cache restrictions. A lookup that fails or exceeds its budget yields facts that
+grant nothing, so the cost of an unreachable GitHub is a cold cache, never a wider scope. This adds
+`Actions: Read` and `Contents: Read` to what the controller's credentials need.
+
 ## What would reverse this decision
 
 In ADR 0002's own style, stated so that a future reader can check it rather than re-argue it:
