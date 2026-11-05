@@ -4,7 +4,7 @@
 // ordinary `operator` API token any CLI user could also hold. Here an operator enrolls a Node by
 // name and gets a credential bound to that one Node; the Node later registers the iroh EndpointId
 // that phase 1 gives it, which ADR 0016 makes its identity.
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import {
   internalMutation,
@@ -208,22 +208,30 @@ export const resetEndpoint = mutation({
  * App's ingress exposure (infra/ingress.ts). Removing the role revokes both on the next snapshot.
  * Only an owner or admin may do this; a Node cannot declare its own roles.
  */
+export async function setNodePlacementRoles(
+  ctx: MutationCtx,
+  input: { nodeId: Id<"nodes">; roles: Infer<typeof placementRoleValidator>[]; actor: string },
+) {
+  const node = await ctx.db.get(input.nodeId);
+  if (node === null) throw new ConvexError("No such Node");
+  const roles = [...new Set(input.roles)].toSorted();
+  await ctx.db.patch(node._id, { placementRoles: roles });
+  await appendAudit(ctx, {
+    actor: input.actor,
+    action: "nodes.setPlacementRoles",
+    target: node.name,
+    outcome: "success",
+    meta: { from: node.placementRoles ?? [], to: roles },
+  });
+  return roles;
+}
+
 export const setPlacementRoles = mutation({
   args: { nodeId: v.id("nodes"), roles: v.array(placementRoleValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { actor } = await requirePermission(ctx, "account.admin");
-    const node = await ctx.db.get(args.nodeId);
-    if (node === null) throw new ConvexError("No such Node");
-    const roles = [...new Set(args.roles)].toSorted();
-    await ctx.db.patch(node._id, { placementRoles: roles });
-    await appendAudit(ctx, {
-      actor,
-      action: "nodes.setPlacementRoles",
-      target: node.name,
-      outcome: "success",
-      meta: { from: node.placementRoles ?? [], to: roles },
-    });
+    const { actor } = await requirePermission(ctx, "node.admin");
+    await setNodePlacementRoles(ctx, { ...args, actor });
     return null;
   },
 });

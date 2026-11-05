@@ -8,6 +8,7 @@
 //   POST   /api/v1/nodes                          admin  {name} → 201 {node, credential}
 //   POST   /api/v1/nodes/<name>/revoke            admin  {credential?} → {node, revoked}
 //   POST   /api/v1/nodes/<name>/endpoint/reset    admin  → {node}
+//   PUT    /api/v1/nodes/<name>/roles             admin  {roles} → {node, placementRoles}
 //   GET    /api/v1/apps                           read   {apps}
 //   GET    /api/v1/apps/<app>                     read   {app}
 //   DELETE /api/v1/apps/<app>                     admin  → 202 {removal}
@@ -237,6 +238,36 @@ export function registerInfraRoutes(http: HttpRouter) {
       }
       return null;
     }),
+  });
+
+  http.route({
+    pathPrefix: `${API_PREFIX}/nodes/`,
+    method: "PUT",
+    handler: prefixRoute(`${API_PREFIX}/nodes/`, ([node, ...action]) =>
+      action.join("/") !== "roles"
+        ? null
+        : {
+            needed: "admin",
+            handler: async (ctx, request, caller) => {
+              const body = await readJson(request);
+              if (body === null) return apiError(400, "invalid_request", "Send a JSON object");
+              const roles = body.roles;
+              if (
+                Object.keys(body).some((key) => key !== "roles") ||
+                !Array.isArray(roles) ||
+                roles.length > 4 ||
+                roles.some((role) => typeof role !== "string")
+              )
+                return apiError(400, "invalid_request", "Send {roles: [placement role, ...]}");
+              const result = await ctx.runMutation(internal.infra.operator.apiSetRoles, {
+                caller,
+                node,
+                roles: roles as string[],
+              });
+              return result.ok ? apiJson(result.value, 200) : refused(result.error);
+            },
+          },
+    ),
   });
 
   // ---- Apps and env

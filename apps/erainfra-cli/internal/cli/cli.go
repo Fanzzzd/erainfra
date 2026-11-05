@@ -127,6 +127,7 @@ func init() {
 		nodesEnrollCommand,
 		nodesRevokeCommand,
 		nodesResetEndpointCommand,
+		nodesSetRolesCommand,
 		appsListCommand,
 		appsViewCommand,
 		appsRemoveCommand,

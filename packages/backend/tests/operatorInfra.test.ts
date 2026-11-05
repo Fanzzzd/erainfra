@@ -258,6 +258,44 @@ describe("Nodes", () => {
   });
 });
 
+describe("placement roles", () => {
+  it("sets and clears a Node's roles through the API, as an admin token only", async () => {
+    const f = await fixture();
+    await f.call("POST", "/nodes", f.admin, { name: "edge-1" });
+    expect(
+      (await f.call("PUT", "/nodes/edge-1/roles", f.read, { roles: ["gateway"] })).status,
+    ).toBe(403);
+    const set = await f.call("PUT", "/nodes/edge-1/roles", f.admin, {
+      roles: ["gateway", "compute", "gateway"],
+    });
+    expect(set.status).toBe(200);
+    expect(set.body).toEqual({ node: "edge-1", placementRoles: ["compute", "gateway"] });
+    expect((await f.call("GET", "/nodes", f.read)).body.nodes[0].placementRoles).toEqual([
+      "compute",
+      "gateway",
+    ]);
+    expect(
+      (await f.call("PUT", "/nodes/edge-1/roles", f.admin, { roles: ["worker"] })).status,
+    ).toBe(400);
+    expect((await f.call("PUT", "/nodes/edge-1/roles", f.admin, { roles: "gateway" })).status).toBe(
+      400,
+    );
+    expect((await f.call("PUT", "/nodes/ghost/roles", f.admin, { roles: [] })).status).toBe(404);
+    expect((await f.call("PUT", "/nodes/edge-1/roles", f.admin, { roles: [] })).body).toEqual({
+      node: "edge-1",
+      placementRoles: [],
+    });
+    const rows = (await f.audit()).filter((r) => r.action === "nodes.setPlacementRoles");
+    expect(rows.map((r) => [r.actor, r.outcome])).toEqual([
+      ["token:ci-admin", "success"],
+      ["token:ci-admin", "deny"],
+      ["token:ci-admin", "deny"],
+      ["token:ci-admin", "success"],
+    ]);
+    expect(rows[0].meta).toEqual({ from: [], to: ["compute", "gateway"] });
+  });
+});
+
 describe("env", () => {
   it("sets, lists masked and unsets with a structured scope, never returning a value", async () => {
     const f = await fixture();
@@ -395,6 +433,10 @@ describe("links", () => {
       (await link({ provider: "node-a", providerPort: 1, consumer: "node-b", name: "Bad_Name" }))
         .status,
     ).toBe(400);
+    // A gateway's ingress links listen on this range.
+    const reserved = await link({ provider: "node-a", providerPort: 61100, consumer: "node-b" });
+    expect(reserved.status).toBe(400);
+    expect(reserved.body.error.message).toContain("reserved for gateway ingress");
     // Re-declaring a name re-points it, as on the Hub.
     const again = await link({
       provider: "node-a",

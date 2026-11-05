@@ -657,12 +657,13 @@ Hub's tunnel, follow [move-ingress-to-gateways.md](runbooks/move-ingress-to-gate
 
 ### What Convex sends
 
-An owner or admin marks a Node as a gateway with its placement roles:
+An owner or admin, or an admin API token, marks a Node as a gateway with its placement roles:
 
 ```sh
-npx convex run infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' \
-  --identity '{"subject":"<users _id>|cli"}'
+erainfra nodes set-roles edge-1 gateway
 ```
+
+Without the CLI: `npx convex run infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' --identity '{"subject":"<users _id>|cli"}'`.
 
 A Node cannot set its own roles: a gateway gets a mesh path to every routed App. An empty `roles`
 list removes the role, and the next snapshot revokes the gateway's links and grants. The Node's
@@ -862,6 +863,7 @@ erainfra nodes list                         # transport, liveness, mesh endpoint
 erainfra nodes enroll edge-1 > edge-1.credential
 erainfra nodes revoke edge-1                # every live credential; --credential <hint> for one
 erainfra nodes reset-endpoint edge-1        # after a Node lost its mesh key
+erainfra nodes set-roles edge-1 gateway     # placement roles; --clear removes them
 
 erainfra deploy ./my-app --port 3000        # pack, upload, deploy, follow each stage
 erainfra deploy --repo acme/web --branch main
@@ -973,6 +975,7 @@ token without the scope, 404 for a name that does not exist, 409 while a deploy 
 | `POST /api/v1/nodes` `{name}`                                                                        | admin      | enrolls; returns the credential once                                |
 | `POST /api/v1/nodes/<name>/revoke`                                                                   | admin      | `{credential?}`: one credential, or every live one                  |
 | `POST /api/v1/nodes/<name>/endpoint/reset`                                                           | admin      | forgets the Node's mesh key                                         |
+| `PUT /api/v1/nodes/<name>/roles`                                                                     | admin      | `{roles}`: replaces the placement roles                             |
 | `GET /api/v1/apps`, `GET /api/v1/apps/<app>`                                                         | read       | Apps with status; one App with env names and recent runs            |
 | `DELETE /api/v1/apps/<app>`                                                                          | admin      | removes the App (202: Nodes remove containers when they poll)       |
 | `GET /api/v1/apps/<app>/env`                                                                         | read       | variable names by scope, masked                                     |

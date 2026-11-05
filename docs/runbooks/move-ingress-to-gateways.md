@@ -15,11 +15,12 @@ done with this zone.
    Nodes with a proven endpoint. List the routes and their Nodes:
 
    ```sh
-   npx convex run infra/apps:routes --identity '{"subject":"<users _id>|cli"}'
-   npx convex run infra/nodes:list --identity '{"subject":"<users _id>|cli"}'
+   erainfra apps list      # each routed App's Nodes
+   erainfra nodes list     # MESH must say proven for each of them
    ```
 
-   Each route's `nodeId` needs an `endpointId` in `nodes:list`. A route that fails this check gets
+   (Or `npx convex run infra/apps:routes` and `infra/nodes:list` with `--identity`.) Each route's
+   Node needs a proven endpoint. A route that fails this check gets
    503 from the gateways after the cutover. Move its Node first, or leave the zone on the Hub.
 
 2. **Convex must hold the Hub's current routes.** Re-run the Hub importer
@@ -112,7 +113,8 @@ the rollback above a single command.
 
 ## Remove a gateway Node
 
-1. Remove the role: `infra/nodes:setPlacementRoles` with `"roles":[]`. Its links and grants go on
+1. Remove the role: `erainfra nodes set-roles <name> --clear` (or `infra/nodes:setPlacementRoles`
+   with `"roles":[]`). Its links and grants go on
    the next snapshot, and its routes file becomes an empty table.
 2. `sudo systemctl disable --now erainfra-gateway-tunnel erainfra-gateway`. Its replica leaves the
    tunnel and Cloudflare sends its share to the other gateways.

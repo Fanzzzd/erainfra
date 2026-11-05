@@ -132,6 +132,31 @@ func TestNodesRevokeAndResetEndpoint(t *testing.T) {
 	}
 }
 
+func TestNodesSetRolesReplacesOrClears(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	var roles capture
+	h.api.routes["PUT /api/v1/nodes/edge-1/roles"] = roles.route(200, `{"node":"edge-1","placementRoles":["gateway"]}`)
+	h.expect(ExitOK, "nodes", "set-roles", "edge-1", "gateway")
+	if got := roles.last(t).body["roles"]; len(got.([]any)) != 1 || got.([]any)[0] != "gateway" {
+		t.Errorf("roles body = %v", roles.last(t).body)
+	}
+	if h.stdout.String() != "edge-1 placement roles: gateway\n" {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+	h.api.routes["PUT /api/v1/nodes/edge-1/roles"] = roles.route(200, `{"node":"edge-1","placementRoles":[]}`)
+	h.expect(ExitOK, "nodes", "set-roles", "edge-1", "--clear")
+	if got := roles.last(t).body["roles"]; got == nil || len(got.([]any)) != 0 {
+		t.Errorf("--clear must send an empty list, got %v", roles.last(t).body)
+	}
+	before := len(roles.requests)
+	h.expect(ExitUsage, "nodes", "set-roles", "edge-1")
+	h.expect(ExitUsage, "nodes", "set-roles", "edge-1", "worker")
+	h.expect(ExitUsage, "nodes", "set-roles", "edge-1", "gateway", "--clear")
+	if len(roles.requests) != before {
+		t.Error("usage errors must not reach the network")
+	}
+}
+
 func TestEnvSetUnsetAndList(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	var put, del capture

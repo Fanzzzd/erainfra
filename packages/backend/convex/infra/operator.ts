@@ -20,7 +20,17 @@ import { apiCallerValidator, requirePermission, requireTokenPermission } from ".
 import { upsertMeshLink } from "./apps";
 import { appendAudit } from "./auditLog";
 import { insertNodeCommand } from "./nodeCommands";
-import { enrollNode, hasLiveCredential, resetNodeEndpoint, revokeNodeCredential } from "./nodes";
+import { INGRESS_PORT_END, INGRESS_PORT_START } from "./ingress";
+import {
+  enrollNode,
+  hasLiveCredential,
+  resetNodeEndpoint,
+  revokeNodeCredential,
+  setNodePlacementRoles,
+} from "./nodes";
+
+/** CONTEXT.md, "Placement role". Mirrors tables.ts placementRoleValidator. */
+export const PLACEMENT_ROLES = ["gateway", "compute", "database", "relay"] as const;
 import { isNodeLive, isTerminalStage } from "./policy";
 import { releaseAppPorts } from "./ports";
 import { maskedSecrets, setSecrets, unsetSecret } from "./secrets";
@@ -101,6 +111,8 @@ async function nodeView(ctx: QueryCtx, node: Node, now: number) {
         revokedAt: c.revokedAt ?? null,
       })),
     liveCredentials: live.length,
+    // Set by an owner or admin, never by the Node; `gateway` makes it serve ingress.
+    placementRoles: node.placementRoles ?? [],
   };
 }
 
@@ -397,6 +409,12 @@ export async function declareLink(
   if (apps.some((a) => a.links.some((l) => l.name === name))) {
     // Two links of one name would make every affected Node's snapshot refuse to apply.
     throw new ConvexError(`The link name ${name} is used by an App dependency`);
+  }
+  // A gateway listens on this range for its ingress links (infra/ingress.ts).
+  if (localPort >= INGRESS_PORT_START && localPort <= INGRESS_PORT_END) {
+    throw new ConvexError(
+      `Ports ${INGRESS_PORT_START}-${INGRESS_PORT_END} are reserved for gateway ingress`,
+    );
   }
   // A second listener on the same consumer port would fail to bind on the Node.
   const standalone = await ctx.db.query("meshLinks").take(MAX_STANDALONE_LINKS + 1);
@@ -771,6 +789,33 @@ export const apiResetEndpoint = internalMutation({
         const node = await requireNodeNamed(ctx, args.node);
         await resetNodeEndpoint(ctx, node._id, actor);
         return { node: node.name };
+      },
+    );
+  },
+});
+
+/** Replace a Node's placement roles; an empty list clears them (infra/ingress.ts reads `gateway`). */
+export const apiSetRoles = internalMutation({
+  args: { caller: apiCallerValidator, node: v.string(), roles: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    const { actor } = requireTokenPermission(args.caller, "node.admin");
+    return await audited(
+      ctx,
+      { actor, action: "nodes.setPlacementRoles", target: args.node },
+      async () => {
+        const unknown = args.roles.find((r) => !(PLACEMENT_ROLES as readonly string[]).includes(r));
+        if (unknown !== undefined) {
+          throw new ConvexError(
+            `${unknown} is not a placement role (${PLACEMENT_ROLES.join(", ")})`,
+          );
+        }
+        const node = await requireNodeNamed(ctx, args.node);
+        const roles = await setNodePlacementRoles(ctx, {
+          nodeId: node._id,
+          roles: args.roles as (typeof PLACEMENT_ROLES)[number][],
+          actor,
+        });
+        return { node: node.name, placementRoles: roles };
       },
     );
   },

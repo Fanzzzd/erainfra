@@ -225,6 +225,63 @@ with endpoint_key_changed. The Node publishes its new key on its next heartbeat.
 	},
 }
 
+var placementRoles = map[string]bool{"gateway": true, "compute": true, "database": true, "relay": true}
+
+var nodesSetRolesCommand = command{
+	path:    "nodes set-roles",
+	args:    "<name> [gateway|compute|database|relay...]",
+	minArgs: 1,
+	maxArgs: 5,
+	summary: "Replace a Node's placement roles (admin token)",
+	long: `
+The roles given replace the Node's roles. A Node marked gateway is sent the route
+table and a mesh link to every routed App on its next snapshot, and serves public
+ingress through its cloudflared (docs/runbooks/move-ingress-to-gateways.md).
+--clear removes every role; a former gateway's links and grants go on its next
+snapshot. A Node cannot set its own roles.`,
+	flags: []flagSpec{{name: "clear", usage: "remove every role"}},
+	run: func(ctx context.Context, a *App, in invocation) error {
+		name, roles := in.args[0], in.args[1:]
+		if err := pathName("Node", name); err != nil {
+			return err
+		}
+		if len(roles) == 0 && !in.bools["clear"] {
+			return usagef("name the roles, or pass --clear to remove them all")
+		}
+		if len(roles) > 0 && in.bools["clear"] {
+			return usagef("--clear takes no roles")
+		}
+		for _, role := range roles {
+			if !placementRoles[role] {
+				return usagef("%q is not a placement role (gateway, compute, database, relay)", role)
+			}
+		}
+		c, _, err := a.connect()
+		if err != nil {
+			return err
+		}
+		body, err := c.send(ctx, http.MethodPut, "/nodes/"+url.PathEscape(name)+"/roles", nil, map[string]any{"roles": append([]string{}, roles...)})
+		if err != nil {
+			return err
+		}
+		if in.format == formatJSON {
+			return writeRawJSON(a.Stdout, body)
+		}
+		var out struct {
+			PlacementRoles []string `json:"placementRoles"`
+		}
+		if err := decode(body, &out); err != nil {
+			return err
+		}
+		set := strings.Join(out.PlacementRoles, ", ")
+		if set == "" {
+			set = "none"
+		}
+		_, err = fmt.Fprintf(a.Stdout, "%s placement roles: %s\n", name, set)
+		return err
+	},
+}
+
 // ---- Apps
 
 type appService struct {
