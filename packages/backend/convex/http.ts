@@ -36,11 +36,14 @@ import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { renderWindowsInstallScript } from "./installScriptPowerShell";
 import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 
+import { registerNodeRoutes } from "./infra/nodeHttp";
+
 const http = httpRouter();
 auth.addHttpRoutes(http);
 registerStaticRoutes(http, components.staticHosting);
 // The operator API under /api/v1, for the `erainfra` CLI (operatorHttp.ts).
 registerOperatorRoutes(http);
+registerNodeRoutes(http);
 
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {

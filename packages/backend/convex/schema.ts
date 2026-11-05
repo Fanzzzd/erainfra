@@ -11,6 +11,8 @@ import { alertConditionValidator } from "./alertRules";
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
 
+import { nodeTransportTables } from "./infra/nodeCommandModel";
+
 export default defineSchema({
   ...authTables,
 
@@ -36,6 +38,7 @@ export default defineSchema({
     .index("by_role", ["role"]),
 
   ...infraTables,
+  ...nodeTransportTables,
 
   // Single-use permission to create exactly one dashboard account. Sign-up is
   // closed unless the caller presents a live grant: `bootstrap` grants are
