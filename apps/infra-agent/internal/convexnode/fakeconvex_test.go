@@ -30,6 +30,9 @@ type fakeConvex struct {
 	server     *httptest.Server
 	nodes      map[string]*fakeNode // by credential
 	links      []fakeLink
+	routes     []fakeRoute
+	gateways   map[string]bool // by credential
+	overflow   int             // ingress.overflow sent to gateways
 	challenges map[string]fakeChallenge
 	next       int
 
@@ -53,6 +56,14 @@ type fakeLink struct {
 	// bridge marks an App dependency link, whose consumer listens on the Docker bridge.
 	bridge bool
 }
+
+// fakeRoute is an appRoutes row; listen is the gateway-side ingress port Convex derives.
+type fakeRoute struct {
+	host         string
+	provider     string // credential of the App's Node
+	port, listen int
+}
+
 type fakeChallenge struct {
 	credential string
 	address    meshclient.Peer
@@ -66,7 +77,7 @@ const challengeNote = "节点 <&> \u2028 end"
 
 func newFakeConvex(t *testing.T) *fakeConvex {
 	t.Helper()
-	f := &fakeConvex{nodes: map[string]*fakeNode{}, challenges: map[string]fakeChallenge{}, results: map[string]string{}}
+	f := &fakeConvex{nodes: map[string]*fakeNode{}, challenges: map[string]fakeChallenge{}, results: map[string]string{}, gateways: map[string]bool{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -110,6 +121,26 @@ func (f *fakeConvex) appLink(name, provider, consumer string, providerPort, list
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.links = append(f.links, fakeLink{name: name, provider: provider, consumer: consumer, providerPort: providerPort, listen: listen, bridge: true})
+}
+
+// route upserts an appRoutes row by host, as deploy and failover do.
+func (f *fakeConvex) route(host, provider string, port, listen int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, r := range f.routes {
+		if r.host == host {
+			f.routes[i] = fakeRoute{host: host, provider: provider, port: port, listen: listen}
+			return
+		}
+	}
+	f.routes = append(f.routes, fakeRoute{host: host, provider: provider, port: port, listen: listen})
+}
+
+// gateway is infra/nodes:setPlacementRoles with or without "gateway".
+func (f *fakeConvex) gateway(credential string, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gateways[credential] = on
 }
 
 func (f *fakeConvex) registered(credential string) (string, *meshclient.Peer) {
@@ -286,6 +317,44 @@ func (f *fakeConvex) desired(credential string) DesiredMesh {
 			}
 			d.Links = append(d.Links, MeshLink{Name: l.name, Peer: peer.address.ID, Service: l.name, Listen: listen})
 		}
+	}
+	// Ingress, as infra/ingress.ts derives it: the App's Node exposes each route to exactly the
+	// proven gateways, and a gateway links to each route and receives the table.
+	maxConn := uint32(1024)
+	for _, r := range f.routes {
+		if r.provider != credential {
+			continue
+		}
+		allowed := []string{}
+		for g, on := range f.gateways {
+			if on && g != credential && f.nodes[g].address != nil {
+				a := f.nodes[g].address
+				allowed = append(allowed, a.ID)
+				peers[a.ID] = MeshPeer{ID: a.ID, RelayURLs: a.RelayURLs, DirectAddrs: a.DirectAddrs}
+			}
+		}
+		if len(allowed) > 0 {
+			sort.Strings(allowed)
+			exposures["ingress."+r.host] = &MeshExposure{Name: "ingress." + r.host, Target: fmt.Sprintf("127.0.0.1:%d", r.port), AllowedPeers: allowed, MaxConnections: &maxConn}
+		}
+	}
+	if f.gateways[credential] {
+		d.Ingress = &MeshIngress{Routes: []IngressRoute{}, Overflow: f.overflow}
+		for _, r := range f.routes {
+			var upstream *string
+			switch app := f.nodes[r.provider]; {
+			case r.provider == credential:
+				u := fmt.Sprintf("127.0.0.1:%d", r.port)
+				upstream = &u
+			case app.address != nil:
+				u := fmt.Sprintf("127.0.0.1:%d", r.listen)
+				upstream = &u
+				peers[app.address.ID] = MeshPeer{ID: app.address.ID, RelayURLs: app.address.RelayURLs, DirectAddrs: app.address.DirectAddrs}
+				d.Links = append(d.Links, MeshLink{Name: "ingress." + r.host, Peer: app.address.ID, Service: "ingress." + r.host, Listen: u, MaxConnections: &maxConn})
+			}
+			d.Ingress.Routes = append(d.Ingress.Routes, IngressRoute{Host: r.host, Upstream: upstream})
+		}
+		sort.Slice(d.Ingress.Routes, func(i, j int) bool { return d.Ingress.Routes[i].Host < d.Ingress.Routes[j].Host })
 	}
 	for _, p := range peers {
 		d.Fleet = append(d.Fleet, p)

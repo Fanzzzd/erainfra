@@ -27,7 +27,7 @@ import { internalMutation, type MutationCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";
 import { upsertApp, upsertMeshLink, upsertRoute } from "./apps";
 import { createDeployment } from "./deployments";
-import { acquireAppLease, releaseAppLease, renewAppLease } from "./leases";
+import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
 import { insertNodeCommand, type NodeCommand } from "./nodeCommands";
 import { changedNodes, planDeploy } from "./plan";
 import { isNodeLive, isTerminalStage, leaseAdmits, type DeployStage } from "./policy";
@@ -535,6 +535,10 @@ async function cancelRetirements(ctx: MutationCtx, app: string, nodeId: Id<"node
  */
 async function commit(ctx: MutationCtx, run: Run) {
   const plan = run.plan!;
+  // The App row and its route rows take the node AND port of the placement just deployed, in this
+  // one transaction under the App lease epoch. Gateway ingress serves a route only while the two
+  // agree with the port allocation (nodeState.ts), so a route never names a port another App holds.
+  await assertAppLease(ctx, run.app, run.leaseEpoch!, Date.now());
   const before = await ctx.db
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", run.app))

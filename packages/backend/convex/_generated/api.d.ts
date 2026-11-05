@@ -51,6 +51,7 @@ import type * as infra_deployments from "../infra/deployments.js";
 import type * as infra_git from "../infra/git.js";
 import type * as infra_hubImport from "../infra/hubImport.js";
 import type * as infra_hubPassword from "../infra/hubPassword.js";
+import type * as infra_ingress from "../infra/ingress.js";
 import type * as infra_leases from "../infra/leases.js";
 import type * as infra_nodes from "../infra/nodes.js";
 import type * as infra_policy from "../infra/policy.js";
@@ -142,6 +143,7 @@ declare const fullApi: ApiFromModules<{
   "infra/git": typeof infra_git;
   "infra/hubImport": typeof infra_hubImport;
   "infra/hubPassword": typeof infra_hubPassword;
+  "infra/ingress": typeof infra_ingress;
   "infra/leases": typeof infra_leases;
   "infra/nodes": typeof infra_nodes;
   "infra/policy": typeof infra_policy;

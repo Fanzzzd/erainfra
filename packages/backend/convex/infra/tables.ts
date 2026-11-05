@@ -33,6 +33,17 @@ export const auditOutcomeValidator = v.union(
   v.literal("attempt"),
 );
 
+/**
+ * Placement roles (CONTEXT.md): which capability a Node carries for the Apps deployed onto it.
+ * Only `gateway` changes what Convex sends a Node today (infra/ingress.ts).
+ */
+export const placementRoleValidator = v.union(
+  v.literal("gateway"),
+  v.literal("compute"),
+  v.literal("database"),
+  v.literal("relay"),
+);
+
 /** What phase 1's `erainfra-mesh` publishes so peers can dial a Node without n0's discovery. */
 export const endpointAddrValidator = v.object({
   relayUrl: v.optional(v.string()),
@@ -134,6 +145,9 @@ export const infraTables = {
     // the silence a failover already ran for, so one outage fails over once.
     failoverSuspectAt: v.optional(v.number()),
     failoverHandledSeenAt: v.optional(v.number()),
+    // Set by an owner or admin (nodes.setPlacementRoles), never by the Node: a gateway is granted
+    // a mesh path to every routed App, so a Node must not be able to promote itself.
+    placementRoles: v.optional(v.array(placementRoleValidator)),
   })
     .index("by_name", ["name"])
     .index("by_endpointId", ["endpointId"]),

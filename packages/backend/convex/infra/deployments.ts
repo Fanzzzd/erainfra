@@ -214,6 +214,14 @@ export const beginFailover = internalMutation({
 /**
  * Point an App, and the routes of its services, at the Node it was redeployed onto. Fenced: a
  * failover that lost its lease cannot move an App another operation now owns.
+ *
+ * A moved service keeps its name but not its port: the new Node allocates its own (key
+ * `<app>/<service>`), so the redeploy on it must have allocated one. Each moved service's App row
+ * entry and route row get the new Node and that Node's port together, in this one fenced
+ * transaction. The old port number on the new Node may belong to another App, so a service with
+ * no allocation there is refused, not moved with its old port (gateway ingress would otherwise
+ * expose another App's port under this App's name; infra/nodeState.ts refuses such a route too).
+ * The deploy pipeline's failover (pipeline.ts `commit`) writes the plan's node and port the same way.
  */
 export const completeFailover = internalMutation({
   args: { app: v.string(), epoch: v.number(), fromNodeId: v.id("nodes"), toNodeId: v.id("nodes") },
@@ -224,27 +232,55 @@ export const completeFailover = internalMutation({
       .query("apps")
       .withIndex("by_name", (q) => q.eq("name", args.app))
       .unique();
-    const routeNames =
-      app === null ? [args.app] : app.services.flatMap((s) => (s.route ? [s.route] : []));
-    if (app !== null) {
-      // Move every service that ran on the lost Node, by its own placement, not only the App's
-      // primary Node: the Hub moved the primary and left services[].node pointing at the lost one.
-      const services = app.services.map((s) =>
-        (s.nodeId ?? app.nodeId) === args.fromNodeId ? { ...s, nodeId: args.toNodeId } : s,
+    if (app === null)
+      throw new ConvexError(
+        `${args.app} has no App row, so its new port is unknown; redeploy it through the pipeline`,
       );
-      await ctx.db.patch(app._id, {
-        nodeId: app.nodeId === args.fromNodeId ? args.toNodeId : app.nodeId,
-        services,
-        updatedAt: Date.now(),
+    // Move every service that ran on the lost Node, by its own placement, not only the App's
+    // primary Node: the Hub moved the primary and left services[].node pointing at the lost one.
+    const services = [];
+    for (const s of app.services) {
+      if ((s.nodeId ?? app.nodeId) !== args.fromNodeId) {
+        services.push(s);
+        continue;
+      }
+      let port: number | undefined;
+      if (s.port !== undefined) {
+        const allocation = await ctx.db
+          .query("portAllocations")
+          .withIndex("by_node_key", (q) =>
+            q.eq("nodeId", args.toNodeId).eq("key", `${app.name}/${s.name}`),
+          )
+          .unique();
+        if (allocation === null)
+          throw new ConvexError(
+            `${app.name}/${s.name} has no port on the target Node; redeploy it there first`,
+          );
+        port = allocation.port;
+      }
+      services.push({
+        ...s,
+        nodeId: args.toNodeId,
+        ...(port === undefined ? {} : { port }),
       });
     }
-    for (const name of routeNames) {
+    await ctx.db.patch(app._id, {
+      nodeId: app.nodeId === args.fromNodeId ? args.toNodeId : app.nodeId,
+      services,
+      updatedAt: Date.now(),
+    });
+    for (const s of services) {
+      if (s.route === undefined || s.nodeId !== args.toNodeId) continue;
       const route = await ctx.db
         .query("appRoutes")
-        .withIndex("by_name", (q) => q.eq("name", name))
+        .withIndex("by_name", (q) => q.eq("name", s.route!))
         .unique();
       if (route !== null && route.nodeId === args.fromNodeId) {
-        await ctx.db.patch(route._id, { nodeId: args.toNodeId, updatedAt: Date.now() });
+        await ctx.db.patch(route._id, {
+          nodeId: args.toNodeId,
+          ...(s.port === undefined ? {} : { port: s.port }),
+          updatedAt: Date.now(),
+        });
       }
     }
     await releaseAppLease(ctx, args.app, args.epoch);

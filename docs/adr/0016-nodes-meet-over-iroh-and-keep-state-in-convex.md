@@ -115,7 +115,10 @@ the Hub's web app folds into the EraInfra dashboard.
      two parts: 2a puts the state and its invariants in Convex with an importer that copies a
      running Hub (docs/infra-management.md); 2b has the Infra Agent dial Convex;
   3. gateway ingress, the deploy pipeline and failover run from Convex, the CLI and UI follow, and the
-     Hub is retired.
+     Hub is retired. Gateway ingress (3b) carries each routed App on an ordinary `erainfra/tcp/1`
+     link from each gateway to an exposure granted to exactly the gateway Nodes, not on a separate
+     `erainfra/ingress/1` protocol: the grant is already that narrow, and a second protocol would
+     change the sidecar without narrowing who can connect.
 - Identifiers a running Node or Hub already holds (`PORTLESS_*`, `/etc/portless/agent.env`,
   `portless-agent.service`, the `portless-data` volume) change only through the dual-read migration
   rules in CONTEXT.md rule 4, never as part of a phase.
