@@ -140,6 +140,9 @@ func init() {
 		linksListCommand,
 		linksAddCommand,
 		linksRemoveCommand,
+		gitBindingsCommand,
+		gitBindCommand,
+		gitUnbindCommand,
 		logsCommand,
 		versionCommand,
 	}
@@ -151,8 +154,8 @@ func init() {
 var groupAliases = map[string]string{"attempts": "jobs"}
 
 const topHelp = `erainfra operates an EraInfra fleet through the control plane's operator API:
-CI Workers and jobs, and the Nodes, Apps, env, links and logs of infrastructure
-management.
+CI Workers and jobs, and the Nodes, Apps, env, links, logs and push-to-deploy
+bindings of infrastructure management.
 
 Usage:
   erainfra <command> <subcommand> [flags]
