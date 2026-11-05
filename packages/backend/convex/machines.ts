@@ -4,7 +4,14 @@ import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
 const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
@@ -101,125 +108,129 @@ export const list = query({
   returns: v.array(machineListItemValidator),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    const [
-      machines,
-      assignedJobs,
-      runningJobs,
-      attemptRanges,
-      experimentRanges,
-      readiness,
-      readinessEvidence,
-      benchmarkEvidence,
-    ] = await Promise.all([
-      ctx.db.query("machines").collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "assigned"))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "running"))
-        .collect(),
-      Promise.all(
-        ACTIVE_ATTEMPT_STATES.map((state) =>
-          ctx.db
-            .query("attempts")
-            .withIndex("by_state", (q) => q.eq("state", state))
-            .collect(),
-        ),
-      ),
-      Promise.all(
-        ACTIVE_EXPERIMENT_STATES.map((state) =>
-          ctx.db
-            .query("experiments")
-            .withIndex("by_state", (q) => q.eq("state", state))
-            .collect(),
-        ),
-      ),
-      ctx.db.query("workerReadiness").collect(),
-      ctx.db.query("readinessEvidence").collect(),
-      ctx.db.query("benchmarkEvidence").collect(),
-    ]);
-
-    const activeJobs = [...assignedJobs, ...runningJobs];
-    const attempts = attemptRanges.flat();
-    const experiments = experimentRanges.flat();
-    const readinessEvidenceByKey = new Map(
-      readinessEvidence.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
-    );
-    const benchmarkEvidenceByMachine = new Map(
-      benchmarkEvidence.map((evidence) => [evidence.machineId, evidence.benchmark]),
-    );
-    return machines
-      .toSorted((a, b) => a.name.localeCompare(b.name))
-      .map(({ token: _token, ...machine }) => ({
-        ...machine,
-        benchmark:
-          benchmarkEvidenceByMachine.get(machine._id) ??
-          (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined),
-        currentJobs: activeJobs
-          .filter((job) => job.machineId === machine._id)
-          .map((job) => ({
-            _id: job._id,
-            repo: job.repo,
-            workflowName: job.workflowName,
-            status: job.status as "assigned" | "running",
-          })),
-        currentAttempts: attempts
-          .filter(
-            (attempt) =>
-              attempt.machineId === machine._id &&
-              (attempt.state === "pending" ||
-                attempt.state === "preparing" ||
-                attempt.state === "ready" ||
-                attempt.state === "running"),
-          )
-          .map((attempt) => ({
-            _id: attempt._id,
-            profile: attempt.profile,
-            state: attempt.state as "pending" | "preparing" | "ready" | "running",
-          })),
-        currentExperiments: experiments
-          .filter(
-            (experiment) =>
-              experiment.machineId === machine._id &&
-              (experiment.state === "queued" ||
-                experiment.state === "preparing" ||
-                experiment.state === "running"),
-          )
-          .map((experiment) => ({
-            _id: experiment._id,
-            name: experiment.name,
-            state: experiment.state as "queued" | "preparing" | "running",
-          })),
-        readiness: readiness
-          .filter((entry) => entry.machineId === machine._id)
-          .toSorted((left, right) => left.profile.localeCompare(right.profile))
-          .map((entry) => {
-            const evidence = readinessEvidenceByKey.get(`${entry.machineId}:${entry.profile}`);
-            const currentEvidence = evidence?.checkedAt === entry.checkedAt ? evidence : undefined;
-            const admissionError = readinessAdmissionError(entry, evidence);
-            return {
-              profile: entry.profile,
-              executor: entry.executor,
-              imageRelease: entry.imageRelease,
-              state:
-                entry.state === "ready" && admissionError !== undefined
-                  ? entry.preparedAt === undefined
-                    ? ("failed" as const)
-                    : ("degraded" as const)
-                  : entry.state,
-              checkedAt: entry.checkedAt,
-              preparedAt: entry.preparedAt,
-              // Legacy hot rows are the one-cycle fallback until their next
-              // readiness report creates a matching evidence document.
-              statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
-              lastError: currentEvidence?.lastError ?? entry.lastError ?? admissionError,
-            };
-          }),
-      }));
+    return await listMachines(ctx);
   },
 });
+
+export async function listMachines(ctx: QueryCtx) {
+  const [
+    machines,
+    assignedJobs,
+    runningJobs,
+    attemptRanges,
+    experimentRanges,
+    readiness,
+    readinessEvidence,
+    benchmarkEvidence,
+  ] = await Promise.all([
+    ctx.db.query("machines").collect(),
+    ctx.db
+      .query("jobs")
+      .withIndex("by_status", (q) => q.eq("status", "assigned"))
+      .collect(),
+    ctx.db
+      .query("jobs")
+      .withIndex("by_status", (q) => q.eq("status", "running"))
+      .collect(),
+    Promise.all(
+      ACTIVE_ATTEMPT_STATES.map((state) =>
+        ctx.db
+          .query("attempts")
+          .withIndex("by_state", (q) => q.eq("state", state))
+          .collect(),
+      ),
+    ),
+    Promise.all(
+      ACTIVE_EXPERIMENT_STATES.map((state) =>
+        ctx.db
+          .query("experiments")
+          .withIndex("by_state", (q) => q.eq("state", state))
+          .collect(),
+      ),
+    ),
+    ctx.db.query("workerReadiness").collect(),
+    ctx.db.query("readinessEvidence").collect(),
+    ctx.db.query("benchmarkEvidence").collect(),
+  ]);
+
+  const activeJobs = [...assignedJobs, ...runningJobs];
+  const attempts = attemptRanges.flat();
+  const experiments = experimentRanges.flat();
+  const readinessEvidenceByKey = new Map(
+    readinessEvidence.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
+  );
+  const benchmarkEvidenceByMachine = new Map(
+    benchmarkEvidence.map((evidence) => [evidence.machineId, evidence.benchmark]),
+  );
+  return machines
+    .toSorted((a, b) => a.name.localeCompare(b.name))
+    .map(({ token: _token, ...machine }) => ({
+      ...machine,
+      benchmark:
+        benchmarkEvidenceByMachine.get(machine._id) ??
+        (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined),
+      currentJobs: activeJobs
+        .filter((job) => job.machineId === machine._id)
+        .map((job) => ({
+          _id: job._id,
+          repo: job.repo,
+          workflowName: job.workflowName,
+          status: job.status as "assigned" | "running",
+        })),
+      currentAttempts: attempts
+        .filter(
+          (attempt) =>
+            attempt.machineId === machine._id &&
+            (attempt.state === "pending" ||
+              attempt.state === "preparing" ||
+              attempt.state === "ready" ||
+              attempt.state === "running"),
+        )
+        .map((attempt) => ({
+          _id: attempt._id,
+          profile: attempt.profile,
+          state: attempt.state as "pending" | "preparing" | "ready" | "running",
+        })),
+      currentExperiments: experiments
+        .filter(
+          (experiment) =>
+            experiment.machineId === machine._id &&
+            (experiment.state === "queued" ||
+              experiment.state === "preparing" ||
+              experiment.state === "running"),
+        )
+        .map((experiment) => ({
+          _id: experiment._id,
+          name: experiment.name,
+          state: experiment.state as "queued" | "preparing" | "running",
+        })),
+      readiness: readiness
+        .filter((entry) => entry.machineId === machine._id)
+        .toSorted((left, right) => left.profile.localeCompare(right.profile))
+        .map((entry) => {
+          const evidence = readinessEvidenceByKey.get(`${entry.machineId}:${entry.profile}`);
+          const currentEvidence = evidence?.checkedAt === entry.checkedAt ? evidence : undefined;
+          const admissionError = readinessAdmissionError(entry, evidence);
+          return {
+            profile: entry.profile,
+            executor: entry.executor,
+            imageRelease: entry.imageRelease,
+            state:
+              entry.state === "ready" && admissionError !== undefined
+                ? entry.preparedAt === undefined
+                  ? ("failed" as const)
+                  : ("degraded" as const)
+                : entry.state,
+            checkedAt: entry.checkedAt,
+            preparedAt: entry.preparedAt,
+            // Legacy hot rows are the one-cycle fallback until their next
+            // readiness report creates a matching evidence document.
+            statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
+            lastError: currentEvidence?.lastError ?? entry.lastError ?? admissionError,
+          };
+        }),
+    }));
+}
 
 export const createRegistrationToken = mutation({
   args: {},
@@ -229,22 +240,26 @@ export const createRegistrationToken = mutation({
   }),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-
-    let token = "";
-    do {
-      token = `rcreg_${randomHex(24)}`;
-    } while (
-      (await ctx.db
-        .query("registrationTokens")
-        .withIndex("by_token", (q) => q.eq("token", token))
-        .unique()) !== null
-    );
-
-    const createdAt = Date.now();
-    await ctx.db.insert("registrationTokens", { token, createdAt });
-    return { token, expiresAt: createdAt + REGISTRATION_TOKEN_TTL_MS };
+    return await issueRegistrationToken(ctx);
   },
 });
+
+/** Shared by the dashboard's Add Worker dialog and the operator API's admin route. */
+export async function issueRegistrationToken(ctx: MutationCtx) {
+  let token = "";
+  do {
+    token = `rcreg_${randomHex(24)}`;
+  } while (
+    (await ctx.db
+      .query("registrationTokens")
+      .withIndex("by_token", (q) => q.eq("token", token))
+      .unique()) !== null
+  );
+
+  const createdAt = Date.now();
+  await ctx.db.insert("registrationTokens", { token, createdAt });
+  return { token, expiresAt: createdAt + REGISTRATION_TOKEN_TTL_MS };
+}
 
 export const registerAgent = internalMutation({
   args: {

@@ -25,10 +25,13 @@ import { renderInstallScript } from "./installScript";
 import { bearerToken, LAST_USED_RESOLUTION_MS, sha256Hex } from "./metrics";
 import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { renderWindowsInstallScript } from "./installScriptPowerShell";
+import { registerOperatorRoutes } from "./operatorHttp";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
 registerStaticRoutes(http, components.staticHosting);
+// The operator API under /api/v1, for the `erainfra` CLI (operatorHttp.ts).
+registerOperatorRoutes(http);
 
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {

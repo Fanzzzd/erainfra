@@ -74,6 +74,11 @@ reporting a boundary weaker than its executor promises is refused.
 **Readiness evidence** — the measured facts a Worker submits to justify a ready state, including
 the network policy identity hash and thin-pool identity. Admission is fail-closed against it.
 
+**Operator API token** — a bearer credential for the Convex control plane's `/api/v1`, minted in the
+dashboard and used by the `erainfra` CLI. Its **scope** is `read` or `admin`. It is unrelated to a
+Worker's machine token, the controller's `CONTROLLER_TOKEN`, and the Hub's API tokens
+([ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)).
+
 **Role** — three unrelated vocabularies here use the word, and only the first is a machine kind, so
 a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
 

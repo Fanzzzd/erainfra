@@ -772,6 +772,69 @@ Agree on a queue limit with whoever operates the Profile. Before an operation ta
 only Worker away for longer than that limit, the operator follows
 [docs/runbooks/take-the-only-worker-away.md](docs/runbooks/take-the-only-worker-away.md).
 
+## Read the fleet from the command line
+
+`erainfra` is the operator CLI. It reads Profiles, Workers and jobs through the control plane's
+operator API, the way the Blacksmith CLI and actuated-cli read theirs, and prints a table or stable
+JSON. It is a single static binary with no dependencies. `rc` on a Worker remains the tool for that
+one machine (`rc status`, `rc logs -f`, `rc update`); [ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)
+explains the split.
+
+Install it from a release (releases after v0.2.0-rc.10; Linux, macOS and Windows, x64 and ARM64
+except Windows ARM64), or build it from source:
+
+```bash
+gh release download v<version> -R Fanzzzd/erainfra -p 'erainfra-linux-x86_64*'
+sha256sum -c erainfra-linux-x86_64.sha256
+install -m 0755 erainfra-linux-x86_64 ~/.local/bin/erainfra
+
+go install github.com/Fanzzzd/erainfra/apps/erainfra-cli/cmd/erainfra@latest
+```
+
+Create a token in the dashboard under **Machines → API tokens**. A **read** token reads; an
+**admin** token can also mint Worker registration tokens (`erainfra workers add`), the one dashboard
+action the API offers. The dashboard shows a new token once, stores only its SHA-256, records when
+each token was last used, and revokes a token on its next request. The API cannot mint tokens, so a
+leaked admin token cannot create its own replacement.
+
+```bash
+erainfra auth login --url https://<deployment>.convex.site --token -   # reads the token from stdin
+erainfra auth status
+erainfra profiles list
+erainfra workers list
+erainfra jobs list --profile erainfra-4vcpu-ubuntu-2404 --state failed --since 24h
+erainfra jobs list --repo acme/web --all --json | jq '.attempts[] | {id, queueWaitMs, durationMs}'
+erainfra jobs view <id>
+erainfra jobs logs <id>
+```
+
+The login is stored in `$XDG_CONFIG_HOME/erainfra/config.json` (default
+`~/.config/erainfra/config.json`, `%AppData%\erainfra\config.json` on Windows) with mode 0600.
+`ERAINFRA_URL` and `ERAINFRA_TOKEN` together override it, for CI and scripts. Every command takes
+`--format table|json` (or `--json`) and `--help`. Exit codes: 0 success, 1 the request failed, 2
+usage error or a filter the API refused, 4 not logged in or token refused.
+
+Each `jobs` row is one Attempt. `WAIT` is how long GitHub held the job before a Runner of this fleet
+took it, and `DURATION` runs from the job starting to it finishing. The control plane stores no job
+or Worker logs: GitHub holds the job log, so `jobs logs` runs `gh run view <run> --log` when the
+GitHub CLI is installed and prints the run URL otherwise. A Worker's own Agent log is read on the
+Worker with `rc logs`.
+
+The API under `/api/v1` takes the token as `Authorization: Bearer <token>`:
+
+| Route                                      | Scope | Returns                                                                                                         |
+| ------------------------------------------ | ----- | --------------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/token`                        | read  | the calling token's name and scope                                                                              |
+| `GET /api/v1/profiles`                     | read  | Profiles with ready Workers, free/ready slots, and Workers per readiness state                                  |
+| `GET /api/v1/workers`                      | read  | Workers with slots, readiness per Profile, last heartbeat and active Attempts                                   |
+| `GET /api/v1/attempts`                     | read  | Attempts newest first; `profile`, `state`, `repo`, `since` (`24h`, `7d` or RFC 3339), `limit` (1–100), `cursor` |
+| `GET /api/v1/attempts/<id>`                | read  | one Attempt with its timeline, queue wait, duration and run URL                                                 |
+| `POST /api/v1/workers/registration-tokens` | admin | a single-use Worker registration token and the install commands                                                 |
+
+Absent values are `null`, timestamps are RFC 3339 in UTC, durations are milliseconds, and an error
+is `{"error": {"code", "message"}}` with 400, 401, 403 or 404. The control plane does not record a
+Worker's Agent version, so `workers` does not report one; `rc status` on the Worker prints it.
+
 ## Legacy webhook delivery recovery
 
 Minute reconciliation calls `retryStalledDeliveries` for deliveries that reached Convex but remained
@@ -1050,7 +1113,9 @@ twice byte-for-byte, checks the deployment pin, attests the artifacts, and publi
 - `infra-agent-<os>-<arch>` binaries and SHA-256 sidecars for Linux and macOS x64/ARM64 and
   Windows x64 — the five targets a Node can be;
 - `erainfra-cache-service-linux-x86_64` and its SHA-256 sidecar — the cache service (ADR 0009),
-  one Linux target because it is a server an operator deploys, not a binary every Node runs.
+  one Linux target because it is a server an operator deploys, not a binary every Node runs;
+- `erainfra-<os>-<arch>` binaries and SHA-256 sidecars, the operator CLI, for the same five targets
+  as the Infra Agent.
 
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never
 overwritten; a correction is a new version.
@@ -1071,6 +1136,7 @@ apps/action-runner-agent  Worker daemon and Tart/legacy provisioners
 apps/controller           official scale-set listener adapter
 apps/runtime              Firecracker host runtime, job network policy, and guest bootstrap
 apps/infra-agent          Node daemon: outbound WS to the Hub, App deploys, host operations
+apps/erainfra-cli         the `erainfra` operator CLI over the control plane's /api/v1
 apps/hub                  Hub: Fastify + tRPC control plane for Nodes and Apps
 apps/hub-web              the Hub's dashboard
 apps/dashboard            React dashboard for the Convex control plane

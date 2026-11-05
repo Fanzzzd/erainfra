@@ -7,7 +7,7 @@ import {
   readinessAdmissionError,
   readinessCheckValidator,
 } from "./isolation";
-import { query } from "./_generated/server";
+import { query, type QueryCtx } from "./_generated/server";
 import { isSchedulableReadiness } from "./attemptScheduler";
 import { fitPolicyValidator } from "./benchmark";
 import { effectiveReadinessState } from "./fleetObservation";
@@ -99,101 +99,106 @@ export const list = query({
   ),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    const now = Date.now();
-    const [profiles, readiness, evidenceRows, machines] = await Promise.all([
-      ctx.db.query("profiles").collect(),
-      ctx.db.query("workerReadiness").collect(),
-      ctx.db.query("readinessEvidence").collect(),
-      ctx.db.query("machines").collect(),
-    ]);
-    const machineById = new Map(machines.map((machine) => [machine._id, machine]));
-    const evidenceByKey = new Map(
-      evidenceRows.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
-    );
-    return profiles
-      .toSorted((left, right) => left.name.localeCompare(right.name))
-      .map((profile) => {
-        const rows = readiness.filter(
-          (row) =>
-            row.profile === profile.name &&
-            row.executor === profile.executor &&
-            row.imageRelease === profile.imageRelease,
-        );
-        const workers =
-          profile.state === "active"
-            ? rows.flatMap((row) => {
-                const machine = machineById.get(row.machineId);
-                return isSchedulableReadiness(
-                  row,
-                  evidenceByKey.get(`${row.machineId}:${row.profile}`),
-                  machine,
-                  profile,
-                  now,
-                )
-                  ? [machine]
-                  : [];
-              })
-            : [];
-        const workerDetail = rows.flatMap((row) => {
-          const machine = machineById.get(row.machineId);
-          if (machine === undefined) return [];
-          const evidence = evidenceByKey.get(`${row.machineId}:${row.profile}`);
-          // Evidence must describe this exact hot report. Until the next Agent
-          // refresh creates it, fall back to the legacy inline fields.
-          const currentEvidence = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
-          const admissionError = readinessAdmissionError(row, evidence);
-          return [
-            {
-              machineId: row.machineId,
-              machineName: machine.name,
-              state: effectiveReadinessState(row, evidence),
-              checkedAt: row.checkedAt,
-              preparedAt: row.preparedAt,
-              statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
-              online: now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
-              maxSlots: machine.maxSlots,
-              usedSlots: machine.usedSlots,
-              isolation: currentEvidence?.isolation ?? row.isolation,
-              boundary: currentEvidence?.boundary ?? row.boundary,
-              cacheScope: currentEvidence?.cacheScope ?? row.cacheScope,
-              cacheSharedWritable: currentEvidence?.cacheSharedWritable ?? row.cacheSharedWritable,
-              checks: currentEvidence?.checks ?? row.checks,
-              hardware: currentEvidence?.hardware ?? row.hardware,
-              storage: currentEvidence?.storage ?? row.storage,
-              network: currentEvidence?.network ?? row.network,
-              lastError: currentEvidence?.lastError ?? row.lastError ?? admissionError,
-            },
-          ];
-        });
-        return {
-          boundary: EXECUTOR_BOUNDARY[profile.executor],
-          trustedOnly: isTrustedOnly(profile.executor),
-          workers: workerDetail.toSorted((left, right) =>
-            left.machineName.localeCompare(right.machineName),
-          ),
-          _id: profile._id,
-          name: profile.name,
-          scaleSetName: profile.scaleSetName,
-          executor: profile.executor,
-          imageRelease: profile.imageRelease,
-          vcpus: profile.vcpus,
-          memoryMiB: profile.memoryMiB,
-          warmPool: profile.warmPool ?? 0,
-          fitPolicy: profile.fitPolicy ?? "balanced",
-          minRunners: profile.minRunners,
-          maxRunners: profile.maxRunners,
-          state: profile.state,
-          updatedAt: profile.updatedAt,
-          readyWorkers: workers.length,
-          readySlots: workers.reduce((total, machine) => total + machine.maxSlots, 0),
-          freeSlots: workers.reduce(
-            (total, machine) => total + Math.max(0, machine.maxSlots - machine.usedSlots),
-            0,
-          ),
-        };
-      });
+    return await listProfiles(ctx);
   },
 });
+
+/** Shared by the dashboard's query and the operator API (operatorApi.ts). */
+export async function listProfiles(ctx: QueryCtx) {
+  const now = Date.now();
+  const [profiles, readiness, evidenceRows, machines] = await Promise.all([
+    ctx.db.query("profiles").collect(),
+    ctx.db.query("workerReadiness").collect(),
+    ctx.db.query("readinessEvidence").collect(),
+    ctx.db.query("machines").collect(),
+  ]);
+  const machineById = new Map(machines.map((machine) => [machine._id, machine]));
+  const evidenceByKey = new Map(
+    evidenceRows.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
+  );
+  return profiles
+    .toSorted((left, right) => left.name.localeCompare(right.name))
+    .map((profile) => {
+      const rows = readiness.filter(
+        (row) =>
+          row.profile === profile.name &&
+          row.executor === profile.executor &&
+          row.imageRelease === profile.imageRelease,
+      );
+      const workers =
+        profile.state === "active"
+          ? rows.flatMap((row) => {
+              const machine = machineById.get(row.machineId);
+              return isSchedulableReadiness(
+                row,
+                evidenceByKey.get(`${row.machineId}:${row.profile}`),
+                machine,
+                profile,
+                now,
+              )
+                ? [machine]
+                : [];
+            })
+          : [];
+      const workerDetail = rows.flatMap((row) => {
+        const machine = machineById.get(row.machineId);
+        if (machine === undefined) return [];
+        const evidence = evidenceByKey.get(`${row.machineId}:${row.profile}`);
+        // Evidence must describe this exact hot report. Until the next Agent
+        // refresh creates it, fall back to the legacy inline fields.
+        const currentEvidence = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
+        const admissionError = readinessAdmissionError(row, evidence);
+        return [
+          {
+            machineId: row.machineId,
+            machineName: machine.name,
+            state: effectiveReadinessState(row, evidence),
+            checkedAt: row.checkedAt,
+            preparedAt: row.preparedAt,
+            statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
+            online: now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
+            maxSlots: machine.maxSlots,
+            usedSlots: machine.usedSlots,
+            isolation: currentEvidence?.isolation ?? row.isolation,
+            boundary: currentEvidence?.boundary ?? row.boundary,
+            cacheScope: currentEvidence?.cacheScope ?? row.cacheScope,
+            cacheSharedWritable: currentEvidence?.cacheSharedWritable ?? row.cacheSharedWritable,
+            checks: currentEvidence?.checks ?? row.checks,
+            hardware: currentEvidence?.hardware ?? row.hardware,
+            storage: currentEvidence?.storage ?? row.storage,
+            network: currentEvidence?.network ?? row.network,
+            lastError: currentEvidence?.lastError ?? row.lastError ?? admissionError,
+          },
+        ];
+      });
+      return {
+        boundary: EXECUTOR_BOUNDARY[profile.executor],
+        trustedOnly: isTrustedOnly(profile.executor),
+        workers: workerDetail.toSorted((left, right) =>
+          left.machineName.localeCompare(right.machineName),
+        ),
+        _id: profile._id,
+        name: profile.name,
+        scaleSetName: profile.scaleSetName,
+        executor: profile.executor,
+        imageRelease: profile.imageRelease,
+        vcpus: profile.vcpus,
+        memoryMiB: profile.memoryMiB,
+        warmPool: profile.warmPool ?? 0,
+        fitPolicy: profile.fitPolicy ?? "balanced",
+        minRunners: profile.minRunners,
+        maxRunners: profile.maxRunners,
+        state: profile.state,
+        updatedAt: profile.updatedAt,
+        readyWorkers: workers.length,
+        readySlots: workers.reduce((total, machine) => total + machine.maxSlots, 0),
+        freeSlots: workers.reduce(
+          (total, machine) => total + Math.max(0, machine.maxSlots - machine.usedSlots),
+          0,
+        ),
+      };
+    });
+}
 
 // How far back the activity query looks, and how many Attempts it reads per
 // Profile to get there. The window is read newest-first through the

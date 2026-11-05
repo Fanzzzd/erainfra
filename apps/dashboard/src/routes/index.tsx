@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@erainfra/backend/api";
+import { ApiTokens } from "@/components/api-tokens";
 import { EmptyState } from "@/components/empty-state";
 import { GithubAppSetup } from "@/components/github-app-setup";
 import { PageHeader } from "@/components/page-header";
@@ -632,6 +633,8 @@ function MachinesPage() {
       </Card>
 
       <InviteOperator />
+
+      <ApiTokens />
 
       <Card>
         <CardContent className="px-0 pb-0">

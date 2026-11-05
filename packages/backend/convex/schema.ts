@@ -28,6 +28,22 @@ export default defineSchema({
     invitedBy: v.optional(v.id("users")),
   }).index("by_tokenHash", ["tokenHash"]),
 
+  // Bearer credentials for the operator API (/api/v1/*), minted by a signed-in
+  // operator in the dashboard. Only the SHA-256 of a token is stored, like
+  // signupGrants; `hint` is its first characters so the dashboard can tell
+  // tokens apart. A revoked row is kept, not deleted, so the dashboard still
+  // shows what was revoked and when.
+  apiTokens: defineTable({
+    name: v.string(),
+    scope: v.union(v.literal("read"), v.literal("admin")),
+    tokenHash: v.string(),
+    hint: v.string(),
+    createdBy: v.optional(v.id("users")),
+    createdAt: v.number(),
+    lastUsedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+  }).index("by_tokenHash", ["tokenHash"]),
+
   // Failed-bootstrap throttle. At most one row: bootstrap is a single
   // instance-wide event, and Convex mutations cannot see a client address, so
   // the counter is deliberately global rather than per-caller.
