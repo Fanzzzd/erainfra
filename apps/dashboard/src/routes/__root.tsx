@@ -8,7 +8,15 @@ import {
   Outlet,
   useLocation,
 } from "@tanstack/react-router";
-import { Activity, FlaskConical, ListChecks, LogOut, Server, UserRound } from "lucide-react";
+import {
+  Activity,
+  FlaskConical,
+  ListChecks,
+  LogOut,
+  Server,
+  Settings,
+  UserRound,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +55,7 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Machines", icon: Server },
   { to: "/attempts", label: "Runs", icon: Activity },
   { to: "/experiments", label: "Experiments", icon: FlaskConical },
+  { to: "/settings", label: "Alerts and metrics", icon: Settings },
 ];
 
 // Kept reachable but visually demoted below the separator: the webhook runner

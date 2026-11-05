@@ -22,6 +22,8 @@ import {
   type SetupStateStatus,
 } from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
+import { bearerToken, LAST_USED_RESOLUTION_MS, sha256Hex } from "./metrics";
+import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { renderWindowsInstallScript } from "./installScriptPowerShell";
 
 const http = httpRouter();
@@ -650,6 +652,42 @@ http.route({
       labels: selfHostedLabels,
     });
     return jsonResponse({ "runs-on": available ? selfHostedLabels : fallback }, 200);
+  }),
+});
+
+// Prometheus scrape endpoint. Authenticated with a dashboard-minted bearer token (see metrics.ts):
+// the exposition names every Worker and Profile, which is fleet inventory, not public data. A
+// refusal says nothing about why, so a revoked token and a guessed one look the same.
+function metricsUnauthorized() {
+  return new Response("Unauthorized\n", {
+    status: 401,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Bearer realm="erainfra-metrics"',
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+http.route({
+  path: "/metrics",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearerToken(request.headers.get("Authorization"));
+    if (token === null) return metricsUnauthorized();
+    const grant = await ctx.runQuery(internal.metrics.authorizeScrape, {
+      tokenHash: await sha256Hex(token),
+    });
+    if (grant === null) return metricsUnauthorized();
+
+    const now = Date.now();
+    if (grant.lastUsedAt === undefined || now - grant.lastUsedAt >= LAST_USED_RESOLUTION_MS) {
+      await ctx.runMutation(internal.metrics.recordScrape, { id: grant.id, at: now });
+    }
+    return new Response(await ctx.runQuery(internal.metrics.exposition, {}), {
+      status: 200,
+      headers: { "Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store" },
+    });
   }),
 });
 

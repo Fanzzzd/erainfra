@@ -14,6 +14,7 @@ import { Route as AttemptsRouteImport } from './routes/attempts'
 import { Route as ExperimentsRouteImport } from './routes/experiments'
 import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as SettingsRouteImport } from './routes/settings'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -40,6 +41,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -47,6 +53,7 @@ export interface FileRoutesByFullPath {
   '/experiments': typeof ExperimentsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +61,7 @@ export interface FileRoutesByTo {
   '/experiments': typeof ExperimentsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,13 +70,22 @@ export interface FileRoutesById {
   '/experiments': typeof ExperimentsRoute
   '/jobs': typeof JobsRoute
   '/login': typeof LoginRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/attempts' | '/experiments' | '/jobs' | '/login'
+  fullPaths:
+    '/' | '/attempts' | '/experiments' | '/jobs' | '/login' | '/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/attempts' | '/experiments' | '/jobs' | '/login'
-  id: '__root__' | '/' | '/attempts' | '/experiments' | '/jobs' | '/login'
+  to: '/' | '/attempts' | '/experiments' | '/jobs' | '/login' | '/settings'
+  id:
+    | '__root__'
+    | '/'
+    | '/attempts'
+    | '/experiments'
+    | '/jobs'
+    | '/login'
+    | '/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -77,6 +94,7 @@ export interface RootRouteChildren {
   ExperimentsRoute: typeof ExperimentsRoute
   JobsRoute: typeof JobsRoute
   LoginRoute: typeof LoginRoute
+  SettingsRoute: typeof SettingsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -116,6 +134,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -125,6 +150,7 @@ const rootRouteChildren: RootRouteChildren = {
   ExperimentsRoute: ExperimentsRoute,
   JobsRoute: JobsRoute,
   LoginRoute: LoginRoute,
+  SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

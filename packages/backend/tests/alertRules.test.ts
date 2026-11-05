@@ -1,0 +1,386 @@
+import { describe, expect, it } from "vitest";
+import type { Id } from "../convex/_generated/dataModel";
+import { conditionError, evaluateCondition, type AlertCondition } from "../convex/alertRules";
+import {
+  classifyResponse,
+  deliveryBackoffMs,
+  destinationUrlError,
+  signWebhook,
+  slackBody,
+  urlHint,
+  webhookBody,
+  type NotificationContent,
+} from "../convex/alertNotify";
+import type {
+  FinishedAttempt,
+  FleetObservation,
+  ObservedMachine,
+  ObservedProfile,
+} from "../convex/fleetObservation";
+
+const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
+const MINUTE = 60_000;
+
+function machine(name: string, lastSeen: number): ObservedMachine {
+  return {
+    id: `machine-${name}` as Id<"machines">,
+    name,
+    os: "linux",
+    slotPolicy: "auto",
+    maxSlots: 2,
+    usedSlots: 0,
+    lastSeen,
+    online: lastSeen > 0 && NOW - lastSeen < 2 * MINUTE,
+  };
+}
+
+function profile(name: string, fields: Partial<ObservedProfile> = {}): ObservedProfile {
+  return {
+    name,
+    executor: "firecracker",
+    state: "active",
+    minRunners: 0,
+    maxRunners: 4,
+    workers: [],
+    liveAttempts: { pending: 0, preparing: 0, ready: 0, running: 0 },
+    liveAttemptsTruncated: false,
+    running: [],
+    recentFinished: [],
+    recentTruncated: false,
+    ...fields,
+  };
+}
+
+function worker(
+  machineName: string,
+  state: ObservedProfile["workers"][number]["state"],
+  schedulable = state === "ready",
+  detail?: string,
+) {
+  return {
+    machineId: `machine-${machineName}` as Id<"machines">,
+    machineName,
+    state,
+    schedulable,
+    ...(detail === undefined ? {} : { detail }),
+  };
+}
+
+function finished(outcome: FinishedAttempt["outcome"], minutesAgo: number): FinishedAttempt {
+  return { outcome, finishedAt: NOW - minutesAgo * MINUTE, queueWaitMs: null, runDurationMs: null };
+}
+
+function fleet(profiles: ObservedProfile[], machines: ObservedMachine[] = []): FleetObservation {
+  return {
+    now: NOW,
+    recentWindowMs: 24 * 60 * MINUTE,
+    profiles,
+    machines,
+    dimensionsTruncated: false,
+  };
+}
+
+function subjects(condition: AlertCondition, observation: FleetObservation, scope?: string) {
+  return evaluateCondition(condition, scope, observation).map((breach) => breach.subject);
+}
+
+describe("evaluateCondition", () => {
+  it("worker-offline: silent past the threshold, never-connected Workers excluded", () => {
+    const observation = fleet(
+      [profile("a", { workers: [worker("w1", "ready")] })],
+      [
+        machine("w1", NOW - 11 * MINUTE),
+        machine("w2", NOW - 9 * MINUTE),
+        machine("w3", NOW - 60 * MINUTE),
+        machine("fresh", 0),
+      ],
+    );
+    expect(subjects({ kind: "worker-offline", minutes: 10 }, observation)).toEqual(["w1", "w3"]);
+    // Scoped to a Profile, only that Profile's Workers count.
+    expect(subjects({ kind: "worker-offline", minutes: 10 }, observation, "a")).toEqual(["w1"]);
+    const [breach] = evaluateCondition({ kind: "worker-offline", minutes: 10 }, "a", observation);
+    expect(breach?.summary).toBe("Worker w1 has not sent a heartbeat for 11m.");
+  });
+
+  it("profile-no-ready-worker: active Profiles only, and only when nothing is schedulable", () => {
+    const observation = fleet([
+      profile("empty"),
+      profile("broken", { workers: [worker("w1", "degraded"), worker("w2", "ready", false)] }),
+      profile("fine", { workers: [worker("w3", "ready")] }),
+      profile("paused", { state: "paused" }),
+    ]);
+    expect(subjects({ kind: "profile-no-ready-worker" }, observation)).toEqual(["empty", "broken"]);
+    const breaches = evaluateCondition({ kind: "profile-no-ready-worker" }, undefined, observation);
+    expect(breaches[1]?.summary).toBe(
+      "Profile broken has no schedulable Worker (w1 degraded, w2 ready).",
+    );
+    expect(subjects({ kind: "profile-no-ready-worker" }, observation, "fine")).toEqual([]);
+  });
+
+  it("profile-readiness-degraded: one subject per Profile and Worker", () => {
+    const observation = fleet([
+      profile("a", {
+        workers: [
+          worker("w1", "degraded", false, "thin pool full"),
+          worker("w2", "failed", false),
+          worker("w3", "ready"),
+          worker("w4", "preparing", false),
+        ],
+      }),
+    ]);
+    const breaches = evaluateCondition(
+      { kind: "profile-readiness-degraded" },
+      undefined,
+      observation,
+    );
+    expect(breaches.map((breach) => breach.subject)).toEqual(["a/w1", "a/w2"]);
+    expect(breaches[0]?.summary).toBe(
+      "Worker w1 reports degraded readiness for Profile a: thin pool full",
+    );
+  });
+
+  it("queue-backlog: the oldest pending Attempt against the threshold", () => {
+    const observation = fleet([
+      profile("slow", {
+        liveAttempts: { pending: 3, preparing: 0, ready: 0, running: 0 },
+        oldestPendingCreatedAt: NOW - 16 * MINUTE,
+      }),
+      profile("quick", {
+        liveAttempts: { pending: 1, preparing: 0, ready: 0, running: 0 },
+        oldestPendingCreatedAt: NOW - 2 * MINUTE,
+      }),
+      profile("idle"),
+    ]);
+    const breaches = evaluateCondition(
+      { kind: "queue-backlog", minutes: 15 },
+      undefined,
+      observation,
+    );
+    expect(breaches).toEqual([
+      {
+        subject: "slow",
+        summary: "3 Attempts queued on Profile slow; the oldest has waited 16m.",
+      },
+    ]);
+  });
+
+  it("failure-rate: needs the minimum sample, ignores cancellations and old Attempts", () => {
+    const failing = profile("a", {
+      recentFinished: [
+        finished("failed", 1),
+        finished("failed", 2),
+        finished("succeeded", 3),
+        finished("cancelled", 4),
+        finished("cancelled", 5),
+        finished("succeeded", 120),
+      ],
+    });
+    const condition = {
+      kind: "failure-rate" as const,
+      percent: 60,
+      windowMinutes: 60,
+      minAttempts: 3,
+    };
+    const [breach] = evaluateCondition(condition, undefined, fleet([failing]));
+    expect(breach).toEqual({
+      subject: "a",
+      summary: "2 of 3 Attempts on Profile a failed in the last 60m (67%).",
+    });
+    expect(subjects({ ...condition, minAttempts: 4 }, fleet([failing]))).toEqual([]);
+    expect(subjects({ ...condition, percent: 70 }, fleet([failing]))).toEqual([]);
+    // A two-hour window takes in the older success: 2 of 4 is 50%.
+    expect(subjects({ ...condition, windowMinutes: 180 }, fleet([failing]))).toEqual([]);
+  });
+
+  it("consecutive-failures: the newest streak, skipping cancellations", () => {
+    const streak = profile("a", {
+      recentFinished: [
+        finished("failed", 1),
+        finished("cancelled", 2),
+        finished("failed", 3),
+        finished("failed", 4),
+        finished("succeeded", 5),
+        finished("failed", 6),
+      ],
+    });
+    expect(subjects({ kind: "consecutive-failures", count: 3 }, fleet([streak]))).toEqual(["a"]);
+    expect(subjects({ kind: "consecutive-failures", count: 4 }, fleet([streak]))).toEqual([]);
+    const recovered = profile("a", {
+      recentFinished: [finished("succeeded", 1), ...streak.recentFinished],
+    });
+    expect(subjects({ kind: "consecutive-failures", count: 1 }, fleet([recovered]))).toEqual([]);
+  });
+
+  it("attempt-duration: names the longest-running Attempt", () => {
+    const observation = fleet([
+      profile("a", {
+        running: [
+          {
+            runnerName: "r-old",
+            startedAt: NOW - 95 * MINUTE,
+            repo: "acme/app",
+            displayName: "build",
+          },
+          { runnerName: "r-mid", startedAt: NOW - 70 * MINUTE },
+          { runnerName: "r-new", startedAt: NOW - 5 * MINUTE },
+        ],
+      }),
+    ]);
+    expect(
+      evaluateCondition({ kind: "attempt-duration", minutes: 60 }, undefined, observation),
+    ).toEqual([
+      {
+        subject: "a",
+        summary:
+          "2 Attempts on Profile a running longer than 60m; the longest is r-old (acme/app build) at 1h 35m.",
+      },
+    ]);
+    expect(subjects({ kind: "attempt-duration", minutes: 120 }, observation)).toEqual([]);
+  });
+});
+
+describe("conditionError", () => {
+  it("refuses thresholds outside their range", () => {
+    expect(conditionError({ kind: "worker-offline", minutes: 1 })).toMatch(/2 to 10080/);
+    expect(conditionError({ kind: "worker-offline", minutes: 5 })).toBeUndefined();
+    expect(conditionError({ kind: "queue-backlog", minutes: 1.5 })).toBeDefined();
+    expect(
+      conditionError({ kind: "failure-rate", percent: 0, windowMinutes: 60, minAttempts: 3 }),
+    ).toBeDefined();
+    expect(
+      conditionError({ kind: "failure-rate", percent: 50, windowMinutes: 2000, minAttempts: 3 }),
+    ).toBeDefined();
+    expect(conditionError({ kind: "consecutive-failures", count: 0 })).toBeDefined();
+    expect(conditionError({ kind: "profile-no-ready-worker" })).toBeUndefined();
+  });
+});
+
+const CONTENT: NotificationContent = {
+  event: "firing",
+  rule: {
+    id: "rule-1",
+    name: "Queue <backlog> & co",
+    kind: "queue-backlog",
+    condition: "Oldest queued Attempt older than 15m",
+    profile: "rc-linux-js",
+  },
+  incident: {
+    id: "incident-1",
+    subject: "rc-linux-js",
+    summary: "3 Attempts queued on Profile rc-linux-js; the oldest has waited 16m.",
+    since: NOW - 16 * MINUTE,
+    firedAt: NOW,
+    resolvedAt: null,
+  },
+  sentAt: NOW,
+};
+
+describe("notification bodies", () => {
+  it("builds a versioned webhook body with ISO times", () => {
+    expect(JSON.parse(webhookBody(CONTENT))).toEqual({
+      version: 1,
+      event: "alert.firing",
+      rule: CONTENT.rule,
+      incident: {
+        id: "incident-1",
+        status: "firing",
+        subject: "rc-linux-js",
+        summary: CONTENT.incident.summary,
+        since: "2026-11-05T11:44:00.000Z",
+        firedAt: "2026-11-05T12:00:00.000Z",
+        resolvedAt: null,
+      },
+      sentAt: "2026-11-05T12:00:00.000Z",
+    });
+  });
+
+  it("builds a Slack message with escaped text", () => {
+    const body = JSON.parse(slackBody({ ...CONTENT, event: "resolved" })) as {
+      text: string;
+      blocks: Array<{ type: string; text: { type: string; text: string } }>;
+    };
+    expect(body.text).toBe(
+      ":white_check_mark: Resolved: Queue &lt;backlog&gt; &amp; co: 3 Attempts queued on Profile rc-linux-js; the oldest has waited 16m.",
+    );
+    expect(body.blocks).toHaveLength(1);
+    expect(body.blocks[0]?.text.type).toBe("mrkdwn");
+    expect(body.blocks[0]?.text.text).toContain("Subject `rc-linux-js`");
+  });
+});
+
+describe("signWebhook", () => {
+  it("signs t.body with HMAC-SHA256 in Stripe's header format", async () => {
+    // Independent computation of the same MAC, as a receiver would do it.
+    const secret = "whsec_test";
+    const body = '{"hello":"world"}';
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    const header = await signWebhook(secret, 1_700_000_000, body);
+    const match = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(header);
+    expect(match?.[1]).toBe("1700000000");
+    const mac = Uint8Array.from((match?.[2] ?? "").match(/../g) ?? [], (pair) =>
+      Number.parseInt(pair, 16),
+    );
+    expect(
+      await crypto.subtle.verify("HMAC", key, mac, new TextEncoder().encode(`1700000000.${body}`)),
+    ).toBe(true);
+    // A different timestamp or body yields a different signature.
+    expect(await signWebhook(secret, 1_700_000_001, body)).not.toBe(header);
+    expect(await signWebhook(secret, 1_700_000_000, `${body} `)).not.toBe(header);
+  });
+
+  it("matches a known vector", async () => {
+    // printf '%s' '1.{}' | openssl dgst -sha256 -hmac 'key'
+    expect(await signWebhook("key", 1, "{}")).toBe(
+      "t=1,v1=1ba6b8171186efc613e8bcc0cbdab2748f24984d7c5a84faa2637afa0e40d224",
+    );
+  });
+});
+
+describe("delivery policy", () => {
+  it("retries temporary failures and gives up on the rest", () => {
+    expect(classifyResponse(204, null)).toEqual({ kind: "delivered", statusCode: 204 });
+    expect(classifyResponse(503, null)).toEqual({
+      kind: "retry",
+      statusCode: 503,
+      error: "HTTP 503",
+    });
+    expect(classifyResponse(429, "120")).toEqual({
+      kind: "retry",
+      statusCode: 429,
+      error: "HTTP 429",
+      retryAfterMs: 120_000,
+    });
+    expect(classifyResponse(408, null).kind).toBe("retry");
+    expect(classifyResponse(410, null)).toEqual({
+      kind: "permanent",
+      statusCode: 410,
+      error: "HTTP 410",
+    });
+    expect(classifyResponse(302, null).kind).toBe("permanent");
+  });
+
+  it("backs off exponentially to an hour, with bounded jitter and Retry-After", () => {
+    expect([1, 2, 3, 4].map((attempt) => deliveryBackoffMs(attempt, 0))).toEqual([
+      30_000, 60_000, 120_000, 240_000,
+    ]);
+    expect(deliveryBackoffMs(20, 0)).toBe(3_600_000);
+    expect(deliveryBackoffMs(1, 1)).toBe(36_000);
+    expect(deliveryBackoffMs(1, 0, 90_000)).toBe(90_000);
+  });
+
+  it("accepts only https destination URLs and hides their path", () => {
+    expect(destinationUrlError("http://hooks.example.com/x")).toMatch(/https/);
+    expect(destinationUrlError("not a url")).toBeDefined();
+    expect(destinationUrlError("https://user:pw@hooks.example.com/x")).toBeDefined();
+    expect(destinationUrlError("https://hooks.slack.com/services/T0/B0/abcdef")).toBeUndefined();
+    expect(urlHint("https://hooks.slack.com/services/T0/B0/abcdef")).toBe(
+      "https://hooks.slack.com/…cdef",
+    );
+  });
+});

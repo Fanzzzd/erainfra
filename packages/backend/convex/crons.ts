@@ -18,4 +18,10 @@ crons.interval(
   {},
 );
 
+// Alert rules from the dashboard. A query reads fleet state and computes breaches, then a mutation
+// that touches only the alert tables advances incidents and enqueues notifications, which are sent
+// by their own scheduled actions. With no enabled rule the run is one indexed read and a
+// retention sweep.
+crons.interval("evaluate alert rules", { minutes: 1 }, internal.alerts.evaluate, {});
+
 export default crons;
