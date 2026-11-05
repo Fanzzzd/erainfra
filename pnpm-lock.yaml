@@ -313,6 +313,9 @@ importers:
       '@convex-dev/static-hosting':
         specifier: 0.2.1
         version: 0.2.1(convex@1.43.0(react@19.2.8))(react@19.2.8)
+      '@noble/hashes':
+        specifier: 2.4.0
+        version: 2.4.0
       convex:
         specifier: 'catalog:'
         version: 1.43.0(react@19.2.8)
@@ -1105,6 +1108,10 @@ packages:
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [win32]
+
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
 
   '@octokit/app@16.1.4':
     resolution: {integrity: sha512-g70WONQyGoBgqIJtv4O0MUEfOF1iJpTfFt3qAW7HaiwiJ6k607xg/gBezCa4tuq6BpO6qXn7qvq8v9tjWtgGQg==}
@@ -5337,6 +5344,8 @@ snapshots:
 
   '@next/swc-win32-x64-msvc@16.2.9':
     optional: true
+
+  '@noble/hashes@2.4.0': {}
 
   '@octokit/app@16.1.4':
     dependencies:

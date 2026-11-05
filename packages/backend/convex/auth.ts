@@ -6,6 +6,8 @@ import {
   validatePasswordRequirements,
 } from "./authPolicy";
 import { consumeSignupGrant, SIGNUP_REFUSED } from "./bootstrap";
+import { insertUser } from "./infra/access";
+import { isHubPasswordHash, verifyHubPassword } from "./infra/hubPassword";
 
 /**
  * `profile` runs for every flow and its return value is what reaches
@@ -53,8 +55,9 @@ function uniformFailure(flow: unknown, error: unknown) {
  *
  * `ConvexCredentials` keeps the real implementation on the internal `options`
  * object and the framework merges it over the provider at materialisation
- * time, so this replaces that one function and leaves hashing, the flows and
- * the callbacks untouched. If that shape ever changes the throw below fails the
+ * time. Keep its default crypto for new/reset passwords and native hashes; dispatch only Hub
+ * hashes to our verifier. This avoids depending on the provider's hashing library or its files.
+ * If that shape ever changes the throw below fails the
  * push rather than quietly shipping a provider that leaks again.
  */
 function withUniformFailures<Provider>(provider: Provider): Provider {
@@ -65,11 +68,30 @@ function withUniformFailures<Provider>(provider: Provider): Provider {
     );
   }
 
+  const defaultCrypto = options.crypto as
+    | {
+        hashSecret: (password: string) => Promise<string>;
+        verifySecret: (password: string, hash: string) => Promise<boolean>;
+      }
+    | undefined;
+  if (
+    typeof defaultCrypto?.hashSecret !== "function" ||
+    typeof defaultCrypto.verifySecret !== "function"
+  ) {
+    throw new Error("Password provider no longer exposes its default crypto");
+  }
   const authorize = options.authorize as Authorize;
   return {
     ...provider,
     options: {
       ...options,
+      crypto: {
+        hashSecret: (password: string) => defaultCrypto.hashSecret(password),
+        verifySecret: (password: string, hash: string) =>
+          isHubPasswordHash(hash)
+            ? verifyHubPassword(password, hash)
+            : defaultCrypto.verifySecret(password, hash),
+      },
       authorize: async (params: Record<string, unknown>, ctx: unknown) => {
         try {
           return await authorize(params, ctx);
@@ -102,15 +124,18 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       }
 
       const profile = args.profile as { email?: unknown; signupGrant?: unknown };
-      await consumeSignupGrant(ctx, profile.signupGrant);
+      const grant = await consumeSignupGrant(ctx, profile.signupGrant);
 
       if (typeof profile.email !== "string" || profile.email.length === 0) {
         throw new Error(SIGNUP_REFUSED);
       }
 
-      return await ctx.db.insert("users", {
+      // insertUser makes the first account the owner and refuses a second account for an email.
+      // An invite issued before roles existed carries none; the accounts those created could do
+      // everything an admin can, so that is what they still get.
+      return await insertUser(ctx, {
         email: profile.email,
-        emailVerificationTime: undefined,
+        role: grant.role ?? (grant.kind === "bootstrap" ? "owner" : "admin"),
       });
     },
   },

@@ -33,4 +33,13 @@ crons.interval(
   {},
 );
 
+// App deploy runs whose lease lapsed can never finish; mark them failed so pollers see a terminal
+// state. This replaces the Hub's failStale-at-boot. With no run in flight it is a few indexed reads.
+crons.interval(
+  "fail stale App deploy runs",
+  { minutes: 1 },
+  internal.infra.deployments.sweepStale,
+  {},
+);
+
 export default crons;

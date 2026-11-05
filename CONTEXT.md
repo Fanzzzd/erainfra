@@ -78,7 +78,8 @@ the network policy identity hash and thin-pool identity. Admission is fail-close
 **API token** — a bearer credential for the Convex control plane's `/api/v1` and `/metrics`, minted
 in the dashboard and used by the `erainfra` CLI, scripts and Prometheus. Its **scope** is `read`,
 `admin` or `metrics` (`convex/apiTokenPolicy.ts`). It is unrelated to a
-Worker's machine token, the controller's `CONTROLLER_TOKEN`, and the Hub's API tokens
+Worker's machine token, a Node's enrollment credential (`erainfra_node_`, bound to one Node), the
+controller's `CONTROLLER_TOKEN`, and the Hub's API tokens
 ([ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)).
 
 **Role** — three unrelated vocabularies here use the word, and only the first is a machine kind, so
@@ -90,8 +91,10 @@ a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
   for the Apps deployed onto it, reported by the Infra Agent on its `hello` frame. `compute` was
   called `worker` until #64, which is how a Node came to be badged as a Worker; the Hub reads both
   names until that rollout's last stage.
-- **Permission role** — `owner`, …: what a human or an API token may do in the Hub. It shares only
-  the field name with either of the above.
+- **Permission role** — `owner` | `admin` | `operator` | `viewer`: what a human may do, in the Hub
+  and, since ADR 0016 phase 2a, on a Convex account (`convex/infra/policy.ts`, where a dashboard API
+  token's scope maps onto the same permissions). It shares only the field name with either of the
+  above.
 
 ## Naming rules
 
