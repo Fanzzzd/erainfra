@@ -29,7 +29,7 @@ pub fn init(path: &Path) -> Result<SecretKey> {
     }
     let dir = parent_dir(path);
     let key = SecretKey::generate();
-    let tmp = temp_path(path);
+    let tmp = temp_path(path, &key);
     let result = write_new_private(&tmp, &encode(&key)).and_then(|()| {
         fs::hard_link(&tmp, path).with_context(|| {
             if fs::symlink_metadata(path).is_ok() {
@@ -97,12 +97,14 @@ fn parent_dir(path: &Path) -> PathBuf {
     }
 }
 
-fn temp_path(path: &Path) -> PathBuf {
+fn temp_path(path: &Path, key: &SecretKey) -> PathBuf {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "key".into());
-    parent_dir(path).join(format!(".{name}.tmp-{}", std::process::id()))
+    // A random public id, not just the pid: concurrent init calls in one process must not
+    // remove each other's temporary file when create_new loses the race.
+    parent_dir(path).join(format!(".{name}.tmp-{}", key.public()))
 }
 
 /// Creates `path` exclusively with owner-only permissions and writes `data` durably.
@@ -161,6 +163,35 @@ mod tests {
         let key = SecretKey::generate();
         let text = String::from_utf8(encode(&key)).unwrap();
         assert_eq!(decode(text.trim()).unwrap().public(), key.public());
+    }
+
+    #[test]
+    fn concurrent_init_has_exactly_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mesh.key");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let results = std::thread::scope(|scope| {
+            let mut tasks = Vec::new();
+            for _ in 0..16 {
+                let path = &path;
+                let barrier = barrier.clone();
+                tasks.push(scope.spawn(move || {
+                    barrier.wait();
+                    init(path).map(|key| key.public())
+                }));
+            }
+            tasks
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let winners = results
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(winners.len(), 1);
+        assert_eq!(load(&path).unwrap().public(), winners[0]);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

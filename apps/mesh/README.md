@@ -43,13 +43,12 @@ erainfra-mesh ctl --socket /run/erainfra-mesh/mesh.sock '{"v":1,"op":"status"}'
 
 `daemon` options:
 
-| Flag                    | Default                       | Meaning                                                                                                                                     |
-| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--state <dir>`         | none                          | Saves the last fleet, relays, exposures and links to `<dir>/state.json` (mode 0600, directory 0700) and restores them on start.             |
-| `--bind <ip:port>`      | all interfaces, a random port | The UDP address of the endpoint. Set a fixed port to allow it through a host firewall.                                                      |
-| `--idle-timeout <secs>` | 3600                          | Closes a forwarded TCP connection after this long with no bytes in either direction. An hour, because pooled database connections sit idle. |
-| `--no-portmap`          | port mapping on               | Stops asking the local router for a port mapping (UPnP, PCP, NAT-PMP). Mapping helps two NAT'd Nodes connect directly.                      |
-| `--log-format <fmt>`    | `text`                        | `text` or `json`, written to stderr. `RUST_LOG` sets the level (default `info`).                                                            |
+| Flag                    | Default         | Meaning                                                                                                                                     |
+| ----------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--state <dir>`         | none            | Saves the last fleet, relays, exposures and links to `<dir>/state.json` (mode 0600, directory 0700) and restores them on start.             |
+| `--idle-timeout <secs>` | 3600            | Closes a forwarded TCP connection after this long with no bytes in either direction. An hour, because pooled database connections sit idle. |
+| `--no-portmap`          | port mapping on | Stops asking the local router for a port mapping (UPnP, PCP, NAT-PMP). Mapping helps two NAT'd Nodes connect directly.                      |
+| `--log-format <fmt>`    | `text`          | `text` or `json`, written to stderr. `RUST_LOG` sets the level (default `info`).                                                            |
 
 ## Threat model
 
@@ -206,8 +205,14 @@ lists them in `removed`. A peer listed twice is an error.
 }
 ```
 
-Sets the relays this Node uses, replacing the previous list on the running endpoint. `relays` may
-be empty. `auth_token` is optional and sent as a bearer token to the listed relays only.
+Sets the relays this Node uses. A changed configuration closes the old endpoint and rebinds with
+the same key. This closes active streams and changes the ephemeral UDP port, so the agent must
+publish the new `status.addr` to peers. Repeating the same configuration does not rebind.
+
+Rebinding matters: in iroh 1.4 an empty relay map still allows dialing a peer-supplied relay URL,
+and removing a relay does not close its existing connections. With no relays we use
+`RelayMode::Disabled`, which removes the relay transport entirely. `relays` may be empty.
+`auth_token` is optional and sent as a bearer token to the listed relays only.
 `n0_fallback` (default false) adds n0's public relays, which n0 describes as suitable for
 development and hobby use only; they never receive the token.
 
@@ -246,6 +251,7 @@ connection it carries.
 | `unsupported_version` | `v` is not 1.                                                                             |
 | `invalid_target`      | An `expose` target that is not a loopback address and port.                               |
 | `listen_failed`       | A `link` could not bind its listen address, usually because the port is taken.            |
+| `endpoint_failed`     | The endpoint could not rebind after a relay change. Restart the daemon.                   |
 | `shutting_down`       | The daemon received SIGTERM.                                                              |
 
 Names (`name`, `service`) are 1 to 64 characters of `A-Z a-z 0-9 . _ -`. A request line may be up to
@@ -265,8 +271,8 @@ trip per connection.
 - **Run it unprivileged.** It needs no root and no capabilities: the endpoint uses an unprivileged
   UDP port, and links usually listen above 1024. Give it its own user, a key directory it owns
   (0700), and a socket directory such as `/run/erainfra-mesh` (0750, group shared with the agent).
-- **Firewall.** Direct connections use the UDP port of `--bind`. Without a fixed port, iroh picks
-  one at random and relies on hole punching and relays.
+- **Firewall.** iroh picks an ephemeral UDP port and uses hole punching and the configured relays.
+  Open outbound UDP for direct connectivity and HTTPS to the relays for fallback.
 - **Upgrades and restarts** keep the EndpointId as long as the key file is kept. With `--state`,
   the daemon comes back with its last configuration before the agent re-sends it. Saved fleet
   addresses can be stale after peers restart on new ports, so the agent should push a fresh

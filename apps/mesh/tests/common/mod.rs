@@ -27,7 +27,7 @@ pub fn config(dir: &Path, name: &str, state: bool) -> Config {
         dir.join(format!("{name}.key")),
         dir.join(format!("{name}.sock")),
     );
-    cfg.bind = Some("127.0.0.1:0".parse().unwrap());
+    cfg.loopback_only = true;
     cfg.portmapper = false;
     if state {
         cfg.state_dir = Some(dir.join(format!("{name}-state")));

@@ -53,8 +53,6 @@ fn the_daemon_serves_ctl_and_exits_cleanly_on_sigterm() {
             path(&key),
             "--socket",
             path(&socket),
-            "--bind",
-            "127.0.0.1:0",
             "--no-portmap",
             "--log-format",
             "json",

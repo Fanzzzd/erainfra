@@ -11,12 +11,10 @@ use anyhow::{Context, Result};
 use iroh::endpoint::{
     Connection, PortmapperConfig, QuicTransportConfig, RecvStream, SendStream, VarInt, presets,
 };
-use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, Watcher,
-};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMode, RelayUrl, Watcher};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -44,8 +42,10 @@ pub struct Config {
     pub key_path: PathBuf,
     pub socket_path: PathBuf,
     pub state_dir: Option<PathBuf>,
-    /// UDP address for the iroh endpoint. `None` binds all interfaces on a random port.
-    pub bind: Option<SocketAddr>,
+    /// Test harnesses restrict endpoints to loopback. The daemon uses iroh's default
+    /// interface binding and an ephemeral UDP port.
+    #[doc(hidden)]
+    pub loopback_only: bool,
     pub idle_timeout: Duration,
     /// Ask the local router for a port mapping (UPnP, PCP, NAT-PMP), which lets two NAT'd Nodes
     /// connect directly more often. On by default; off where SSDP multicast is unwelcome.
@@ -62,7 +62,7 @@ impl Config {
             key_path,
             socket_path,
             state_dir: None,
-            bind: None,
+            loopback_only: false,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             portmapper: true,
             #[cfg(test)]
@@ -143,12 +143,13 @@ impl Pool {
 }
 
 pub struct Daemon {
-    endpoint: Endpoint,
+    endpoint: Arc<watch::Sender<Endpoint>>,
     fleet: Arc<Fleet>,
     pool: Arc<Pool>,
     exposures: Arc<RwLock<HashMap<String, Arc<Exposure>>>>,
     store: Option<Store>,
     idle: Duration,
+    config: Config,
     inner: tokio::sync::Mutex<Inner>,
     shutdown: CancellationToken,
 }
@@ -162,7 +163,7 @@ pub struct Running {
 
 impl Running {
     pub fn endpoint_id(&self) -> EndpointId {
-        self.daemon.endpoint.id()
+        self.daemon.endpoint().id()
     }
 
     /// Resolves when the control server stops on its own (an error), so `main` can exit.
@@ -196,7 +197,7 @@ impl Running {
         {
             exposure.1.cancel.cancel();
         }
-        self.daemon.endpoint.close().await;
+        self.daemon.endpoint().close().await;
         let _ = self.accept.await;
     }
 }
@@ -208,49 +209,17 @@ impl Daemon {
         let store = cfg.state_dir.as_deref().map(Store::new).transpose()?;
         let fleet = Arc::new(Fleet::default());
 
-        let transport = QuicTransportConfig::builder()
-            .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS_PER_CONNECTION))
-            .max_concurrent_uni_streams(VarInt::from_u32(0))
-            .build();
-        // presets::Minimal sets only the TLS crypto provider: no address lookup and no relays.
-        // presets::N0 would publish this Node to dns.iroh.link and use n0's relays without being
-        // asked; here both are explicit decisions made through `set_relays` and `set_fleet`.
-        //
-        // The relay transport is created with an empty map so `set_relays` can add and remove
-        // relays on the running endpoint. With an empty map iroh runs direct-only and does not
-        // probe the network.
-        let mut builder = Endpoint::builder(presets::Minimal)
-            .secret_key(secret)
-            .alpns(vec![ALPN_TCP.to_vec()])
-            .relay_mode(RelayMode::Custom(RelayMap::empty()))
-            .transport_config(transport)
-            .hooks(FleetHooks(fleet.clone()));
-        if !cfg.portmapper {
-            builder = builder.portmapper_config(PortmapperConfig::Disabled);
-        }
-        if let Some(bind) = cfg.bind {
-            builder = builder
-                .clear_ip_transports()
-                .bind_addr(bind)
-                .with_context(|| format!("invalid bind address {bind}"))?;
-        }
-        #[cfg(test)]
-        if cfg.insecure_relay_tls {
-            builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
-        }
-        let endpoint = builder
-            .bind()
-            .await
-            .context("cannot bind the iroh endpoint")?;
+        let endpoint = bind_endpoint(&cfg, secret, fleet.clone(), RelayMode::Disabled).await?;
         info!(endpoint_id = %endpoint.id(), "endpoint bound");
 
         let daemon = Arc::new(Daemon {
-            endpoint,
+            endpoint: Arc::new(watch::channel(endpoint).0),
             fleet,
             pool: Arc::new(Pool::default()),
             exposures: Default::default(),
             store,
             idle: cfg.idle_timeout,
+            config: cfg.clone(),
             inner: tokio::sync::Mutex::new(Inner {
                 desired: Desired::default(),
                 links: HashMap::new(),
@@ -260,8 +229,6 @@ impl Daemon {
         });
 
         daemon.restore().await;
-
-        let accept = tokio::spawn(accept_loop(daemon.clone()));
 
         // Bind before returning so a caller (or a test) can connect as soon as start() is done.
         #[cfg(unix)]
@@ -279,6 +246,7 @@ impl Daemon {
             let token = daemon.shutdown.clone();
             tokio::spawn(async move { crate::control::run_pipe(&path, d, token).await })
         };
+        let accept = tokio::spawn(accept_loop(daemon.clone()));
         info!(socket = %cfg.socket_path.display(), "control API listening");
         Ok(Running {
             daemon,
@@ -287,8 +255,8 @@ impl Daemon {
         })
     }
 
-    pub fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint.borrow().clone()
     }
 
     /// Re-applies the saved configuration. A saved entry that no longer applies (a port now taken,
@@ -388,7 +356,7 @@ impl Daemon {
     }
 
     fn set_fleet(&self, inner: &mut Inner, peers: Vec<PeerSpec>) -> Result<Value, ApiError> {
-        let me = self.endpoint.id();
+        let me = self.endpoint().id();
         let mut map = BTreeMap::new();
         let mut normalized = Vec::new();
         for spec in &peers {
@@ -428,18 +396,26 @@ impl Daemon {
         if spec == inner.desired.relays && want == inner.applied_relays {
             return Ok(json!({ "changed": false, "mode": relay_mode_name(&want) }));
         }
-        for url in inner.applied_relays.keys() {
-            if !want.contains_key(url) {
-                self.endpoint.remove_relay(url).await;
-            }
-        }
-        for (url, config) in &want {
-            if inner.applied_relays.get(url) != Some(config) {
-                self.endpoint
-                    .insert_relay(url.clone(), config.clone())
-                    .await;
-            }
-        }
+        // An empty RelayMap is not RelayMode::Disabled: iroh's relay actor will dial a
+        // URL supplied by a peer even when it is not in its own map. Removing a relay also
+        // leaves existing relay connections alive. Rebind for an effective configuration
+        // change so disabling relays really removes the transport and no old token/relay
+        // connection survives. The identity is unchanged; streams close and peers must
+        // refresh our EndpointAddr after a rebind (as after a daemon restart).
+        let old = self.endpoint();
+        let secret = old.secret_key().clone();
+        old.close().await;
+        let mode = if want.is_empty() {
+            RelayMode::Disabled
+        } else {
+            RelayMode::Custom(want.values().map(|c| c.as_ref().clone()).collect())
+        };
+        let endpoint = bind_endpoint(&self.config, secret, self.fleet.clone(), mode)
+            .await
+            .map_err(|e| {
+                ApiError::new("endpoint_failed", format!("cannot rebind endpoint: {e:#}"))
+            })?;
+        self.endpoint.send_replace(endpoint);
         let mode = relay_mode_name(&want);
         info!(
             relays = ?spec.relays,
@@ -515,7 +491,7 @@ impl Daemon {
         api::validate_name("link", &name)?;
         api::validate_name("service", &service)?;
         let peer_id = api::parse_endpoint_id(&peer)?;
-        if peer_id == self.endpoint.id() {
+        if peer_id == self.endpoint().id() {
             return Err(ApiError::bad_request(
                 "a link cannot point at this Node itself",
             ));
@@ -608,9 +584,9 @@ impl Daemon {
     }
 
     async fn status(&self, inner: &Inner) -> Value {
-        let addr: EndpointAddr = self.endpoint.addr();
+        let addr: EndpointAddr = self.endpoint().addr();
         let home: Vec<Value> = self
-            .endpoint
+            .endpoint()
             .home_relay_status()
             .get()
             .into_iter()
@@ -669,7 +645,7 @@ impl Daemon {
             .collect();
         json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "endpoint_id": self.endpoint.id().to_string(),
+            "endpoint_id": self.endpoint().id().to_string(),
             "addr": api::addr_json(&addr),
             "relay": {
                 "mode": relay_mode_name(&inner.applied_relays),
@@ -684,6 +660,40 @@ impl Daemon {
             "links": links,
         })
     }
+}
+
+/// Minimal has no discovery or relay preset. Disabled must remove the relay transport, not
+/// merely give it an empty map: the latter still dials peer-provided relay URLs in iroh 1.4.
+async fn bind_endpoint(
+    cfg: &Config,
+    secret: iroh::SecretKey,
+    fleet: Arc<Fleet>,
+    relays: RelayMode,
+) -> Result<Endpoint> {
+    let transport = QuicTransportConfig::builder()
+        .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS_PER_CONNECTION))
+        .max_concurrent_uni_streams(VarInt::from_u32(0))
+        .build();
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .secret_key(secret)
+        .alpns(vec![ALPN_TCP.to_vec()])
+        .relay_mode(relays)
+        .transport_config(transport)
+        .hooks(FleetHooks(fleet));
+    if !cfg.portmapper {
+        builder = builder.portmapper_config(PortmapperConfig::Disabled);
+    }
+    if cfg.loopback_only {
+        builder = builder.clear_ip_transports().bind_addr("127.0.0.1:0")?;
+    }
+    #[cfg(test)]
+    if cfg.insecure_relay_tls {
+        builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
+    }
+    builder
+        .bind()
+        .await
+        .context("cannot bind the iroh endpoint")
 }
 
 /// The relay map a `set_relays` request asks for.
@@ -771,7 +781,26 @@ async fn serve_unix(
 }
 
 async fn accept_loop(daemon: Arc<Daemon>) {
-    while let Some(incoming) = daemon.endpoint.accept().await {
+    let mut endpoints = daemon.endpoint.subscribe();
+    loop {
+        let endpoint = endpoints.borrow_and_update().clone();
+        let incoming = tokio::select! {
+            _ = daemon.shutdown.cancelled() => break,
+            changed = endpoints.changed() => {
+                if changed.is_err() { break; }
+                continue;
+            }
+            incoming = endpoint.accept() => incoming,
+        };
+        let Some(incoming) = incoming else {
+            // The endpoint closes before the replacement binds. Wait for its generation,
+            // without spinning on the closed endpoint or preventing shutdown.
+            tokio::select! {
+                _ = daemon.shutdown.cancelled() => break,
+                changed = endpoints.changed() => if changed.is_err() { break; },
+            }
+            continue;
+        };
         let daemon = daemon.clone();
         tokio::spawn(async move {
             // The fleet hook has already run by the time this resolves; a peer outside the fleet
@@ -902,7 +931,7 @@ struct LinkCtx {
     slots: Arc<Semaphore>,
     counters: Arc<Counters>,
     cancel: CancellationToken,
-    endpoint: Endpoint,
+    endpoint: Arc<watch::Sender<Endpoint>>,
     fleet: Arc<Fleet>,
     pool: Arc<Pool>,
     idle: Duration,
@@ -945,7 +974,8 @@ async fn link_loop(ctx: LinkCtx) {
 async fn forward(ctx: &LinkCtx, tcp: TcpStream) {
     let _ = tcp.set_nodelay(true);
     let _active = ActiveGuard::new(ctx.counters.clone());
-    let conn = match ctx.pool.get(&ctx.endpoint, &ctx.fleet, ctx.peer).await {
+    let endpoint = ctx.endpoint.borrow().clone();
+    let conn = match ctx.pool.get(&endpoint, &ctx.fleet, ctx.peer).await {
         Ok(c) => c,
         Err(e) => {
             ctx.counters

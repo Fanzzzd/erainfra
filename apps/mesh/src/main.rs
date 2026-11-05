@@ -20,7 +20,6 @@ Usage:
   erainfra-mesh daemon --key <path> --socket <path> [options]
       Run the endpoint and serve the control API on <socket>.
       --state <dir>          persist the last configuration and restore it on start
-      --bind <ip:port>       UDP address for the endpoint (default: all interfaces, random port)
       --idle-timeout <secs>  close a forwarded TCP connection idle this long (default 3600)
       --no-portmap           do not ask the local router for a port mapping (UPnP, PCP, NAT-PMP)
       --log-format <fmt>     text (default) or json; level from RUST_LOG (default info)
@@ -123,7 +122,6 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
                     "key",
                     "socket",
                     "state",
-                    "bind",
                     "idle-timeout",
                     "log-format",
                     "no-portmap",
@@ -136,12 +134,6 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
             );
             cfg.state_dir = flags.get("state").map(PathBuf::from);
             cfg.portmapper = flags.get("no-portmap").is_none();
-            if let Some(bind) = flags.get("bind") {
-                cfg.bind = Some(
-                    bind.parse()
-                        .with_context(|| format!("--bind {bind:?} must be IP:PORT"))?,
-                );
-            }
             if let Some(secs) = flags.get("idle-timeout") {
                 let secs: u64 = secs.parse().ok().filter(|s| *s > 0).with_context(|| {
                     format!("--idle-timeout {secs:?} must be a positive number of seconds")

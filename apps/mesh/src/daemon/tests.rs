@@ -11,7 +11,7 @@ async fn start(dir: &std::path::Path, name: &str) -> Running {
     let key_path = dir.join(format!("{name}.key"));
     key::init(&key_path).unwrap();
     let mut cfg = Config::new(key_path, dir.join(format!("{name}.sock")));
-    cfg.bind = Some("127.0.0.1:0".parse().unwrap());
+    cfg.loopback_only = true;
     cfg.insecure_relay_tls = true;
     cfg.portmapper = false;
     Daemon::start(cfg).await.unwrap()
@@ -230,6 +230,72 @@ async fn links_connect_through_a_relay_when_no_direct_address_is_known() {
         .expect("echo through the relay")
         .unwrap();
     assert_eq!(&buf, b"over the relay");
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn direct_only_cannot_dial_peer_relays_and_removing_relays_closes_connections() {
+    let (_map, url, _server) = iroh::test_utils::run_relay_server_with(false)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let a = start(dir.path(), "a").await;
+    let b = start(dir.path(), "b").await;
+    let relays = json!({"v":1,"op":"set_relays","relays":[url.to_string()]});
+    call(&b.daemon, relays.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), b.daemon.endpoint().online())
+        .await
+        .unwrap();
+    let a_id = a.endpoint_id();
+    let b_id = b.endpoint_id();
+    call(&a.daemon, json!({"v":1,"op":"set_fleet","peers":[{"id":b_id.to_string(),"relay_urls":[url.to_string()]}]})).await.unwrap();
+    call(&b.daemon, json!({"v":1,"op":"set_fleet","peers":[{"id":a_id.to_string(),"relay_urls":[url.to_string()]}]})).await.unwrap();
+
+    let addr = EndpointAddr::new(b_id).with_relay_url(url.clone());
+    // An empty relay map with an enabled relay transport would connect here. Disabled means
+    // there is no relay transport, even if the peer's address explicitly names a relay.
+    assert!(!matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            a.daemon.endpoint().connect(addr.clone(), ALPN_TCP)
+        )
+        .await,
+        Ok(Ok(_))
+    ));
+
+    let direct = a.daemon.endpoint();
+    call(&a.daemon, relays).await.unwrap();
+    assert!(
+        direct.is_closed(),
+        "a policy change discards the previous transport and its caches"
+    );
+    assert_eq!(a.endpoint_id(), a_id, "rebinding keeps the identity");
+    let conn = tokio::time::timeout(
+        Duration::from_secs(10),
+        a.daemon.endpoint().connect(addr.clone(), ALPN_TCP),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(a.daemon.fleet.register(&conn));
+
+    call(&a.daemon, json!({"v":1,"op":"set_relays","relays":[]}))
+        .await
+        .unwrap();
+    assert_eq!(a.endpoint_id(), a_id);
+    assert!(
+        conn.close_reason().is_some(),
+        "removing relays must close the old connection too"
+    );
+    assert!(!matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            a.daemon.endpoint().connect(addr, ALPN_TCP)
+        )
+        .await,
+        Ok(Ok(_))
+    ));
     a.shutdown().await;
     b.shutdown().await;
 }
