@@ -1579,6 +1579,10 @@ exit 0
     const { sandbox } = readyToInstall();
     mkdirSync(path.dirname(binaryPath(sandbox)), { recursive: true });
     writeExecutable(binaryPath(sandbox), fakeController(oldVersion));
+    writeFileSync(
+      under(sandbox, "/etc/systemd/system/runner-center-controller@.service"),
+      OLD_UNIT,
+    );
     // Two running Profiles. A retired one is installed but stopped, so it is not listed active.
     writeFileSync(
       path.join(sandbox.root, "active-units"),
@@ -1605,6 +1609,288 @@ exit 0
       service.filter((line) => /^(start|restart|enable)\b/.test(line) && line.includes("*")),
     ).toEqual([]);
     expect(service.indexOf("daemon-reload")).toBeLessThan(service.indexOf(restarts[0] ?? ""));
+  });
+
+  const ACTIVE_UNITS = [
+    "runner-center-controller@rc-linux-js.service",
+    "runner-center-controller@rc-e2e.service",
+  ];
+  const OLD_UNIT = "# previous controller unit\n[Service]\nRestartSec=17s\n";
+
+  // Fail only on the replacement build unless `always` is requested. Log which files each
+  // restart sees so a passing test proves recovery restores both files before starting anything.
+  function updateFaults(
+    sandbox: Sandbox,
+    fields: {
+      restart?: "first" | "later" | "always";
+      reload?: "update" | "always";
+      health?: "update" | "always";
+      list?: boolean;
+    },
+  ) {
+    const newBuild =
+      '[[ "$(<"$RC_TEST_SUDO_ROOT/usr/local/lib/runner-center/runner-center-controller")" == *"1.4.2"* ]]';
+    const gate = (when: "update" | "always") => (when === "always" ? "true" : newBuild);
+    let faults = "";
+    if (fields.list) faults += '  list-units) echo "cannot enumerate units" >&2; exit 19 ;;\n';
+    if (fields.reload) {
+      faults += `  daemon-reload) if ${gate(fields.reload)}; then echo "reload rejected" >&2; exit 14; fi ;;\n`;
+    }
+    if (fields.restart) {
+      const unit = fields.restart === "later" ? ACTIVE_UNITS[1] : ACTIVE_UNITS[0];
+      const condition =
+        fields.restart === "always" ? "true" : `${newBuild} && [ "$2" = "${unit}" ]`;
+      faults += `  restart) if ${condition}; then echo "restart rejected for $2" >&2; exit 17; fi ;;\n`;
+    }
+    if (fields.health) {
+      // Keep the first instance healthy, so this is a failure discovered late in the pass.
+      faults += `  is-active) if ${gate(fields.health)} && [ "$3" = "${ACTIVE_UNITS[1]}" ]; then echo "late health failure" >&2; exit 3; fi ;;\n`;
+    }
+    const snapshots = `
+if [ "$1" = restart ]; then
+  build=old
+  if ${newBuild}; then build=new; fi
+  unit=restored
+  if [ ! -f "$RC_TEST_SUDO_ROOT/etc/systemd/system/runner-center-controller@.service" ]; then
+    unit=missing
+  elif [[ "$(<"$RC_TEST_SUDO_ROOT/etc/systemd/system/runner-center-controller@.service")" != *"previous controller unit"* ]]; then
+    unit=new
+  fi
+  printf 'files %s %s %s\n' "$2" "$build" "$unit" >> "$RC_TEST_SERVICE_LOG"
+fi
+`;
+    writeExecutable(
+      path.join(sandbox.root, "bin", "systemctl"),
+      CONTROLLER_SYSTEMCTL_STUB.replace('case "$1" in', `${snapshots}\ncase "$1" in\n${faults}`),
+    );
+  }
+
+  function expectRestored(sandbox: Sandbox) {
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
+    expect(
+      readFileSync(under(sandbox, "/etc/systemd/system/runner-center-controller@.service"), "utf8"),
+    ).toBe(OLD_UNIT);
+    const log = serviceLog(sandbox);
+    // The only lifecycle operations are restarts of the saved active instances, never a glob or
+    // a stopped/retired instance. Check this in failure paths too, not just on a good update.
+    for (const line of log.filter((entry) => /^(start|restart|enable)\b/.test(entry))) {
+      expect(ACTIVE_UNITS.map((unit) => `restart ${unit}`)).toContain(line);
+    }
+  }
+
+  it.each(["first", "later"] as const)(
+    "--update restores both files when the %s instance's restart fails immediately",
+    (restart) => {
+      const sandbox = installedForUpdate();
+      updateFaults(sandbox, { restart });
+      const result = ctlRun(sandbox, ["--update"]);
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expectRestored(sandbox);
+      expect(result.stderr).toContain(
+        `restart ${ACTIVE_UNITS[restart === "first" ? 0 : 1]} failed (exit 17)`,
+      );
+      expect(result.stderr).toContain("Rolled back to 1.3.0");
+      expect(result.stderr).not.toContain("Rollback recovery failed");
+      const snapshots = serviceLog(sandbox).filter((line) => line.startsWith("files "));
+      expect(snapshots.slice(-2)).toEqual(ACTIVE_UNITS.map((unit) => `files ${unit} old restored`));
+    },
+  );
+
+  it("--update rolls back a failed daemon-reload before restarting either instance", () => {
+    const sandbox = installedForUpdate();
+    updateFaults(sandbox, { reload: "update" });
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expectRestored(sandbox);
+    expect(result.stderr).toContain("daemon-reload failed (exit 14)");
+    expect(result.stderr).not.toContain("Rollback recovery failed");
+    expect(serviceLog(sandbox).filter((line) => line.startsWith("files "))).toEqual(
+      ACTIVE_UNITS.map((unit) => `files ${unit} old restored`),
+    );
+  });
+
+  it("--update restores a failed late health check, then checks the restored instances too", () => {
+    const sandbox = installedForUpdate();
+    updateFaults(sandbox, { health: "update" });
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expectRestored(sandbox);
+    expect(result.stderr).toContain(`health check ${ACTIVE_UNITS[1]} failed (exit 3)`);
+    expect(result.stderr).not.toContain("Rollback recovery failed");
+    expect(
+      serviceLog(sandbox)
+        .filter((line) => line.startsWith("files "))
+        .slice(-2),
+    ).toEqual(ACTIVE_UNITS.map((unit) => `files ${unit} old restored`));
+    expect(serviceLog(sandbox).filter((line) => line.startsWith("is-active "))).toHaveLength(4);
+  });
+
+  it.each([
+    ["reload", "rollback daemon-reload failed (exit 14)"],
+    ["restart", `rollback restart ${ACTIVE_UNITS[0]} failed (exit 17)`],
+    ["health", `rollback health check ${ACTIVE_UNITS[1]} failed (exit 3)`],
+  ] as const)(
+    "--update reports the original failure and a persistent rollback %s failure",
+    (kind, error) => {
+      const sandbox = installedForUpdate();
+      updateFaults(sandbox, { [kind]: "always" });
+      const result = ctlRun(sandbox, ["--update"]);
+      expect(result.status).toBe(1);
+      expectRestored(sandbox);
+      expect(result.stderr).toContain("Update to 1.4.2 failed:");
+      expect(result.stderr).toContain("Rollback recovery failed:");
+      expect(result.stderr).toContain(error);
+      expect(result.stderr).toContain("Manual recovery required");
+      // Recovery tries the second saved instance even when restarting the first one fails.
+      expect(
+        serviceLog(sandbox)
+          .filter((line) => line.startsWith("files "))
+          .slice(-2),
+      ).toEqual(ACTIVE_UNITS.map((unit) => `files ${unit} old restored`));
+    },
+  );
+
+  it("--update makes no changes when the active instances cannot be enumerated", () => {
+    const sandbox = installedForUpdate();
+    updateFaults(sandbox, { list: true });
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expectRestored(sandbox);
+    expect(result.stderr).toContain("Could not list active controllers");
+    expect(serviceLog(sandbox).filter((line) => line.startsWith("restart "))).toEqual([]);
+  });
+
+  it("--update removes the new unit on rollback when no unit existed before", () => {
+    const sandbox = installedForUpdate();
+    const unit = under(sandbox, "/etc/systemd/system/runner-center-controller@.service");
+    rmSync(unit);
+    updateFaults(sandbox, { reload: "update" });
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
+    expect(existsSync(unit)).toBe(false);
+  });
+
+  it.each(["binary", "unit"] as const)(
+    "--update rolls back when staging the replacement %s fails",
+    (file) => {
+      const sandbox = installedForUpdate();
+      const source =
+        file === "binary"
+          ? "*/runner-center-controller-linux-x86_64"
+          : "*/runner-center-controller@.service";
+      writeExecutable(
+        path.join(sandbox.root, "bin", "install"),
+        `#!/usr/bin/env bash
+case "$3" in
+  ${source}) echo "replacement install rejected" >&2; exit 23 ;;
+esac
+exec /usr/bin/install "$@"
+`,
+      );
+      // A failed install must not fall through to mv and publish a leftover staging file.
+      writeExecutable(`${binaryPath(sandbox)}.new`, "# incomplete staging file\n");
+      const result = ctlRun(sandbox, ["--update"]);
+      expect(result.status).toBe(1);
+      expectRestored(sandbox);
+      expect(result.stderr).toContain(`install controller ${file} failed (exit 23)`);
+      expect(result.stderr).not.toContain("Rollback recovery failed");
+    },
+  );
+
+  it.each(["binary", "unit"] as const)(
+    "--update reports a rollback %s restore failure and does not restart rejected files",
+    (file) => {
+      const sandbox = installedForUpdate();
+      updateFaults(sandbox, { reload: "update" });
+      if (file === "binary") {
+        writeExecutable(
+          path.join(sandbox.root, "bin", "install"),
+          `#!/usr/bin/env bash
+case "$3" in *.bak-1.3.0) echo "backup read failed" >&2; exit 28 ;; esac
+exec /usr/bin/install "$@"
+`,
+        );
+      } else {
+        writeExecutable(
+          path.join(sandbox.root, "bin", "cp"),
+          `#!/usr/bin/env bash
+case "$2" in *.service.bak-1.3.0) echo "unit restore failed" >&2; exit 29 ;; esac
+exec /bin/cp "$@"
+`,
+        );
+      }
+      const result = ctlRun(sandbox, ["--update"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Update to 1.4.2 failed: daemon-reload failed (exit 14)");
+      expect(result.stderr).toContain(
+        `restore controller ${file} failed (exit ${file === "binary" ? 28 : 29})`,
+      );
+      expect(result.stderr).toContain("Rollback recovery failed:");
+      expect(result.stderr).toContain("skipped controller restarts");
+      expect(result.stderr).toContain("Manual recovery required");
+      expect(result.stderr).not.toContain("Rolled back to");
+      expect(serviceLog(sandbox).filter((line) => line.startsWith("restart "))).toEqual([]);
+      expect(readFileSync(`${binaryPath(sandbox)}.bak-1.3.0`, "utf8")).toBe(
+        fakeController("1.3.0"),
+      );
+      expect(
+        readFileSync(
+          under(sandbox, "/etc/systemd/system/runner-center-controller@.service.bak-1.3.0"),
+          "utf8",
+        ),
+      ).toBe(OLD_UNIT);
+      expect(result.stderr).toContain(
+        "unit backup: /etc/systemd/system/runner-center-controller@.service.bak-1.3.0",
+      );
+      // Recovery still attempts the other file even when restoring one fails.
+      if (file === "binary") {
+        expect(
+          readFileSync(
+            under(sandbox, "/etc/systemd/system/runner-center-controller@.service"),
+            "utf8",
+          ),
+        ).toBe(OLD_UNIT);
+      } else {
+        expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
+      }
+    },
+  );
+
+  it("--update restores unit permissions as well as its contents", () => {
+    const sandbox = installedForUpdate();
+    const unit = under(sandbox, "/etc/systemd/system/runner-center-controller@.service");
+    chmodSync(unit, 0o600);
+    updateFaults(sandbox, { restart: "first" });
+    expect(ctlRun(sandbox, ["--update"]).status).toBe(1);
+    expectRestored(sandbox);
+    expect(statSync(unit).mode & 0o777).toBe(0o600);
+  });
+
+  it("--update with no active instances still rolls back a reload failure without starting anything", () => {
+    const sandbox = installedForUpdate();
+    writeFileSync(path.join(sandbox.root, "active-units"), "");
+    updateFaults(sandbox, { reload: "update" });
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expectRestored(sandbox);
+    expect(serviceLog(sandbox).filter((line) => /^(start|restart|enable)\b/.test(line))).toEqual(
+      [],
+    );
+  });
+
+  it("--update rolls back when systemctl restart itself fails", () => {
+    const sandbox = installedForUpdate();
+    writeExecutable(
+      path.join(sandbox.root, "bin", "systemctl"),
+      CONTROLLER_SYSTEMCTL_STUB.replace("  is-active)", "  restart) exit 1 ;;\n  is-active)"),
+    );
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expect(readFileSync(binaryPath(sandbox), "utf8"), result.stdout + result.stderr).toBe(
+      fakeController("1.3.0"),
+    );
+    expect(result.stderr).toContain("Rolled back");
   });
 
   it("--update rolls back when an instance does not come back", () => {

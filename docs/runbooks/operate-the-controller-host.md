@@ -100,8 +100,13 @@ curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role con
 changes nothing. Otherwise it keeps the old binary as
 `runner-center-controller.bak-<old version>`, installs the new binary and unit, and restarts exactly
 the instances that were running. It never starts a stopped instance, so a retired Profile stays
-retired. If any restarted instance is not running three seconds later, it puts the old binary and
-unit back, restarts the same instances, and exits with an error.
+retired. A failed file replacement, `daemon-reload`, restart or health check triggers rollback:
+it restores the binary and unit, reloads systemd, restarts the same instances and checks them again.
+The installer exits with an error even if recovery succeeds. If recovery also fails, it reports
+both failures and the backup paths for manual recovery. The previous unit is kept at
+`/etc/systemd/system/runner-center-controller@.service.bak-<old version>` alongside the binary
+backup, even after the installer exits. If either file cannot be restored, it skips restarts rather
+than starting the rejected build.
 
 Each restart closes the GitHub session and opens a new one. GitHub keeps queued jobs and offers
 them to the next session, so a restart delays intake by seconds and loses nothing.
@@ -111,6 +116,9 @@ To roll back by hand:
 ```bash
 sudo install -m 0755 /usr/local/lib/runner-center/runner-center-controller.bak-<version> \
   /usr/local/lib/runner-center/runner-center-controller
+sudo cp -p /etc/systemd/system/runner-center-controller@.service.bak-<version> \
+  /etc/systemd/system/runner-center-controller@.service
+sudo systemctl daemon-reload
 sudo systemctl restart 'runner-center-controller@<profile>'   # each instance that should run
 ```
 
