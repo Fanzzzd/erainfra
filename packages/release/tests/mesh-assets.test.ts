@@ -81,6 +81,34 @@ describe("erainfra-mesh release assets", () => {
     assert.match(read("apps/mesh/rust-toolchain.toml"), /^channel = "\d+\.\d+\.\d+"$/m);
   });
 
+  it("accepts file's static ELF spelling and rejects dynamic Linux binaries", () => {
+    const release = read(".github/workflows/release.yml");
+    const ci = read(".github/workflows/ci.yml");
+    for (const [target, cpu] of [
+      ["linux-x86_64", "x86-64"],
+      ["linux-arm64", "ARM aarch64"],
+    ]) {
+      const asset = meshAssetName(target);
+      const releaseLine = release.split("\n").find((line) => line.includes(`expect ${asset} '`));
+      const ciLine = ci.split("\n").find((line) => line.includes(`file dist/mesh-ci/${asset} |`));
+      for (const [source, line] of [
+        ["release", releaseLine],
+        ["CI", ciLine],
+      ]) {
+        const pattern = line?.split("'")[1];
+        assert.ok(pattern, `${source} must check ${asset}'s header`);
+        const regex = new RegExp(pattern);
+        for (const spelling of ["statically linked", "static-pie linked"]) {
+          assert.match(
+            `ELF 64-bit LSB executable, ${cpu}, version 1 (SYSV), ${spelling}, stripped`,
+            regex,
+          );
+        }
+        assert.doesNotMatch(`ELF 64-bit LSB executable, ${cpu}, dynamically linked`, regex);
+      }
+    }
+  });
+
   it("is published by the release workflow beside the other binaries", () => {
     const release = read(".github/workflows/release.yml");
     assert.match(release, /dist\/release\/erainfra-mesh-\*/);

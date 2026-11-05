@@ -283,8 +283,8 @@ jobs:
         run: |
           node --experimental-strip-types packages/release/bin/build-mesh-assets.ts \
             --target linux-x86_64 --target linux-arm64 --out dist/mesh-ci
-          file dist/mesh-ci/erainfra-mesh-linux-x86_64 | grep -E 'x86-64.*static(-pie)? linked'
-          file dist/mesh-ci/erainfra-mesh-linux-arm64 | grep -E 'ARM aarch64.*static(-pie)? linked'
+          file dist/mesh-ci/erainfra-mesh-linux-x86_64 | grep -E 'x86-64.*(statically|static-pie) linked'
+          file dist/mesh-ci/erainfra-mesh-linux-arm64 | grep -E 'ARM aarch64.*(statically|static-pie) linked'
           test "$(dist/mesh-ci/erainfra-mesh-linux-x86_64 version)" = \
             "erainfra-mesh $(node -p "require('./package.json').version")"
       # The control socket is a named pipe on Windows, so that code only compiles there. The

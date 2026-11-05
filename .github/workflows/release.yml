@@ -336,8 +336,8 @@ jobs:
               exit 1
             }
           }
-          expect erainfra-mesh-linux-x86_64 '^ELF 64-bit .*x86-64.*static(-pie)? linked'
-          expect erainfra-mesh-linux-arm64 '^ELF 64-bit .*ARM aarch64.*static(-pie)? linked'
+          expect erainfra-mesh-linux-x86_64 '^ELF 64-bit .*x86-64.*(statically|static-pie) linked'
+          expect erainfra-mesh-linux-arm64 '^ELF 64-bit .*ARM aarch64.*(statically|static-pie) linked'
           expect erainfra-mesh-darwin-x86_64 '^Mach-O 64-bit .*x86_64'
           expect erainfra-mesh-darwin-arm64 '^Mach-O 64-bit .*arm64'
           expect erainfra-mesh-windows-x86_64.exe '^PE32\+ executable .*x86-64'
