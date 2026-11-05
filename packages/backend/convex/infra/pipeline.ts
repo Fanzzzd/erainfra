@@ -111,13 +111,20 @@ async function liveNodes(ctx: MutationCtx, now: number) {
  */
 async function begin(ctx: MutationCtx, run: Run) {
   const now = Date.now();
-  // Oldest first: a run never overtakes an earlier queued run of the same App.
+  // Oldest first: a run never overtakes an earlier queued run of the same App. Read through the
+  // stage index: few runs are queued at once, while an App's history can hold a thousand.
   const earlier = await ctx.db
     .query("appDeployments")
-    .withIndex("by_app_startedAt", (q) => q.eq("app", run.app).lt("startedAt", run.startedAt))
-    .filter((q) => q.eq(q.field("stage"), "queued"))
+    .withIndex("by_stage", (q) => q.eq("stage", "queued"))
+    .filter((q) =>
+      q.and(
+        q.eq(q.field("app"), run.app),
+        q.neq(q.field("operation"), undefined),
+        q.lt(q.field("startedAt"), run.startedAt),
+      ),
+    )
     .first();
-  if (earlier !== null && earlier.operation !== undefined) return;
+  if (earlier !== null) return;
   const lease = await acquireAppLease(ctx, {
     app: run.app,
     holder: holderOf(run._id),
@@ -162,10 +169,10 @@ async function begin(ctx: MutationCtx, run: Run) {
 async function kickApp(ctx: MutationCtx, app: string) {
   const next = await ctx.db
     .query("appDeployments")
-    .withIndex("by_app_startedAt", (q) => q.eq("app", app))
-    .filter((q) => q.eq(q.field("stage"), "queued"))
+    .withIndex("by_stage", (q) => q.eq("stage", "queued"))
+    .filter((q) => q.and(q.eq(q.field("app"), app), q.neq(q.field("operation"), undefined)))
     .first();
-  if (next !== null && next.operation !== undefined) await begin(ctx, next);
+  if (next !== null) await begin(ctx, next);
 }
 
 // ---------------------------------------------------------------------------
