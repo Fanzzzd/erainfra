@@ -25,7 +25,7 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, type MutationCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";
-import { upsertApp, upsertRoute } from "./apps";
+import { upsertApp, upsertMeshLink, upsertRoute } from "./apps";
 import { createDeployment } from "./deployments";
 import { acquireAppLease, releaseAppLease, renewAppLease } from "./leases";
 import { insertNodeCommand, type NodeCommand } from "./nodeCommands";
@@ -430,6 +430,13 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   const urls = plan.services.flatMap((s) =>
     s.route ? [domain ? `https://${s.route}.${domain}` : s.route] : [],
   );
+  // The registry must be reachable from the build Node (push) and every Node that starts a
+  // service (pull) before either step runs.
+  const registryError = await ensureRegistryLinks(ctx, [
+    ...deployNodeIds,
+    ...(plan.builds.length > 0 && run.buildNodeId !== undefined ? [run.buildNodeId] : []),
+  ]);
+  if (registryError !== null) return await fail(ctx, run, { error: registryError });
   // A container retirement queued for a Node by an earlier failover must not remove what this run
   // is about to start there.
   for (const nodeId of deployNodeIds) await cancelRetirements(ctx, run.app, nodeId);
@@ -443,6 +450,56 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
     plan: stored,
     targetNodeIds: deployNodeIds,
   });
+}
+
+/**
+ * The Hub's registry model: one registry container on the Node named by ERAINFRA_REGISTRY_NODE,
+ * reached by every other Node at the same loopback address over a mesh link, so Docker treats it
+ * as a local insecure registry and no daemon needs configuring. Each link is a standalone
+ * `meshLinks` row named `registry-<node>`, which the Nodes' mesh snapshots carry
+ * (nodeState.ts); the links persist, so a later failover can still pull. Unset, the registry is
+ * one every Node reaches by itself (ERAINFRA_REGISTRY), and nothing is linked.
+ */
+async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
+  const registryNode = process.env.ERAINFRA_REGISTRY_NODE;
+  if (!registryNode) return null;
+  const provider = await ctx.db
+    .query("nodes")
+    .withIndex("by_name", (q) => q.eq("name", registryNode))
+    .unique();
+  if (provider === null) return `ERAINFRA_REGISTRY_NODE names no Node "${registryNode}"`;
+  const port = Number(registryAddress().split(":").pop());
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    return `cannot read a port from ERAINFRA_REGISTRY="${registryAddress()}"`;
+  for (const nodeId of new Set(nodeIds)) {
+    if (nodeId === provider._id) continue;
+    const node = await ctx.db.get(nodeId);
+    if (node === null) continue;
+    const name = `registry-${node.name}`.slice(0, 63);
+    const existing = await ctx.db
+      .query("meshLinks")
+      .withIndex("by_name", (q) => q.eq("name", name))
+      .unique();
+    if (existing !== null && existing.createdBy !== "deploy")
+      return `the mesh link name ${name} is taken by a link someone declared`;
+    if (
+      existing !== null &&
+      existing.providerNodeId === provider._id &&
+      existing.consumerNodeId === nodeId &&
+      existing.providerPort === port &&
+      existing.localPort === port
+    )
+      continue;
+    await upsertMeshLink(ctx, {
+      name,
+      providerNodeId: provider._id,
+      providerPort: port,
+      consumerNodeId: nodeId,
+      localPort: port,
+      createdBy: "deploy",
+    });
+  }
+  return null;
 }
 
 const retireKey = (run: Id<"appDeployments">, service: string, nodeId: Id<"nodes">) =>

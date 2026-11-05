@@ -158,7 +158,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
   const apps = await ctx.db.query("apps").take(501);
   if (standalone.length > 500 || apps.length > 500)
     throw new ConvexError("Mesh configuration exceeds the 500-App/link snapshot limit");
-  const links = [...standalone, ...apps.flatMap((a) => a.links)];
+  // App dependency links (from the deploy pipeline's plan) are marked so their consumer listens
+  // where a container can reach it; standalone links stay on loopback.
+  const links = [
+    ...standalone.map((l) => ({ ...l, forApp: false })),
+    ...apps.flatMap((a) => a.links.map((l) => ({ ...l, forApp: true }))),
+  ];
   if (links.length > 2000) throw new ConvexError("Mesh link limit exceeded");
   const relevant = links.filter(
     (l) =>
@@ -213,7 +218,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
         name: link.name,
         peer: peer.meshAddress.id,
         service: link.name,
-        listen: `127.0.0.1:${link.localPort}`,
+        // A service reaches its dependency at host.docker.internal:<localPort>, the host's address
+        // on the container's bridge, so an App link listens on every address, as the Hub's
+        // bridge-bound links did (apps/hub/src/runtime/meshControl.ts). Like those, the listener
+        // is reachable from the consumer Node's own networks; docs/infra-management.md says to
+        // firewall the 62000-63999 range on a Node with a public address.
+        listen: `${link.forApp ? "0.0.0.0" : "127.0.0.1"}:${link.localPort}`,
       };
       const previous = outgoing.get(link.name);
       if (previous && JSON.stringify(previous) !== JSON.stringify(next)) {

@@ -352,15 +352,14 @@ new one; that keeps the endpoint.
 
 ### What still needs the Hub
 
-Phase 3 moves these to Convex. Until then they run only on the Hub, and a `connect-convex` Node
-takes no part in them:
+Deploys, push-to-deploy and failover for `connect-convex` Nodes run from Convex
+([phase 3a](#deploy-and-failover-from-convex-phase-3a)). These still run only on the Hub, and a
+`connect-convex` Node takes no part in them:
 
-- gateway ingress: public `<app>.<domain>` routes reach a Node over the Hub's data channel;
-- the deploy pipeline: builds, push-to-deploy and `portless deploy`. The Convex command path runs
-  a deployment only for an existing active deployment and live App lease, and nothing creates one
-  yet;
-- failover scheduling;
-- declaring links and the `portless` CLI and dashboard, which talk to the Hub;
+- gateway ingress: public `<app>.<domain>` routes reach a Node over the Hub's data channel (phase
+  3b);
+- declaring standalone links, and the `portless` CLI and dashboard, which talk to the Hub (phase
+  3c);
 - links to Nodes still in Hub mode, and legacy dumbpipe links.
 
 ### Roll back to Hub mode
@@ -535,7 +534,10 @@ for a deploy expires after an hour; the file is not deleted.
 Create a GitHub App for deploys (not the CI App the dashboard creates, which has no Contents
 permission): Repository Contents read, subscribed to `push`, webhook URL `<site>/github/webhook`.
 Install it on the repositories you deploy, then set its credentials in the Convex environment under
-the names the Hub reads:
+the names the Hub reads. Its webhook secret must differ from the CI App's: `/github/webhook` picks
+the secret by event type before it checks the signature, so a `push` verifies only against
+`ERAINFRA_GH_WEBHOOK_SECRET` and a `workflow_job` only against the CI App's secret. A holder of one
+cannot trigger the other's work. With no deploy secret set, every push is refused.
 
 ```sh
 pnpm convex env set ERAINFRA_GH_APP_ID <app id>
@@ -552,20 +554,33 @@ header in the child's environment, never in argv or `.git/config`, and Convex ne
 no deploy App configured, or the App not installed on the repository, public repositories still
 deploy without a token. The binding records the last run's result.
 
-### Image registry
+### Image registry and cross-Node links
 
-`ERAINFRA_REGISTRY` in the Convex environment names where builds push and Nodes pull (default
-`127.0.0.1:5000`). This release keeps the Hub's model of a registry container, with one limit: a
-`connect-convex` Node saves its mesh state but does not yet apply it, so it cannot reach a registry
-on another Node over a mesh link. Use one of:
+The Hub's model carries over: one `registry:2` container on a Node you choose, reached by every
+other Node at the same loopback address over an `erainfra-mesh` link, so Docker treats it as a local
+registry and no daemon needs configuring. Set both in the Convex environment:
 
-- a single Node that builds and runs everything, with the registry on it at `127.0.0.1:5000`;
-- a registry every Node can reach, with TLS (for example `registry.example.com`), and `docker login`
-  on each Node when it is private.
+```sh
+pnpm convex env set ERAINFRA_REGISTRY 127.0.0.1:5000      # where builds push and Nodes pull
+pnpm convex env set ERAINFRA_REGISTRY_NODE <node name>    # the Node running the registry
+```
 
-Cross-Node `needs:` dependencies have the same limit. The links are planned, recorded and published
-in each Node's mesh state, but a `connect-convex` Node does not open them yet. Keep a service and
-what it needs on one Node until the mesh reconciler lands.
+During planning, before any build, the pipeline records a standalone link `registry-<node>` from
+the registry Node to the build Node and to every Node that starts a service. Each Node's mesh
+snapshot carries it: the registry Node exposes `127.0.0.1:5000` to that one peer, and the other Node
+listens on `127.0.0.1:5000`. The links stay after the run, so a later failover can pull too. A run
+fails instead of overwriting a link of that name that someone declared. Leave
+`ERAINFRA_REGISTRY_NODE` unset to use a registry every Node reaches by itself, such as one with TLS
+at `registry.example.com` (`docker login` on each Node when it is private); nothing is linked then.
+
+A `needs:` dependency on another Node becomes a link in the App row. The provider Node exposes the
+dependency's loopback host port to the consumer Node only. The consumer Node listens on
+`0.0.0.0:<port>`, the port injected as `<NEED>_PORT`, because a container reaches it at
+`host.docker.internal`, the host's address on its bridge; this matches the Hub's links. That
+listener is reachable from the consumer Node's own networks, so firewall ports 62000 to 63999 on a
+Node with a public address. Both ends must run `connect-convex` with a proven endpoint
+([Set up a Node](#set-up-a-node)); a Node without one is left out of its peers' snapshots and the
+link stays down.
 
 ### Failover
 
@@ -600,7 +615,7 @@ failover off.
   3b. Until then the Hub's tunnel and data plane serve `<app>.<zone>`.
 - The `portless` CLI, MCP server and the Hub dashboard (phase 3c). The Convex surface today is the
   operator API above and the internal functions.
-- Mesh links between `connect-convex` Nodes, as above.
+- Links to a Node still in Hub mode, which never publishes an endpoint to Convex.
 
 ## Develop
 
