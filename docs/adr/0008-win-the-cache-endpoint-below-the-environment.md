@@ -342,3 +342,10 @@ bearer it cannot verify with `401`.
   floors as conformance keys (§2).
 - The trust-store delta and redirect as conformance-measured facts, as the
   Consequences section asks.
+
+[ADR 0012](0012-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)
+replaces the UID-matched rule described above, which the guest kernel cannot
+load (it has no `xt_owner`), with a name pin. It builds the first follow-up as
+opt-in container coverage and the fourth as fingerprint keys. The test matrix
+and the CA negative tests remain open, and none of ADR 0012 has run on a real
+guest yet.
