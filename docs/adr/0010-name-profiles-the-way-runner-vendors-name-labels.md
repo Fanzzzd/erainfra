@@ -16,16 +16,16 @@ toolchain of the first minimal image, which the image is meant to outgrow (it is
 Every hosted-runner vendor has solved the same naming problem, and they agree on more than they
 differ. Their documented label shapes on 2026-11-05:
 
-| Vendor | Example | Shape |
-|---|---|---|
-| GitHub standard | `ubuntu-24.04`, `ubuntu-24.04-arm` | os, dotted version, arch suffix, x64 implied |
-| GitHub larger runners | `ubuntu-24.04-16core` (docs example) | admin-chosen, 1–64 chars of `[A-Za-z0-9._-]` |
-| Blacksmith | `blacksmith-4vcpu-ubuntu-2404`, `blacksmith-4vcpu-ubuntu-2404-arm` | vendor, size, os + undotted version, `-arm` |
-| BuildJet (closed 2026-03-31) | `buildjet-4vcpu-ubuntu-2204-arm` | same as Blacksmith |
-| Ubicloud | `ubicloud-standard-4-arm-ubuntu-2404` | vendor, class, size, arch, os + version |
-| Depot | `depot-ubuntu-24.04-arm-4` | vendor, os, dotted version, arch, size |
-| WarpBuild | `warp-ubuntu-2404-arm64-4x` | vendor, os + version, arch, size |
-| actuated | `actuated-arm64-4cpu-16gb` | vendor, arch, size, memory |
+| Vendor                       | Example                                                            | Shape                                        |
+| ---------------------------- | ------------------------------------------------------------------ | -------------------------------------------- |
+| GitHub standard              | `ubuntu-24.04`, `ubuntu-24.04-arm`                                 | os, dotted version, arch suffix, x64 implied |
+| GitHub larger runners        | `ubuntu-24.04-16core` (docs example)                               | admin-chosen, 1–64 chars of `[A-Za-z0-9._-]` |
+| Blacksmith                   | `blacksmith-4vcpu-ubuntu-2404`, `blacksmith-4vcpu-ubuntu-2404-arm` | vendor, size, os + undotted version, `-arm`  |
+| BuildJet (closed 2026-03-31) | `buildjet-4vcpu-ubuntu-2204-arm`                                   | same as Blacksmith                           |
+| Ubicloud                     | `ubicloud-standard-4-arm-ubuntu-2404`                              | vendor, class, size, arch, os + version      |
+| Depot                        | `depot-ubuntu-24.04-arm-4`                                         | vendor, os, dotted version, arch, size       |
+| WarpBuild                    | `warp-ubuntu-2404-arm64-4x`                                        | vendor, os + version, arch, size             |
+| actuated                     | `actuated-arm64-4cpu-16gb`                                         | vendor, arch, size, memory                   |
 
 Sources: docs.github.com (github-hosted-runners reference, hosted-runners REST API),
 docs.blacksmith.sh/blacksmith-runners/overview, and each vendor's runner documentation.
