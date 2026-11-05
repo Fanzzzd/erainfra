@@ -6,9 +6,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -127,6 +129,60 @@ func meshRelayPolicy() (meshclient.Relays, error) {
 	}
 	policy.AuthToken = os.Getenv("ERAINFRA_MESH_RELAY_TOKEN")
 	return policy, nil
+}
+
+const journalUsage = `usage: infra-agent journal list [--state-dir DIR]
+       infra-agent journal release [--state-dir DIR] KEY...
+
+list prints every command key the connect-convex journal holds, one JSON object per line. It
+reads without the lock, so the Infra Agent may keep running.
+
+release forgets the named keys after you have checked them. Stop the Infra Agent first: release
+takes the journal's lock. A released key no longer protects its command from running again, so
+release only keys whose command Convex shows finished or cancelled, and for an unknown outcome
+only after you have checked the workload on this Node.`
+
+// runJournal is the operator's way out of a full journal (docs/infra-management.md, "When the
+// journal is full").
+func runJournal(args []string, out io.Writer) error {
+	if len(args) == 0 || (args[0] != "list" && args[0] != "release") {
+		return errors.New(journalUsage)
+	}
+	fs := flag.NewFlagSet("journal "+args[0], flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	state := fs.String("state-dir", os.Getenv("ERAINFRA_NODE_STATE_DIR"), "the connect-convex state directory")
+	if err := fs.Parse(args[1:]); err != nil {
+		return fmt.Errorf("%v\n%s", err, journalUsage)
+	}
+	if *state == "" || !filepath.IsAbs(*state) {
+		return errors.New("an absolute --state-dir (or ERAINFRA_NODE_STATE_DIR) is required")
+	}
+	switch args[0] {
+	case "list":
+		if fs.NArg() != 0 {
+			return errors.New(journalUsage)
+		}
+		entries, err := convexnode.ListJournal(*state)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(out)
+		for _, e := range entries {
+			if err := enc.Encode(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		if fs.NArg() == 0 {
+			return errors.New(journalUsage)
+		}
+		if err := convexnode.ReleaseJournalKeys(*state, fs.Args()); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(out, "released %d keys\n", fs.NArg())
+		return err
+	}
 }
 
 func trimCredential(s string) string {

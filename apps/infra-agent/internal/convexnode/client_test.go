@@ -40,6 +40,16 @@ type fakeAPI struct {
 	// output and truncated are what the last logs result carried.
 	output    string
 	truncated any
+	// statusOf answers commands/status. Nil answers every command but cmd-1 as a terminal
+	// success; cmd-1 is pending until its result arrives. noStatus answers 404, as a control
+	// plane older than the endpoint does.
+	statusOf    map[string]string
+	noStatus    bool
+	statusAsked [][]string
+	// heartbeats is every heartbeat body received. legacyHeartbeat refuses any field but
+	// version, as a control plane older than the command health fields does.
+	heartbeats      []map[string]any
+	legacyHeartbeat bool
 }
 
 func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +63,47 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	send := func(v any) { _ = json.NewEncoder(w).Encode(v) }
 	switch r.URL.Path {
 	case "/api/v1/nodes/heartbeat":
+		var b map[string]any
+		if json.NewDecoder(r.Body).Decode(&b) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		f.heartbeats = append(f.heartbeats, b)
+		if f.legacyHeartbeat && len(b) != 1 {
+			w.WriteHeader(400)
+			send(map[string]string{"error": "unknown_field"})
+			return
+		}
 		send(map[string]string{"nodeId": "node-a"})
+	case "/api/v1/nodes/commands/status":
+		if f.noStatus {
+			w.WriteHeader(404)
+			return
+		}
+		var b struct {
+			IDs []string `json:"commandIds"`
+		}
+		if json.NewDecoder(r.Body).Decode(&b) != nil || len(b.IDs) > sweepBatch {
+			w.WriteHeader(400)
+			return
+		}
+		f.statusAsked = append(f.statusAsked, b.IDs)
+		out := []map[string]string{}
+		for _, id := range b.IDs {
+			status, ok := f.statusOf[id]
+			switch {
+			case f.statusOf != nil && !ok:
+				status = "missing"
+			case f.statusOf == nil && id == "cmd-1" && f.result == "":
+				status = "pending"
+			case f.statusOf == nil && id == "cmd-1":
+				status = f.result
+			case f.statusOf == nil:
+				status = "success"
+			}
+			out = append(out, map[string]string{"id": id, "status": status})
+		}
+		send(map[string]any{"commands": out})
 	case "/api/v1/nodes/state":
 		if f.huge {
 			send(strings.Repeat("x", maxWireBytes+1))

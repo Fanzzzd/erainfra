@@ -60,6 +60,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "journal":
+		if err := runJournal(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "connect":
 		if err := convexModeConflict("connect"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -73,7 +78,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: portless-agent <version|plan|resources|heartbeat|benchmark|op|connect|connect-convex|gateway>")
+	fmt.Fprintln(os.Stderr, "usage: portless-agent <version|plan|resources|heartbeat|benchmark|op|connect|connect-convex|gateway|journal>")
 }
 
 // connect dials the hub over WSS and serves its commands (deploy containers, exec). The agent dials
