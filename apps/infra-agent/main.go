@@ -50,6 +50,11 @@ func main() {
 		// Reads an Operation from stdin and prints the resolved allowlisted command.
 		// Dry-run only: this never executes, and there is no raw-shell path.
 		runOp()
+	case "gateway":
+		if err := runGateway(ctx, os.Args[2:]); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "connect-convex":
 		if err := runConnectConvex(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -68,7 +73,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: portless-agent <version|plan|resources|heartbeat|benchmark|op|connect|connect-convex>")
+	fmt.Fprintln(os.Stderr, "usage: portless-agent <version|plan|resources|heartbeat|benchmark|op|connect|connect-convex|gateway>")
 }
 
 // connect dials the hub over WSS and serves its commands (deploy containers, exec). The agent dials

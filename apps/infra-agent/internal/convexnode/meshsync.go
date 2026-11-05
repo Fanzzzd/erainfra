@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	gw "github.com/Fanzzzd/erainfra/apps/infra-agent/internal/gateway"
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient"
 )
 
@@ -45,6 +46,11 @@ type MeshOptions struct {
 	// Bridge resolves the address a `bridge:<port>` listener binds (bridge.go). Nil closes every
 	// such link.
 	Bridge BridgeResolver
+	// RoutesFile, when set, receives the gateway route table from each applied snapshot
+	// (gateway.Table), for the `infra-agent gateway` proxy to serve. It is written only after the
+	// sidecar holds the links the routes use, and left alone while Convex is unreachable, so the
+	// proxy keeps serving the last copy. A Node that is not a gateway gets an empty table.
+	RoutesFile string
 	// Logf receives operator-facing messages. Default log.Printf. Messages never carry a
 	// credential, a relay token or a response body.
 	Logf func(format string, args ...any)
@@ -84,11 +90,16 @@ type meshLoop struct {
 	lastAttempt   time.Time
 	refusal       *endpointRefusal
 
-	revision    string
-	applied     *meshclient.Desired
-	lastState   time.Time
-	stateDue    bool
-	lastFailure map[string]time.Time
+	revision string
+	applied  *meshclient.Desired
+	ingress  *MeshIngress // of the applied revision; nil when this Node is not a gateway
+	// tableRevision is the revision ingress came from. m.revision can be cleared to refetch while a
+	// link stays closed; the route table keeps the revision it was applied under.
+	tableRevision string
+	routesFor     string // the revision whose route table is on disk (or reported missing)
+	lastState     time.Time
+	stateDue      bool
+	lastFailure   map[string]time.Time
 	// closed lists the snapshot's links this Node left closed, for tests and status.
 	closed []closedLink
 }
@@ -198,6 +209,35 @@ func (m *meshLoop) tick(ctx context.Context) {
 		m.stateDue, m.lastState = false, now
 		m.syncState(ctx)
 	}
+	if m.applied != nil && m.routesFor != m.tableRevision {
+		m.writeRoutes()
+	}
+}
+
+// writeRoutes hands the applied revision's route table to the gateway proxy. A failed write is
+// retried on the next tick; the proxy keeps the previous table until one succeeds.
+func (m *meshLoop) writeRoutes() {
+	if m.o.RoutesFile == "" {
+		if m.ingress != nil {
+			m.o.Logf("connect-convex: WARNING: Convex marks this Node a gateway, but ERAINFRA_GATEWAY_ROUTES_FILE is not set, so no gateway proxy receives its %d routes", len(m.ingress.Routes))
+		}
+		m.routesFor = m.tableRevision
+		return
+	}
+	t := gw.Table{V: 1, Revision: m.tableRevision, Gateway: m.ingress != nil, Routes: []gw.Route{}}
+	if m.ingress != nil {
+		for _, r := range m.ingress.Routes {
+			t.Routes = append(t.Routes, gw.Route(r))
+		}
+	}
+	if err := gw.WriteTable(m.o.RoutesFile, t); err != nil {
+		m.fail("routes", "writing the gateway route table failed; the proxy keeps its last copy: %v", err)
+		return
+	}
+	m.routesFor = m.tableRevision
+	if t.Gateway {
+		m.o.Logf("connect-convex: gateway route table %s written (%d routes)", shortRevision(m.tableRevision), len(t.Routes))
+	}
 }
 
 func (m *meshLoop) refusalCleared(key string, reg registration) bool {
@@ -257,6 +297,10 @@ func (m *meshLoop) syncState(ctx context.Context) {
 		return
 	}
 	d, closed, err := decodeSnapshot(ctx, state.Desired, m.o.Bridge)
+	var ingress *MeshIngress
+	if err == nil {
+		ingress, err = decodeIngress(state.Desired)
+	}
 	if err != nil {
 		m.fail("state", "refusing the mesh snapshot; keeping the last applied one: %v", err)
 		return
@@ -267,6 +311,7 @@ func (m *meshLoop) syncState(ctx context.Context) {
 		return
 	}
 	m.revision, m.applied = state.Revision, &d
+	m.ingress, m.tableRevision = ingress, state.Revision
 	m.closed = closed
 	if len(closed) > 0 {
 		for _, l := range closed {
@@ -313,7 +358,7 @@ func decodeSnapshot(ctx context.Context, raw json.RawMessage, bridge BridgeResol
 		d.Fleet = append(d.Fleet, meshclient.Peer{ID: p.ID, RelayURLs: p.RelayURLs, DirectAddrs: p.DirectAddrs})
 	}
 	for _, e := range from.Exposures {
-		d.Exposures = append(d.Exposures, meshclient.Exposure{Name: e.Name, Target: e.Target, AllowedPeers: e.AllowedPeers})
+		d.Exposures = append(d.Exposures, meshclient.Exposure{Name: e.Name, Target: e.Target, AllowedPeers: e.AllowedPeers, MaxConnections: e.MaxConnections})
 	}
 	var closed []closedLink
 	var gateway netip.Addr
@@ -354,12 +399,35 @@ func decodeSnapshot(ctx context.Context, raw json.RawMessage, bridge BridgeResol
 			closed = append(closed, closedLink{name: l.Name, reason: reason})
 			continue
 		}
-		d.Links = append(d.Links, meshclient.Link{Name: l.Name, Peer: l.Peer, Service: l.Service, Listen: listen})
+		d.Links = append(d.Links, meshclient.Link{Name: l.Name, Peer: l.Peer, Service: l.Service, Listen: listen, MaxConnections: l.MaxConnections})
 	}
 	if err := d.Validate(); err != nil {
 		return meshclient.Desired{}, nil, err
 	}
 	return d, closed, nil
+}
+
+// decodeIngress returns a gateway's route table from a snapshot decodeSnapshot accepted, or nil
+// when the snapshot has none (the Node is not a gateway). A table that would send the proxy off
+// loopback refuses the whole snapshot.
+func decodeIngress(raw json.RawMessage) (*MeshIngress, error) {
+	var from struct {
+		Ingress *MeshIngress `json:"ingress"`
+	}
+	if err := json.Unmarshal(raw, &from); err != nil {
+		return nil, err
+	}
+	if from.Ingress == nil {
+		return nil, nil
+	}
+	t := gw.Table{V: 1, Gateway: true}
+	for _, r := range from.Ingress.Routes {
+		t.Routes = append(t.Routes, gw.Route(r))
+	}
+	if err := t.Validate(); err != nil {
+		return nil, fmt.Errorf("gateway routes: %w", err)
+	}
+	return from.Ingress, nil
 }
 
 // drifted reports whether the sidecar no longer holds what was applied, for example after it

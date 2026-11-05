@@ -66,6 +66,10 @@ func runConnectConvex(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	routesFile, err := gatewayRoutesFile()
+	if err != nil {
+		return err
+	}
 	if mesh != nil {
 		defer func() { _ = mesh.Close() }()
 		relays, err := meshRelayPolicy()
@@ -73,9 +77,12 @@ func runConnectConvex(ctx context.Context) error {
 			return err
 		}
 		// An App link listens on the Docker bridge gateway, where its containers reach it.
-		client.Mesh = &convexnode.MeshOptions{Sidecar: mesh, Relays: relays, Bridge: convexnode.DockerBridge{Docker: *docker}.Resolve}
+		client.Mesh = &convexnode.MeshOptions{Sidecar: mesh, Relays: relays, Bridge: convexnode.DockerBridge{Docker: *docker}.Resolve, RoutesFile: routesFile}
 	} else {
 		log.Printf("connect-convex: no erainfra-mesh sidecar configured (ERAINFRA_MESH_SOCKET or ERAINFRA_MESH_BIN); this Node publishes no endpoint and runs no mesh links")
+		if routesFile != "" {
+			log.Printf("connect-convex: ERAINFRA_GATEWAY_ROUTES_FILE is set, but a gateway reaches Apps only over the mesh, so no route table is written without a sidecar")
+		}
 	}
 	err = client.Run(ctx)
 	if ctx.Err() != nil {
