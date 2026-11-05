@@ -80,6 +80,7 @@ export function registerNodeRoutes(http: HttpRouter) {
     ["POST", "commands/renew"],
     ["POST", "commands/payload"],
     ["POST", "commands/result"],
+    ["POST", "commands/status"],
   ] as const) {
     http.route({
       method,
@@ -98,7 +99,7 @@ export function registerNodeRoutes(http: HttpRouter) {
           const fields: Record<string, string[]> = {
             state: [],
             commands: [],
-            heartbeat: ["version"],
+            heartbeat: ["version", "commandsBlocked", "journalKeys", "journalKeyLimit"],
             "endpoint/challenge": ["address"],
             endpoint: ["challengeId", "signature"],
             "commands/claim": ["commandId", "owner"],
@@ -113,6 +114,7 @@ export function registerNodeRoutes(http: HttpRouter) {
               "output",
               "truncated",
             ],
+            "commands/status": ["commandIds"],
           };
           if (
             Object.keys(b).some((k) => !fields[path].includes(k)) ||
@@ -131,6 +133,19 @@ export function registerNodeRoutes(http: HttpRouter) {
               result = await ctx.runMutation(internal.infra.nodeState.heartbeat, {
                 credential,
                 version: b.version as string,
+                ...(b.commandsBlocked === undefined
+                  ? {}
+                  : { commandsBlocked: b.commandsBlocked as string }),
+                ...(b.journalKeys === undefined ? {} : { journalKeys: b.journalKeys as number }),
+                ...(b.journalKeyLimit === undefined
+                  ? {}
+                  : { journalKeyLimit: b.journalKeyLimit as number }),
+              });
+              break;
+            case "commands/status":
+              result = await ctx.runQuery(internal.infra.nodeCommands.statuses, {
+                credential,
+                commandIds: b.commandIds as string[],
               });
               break;
             case "state":

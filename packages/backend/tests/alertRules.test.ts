@@ -16,6 +16,7 @@ import type {
   FinishedAttempt,
   FleetObservation,
   ObservedMachine,
+  ObservedNode,
   ObservedProfile,
 } from "../convex/fleetObservation";
 
@@ -101,14 +102,23 @@ function finished(outcome: FinishedAttempt["outcome"], minutesAgo: number): Fini
   return { outcome, finishedAt: NOW - minutesAgo * MINUTE, queueWaitMs: null, runDurationMs: null };
 }
 
-function fleet(profiles: ObservedProfile[], machines: ObservedMachine[] = []): FleetObservation {
+function fleet(
+  profiles: ObservedProfile[],
+  machines: ObservedMachine[] = [],
+  nodes: ObservedNode[] = [],
+): FleetObservation {
   return {
     now: NOW,
     recentWindowMs: 24 * 60 * MINUTE,
     profiles,
     machines,
+    nodes,
     dimensionsTruncated: false,
   };
+}
+
+function node(name: string, fields: Partial<ObservedNode> = {}): ObservedNode {
+  return { name, online: true, lastSeenAt: NOW - 10_000, ...fields };
 }
 
 function subjects(condition: AlertCondition, observation: FleetObservation, scope?: string) {
@@ -369,6 +379,57 @@ describe("evaluateCondition", () => {
     expect(subjects({ kind: "controller-silent", minutes: 3 }, observation)).toEqual(["a"]);
     expect(subjects({ kind: "controller-silent", minutes: 5 }, observation)).toEqual([]);
   });
+
+  it("node-commands-blocked: an online Node blocked past the threshold fires, with its reason and journal", () => {
+    const observation = fleet(
+      [profile("a")],
+      [],
+      [
+        node("edge-1", {
+          commandsBlocked: "journal_full",
+          commandsBlockedSince: NOW - 20 * MINUTE,
+          journalKeys: 10_000,
+          journalKeyLimit: 10_000,
+        }),
+        node("edge-2", { commandsBlocked: "command_api", commandsBlockedSince: NOW - 2 * MINUTE }),
+        node("edge-3"),
+        // Offline: its last report is stale, and failover handles a silent Node.
+        node("edge-4", {
+          online: false,
+          commandsBlocked: "journal_full",
+          commandsBlockedSince: NOW - 60 * MINUTE,
+        }),
+      ],
+    );
+    const condition: AlertCondition = { kind: "node-commands-blocked", minutes: 10 };
+    expect(subjects(condition, observation)).toEqual(["edge-1"]);
+    // A Profile scope does not hide a Node, which belongs to no Profile.
+    expect(subjects(condition, observation, "a")).toEqual(["edge-1"]);
+    const [breach] = evaluateCondition(condition, undefined, observation);
+    expect(breach?.summary).toBe(
+      "Node edge-1 has not been able to run commands for 20m: its execution journal is full of outcomes nobody has checked, so new builds, deploys and operations are refused (journal_full). Its journal holds 10000 of 10000 keys.",
+    );
+    expect(subjects({ kind: "node-commands-blocked", minutes: 1 }, observation)).toEqual([
+      "edge-1",
+      "edge-2",
+    ]);
+  });
+
+  it("node-commands-blocked: an unrecognised reason is reported as sent", () => {
+    const observation = fleet(
+      [],
+      [],
+      [node("edge-1", { commandsBlocked: "disk_gone", commandsBlockedSince: NOW - 5 * MINUTE })],
+    );
+    const [breach] = evaluateCondition(
+      { kind: "node-commands-blocked", minutes: 5 },
+      undefined,
+      observation,
+    );
+    expect(breach?.summary).toBe(
+      "Node edge-1 has not been able to run commands for 5m: disk_gone.",
+    );
+  });
 });
 
 describe("conditionError", () => {
@@ -387,6 +448,8 @@ describe("conditionError", () => {
     // Below the 90-second offline cutoff one late report would page.
     expect(conditionError({ kind: "controller-silent", minutes: 1 })).toMatch(/2 to 10080/);
     expect(conditionError({ kind: "controller-silent", minutes: 3 })).toBeUndefined();
+    expect(conditionError({ kind: "node-commands-blocked", minutes: 0 })).toBeDefined();
+    expect(conditionError({ kind: "node-commands-blocked", minutes: 5 })).toBeUndefined();
   });
 });
 

@@ -4,6 +4,7 @@ import { isSchedulableReadiness } from "./attemptScheduler";
 import { queueWaitMs } from "./attempts";
 import { controllerLiveness, type ControllerLiveness } from "./controllerLiveness";
 import { profileEgressOf, type ProfileEgress } from "./egress";
+import { isNodeLive } from "./infra/policy";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -128,6 +129,22 @@ export type ObservedMachine = {
   benchmark?: { measuredAt: number; scores: Record<BenchmarkDimension, number> };
 };
 
+/**
+ * An infrastructure Node that has heartbeated over the Node API (connect-convex), with the command
+ * health its Infra Agent reports. A Node the Hub still drives sends no such heartbeat and is left
+ * out.
+ */
+export type ObservedNode = {
+  name: string;
+  online: boolean;
+  lastSeenAt: number;
+  /** Why the Node cannot run commands, while it says so (nodeState.COMMANDS_BLOCKED_REASONS). */
+  commandsBlocked?: string;
+  commandsBlockedSince?: number;
+  journalKeys?: number;
+  journalKeyLimit?: number;
+};
+
 export const BENCHMARK_DIMENSIONS = ["cpu", "memory", "disk", "network", "balanced"] as const;
 export type BenchmarkDimension = (typeof BENCHMARK_DIMENSIONS)[number];
 
@@ -136,7 +153,9 @@ export type FleetObservation = {
   recentWindowMs: number;
   profiles: ObservedProfile[];
   machines: ObservedMachine[];
-  /** True when the Profile, Worker or readiness range reached its cap. */
+  /** Infrastructure Nodes on the Convex transport, by name. */
+  nodes: ObservedNode[];
+  /** True when the Profile, Worker, Node or readiness range reached its cap. */
   dimensionsTruncated: boolean;
 };
 
@@ -336,5 +355,36 @@ export async function loadFleetObservation(
     })
     .toSorted((left, right) => left.name.localeCompare(right.name));
 
-  return { now, recentWindowMs: options.recentWindowMs, profiles, machines, dimensionsTruncated };
+  const nodeRows = await ctx.db.query("nodes").take(OBSERVATION_DIMENSION_LIMIT);
+  if (nodeRows.length === OBSERVATION_DIMENSION_LIMIT) dimensionsTruncated = true;
+  const nodes = nodeRows
+    .flatMap((node): ObservedNode[] => {
+      const lastSeenAt = node.lastSeenAt;
+      if (lastSeenAt === undefined) return [];
+      return [
+        {
+          name: node.name,
+          online: isNodeLive(lastSeenAt, now),
+          lastSeenAt,
+          ...(node.commandsBlocked === undefined
+            ? {}
+            : {
+                commandsBlocked: node.commandsBlocked,
+                commandsBlockedSince: node.commandsBlockedSince ?? lastSeenAt,
+              }),
+          ...(node.journalKeys === undefined ? {} : { journalKeys: node.journalKeys }),
+          ...(node.journalKeyLimit === undefined ? {} : { journalKeyLimit: node.journalKeyLimit }),
+        },
+      ];
+    })
+    .toSorted((left, right) => left.name.localeCompare(right.name));
+
+  return {
+    now,
+    recentWindowMs: options.recentWindowMs,
+    profiles,
+    machines,
+    nodes,
+    dimensionsTruncated,
+  };
 }

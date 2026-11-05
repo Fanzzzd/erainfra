@@ -393,13 +393,14 @@ refused here; Node credentials are refused on the operator API.
 
 | Method | Path                 | Purpose                                                             |
 | ------ | -------------------- | ------------------------------------------------------------------- |
-| POST   | `heartbeat`          | publish Infra Agent version/liveness                                |
+| POST   | `heartbeat`          | publish Infra Agent version/liveness and command health             |
 | GET    | `state?revision=…`   | conditional full mesh snapshot; unchanged responses omit data       |
 | GET    | `commands?cursor=…`  | at most 25 unsettled commands; opaque pagination cursor             |
 | POST   | `commands/claim`     | atomically claim one addressed command, returning its epoch         |
 | POST   | `commands/renew`     | renew a live claim, with owner and epoch                            |
 | POST   | `commands/payload`   | claim-gated operation, deploy services and secrets, or build source |
 | POST   | `commands/result`    | `success`, `failure` or `unknown`; a spec step also sends its text  |
+| POST   | `commands/status`    | status of up to 200 of this Node's commands, for journal compaction |
 | POST   | `endpoint/challenge` | request a one-use key-possession challenge for an EndpointAddr      |
 | POST   | `endpoint`           | publish that address with its signed challenge                      |
 
@@ -426,12 +427,100 @@ bounded to 16 KiB per subprocess, HTTP bodies to 256 KiB, and execution to 10 mi
 build, 2 for reading a spec).
 
 Keep the state directory across upgrades, outages and rollbacks. It is locked against another local
-process and bound to the Convex origin and Node. Do not enroll a second machine with the same Node
-credential or delete/copy its journal to bypass the lock. The journal stops accepting new work at
-10,000 keys or 16 MiB; a torn record fails closed for manual recovery. Unknown outcomes require
-inspection of the actual workload before a human deliberately issues a new operation key. Lease
-epochs and the local journal do not provide globally exactly-once external effects across cloned
-hosts or loss of the journal.
+process (through `execution.lock`, and the journal file itself) and bound to the Convex origin and
+Node. Do not enroll a second machine with the same Node credential or delete/copy its journal to
+bypass the lock. A torn record fails closed for manual recovery. Lease epochs and the local journal
+do not provide globally exactly-once external effects across cloned hosts or loss of the journal.
+
+#### What the journal keeps
+
+A journal key exists so that a re-delivered command replays its recorded outcome instead of running
+again. Convex never re-delivers a terminal command: `commands/claim` refuses one, and nothing moves
+a finished command back to pending or deletes it. So the Infra Agent forgets a key exactly when
+Convex has accepted that key's `success` or `failure`:
+
+- when its `commands/result` returns 200, at once;
+- when a status sweep (`commands/status`) finds the command terminal with the outcome the journal
+  recorded. This catches a key whose acknowledgement a crash cut off. The sweep runs once at least
+  500 such keys have collected, at most every 10 minutes, and immediately when the journal is full.
+
+Every other key stays:
+
+| Key                                                   | Why it stays                                                  |
+| ----------------------------------------------------- | ------------------------------------------------------------- |
+| Command still pending or running in Convex            | It can be delivered again; the journal replays its outcome.   |
+| `accepted` (interrupted) or `unknown`                 | An effect may have happened. Only an operator can rule on it. |
+| Terminal in Convex with another outcome, or cancelled | Convex never took this outcome. An operator should check it.  |
+| Unknown to Convex                                     | Nothing confirms it.                                          |
+
+The file is rewritten without the forgotten keys once 1,024 dead lines collect (written beside it,
+fsynced, renamed over it), so it stays under about 11 MiB. A healthy Node's journal holds only its
+in-flight command. Keys that stay pile up only through cancellations of running commands, outcomes
+Convex recorded differently, and restarts in the middle of a command.
+
+One case the journal no longer covers: if the Convex deployment is restored from a backup taken
+while a since-finished command was still pending, that command is delivered again and runs again,
+because its key was forgotten when it finished.
+
+#### Command health in the heartbeat
+
+Each heartbeat carries `commandsBlocked` while command polling fails, and how many keys the journal
+holds (`journalKeys` of `journalKeyLimit`). The reason is one of `journal_full`, `journal_error`
+(the journal cannot be written), `command_api` (the Node API refuses or fails command requests) or
+`command_error`. It shows on the dashboard's Nodes page and in `erainfra nodes list` as
+`online, blocked: <reason>`, in `/metrics` as `erainfra_node_commands_blocked`, and fires the
+**Node unable to run commands** alert rule. The agent logs each distinct error once, again every
+five minutes while it lasts, and once when polling recovers:
+
+```text
+connect-convex: ERROR: command polling failed (journal_full): journal key limit reached: 10000 keys are held, 37 of them unknown outcomes; ...
+```
+
+An agent newer than the control plane falls back to a version-only heartbeat and logs a warning;
+deploy the control plane to see the health fields.
+
+#### When the journal is full
+
+At 10,000 keys the Node refuses every new build, deploy and operate command with
+`journal key limit reached`. Spec reads and log tails are not journaled and keep working, and so do
+re-deliveries of commands the journal already holds. A full journal means 10,000 keys that Convex
+never acknowledged, so a sweep cannot clear them; each one needs a human decision.
+
+1. List what the journal holds. This reads without the lock, so the agent can keep running:
+
+   ```sh
+   ./infra-agent journal list --state-dir /var/lib/erainfra-node
+   ```
+
+   Each line is `{"key":"<nodeId>:<idempotency key>","commandId":"…","outcome":"success|failure|unknown"}`.
+
+2. For each key, look the command up in Convex (the deployment's `nodeCommands` table, by
+   `commandId`, or the run it belongs to on the dashboard's Deployments page).
+   - **`unknown` outcomes need a human check.** The command started and its result is lost: a
+     restart, deploy, build or removal may or may not have happened. Inspect the workload on this
+     Node (`docker ps`, `systemctl status`, the App's URL) and decide whether to issue a new
+     operation under a new key. Never re-enqueue under the old key.
+   - A `success` or `failure` whose command is `cancelled`, or terminal with another outcome, ran
+     on the Node but its result never reached Convex. Check that the Node's state matches what the
+     run expected (usually the next deploy fixes it).
+   - A command still `pending` or `running` must keep its key: releasing it would let the
+     command run again.
+
+3. Stop the Infra Agent and release the keys you have checked:
+
+   ```sh
+   systemctl stop <the connect-convex unit>   # or stop the process
+   ./infra-agent journal release --state-dir /var/lib/erainfra-node <key> [<key>...]
+   ```
+
+   `release` takes the journal's lock, so it refuses while the agent runs. It refuses the binding
+   record and keys that do not exist.
+
+4. Start the agent again. It logs `command polling recovered`, and the next heartbeat clears the
+   blocked state.
+
+Never delete or edit `execution.jsonl` by hand: that forgets every key at once, including commands
+Convex can still deliver.
 
 The client uses bounded HTTPS polling, not a generic Convex WebSocket or a sleeping action. Busy
 polling is about one second; idle/error backoff doubles from 2 to 30 seconds, with ±20% jitter.

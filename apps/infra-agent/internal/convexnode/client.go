@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -184,9 +185,21 @@ type Client struct {
 	// to the local sidecar in a loop of its own, so a mesh failure never delays a command.
 	Mesh *MeshOptions
 
+	// Logf receives operator-facing messages from Run. Default log.Printf.
+	Logf func(format string, args ...any)
+
 	now        func() time.Time // the mesh loop and heartbeat bookkeeping share one clock
 	regMu      sync.Mutex
 	registered registration
+
+	// blocked is why the last command step failed, as a fixed code the heartbeat carries; ""
+	// after a step that succeeded. sentBlocked is what the last heartbeat said.
+	blocked, sentBlocked string
+	// legacyHeartbeat is set when Convex predates the heartbeat's command health fields.
+	legacyHeartbeat bool
+	// lastSweep and lastForcedSweep pace the journal status sweep (sweepJournal).
+	lastSweep, lastForcedSweep time.Time
+	stepLog                    stepLog
 }
 
 // registration is the Node's EndpointId as the last heartbeat reported it.
@@ -255,15 +268,15 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return errors.New("node API unavailable")
+		return nodeAPIError("node API unavailable")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxWireBytes+1))
 	if err != nil {
-		return errors.New("node API read failed")
+		return nodeAPIError("node API read failed")
 	}
 	if len(b) > maxWireBytes {
-		return errors.New("node API response limit exceeded")
+		return nodeAPIError("node API response limit exceeded")
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Only a short fixed code is kept from an error body, never free text.
@@ -279,10 +292,15 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		return nil
 	}
 	if err = json.Unmarshal(b, output); err != nil {
-		return errors.New("invalid Node API response")
+		return nodeAPIError("invalid Node API response")
 	}
 	return nil
 }
+
+// nodeAPIError is a request that failed before Convex answered it with a status.
+type nodeAPIError string
+
+func (e nodeAPIError) Error() string { return string(e) }
 
 var errorCodePattern = regexp.MustCompile(`^[a-z_]{1,40}$`)
 
@@ -312,34 +330,121 @@ type commandClaim struct {
 // Step makes bounded requests, executes at most 25 commands sequentially, and never sleeps in a
 // Convex function. The cursor is opaque and Node-scoped server-side; it is periodically reset by
 // end-of-page so a request queued behind the current cursor is eventually observed.
+//
+// Whatever stops a step is kept as a fixed reason code (blockedReason) and sent with the next
+// heartbeat, so a Node that is online but cannot run commands shows as blocked in Convex, the
+// dashboard, /metrics and the node-commands-blocked alert, rather than as a healthy Node whose
+// work times out.
 func (c *Client) Step(ctx context.Context) (bool, error) {
-	if c.nodeID == "" || time.Since(c.lastHeartbeat) >= 15*time.Second {
-		var hb struct {
-			NodeID     string  `json:"nodeId"`
-			EndpointID *string `json:"endpointId"`
+	busy, err := c.step(ctx)
+	var hb heartbeatError
+	// A failed heartbeat says nothing about commands; Convex sees that Node go silent instead.
+	if ctx.Err() == nil && !errors.As(err, &hb) {
+		c.blocked = blockedReason(err)
+	}
+	return busy, err
+}
+
+// Reasons a heartbeat gives for commandsBlocked. Convex accepts any short code
+// (nodeState.heartbeat), so a newer agent can add one without a control-plane change.
+const (
+	blockedJournalFull  = "journal_full"
+	blockedJournalError = "journal_error"
+	blockedCommandAPI   = "command_api"
+	blockedCommandError = "command_error"
+)
+
+func blockedReason(err error) string {
+	var journal journalError
+	var status apiStatusError
+	var api nodeAPIError
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrJournalFull):
+		return blockedJournalFull
+	case errors.As(err, &journal):
+		return blockedJournalError
+	case errors.As(err, &status), errors.As(err, &api):
+		return blockedCommandAPI
+	default:
+		return blockedCommandError
+	}
+}
+
+type heartbeatError struct{ err error }
+
+func (e heartbeatError) Error() string { return e.err.Error() }
+func (e heartbeatError) Unwrap() error { return e.err }
+
+func (c *Client) heartbeat(ctx context.Context) error {
+	var hb struct {
+		NodeID     string  `json:"nodeId"`
+		EndpointID *string `json:"endpointId"`
+	}
+	sent := c.now()
+	blocked := c.blocked
+	body := map[string]any{"version": c.cfg.Version, "journalKeys": c.journal.keys(), "journalKeyLimit": maxJournalKeys}
+	if blocked != "" {
+		body["commandsBlocked"] = blocked
+	}
+	err := errors.New("legacy heartbeat")
+	if !c.legacyHeartbeat {
+		err = c.request(ctx, "POST", "heartbeat", body, &hb)
+		var status apiStatusError
+		if errors.As(err, &status) && status.status == http.StatusBadRequest && status.code == "unknown_field" {
+			// A control plane older than this agent refuses the new fields. Keep heartbeating
+			// with the version alone; the blocked state is still logged here.
+			c.legacyHeartbeat = true
+			c.logf("connect-convex: WARNING: Convex does not accept command health in the heartbeat; deploy the control plane to show a blocked Node on the dashboard")
 		}
-		sent := c.now()
-		if err := c.request(ctx, "POST", "heartbeat", map[string]string{"version": c.cfg.Version}, &hb); err != nil {
-			return false, err
+	}
+	if c.legacyHeartbeat {
+		err = c.request(ctx, "POST", "heartbeat", map[string]string{"version": c.cfg.Version}, &hb)
+	}
+	if err != nil {
+		return err
+	}
+	if hb.NodeID == "" {
+		return errors.New("missing Node identity")
+	}
+	binding := c.cfg.URL + "|" + hb.NodeID
+	if _, exists, err := c.journal.lookup(bindingKey, binding); err != nil {
+		return err
+	} else if !exists {
+		if err = c.journal.append(bindingKey, binding, outcomeSuccess); err != nil {
+			return err
 		}
-		if hb.NodeID == "" {
-			return false, errors.New("missing Node identity")
+	}
+	c.nodeID = hb.NodeID
+	c.lastHeartbeat = c.now()
+	c.sentBlocked = blocked
+	registered := ""
+	if hb.EndpointID != nil {
+		registered = *hb.EndpointID
+	}
+	c.setRegistered(registered, sent)
+	return nil
+}
+
+func (c *Client) logf(format string, args ...any) {
+	if c.Logf != nil {
+		c.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
+}
+
+func (c *Client) step(ctx context.Context) (bool, error) {
+	// A change in the blocked state is reported on the next poll, not up to 15 seconds later.
+	since := c.now().Sub(c.lastHeartbeat)
+	if c.nodeID == "" || since >= 15*time.Second || (c.blocked != c.sentBlocked && since >= 2*time.Second) {
+		if err := c.heartbeat(ctx); err != nil {
+			return false, heartbeatError{err}
 		}
-		binding := c.cfg.URL + "|" + hb.NodeID
-		if _, exists, err := c.journal.lookup("binding", binding); err != nil {
-			return false, err
-		} else if !exists {
-			if err = c.journal.append("binding", binding, "success"); err != nil {
-				return false, err
-			}
-		}
-		c.nodeID = hb.NodeID
-		c.lastHeartbeat = time.Now()
-		registered := ""
-		if hb.EndpointID != nil {
-			registered = *hb.EndpointID
-		}
-		c.setRegistered(registered, sent)
+	}
+	if err := c.sweepJournal(ctx, false); err != nil {
+		c.logf("connect-convex: journal status sweep failed: %v", err)
 	}
 	// The mesh snapshot is not fetched here: a bad link or an unavailable mesh state must not
 	// stop this Node from running its commands (see RunMesh).
@@ -358,6 +463,7 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 		c.cursor = *page.Cursor
 	}
 	progressed := false
+	var full error
 	for _, cmd := range page.Commands {
 		if err := c.execute(ctx, cmd); err != nil {
 			var status apiStatusError
@@ -366,13 +472,111 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 			if errors.As(err, &status) && status.status == http.StatusConflict {
 				continue
 			}
+			// A full journal refuses only journaled work; spec reads and log tails still run.
+			if errors.Is(err, ErrJournalFull) {
+				full = err
+				continue
+			}
 			return false, err
 		}
 		progressed = true
 	}
+	if full != nil {
+		return progressed, full
+	}
 	return progressed || c.cursor != "", nil
 }
+
+// Journal sweep pacing. A healthy Node settles each key when its report is acknowledged, so the
+// sweep only finds keys whose acknowledgement was lost to a crash, or that a cancellation left
+// behind; it runs when enough of those collect, or at once when the journal is full.
+const (
+	sweepBatch          = 200 // matches MAX_STATUS_IDS in packages/backend/convex/infra/nodeCommands.ts
+	sweepThreshold      = 500
+	sweepInterval       = 10 * time.Minute
+	forcedSweepInterval = 30 * time.Second
+)
+
+// sweepJournal asks Convex for the status of journaled commands and settles every key whose
+// command is terminal with the outcome recorded here: Convex will never deliver it again and has
+// already accepted its result. A command still pending or running keeps its key, so its
+// re-delivery replays the outcome. One that ended any other way (cancelled while it ran, or a
+// different outcome) keeps its key for an operator and is not asked about again.
+func (c *Client) sweepJournal(ctx context.Context, forced bool) error {
+	candidates := c.journal.sweepCandidates()
+	if len(candidates) == 0 {
+		return nil
+	}
+	now := c.now()
+	if forced {
+		if !c.lastForcedSweep.IsZero() && now.Sub(c.lastForcedSweep) < forcedSweepInterval {
+			return nil
+		}
+		c.lastForcedSweep = now
+	} else if len(candidates) < sweepThreshold || (!c.lastSweep.IsZero() && now.Sub(c.lastSweep) < sweepInterval) {
+		return nil
+	}
+	c.lastSweep = now
+	settled := 0
+	for start := 0; start < len(candidates); start += sweepBatch {
+		batch := candidates[start:min(start+sweepBatch, len(candidates))]
+		ids := make([]string, len(batch))
+		for i, r := range batch {
+			ids[i] = r.ID
+		}
+		var answer struct {
+			Commands []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"commands"`
+		}
+		if err := c.request(ctx, "POST", "commands/status", map[string]any{"commandIds": ids}, &answer); err != nil {
+			return err
+		}
+		status := make(map[string]string, len(answer.Commands))
+		for _, s := range answer.Commands {
+			status[s.ID] = s.Status
+		}
+		var done []string
+		for _, r := range batch {
+			switch s := status[r.ID]; s {
+			case "", "pending", "running":
+				// Deliverable again, or not answered: the key must stay.
+			case r.Outcome:
+				done = append(done, r.Key)
+			default:
+				c.journal.review[r.Key] = true
+			}
+		}
+		if err := c.journal.settleMany(done); err != nil {
+			return err
+		}
+		settled += len(done)
+	}
+	if settled > 0 {
+		c.logf("connect-convex: journal sweep settled %d keys Convex has acknowledged; %d keys remain", settled, c.journal.keys())
+	}
+	return nil
+}
 func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
+	journaled := cmd.Kind != "spec" && cmd.Kind != "logs"
+	// The journal is what makes a Node-side effect happen at most once per idempotency key. Convex
+	// leases fence only Convex writes; a command can be re-delivered after a lost result or a
+	// restart, and its deterministic key (deployment, step, Node for pipeline steps) finds the
+	// outcome recorded here, which is reported again instead of building or deploying twice.
+	key := c.nodeID + ":" + cmd.Key
+	if journaled {
+		if _, exists, _ := c.journal.lookup(key, cmd.ID); !exists && c.journal.full() {
+			// Make room from keys Convex has already acknowledged before refusing. The command is
+			// not claimed, so it holds no lease and the Node's other work is not held up behind it.
+			if err := c.sweepJournal(ctx, true); err != nil {
+				c.logf("connect-convex: journal status sweep failed: %v", err)
+			}
+			if c.journal.full() {
+				return c.journal.fullError()
+			}
+		}
+	}
 	var lease struct {
 		Epoch      int   `json:"epoch"`
 		LeaseUntil int64 `json:"leaseUntil"`
@@ -387,11 +591,6 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 	if cmd.Kind == "logs" {
 		return c.executeLogs(ctx, cmd, claim)
 	}
-	// The journal is what makes a Node-side effect happen at most once per idempotency key. Convex
-	// leases fence only Convex writes; a command can be re-delivered after a lost result or a
-	// restart, and its deterministic key (deployment, step, Node for pipeline steps) finds the
-	// outcome recorded here, which is reported again instead of building or deploying twice.
-	key := c.nodeID + ":" + cmd.Key
 	outcome, exists, err := c.journal.lookup(key, cmd.ID)
 	if err != nil {
 		return err
@@ -414,13 +613,20 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 			return err
 		}
 	}
-	if outcome == "accepted" {
-		outcome = "unknown"
+	if outcome == outcomeAccepted {
+		outcome = outcomeUnknown
 	}
-	return c.request(ctx, "POST", "commands/result", struct {
+	if err = c.request(ctx, "POST", "commands/result", struct {
 		commandClaim
 		Outcome string `json:"outcome"`
-	}{claim, outcome}, nil)
+	}{claim, outcome}, nil); err != nil {
+		return err
+	}
+	// The report committed: the command is terminal with this outcome, and Convex refuses to
+	// claim a terminal command, so it is never delivered again. A success or failure has nothing
+	// left to replay. An unknown outcome stays for an operator to check.
+	_, err = c.journal.settle(key, cmd.ID)
+	return err
 }
 
 // executionLimit bounds one command's run. A build gets the Hub's 15 minutes; everything else
@@ -570,8 +776,10 @@ func (c *Client) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		// Errors never log response bodies or payloads. Cached journal outcomes survive a control
-		// network outage; reclaiming a command only uploads that result, it does not repeat the effect.
+		// Errors never carry response bodies or payloads, so they are safe to log. Cached journal
+		// outcomes survive a control network outage; reclaiming a command only uploads that
+		// result, it does not repeat the effect.
+		c.stepLog.observe(c.now(), err, c.logf)
 		delay = idleDelay(delay, busy && err == nil)
 		b := make([]byte, 1)
 		if _, err := rand.Read(b); err != nil {
@@ -585,5 +793,45 @@ func (c *Client) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+// stepLogRepeat is how often an error that keeps recurring is logged again.
+const stepLogRepeat = 5 * time.Minute
+
+// stepLog logs each distinct step error once, then again every stepLogRepeat while it recurs, and
+// says when steps succeed again. A Node polling every few seconds would otherwise either flood
+// its log or say nothing at all while every command failed.
+type stepLog struct {
+	last     string
+	loggedAt time.Time
+	since    time.Time
+	failures int
+}
+
+func (l *stepLog) observe(now time.Time, err error, logf func(string, ...any)) {
+	if err == nil {
+		if l.last != "" {
+			logf("connect-convex: command polling recovered after %d failed polls since %s", l.failures, l.since.UTC().Format(time.RFC3339))
+		}
+		*l = stepLog{}
+		return
+	}
+	message := err.Error()
+	switch {
+	case message != l.last:
+		failures := l.failures + 1
+		since := l.since
+		if l.last == "" {
+			since = now
+		}
+		logf("connect-convex: ERROR: command polling failed (%s): %s", blockedReason(err), message)
+		*l = stepLog{last: message, loggedAt: now, since: since, failures: failures}
+	case now.Sub(l.loggedAt) >= stepLogRepeat:
+		l.failures++
+		logf("connect-convex: ERROR: command polling still failing (%d polls since %s): %s", l.failures, l.since.UTC().Format(time.RFC3339), message)
+		l.loggedAt = now
+	default:
+		l.failures++
 	}
 }

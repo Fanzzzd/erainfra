@@ -6,6 +6,7 @@ import schema from "../convex/schema";
 import { validateDockerArgs } from "../convex/infra/dockerArgs";
 import { validateOperation, COMMAND_TTL_MS } from "../convex/infra/nodeCommandModel";
 import { legacyEndpointAddress } from "../convex/infra/nodeState";
+import { listNodeViews } from "../convex/infra/operator";
 const modules = import.meta.glob("../convex/**/*.ts");
 const T0 = Date.parse("2026-11-05T00:00:00Z");
 beforeEach(() => {
@@ -106,6 +107,7 @@ describe("scoped Node HTTP API", () => {
       "commands/renew",
       "commands/result",
       "commands/payload",
+      "commands/status",
     ])
       expect((await request(path, token.token, {})).status).toBe(401);
     expect(
@@ -199,6 +201,112 @@ describe("scoped Node HTTP API", () => {
       ).status,
     ).toBe(409);
     expect((await t.run((ctx) => ctx.db.get(cmd)))?.status).toBe("cancelled");
+  });
+  // The Infra Agent forgets a journal key only when this says the command is terminal with the
+  // outcome it recorded, so the answer must be exactly the row's status, and a terminal command
+  // must be one Convex never delivers again.
+  it("answers command statuses for this Node only, and never re-delivers a terminal command", async () => {
+    const { human, request, a, b, cmd } = await fixture();
+    const statuses = async (credential: string, commandIds: unknown) => {
+      const response = await request("commands/status", credential, { commandIds });
+      return {
+        status: response.status,
+        body: response.status === 200 ? await response.json() : null,
+      };
+    };
+    const other = await human.mutation(api.infra.nodeCommands.enqueue, {
+      nodeId: a.nodeId,
+      idempotencyKey: "a-disk",
+      command: { kind: "operate", operation: { name: "disk.usage", args: {} } },
+    });
+    expect((await statuses(b.credential, [cmd, other, "cmd00001", ""])).body).toEqual({
+      commands: [
+        { id: cmd, status: "pending" },
+        // Another Node's command, a malformed id and an empty one all read as missing.
+        { id: other, status: "missing" },
+        { id: "cmd00001", status: "missing" },
+        { id: "", status: "missing" },
+      ],
+    });
+    const lease = await (
+      await request("commands/claim", b.credential, { commandId: cmd, owner: "b" })
+    ).json();
+    expect((await statuses(b.credential, [cmd])).body.commands[0].status).toBe("running");
+    const report = { commandId: cmd, owner: "b", epoch: lease.epoch, outcome: "success" };
+    expect((await request("commands/result", b.credential, report)).status).toBe(200);
+    expect((await statuses(b.credential, [cmd])).body.commands[0].status).toBe("success");
+    // Terminal: not listed, not claimable by any owner, even after the lease would have lapsed.
+    vi.setSystemTime(T0 + 10 * COMMAND_TTL_MS);
+    expect((await (await request("commands", b.credential)).json()).commands).toEqual([]);
+    for (const owner of ["b", "after-restart"])
+      expect(
+        (await request("commands/claim", b.credential, { commandId: cmd, owner })).status,
+      ).toBe(409);
+    expect((await statuses(b.credential, [cmd])).body.commands[0].status).toBe("success");
+    // Bounded and strictly shaped.
+    expect((await statuses(b.credential, Array(201).fill(cmd))).status).toBe(409);
+    expect((await statuses(b.credential, Array(200).fill(cmd))).status).toBe(200);
+    expect((await statuses(b.credential, ["x".repeat(65)])).status).toBe(409);
+    expect((await statuses(b.credential, "not-a-list")).status).toBe(409);
+    expect(
+      (await request("commands/status", b.credential, { commandIds: [], extra: 1 })).status,
+    ).toBe(400);
+  });
+  it("stores the command health a heartbeat reports, keeping when a block began", async () => {
+    const { t, request, b } = await fixture();
+    const heartbeat = (body: Record<string, unknown>) =>
+      request("heartbeat", b.credential, { version: "0.3.0", ...body });
+    const view = async () =>
+      (await t.run((ctx) => listNodeViews(ctx, Date.now()))).find((n) => n.id === b.nodeId)!
+        .commands;
+    // An older agent sends the version alone.
+    expect((await heartbeat({})).status).toBe(200);
+    expect(await view()).toEqual({
+      blocked: null,
+      blockedSince: null,
+      journalKeys: null,
+      journalKeyLimit: null,
+    });
+    expect(
+      (
+        await heartbeat({
+          commandsBlocked: "journal_full",
+          journalKeys: 10000,
+          journalKeyLimit: 10000,
+        })
+      ).status,
+    ).toBe(200);
+    vi.setSystemTime(T0 + 60_000);
+    // A different reason while still blocked keeps the original start.
+    await heartbeat({
+      commandsBlocked: "journal_error",
+      journalKeys: 10000,
+      journalKeyLimit: 10000,
+    });
+    expect(await view()).toEqual({
+      blocked: "journal_error",
+      blockedSince: T0,
+      journalKeys: 10000,
+      journalKeyLimit: 10000,
+    });
+    vi.setSystemTime(T0 + 120_000);
+    await heartbeat({ journalKeys: 2, journalKeyLimit: 10000 });
+    expect(await view()).toEqual({
+      blocked: null,
+      blockedSince: null,
+      journalKeys: 2,
+      journalKeyLimit: 10000,
+    });
+    const node = await t.run((ctx) => ctx.db.get(b.nodeId));
+    expect(node?.commandsBlockedSince).toBeUndefined();
+    for (const bad of [
+      { commandsBlocked: "Journal Full; rm -rf" },
+      { commandsBlocked: "" },
+      { journalKeys: -1 },
+      { journalKeys: 1.5 },
+      { journalKeyLimit: 2_000_000 },
+    ])
+      expect((await heartbeat(bad)).status, JSON.stringify(bad)).toBe(409);
   });
   it("enqueues only with a human permission and durable audit; deduplicates keys and bounds pages", async () => {
     const { t, human, a } = await fixture();
