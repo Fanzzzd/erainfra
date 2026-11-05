@@ -782,6 +782,17 @@ rsync --version
 sudo --version
 TOOLS
 
+# Docker CLI plugins are not binaries on PATH, so the loop above cannot see
+# them. ubuntu-latest has both; a workflow that runs `docker compose up` or
+# `docker buildx build` fails outright without them.
+for plugin in compose buildx; do
+  if have docker && docker "$plugin" version >/dev/null 2>&1; then
+    emit "tool_docker_${plugin}_present" yes
+  else
+    emit "tool_docker_${plugin}_present" no
+  fi
+done
+
 # A Docker CLI that cannot reach a daemon is not the same environment as one
 # that can, and `docker build` in a workflow does not care which of the two it
 # was promised.
