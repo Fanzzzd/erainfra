@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/adminapi"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
@@ -60,6 +61,7 @@ type Server struct {
 	config config.Config
 	index  *cacheindex.Index
 	verify *cachetoken.Verifier
+	admin  *adminapi.Verifier
 	logger *slog.Logger
 
 	// Now is the clock. Tests replace it.
@@ -76,6 +78,8 @@ type Server struct {
 	stopOnce sync.Once
 	stop     chan struct{}
 	done     chan struct{}
+	// retained closes when the retention loop has exited.
+	retained chan struct{}
 }
 
 // New builds a server over an already-validated store.
@@ -87,21 +91,41 @@ func New(cfg config.Config, store objectstore.Store, logger *slog.Logger) (*Serv
 	if err != nil {
 		return nil, err
 	}
+	admin, err := adminapi.NewVerifier(cfg.SigningKey)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(cfg.SpoolDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create ERAINFRA_CACHE_SPOOL_DIR: %w", err)
 	}
+	index := cacheindex.New(store, logger)
+	index.Retention = cacheindex.Retention{
+		IdleTTL:        cfg.IdleTTL,
+		RepoQuotaBytes: cfg.RepoQuotaBytes,
+		// A restore that found an entry just before it was deleted holds a
+		// download URL valid for DownloadTTL, and a proxied download through it
+		// may stream for TransferTimeout. The bytes outlive both.
+		BlobGrace: cfg.DownloadTTL + cfg.TransferTimeout + 5*time.Minute,
+		// A blob is written before the entry that names it: v1 within one
+		// commit request, v2 up to an upload session before its finalize.
+		OrphanGrace: cfg.UploadTTL + cfg.TransferTimeout + 15*time.Minute,
+	}
 	server := &Server{
 		config:       cfg,
-		index:        cacheindex.New(store, logger),
+		index:        index,
 		verify:       verify,
+		admin:        admin,
 		logger:       logger,
 		reservations: map[int64]*reservation{},
 		sessions:     map[string]*session{},
 		facts:        map[string]factsEntry{},
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
+		retained:     make(chan struct{}),
 	}
+	admin.Now = server.now
 	go server.sweep()
+	go server.retain()
 	return server, nil
 }
 
@@ -112,6 +136,7 @@ func (s *Server) Close() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 		<-s.done
+		<-s.retained
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for id, held := range s.reservations {
@@ -173,6 +198,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == healthPath:
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
+	case strings.Contains(path, adminEntriesMarker):
+		s.serveAdminEntries(w, r)
 	case strings.Contains(path, adminFactsMarker):
 		s.serveRegisterFacts(w, r)
 	case strings.Contains(path, blobMarker):

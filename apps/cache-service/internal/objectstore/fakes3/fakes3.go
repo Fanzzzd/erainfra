@@ -15,20 +15,24 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Server is a bucket that speaks enough of the S3 API for this service: put,
-// get, delete, list-type=2, and the four multipart calls.
+// get, head, delete, list-type=2 with start-after, and the four multipart
+// calls.
 type Server struct {
 	*httptest.Server
 	Bucket    string
 	AccessKey string
 	Secret    string
 
-	mu      sync.Mutex
-	objects map[string][]byte
-	parts   map[string]map[int][]byte
-	nextID  int
+	mu       sync.Mutex
+	objects  map[string][]byte
+	modified map[string]time.Time
+	parts    map[string]map[int][]byte
+	nextID   int
+	now      func() time.Time
 
 	fail  func(method, key string, query map[string][]string) int
 	stall func(method, key string) <-chan struct{}
@@ -52,6 +56,32 @@ func (s *Server) SetStall(stall func(method, key string) <-chan struct{}) {
 	s.stall = stall
 }
 
+// SetNow replaces the clock the store stamps LastModified with. Eviction reads
+// an entry's last access from that stamp, so a test that advances its own
+// clock has to advance the store's with it.
+func (s *Server) SetNow(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
+// stamp is the modification time a write gets, truncated to the second as a
+// real S3 listing reports it. The caller holds s.mu.
+func (s *Server) stamp() time.Time {
+	if s.now != nil {
+		return s.now().UTC().Truncate(time.Second)
+	}
+	return time.Now().UTC().Truncate(time.Second)
+}
+
+// Modified returns an object's LastModified and whether it exists.
+func (s *Server) Modified(key string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.modified[key]
+	return at, ok
+}
+
 func (s *Server) hooks() (func(string, string, map[string][]string) int, func(string, string) <-chan struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,6 +95,7 @@ func New() *Server {
 		AccessKey: "AKIAIOSFODNN7EXAMPLE",
 		Secret:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		objects:   map[string][]byte{},
+		modified:  map[string]time.Time{},
 		parts:     map[string]map[int][]byte{},
 	}
 	server.Server = httptest.NewServer(http.HandlerFunc(server.serve))
@@ -85,6 +116,16 @@ func (s *Server) Overwrite(key string, body []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.objects[key] = body
+	s.modified[key] = s.stamp()
+}
+
+// Remove deletes an object without going through the API, so a test can make
+// the store lose something the service believes is there.
+func (s *Server) Remove(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.objects, key)
+	delete(s.modified, key)
 }
 
 // Keys returns every stored key, sorted.
@@ -146,6 +187,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.list(w, query)
 	case r.Method == http.MethodGet:
 		s.get(w, key)
+	case r.Method == http.MethodHead:
+		s.head(w, key)
 	case r.Method == http.MethodPost && query.Has("uploads"):
 		s.startMultipart(w, key)
 	case r.Method == http.MethodPost && query.Get("uploadId") != "":
@@ -157,9 +200,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut:
 		s.put(w, r, key)
 	case r.Method == http.MethodDelete:
-		s.mu.Lock()
-		delete(s.objects, key)
-		s.mu.Unlock()
+		s.Remove(key)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "<Error><Code>MethodNotAllowed</Code><Message>no</Message></Error>", http.StatusMethodNotAllowed)
@@ -177,6 +218,18 @@ func (s *Server) get(w http.ResponseWriter, key string) {
 	_, _ = w.Write(body)
 }
 
+func (s *Server) head(w http.ResponseWriter, key string) {
+	body, ok := s.Object(key)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	modified, _ := s.Modified(key)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) put(w http.ResponseWriter, r *http.Request, key string) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -185,6 +238,7 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request, key string) {
 	}
 	s.mu.Lock()
 	s.objects[key] = body
+	s.modified[key] = s.stamp()
 	s.mu.Unlock()
 	w.Header().Set("ETag", etagOf(body))
 	w.WriteHeader(http.StatusOK)
@@ -192,14 +246,16 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request, key string) {
 
 func (s *Server) list(w http.ResponseWriter, query map[string][]string) {
 	prefix := first(query, "prefix")
+	startAfter := first(query, "start-after")
 	max, err := strconv.Atoi(first(query, "max-keys"))
 	if err != nil || max <= 0 {
 		max = 1000
 	}
 
 	type content struct {
-		Key  string `xml:"Key"`
-		Size int64  `xml:"Size"`
+		Key          string `xml:"Key"`
+		Size         int64  `xml:"Size"`
+		LastModified string `xml:"LastModified"`
 	}
 	var result struct {
 		XMLName     xml.Name  `xml:"ListBucketResult"`
@@ -207,7 +263,7 @@ func (s *Server) list(w http.ResponseWriter, query map[string][]string) {
 		Contents    []content `xml:"Contents"`
 	}
 	for _, key := range s.Keys() {
-		if !strings.HasPrefix(key, prefix) {
+		if !strings.HasPrefix(key, prefix) || (startAfter != "" && key <= startAfter) {
 			continue
 		}
 		if len(result.Contents) == max {
@@ -215,7 +271,10 @@ func (s *Server) list(w http.ResponseWriter, query map[string][]string) {
 			break
 		}
 		body, _ := s.Object(key)
-		result.Contents = append(result.Contents, content{Key: key, Size: int64(len(body))})
+		modified, _ := s.Modified(key)
+		result.Contents = append(result.Contents, content{
+			Key: key, Size: int64(len(body)), LastModified: modified.Format("2006-01-02T15:04:05.000Z"),
+		})
 	}
 	w.Header().Set("Content-Type", "application/xml")
 	_ = xml.NewEncoder(w).Encode(result)
@@ -304,6 +363,7 @@ func (s *Server) completeMultipart(w http.ResponseWriter, r *http.Request, key, 
 		assembled = append(assembled, body...)
 	}
 	s.objects[key] = assembled
+	s.modified[key] = s.stamp()
 	delete(s.parts, uploadID)
 
 	w.Header().Set("Content-Type", "application/xml")

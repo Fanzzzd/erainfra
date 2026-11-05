@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,10 +27,23 @@ func newTestIndex(t *testing.T) (*Index, *fakes3.Server, func(time.Time)) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// One clock for the index and the store. The store stamps LastModified,
+	// which is what eviction reads last access from, so the two must agree.
+	var mu sync.Mutex
 	clock := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return clock
+	}
+	store.SetNow(now)
 	index := New(backing, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	index.Now = func() time.Time { return clock }
-	return index, store, func(at time.Time) { clock = at }
+	index.Now = now
+	return index, store, func(at time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		clock = at
+	}
 }
 
 // The prefix match is delegated wholesale to the store's own prefix listing,
@@ -108,9 +122,13 @@ func TestRecencySuffixSortsNewestFirst(t *testing.T) {
 }
 
 func TestNewestMatchingEntryWins(t *testing.T) {
-	index, _, setClock := newTestIndex(t)
+	index, store, setClock := newTestIndex(t)
 	ctx := context.Background()
 	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"}
+
+	// A hit has to name bytes that exist, so both blobs are really written.
+	store.Overwrite("blobs/old", []byte("old"))
+	store.Overwrite("blobs/new", []byte("new"))
 
 	setClock(time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
 	if err := index.Commit(ctx, Entry{
