@@ -74,13 +74,17 @@ type Storage struct {
 	PoolFreeMiB  int64  `json:"poolFreeMiB"`
 }
 
-// Network is the job network contract the Worker is enforcing right now.
+// Network is the job network contract the Worker is enforcing right now, for
+// the Profile the report was made for. PolicyHash and EgressMode cover the
+// Profile's egress combined with the host, so they differ between two
+// Profiles on one Worker exactly when their guests' networks differ.
 type Network struct {
 	PolicyName          string   `json:"policyName"`
 	PolicyHash          string   `json:"policyHash"`
 	Subnet              string   `json:"subnet"`
 	EgressMode          string   `json:"egressMode"`
 	AllowedDestinations []string `json:"allowedDestinations,omitempty"`
+	Egress              *Egress  `json:"egress,omitempty"`
 }
 
 // Cache describes what survives between jobs on this Worker. Anything writable

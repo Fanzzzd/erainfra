@@ -103,7 +103,7 @@ Usage:
                                  | --file-backed-pool GIB [--pool-dir PATH])
                                 [--worker-user NAME]
                                 [--network-subnet CIDR]
-                                [--egress-mode public|allowlist]
+                                [--egress-mode public|audit|allowlist]
                                 [--egress-allow CIDR[,CIDR...]]
                                 [--nameservers IP[,IP...]]
                                 [--min-pool-free-mib N]

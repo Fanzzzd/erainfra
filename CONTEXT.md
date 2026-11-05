@@ -57,7 +57,8 @@ that Workers report to; the two have not been merged and the terms are not inter
 
 **Profile** — the immutable contract a Worker advertises capacity against. Not just a size: it
 carries `executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`, `fitPolicy`, `minRunners` and
-`maxRunners` (`convex/schema.ts:70-82`). Readiness is per Worker _and_ Profile.
+`maxRunners` (`convex/schema.ts:70-82`), and its `egress` (public, audit or allowlist; see
+[ADR 0015](docs/adr/0015-egress-is-a-property-of-the-profile.md)). Readiness is per Worker _and_ Profile.
 
 **Attempt** — one execution of one CI job inside one disposable boundary. The isolation boundary
 is per Attempt, never per Worker.

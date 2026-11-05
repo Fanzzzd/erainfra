@@ -230,15 +230,24 @@ func liveTable(t *testing.T, chains map[string][]string, guests, allowed []strin
 			"elem": prefixElements(allowed),
 		}},
 	}
-	for _, chain := range []string{"forward", "input"} {
+	for _, name := range RuntimeSets() {
+		entries = append(entries, map[string]any{"set": map[string]any{
+			"family": "inet", "table": TableName, "name": name,
+		}})
+	}
+	specs := DefaultPolicy("runner-center").ExpectedChains()
+	for _, chain := range []string{"forward", RestrictedChain, "prerouting", "input"} {
 		comments, ok := chains[chain]
 		if !ok {
 			continue
 		}
-		entries = append(entries, map[string]any{"chain": map[string]any{
-			"family": "inet", "table": TableName, "name": chain,
-			"type": "filter", "hook": chain, "policy": "accept",
-		}})
+		description := map[string]any{"family": "inet", "table": TableName, "name": chain}
+		if spec := specs[chain]; spec.Hook != "" {
+			description["type"] = spec.Type
+			description["hook"] = spec.Hook
+			description["policy"] = "accept"
+		}
+		entries = append(entries, map[string]any{"chain": description})
 		for _, comment := range comments {
 			entries = append(entries, map[string]any{"rule": map[string]any{
 				"family": "inet", "table": TableName, "chain": chain, "comment": comment,

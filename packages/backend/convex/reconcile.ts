@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import { deleteAttemptSecret } from "./attemptSecrets";
+import { deleteAttemptEgress } from "./egress";
 import { decideAttemptOutcome } from "./retry";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
@@ -421,6 +422,7 @@ export const run = internalMutation({
       );
       for (const attempt of [...finished, ...staleLegacy]) {
         await deleteAttemptSecret(ctx, attempt._id);
+        await deleteAttemptEgress(ctx, attempt._id);
         await ctx.db.delete(attempt._id);
       }
     }

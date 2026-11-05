@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
@@ -10,6 +13,7 @@ import {
   experimentInvocation,
   provisionerPath,
   provisionInvocation,
+  readEgressRecord,
 } from "../provision.ts";
 import { parseCpuset } from "../cpuset.ts";
 import { PIDS_LIMIT, probeInvocation } from "../readiness.ts";
@@ -355,8 +359,81 @@ describe("scale-set Attempt invocation", () => {
         "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       RC_VCPUS: "4",
       RC_MEMORY_MIB: "8192",
+      // Public, stated explicitly so the Agent's own environment cannot fill it.
+      RC_PROFILE_EGRESS: "",
     });
     assert.doesNotMatch(JSON.stringify(invocation), /jit|secret/i);
+  });
+
+  it("hands the Profile's egress and the record path to the runtime", () => {
+    const egress = {
+      mode: "allowlist" as const,
+      presets: ["github"],
+      domains: ["registry.npmjs.org"],
+      cidrs: [],
+    };
+    const { env } = attemptInvocation({
+      attemptId: "attempt-1",
+      runnerName: "runner-a",
+      profile: "rc-linux-locked",
+      executor: "firecracker",
+      imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+      vcpus: 4,
+      memoryMiB: 8192,
+      egress,
+      egressRecordFile: "/tmp/rc-egress-abc/record.json",
+    });
+    assert.deepEqual(JSON.parse(env.RC_PROFILE_EGRESS ?? ""), egress);
+    assert.equal(env.RC_EGRESS_RECORD_FILE, "/tmp/rc-egress-abc/record.json");
+    // The host operator's override lives in the runtime's own environment and
+    // is never something an Attempt sets.
+    assert.equal("RC_EGRESS_MODE" in env, false);
+
+    const experiment = experimentInvocation({
+      experimentId: "experiment-1",
+      name: "benchmark",
+      profile: "rc-linux-locked",
+      executor: "firecracker",
+      imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+      vcpus: 4,
+      memoryMiB: 8192,
+      timeoutSeconds: 900,
+      egress,
+    });
+    assert.deepEqual(JSON.parse(experiment.env.RC_PROFILE_EGRESS ?? ""), egress);
+  });
+
+  it("refuses egress variables the agent's own environment happened to hold", () => {
+    const saved = [process.env.RC_PROFILE_EGRESS, process.env.RC_EGRESS_RECORD_FILE];
+    process.env.RC_PROFILE_EGRESS = '{"mode":"public"}';
+    process.env.RC_EGRESS_RECORD_FILE = "/tmp/stale.json";
+    try {
+      const inherited = attemptEnvironment({});
+      assert.equal("RC_PROFILE_EGRESS" in inherited, false);
+      assert.equal("RC_EGRESS_RECORD_FILE" in inherited, false);
+    } finally {
+      if (saved[0] === undefined) delete process.env.RC_PROFILE_EGRESS;
+      else process.env.RC_PROFILE_EGRESS = saved[0];
+      if (saved[1] === undefined) delete process.env.RC_EGRESS_RECORD_FILE;
+      else process.env.RC_EGRESS_RECORD_FILE = saved[1];
+    }
+  });
+
+  it("reads the runtime's egress record and ignores anything that is not one", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rc-egress-test-"));
+    try {
+      const path = join(directory, "record.json");
+      assert.equal(await readEgressRecord(undefined), undefined);
+      assert.equal(await readEgressRecord(path), undefined);
+      await writeFile(path, JSON.stringify({ mode: "audit", names: [] }));
+      assert.deepEqual(await readEgressRecord(path), { mode: "audit", names: [] });
+      await writeFile(path, "[1,2,3]");
+      assert.equal(await readEgressRecord(path), undefined);
+      await writeFile(path, "{truncated");
+      assert.equal(await readEgressRecord(path), undefined);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   // The microVM half of the T0 seam: the same CacheEndpoint the Docker branch

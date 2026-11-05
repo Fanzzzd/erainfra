@@ -88,11 +88,9 @@ For a Firecracker Profile, each Attempt gets:
   path, socket, volume or device is shared, and the snapshot is discarded on exit;
 - a point-to-point job network whose policy is rendered and verified by the runtime itself. Traffic
   to the host, to other guests, and to RFC1918, CGNAT, link-local and other special-purpose ranges
-  is dropped. An operator adds destinations explicitly, or switches the host to allowlist-only
-  egress. Both settings belong to the Worker's runtime (`RC_EGRESS_ALLOW` and `RC_EGRESS_MODE`,
-  written by the provisioner's `--egress-allow` and `--egress-mode`), so they apply to every
-  Firecracker Profile that Worker serves. A Worker whose nftables table no longer matches the
-  policy its runtime rendered stops being ready;
+  is dropped. A Worker whose nftables table no longer matches stops being ready;
+- the egress its Profile publishes, enforced on the host, never inside the guest (see
+  [Egress policy](#egress-policy));
 - single-use JIT credentials over MMDSv2, never in argv, an image layer, a host environment or a
   log;
 - teardown on success, failure, cancellation, timeout, and controller reconciliation. After an Agent
@@ -204,6 +202,42 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   the interception on, following
   [docs/runbooks/operate-the-job-cache.md](docs/runbooks/operate-the-job-cache.md). Until every
   step there is done, jobs use GitHub's cache exactly as before.
+
+### Egress policy
+
+Egress is part of the Profile, like its executor and size. The controller publishes it from
+`RC_EGRESS_MODE`, `RC_EGRESS_PRESETS` and `RC_EGRESS_ALLOW` in its environment, and every Worker
+renders and verifies it for that Profile's guests. Three modes exist:
+
+| Mode        | What a guest can reach                                     | What is recorded per Attempt                      |
+| ----------- | ---------------------------------------------------------- | ------------------------------------------------- |
+| `public`    | the internet; host, private ranges and other guests denied | nothing                                           |
+| `audit`     | the same as `public`                                       | every DNS name queried and every new IP:port flow |
+| `allowlist` | only the listed domains and CIDRs                          | the same, with each refused name and flow marked  |
+
+A Profile without the setting is `public`, which is what every Profile was before.
+`RC_EGRESS_ALLOW` takes domains (`registry.npmjs.org`, `*.example.com`) and IPv4 CIDRs or
+addresses. `RC_EGRESS_PRESETS=github` expands to the domains GitHub lists for
+[self-hosted runner communication](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#communication-requirements),
+plus `*.githubusercontent.com`. The Worker's cache service and Docker Hub registry mirror, when it has them, are always allowed.
+
+Enforcement happens on the host. Each audit or allowlist guest's DNS, to whatever server it names,
+is redirected to a resolver in the runtime daemon. For an allowlist guest the resolver answers only
+allowed names, and before it replies it adds the answer's addresses to that guest's nftables set
+with a timeout of the record's TTL. The kernel then forwards new TCP and UDP flows only to set
+members and the Profile's CIDRs; a direct connection to any other address is dropped and recorded.
+Because the set follows DNS, an allowed name that moves to a new address keeps working, and a CNAME
+chain behind an allowed name is followed. The record comes from the resolver and from a kernel set
+the forward chain fills, so nothing in it depends on the guest.
+
+The host operator's `RC_EGRESS_MODE` and `RC_EGRESS_ALLOW` in `runtime.env` still apply, and the
+stricter layer wins: the effective mode is the stricter of the two, a host allowlist keeps denying
+everything it does not list, and a Profile cannot open a private or host range unless the operator
+lists it too. A Worker that cannot run the resolver or write the per-guest sets fails its
+`egress-policy` check and is not ready for audit or allowlist Profiles; its public Profiles keep
+running. The [egress runbook](docs/runbooks/restrict-job-egress.md) walks through moving a Profile
+from audit to allowlist, and [ADR 0015](docs/adr/0015-egress-is-a-property-of-the-profile.md)
+records the design.
 
 ## Develop locally
 
@@ -606,8 +640,10 @@ Useful flags: `--file-backed-pool GIB` (32 minimum) backs the thin-pool with spa
 evaluation only (never in production: a full backing filesystem then fails every running job at
 once), and `--pool-dir PATH` puts those files on a data filesystem when the root filesystem is
 nearly full;
-`--egress-mode allowlist` with `--egress-allow CIDR,CIDR` denies every destination a Profile has not
-declared; `--network-subnet` moves the guest range if it collides with the host's.
+`--egress-mode public|audit|allowlist` and `--egress-allow CIDR,CIDR` set the host operator's
+override for every guest on this Worker, on top of each Profile's own egress (see
+[Egress policy](#egress-policy)); `--network-subnet` moves the guest range if it collides with the
+host's.
 
 Log out and back in after the group change, then run `rc doctor`. The user-owned release binary is
 only a socket client; the systemd service never executes files from `~/.runner-center`. Two operator
@@ -706,9 +742,10 @@ network download. `actions/cache` and the `cache:` input of the setup actions wo
 Firecracker Worker with [the job cache](#the-job-cache) turned on, EraInfra's cache service answers
 them, and everywhere else GitHub's cache does, counted against the repository's Actions storage. A
 remote build cache such as Turborepo's works over allowed egress. Any cache can still be slower than
-a warm immutable image, so prefer prewarming the Image Release for anything that changes rarely. A
-Worker on allowlist-only egress needs every cache endpoint its jobs reach declared, as a CIDR, in
-`--egress-allow`.
+a warm immutable image, so prefer prewarming the Image Release for anything that changes rarely.
+A Profile on allowlist egress needs every cache endpoint a job uses on its list:
+`RC_EGRESS_PRESETS=github` covers `actions/cache`, and EraInfra's own cache service is allowed
+automatically.
 
 ### Fall back to GitHub-hosted runners
 
@@ -1097,7 +1134,10 @@ effect at once.
 
 - Every CI Attempt gets a fresh VM and single-use JIT registration.
 - The job network policy is rendered and verified by the same runtime build that enforces it; a
-  Worker whose live nftables table drifts from that rendered policy stops being ready.
+  Worker whose live nftables table drifts stops being ready.
+- Each Profile can deny all egress except a domain and CIDR allowlist, enforced on the host through
+  a host-side resolver and per-guest nftables sets, or audit what its jobs reach first. A Worker
+  that cannot prove a Profile's egress is not scheduled for that Profile.
 - No host path, socket, volume or device is shared with a job, and nothing writable outlives one.
 - Image and product releases are immutable and checksum/provenance verified.
 - The Linux guest obtains workload metadata through MMDSv2; it has no host SSH path.

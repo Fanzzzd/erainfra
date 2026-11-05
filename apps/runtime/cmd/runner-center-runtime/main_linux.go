@@ -72,7 +72,15 @@ func run(ctx context.Context, args []string) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		if _, err := runtime.Preflight(ctx); err != nil {
+		// The unit's ExecStartPre reloads the table, which empties every
+		// per-guest set, so the resolver starts with no views and nothing stale.
+		// Failing to listen is not fatal: public Profiles never need it, and
+		// every audit or allowlist Profile reports its egress-policy check
+		// failed until it serves.
+		if err := runtime.ServeEgress(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "host resolver unavailable; audit and allowlist Profiles are not ready: %v\n", err)
+		}
+		if _, err := runtime.Preflight(ctx, netpolicy.ProfileEgress{}); err != nil {
 			return 1, err
 		}
 		group := strings.TrimSpace(os.Getenv("RC_RUNTIME_GROUP"))
@@ -91,7 +99,11 @@ func run(ctx context.Context, args []string) (int, error) {
 
 	switch args[0] {
 	case "preflight":
-		report, err := client.Preflight(ctx)
+		egress, err := profileEgressEnv()
+		if err != nil {
+			return 2, err
+		}
+		report, err := client.Preflight(ctx, egress)
 		// The Worker parses this document to publish readiness, so it is written
 		// to stdout whether or not every check passed.
 		if encodeErr := json.NewEncoder(os.Stdout).Encode(report); encodeErr != nil {
@@ -167,12 +179,17 @@ func profileEnv() (executor.Profile, error) {
 	if err != nil {
 		return executor.Profile{}, err
 	}
+	egress, err := profileEgressEnv()
+	if err != nil {
+		return executor.Profile{}, err
+	}
 	profile := executor.Profile{
 		Name:         strings.TrimSpace(os.Getenv("RC_PROFILE")),
 		ImageRelease: strings.TrimSpace(os.Getenv("RC_IMAGE_RELEASE")),
 		VCPUs:        vCPUs,
 		MemoryMiB:    memoryMiB,
 		WarmPool:     warmPool,
+		Egress:       egress,
 	}
 	if err := profile.Validate(); err != nil {
 		return executor.Profile{}, err
@@ -196,7 +213,12 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	egress, err := profileEgressEnv()
+	if err != nil {
+		return 2, err
+	}
 	spec := executor.Spec{
+		Egress:          egress,
 		Kind:            "ci",
 		AttemptID:       strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID")),
 		RunnerName:      strings.TrimSpace(os.Getenv("RC_RUNNER_NAME")),
@@ -229,6 +251,11 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	// The record is evidence, not the job's result: failing to hand it over is
+	// reported, and the job's own exit code still stands.
+	if recordErr := writeEgressRecord(result.Egress); recordErr != nil {
+		fmt.Fprintln(os.Stderr, recordErr)
+	}
 	return result.ExitCode, nil
 }
 
@@ -256,7 +283,12 @@ func runExperiment(ctx context.Context, client *runtimeapi.Client) (int, error) 
 	if _, err := rand.Read(resultTokenBytes); err != nil {
 		return 1, fmt.Errorf("create Experiment result token: %w", err)
 	}
+	egress, err := profileEgressEnv()
+	if err != nil {
+		return 2, err
+	}
 	spec := executor.Spec{
+		Egress:       egress,
 		Kind:         "experiment",
 		AttemptID:    strings.TrimSpace(os.Getenv("RC_ATTEMPT_ID")),
 		RunnerName:   strings.TrimSpace(os.Getenv("RC_RUNNER_NAME")),

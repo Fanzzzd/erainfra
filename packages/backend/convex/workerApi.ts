@@ -14,6 +14,12 @@ import {
 } from "./benchmark";
 import { recordAttemptMetrics } from "./attemptMetrics";
 import { metricsSnapshotValidator } from "./attemptMetricsModel";
+import {
+  egressRecordValidator,
+  profileEgressOf,
+  boundedEgressRecord,
+  profileEgressValidator,
+} from "./egress";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 
 const completedExecutorDrainMs = 30_000;
@@ -34,6 +40,7 @@ const profileSpecValidator = v.object({
   vcpus: v.number(),
   memoryMiB: v.number(),
   warmPool: v.number(),
+  egress: profileEgressValidator,
 });
 
 async function machineForToken(ctx: QueryCtx | MutationCtx, token: string) {
@@ -43,6 +50,20 @@ async function machineForToken(ctx: QueryCtx | MutationCtx, token: string) {
     .unique();
   if (machine === null) throw new ConvexError("Invalid machine token");
   return machine;
+}
+
+/**
+ * The egress a claimed Attempt or Experiment runs under: its Profile's, read at
+ * claim. The scheduler only assigned the work to a Worker whose evidence proves
+ * that same policy, so the two agree; a Profile that is gone means public,
+ * which is also what the Worker would have been checked against.
+ */
+async function claimEgress(ctx: MutationCtx, profileName: string) {
+  const profile = await ctx.db
+    .query("profiles")
+    .withIndex("by_name", (q) => q.eq("name", profileName))
+    .unique();
+  return profile === null ? profileEgressOf({}) : profileEgressOf(profile);
 }
 
 export const profiles = query({
@@ -69,6 +90,7 @@ export const profiles = query({
         vcpus: profile.vcpus,
         memoryMiB: profile.memoryMiB,
         warmPool: profile.warmPool ?? 0,
+        egress: profileEgressOf(profile),
       }));
   },
 });
@@ -287,6 +309,7 @@ export const claimExperiment = mutation({
       memoryMiB: v.number(),
       command: v.array(v.string()),
       timeoutSeconds: v.number(),
+      egress: profileEgressValidator,
     }),
   ),
   handler: async (ctx, args) => {
@@ -312,6 +335,7 @@ export const claimExperiment = mutation({
       memoryMiB: experiment.memoryMiB,
       command: experiment.command,
       timeoutSeconds: experiment.timeoutSeconds,
+      egress: await claimEgress(ctx, experiment.profile),
     };
   },
 });
@@ -377,6 +401,7 @@ export const claimAttempt = mutation({
       vcpus: v.number(),
       memoryMiB: v.number(),
       jitConfig: v.string(),
+      egress: profileEgressValidator,
     }),
   ),
   handler: async (ctx, args) => {
@@ -407,6 +432,7 @@ export const claimAttempt = mutation({
       vcpus: attempt.vcpus,
       memoryMiB: attempt.memoryMiB,
       jitConfig,
+      egress: await claimEgress(ctx, attempt.profile),
     };
   },
 });
@@ -430,6 +456,9 @@ export const reportAttempt = mutation({
     token: v.string(),
     attemptId: v.id("attempts"),
     exitCode: v.number(),
+    // What the guest talked to, for an audit or allowlist Profile. Older
+    // Agents send none.
+    egress: v.optional(egressRecordValidator),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -438,6 +467,21 @@ export const reportAttempt = mutation({
     const attempt = await ctx.db.get(args.attemptId);
     if (attempt === null || attempt.machineId !== machine._id) return false;
     const executorFinishedAt = Date.now();
+    if (args.egress !== undefined) {
+      const existing = await ctx.db
+        .query("attemptEgress")
+        .withIndex("by_attempt", (q) => q.eq("attemptId", attempt._id))
+        .unique();
+      const row = {
+        attemptId: attempt._id,
+        machineId: machine._id,
+        profile: attempt.profile,
+        recordedAt: executorFinishedAt,
+        record: boundedEgressRecord(args.egress),
+      };
+      if (existing === null) await ctx.db.insert("attemptEgress", row);
+      else await ctx.db.replace(existing._id, row);
+    }
     if (
       attempt.state === "completed" ||
       attempt.state === "cancelled" ||
@@ -528,7 +572,7 @@ export const reportReadiness = mutation({
     }
     // A Worker measures its own host, so the control plane cannot re-run these
     // checks. It can, and does, refuse a report that contradicts itself.
-    assertReadinessContract(args.state, args.executor, args);
+    assertReadinessContract(args.state, args.executor, args, profileEgressOf(profile));
     const existing = await ctx.db
       .query("workerReadiness")
       .withIndex("by_machine_profile", (q) =>

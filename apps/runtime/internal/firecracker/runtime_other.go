@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 )
 
 var errUnsupported = errors.New("Firecracker executor requires Linux with KVM") //nolint:staticcheck // ST1005: Firecracker is a product name
@@ -15,7 +16,7 @@ type Runtime struct{}
 
 func New(Config) (*Runtime, error) { return &Runtime{}, nil }
 
-func (*Runtime) Preflight(context.Context) (executor.Report, error) {
+func (*Runtime) Preflight(context.Context, netpolicy.ProfileEgress) (executor.Report, error) {
 	return executor.Report{
 		Isolation: executor.IsolationFirecracker,
 		Boundary:  executor.BoundaryGuestKernel,

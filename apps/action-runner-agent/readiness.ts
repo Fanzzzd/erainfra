@@ -3,6 +3,17 @@ import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 
+/**
+ * A Profile's egress policy as the control plane publishes it. The runtime
+ * validates it again before enforcing it; the Agent only carries it.
+ */
+export type ProfileEgress = {
+  mode: "public" | "audit" | "allowlist";
+  presets: string[];
+  domains: string[];
+  cidrs: string[];
+};
+
 export type ProfileSpec = {
   profile: string;
   executor: "docker" | "firecracker" | "tart" | "hyperv";
@@ -10,7 +21,23 @@ export type ProfileSpec = {
   vcpus: number;
   memoryMiB: number;
   warmPool?: number;
+  /** Absent from a control plane that predates Profile egress: public. */
+  egress?: ProfileEgress;
 };
+
+/**
+ * The environment that hands a Profile's egress to the privileged runtime.
+ * Empty means public, which is what a Profile without a policy is; it is set
+ * empty rather than left out so a value in the Agent's own environment can
+ * never stand in for the Profile's. The variable is deliberately not
+ * RC_EGRESS_MODE, the host operator's override in the runtime's environment.
+ */
+export function profileEgressEnvironment(egress: ProfileEgress | undefined): {
+  RC_PROFILE_EGRESS: string;
+} {
+  if (egress === undefined || egress.mode === "public") return { RC_PROFILE_EGRESS: "" };
+  return { RC_PROFILE_EGRESS: JSON.stringify(egress) };
+}
 
 /** One named prerequisite the Worker proved, or failed to prove, locally. */
 export type ReadinessCheck = {
@@ -44,7 +71,13 @@ export type ReadinessFacts = {
     poolTotalMiB?: number;
     poolFreeMiB?: number;
   };
-  network?: { policyName?: string; policyHash?: string; subnet?: string; egressMode?: string };
+  network?: {
+    policyName?: string;
+    policyHash?: string;
+    subnet?: string;
+    egressMode?: string;
+    egress?: EgressEvidence;
+  };
   warmPool?: { target: number; parked: number; claimed: number };
 };
 
@@ -103,9 +136,52 @@ type RuntimeReport = {
   checks?: { name: string; passed: boolean; detail?: string }[];
   hardware?: ReadinessFacts["hardware"];
   storage?: ReadinessFacts["storage"];
-  network?: ReadinessFacts["network"];
+  network?: ReadinessFacts["network"] & { allowedDestinations?: string[] };
   cache?: { scope?: string; sharedWritable?: boolean; detail?: string };
 };
+
+/** The Profile egress half of the network evidence, as the runtime reports it. */
+export type EgressEvidence = {
+  mode: string;
+  hostMode: string;
+  profileMode: string;
+  presets?: string[];
+  domains?: string[];
+  cidrs?: string[];
+  allowedDomainCount: number;
+};
+
+/**
+ * Picks the network facts the control plane stores, by name. The runtime also
+ * reports fields the control plane's validator does not accept, such as the
+ * host's allowed destinations, and forwarding the whole object would make
+ * every readiness report from a host with RC_EGRESS_ALLOW set fail validation.
+ */
+export function networkFacts(
+  network: RuntimeReport["network"] | undefined,
+): ReadinessFacts["network"] {
+  if (network === undefined) return undefined;
+  const egress = network.egress;
+  return {
+    policyName: network.policyName,
+    policyHash: network.policyHash,
+    subnet: network.subnet,
+    egressMode: network.egressMode,
+    ...(egress === undefined
+      ? {}
+      : {
+          egress: {
+            mode: egress.mode,
+            hostMode: egress.hostMode,
+            profileMode: egress.profileMode,
+            presets: egress.presets ?? [],
+            domains: egress.domains ?? [],
+            cidrs: egress.cidrs ?? [],
+            allowedDomainCount: egress.allowedDomainCount,
+          },
+        }),
+  };
+}
 
 const IMAGE_DIGEST = /@sha256:[0-9a-f]{64}$/;
 
@@ -148,7 +224,7 @@ function runtimeFacts(report: RuntimeReport, fallbackError?: string): ReadinessF
     cacheSharedWritable: report.cache?.sharedWritable === true,
     hardware: report.hardware,
     storage: report.storage,
-    network: report.network,
+    network: networkFacts(report.network),
   };
 }
 
@@ -636,7 +712,11 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
   const binary = process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime";
   let report: RuntimeReport = {};
   try {
-    const preflight = await execa(binary, ["preflight"], { timeout: 60_000, reject: false });
+    const preflight = await execa(binary, ["preflight"], {
+      env: { ...process.env, ...profileEgressEnvironment(profile.egress) },
+      timeout: 60_000,
+      reject: false,
+    });
     report = parseRuntimeReport(preflight.stdout);
     if (preflight.exitCode !== 0) {
       const facts = runtimeFacts(report, preflight.stderr.trim() || "preflight failed");
@@ -650,6 +730,7 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
         RC_VCPUS: String(profile.vcpus),
         RC_MEMORY_MIB: String(profile.memoryMiB),
         RC_WARM_POOL: String(profile.warmPool ?? 0),
+        ...profileEgressEnvironment(profile.egress),
       },
       timeout: 60 * 60_000,
       reject: false,

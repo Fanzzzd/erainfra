@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import {
@@ -156,6 +157,12 @@ export async function listMachines(ctx: QueryCtx) {
   const activeJobs = [...assignedJobs, ...runningJobs];
   const attempts = attemptRanges.flat();
   const experiments = experimentRanges.flat();
+  const profileEgressByName = new Map(
+    (await ctx.db.query("profiles").collect()).map((profile) => [
+      profile.name,
+      profileEgressOf(profile),
+    ]),
+  );
   const readinessEvidenceByKey = new Map(
     readinessEvidence.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
   );
@@ -210,7 +217,11 @@ export async function listMachines(ctx: QueryCtx) {
         .map((entry) => {
           const evidence = readinessEvidenceByKey.get(`${entry.machineId}:${entry.profile}`);
           const currentEvidence = evidence?.checkedAt === entry.checkedAt ? evidence : undefined;
-          const admissionError = readinessAdmissionError(entry, evidence);
+          const admissionError = readinessAdmissionError(
+            entry,
+            evidence,
+            profileEgressByName.get(entry.profile) ?? PUBLIC_EGRESS,
+          );
           return {
             profile: entry.profile,
             executor: entry.executor,

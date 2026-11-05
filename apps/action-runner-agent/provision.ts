@@ -1,6 +1,8 @@
 import { execa } from "execa";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import type { ProfileEgress } from "./readiness.js";
 
 export type MachineOs = "linux" | "mac" | "win";
 
@@ -62,8 +64,32 @@ export type AttemptExecution = {
    * measurement, and this is what makes it possible to take.
    */
   cache?: CacheEndpoint;
+  /**
+   * The Profile's egress policy, as the control plane handed it over at claim.
+   * Only the Firecracker runtime enforces it; the other executors refuse to
+   * be published with one.
+   */
+  egress?: ProfileEgress;
+  /**
+   * Where the runtime writes what the guest talked to, for the Agent to report
+   * with the Attempt. A fresh path the Agent created; absent for executors that
+   * record nothing.
+   */
+  egressRecordFile?: string;
   jitConfig: string;
 };
+
+/**
+ * The runtime reads the Profile's egress from RC_PROFILE_EGRESS. It is set
+ * empty for public rather than left out, so a value the Agent's own
+ * environment happens to hold can never stand in for the Profile's.
+ */
+function egressVariables(egress: ProfileEgress | undefined) {
+  return {
+    RC_PROFILE_EGRESS:
+      egress === undefined || egress.mode === "public" ? "" : JSON.stringify(egress),
+  };
+}
 
 /**
  * What an operator configured, not what a container receives. The rename to the
@@ -85,6 +111,7 @@ export type ExperimentExecution = {
   memoryMiB: number;
   command: string[];
   timeoutSeconds: number;
+  egress?: ProfileEgress;
 };
 
 /**
@@ -163,6 +190,10 @@ export function attemptInvocation(
         ...(attempt.cache?.serviceV2 === undefined
           ? {}
           : { RC_CACHE_SERVICE_V2: attempt.cache.serviceV2 }),
+        ...egressVariables(attempt.egress),
+        ...(attempt.egressRecordFile === undefined
+          ? {}
+          : { RC_EGRESS_RECORD_FILE: attempt.egressRecordFile }),
       },
     };
   }
@@ -218,6 +249,10 @@ export function attemptEnvironment(env: Record<string, string>): NodeJS.ProcessE
   delete inherited.RC_CACHE_SERVICE_V2;
   delete inherited.ERAINFRA_CACHE_URL;
   delete inherited.ERAINFRA_CACHE_SERVICE_V2;
+  // The same rule for the egress seam: what an Attempt may reach and where its
+  // record goes are decided per Attempt, never inherited.
+  delete inherited.RC_PROFILE_EGRESS;
+  delete inherited.RC_EGRESS_RECORD_FILE;
   return { ...inherited, ...env };
 }
 
@@ -248,6 +283,7 @@ export function experimentInvocation(
       RC_VCPUS: String(experiment.vcpus),
       RC_MEMORY_MIB: String(experiment.memoryMiB),
       RC_JOB_TIMEOUT_S: String(experiment.timeoutSeconds),
+      ...egressVariables(experiment.egress),
     },
   };
 }
@@ -263,4 +299,25 @@ export function spawnExperiment(experiment: ExperimentExecution) {
     killSignal: "SIGTERM",
     forceKillAfterDelay: 30_000,
   });
+}
+
+/**
+ * Reads the egress record the runtime wrote for an Attempt, or undefined when
+ * it wrote none: a public Profile, a runtime that predates records, or a run
+ * that never reached teardown. The control plane validates the shape; this
+ * only refuses what is not a bounded JSON object, so a missing record never
+ * fails the report of the Attempt itself.
+ */
+export async function readEgressRecord(path: string | undefined): Promise<unknown> {
+  if (path === undefined) return undefined;
+  try {
+    const contents = await readFile(path, "utf8");
+    if (contents.length > 1024 * 1024) return undefined;
+    const parsed: unknown = JSON.parse(contents);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

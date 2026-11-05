@@ -8,9 +8,11 @@ import {
   readinessCheckValidator,
 } from "./isolation";
 import { query, type QueryCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { isSchedulableReadiness } from "./attemptScheduler";
 import { fitPolicyValidator } from "./benchmark";
 import { effectiveReadinessState } from "./fleetObservation";
+import { egressEvidenceValidator, profileEgressOf, profileEgressValidator } from "./egress";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const executorValidator = v.union(
@@ -32,6 +34,8 @@ export const list = query({
       vcpus: v.number(),
       memoryMiB: v.number(),
       warmPool: v.number(),
+      // Absent on the stored row means public; the query always answers.
+      egress: profileEgressValidator,
       fitPolicy: fitPolicyValidator,
       minRunners: v.number(),
       maxRunners: v.number(),
@@ -90,6 +94,7 @@ export const list = query({
               policyHash: v.optional(v.string()),
               subnet: v.optional(v.string()),
               egressMode: v.optional(v.string()),
+              egress: v.optional(egressEvidenceValidator),
             }),
           ),
           lastError: v.optional(v.string()),
@@ -134,6 +139,7 @@ export async function listProfiles(ctx: QueryCtx) {
                 evidenceByKey.get(`${row.machineId}:${row.profile}`),
                 machine,
                 profile,
+                profileEgressOf(profile),
                 now,
               )
                 ? [machine]
@@ -147,12 +153,12 @@ export async function listProfiles(ctx: QueryCtx) {
         // Evidence must describe this exact hot report. Until the next Agent
         // refresh creates it, fall back to the legacy inline fields.
         const currentEvidence = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
-        const admissionError = readinessAdmissionError(row, evidence);
+        const admissionError = readinessAdmissionError(row, evidence, profileEgressOf(profile));
         return [
           {
             machineId: row.machineId,
             machineName: machine.name,
-            state: effectiveReadinessState(row, evidence),
+            state: effectiveReadinessState(row, evidence, profileEgressOf(profile)),
             checkedAt: row.checkedAt,
             preparedAt: row.preparedAt,
             statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
@@ -166,7 +172,10 @@ export async function listProfiles(ctx: QueryCtx) {
             checks: currentEvidence?.checks ?? row.checks,
             hardware: currentEvidence?.hardware ?? row.hardware,
             storage: currentEvidence?.storage ?? row.storage,
-            network: currentEvidence?.network ?? row.network,
+            // The legacy hot row is the same shape without the egress half.
+            network: (currentEvidence?.network ?? row.network) as
+              | Doc<"readinessEvidence">["network"]
+              | undefined,
             lastError: currentEvidence?.lastError ?? row.lastError ?? admissionError,
           },
         ];
@@ -185,6 +194,7 @@ export async function listProfiles(ctx: QueryCtx) {
         vcpus: profile.vcpus,
         memoryMiB: profile.memoryMiB,
         warmPool: profile.warmPool ?? 0,
+        egress: profileEgressOf(profile),
         fitPolicy: profile.fitPolicy ?? "balanced",
         minRunners: profile.minRunners,
         maxRunners: profile.maxRunners,

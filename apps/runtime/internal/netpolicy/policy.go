@@ -38,6 +38,40 @@ const (
 	AllowSetName = "rc_egress_allow"
 )
 
+// Per-guest sets. The runtime fills them while a guest is alive and empties
+// them at teardown; the rules that read them are static and verified like every
+// other rule, so a Profile's egress changes what is in a set, never what the
+// table enforces.
+const (
+	// ObservedSetName holds guests whose DNS is answered by the host resolver
+	// and whose new flows are recorded: audit and allowlist guests.
+	ObservedSetName = "rc_observed"
+	// RestrictedSetName holds guests under a Profile allowlist.
+	RestrictedSetName = "rc_restricted"
+	// AllowCIDRSetName maps a restricted guest to the CIDRs its Profile allows.
+	AllowCIDRSetName = "rc_allow_cidr"
+	// AllowDNSSetName maps a restricted guest to the addresses the host
+	// resolver handed it for allowed names, each until its DNS TTL runs out.
+	AllowDNSSetName = "rc_allow_dns"
+	// FlowSetName and BlockedSetName record the new flows observed guests
+	// opened, and the subset a Profile allowlist dropped, as
+	// guest . destination . protocol . port.
+	FlowSetName    = "rc_flows"
+	BlockedSetName = "rc_blocked"
+)
+
+// RestrictedChain is the regular chain a restricted guest's new flows jump to.
+const RestrictedChain = "restricted"
+
+// ResolverPort is where the host resolver listens on the guest gateway
+// address. An observed guest's DNS, to whatever server it names, is redirected
+// here, so a guest cannot pick a resolver that ignores its allowlist.
+const ResolverPort = 10053
+
+// FlowRecordCapacity bounds each flow record set. A set that is full stops
+// recording; it never stops forwarding.
+const FlowRecordCapacity = 65536
+
 // EgressMode selects how much of the internet a guest may reach once the host,
 // private and east-west drops have been applied.
 type EgressMode string
@@ -47,8 +81,9 @@ const (
 	// package registries a CI job needs all live there, and every private
 	// destination is still denied.
 	EgressPublic EgressMode = "public"
-	// EgressAllowlist denies every destination that AllowedDestinations does not
-	// name. Use it when a Profile must not reach the open internet at all.
+	// EgressAllowlist denies every destination that is not listed. On the host
+	// policy that is AllowedDestinations, for every guest on the Worker; on a
+	// Profile it is the Profile's domains and CIDRs, for that Profile's guests.
 	EgressAllowlist EgressMode = "allowlist"
 )
 
@@ -86,6 +121,16 @@ const (
 	RuleDenyPrivate       = "rc:deny-private"
 	RuleDenyDefault       = "rc:deny-default"
 	RuleDenyHostInput     = "rc:deny-host-input"
+
+	RuleRecordFlows           = "rc:record-flows"
+	RuleRestrictProfile       = "rc:restrict-profile"
+	RuleRestrictedEstablished = "rc:restricted-established"
+	RuleRestrictedAllowCIDR   = "rc:restricted-allow-cidr"
+	RuleRestrictedAllowDNS    = "rc:restricted-allow-dns"
+	RuleRecordBlocked         = "rc:record-blocked"
+	RuleRestrictedDeny        = "rc:restricted-deny"
+	RuleRedirectDNS           = "rc:redirect-dns"
+	RuleAllowResolver         = "rc:allow-resolver"
 )
 
 // RequiredKernelArgs are boot arguments the guest kernel must carry for the
@@ -103,7 +148,9 @@ type Policy struct {
 	Name string
 	// Subnet is the address range host-local hands out, one address per guest.
 	Subnet string
-	// EgressMode selects public or allowlist-only egress.
+	// EgressMode is the host operator's override: public, audit, or
+	// allowlist-only egress for every guest on this Worker. A Profile's own
+	// egress combines with it; see EffectiveEgress.
 	EgressMode EgressMode
 	// AllowedDestinations are CIDRs the guest may reach even though a deny rule
 	// would otherwise cover them, and the only destinations allowed at all under
@@ -136,7 +183,7 @@ func DefaultPolicy(name string) Policy {
 // produces a different identity for control-plane readiness evidence.
 func (p Policy) IdentityHash() string {
 	hash := sha256.New()
-	fmt.Fprintf(hash, "runner-center-network-policy/v1\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n", //nolint:errcheck // hash.Hash.Write never returns an error
+	fmt.Fprintf(hash, "runner-center-network-policy/v2\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n", //nolint:errcheck // hash.Hash.Write never returns an error
 		p.Name, p.Subnet, p.EgressMode, p.MTU)
 	for _, destination := range p.AllowedDestinations {
 		fmt.Fprintf(hash, "allow=%q\n", destination) //nolint:errcheck // hash.Hash.Write never returns an error
@@ -168,9 +215,9 @@ func (p Policy) Validate() error {
 		return errors.New("subnet must be a private range so guest addresses are never routable")
 	}
 	switch p.EgressMode {
-	case EgressPublic, EgressAllowlist:
+	case EgressPublic, EgressAudit, EgressAllowlist:
 	default:
-		return fmt.Errorf("egress mode must be %q or %q", EgressPublic, EgressAllowlist)
+		return fmt.Errorf("egress mode must be %q, %q or %q", EgressPublic, EgressAudit, EgressAllowlist)
 	}
 	for _, destination := range p.AllowedDestinations {
 		prefix, parseErr := netip.ParsePrefix(destination)
@@ -230,6 +277,17 @@ func (p Policy) reaches(address netip.Addr) (bool, string) {
 		}
 	}
 	return true, ""
+}
+
+// ResolverAddress is the guest gateway: the address ptp puts on the host side
+// of every guest's link, host-local's default of the subnet's first address.
+// The DNS redirect lands there, so the host resolver listens there.
+func (p Policy) ResolverAddress() (netip.Addr, error) {
+	subnet, err := netip.ParsePrefix(p.Subnet)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("subnet: %w", err)
+	}
+	return subnet.Masked().Addr().Next(), nil
 }
 
 // ConflistFileName is the file the CNI configuration directory must contain.

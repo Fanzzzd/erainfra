@@ -2,6 +2,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { isSchedulableReadiness } from "./attemptScheduler";
 import { queueWaitMs } from "./attempts";
+import { profileEgressOf, type ProfileEgress } from "./egress";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -58,9 +59,10 @@ export function attemptOutcome(attempt: Pick<Doc<"attempts">, "state" | "result"
 export function effectiveReadinessState(
   readiness: Doc<"workerReadiness">,
   evidence: Doc<"readinessEvidence"> | undefined,
+  profileEgress: ProfileEgress,
 ): ReadinessState {
   if (readiness.state !== "ready") return readiness.state;
-  if (readinessAdmissionError(readiness, evidence) === undefined) return "ready";
+  if (readinessAdmissionError(readiness, evidence, profileEgress) === undefined) return "ready";
   return readiness.preparedAt === undefined ? "failed" : "degraded";
 }
 
@@ -218,17 +220,24 @@ export async function loadFleetObservation(
         const detail =
           currentEvidence?.lastError ??
           row.lastError ??
-          readinessAdmissionError(row, rowEvidence) ??
+          readinessAdmissionError(row, rowEvidence, profileEgressOf(profile)) ??
           currentEvidence?.statusDetail ??
           row.statusDetail;
         return [
           {
             machineId: row.machineId,
             machineName: machine.name,
-            state: effectiveReadinessState(row, rowEvidence),
+            state: effectiveReadinessState(row, rowEvidence, profileEgressOf(profile)),
             schedulable:
               profile.state === "active" &&
-              isSchedulableReadiness(row, rowEvidence, machine, profile, now),
+              isSchedulableReadiness(
+                row,
+                rowEvidence,
+                machine,
+                profile,
+                profileEgressOf(profile),
+                now,
+              ),
             ...(detail === undefined ? {} : { detail }),
           },
         ];

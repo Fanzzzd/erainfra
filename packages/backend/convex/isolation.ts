@@ -1,5 +1,13 @@
 import { ConvexError, v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
+import {
+  egressEvidenceError,
+  egressEvidenceValidator,
+  egressRank,
+  PUBLIC_EGRESS,
+  type EgressEvidence,
+  type ProfileEgress,
+} from "./egress";
 
 export type Executor = "docker" | "firecracker" | "tart" | "hyperv";
 export type Boundary = "guest-kernel" | "shared-kernel";
@@ -66,6 +74,7 @@ export const readinessFactsValidator = {
       policyHash: v.optional(v.string()),
       subnet: v.optional(v.string()),
       egressMode: v.optional(v.string()),
+      egress: v.optional(egressEvidenceValidator),
     }),
   ),
   warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
@@ -89,6 +98,7 @@ export type ReadinessFacts = {
     policyHash?: string;
     subnet?: string;
     egressMode?: string;
+    egress?: EgressEvidence;
   };
   warmPool?: { target: number; parked: number; claimed: number };
 };
@@ -119,8 +129,13 @@ const POLICY_HASH = /^sha256:[0-9a-f]{64}$/;
  * lets the write path, scheduler, and dashboard apply the same fail-closed
  * rule to new reports and schema-compatible historical rows.
  */
-export function firecrackerReadinessError(facts: ReadinessFacts): string | undefined {
+export function firecrackerReadinessError(
+  facts: ReadinessFacts,
+  profileEgress: ProfileEgress = PUBLIC_EGRESS,
+): string | undefined {
   const problems: string[] = [];
+  const egressProblem = egressEvidenceError(profileEgress, facts.network?.egress, facts.checks);
+  if (egressProblem !== undefined) problems.push(egressProblem);
   if (facts.isolation !== "firecracker-microvm") {
     problems.push("isolation must be firecracker-microvm");
   }
@@ -157,8 +172,8 @@ export function firecrackerReadinessError(facts: ReadinessFacts): string | undef
   if (facts.network?.subnet?.trim() === "" || facts.network?.subnet === undefined) {
     problems.push("network.subnet is required");
   }
-  if (facts.network?.egressMode !== "public" && facts.network?.egressMode !== "allowlist") {
-    problems.push("network.egressMode must be public or allowlist");
+  if (egressRank(facts.network?.egressMode) < 0) {
+    problems.push("network.egressMode must be public, audit or allowlist");
   }
   if (facts.cacheScope !== "immutable-image") {
     problems.push("cacheScope must be immutable-image");
@@ -227,10 +242,16 @@ type EvidenceRow = Pick<
   | "network"
 >;
 
-/** Why a nominally-ready row is ineligible, including stale split evidence. */
+/**
+ * Why a nominally-ready row is ineligible, including stale split evidence and
+ * evidence that does not prove the Profile's current egress policy. Every
+ * reader passes the Profile's egress, so a Profile switched to allowlist stops
+ * admitting a Worker the moment it changes, not at that Worker's next report.
+ */
 export function readinessAdmissionError(
   readiness: ReadinessRow,
   evidence: EvidenceRow | undefined,
+  profileEgress: ProfileEgress,
 ): string | undefined {
   if (readiness.executor !== "firecracker") return undefined;
   let facts: ReadinessFacts;
@@ -253,7 +274,7 @@ export function readinessAdmissionError(
     }
     facts = evidence;
   }
-  const problem = firecrackerReadinessError(facts);
+  const problem = firecrackerReadinessError(facts, profileEgress);
   return problem === undefined
     ? undefined
     : `Firecracker readiness evidence is incomplete: ${problem}`;
@@ -271,6 +292,7 @@ export function assertReadinessContract(
   state: "preparing" | "ready" | "failed",
   executor: Executor,
   facts: ReadinessFacts,
+  profileEgress: ProfileEgress,
 ) {
   if (state !== "ready") return;
 
@@ -295,7 +317,7 @@ export function assertReadinessContract(
     );
   }
   if (executor === "firecracker") {
-    const problem = firecrackerReadinessError(facts);
+    const problem = firecrackerReadinessError(facts, profileEgress);
     if (problem !== undefined) {
       throw new ConvexError(`Firecracker readiness evidence is incomplete: ${problem}`);
     }

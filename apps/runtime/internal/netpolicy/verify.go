@@ -111,7 +111,8 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 	}
 
 	tableFound := false
-	chains := map[string]string{}
+	type liveChain struct{ chainType, hook string }
+	chains := map[string]liveChain{}
 	rules := map[string][]string{}
 	sets := map[string][]string{}
 	for _, entry := range document.Nftables {
@@ -124,10 +125,7 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 			if entry.Chain.Family != "inet" || entry.Chain.Table != TableName {
 				continue
 			}
-			if entry.Chain.Type != "filter" {
-				return fmt.Errorf("chain %q must be a filter chain, not %q", entry.Chain.Name, entry.Chain.Type)
-			}
-			chains[entry.Chain.Name] = entry.Chain.Hook
+			chains[entry.Chain.Name] = liveChain{chainType: entry.Chain.Type, hook: entry.Chain.Hook}
 		case entry.Rule != nil:
 			if entry.Rule.Family != "inet" || entry.Rule.Table != TableName {
 				continue
@@ -154,20 +152,40 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 		)
 	}
 
-	for chain, expectedComments := range p.ExpectedRules() {
-		hook, ok := chains[chain]
+	expectedChains := p.ExpectedChains()
+	names := make([]string, 0, len(expectedChains))
+	for name := range expectedChains {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, chain := range names {
+		expected := expectedChains[chain]
+		live, ok := chains[chain]
 		if !ok {
 			return fmt.Errorf("nftables chain %q is missing from table inet %s", chain, TableName)
 		}
-		if hook != chain {
-			return fmt.Errorf("nftables chain %q must hook %q, not %q", chain, chain, hook)
+		if live.chainType != expected.Type {
+			return fmt.Errorf("nftables chain %q must be of type %q, not %q", chain, expected.Type, live.chainType)
 		}
-		if !slices.Equal(rules[chain], expectedComments) {
+		if live.hook != expected.Hook {
+			return fmt.Errorf("nftables chain %q must hook %q, not %q", chain, expected.Hook, live.hook)
+		}
+		if !slices.Equal(rules[chain], expected.Rules) {
 			return fmt.Errorf(
 				"nftables chain %q enforces [%s] but this Profile requires [%s]",
 				chain,
 				strings.Join(rules[chain], " "),
-				strings.Join(expectedComments, " "),
+				strings.Join(expected.Rules, " "),
+			)
+		}
+	}
+	// A chain EraInfra did not render could redirect or re-route guest traffic
+	// before any of the verified rules see it.
+	for chain := range chains {
+		if _, ok := expectedChains[chain]; !ok {
+			return fmt.Errorf(
+				"nftables table inet %s contains a chain %q EraInfra did not install",
+				TableName, chain,
 			)
 		}
 	}
@@ -175,7 +193,18 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 	if err := verifySet(sets, GuestSetName, []string{p.Subnet}); err != nil {
 		return err
 	}
-	return verifySet(sets, AllowSetName, p.allowedOrEmpty())
+	if err := verifySet(sets, AllowSetName, p.allowedOrEmpty()); err != nil {
+		return err
+	}
+	// The per-guest sets hold live state, so only their presence is part of the
+	// contract. A missing one would make every Profile egress rule fail to load
+	// or match nothing.
+	for _, name := range RuntimeSets() {
+		if _, ok := sets[name]; !ok {
+			return fmt.Errorf("nftables set %q is missing from table inet %s", name, TableName)
+		}
+	}
+	return nil
 }
 
 func verifySet(sets map[string][]string, name string, expected []string) error {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"golang.org/x/sys/unix"
 )
 
@@ -36,8 +37,15 @@ type executeRequest struct {
 }
 
 type resultResponse struct {
-	ExitCode int    `json:"exitCode"`
-	Error    string `json:"error,omitempty"`
+	ExitCode int                    `json:"exitCode"`
+	Error    string                 `json:"error,omitempty"`
+	Egress   *executor.EgressRecord `json:"egress,omitempty"`
+}
+
+// preflightRequest names the Profile egress the report is for. An empty body,
+// which is what a Worker that predates Profile egress sends, means public.
+type preflightRequest struct {
+	Egress netpolicy.ProfileEgress `json:"egress"`
 }
 
 type prepareRequest struct {
@@ -98,9 +106,9 @@ func NewClient(socketPath string) (*Client, error) {
 	}}, nil
 }
 
-func (c *Client) Preflight(ctx context.Context) (executor.Report, error) {
+func (c *Client) Preflight(ctx context.Context, egress netpolicy.ProfileEgress) (executor.Report, error) {
 	var response preflightResponse
-	if err := c.do(ctx, "/v1/preflight", struct{}{}, &response); err != nil {
+	if err := c.do(ctx, "/v1/preflight", preflightRequest{Egress: egress}, &response); err != nil {
 		return executor.Report{}, err
 	}
 	if response.Error != "" {
@@ -157,7 +165,7 @@ func (c *Client) Execute(
 	if err != nil {
 		return executor.Result{}, err
 	}
-	return executor.Result{ExitCode: result.ExitCode}, nil
+	return executor.Result{ExitCode: result.ExitCode, Egress: result.Egress}, nil
 }
 
 func (c *Client) do(ctx context.Context, path string, input any, output any) error {
@@ -321,7 +329,12 @@ func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handl
 		writeJSON(response, http.StatusOK, MetricsResponse{Found: found, Live: live, Snapshot: snapshot})
 	})
 	mux.HandleFunc("POST /v1/preflight", func(response http.ResponseWriter, request *http.Request) {
-		report, err := runtime.Preflight(request.Context())
+		var input preflightRequest
+		if err := decodeRequest(request, &input); err != nil {
+			writeError(response, err)
+			return
+		}
+		report, err := runtime.Preflight(request.Context(), input.Egress)
 		payload := preflightResponse{Report: report}
 		if err != nil {
 			payload.Error = err.Error()
@@ -419,14 +432,20 @@ func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handl
 		// makes as soon as this request returns, finds the final Snapshot.
 		finishMetrics()
 		if waitError == nil {
-			writeJSON(response, http.StatusOK, resultResponse{ExitCode: result.ExitCode})
+			writeJSON(response, http.StatusOK, resultResponse{ExitCode: result.ExitCode, Egress: result.Egress})
 			return
 		}
 		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 		cleanupError := lease.Cancel(cleanupContext)
 		cancelCleanup()
 		if errors.Is(waitError, context.DeadlineExceeded) {
-			writeJSON(response, http.StatusOK, resultResponse{ExitCode: 124})
+			// A job that ran out of time is exactly the one whose traffic an
+			// operator wants to read, so its record survives the cancellation.
+			var record *executor.EgressRecord
+			if recorded, ok := lease.(interface{ EgressRecord() *executor.EgressRecord }); ok {
+				record = recorded.EgressRecord()
+			}
+			writeJSON(response, http.StatusOK, resultResponse{ExitCode: 124, Egress: record})
 			return
 		}
 		writeError(response, errors.Join(waitError, cleanupError))

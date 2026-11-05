@@ -45,6 +45,20 @@ type ProfileSpec struct {
 	FitPolicy    string `json:"fitPolicy"`
 	MinRunners   int    `json:"minRunners"`
 	MaxRunners   int    `json:"maxRunners"`
+	// Egress is the Profile's egress policy, or nil for public egress. It is
+	// omitted rather than sent as public so a control plane that predates it
+	// reads the same Profile it always did.
+	Egress *ProfileEgress `json:"egress,omitempty"`
+}
+
+// ProfileEgress is what a Profile's guests may reach: public, audit (public
+// plus a host-side record of every destination), or allowlist (only the
+// presets, domains and CIDRs listed).
+type ProfileEgress struct {
+	Mode    string   `json:"mode"`
+	Presets []string `json:"presets,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+	CIDRs   []string `json:"cidrs,omitempty"`
 }
 
 // NewAttempt carries a single-use runner registration into the Fleet. The

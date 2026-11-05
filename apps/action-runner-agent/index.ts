@@ -1,4 +1,6 @@
-import { arch, cpus, totalmem } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { arch, cpus, tmpdir, totalmem } from "node:os";
+import { join } from "node:path";
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 import {
@@ -20,6 +22,7 @@ import {
 import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./job-metrics.js";
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
+  readEgressRecord,
   spawnAttempt,
   spawnExperiment,
   spawnProvisioner,
@@ -105,7 +108,7 @@ const claimAttempt = makeFunctionReference<
 >("workerApi:claimAttempt");
 const reportAttempt = makeFunctionReference<
   "mutation",
-  { token: string; attemptId: string; exitCode: number },
+  { token: string; attemptId: string; exitCode: number; egress?: unknown },
   boolean
 >("workerApi:reportAttempt");
 const reportAttemptMetrics = makeFunctionReference<
@@ -310,6 +313,7 @@ async function runLegacyCommand(item: Extract<WorkItem, { kind: "command" }>) {
 async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) {
   let exitCode = 1;
   let claimedByThisAgent = false;
+  let recordDirectory: string | undefined;
   const key = workKey(item.kind, item.id);
   try {
     const claimed = await client.mutation(claimAttempt, {
@@ -319,6 +323,14 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
     if (claimed === null) return;
     claimedByThisAgent = true;
     console.log(`Starting ${claimed.executor} Attempt ${claimed.runnerName}`);
+    // A private directory per Attempt, so the runtime's record lands where
+    // only this Agent reads it and nothing from another Attempt is mistaken
+    // for it.
+    if (claimed.executor === "firecracker") {
+      recordDirectory = await mkdtemp(join(tmpdir(), "rc-egress-"));
+    }
+    const egressRecordFile =
+      recordDirectory === undefined ? undefined : join(recordDirectory, "record.json");
     exitCode = await withCores(
       cores,
       {
@@ -342,6 +354,7 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
           // Worker rather than per Attempt because nothing yet mints anything
           // per Attempt -- an Attempt exists before GitHub assigns it a job.
           cache: config.cache,
+          egressRecordFile,
         });
         running.set(key, child);
         let metrics: AttemptMetrics | undefined;
@@ -378,12 +391,20 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
     exitCode = error instanceof CoreExhaustedError ? CPUSET_EXHAUSTED_EXIT : 1;
     console.error(`Attempt ${item.runnerName} failed`, error);
   } finally {
+    const egress =
+      recordDirectory === undefined
+        ? undefined
+        : await readEgressRecord(join(recordDirectory, "record.json"));
+    if (recordDirectory !== undefined) {
+      await rm(recordDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
     if (claimedByThisAgent) {
       try {
         await client.mutation(reportAttempt, {
           token: config.machineToken,
           attemptId: item.id,
           exitCode,
+          ...(egress === undefined ? {} : { egress }),
         });
       } catch (error) {
         console.error(`Reporting Attempt ${item.runnerName} failed`, error);

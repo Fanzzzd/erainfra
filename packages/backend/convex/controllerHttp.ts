@@ -1,3 +1,5 @@
+import { parseProfileEgress } from "./egress";
+
 type ControllerAuth = "ok" | "not-configured" | "unauthorized";
 
 export function controllerAuthorization(
@@ -99,7 +101,15 @@ export function parseRegisterProfile(payload: unknown) {
   ) {
     return null;
   }
+  const egress = parseProfileEgress(payload.egress);
+  // Only the Firecracker runtime renders and verifies a per-guest egress
+  // policy; a Profile on any other executor claiming one would advertise a
+  // boundary no Worker enforces.
+  if (!egress.ok || (egress.egress.mode !== "public" && payload.executor !== "firecracker")) {
+    return null;
+  }
   return {
+    egress: egress.egress,
     name: payload.name.trim(),
     scaleSetName: payload.scaleSetName.trim(),
     executor: payload.executor as "docker" | "firecracker" | "tart" | "hyperv",
