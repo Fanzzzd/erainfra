@@ -1,0 +1,158 @@
+# Retire the Hub
+
+After this runbook the infrastructure-management surface runs on Convex and the Nodes alone
+([ADR 0016](../adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md)): Node state, deploys,
+failover, links, env and logs in Convex, public traffic at gateway Nodes, and operators on the
+`erainfra` CLI and the EraInfra dashboard. The Hub container is stopped. Its data volume,
+`portless-data`, is kept as the rollback source and is never deleted here.
+
+Each step is reversible until the last one, and the Hub keeps working throughout: a Node in Hub
+mode is untouched until you switch it, and the Hub serves ingress until DNS moves.
+
+## What retiring the Hub loses
+
+Read this before you start. Each item is something the Hub did that Convex does not, and what to do
+instead.
+
+| Lost                                                                                                      | Instead                                                                                                                                                                                                                              |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The AI chat transcript archive (`chat_*` tables, `portless chats`). The importer does not copy it (#180). | Export the database before stopping the Hub (step 5). Transcripts are not control state and nothing in Convex reads them. To search them later, open the copy with `sqlite3`, or start the Hub again read-only from the kept volume. |
+| `portless mcp`, the MCP server for AI agents.                                                             | No Convex equivalent ships yet. Agents run `erainfra … --format json`, which is a stable shape.                                                                                                                                      |
+| Hub API tokens (`plt_…`) and Hub sessions. Not imported.                                                  | Mint dashboard API tokens (Settings, API tokens): `read` for scripts that only look, `admin` for deploys. People sign in to the dashboard with their imported Hub password.                                                          |
+| Hub S3 backups (`portless backup`).                                                                       | Convex holds the state; use Convex's snapshot export for backups. Keep `ERAINFRA_SECRETS_MASTER_KEY` in a safe place: without it the stored secrets cannot be decrypted.                                                             |
+| The Hub dashboard (`portless.<zone>`).                                                                    | The EraInfra dashboard: Nodes, Apps, Deployments and Links pages.                                                                                                                                                                    |
+| `portless bind`, `portless repos`, `portless redeploy`.                                                   | Bind a branch with `npx convex run infra/git:bind` as an owner or admin; push-to-deploy then runs from Convex. `erainfra deploy --repo owner/name --branch <b>` replaces `redeploy`.                                                 |
+| Legacy dumbpipe links, and links to a Node still in Hub mode.                                             | Every Node runs `connect-convex` with a sidecar before step 5; `erainfra links list` must show `transport mesh` for every link.                                                                                                      |
+| `/agent.sh`, `/cli.sh` and `/agent-bin` on the Hub host.                                                  | `/install --role node` on the Convex site and the GitHub Release (ADR 0006).                                                                                                                                                         |
+
+## 1. Copy the Hub into Convex
+
+On the Hub's host, set the secrets master key once and run the importer
+([State in Convex](../infra-management.md#state-in-convex)). Start with `--dry-run`; it reads
+everything and sends nothing, and it lists every scope it would refuse:
+
+```sh
+pnpm convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"   # first time only
+
+DB=$(docker run --rm -v portless-data:/data:ro alpine sh -c \
+  'ls /data/erainfra-runtime/erainfra.db /data/portless-runtime/portless.db 2>/dev/null | head -1')
+docker run --rm -v portless-data:/data:ro -v "$PWD":/out alpine \
+  cp "$DB" "$(dirname "$DB")/secret.key" /out/
+CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
+  pnpm --filter @erainfra/backend import-hub-state \
+    --db "$PWD/$(basename "$DB")" --secret-key "$PWD/secret.key" --dry-run
+```
+
+Drop `--dry-run` when it reports nothing refused. The import is safe to repeat, and you re-run it
+before each later step that moves a reader to Convex. Delete the two copied files afterwards; they
+hold every secret.
+
+Check what arrived:
+
+```sh
+erainfra nodes list    # every Hub Node, transport hub
+erainfra apps list     # every App, status hub
+erainfra links list    # every link, transport legacy for now
+```
+
+## 2. Enroll each Node and switch it to connect-convex
+
+Do this one Node at a time, starting with one that runs nothing important. A Node stays in Hub mode
+until you switch it, so the Hub keeps driving the rest.
+
+1. Enroll it and store its credential on the Node:
+
+   ```sh
+   erainfra nodes enroll edge-1 > edge-1.credential
+   scp edge-1.credential edge-1:/etc/erainfra-node.credential   # then chmod 0600 there
+   ```
+
+2. Give it the `erainfra-mesh` sidecar and start `connect-convex`, as
+   [Set up a Node](../infra-management.md#set-up-a-node) describes. With the systemd sidecar from
+   `/install --role node --mesh`, stop and disable `portless-agent.service` first: the two modes
+   never drive one sidecar at once.
+3. Within a minute `erainfra nodes list` shows the Node with transport `convex`, `online`, and
+   `MESH proven`. Its Apps show status `running` in `erainfra apps list`.
+4. Re-run the importer (step 1) after each switch, so Convex holds what the Hub last deployed.
+
+Once both ends of a link run `connect-convex`, `erainfra links list` shows that link with
+transport `mesh`. When every Node is switched, every link must show `mesh` and state `active`.
+
+Rolling one Node back is [Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode).
+
+## 3. Move ingress to gateway Nodes
+
+Follow [move-ingress-to-gateways.md](move-ingress-to-gateways.md): mark two or more Nodes
+`erainfra nodes set-roles <name> gateway`, run `deploy/infra/gateway.sh` on each, canary one App,
+then move `*.<zone>` to the `erainfra-gateway` tunnel. Its rollback is one DNS command while the Hub
+runs.
+
+## 4. Verify everything through Convex
+
+Run each check with the `erainfra` CLI logged in to the Convex site, never `portless`.
+
+- **Deploy.** Deploy a small App and follow it to `done`, then open its URL through the gateways:
+
+  ```sh
+  erainfra deploy ./hello --app hello-retire --port 8080
+  curl -fsS https://hello-retire.<zone>/
+  ```
+
+- **Deploy every real App once through Convex.** Apps copied from the Hub have no stored spec, so
+  Convex cannot fail them over until they are deployed through it once. `erainfra apps view <app>`
+  says so until then.
+- **Failover.** On a test App spread over two Nodes, stop the Infra Agent on one Node. After about
+  two and a half minutes `erainfra deployments list --app <app>` shows a `failover` run ending
+  `done`, and the App answers from the other Node. Start the agent again.
+- **Logs.** `erainfra logs hello-retire` prints the container's last lines, and a second read of the
+  same request gets 404.
+- **Links.** `erainfra links list` shows every link `mesh` and `active`, and each consumer reaches
+  its provider on the surfaced port.
+- **Env.** `erainfra env list <app>` shows the names the Hub had.
+- **Dashboard.** The Nodes, Apps, Deployments and Links pages show the same.
+
+Then remove the test App: `erainfra apps remove hello-retire --yes`.
+
+## 5. Stop the Hub, keep its data
+
+Re-run the importer once more, then export the chat transcripts if anyone wants them, and stop the
+Hub container and its tunnel connector. Do not delete `portless-data`, `portless-registry` or the
+Hub's tunnel: they are the rollback source.
+
+```sh
+# The transcripts and everything else the Hub held, as one file you keep elsewhere.
+docker run --rm -v portless-data:/data:ro -v "$PWD":/out alpine \
+  sh -c 'cp /data/*-runtime/*.db /out/hub-final.db'
+
+docker stop portless-hub
+docker update --restart=no portless-hub
+sudo systemctl disable --now portless-tunnel
+```
+
+Leave the `portless-registry` container running if `ERAINFRA_REGISTRY_NODE` names this box: it is
+the image registry every Node pulls from. Leave `portless.<zone>` in DNS; it answers 502 while the
+Hub is stopped and costs nothing.
+
+From now on:
+
+- `portless` commands fail to reach the Hub. Use `erainfra` (`portless help` says so).
+- Never run `deploy/infra/hub.sh` on this box again unless you are rolling back: it restarts the
+  Hub with the old state.
+- Never `docker volume rm portless-data`. If disk space matters, archive the volume first and keep
+  the archive with the Convex master key.
+
+## Roll back
+
+Until you delete `portless-data`, the Hub comes back with the state it had when it stopped. Work
+done in Convex since then (deploys, env changes, links, removed Apps) is not in it.
+
+1. Start the Hub: `docker start portless-hub && sudo systemctl enable --now portless-tunnel`, or
+   re-run `deploy/infra/hub.sh`, which reuses the volume, the env file and the tunnel.
+2. Point ingress back at the Hub's tunnel:
+   `cloudflared tunnel route dns --overwrite-dns portless '*.<zone>'`
+   ([move-ingress-to-gateways.md](move-ingress-to-gateways.md#roll-back)).
+3. Switch Nodes back to Hub mode one at a time
+   ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)). Revoke a Node's Convex
+   credential (`erainfra nodes revoke <name>`) if it should leave the Convex mesh.
+4. Redeploy through the Hub (`portless deploy` or `portless redeploy`) any App that changed in
+   Convex after the Hub stopped, and set again any env changed in Convex.

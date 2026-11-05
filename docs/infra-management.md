@@ -191,9 +191,11 @@ secret values themselves need not change.
 4. Phase 3a (now): the deploy pipeline, push-to-deploy and failover run from Convex for Nodes in
    `connect-convex` mode.
 5. Phase 3b: gateway ingress serves public traffic from the `appRoutes` table.
-6. Phase 3c (now): the `erainfra` CLI and the operator API manage Nodes, Apps, env, links and log
-   tails in Convex ([Operate from the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c)), and
-   the Hub is retired.
+6. Phase 3c (now): the `erainfra` CLI, the operator API and the dashboard (Nodes, Apps,
+   Deployments and Links pages) manage Nodes, Apps, env, links and log tails in Convex
+   ([Operate from the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c)). The Hub is retired
+   with [retire-the-hub.md](runbooks/retire-the-hub.md), which also lists what the Hub did that
+   Convex does not.
 
 Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
 inside the `portless-data` volume). Start with `--dry-run`, which reads everything and sends nothing:
@@ -852,6 +854,11 @@ then requests to that App get 502.
 the operator CLI for Convex. It replaces `portless` for every Node in `connect-convex` mode.
 `portless` keeps working against a Hub until the Hub is retired, and its help says where to go
 next; its package name is frozen (CONTEXT.md rule 4), so it is not renamed or removed.
+
+The EraInfra dashboard shows the same state on its Nodes, Apps, Deployments and Links pages, and
+offers the same changes to a signed-in owner or admin (an operator may deploy, link and remove
+Apps; a viewer reads). It judges Node liveness against the browser's clock with the backend's
+rule, so a Node that stops heartbeating turns offline on the page without a new query result.
 
 Log in once with a dashboard API token (Settings, API tokens). A `read` token runs the list and
 view commands; everything that changes state, and log tails, needs an `admin` token.
