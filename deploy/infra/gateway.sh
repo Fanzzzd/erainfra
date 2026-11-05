@@ -143,7 +143,9 @@ sudo tee /etc/systemd/system/erainfra-gateway-tunnel.service >/dev/null <<EOF
 [Unit]
 Description=EraInfra gateway tunnel connector ($TUNNEL, *.$ZONE)
 After=network-online.target erainfra-gateway.service
-Wants=network-online.target erainfra-gateway.service
+Wants=network-online.target
+# A replica whose proxy is down must leave the tunnel, so Cloudflare sends its share to the others.
+BindsTo=erainfra-gateway.service
 
 [Service]
 User=$GW_USER

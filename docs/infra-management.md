@@ -356,8 +356,8 @@ Deploys, push-to-deploy and failover for `connect-convex` Nodes run from Convex
 ([phase 3a](#deploy-and-failover-from-convex-phase-3a)). These still run only on the Hub, and a
 `connect-convex` Node takes no part in them:
 
-- gateway ingress: public `<app>.<domain>` routes reach a Node over the Hub's data channel (phase
-  3b);
+- ingress for Apps on Nodes in Hub mode. Apps on `connect-convex` Nodes with a sidecar can be
+  served by [gateway Nodes](#gateway-ingress-phase-3b) instead;
 - declaring standalone links, and the `portless` CLI and dashboard, which talk to the Hub (phase
   3c);
 - links to Nodes still in Hub mode, and legacy dumbpipe links.
@@ -627,11 +627,197 @@ failover off.
 
 ### What still needs the Hub
 
-- Public traffic: routes are recorded in `appRoutes`, but gateway ingress that serves them is phase
-  3b. Until then the Hub's tunnel and data plane serve `<app>.<zone>`.
+- Public traffic, unless gateway Nodes serve the zone ([phase 3b](#gateway-ingress-phase-3b)).
+  Otherwise the Hub's tunnel and data plane serve `<app>.<zone>`.
 - The `portless` CLI, MCP server and the Hub dashboard (phase 3c). The Convex surface today is the
   operator API above and the internal functions.
 - Links to a Node still in Hub mode, which never publishes an endpoint to Convex.
+
+## Gateway ingress (phase 3b)
+
+A gateway Node serves `https://<app>.<zone>` without the Hub. cloudflared on the gateway Node
+hands each request to the gateway proxy on loopback, and the proxy forwards it over
+`erainfra-mesh` to the Node running the App. No App Node listens publicly.
+
+```text
+browser ─https─▶ Cloudflare ─tunnel─▶ cloudflared ─▶ infra-agent gateway (127.0.0.1:61090)
+                                      (gateway Node)       │ Host web.<zone> → 127.0.0.1:<ingress port>
+                                                           ▼
+                                      mesh link ingress.web ═iroh═▶ exposure ingress.web ─▶ App
+                                                                    (App Node, 127.0.0.1:<route port>)
+```
+
+Only Apps on `connect-convex` Nodes with a sidecar can be served this way. To move a zone off the
+Hub's tunnel, follow [move-ingress-to-gateways.md](runbooks/move-ingress-to-gateways.md).
+
+### What Convex sends
+
+An owner or admin marks a Node as a gateway with its placement roles:
+
+```sh
+npx convex run infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' \
+  --identity '{"subject":"<users _id>|cli"}'
+```
+
+A Node cannot set its own roles: a gateway gets a mesh path to every routed App. An empty `roles`
+list removes the role, and the next snapshot revokes the gateway's links and grants. The Node's
+mesh snapshot (`GET /api/v1/nodes/state`, see above) then carries ingress under the same revision
+as everything else:
+
+- **A gateway Node** gets `ingress.routes`, one `{host, upstream}` per row of `appRoutes`, and one
+  link named `ingress.<label>` per route to the App's Node. The link listens on a loopback port in
+  61100-61999, derived from the label. A new route never moves an existing route's port, and
+  every gateway uses the same port for a route. A route served on the gateway itself has the App's
+  port as its upstream and no link. A route whose Node has no proven endpoint or no live
+  credential stays in the table with `upstream: null`, so the proxy answers 503 for it. The
+  gateway's `fleet` holds only the App Nodes it links to.
+- **The App's Node** gets one exposure `ingress.<label>` per route it serves, targeting
+  `127.0.0.1:<route port>`. Its `allowed_peers` are exactly the gateway Nodes with a proven
+  endpoint and a live credential, and nothing else. Ingress links and exposures allow 1024
+  concurrent connections each (the sidecar's default is 256).
+- **Every other Node** gets no `ingress` field and no ingress grant.
+
+Limits: at most 100 routes while any gateway exists (a larger table is refused, like the other
+snapshot limits). A route is served only if its name is a lowercase first-level DNS label, because
+Cloudflare's free certificate covers one wildcard level (see `deploy/infra/hub.sh`). Mesh names
+starting with `ingress.` are reserved; a declared link with such a name makes the snapshot fail.
+
+### Where the proxy runs
+
+The proxy is a subcommand of the Infra Agent binary, `infra-agent gateway`, run as a separate
+process under its own system user. It parses every public request, so it does not run inside the
+Infra Agent, which runs as root and holds the Convex credential and the Docker socket. Shipping it
+in the same binary keeps one attested release artifact per platform, so the release pins
+(ADR 0006) do not grow.
+
+The two processes share one file. The Infra Agent writes the route table to
+`ERAINFRA_GATEWAY_ROUTES_FILE` after the sidecar has applied the snapshot's links, by atomic rename,
+mode 0644, under the snapshot's revision. The proxy checks that file every second and swaps in a new
+revision whole. It refuses an upstream that is not a loopback address, and it refuses to start as
+root unless given `--allow-root`.
+
+### Set up a gateway Node
+
+1. Run the Node in `connect-convex` mode with an `erainfra-mesh` sidecar
+   ([Set up a Node](#set-up-a-node)).
+2. On the Node, with `sudo`, a Cloudflare origin cert for the zone (`cloudflared login`) and
+   cloudflared installed:
+
+   ```sh
+   ERAINFRA_ZONE=example.com ERAINFRA_AGENT_BIN=/usr/local/bin/infra-agent sh deploy/infra/gateway.sh
+   ```
+
+   It creates the `erainfra-gateway` system user, `/var/lib/erainfra-gateway` (0750, owned by the
+   agent's user, `ERAINFRA_AGENT_USER`, default root, group `erainfra-gateway`), a root-owned copy of
+   the binary in `/usr/local/libexec/erainfra-gateway`, and two units that both run as
+   `erainfra-gateway`:
+   - `erainfra-gateway.service`: the proxy on `127.0.0.1:61090` (`ERAINFRA_GATEWAY_PORT`). The
+     unit allows IP traffic to and from loopback only, with no capabilities and a read-only system.
+   - `erainfra-gateway-tunnel.service`: cloudflared running the tunnel `erainfra-gateway`
+     (`ERAINFRA_GATEWAY_TUNNEL`), with ingress `*.<zone>` to the proxy and 404 for anything else.
+     It is bound to the proxy unit: if the proxy stops, this replica leaves the tunnel. The script
+     creates the tunnel on first use and fetches its credentials with
+     `cloudflared tunnel token --cred-file`, so no credentials file is copied between Nodes.
+
+   The script does not touch DNS. Without systemd, run the proxy as an ordinary user:
+   `infra-agent gateway --zone example.com --routes-file <path> [--listen 127.0.0.1:61090]`, and
+   point cloudflared at it.
+
+3. Add `ERAINFRA_GATEWAY_ROUTES_FILE=/var/lib/erainfra-gateway/routes.json` to the
+   `connect-convex` agent's environment and restart it. The variable must be an absolute path in a
+   directory that exists.
+4. Mark the Node a gateway (`infra/nodes:setPlacementRoles` above).
+5. Check it. Within about 15 seconds the agent logs
+   `gateway route table <revision> written (<n> routes)`, and then:
+
+   ```sh
+   curl -s -H 'Host: localhost' http://127.0.0.1:61090/healthz   # {"ok":true,"revision":…,"routes":n}
+   curl -s -H 'Host: web.example.com' http://127.0.0.1:61090/     # the App "web", over the mesh
+   cloudflared tunnel info erainfra-gateway                         # one connector per gateway Node
+   ```
+
+   If Convex marks the Node a gateway but the variable is unset, the agent logs a warning once per
+   revision and no proxy gets routes.
+
+### Proxy behaviour
+
+- **Routing.** `<label>.<zone>` (case-insensitive, port and trailing dot ignored) goes to that
+  label's upstream. An unknown label, a deeper name such as `a.web.<zone>`, or a host outside the
+  zone gets 404. A known App with no reachable Node gets 503, and so does every request before the
+  first table loads. `/healthz` on a host outside the zone reports the loaded revision; names in
+  the zone always go to the App, so an App's own `/healthz` is not shadowed. `--zone` takes a
+  comma-separated list.
+- **Streaming.** Request and response bodies are streamed in both directions with no size limit at
+  the gateway, and responses are flushed as the App writes them. WebSocket and other `Upgrade`
+  requests are passed through; the Hub refused them with 501.
+- **Timeouts.** Request headers must arrive within 10 seconds; idle keep-alive connections close
+  after 120 seconds. The App has 120 seconds to send response headers
+  (`--response-header-timeout`), above Cloudflare's 100-second proxy read timeout, so Cloudflare's
+  own 524 decides first. Bodies and upgraded connections have no deadline; the mesh closes a
+  stream idle for an hour. Dialing the loopback link times out after 5 seconds. A failed upstream
+  returns 502, a timeout 504.
+- **Headers.** The App sees the public `Host`. `X-Forwarded-For` keeps the chain cloudflared sent and
+  appends the hop that reached the proxy (`127.0.0.1`). `X-Forwarded-Host` is the public host.
+  `X-Forwarded-Proto` is `https` when cloudflared says so, otherwise `http`. Hop-by-hop headers
+  (`Connection` and every header it names, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`,
+  `Transfer-Encoding`, and `Upgrade` outside an upgrade) are removed in both directions.
+  `Cf-Connecting-Ip` passes through unchanged. Any local process on the gateway Node can reach
+  the loopback port and set these headers, so treat them as trustworthy only as far as you trust
+  the gateway Node.
+- **TLS** ends at Cloudflare. The proxy speaks plain HTTP on loopback, and the mesh encrypts the
+  hop to the App's Node.
+
+### High availability
+
+Run `gateway.sh` on two or more gateway Nodes with the same tunnel name. Each run adds one
+cloudflared replica (Cloudflare's word for another connector of the same tunnel). Cloudflare's
+documentation ([tunnel availability](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-availability/),
+[deploy replicas](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-availability/deploy-replicas/),
+read 2026-11-06) says:
+
+- a request goes to the geographically closest replica, with no round-robin or hash steering;
+- if that connection fails, Cloudflare retries with another replica, with no guarantee which;
+- if a host running cloudflared goes down, the remaining replicas keep serving;
+- a tunnel takes up to 100 connections, which is 25 replicas.
+
+Cloudflare only notices a replica that has lost its connections. A replica whose proxy is up but
+whose table is stale or empty still receives its share, which is why the tunnel unit is bound to
+the proxy unit and why `/healthz` should be monitored on every gateway. On the mesh side each App
+Node grants every gateway, so any replica can reach any App.
+
+### When Convex is unreachable
+
+Running Apps keep serving. The sidecars keep their links and grants, the routes file keeps the
+last table, and the proxy keeps serving it. A restarted proxy loads the file from disk. A restarted
+Infra Agent applies nothing and writes no table until Convex answers (it must publish its endpoint
+first), so the last table stays in place. Deploys, failover, new routes and role changes wait for
+Convex.
+
+### Failover timing
+
+When failover moves a route (`deployments.completeFailover` patches `appRoutes`), the gateways and
+the App's new Node see the change on their next snapshot poll. With the default intervals:
+
+| step                                                               | at most        |
+| ------------------------------------------------------------------ | -------------- |
+| gateway fetches the new revision (10 s poll, checked on 5 s ticks) | 15 s           |
+| sidecar moves the `ingress.<label>` link to the new Node           | under a second |
+| route table written, same tick; proxy reads it (1 s poll)          | 1 s            |
+| new App Node grants the gateways (its own poll, in parallel)       | 15 s           |
+
+So the gateway serves the new Node within about 16 seconds of the Convex write, plus network
+latency. The route keeps its loopback port, so the proxy's upstream does not change; the proxy
+drops idle pooled connections when a new table loads. Until then requests to that App get 502.
+Detecting the lost Node and redeploying happen before this and are not included.
+
+### Limits of this phase
+
+- Apps on Nodes in Hub mode cannot be served by a gateway: they have no proven endpoint, so their
+  routes have no upstream (503).
+- Failover keeps the route's port. If the App's new Node serves it on a different port, the
+  exposure points at the wrong port until the route row is updated.
+- `gateway.sh` is for Linux with systemd. The proxy itself runs anywhere the Infra Agent does.
+- The proxy has no access control or rate limiting of its own; use Cloudflare's.
 
 ## Develop
 
