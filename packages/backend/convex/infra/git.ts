@@ -7,7 +7,7 @@
 // intake here records every delivery by X-GitHub-Delivery in the same `webhookDeliveries` table
 // the CI intake uses (webhooks.ts) and queues at most one run per delivery.
 import { ConvexError, v } from "convex/values";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import {
   internalMutation,
   mutation,
@@ -59,6 +59,143 @@ export async function insertBinding(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Bind, unbind and list. One body each, run by the dashboard functions below and by the operator
+// API (operatorGit.ts), so the two callers cannot disagree about a rule.
+
+const APP_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Why `branch` cannot be bound, or null. The push intake matches the branch GitHub reports after
+ * `refs/heads/` (githubDeploy.ts parsePush). A full ref, or a name git refuses
+ * (git-check-ref-format), never matches a push, so binding it would deploy nothing and say nothing.
+ */
+export function branchProblem(branch: string) {
+  if (branch.length === 0) return "Name a branch";
+  if (branch.length > 255) return "A branch name is at most 255 characters";
+  if (branch.startsWith("refs/")) return "Name the branch without refs/heads/";
+  if (
+    [...branch].some((ch) => ch.charCodeAt(0) <= 0x20 || ch.charCodeAt(0) === 0x7f) ||
+    /[~^:?*[\\]/.test(branch) ||
+    branch.includes("..") ||
+    branch.includes("@{") ||
+    branch.includes("//") ||
+    branch.startsWith("/") ||
+    branch.startsWith("-") ||
+    branch.endsWith("/") ||
+    branch.endsWith(".") ||
+    branch.endsWith(".lock") ||
+    branch === "@"
+  ) {
+    return `${JSON.stringify(branch)} is not a branch name git accepts`;
+  }
+  return null;
+}
+
+/**
+ * Bind (repo, branch) to an App and audit it as `git.bind`, in one transaction. Everything is
+ * checked before the first write, so a caller that catches the refusal (operatorGit.ts) commits
+ * only its own audit row.
+ */
+export async function bindBranch(
+  ctx: MutationCtx,
+  input: {
+    repo: string;
+    branch: string;
+    app: string;
+    buildNodeId?: Id<"nodes">;
+    deployNodeId?: Id<"nodes">;
+    port?: number;
+    actor: string;
+  },
+) {
+  const { actor, ...binding } = input;
+  const problem = branchProblem(binding.branch);
+  if (problem !== null) throw new ConvexError(problem);
+  if (!APP_NAME.test(binding.app)) {
+    throw new ConvexError("An App name is lowercase letters, digits and dashes, at most 63");
+  }
+  if (
+    binding.port !== undefined &&
+    (!Number.isInteger(binding.port) || binding.port < 1 || binding.port > 65535)
+  ) {
+    throw new ConvexError("port must be an integer from 1 to 65535");
+  }
+  const nodes = { buildNode: null as string | null, deployNode: null as string | null };
+  for (const [key, id] of [
+    ["buildNode", binding.buildNodeId],
+    ["deployNode", binding.deployNodeId],
+  ] as const) {
+    if (id === undefined) continue;
+    const node = await ctx.db.get(id);
+    if (node === null) throw new ConvexError(`No Node with id ${id}`);
+    nodes[key] = node.name;
+  }
+  const id = await insertBinding(ctx, binding);
+  await appendAudit(ctx, {
+    actor,
+    action: "git.bind",
+    target: `${binding.repo}@${binding.branch}`,
+    outcome: "success",
+    meta: { app: binding.app, ...nodes, port: binding.port ?? null },
+  });
+  return id;
+}
+
+/** Delete a binding and audit it as `git.unbind`. Pushes to the branch then deploy nothing. */
+export async function unbindBranch(ctx: MutationCtx, binding: Doc<"gitBindings">, actor: string) {
+  await ctx.db.delete(binding._id);
+  await appendAudit(ctx, {
+    actor,
+    action: "git.unbind",
+    target: `${binding.repo}@${binding.branch}`,
+    outcome: "success",
+    meta: { app: binding.app },
+  });
+}
+
+/** Every binding, its Nodes by name, ordered by repository then branch. */
+export async function listBindings(ctx: QueryCtx) {
+  // At most MAX_GIT_BINDINGS rows exist (insertBinding), so this reads them all.
+  return await bindingViews(ctx, await ctx.db.query("gitBindings").take(MAX_GIT_BINDINGS));
+}
+
+/** Bindings as callers see them: Nodes by name as well as by id, no internal keys. */
+export async function bindingViews(ctx: QueryCtx, rows: Doc<"gitBindings">[]) {
+  const names = new Map<Id<"nodes">, string | null>();
+  const nodeName = async (id: Id<"nodes"> | undefined) => {
+    if (id === undefined) return null;
+    if (!names.has(id)) names.set(id, (await ctx.db.get(id))?.name ?? null);
+    return names.get(id) ?? null;
+  };
+  const views = [];
+  for (const row of rows) {
+    views.push({
+      _id: row._id,
+      repo: row.repo,
+      branch: row.branch,
+      app: row.app,
+      buildNodeId: row.buildNodeId,
+      deployNodeId: row.deployNodeId,
+      buildNode: await nodeName(row.buildNodeId),
+      deployNode: await nodeName(row.deployNodeId),
+      port: row.port,
+      createdAt: row.createdAt,
+      lastStatus: row.lastStatus ?? null,
+    });
+  }
+  return views.toSorted(
+    (a, b) =>
+      repoKey(a.repo).localeCompare(repoKey(b.repo)) ||
+      (a.branch < b.branch ? -1 : a.branch > b.branch ? 1 : 0),
+  );
+}
+
+export type BindingView = Awaited<ReturnType<typeof bindingViews>>[number];
+
+// ---------------------------------------------------------------------------
+// Dashboard: signed-in people, through the permission table.
+
 export const bind = mutation({
   args: {
     repo: v.string(),
@@ -71,14 +208,7 @@ export const bind = mutation({
   returns: v.id("gitBindings"),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    const id = await insertBinding(ctx, args);
-    await appendAudit(ctx, {
-      actor,
-      action: "git.bind",
-      target: `${args.repo}@${args.branch}`,
-      outcome: "success",
-    });
-    return id;
+    return await bindBranch(ctx, { ...args, actor });
   },
 });
 
@@ -89,13 +219,7 @@ export const unbind = mutation({
     const { actor } = await requirePermission(ctx, "app.deploy");
     const binding = await ctx.db.get(args.bindingId);
     if (binding === null) return false;
-    await ctx.db.delete(binding._id);
-    await appendAudit(ctx, {
-      actor,
-      action: "git.unbind",
-      target: `${binding.repo}@${binding.branch}`,
-      outcome: "success",
-    });
+    await unbindBranch(ctx, binding, actor);
     return true;
   },
 });
@@ -110,21 +234,25 @@ export const list = query({
       app: v.string(),
       buildNodeId: v.optional(v.id("nodes")),
       deployNodeId: v.optional(v.id("nodes")),
+      buildNode: v.union(v.string(), v.null()),
+      deployNode: v.union(v.string(), v.null()),
       port: v.optional(v.number()),
+      createdAt: v.number(),
+      lastStatus: v.union(
+        v.object({
+          at: v.number(),
+          sha: v.string(),
+          ok: v.boolean(),
+          stage: v.string(),
+          error: v.optional(v.string()),
+        }),
+        v.null(),
+      ),
     }),
   ),
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
-    const rows = await ctx.db.query("gitBindings").take(MAX_GIT_BINDINGS);
-    return rows.map(({ _id, repo, branch, app, buildNodeId, deployNodeId, port }) => ({
-      _id,
-      repo,
-      branch,
-      app,
-      buildNodeId,
-      deployNodeId,
-      port,
-    }));
+    return await listBindings(ctx);
   },
 });
 

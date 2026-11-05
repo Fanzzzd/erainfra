@@ -37,6 +37,7 @@ import {
   type Caller,
 } from "../operatorHttp";
 import type { AppView, LinkView, NodeView } from "./operator";
+import { registerGitRoutes } from "./operatorGitRoutes";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -166,6 +167,9 @@ function prefixRoute(
 }
 
 export function registerInfraRoutes(http: HttpRouter) {
+  // ---- Push-to-deploy bindings: /api/v1/git/bindings
+  registerGitRoutes(http);
+
   // ---- Nodes
   http.route({
     path: `${API_PREFIX}/nodes`,

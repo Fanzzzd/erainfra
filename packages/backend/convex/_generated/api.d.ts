@@ -75,6 +75,8 @@ import type * as infra_logs from "../infra/logs.js";
 import type * as infra_logOutput from "../infra/logOutput.js";
 import type * as infra_operator from "../infra/operator.js";
 import type * as infra_operatorRoutes from "../infra/operatorRoutes.js";
+import type * as infra_operatorGit from "../infra/operatorGit.js";
+import type * as infra_operatorGitRoutes from "../infra/operatorGitRoutes.js";
 import type * as installScript from "../installScript.js";
 import type * as installScriptPowerShell from "../installScriptPowerShell.js";
 import type * as isolation from "../isolation.js";
@@ -171,6 +173,8 @@ declare const fullApi: ApiFromModules<{
   "infra/logOutput": typeof infra_logOutput;
   "infra/operator": typeof infra_operator;
   "infra/operatorRoutes": typeof infra_operatorRoutes;
+  "infra/operatorGit": typeof infra_operatorGit;
+  "infra/operatorGitRoutes": typeof infra_operatorGitRoutes;
   installScript: typeof installScript;
   installScriptPowerShell: typeof installScriptPowerShell;
   isolation: typeof isolation;
