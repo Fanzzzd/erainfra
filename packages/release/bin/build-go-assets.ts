@@ -46,11 +46,6 @@ const version = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "ut
 if (version === undefined || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(version)) {
   throw new Error("package.json has no valid product version");
 }
-const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-  cwd: repoRoot,
-  encoding: "utf8",
-}).trim();
-
 const targets: Target[] = [
   {
     os: "linux",
@@ -68,13 +63,18 @@ const targets: Target[] = [
     embed: path.join(runtimeOut, "linux-arm64", "runner-center-runtime"),
     ldflags: `-s -w -buildid= -X main.version=${version}`,
   },
+  // The controller. Version-only ldflags since AGENT_RELEASE pins its Linux builds for
+  // `/install --role controller`: a commitSHA stamp would make the checksum a function of the
+  // release commit, which cannot be written into the commit whose build the release gate compares
+  // against the pin (#134 fixed the same trap for the cache service). The version names the tag,
+  // and the tag names the commit.
   ...(["linux", "darwin"] as const).flatMap((os) =>
     (["amd64", "arm64"] as const).map((arch) => ({
       os,
       arch,
       output: path.join(releaseOut, assetName("runner-center-controller", os, arch)),
       package: "./apps/controller/cmd/runner-center-controller",
-      ldflags: `-s -w -buildid= -X main.version=${version} -X main.commitSHA=${commit}`,
+      ldflags: `-s -w -buildid= -X main.version=${version}`,
     })),
   ),
   // The Infra Agent. Building it here rather than ad hoc on a customer's hub box is what lets its
@@ -97,7 +97,7 @@ const targets: Target[] = [
   })),
   // The cache service (ADR 0009). One Linux target, not the Infra Agent's five: it is a server an
   // operator deploys on infrastructure they control, not a binary that must run on every customer
-  // box. Version-only ldflags, exactly like the Infra Agent above and unlike the controller: this
+  // box. Version-only ldflags, exactly like the Infra Agent and the controller above: this
   // binary is pinned by digest in AGENT_RELEASE, so a commitSHA stamp would make its checksum a
   // function of the release commit — a value that cannot be written into the commit whose checksum
   // the release gate rebuilds and demands it match.

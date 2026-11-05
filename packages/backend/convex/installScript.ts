@@ -5,6 +5,7 @@ import {
   FIRECRACKER_RUNTIME_UNIT_B64,
   FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "./provisionerFirecrackerHost.generated.ts";
+import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "./controllerUnit.generated.ts";
 
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail
@@ -14,8 +15,10 @@ set -euo pipefail
 # script rather than a query parameter on the URL because the /install handler takes no request
 # argument — one body, rendered from this deployment's own configuration, cacheable, and impossible
 # to steer by crafting a request. worker-host is the third role: the root-level, once-per-machine
-# Firecracker host provisioning that a Worker install assumes. Everything below the dispatch is
-# the Worker path, unchanged.
+# Firecracker host provisioning that a Worker install assumes. controller is the fourth: one
+# Profile's scale-set controller under systemd, on its own host or beside a Worker. Neither of the
+# last two is a machine kind; they are setup steps on a host. Everything below the dispatch is the
+# Worker path, unchanged.
 INSTALL_ROLE='worker'
 ROLE_REMAINING=$#
 while [ "$ROLE_REMAINING" -gt 0 ]; do
@@ -28,7 +31,7 @@ while [ "$ROLE_REMAINING" -gt 0 ]; do
       # the rotated --token as the role, and hand the Worker parser a bare X — silently rewriting the
       # argument list rather than refusing.
       if [ "$ROLE_REMAINING" -lt 2 ]; then
-        printf '❌ %s\n' '--role requires a value: worker, node or worker-host' >&2
+        printf '❌ %s\n' '--role requires a value: worker, node, worker-host or controller' >&2
         exit 1
       fi
       INSTALL_ROLE=$1
@@ -506,6 +509,502 @@ WH_RUNTIME_UNIT_B64
   exit 0
 }
 
+# --role controller installs one Profile's scale-set controller as a systemd instance,
+# runner-center-controller@<profile>, on a dedicated host or beside a Worker on the same machine.
+# The binary is verified against the digest this deployment pins (ADR 0006), the unit travels
+# embedded and checked like the worker-host files, and the Profile's configuration lands in a
+# root-only env file whose secrets are paths, never values. --update moves every running instance
+# on the host to the pinned release, keeping the old binary to roll back to.
+#
+# Sharing a machine with a Worker is a supported shape, so this role owns only what it names:
+# runner-center-controller*, its unit, its account, and the profiles/ and secrets/ trees. It
+# creates the shared runner-center directories only when they are missing and never changes an
+# existing one, and it leaves runner-center-runtime, the runner-center group, the Worker account
+# and ~/.runner-center alone.
+controller_install() {
+  CTL_SITE='__ERAINFRA_SITE_URL__'
+  CTL_REPO='__AGENT_REPO__'
+  CTL_VERSION='__AGENT_VERSION__'
+  CTL_LIB_DIR='/usr/local/lib/runner-center'
+  CTL_BINARY="$CTL_LIB_DIR/runner-center-controller"
+  CTL_ETC_DIR='/etc/runner-center'
+  CTL_UNIT_PATH='/etc/systemd/system/runner-center-controller@.service'
+  CTL_ACCOUNT='runner-center-controller'
+
+  ctl_log() { printf '✅ %s\n' "$1"; }
+  ctl_warn() { printf '⚠️  %s\n' "$1" >&2; }
+  ctl_fail() {
+    printf '❌ %s\n' "$1" >&2
+    exit 1
+  }
+  ctl_sha256() {
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "$1" | cut -d ' ' -f 1
+    elif command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$1" | cut -d ' ' -f 1
+    else
+      ctl_fail 'A SHA-256 utility (shasum or sha256sum) is required'
+    fi
+  }
+  # One arm per pinned target. A target that is not listed is refused: there would be nothing to
+  # check the bytes against.
+  ctl_pinned_digest() {
+    case "$1" in
+__CONTROLLER_DIGESTS__
+      *) printf '' ;;
+    esac
+  }
+  ctl_usage() {
+    printf '%s\n' 'Usage: curl -fsSL <site>/install | sudo bash -s -- --role controller --profile NAME'
+    printf '%s\n' '         --github-config-url URL --executor docker|firecracker|tart|hyperv'
+    printf '%s\n' '         --image-release REF@sha256:DIGEST --controller-token-file PATH'
+    printf '%s\n' '         (--github-app-client-id ID --github-app-installation-id ID'
+    printf '%s\n' '          --github-app-private-key-file PATH | --github-token-file PATH)'
+    printf '%s\n' '         [--vcpus N] [--memory-mib N] [--warm-pool N] [--fit-policy balanced|cpu|network|io]'
+    printf '%s\n' '         [--min-runners N] [--max-runners N] [--scale-set-name NAME] [--labels A,B]'
+    printf '%s\n' '         [--runner-group NAME] [--cache-facts-url URL --cache-signing-key-file PATH]'
+    printf '%s\n' '         [--source <url|file:///path>] [--reconfigure] [--no-prompt]'
+    printf '%s\n' '       curl -fsSL <site>/install | sudo bash -s -- --role controller --update [--source ...]'
+    printf '%s\n' ''
+    printf '%s\n' 'Installs the scale-set controller for one Profile as runner-center-controller@NAME,'
+    printf '%s\n' 'on a dedicated host or beside a Worker. Secrets are given as files and copied to'
+    printf '%s\n' '/etc/runner-center/secrets/NAME/; the env file /etc/runner-center/profiles/NAME.env'
+    printf '%s\n' 'is kept on a rerun unless --reconfigure is given. --update moves every running'
+    printf '%s\n' 'instance on this host to the release this deployment pins.'
+  }
+  # A flag's value, refused when it is missing rather than silently taking the next flag.
+  ctl_take() {
+    [ "$2" -ge 2 ] || ctl_fail "$1 requires a value"
+  }
+  ctl_get() { eval "printf '%s' \"\$$1\""; }
+
+  CTL_PROFILE=''
+  CTL_GITHUB_CONFIG_URL=''
+  CTL_EXECUTOR=''
+  CTL_IMAGE_RELEASE=''
+  CTL_VCPUS=''
+  CTL_MEMORY_MIB=''
+  CTL_WARM_POOL=''
+  CTL_FIT_POLICY=''
+  CTL_MIN_RUNNERS=''
+  CTL_MAX_RUNNERS=''
+  CTL_SCALE_SET_NAME=''
+  CTL_LABELS=''
+  CTL_RUNNER_GROUP=''
+  CTL_APP_CLIENT_ID=''
+  CTL_APP_INSTALLATION_ID=''
+  CTL_APP_KEY_FILE=''
+  CTL_GITHUB_TOKEN_FILE=''
+  CTL_TOKEN_FILE=''
+  CTL_CACHE_FACTS_URL=''
+  CTL_CACHE_KEY_FILE=''
+  CTL_SOURCE=''
+  CTL_RECONFIGURE=0
+  CTL_UPDATE=0
+  CTL_PROMPT=1
+  CTL_CONFIG_GIVEN=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile) ctl_take "$1" "$#"; CTL_PROFILE=$2; shift 2 ;;
+      --github-config-url) ctl_take "$1" "$#"; CTL_GITHUB_CONFIG_URL=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --executor) ctl_take "$1" "$#"; CTL_EXECUTOR=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --image-release) ctl_take "$1" "$#"; CTL_IMAGE_RELEASE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --vcpus) ctl_take "$1" "$#"; CTL_VCPUS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --memory-mib) ctl_take "$1" "$#"; CTL_MEMORY_MIB=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --warm-pool) ctl_take "$1" "$#"; CTL_WARM_POOL=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --fit-policy) ctl_take "$1" "$#"; CTL_FIT_POLICY=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --min-runners) ctl_take "$1" "$#"; CTL_MIN_RUNNERS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --max-runners) ctl_take "$1" "$#"; CTL_MAX_RUNNERS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --scale-set-name) ctl_take "$1" "$#"; CTL_SCALE_SET_NAME=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --labels) ctl_take "$1" "$#"; CTL_LABELS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --runner-group) ctl_take "$1" "$#"; CTL_RUNNER_GROUP=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --github-app-client-id) ctl_take "$1" "$#"; CTL_APP_CLIENT_ID=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --github-app-installation-id) ctl_take "$1" "$#"; CTL_APP_INSTALLATION_ID=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --github-app-private-key-file) ctl_take "$1" "$#"; CTL_APP_KEY_FILE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --github-token-file) ctl_take "$1" "$#"; CTL_GITHUB_TOKEN_FILE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --controller-token-file) ctl_take "$1" "$#"; CTL_TOKEN_FILE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --cache-facts-url) ctl_take "$1" "$#"; CTL_CACHE_FACTS_URL=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --cache-signing-key-file) ctl_take "$1" "$#"; CTL_CACHE_KEY_FILE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --source) ctl_take "$1" "$#"; CTL_SOURCE=$2; shift 2 ;;
+      --reconfigure) CTL_RECONFIGURE=1; shift ;;
+      --update) CTL_UPDATE=1; shift ;;
+      --no-prompt) CTL_PROMPT=0; shift ;;
+      -h|--help) ctl_usage; exit 0 ;;
+      *) ctl_usage >&2; ctl_fail "Unknown controller option: $1" ;;
+    esac
+  done
+
+  if [ "$CTL_UPDATE" -eq 1 ]; then
+    if [ -n "$CTL_PROFILE" ] || [ "$CTL_CONFIG_GIVEN" -eq 1 ] || [ "$CTL_RECONFIGURE" -eq 1 ]; then
+      ctl_fail '--update moves every controller on this host to the pinned release and takes no Profile settings; change a Profile with --profile NAME --reconfigure instead'
+    fi
+  fi
+
+  # Every value below ends up in an EnvironmentFile, which systemd parses with its own quoting and
+  # specifier rules. A conservative charset keeps a value from meaning anything but itself there,
+  # and refusing before anything is written means a typo never leaves half a Profile behind.
+  ctl_plain() {
+    [[ "$2" =~ ^[A-Za-z0-9._:/@+=,-]*$ ]] ||
+      ctl_fail "$1 may hold only letters, digits and . _ : / @ + = , - (no spaces, quotes or \$): $2"
+  }
+  ctl_integer() {
+    [ -z "$2" ] || [[ "$2" =~ ^[0-9]+$ ]] || ctl_fail "$1 must be a whole number: $2"
+  }
+  ctl_absolute() {
+    [ -z "$2" ] || [[ "$2" =~ ^/ ]] || ctl_fail "$1 must be an absolute path: $2"
+  }
+  ctl_validate() {
+    if [ -n "$CTL_PROFILE" ]; then
+      # The rules apps/controller/internal/config/profilename.go enforces, checked here so a bad
+      # name is refused before it becomes a unit instance and a file name.
+      if [ "$(printf '%s' "$CTL_PROFILE" | wc -c | tr -d ' ')" -gt 45 ] ||
+        ! [[ "$CTL_PROFILE" =~ ^[a-z][a-z0-9-]*[a-z0-9]$ ]] ||
+        [[ "$CTL_PROFILE" == *--* ]]; then
+        ctl_fail "Profile name $CTL_PROFILE must be lowercase letters, digits and single hyphens, start with a letter, end with a letter or digit, and be at most 45 characters"
+      fi
+    fi
+    case "$CTL_EXECUTOR" in
+      ''|docker|firecracker|tart|hyperv) ;;
+      *) ctl_fail "--executor must be docker, firecracker, tart or hyperv: $CTL_EXECUTOR" ;;
+    esac
+    if [ -n "$CTL_IMAGE_RELEASE" ] && ! [[ "$CTL_IMAGE_RELEASE" =~ @sha256:[0-9a-f]{64}$ ]]; then
+      ctl_fail "--image-release must be immutable and end in @sha256:<64 hex characters>: $CTL_IMAGE_RELEASE"
+    fi
+    case "$CTL_FIT_POLICY" in
+      ''|balanced|cpu|network|io) ;;
+      *) ctl_fail "--fit-policy must be balanced, cpu, network or io: $CTL_FIT_POLICY" ;;
+    esac
+    if [ -n "$CTL_GITHUB_CONFIG_URL" ] && ! [[ "$CTL_GITHUB_CONFIG_URL" =~ ^https?://[^/]+/.+ ]]; then
+      ctl_fail "--github-config-url must name a repository, organization or enterprise URL: $CTL_GITHUB_CONFIG_URL"
+    fi
+    ctl_integer --vcpus "$CTL_VCPUS"
+    ctl_integer --memory-mib "$CTL_MEMORY_MIB"
+    ctl_integer --warm-pool "$CTL_WARM_POOL"
+    ctl_integer --min-runners "$CTL_MIN_RUNNERS"
+    ctl_integer --max-runners "$CTL_MAX_RUNNERS"
+    ctl_integer --github-app-installation-id "$CTL_APP_INSTALLATION_ID"
+    ctl_plain --github-config-url "$CTL_GITHUB_CONFIG_URL"
+    ctl_plain --image-release "$CTL_IMAGE_RELEASE"
+    ctl_plain --scale-set-name "$CTL_SCALE_SET_NAME"
+    ctl_plain --labels "$CTL_LABELS"
+    ctl_plain --runner-group "$CTL_RUNNER_GROUP"
+    ctl_plain --github-app-client-id "$CTL_APP_CLIENT_ID"
+    ctl_plain --cache-facts-url "$CTL_CACHE_FACTS_URL"
+    ctl_absolute --controller-token-file "$CTL_TOKEN_FILE"
+    ctl_absolute --github-app-private-key-file "$CTL_APP_KEY_FILE"
+    ctl_absolute --github-token-file "$CTL_GITHUB_TOKEN_FILE"
+    ctl_absolute --cache-signing-key-file "$CTL_CACHE_KEY_FILE"
+    if [ -n "$CTL_GITHUB_TOKEN_FILE" ] &&
+      { [ -n "$CTL_APP_CLIENT_ID" ] || [ -n "$CTL_APP_INSTALLATION_ID" ] || [ -n "$CTL_APP_KEY_FILE" ]; }; then
+      ctl_fail 'Give GitHub App credentials or --github-token-file, not both'
+    fi
+    if { [ -n "$CTL_CACHE_FACTS_URL" ] && [ -z "$CTL_CACHE_KEY_FILE" ]; } ||
+      { [ -z "$CTL_CACHE_FACTS_URL" ] && [ -n "$CTL_CACHE_KEY_FILE" ]; }; then
+      ctl_fail '--cache-facts-url and --cache-signing-key-file go together'
+    fi
+  }
+  ctl_validate
+
+  # The pin check precedes the root check on purpose: an unpinned deployment should refuse while
+  # the operator is still unprivileged, not after they have escalated.
+  [ "$(uname -s)" = 'Linux' ] || ctl_fail 'The controller role installs a systemd unit, so it needs Linux'
+  case "$(uname -m)" in
+    x86_64|amd64) CTL_TARGET='linux-x86_64' ;;
+    aarch64|arm64) CTL_TARGET='linux-arm64' ;;
+    *) ctl_fail "This deployment publishes no controller for $(uname -m)" ;;
+  esac
+  CTL_ASSET="runner-center-controller-$CTL_TARGET"
+  CTL_EXPECTED_SHA=$(ctl_pinned_digest "$CTL_TARGET")
+  [ -n "$CTL_EXPECTED_SHA" ] ||
+    ctl_fail "This EraInfra deployment pins no controller build for $CTL_TARGET, so there is nothing to verify the download against. Deploy a backend whose AGENT_RELEASE pins a release that publishes it."
+
+  if [ "$(id -u)" = '0' ]; then
+    CTL_SUDO=''
+  else
+    command -v sudo >/dev/null 2>&1 ||
+      ctl_fail "The controller role must run as root: curl -fsSL $CTL_SITE/install | sudo bash -s -- --role controller"
+    CTL_SUDO='sudo'
+  fi
+  $CTL_SUDO test -d /run/systemd/system ||
+    ctl_fail 'The controller role needs systemd as the init system; run runner-center-controller under your own supervisor instead (README, "Run a Profile controller")'
+
+  CTL_TMP=$(mktemp -d)
+  trap 'rm -rf "$CTL_TMP"' EXIT INT TERM
+
+  # The unit ships inside this script, checked like the worker-host files, so a truncated download
+  # of the script fails here rather than writing half a unit.
+  base64 -d > "$CTL_TMP/runner-center-controller@.service" <<'CTL_UNIT_B64'
+__CONTROLLER_UNIT_B64__
+CTL_UNIT_B64
+  [ "$(ctl_sha256 "$CTL_TMP/runner-center-controller@.service")" = '__CONTROLLER_UNIT_SHA256__' ] ||
+    ctl_fail 'The embedded controller unit failed its checksum; the download of this script was corrupted'
+
+  # The digest of what is installed now, or nothing. Read through $CTL_SUDO like every other
+  # privileged path, so a root-only file and the test suite's redirection both work.
+  ctl_installed_sha() {
+    if $CTL_SUDO test -f "$CTL_BINARY"; then
+      $CTL_SUDO cp "$CTL_BINARY" "$CTL_TMP/installed"
+      ctl_sha256 "$CTL_TMP/installed"
+    fi
+  }
+
+  # The bytes may come from anywhere. --source moves the payload's origin, a mirror or a file on
+  # local disk, and never the script's: this script and the digest in it arrived from this
+  # deployment over TLS, which is what makes an untrusted byte source safe to read from.
+  ctl_fetch_verified() {
+    CTL_URL="https://github.com/$CTL_REPO/releases/download/v$CTL_VERSION/$CTL_ASSET"
+    CTL_ORIGIN='the release this deployment pins'
+    if [ -n "$CTL_SOURCE" ]; then
+      case "$CTL_SOURCE" in
+        */) CTL_URL="$CTL_SOURCE$CTL_ASSET" ;;
+        *) CTL_URL=$CTL_SOURCE ;;
+      esac
+      CTL_ORIGIN=$CTL_URL
+    fi
+    ctl_log "Fetching the controller $CTL_VERSION for $CTL_TARGET from $CTL_ORIGIN."
+    CTL_DOWNLOAD="$CTL_TMP/$CTL_ASSET"
+    case "$CTL_URL" in
+      file://*)
+        cp "$(printf '%s' "$CTL_URL" | sed 's|^file://||')" "$CTL_DOWNLOAD" ||
+          ctl_fail "Could not read the controller from $CTL_URL"
+        ;;
+      /*) cp "$CTL_URL" "$CTL_DOWNLOAD" || ctl_fail "Could not read the controller from $CTL_URL" ;;
+      *) curl -fsSL "$CTL_URL" -o "$CTL_DOWNLOAD" || ctl_fail "Could not download the controller from $CTL_URL" ;;
+    esac
+    CTL_ACTUAL_SHA=$(ctl_sha256 "$CTL_DOWNLOAD")
+    if [ "$CTL_ACTUAL_SHA" != "$CTL_EXPECTED_SHA" ]; then
+      rm -f "$CTL_DOWNLOAD"
+      ctl_fail "Controller checksum verification failed: expected $CTL_EXPECTED_SHA but got $CTL_ACTUAL_SHA. Nothing was installed."
+    fi
+    ctl_log "Verified $CTL_ASSET against the checksum pinned by this EraInfra deployment."
+  }
+
+  # Install to a temporary name in the same directory, then rename: a running instance that
+  # restarts mid-install execs either the old file or the new one, never a partial copy.
+  ctl_swap_binary() {
+    $CTL_SUDO install -m 0755 "$1" "$CTL_BINARY.new"
+    $CTL_SUDO mv -f "$CTL_BINARY.new" "$CTL_BINARY"
+  }
+  ctl_mkdir() {
+    $CTL_SUDO test -d "$1" || $CTL_SUDO install -d -m "$2" "$1"
+  }
+
+  if [ "$CTL_UPDATE" -eq 1 ]; then
+    CTL_CURRENT_SHA=$(ctl_installed_sha)
+    [ -n "$CTL_CURRENT_SHA" ] ||
+      ctl_fail "No controller is installed at $CTL_BINARY; install a Profile first with --role controller --profile NAME"
+    ctl_fetch_verified
+    if [ "$CTL_CURRENT_SHA" = "$CTL_EXPECTED_SHA" ]; then
+      ctl_log "$CTL_BINARY is already the pinned controller $CTL_VERSION; nothing changed."
+      exit 0
+    fi
+    CTL_OLD_VERSION=$($CTL_SUDO "$CTL_BINARY" version 2>/dev/null | awk 'NR == 1 { print $2 }' || true)
+    [[ "$CTL_OLD_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || CTL_OLD_VERSION='unknown'
+    CTL_BACKUP="$CTL_BINARY.bak-$CTL_OLD_VERSION"
+    # Only the instances running now. Restarting a pattern would also start a stopped instance,
+    # which for a retired Profile re-registers a scale set nobody wants.
+    CTL_ACTIVE=$($CTL_SUDO systemctl list-units --type=service --state=active --plain --no-legend \
+      'runner-center-controller@*' | awk '$1 ~ /^runner-center-controller@[a-z0-9-]+\.service$/ { print $1 }' || true)
+    $CTL_SUDO cp -p "$CTL_BINARY" "$CTL_BACKUP"
+    ctl_log "Kept the previous controller ($CTL_OLD_VERSION) at $CTL_BACKUP."
+    if $CTL_SUDO test -f "$CTL_UNIT_PATH"; then
+      $CTL_SUDO cp "$CTL_UNIT_PATH" "$CTL_TMP/previous.service"
+    fi
+    ctl_swap_binary "$CTL_DOWNLOAD"
+    $CTL_SUDO install -m 0644 "$CTL_TMP/runner-center-controller@.service" "$CTL_UNIT_PATH"
+    $CTL_SUDO systemctl daemon-reload
+    ctl_log "Installed the controller $CTL_VERSION at $CTL_BINARY."
+    if [ -z "$CTL_ACTIVE" ]; then
+      ctl_log 'No controller instance is running on this host; the next one to start runs the new binary.'
+      exit 0
+    fi
+    for ctl_unit in $CTL_ACTIVE; do
+      $CTL_SUDO systemctl restart "$ctl_unit"
+    done
+    sleep 3
+    CTL_FAILED=''
+    for ctl_unit in $CTL_ACTIVE; do
+      $CTL_SUDO systemctl is-active --quiet "$ctl_unit" || CTL_FAILED="$CTL_FAILED $ctl_unit"
+    done
+    if [ -z "$CTL_FAILED" ]; then
+      for ctl_unit in $CTL_ACTIVE; do ctl_log "$ctl_unit restarted on $CTL_VERSION."; done
+      exit 0
+    fi
+    for ctl_unit in $CTL_FAILED; do
+      $CTL_SUDO journalctl -u "$ctl_unit" -n 20 --no-pager >&2 || true
+    done
+    ctl_swap_binary "$CTL_BACKUP"
+    if [ -f "$CTL_TMP/previous.service" ]; then
+      $CTL_SUDO install -m 0644 "$CTL_TMP/previous.service" "$CTL_UNIT_PATH"
+    fi
+    $CTL_SUDO systemctl daemon-reload
+    for ctl_unit in $CTL_ACTIVE; do
+      $CTL_SUDO systemctl restart "$ctl_unit" || true
+    done
+    ctl_fail "Did not stay running on $CTL_VERSION:$CTL_FAILED. Rolled back to $CTL_OLD_VERSION from $CTL_BACKUP and restarted the instances that were running."
+  fi
+
+  # A fresh Profile, or a rerun for one this host already serves.
+  CTL_TTY=0
+  # --no-prompt is for automation that runs under a pseudo-terminal (cloud-init, Ansible), where a
+  # prompt would hang instead of failing with the list of what is missing.
+  if [ "$CTL_PROMPT" -eq 1 ] && ( exec 3</dev/tty ) 2>/dev/null; then CTL_TTY=1; fi
+  # Prompt on the terminal, not stdin: stdin is this script, piped from curl.
+  ctl_prompt() {
+    printf '%s: ' "$2" >/dev/tty
+    ctl_answer=''
+    IFS= read -r ctl_answer </dev/tty || ctl_answer=''
+    printf -v "$1" '%s' "$ctl_answer"
+  }
+  CTL_MISSING=''
+  ctl_need() {
+    if [ -z "$(ctl_get "$1")" ] && [ "$CTL_TTY" -eq 1 ]; then ctl_prompt "$1" "$3"; fi
+    [ -n "$(ctl_get "$1")" ] || CTL_MISSING="$CTL_MISSING $2"
+  }
+  ctl_need CTL_PROFILE --profile 'Profile name (for example erainfra-4vcpu-ubuntu-2404)'
+  ctl_validate
+
+  # Without a Profile there is no env file to keep, so every setting counts as missing and the
+  # refusal below lists them all at once.
+  CTL_WRITE_CONFIG=1
+  if [ -n "$CTL_PROFILE" ] && $CTL_SUDO test -f "$CTL_ETC_DIR/profiles/$CTL_PROFILE.env" &&
+    [ "$CTL_RECONFIGURE" -eq 0 ]; then
+    CTL_WRITE_CONFIG=0
+    [ "$CTL_CONFIG_GIVEN" -eq 0 ] ||
+      ctl_warn "Kept the existing $CTL_ETC_DIR/profiles/$CTL_PROFILE.env and ignored the settings given; rerun with --reconfigure to replace it."
+  fi
+
+  if [ "$CTL_WRITE_CONFIG" -eq 1 ]; then
+    ctl_need CTL_GITHUB_CONFIG_URL --github-config-url 'GitHub repository, organization or enterprise URL'
+    ctl_need CTL_EXECUTOR --executor 'Executor (docker, firecracker, tart or hyperv)'
+    ctl_need CTL_IMAGE_RELEASE --image-release 'Image Release (ending in @sha256:<digest>)'
+    ctl_need CTL_TOKEN_FILE --controller-token-file 'Path to a file holding the controller token'
+    if [ -z "$CTL_GITHUB_TOKEN_FILE" ] && [ -z "$CTL_APP_CLIENT_ID" ] &&
+      [ -z "$CTL_APP_INSTALLATION_ID" ] && [ -z "$CTL_APP_KEY_FILE" ] && [ "$CTL_TTY" -eq 1 ]; then
+      ctl_prompt CTL_GITHUB_TOKEN_FILE 'Path to a GitHub token file (leave empty to use a GitHub App)'
+    fi
+    if [ -z "$CTL_GITHUB_TOKEN_FILE" ]; then
+      if [ "$CTL_TTY" -eq 0 ] && [ -z "$CTL_APP_CLIENT_ID" ] && [ -z "$CTL_APP_INSTALLATION_ID" ] &&
+        [ -z "$CTL_APP_KEY_FILE" ]; then
+        CTL_MISSING="$CTL_MISSING --github-app-client-id/--github-app-installation-id/--github-app-private-key-file or --github-token-file"
+      else
+        ctl_need CTL_APP_CLIENT_ID --github-app-client-id 'GitHub App client ID'
+        ctl_need CTL_APP_INSTALLATION_ID --github-app-installation-id 'GitHub App installation ID'
+        ctl_need CTL_APP_KEY_FILE --github-app-private-key-file 'Path to the GitHub App private key'
+      fi
+    fi
+    [ -z "$CTL_MISSING" ] || { ctl_usage >&2; ctl_fail "Missing:$CTL_MISSING"; }
+    ctl_validate
+    for ctl_source in "$CTL_TOKEN_FILE" "$CTL_APP_KEY_FILE" "$CTL_GITHUB_TOKEN_FILE" "$CTL_CACHE_KEY_FILE"; do
+      [ -z "$ctl_source" ] || $CTL_SUDO test -r "$ctl_source" || ctl_fail "Cannot read $ctl_source"
+    done
+  fi
+  CTL_ENV_FILE="$CTL_ETC_DIR/profiles/$CTL_PROFILE.env"
+  CTL_SECRETS_DIR="$CTL_ETC_DIR/secrets/$CTL_PROFILE"
+  CTL_UNIT="runner-center-controller@$CTL_PROFILE"
+
+  # Nothing on this machine has changed yet. Past the verification, it does.
+  if [ "$(ctl_installed_sha)" = "$CTL_EXPECTED_SHA" ]; then
+    ctl_log "$CTL_BINARY is already the pinned controller $CTL_VERSION."
+  else
+    ctl_fetch_verified
+    ctl_mkdir "$CTL_LIB_DIR" 0755
+    ctl_swap_binary "$CTL_DOWNLOAD"
+    ctl_log "Installed the controller $CTL_VERSION at $CTL_BINARY."
+  fi
+  $CTL_SUDO install -m 0644 "$CTL_TMP/runner-center-controller@.service" "$CTL_UNIT_PATH"
+
+  if ! getent passwd "$CTL_ACCOUNT" >/dev/null 2>&1; then
+    CTL_NOLOGIN=/usr/sbin/nologin
+    [ -x "$CTL_NOLOGIN" ] || CTL_NOLOGIN=/sbin/nologin
+    $CTL_SUDO useradd --system --user-group --no-create-home --home-dir /nonexistent \
+      --shell "$CTL_NOLOGIN" "$CTL_ACCOUNT" || ctl_fail "Could not create the $CTL_ACCOUNT account"
+    ctl_log "Created the unprivileged $CTL_ACCOUNT account."
+  fi
+
+  if [ "$CTL_WRITE_CONFIG" -eq 1 ]; then
+    ctl_mkdir "$CTL_ETC_DIR" 0755
+    ctl_mkdir "$CTL_ETC_DIR/profiles" 0755
+    ctl_mkdir "$CTL_ETC_DIR/secrets" 0750
+    $CTL_SUDO chgrp "$CTL_ACCOUNT" "$CTL_ETC_DIR/secrets"
+    ctl_mkdir "$CTL_SECRETS_DIR" 0750
+    $CTL_SUDO chgrp "$CTL_ACCOUNT" "$CTL_SECRETS_DIR"
+
+    # systemd reads the env file as root, but the controller reads every *_FILE path itself, as
+    # its unprivileged account. So the env file is root-only and each secret is group-readable by
+    # that account alone: created 0600, filled, then opened to the group, so no other local user
+    # ever sees a window in which it is readable.
+    ctl_secret() {
+      if [ -z "$1" ]; then return 0; fi
+      if [ "$1" != "$2" ]; then
+        $CTL_SUDO install -m 0600 /dev/null "$2"
+        $CTL_SUDO cp "$1" "$2"
+      fi
+      $CTL_SUDO chgrp "$CTL_ACCOUNT" "$2"
+      $CTL_SUDO chmod 0640 "$2"
+    }
+    ctl_secret "$CTL_TOKEN_FILE" "$CTL_SECRETS_DIR/controller-token"
+    ctl_secret "$CTL_APP_KEY_FILE" "$CTL_SECRETS_DIR/github-app.pem"
+    ctl_secret "$CTL_GITHUB_TOKEN_FILE" "$CTL_SECRETS_DIR/github-token"
+    ctl_secret "$CTL_CACHE_KEY_FILE" "$CTL_SECRETS_DIR/cache-signing-key"
+
+    ctl_line() { [ -z "$2" ] || printf '%s=%s\n' "$1" "$2"; }
+    $CTL_SUDO install -m 0600 /dev/null "$CTL_ENV_FILE"
+    {
+      printf '%s\n' "# Written by $CTL_SITE/install --role controller. Rerun it with --reconfigure to replace this file."
+      ctl_line RC_CONVEX_URL "$CTL_SITE"
+      ctl_line RC_CONTROLLER_TOKEN_FILE "$CTL_SECRETS_DIR/controller-token"
+      ctl_line RC_GITHUB_CONFIG_URL "$CTL_GITHUB_CONFIG_URL"
+      ctl_line RC_PROFILE "$CTL_PROFILE"
+      ctl_line RC_SCALE_SET_NAME "$CTL_SCALE_SET_NAME"
+      ctl_line RC_LABELS "$CTL_LABELS"
+      ctl_line RC_RUNNER_GROUP "$CTL_RUNNER_GROUP"
+      ctl_line RC_EXECUTOR "$CTL_EXECUTOR"
+      ctl_line RC_IMAGE_RELEASE "$CTL_IMAGE_RELEASE"
+      ctl_line RC_VCPUS "$CTL_VCPUS"
+      ctl_line RC_MEMORY_MIB "$CTL_MEMORY_MIB"
+      ctl_line RC_WARM_POOL "$CTL_WARM_POOL"
+      ctl_line RC_FIT_POLICY "$CTL_FIT_POLICY"
+      ctl_line RC_MIN_RUNNERS "$CTL_MIN_RUNNERS"
+      ctl_line RC_MAX_RUNNERS "$CTL_MAX_RUNNERS"
+      if [ -n "$CTL_GITHUB_TOKEN_FILE" ]; then
+        ctl_line RC_GITHUB_TOKEN_FILE "$CTL_SECRETS_DIR/github-token"
+      else
+        ctl_line RC_GITHUB_APP_CLIENT_ID "$CTL_APP_CLIENT_ID"
+        ctl_line RC_GITHUB_APP_INSTALLATION_ID "$CTL_APP_INSTALLATION_ID"
+        ctl_line RC_GITHUB_APP_PRIVATE_KEY_FILE "$CTL_SECRETS_DIR/github-app.pem"
+      fi
+      if [ -n "$CTL_CACHE_FACTS_URL" ]; then
+        ctl_line RC_CACHE_FACTS_URL "$CTL_CACHE_FACTS_URL"
+        ctl_line RC_CACHE_SIGNING_KEY_FILE "$CTL_SECRETS_DIR/cache-signing-key"
+      fi
+    } | $CTL_SUDO tee "$CTL_ENV_FILE" >/dev/null
+    ctl_log "Wrote $CTL_ENV_FILE (mode 0600) and the secrets under $CTL_SECRETS_DIR."
+  else
+    ctl_log "Kept the existing $CTL_ENV_FILE."
+  fi
+
+  $CTL_SUDO systemctl daemon-reload
+  $CTL_SUDO systemctl enable --now "$CTL_UNIT" >/dev/null 2>&1 ||
+    ctl_fail "Could not enable $CTL_UNIT"
+  # "enable --now" starts a stopped unit and does nothing to a running one, so on a rerun the old
+  # process would keep the bytes and settings it started with. Restart explicitly: what runs is
+  # what was just verified and written.
+  $CTL_SUDO systemctl restart "$CTL_UNIT"
+  sleep 3
+  if ! $CTL_SUDO systemctl is-active --quiet "$CTL_UNIT"; then
+    $CTL_SUDO journalctl -u "$CTL_UNIT" -n 20 --no-pager >&2 || true
+    ctl_fail "$CTL_UNIT did not stay running; its last log lines are above. Fix $CTL_ENV_FILE and rerun, or: sudo systemctl restart $CTL_UNIT"
+  fi
+  ctl_log "$CTL_UNIT is running the controller $CTL_VERSION."
+  printf '%s\n' "  Status:   systemctl status $CTL_UNIT"
+  printf '%s\n' "  Logs:     journalctl -u $CTL_UNIT -f"
+  printf '%s\n' "  Config:   $CTL_ENV_FILE (secrets in $CTL_SECRETS_DIR)"
+  printf '%s\n' "  Another Profile on this host: rerun this command with --profile <name>"
+  printf '%s\n' "  Update every Profile here:    curl -fsSL $CTL_SITE/install | sudo bash -s -- --role controller --update"
+  exit 0
+}
+
 case "$INSTALL_ROLE" in
   worker) ;;
   node)
@@ -516,8 +1015,12 @@ case "$INSTALL_ROLE" in
     worker_host_install "$@"
     exit 0
     ;;
+  controller)
+    controller_install "$@"
+    exit 0
+    ;;
   *)
-    printf '❌ %s\n' "Unknown --role: $INSTALL_ROLE (expected worker, node or worker-host)" >&2
+    printf '❌ %s\n' "Unknown --role: $INSTALL_ROLE (expected worker, node, worker-host or controller)" >&2
     exit 1
     ;;
 esac
@@ -1325,29 +1828,30 @@ printf '   Follow live progress with "rc logs -f" or in the dashboard readiness 
 `;
 
 /**
- * The `case` arms of `node_pinned_digest`, one per pinned target.
+ * The `case` arms of `node_pinned_digest` and `ctl_pinned_digest`, one per pinned target.
  *
  * Both halves are interpolated into single-quoted shell, so both are checked against the shapes the
  * release workflow enforces rather than trusted: a pin carrying a quote would be command injection
  * in a script an operator pipes to `sudo bash`. An empty map renders no arms, which is what makes
- * an unpinned deployment refuse `--role node` instead of installing something unverifiable.
+ * an unpinned deployment refuse `--role node` or `--role controller` instead of installing
+ * something unverifiable.
  */
-function renderPinnedDigests(infraAgent: AgentRelease["infraAgent"]) {
-  return Object.entries(infraAgent)
+function renderPinnedDigests(pins: Record<string, string>, what: string, indent = "    ") {
+  return Object.entries(pins)
     .map(([target, digest]) => {
       if (!/^[a-z0-9]+-[a-z0-9_]+$/.test(target)) {
-        throw new Error(`Infra Agent pin has an unusable target name: ${target}`);
+        throw new Error(`${what} pin has an unusable target name: ${target}`);
       }
       if (!/^[0-9a-f]{64}$/.test(digest)) {
-        throw new Error(`Infra Agent pin for ${target} is not a lowercase SHA-256 digest`);
+        throw new Error(`${what} pin for ${target} is not a lowercase SHA-256 digest`);
       }
-      return `    ${target}) printf '%s' '${digest}' ;;`;
+      return `${indent}${target}) printf '%s' '${digest}' ;;`;
     })
     .join("\n");
 }
 
 /**
- * An embedded file for the worker-host role, checked rather than trusted for the same reason the
+ * An embedded file for the worker-host or controller role, checked rather than trusted for the same reason the
  * digests are: it lands inside a heredoc in a script an operator pipes to `sudo bash`. The base64
  * alphabet cannot contain the heredoc terminators (no underscore), so proving the charset proves
  * the heredocs cannot be broken out of.
@@ -1367,7 +1871,16 @@ export function renderInstallScript(siteUrl: string, release: AgentRelease) {
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256)
-    .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent))
+    .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent, "Infra Agent"))
+    .replaceAll(
+      "__CONTROLLER_DIGESTS__",
+      renderPinnedDigests(release.controller, "Controller", "      "),
+    )
+    .replaceAll(
+      "__CONTROLLER_UNIT_B64__",
+      checkedEmbed("controller unit", CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256),
+    )
+    .replaceAll("__CONTROLLER_UNIT_SHA256__", CONTROLLER_UNIT_SHA256)
     .replaceAll(
       "__FIRECRACKER_PROVISIONER_B64__",
       checkedEmbed(

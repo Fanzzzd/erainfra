@@ -205,14 +205,20 @@ uninstall() {
   done
 
   step 'Removing installed files'
-  rm -rf "$RC_CNI_BIN_DIR" "$RC_LIB_DIR"
+  rm -rf "$RC_CNI_BIN_DIR"
+  # Only the files this script put in the lib directory, never the directory
+  # itself: a host can also run a scale-set controller, whose binary
+  # `/install --role controller` keeps beside these, and an uninstall must not
+  # take a Profile's job intake down with the Worker.
+  rm -f "$RC_LIB_DIR/runner-center-runtime" "$RC_LIB_DIR/thinpool-setup.sh"
   rm -f /usr/local/bin/firecracker "$RC_ETC_DIR/thinpool.env" "$RC_RUNTIME_ENV" \
     "$RC_ETC_DIR/containerd.toml"
   # Take the private directory trees with them, rather than leaving a skeleton
   # of empty directories behind. rmdir, not rm -rf: anything an operator put
   # here that this script did not write stays, and says so by the directory
   # surviving.
-  for directory in /opt/runner-center/cni /opt/runner-center "$RC_ETC_DIR/cni" "$RC_ETC_DIR"; do
+  for directory in /opt/runner-center/cni /opt/runner-center "$RC_ETC_DIR/cni" "$RC_ETC_DIR" \
+    "$RC_LIB_DIR"; do
     rmdir "$directory" 2>/dev/null || true
   done
   printf '\n'
