@@ -90,6 +90,7 @@ func TestDockerBridgeResolvesWhatHostGatewayResolvesTo(t *testing.T) {
 		"a daemon.json without host-gateway settings": {docker: "172.17.0.1 ", config: `{"log-driver":"local"}`, want: "172.17.0.1"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			config := absent
 			if tc.config != "" {
 				config = daemonJSON(t, tc.config)
@@ -109,6 +110,7 @@ func TestDockerBridgeResolvesWhatHostGatewayResolvesTo(t *testing.T) {
 		"an unreadable daemon configuration": {docker: "172.17.0.1 ", config: `{not json`},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			config := absent
 			if tc.config != "" {
 				config = daemonJSON(t, tc.config)
@@ -186,7 +188,7 @@ func TestAppLinkStaysClosedUntilTheBridgeResolves(t *testing.T) {
 	f.prove(peer, meshclient.Peer{ID: idB, RelayURLs: []string{}, DirectAddrs: []string{"192.0.2.7:4433"}})
 	f.appLink("shop-db", peer, a.credential, 62005, 62001)
 
-	var bridgeErr error = errors.New("docker network inspect bridge failed")
+	bridgeErr := errors.New("docker network inspect bridge failed")
 	a.loop.o.Bridge = func(context.Context) (netip.Addr, error) {
 		if bridgeErr != nil {
 			return netip.Addr{}, bridgeErr
