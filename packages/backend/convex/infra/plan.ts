@@ -72,7 +72,8 @@ export async function planDeploy(input: {
     else if (s.node === undefined) nodeOf.set(s.name, input.defaultNodeId);
     else {
       const id = input.nodeIdOf(s.node);
-      if (id === null) return { ok: false, error: `service "${s.name}": no Node named "${s.node}"` };
+      if (id === null)
+        return { ok: false, error: `service "${s.name}": no Node named "${s.node}"` };
       nodeOf.set(s.name, id);
     }
   }
@@ -169,7 +170,9 @@ export function canonicalJson(value: unknown): string {
 
 /** The Nodes whose group of services differs between two placements, so failover redeploys only those. */
 export function changedNodes(
-  before: ReadonlyArray<Omit<PlannedService, "nodeId" | "env"> & { nodeId?: NodeId; env?: Record<string, string> }>,
+  before: ReadonlyArray<
+    Omit<PlannedService, "nodeId" | "env"> & { nodeId?: NodeId; env?: Record<string, string> }
+  >,
   beforeDefault: NodeId,
   after: readonly PlannedService[],
 ): NodeId[] {

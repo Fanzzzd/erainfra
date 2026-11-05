@@ -23,7 +23,16 @@ const LABEL = /^[a-z0-9][a-z0-9-]{0,62}$/;
 // hand the repository's authors the Node's filesystem.
 const VOLUME = /^[a-z0-9][a-z0-9-]{0,62}:\/[^\s:]+$/;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SERVICE_KEYS = ["build", "image", "port", "route", "env", "volumes", "node", "needs"];
+const SERVICE_KEYS = new Set([
+  "build",
+  "image",
+  "port",
+  "route",
+  "env",
+  "volumes",
+  "node",
+  "needs",
+]);
 
 /** The largest spec file the pipeline accepts from a build Node. */
 export const MAX_SPEC_BYTES = 64 * 1024;
@@ -70,7 +79,7 @@ function checkService(name: string, value: unknown): { ok: true; raw: Raw } | Sp
   if (!LABEL.test(name)) return fail(at, "lowercase alphanumeric + dashes");
   if (!isObject(value)) return fail(at, "expected an object");
   for (const key of Object.keys(value))
-    if (!SERVICE_KEYS.includes(key)) return fail(at, `Unrecognized key: "${key}"`);
+    if (!SERVICE_KEYS.has(key)) return fail(at, `Unrecognized key: "${key}"`);
   const raw: Raw = {};
   if (value.build !== undefined) {
     if (typeof value.build !== "string" || value.build.length > 255)
@@ -173,7 +182,10 @@ export function parseSpec(yamlText: string, fallbackApp: string): SpecResult {
     if (!!s.build === !!s.image)
       return { ok: false, error: `service "${name}": set exactly one of build / image` };
     if (s.build !== undefined && (s.build.startsWith("/") || s.build.split("/").includes(".."))) {
-      return { ok: false, error: `service "${name}": build must be a relative dir inside the repo` };
+      return {
+        ok: false,
+        error: `service "${name}": build must be a relative dir inside the repo`,
+      };
     }
     // route:true is the App name when it is the only routed service, else <app>-<service>.
     let route: string | undefined;

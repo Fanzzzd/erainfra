@@ -179,18 +179,21 @@ async function kickApp(ctx: MutationCtx, app: string) {
 async function advance(ctx: MutationCtx, run: Run) {
   for (let guard = 0; guard < 8; guard++) {
     if (isTerminalStage(run.stage)) return;
-    const next = await step(ctx, run);
+    const next = await runStage(ctx, run);
     if (next === null) return;
     run = next;
   }
 }
 
 /** One stage. Returns the updated run to continue with, or null to wait. */
-async function step(ctx: MutationCtx, run: Run): Promise<Run | null> {
+async function runStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   switch (run.stage) {
     case "reading-spec": {
       const nodeId = run.buildNodeId!;
-      const state = await runStep(ctx, run, nodeId, "spec", { kind: "spec", deploymentId: run._id });
+      const state = await runStep(ctx, run, nodeId, "spec", {
+        kind: "spec",
+        deploymentId: run._id,
+      });
       if (state.kind !== "done") return state.kind === "wait" ? null : await fail(ctx, run, state);
       const text = state.command.specText ?? "";
       let spec: AppSpec;
@@ -400,7 +403,9 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       allocate: (nodeId, key) => allocatePort(ctx, nodeId, key),
     });
   } catch (e) {
-    return await fail(ctx, run, { error: e instanceof ConvexError ? String(e.data) : "planning failed" });
+    return await fail(ctx, run, {
+      error: e instanceof ConvexError ? String(e.data) : "planning failed",
+    });
   }
   if (!planned.ok) return await fail(ctx, run, { error: planned.error });
   const plan = planned.plan;
@@ -448,7 +453,11 @@ async function cancelRetirements(ctx: MutationCtx, app: string, nodeId: Id<"node
       (row.command.operation.args.name ?? "").startsWith(`${app}-`) &&
       row.idempotencyKey.includes(":retire-")
     )
-      await ctx.db.patch(row._id, { status: "cancelled", unsettled: false, finishedAt: Date.now() });
+      await ctx.db.patch(row._id, {
+        status: "cancelled",
+        unsettled: false,
+        finishedAt: Date.now(),
+      });
   }
 }
 
@@ -550,7 +559,11 @@ async function cleanUp(ctx: MutationCtx, run: Run) {
     .take(100);
   for (const row of steps)
     if (row.status === "pending" || row.status === "running")
-      await ctx.db.patch(row._id, { status: "cancelled", unsettled: false, finishedAt: Date.now() });
+      await ctx.db.patch(row._id, {
+        status: "cancelled",
+        unsettled: false,
+        finishedAt: Date.now(),
+      });
   if (run.source?.kind === "upload" && !run.sourceDeleted) {
     await ctx.storage.delete(run.source.storageId).catch(() => undefined);
     await ctx.db.patch(run._id, { sourceDeleted: true });

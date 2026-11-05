@@ -173,7 +173,9 @@ describe("spec parsing", () => {
       ["web", "shop"],
       ["db", null],
     ]);
-    expect(parseSpec("services:\n  web:\n    image: x\n    volumes: [/etc:/etc]\n", "a")).toMatchObject({
+    expect(
+      parseSpec("services:\n  web:\n    image: x\n    volumes: [/etc:/etc]\n", "a"),
+    ).toMatchObject({
       ok: false,
     });
     expect(parseSpec("services:\n  web:\n    image: x\n    privileged: true\n", "a")).toEqual({
@@ -237,7 +239,10 @@ describe("deploy pipeline", () => {
     });
     // A service-private secret reaches only the Node running that service.
     expect(web.env.POSTGRES_PASSWORD).toBeUndefined();
-    expect(onB[0].payload.services[0].env).toMatchObject({ POSTGRES_PASSWORD: "pw", API_KEY: "k-1" });
+    expect(onB[0].payload.services[0].env).toMatchObject({
+      POSTGRES_PASSWORD: "pw",
+      API_KEY: "k-1",
+    });
 
     const done = await s.deployment(id);
     expect(done).toMatchObject({ stage: "done", urls: ["https://shop.apps.example.com"] });
@@ -394,7 +399,9 @@ describe("deploy pipeline", () => {
     ).rejects.toThrow(/Stale/);
 
     // The run's own tick refuses to advance on the old epoch and fails the run instead.
-    await s.t.mutation(internal.infra.pipeline.tick, { deploymentId: first as Id<"appDeployments"> });
+    await s.t.mutation(internal.infra.pipeline.tick, {
+      deploymentId: first as Id<"appDeployments">,
+    });
     expect(await s.deployment(first)).toMatchObject({
       stage: "failed",
       error: "lost its App lease mid-run",
@@ -510,9 +517,12 @@ describe("push-to-deploy", () => {
       calls.push({ url, body: init.body ? JSON.parse(init.body as string) : undefined });
       if (url.endsWith("/repos/acme/shop/installation"))
         return new Response(JSON.stringify({ id: 77 }), { status: 200 });
-      return new Response(JSON.stringify({ token: "ghs_minted", expires_at: "2026-11-06T01:00:00Z" }), {
-        status: 201,
-      });
+      return new Response(
+        JSON.stringify({ token: "ghs_minted", expires_at: "2026-11-06T01:00:00Z" }),
+        {
+          status: 201,
+        },
+      );
     });
     const seen = await s.agent("node-a", () => ({
       outcome: "success",

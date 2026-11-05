@@ -127,10 +127,11 @@ export const start = internalMutation({
   },
 });
 
+const iso = (ms: number | undefined) => (ms === undefined ? null : new Date(ms).toISOString());
+
 async function view(ctx: QueryCtx, row: Doc<"appDeployments">) {
   const name = async (id: Id<"nodes"> | undefined) =>
     id === undefined ? null : ((await ctx.db.get(id))?.name ?? null);
-  const iso = (ms: number | undefined) => (ms === undefined ? null : new Date(ms).toISOString());
   return {
     id: row._id,
     app: row.app,

@@ -17,7 +17,16 @@ import type { ApiTokenScope } from "../apiTokenPolicy";
 import { API_PREFIX, apiError, apiJson, authenticateBearer } from "../operatorHttp";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
-const DEPLOY_FIELDS = ["app", "upload", "repo", "branch", "sha", "port", "buildNode", "node"];
+const DEPLOY_FIELDS = new Set([
+  "app",
+  "upload",
+  "repo",
+  "branch",
+  "sha",
+  "port",
+  "buildNode",
+  "node",
+]);
 
 function route(
   needed: ApiTokenScope,
@@ -34,7 +43,11 @@ function route(
             ? "This route needs an admin token"
             : "This route needs a read or admin token",
         );
-      return apiError(401, "unauthorized", "Send a valid API token as Authorization: Bearer <token>");
+      return apiError(
+        401,
+        "unauthorized",
+        "Send a valid API token as Authorization: Bearer <token>",
+      );
     }
     return await handler(ctx, request, `token:${auth.caller.name}`);
   });
@@ -81,7 +94,7 @@ export function registerDeployRoutes(http: HttpRouter) {
     handler: route("admin", async (ctx, request, actor) => {
       const body = await readBody(request);
       if (body === null) return apiError(400, "invalid_request", "Send a JSON object");
-      const unknown = Object.keys(body).find((key) => !DEPLOY_FIELDS.includes(key));
+      const unknown = Object.keys(body).find((key) => !DEPLOY_FIELDS.has(key));
       if (unknown !== undefined)
         return apiError(400, "invalid_request", `unknown field ${unknown}`);
       const strings: Record<string, string | undefined> = {};
