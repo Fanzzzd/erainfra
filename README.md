@@ -423,9 +423,13 @@ hold the lease too. A fresh network score below 40 delays a Worker candidate by 
 the lease frees, giving better-connected Workers the first chance
 ([ADR 0014](docs/adr/0014-controllers-run-on-the-workers-under-a-lease.md)).
 
-A Worker standby uses its existing machine credential. It reads the complete Profile from Convex
+A Worker standby uses its existing machine credential. It reads the Profile's contract from Convex
 and gets a short-lived GitHub App installation token from Convex only while holding the lease.
-It receives no App key or shared controller token. Install it beside an already enrolled Worker:
+It receives no App key or shared controller token. The job cache is the one setting it cannot read
+from Convex, because the signing key stays off the control plane: if the Profile publishes cache
+facts, give the standby `--cache-facts-url` and `--cache-signing-key-file` too. Convex refuses the
+lease to a standby without them, and its heartbeat shows `incapable`. Install it beside an already
+enrolled Worker:
 
 ```bash
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \

@@ -245,6 +245,7 @@ const acquireResultValidator = v.union(
       v.literal("profilePaused"),
       v.literal("profileIncomplete"),
       v.literal("notReady"),
+      v.literal("incapable"),
     ),
     holder: v.optional(v.string()),
     retryAfterMs: v.number(),
@@ -272,6 +273,7 @@ export const acquire = internalMutation({
     hostname: v.string(),
     instance: v.string(),
     activate: v.optional(v.boolean()),
+    canPublishCacheFacts: v.optional(v.boolean()),
     caller: controllerCallerValidator,
   },
   returns: acquireResultValidator,
@@ -308,6 +310,10 @@ export const acquire = internalMutation({
         readiness.memoryMiB !== profile.memoryMiB
       )
         return refusal("notReady");
+      // A Profile that publishes cache facts needs a holder that can. Leasing it to one that cannot
+      // would leave its runners with no facts, so every cache request would be refused with 401.
+      if (profile.githubCacheFacts === true && args.canPublishCacheFacts !== true)
+        return refusal("incapable");
     } else if (profile?.state === "paused" && !args.activate) {
       return refusal("profilePaused");
     }

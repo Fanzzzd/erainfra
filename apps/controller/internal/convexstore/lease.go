@@ -22,11 +22,13 @@ type leaseRequest struct {
 	Hostname string `json:"hostname"`
 	Instance string `json:"instance"`
 	Activate bool   `json:"activate,omitempty"`
+	// Omitted when false, which an older backend ignores and this one reads as false.
+	CanPublishCacheFacts bool `json:"canPublishCacheFacts,omitempty"`
 }
 
 func (s *Store) AcquireLease(ctx context.Context, profile, hostname, instance string) (fleet.LeaseGrant, error) {
 	var grant fleet.LeaseGrant
-	err := s.doJSON(ctx, http.MethodPost, "/controller/lease/acquire", leaseRequest{Profile: profile, Hostname: hostname, Instance: instance, Activate: s.ActivateProfile}, &grant, true)
+	err := s.doJSON(ctx, http.MethodPost, "/controller/lease/acquire", leaseRequest{Profile: profile, Hostname: hostname, Instance: instance, Activate: s.ActivateProfile, CanPublishCacheFacts: s.CanPublishCacheFacts}, &grant, true)
 	if err == nil && grant.Granted {
 		s.ActivateProfile = false
 	}
