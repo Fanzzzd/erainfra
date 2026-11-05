@@ -21,7 +21,7 @@ instead.
 | Hub API tokens (`plt_…`) and Hub sessions. Not imported.                                                  | Mint dashboard API tokens (Settings, API tokens): `read` for scripts that only look, `admin` for deploys. People sign in to the dashboard with their imported Hub password.                                                          |
 | Hub S3 backups (`portless backup`).                                                                       | Convex holds the state; use Convex's snapshot export for backups. Keep `ERAINFRA_SECRETS_MASTER_KEY` in a safe place: without it the stored secrets cannot be decrypted.                                                             |
 | The Hub dashboard (`portless.<zone>`).                                                                    | The EraInfra dashboard: Nodes, Apps, Deployments and Links pages.                                                                                                                                                                    |
-| `portless bind`, `portless repos`, `portless redeploy`.                                                   | Bind a branch with `npx convex run infra/git:bind` as an owner or admin; push-to-deploy then runs from Convex. `erainfra deploy --repo owner/name --branch <b>` replaces `redeploy`.                                                 |
+| `portless bind`, `portless repos`, `portless redeploy`.                                                   | The importer copies the Hub's bindings. `erainfra git bind owner/name <branch> --app <app>` binds another (admin token); step 4 moves the webhook. `erainfra deploy --repo owner/name --branch <b>` replaces `redeploy`.             |
 | Legacy dumbpipe links, and links to a Node still in Hub mode.                                             | Every Node runs `connect-convex` with a sidecar before step 5; `erainfra links list` must show `transport mesh` for every link.                                                                                                      |
 | `/agent.sh`, `/cli.sh` and `/agent-bin` on the Hub host.                                                  | `/install --role node` on the Convex site and the GitHub Release (ADR 0006).                                                                                                                                                         |
 
@@ -53,6 +53,7 @@ Check what arrived:
 erainfra nodes list    # every Hub Node, transport hub
 erainfra apps list     # every App, status hub
 erainfra links list    # every link, transport legacy for now
+erainfra git bindings  # every branch the Hub deployed on push
 ```
 
 ## 2. Enroll each Node and switch it to connect-convex
@@ -109,6 +110,19 @@ Run each check with the `erainfra` CLI logged in to the Convex site, never `port
 - **Links.** `erainfra links list` shows every link `mesh` and `active`, and each consumer reaches
   its provider on the surfaced port.
 - **Env.** `erainfra env list <app>` shows the names the Hub had.
+- **Push-to-deploy.** Set the deploy GitHub App's credentials in the Convex environment,
+  `ERAINFRA_GH_WEBHOOK_SECRET` among them
+  ([Push-to-deploy](../infra-management.md#push-to-deploy)), then change the App's webhook URL from
+  `https://<hub>/webhook/github` to `https://<deployment>.convex.site/github/webhook`. From then on
+  pushes deploy from Convex, not the Hub. Push a commit to a bound branch;
+  `erainfra deployments list --app <app>` shows a `git` run ending `done`. Bind any further branch
+  with an admin token, or `POST /api/v1/git/bindings`:
+
+  ```sh
+  erainfra git bind acme/web main --app web --build-node edge-1 --deploy-node edge-2
+  erainfra git bindings
+  ```
+
 - **Dashboard.** The Nodes, Apps, Deployments and Links pages show the same.
 
 Then remove the test App: `erainfra apps remove hello-retire --yes`.
@@ -156,3 +170,5 @@ done in Convex since then (deploys, env changes, links, removed Apps) is not in 
    credential (`erainfra nodes revoke <name>`) if it should leave the Convex mesh.
 4. Redeploy through the Hub (`portless deploy` or `portless redeploy`) any App that changed in
    Convex after the Hub stopped, and set again any env changed in Convex.
+5. Point the deploy GitHub App's webhook back at `https://<hub>/webhook/github`, and bind on the Hub
+   (`portless bind`) any branch bound in Convex after the Hub stopped.

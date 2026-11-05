@@ -648,13 +648,13 @@ export const remove = mutation({
 // Operator API (/api/v1): internal, called by infra/operatorRoutes.ts with the token it
 // authenticated. A refusal is returned, not thrown, so its audit row commits.
 
-type Result<T> = { ok: true; value: T } | { ok: false; error: string };
+export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 /**
  * Run a change and audit a refusal. Convex keeps the writes of a mutation that catches an error,
  * so every body run through here validates everything before its first write.
  */
-async function audited<T>(
+export async function audited<T>(
   ctx: MutationCtx,
   input: { actor: string; action: string; target?: string },
   body: () => Promise<T>,
