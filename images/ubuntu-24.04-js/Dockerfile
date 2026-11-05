@@ -13,6 +13,7 @@ FROM docker.io/library/ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5
 ARG TARGETARCH
 ARG RUNNER_VERSION=2.336.0
 ARG NODE_VERSION=22.23.2
+ARG NODE_24_VERSION=24.22.1
 ARG PNPM_VERSION=11.21.0
 ARG GO_VERSION=1.25.3
 ARG GH_VERSION=2.97.0
@@ -26,6 +27,8 @@ RUN apt-get update \
     curl \
     dbus \
     docker.io \
+    docker-buildx \
+    docker-compose-v2 \
     git \
     git-lfs \
     haveged \
@@ -155,6 +158,14 @@ RUN install -d \
 
 # Populate the exact tool-cache layout actions/setup-node probes. Workflows can
 # keep using the official action without downloading Node on every fresh VM.
+#
+# pnpm keeps its default store, under the runner's home, exactly as on
+# ubuntu-latest. The image used to point it at /runner-cache/pnpm, a
+# Profile-local volume that no executor mounts any more (ADR 0002: nothing
+# writable survives a job). The override outlived the volume and cost more than
+# nothing: actions/cache versions an entry by its path, so a store saved on a
+# hosted runner could never be restored here, and every job reinstalled from
+# the registry.
 RUN case "$TARGETARCH" in \
       amd64) node_arch=x64; node_sha=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307 ;; \
       arm64) node_arch=arm64; node_sha=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8 ;; \
@@ -173,17 +184,32 @@ RUN case "$TARGETARCH" in \
   && ln -s "$node_dir/bin/npm" /usr/local/bin/npm \
   && ln -s "$node_dir/bin/npx" /usr/local/bin/npx \
   && npm install --global --prefix /usr/local "pnpm@${PNPM_VERSION}" \
-  && install -d -o runner -g docker /home/runner/.config/pnpm /runner-cache/pnpm \
-  && printf 'storeDir: /runner-cache/pnpm\nverifyStoreIntegrity: true\n' \
-    > /home/runner/.config/pnpm/config.yaml \
-  && printf 'store-dir=/runner-cache/pnpm\nverify-store-integrity=true\n' \
-    > /home/runner/.config/pnpm/rc \
-  && chown runner:docker \
-    /home/runner/.config/pnpm/config.yaml \
-    /home/runner/.config/pnpm/rc \
   && node --version \
   && pnpm --version \
   && chown -R runner:docker /opt/hostedtoolcache
+
+# A second Node, in the tool cache only. GitHub's hosted image carries several
+# Node majors there and setup-node takes an exact version straight from it, so a
+# workflow that pins Node 24 -- Payable pins 24.22.1 -- would otherwise download
+# about 30 MB from nodejs.org on every fresh VM. It is deliberately not linked
+# onto PATH: the default `node` stays the 22 this image was built and smoke-tested
+# around, and only a workflow that asks setup-node for 24 sees this one.
+RUN case "$TARGETARCH" in \
+      amd64) node_arch=x64; node_sha=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6 ;; \
+      arm64) node_arch=arm64; node_sha=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && node_dir="/opt/hostedtoolcache/node/${NODE_24_VERSION}/${node_arch}" \
+  && install -d -o runner -g docker "$node_dir" \
+  && curl --fail --location --retry 5 \
+    --output /tmp/node.tar.xz \
+    "https://nodejs.org/dist/v${NODE_24_VERSION}/node-v${NODE_24_VERSION}-linux-${node_arch}.tar.xz" \
+  && echo "${node_sha}  /tmp/node.tar.xz" | sha256sum --check --strict \
+  && tar --extract --xz --strip-components=1 --file /tmp/node.tar.xz --directory "$node_dir" \
+  && rm /tmp/node.tar.xz \
+  && touch "/opt/hostedtoolcache/node/${NODE_24_VERSION}/${node_arch}.complete" \
+  && "$node_dir/bin/node" --version \
+  && chown -R runner:docker /opt/hostedtoolcache/node
 
 # Go, in the same tool-cache layout as Node above, because this image already
 # seeds the actions/setup-go archive and then shipped no Go for it to find. The

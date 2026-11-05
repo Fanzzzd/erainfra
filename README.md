@@ -195,12 +195,12 @@ HTTP request body. They never appear in argv or a host environment variable.
 
 - Ubuntu 24.04 and systemd;
 - actions/runner 2.336.0, checksum verified;
-- Node.js 22.23.2 and Go 1.25.3 in the hosted-toolcache layout, each checksum verified, so
-  `setup-node` and `setup-go` resolve them without a download;
+- Node.js 22.23.2 (the default `node`) and 24.22.1, and Go 1.25.3, in the hosted-toolcache layout,
+  each checksum verified, so `setup-node` and `setup-go` resolve them without a download;
 - GitHub CLI 2.97.0, checksum verified;
 - an official runner action-archive cache seeded with the exact checkout, pnpm, setup-node, and
   setup-go commits used by the workflows;
-- pnpm 11.21.0, Git, Docker, build tools, `libatomic1`, and common archive tools including `zstd`,
+- pnpm 11.21.0, Git, Docker with the Compose v2 and Buildx plugins, build tools, `libatomic1`, and common archive tools including `zstd`,
   which `actions/cache` shells out to and falls back to gzip without;
 - the OpenSSH **client**, `python3`, `pip3`, and `rsync`;
 - `LANG=C.UTF-8`, a generated `en_US.UTF-8`, and a `tzdata` database set to `Etc/UTC`, so a named
