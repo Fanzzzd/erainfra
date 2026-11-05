@@ -155,10 +155,15 @@ service, and forwards artifact calls and everything else to GitHub
 ([ADR 0008](docs/adr/0008-win-the-cache-endpoint-below-the-environment.md)). The caches of
 `actions/cache`, `setup-node` and `setup-go` all take this path.
 
-- **Scope.** Entries are stored per repository. The guest's token names only the runner. At
-  `JobStarted` the controller tells the cache service which repository, event and ref that runner's
-  job belongs to, and the service scopes every request to them. The controller does not yet send a
-  pull request's base ref, so a `pull_request` job gets no scope and reads a cold cache.
+- **Scope.** Entries are stored per repository and ref. The guest's token names only the runner.
+  At `JobStarted` the controller reads the job's workflow run from GitHub, works out which refs the
+  job may read and the one it may write, and pushes those facts to the cache service, which applies
+  them to every request. The rules follow GitHub's own cache restrictions: a branch or tag job reads
+  its own ref, then the default branch; a pull request reads `refs/pull/<n>/merge`, then its base
+  branch, then the default branch, and writes only to its merge ref; a pull request from a fork
+  writes nothing; a sibling branch is never readable. A lookup that fails or takes over 3 s gives
+  the job a cold cache, never a wider one. The exact table is in
+  [the runbook](docs/runbooks/operate-the-job-cache.md#one-key-three-holders).
 - **Failure.** A cache service or store that cannot answer in time turns into a cache miss or a
   request forwarded to GitHub. A guest whose redirect does not come up talks to GitHub directly. A
   cache failure makes the cache step warn; it does not fail the job.
@@ -364,12 +369,12 @@ Profiles must leave it at zero.
 
 ### GitHub permissions the controller needs
 
-The controller makes one GitHub REST call that needs a permission: it creates a runner registration
-token at the scope `RC_GITHUB_CONFIG_URL` names. The scale-set client exchanges that token for an
-Actions service session, and every later operation goes through that session, not the REST API:
-creating or updating the scale set, issuing JIT configurations, removing runners, and polling for
-jobs. Minting a GitHub App installation token is signed with the App's own key and needs no
-permission.
+Registering the scale set takes one GitHub REST call that needs a permission: the controller
+creates a runner registration token at the scope `RC_GITHUB_CONFIG_URL` names. The scale-set client
+exchanges that token for an Actions service session, and every later scale-set operation goes
+through that session, not the REST API: creating or updating the scale set, issuing JIT
+configurations, removing runners, and polling for jobs. Minting a GitHub App installation token is
+signed with the App's own key and needs no permission.
 
 | `RC_GITHUB_CONFIG_URL`                      | GitHub App                                        | Personal access token                                                    |
 | ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -378,15 +383,24 @@ permission.
 | `https://github.com/enterprises/ENTERPRISE` | not possible; the controller refuses it at start  | classic only, with `manage_runners:enterprise`, set as `RC_GITHUB_TOKEN` |
 
 An organization scale set needs no Administration permission. GitHub gives every App with a
-repository permission read-only Metadata, which is all an App needs beyond the row above. A GitHub
-Enterprise Server host follows the same path rules, so `https://ghes.example/ORGANIZATION` is an
-organization scope.
+repository permission read-only Metadata. A GitHub Enterprise Server host follows the same path
+rules, so `https://ghes.example/ORGANIZATION` is an organization scope.
 
-Repository: Actions, read-only is not needed today. The controller takes a job's repository and ref
-from the `JobStarted` message and calls no Actions REST endpoint. The planned lookup that fills a
-pull request's base ref and head repository for [the job cache](#the-job-cache) reads
-`GET /repos/{owner}/{repo}/actions/runs/{run_id}`, which needs it, so an App that will push cache
-facts can be granted it now.
+A controller that pushes cache facts (`RC_CACHE_FACTS_URL` set) also reads three repository
+endpoints at `JobStarted` for [the job cache](#the-job-cache), with the same credentials. An
+organization or enterprise scale set needs these on every repository whose jobs it serves.
+
+| endpoint                                          | why                                                    | GitHub App permission      |
+| ------------------------------------------------- | ------------------------------------------------------ | -------------------------- |
+| `GET /repos/{owner}/{repo}/actions/runs/{run_id}` | the job's head branch, event, pull requests and fork   | Repository: Actions, read  |
+| `GET /repos/{owner}/{repo}`                       | the default branch                                     | Repository: Metadata, read |
+| `GET /repos/{owner}/{repo}/git/ref/{ref}`         | whether a reusable workflow's ref is a tag or a branch | Repository: Contents, read |
+
+A fine-grained token needs the same three; a classic token needs `repo` for private repositories.
+Without Actions read, every job's lookup fails and reads a cold cache. Without Contents read, jobs
+inside reusable workflows on branch and tag events do. The controller logs
+`could not establish the job's cache scope; publishing read-only facts` with GitHub's status code in
+either case.
 
 Sources, per endpoint: GitHub's
 [permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
@@ -394,16 +408,21 @@ and
 [for fine-grained personal access tokens](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)
 (`POST /repos/{owner}/{repo}/actions/runners/registration-token` under Administration,
 `POST /orgs/{org}/actions/runners/registration-token` under Self-hosted runners,
-`GET /repos/{owner}/{repo}/actions/runs/{run_id}` under Actions);
+`GET /repos/{owner}/{repo}/actions/runs/{run_id}` under Actions,
+`GET /repos/{owner}/{repo}` under Metadata, `GET /repos/{owner}/{repo}/git/ref/{ref}` under
+Contents);
 [the enterprise registration-token endpoint](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/self-hosted-runners#create-a-registration-token-for-an-enterprise)
 for `manage_runners:enterprise`; and
 [ARC's authentication guide](https://docs.github.com/en/actions/tutorials/use-actions-runner-controller/authenticate-to-the-api),
 which uses the same scale-set protocol, for Metadata and for "You cannot authenticate using a
 GitHub App for runners at the enterprise level."
 
-The dashboard's GitHub App setup creates a different App, for the legacy `workflow_job` webhook
-path. Its manifest (`packages/backend/convex/githubAppConfig.ts`) asks for Repository:
-Administration, read and write, for `POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig`
+The controller does not use the App the dashboard's GitHub App setup creates. It authenticates
+only with its own `RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials, so the cache-facts permissions
+above belong on the controller's App, and the dashboard App's manifest stays as it is. That App
+serves the legacy `workflow_job` webhook path. Its manifest
+(`packages/backend/convex/githubAppConfig.ts`) asks for Repository: Administration, read and write,
+for `POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig`
 and `DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}`, and Repository: Actions, read-only,
 which GitHub requires before it delivers `workflow_job` events. Its delivery recovery calls
 `/app/hook/deliveries`, which takes the App's JWT and no installation permission.
