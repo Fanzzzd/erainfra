@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { retiredName } from "../env.ts";
+import type { MeshDesired } from "./meshControl.ts";
 
 // AgentGateway is the self-controlled control channel that replaces dumbpipe: portless agents on
 // remote (NAT'd) boxes dial OUT to the hub over a WebSocket and stay connected; the hub addresses
@@ -41,6 +42,9 @@ export type AgentCommand =
     }
   | { cmd: "deployApp"; app: string; services: AgentService[] }
   | { cmd: "serve"; app: string; port: number }
+  | { cmd: "meshStatus"; meshVersion: 1 }
+  | { cmd: "meshApply"; meshVersion: 1; desired: MeshDesired; stage?: "authorize" | "links" }
+  // Legacy dumbpipe transport, for a link with an end that has no erainfra-mesh (expand release).
   | { cmd: "meshShare"; name: string; port: number }
   | { cmd: "meshConnect"; name: string; ticket: string; port: number }
   | { cmd: "meshDrop"; name: string }
@@ -63,6 +67,7 @@ export interface AgentSocket {
 }
 
 export interface AgentInfo {
+  capabilities?: string[];
   id: string;
   version: string | null;
   roles: string[];
@@ -145,6 +150,7 @@ interface Entry {
   info: AgentInfo;
 }
 interface Pending {
+  socket: AgentSocket;
   resolve: (r: AgentReply) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -197,6 +203,7 @@ export class AgentGateway {
           } catch {
             /* gone */
           }
+          this.rejectPending(prev.socket);
           this.idOf.delete(prev.socket);
         }
         const info: AgentInfo = {
@@ -205,6 +212,11 @@ export class AgentGateway {
           roles: normalizeAgentRoles(m.roles),
           connectedAt: new Date().toISOString(),
         };
+        if (Array.isArray(m.capabilities)) {
+          info.capabilities = m.capabilities
+            .filter((v): v is string => typeof v === "string" && v.length <= 64)
+            .slice(0, 16);
+        }
         this.byId.set(id, { socket, info });
         this.idOf.set(socket, id);
         this.lastSeen.set(id, Date.now());
@@ -219,7 +231,7 @@ export class AgentGateway {
       }
       case "reply": {
         const p = this.pending.get(String(m.id ?? ""));
-        if (!p) return;
+        if (!p || p.socket !== socket || !known) return;
         clearTimeout(p.timer);
         this.pending.delete(String(m.id));
         p.resolve({
@@ -234,7 +246,17 @@ export class AgentGateway {
   }
 
   onClose(socket: AgentSocket): void {
+    this.rejectPending(socket);
     this.removeSocket(socket);
+  }
+
+  private rejectPending(socket: AgentSocket): void {
+    for (const [id, p] of this.pending)
+      if (p.socket === socket) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        p.reject(new Error("agent control connection closed or replaced"));
+      }
   }
 
   // Remove an agent and notify disconnect listeners (drives failover). Used by both a clean socket
@@ -291,7 +313,7 @@ export class AgentGateway {
         this.pending.delete(id);
         reject(new Error("agent command timed out"));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { socket: entry.socket, resolve, reject, timer });
       try {
         entry.socket.send(JSON.stringify({ type: "cmd", id, ...cmd }));
       } catch (e) {

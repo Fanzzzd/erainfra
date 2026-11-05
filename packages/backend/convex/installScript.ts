@@ -1,4 +1,5 @@
 import type { AgentRelease } from "./agentRelease";
+import { MESH_INSTALL_FUNCTIONS } from "./meshInstallScript.ts";
 import {
   FIRECRACKER_HOST_PROVISIONER_B64,
   FIRECRACKER_HOST_PROVISIONER_SHA256,
@@ -55,7 +56,7 @@ node_fail() {
 
 node_usage() {
   printf '%s\n' 'Usage: bash -s -- --role node --token <hub token> --hub wss://<hub>/agent [--name NAME]'
-  printf '%s\n' '                  [--source <url|file:///path>] [--no-docker]'
+  printf '%s\n' '                  [--source <url|file:///path>] [--mesh] [--mesh-source <url|file:///path>] [--no-docker]'
 }
 
 # Every Infra Agent digest this deployment pins, one line per published target. A target that is
@@ -77,6 +78,8 @@ node_sha256_file() {
     node_fail 'A SHA-256 utility (shasum or sha256sum) is required'
   fi
 }
+
+__MESH_INSTALL_FUNCTIONS__
 
 # Bring up a container runtime if there is not one, exactly as deploy/infra/agent.sh does: distro
 # packages only, and a failure warns rather than aborts so the box still enrolls. Apps cannot deploy
@@ -159,9 +162,14 @@ node_install_service() {
     'Description=Portless deploy agent' \
     'After=network-online.target docker.service' \
     'Wants=network-online.target' \
+    "$NODE_MESH_UNIT_REQUIRES" \
+    "$NODE_MESH_UNIT_AFTER" \
     '[Service]' \
     "EnvironmentFile=$NODE_ENV_DIR/agent.env" \
     "Environment=HOME=$HOME" \
+    "$NODE_MESH_SERVICE_ENV" \
+    "$NODE_MESH_SERVICE_CONTROL" \
+    "$NODE_MESH_SERVICE_GROUP" \
     "ExecStart=$NODE_BIN_DIR/portless-agent connect --name $NODE_MACHINE_NAME" \
     'Restart=always' \
     'RestartSec=3' \
@@ -187,6 +195,16 @@ node_install() {
   NODE_HUB=""
   NODE_NAME=""
   NODE_SOURCE=""
+  NODE_MESH=0
+  NODE_MESH_SOURCE=""
+  NODE_MESH_UNIT=""
+  NODE_MESH_SOCKET=""
+  NODE_MESH_BIN=""
+  NODE_MESH_UNIT_REQUIRES="# no erainfra-mesh dependency"
+  NODE_MESH_UNIT_AFTER="# no erainfra-mesh ordering"
+  NODE_MESH_SERVICE_ENV="# no erainfra-mesh socket"
+  NODE_MESH_SERVICE_CONTROL="# no erainfra-mesh controller"
+  NODE_MESH_SERVICE_GROUP="# no erainfra-mesh group"
   NODE_WANT_DOCKER=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -208,6 +226,16 @@ node_install() {
       --source)
         [ "$#" -ge 2 ] || node_fail '--source requires a url or file:// path'
         NODE_SOURCE=$2
+        shift 2
+        ;;
+      --mesh)
+        NODE_MESH=1
+        shift
+        ;;
+      --mesh-source)
+        [ "$#" -ge 2 ] || node_fail '--mesh-source requires a url or file:// path'
+        NODE_MESH=1
+        NODE_MESH_SOURCE=$2
         shift 2
         ;;
       --no-docker)
@@ -245,6 +273,10 @@ node_install() {
   [ -n "$NODE_EXPECTED_SHA" ] ||
     node_fail "This EraInfra deployment pins no Infra Agent build for $NODE_TARGET, so there is nothing to verify the download against. Deploy a backend whose AGENT_RELEASE pins a release that publishes it."
 
+  if [ "$NODE_MESH" -eq 1 ]; then
+    NODE_MESH_EXPECTED=$(node_mesh_digest "$NODE_TARGET")
+    [ -n "$NODE_MESH_EXPECTED" ] || node_fail "This EraInfra deployment pins no erainfra-mesh build for $NODE_TARGET. Deploy a backend whose AGENT_RELEASE pins all mesh targets; dumbpipe is not installed."
+  fi
   if [ "$(id -u)" = '0' ]; then NODE_SUDO=''; else NODE_SUDO='sudo'; fi
   # $PORTLESS_PREFIX and the paths under it are identifiers a running Node already holds (rule 4).
   # Stage 1 of retiring the name (ADR 0004) reads both and prefers the new one; it writes neither,
@@ -288,6 +320,7 @@ node_install() {
     node_fail "Infra Agent checksum verification failed: expected $NODE_EXPECTED_SHA but got $NODE_ACTUAL_SHA. Nothing was installed."
   fi
   node_log "Verified $NODE_ASSET against the checksum pinned by this EraInfra deployment."
+  node_mesh_prepare
 
   # Only past the verification does anything on this machine change. A mismatch above leaves an
   # already-installed agent running on the bytes it was installed with.
@@ -302,6 +335,7 @@ node_install() {
 
   node_ensure_runtime
   mkdir -p "$NODE_BIN_DIR"
+  node_mesh_install
   chmod +x "$NODE_DOWNLOAD"
   mv "$NODE_DOWNLOAD" "$NODE_BIN_DIR/portless-agent"
   node_log "Installed $NODE_BIN_DIR/portless-agent."
@@ -323,9 +357,15 @@ node_install() {
   # Linux, so a token passed as a flag is a Hub credential any local user can read for as long as
   # the agent runs. The agent reads PORTLESS_TOKEN and PORTLESS_HUB as its flag defaults, which is
   # the same channel the systemd unit uses through /etc/portless/agent.env.
-  PORTLESS_HUB="$NODE_HUB" PORTLESS_TOKEN="$NODE_TOKEN" nohup "$NODE_BIN_DIR/portless-agent" \
-    connect --name "$NODE_MACHINE_NAME" \
-    >>"$NODE_LOG_FILE" 2>&1 &
+  if [ -n "$NODE_MESH_BIN" ]; then
+    ERAINFRA_MESH_BIN="$NODE_MESH_BIN" PORTLESS_HUB="$NODE_HUB" PORTLESS_TOKEN="$NODE_TOKEN" nohup "$NODE_BIN_DIR/portless-agent" \
+      connect --name "$NODE_MACHINE_NAME" \
+      >>"$NODE_LOG_FILE" 2>&1 &
+  else
+    PORTLESS_HUB="$NODE_HUB" PORTLESS_TOKEN="$NODE_TOKEN" nohup "$NODE_BIN_DIR/portless-agent" \
+      connect --name "$NODE_MACHINE_NAME" \
+      >>"$NODE_LOG_FILE" 2>&1 &
+  fi
   printf '%s\n' "$!" > "$NODE_PID_FILE"
   sleep 1
   kill -0 "$(cat "$NODE_PID_FILE")" 2>/dev/null || {
@@ -2065,6 +2105,8 @@ export function renderInstallScript(siteUrl: string, release: AgentRelease) {
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256)
+    .replaceAll("__MESH_INSTALL_FUNCTIONS__", MESH_INSTALL_FUNCTIONS)
+    .replaceAll("__MESH_DIGESTS__", renderPinnedDigests(release.mesh, "Mesh"))
     .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent, "Infra Agent"))
     .replaceAll(
       "__CONTROLLER_DIGESTS__",

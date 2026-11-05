@@ -14,6 +14,8 @@ export type AgentRelease = {
    * scalar, for the same reason.
    */
   infraAgent: Record<string, string>;
+  /** SHA-256 of erainfra-mesh-<target>[.exe]. Empty until an authorized release supplies all five. */
+  mesh: Record<string, string>;
   /**
    * SHA-256 of `erainfra-cache-service-<target>` — the cache service (ADR 0009), keyed by target:
    * `linux-x86_64`.
@@ -65,6 +67,9 @@ export type AgentRelease = {
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
   version: "0.2.0-rc.10",
+  // No published release contains the phase 1b API/install contract yet. Never synthesize pins
+  // from local development builds: --mesh refuses until the owner cuts and pins that release.
+  mesh: {},
   sha256: "4453d0cd2e43ae14069cbc21350b284875e24c4cd445ec975a7e5c7cc514a888",
   infraAgent: {
     "linux-x86_64": "630ef2a8dcd2d5154d1307eed98644e1f019e74a04266688be747818beb20f04",
@@ -105,9 +110,8 @@ export function infraAgentAssetName(target: string) {
  * The targets a release publishes an `erainfra-mesh` binary for (ADR 0016), the Node-to-Node
  * sidecar that replaces dumbpipe. The same five as the Infra Agent, because every Node runs both.
  *
- * Published but not yet pinned: `AgentRelease` gains a `mesh` map keyed by these targets, and the
- * tag gate the coverage and pin-match checks `infraAgent` has, in the change that switches the
- * Infra Agent from dumbpipe to this binary.
+ * `AgentRelease.mesh` covers these targets. It stays empty on main until the next authorized
+ * release; --mesh installation and tag publication reject a missing or incomplete pin.
  */
 export const MESH_TARGETS = INFRA_AGENT_TARGETS;
 

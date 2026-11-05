@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/agent"
@@ -24,9 +26,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	// The root of every context below. Nothing cancels it: the agent has no graceful shutdown, and a
-	// signal ends the process as it always has.
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	switch os.Args[1] {
 	case "version":
@@ -89,8 +90,13 @@ func runConnect(ctx context.Context) {
 	// (reads it to reverse-proxy <app>.<domain> → loopback). Data channel = control URL with /agent→/data.
 	reg := agent.NewRegistry()
 	dataURL := strings.TrimSuffix(*hub, "/agent") + "/data"
+	mesh, err := connectMesh(ctx, "hub")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secure mesh startup: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = mesh.Close() }()
 	go agent.ConnectData(ctx, dataURL, *token, *name, reg)
-	mesh := agent.NewMeshManager() // dumbpipe sidecars for cross-node service links
 	agent.Connect(ctx, *hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token, Reg: reg, Mesh: mesh})
 }
 

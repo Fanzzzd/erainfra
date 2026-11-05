@@ -76,6 +76,12 @@ curl -fsSL https://<hub>/agent.sh | sudo sh -s -- --token <plt_...> --name <name
 
 Windows: `deploy/infra/agent.ps1` (see `deploy/infra/WINDOWS.md`).
 
+`agent.sh` installs dumbpipe, not the `erainfra-mesh` sidecar. Its Nodes' cross-node links run on
+the legacy, unauthenticated dumbpipe transport, and `portless links` marks them
+`legacy-dumbpipe (unauthenticated)`. To move them onto the authenticated mesh, install the Node
+with the control plane's `/install --role node --mesh`
+([secure-node-mesh.md](runbooks/secure-node-mesh.md)).
+
 ### Node privilege boundary
 
 Treat every Portless node as a privileged service boundary, not as an unprivileged sandbox. On
@@ -166,7 +172,8 @@ values themselves need not change.
 
 ### Migration order
 
-1. Phase 1: `erainfra-mesh` replaces dumbpipe, still brokered by the Hub.
+1. Phase 1: `erainfra-mesh` replaces dumbpipe, still brokered by the Hub. Opt-in installation,
+   migration and rollback are in [secure-node-mesh.md](runbooks/secure-node-mesh.md).
 2. Phase 2a (now): Convex holds the state and its invariants, and the importer copies the Hub into
    it. Existing Hub-mode Nodes do not read the copy.
 3. Phase 2b: the Infra Agent dials Convex with its Node credential, registers its EndpointId, and
@@ -322,7 +329,7 @@ pnpm test                             # hermetic — no docker, no network, no i
 
 - `apps/hub` — hub: Fastify + tRPC control plane, data plane (wildcard ingress over agent WS),
   deploy pipeline (`runtime/appdeploy.ts`), failover, secrets, backups.
-- `apps/infra-agent` — Go agent: outbound WS, docker deploys, builds, mesh links (dumbpipe/iroh).
+- `apps/infra-agent` — Go agent: outbound WS, docker deploys, builds, opt-in authenticated `erainfra-mesh` links.
 - `packages/cli` — the `portless` CLI + MCP server. Zero dependencies.
 - `apps/hub-web` — dashboard (React + shadcn).
 - `deploy/infra/` — `hub.sh`, `agent.sh`, `image.sh` (build), `registry.sh`, `cli.sh`.

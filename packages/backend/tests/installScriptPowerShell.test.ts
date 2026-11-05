@@ -46,6 +46,7 @@ const CURRENT: AgentRelease = {
   version: "1.4.2",
   sha256: "",
   infraAgent: {},
+  mesh: {},
   cacheService: {},
   controller: {},
 };

@@ -12,8 +12,7 @@
 #     curl -fsSL <hub>/image.sh | sh -s -- run <name:tag> [docker run args…] # docker pull + run
 #
 # The store is reached at $PORTLESS_REGISTRY (default 127.0.0.1:5000). Connect the mesh first so the
-# store appears locally with no public IP:
-#   curl -fsSL <hub>/mesh-node.sh | sh -s -- connect <registry-ticket> 5000
+# store appears locally with no public IP: link this Node to the registry's port 5000 from the Hub (`portless link`).
 # Docker treats 127.0.0.1:* as an insecure registry automatically, so the mesh path needs NO daemon
 # config. (On a public VPS registry, give it TLS or add it to the daemon's insecure-registries.)
 set -eu
@@ -109,8 +108,7 @@ need_docker() {
 # Confirm the store is reachable before doing docker work, with an actionable message.
 check_registry() {
   curl -fsS "http://$REGISTRY/v2/" >/dev/null 2>&1 && { log "store reachable at $REGISTRY"; return 0; }
-  die "store $REGISTRY not reachable — connect the mesh first:
-     curl -fsSL <hub>/mesh-node.sh | sh -s -- connect <registry-ticket> ${REGISTRY##*:}"
+  die "store $REGISTRY not reachable — link this Node to the registry from the Hub first (portless link)"
 }
 
 cmd_ship() {

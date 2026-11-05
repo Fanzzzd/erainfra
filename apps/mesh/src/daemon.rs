@@ -331,6 +331,22 @@ impl Daemon {
         let before = inner.desired.clone();
         let result = match req {
             Request::Status => return Ok(self.status(&inner).await),
+            Request::SignChallenge { message } => {
+                use base64::Engine;
+                // This socket may prove Node-key possession, never sign arbitrary application
+                // traffic. Sign the exact server-supplied UTF-8 bytes without normalizing them.
+                if message.len() > 4096 || !message.starts_with("erainfra/node-endpoint/v1\n") {
+                    return Err(ApiError::bad_request(
+                        "expected a Node endpoint challenge, at most 4096 bytes",
+                    ));
+                }
+                let endpoint = self.endpoint();
+                let signature = endpoint.secret_key().sign(message.as_bytes());
+                return Ok(json!({
+                    "endpoint_id": endpoint.id().to_string(),
+                    "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+                }));
+            }
             Request::SetFleet { peers } => self.set_fleet(&mut inner, peers),
             Request::SetRelays {
                 relays,

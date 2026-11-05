@@ -6,10 +6,9 @@ listens on a local port and forwards each TCP connection, end-to-end encrypted, 
 Node, which connects it to the service. Nodes behind NAT connect directly when hole punching works
 and through a relay when it does not.
 
-It is phase 1a of [ADR 0016](../../docs/adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md):
-the sidecar that replaces dumbpipe. It is built, attested and published with every release, but
-the Infra Agent still runs dumbpipe until the change that pins these binaries in `AGENT_RELEASE`
-and switches the agent over.
+It implements [ADR 0016](../../docs/adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md)
+phase 1: the sidecar that replaces dumbpipe. The Infra Agent uses it only after an explicit,
+pinned installation; see [the opt-in runbook](../../docs/runbooks/secure-node-mesh.md).
 
 What it does that dumbpipe did not:
 
@@ -47,6 +46,7 @@ erainfra-mesh ctl --socket /run/erainfra-mesh/mesh.sock '{"v":1,"op":"status"}'
 | ----------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--state <dir>`         | none            | Saves the last fleet, relays, exposures and links to `<dir>/state.json` (mode 0600, directory 0700) and restores them on start.             |
 | `--idle-timeout <secs>` | 3600            | Closes a forwarded TCP connection after this long with no bytes in either direction. An hour, because pooled database connections sit idle. |
+| `--loopback-only`       | off             | Binds the endpoint to `127.0.0.1`. For offline integration tests and local-only experiments.                                                |
 | `--no-portmap`          | port mapping on | Stops asking the local router for a port mapping (UPnP, PCP, NAT-PMP). Mapping helps two NAT'd Nodes connect directly.                      |
 | `--log-format <fmt>`    | `text`          | `text` or `json`, written to stderr. `RUST_LOG` sets the level (default `info`).                                                            |
 
@@ -73,7 +73,7 @@ Who it defends against:
 | A Node removed from the fleet                  | `set_fleet` closes its live connections at once, and the hook refuses its next handshake.                                                                                                                                                                                                                                        |
 | This Node dialing somewhere it should not      | The `before_connect` hook refuses to dial an EndpointId outside the fleet, and there is no discovery service: a peer is dialed only at the addresses `set_fleet` gave.                                                                                                                                                           |
 | A fleet peer asking for more than it was given | Fleet membership alone grants no service access. Each stream requires an explicit grant to its authenticated EndpointId in that exposure's `allowed_peers`; missing or empty grants deny everyone. Removing a grant closes that peer's streams without interrupting retained peers. Only the named loopback target is forwarded. |
-| Another local user                             | The control socket is mode 0660, so only the daemon's user and group can drive it. Run the daemon as its own user and put the Infra Agent in its group. On Windows the named pipe keeps Windows' default security, under which only the creating user, Administrators and SYSTEM may write to it.                                |
+| Another local user                             | The control socket is mode 0660, so only the daemon's user and group can drive it. Run the daemon as its own user and put the Infra Agent in its group. On Windows the named pipe receives an explicit protected DACL that admits only SYSTEM and its owner.                                                                     |
 
 What it does not defend against:
 
@@ -177,6 +177,17 @@ unchanged. `relay.mode` is `direct_only` when no relay is configured: the Node t
 peers it can reach at a direct address. `bytes_sent` counts bytes sent into the mesh and
 `bytes_received` bytes that came out of it. `connections_refused` counts connections the limit or
 the peer turned away.
+
+### sign_challenge
+
+```json
+{ "v": 1, "op": "sign_challenge", "message": "erainfra/node-endpoint/v1\n{...}" }
+```
+
+Signs only a Node endpoint challenge. The UTF-8 message must begin with
+`erainfra/node-endpoint/v1\n` and be at most 4096 bytes. The result is
+`{"endpoint_id":"...","signature":"<base64 Ed25519>"}`. Convex enrollment uses it to prove the
+Node holds its endpoint key without the key ever leaving the sidecar.
 
 ### set_fleet
 

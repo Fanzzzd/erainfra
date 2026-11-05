@@ -21,6 +21,7 @@ Usage:
       Run the endpoint and serve the control API on <socket>.
       --state <dir>          persist the last configuration and restore it on start
       --idle-timeout <secs>  close a forwarded TCP connection idle this long (default 3600)
+      --loopback-only        bind the endpoint to 127.0.0.1 (offline tests or local use)
       --no-portmap           do not ask the local router for a port mapping (UPnP, PCP, NAT-PMP)
       --log-format <fmt>     text (default) or json; level from RUST_LOG (default info)
   erainfra-mesh ctl --socket <path> <json>
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
 }
 
 /// Flags that take no value.
-const SWITCHES: &[&str] = &["no-portmap"];
+const SWITCHES: &[&str] = &["no-portmap", "loopback-only"];
 
 struct Flags {
     values: Vec<(String, String)>,
@@ -125,6 +126,7 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
                     "idle-timeout",
                     "log-format",
                     "no-portmap",
+                    "loopback-only",
                 ],
             )?;
             init_logging(flags.get("log-format").unwrap_or("text"))?;
@@ -134,6 +136,7 @@ fn run(args: Vec<String>) -> Result<ExitCode> {
             );
             cfg.state_dir = flags.get("state").map(PathBuf::from);
             cfg.portmapper = flags.get("no-portmap").is_none();
+            cfg.loopback_only = flags.get("loopback-only").is_some();
             if let Some(secs) = flags.get("idle-timeout") {
                 let secs: u64 = secs.parse().ok().filter(|s| *s > 0).with_context(|| {
                     format!("--idle-timeout {secs:?} must be a positive number of seconds")

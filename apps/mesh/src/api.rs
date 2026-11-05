@@ -26,6 +26,9 @@ pub const DEFAULT_MAX_CONNECTIONS: u32 = 256;
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status,
+    SignChallenge {
+        message: String,
+    },
     SetFleet {
         peers: Vec<PeerSpec>,
     },

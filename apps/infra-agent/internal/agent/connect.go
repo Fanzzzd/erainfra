@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient"
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
 )
 
@@ -29,10 +30,11 @@ import (
 type Runner interface {
 	Deploy(ctx context.Context, image, name string, args []string, env map[string]string, port int) (string, error)
 	DeployApp(ctx context.Context, app string, services []Service) (string, error)
-	MeshShare(name string, port int) (string, error)                // expose a local port on the mesh → ticket
-	MeshConnect(name, ticket string, localPort int) (string, error) // dial a ticket → local 127.0.0.1:localPort
-	MeshDrop(name string) (string, error)                           // tear down a mesh link by name
-	Serve(app string, port int) (string, error)                     // (re)register app->port for the data plane, no deploy
+	// Legacy dumbpipe links (expand release only; see legacyPipes). MeshShare returns the ticket.
+	MeshShare(ctx context.Context, name string, port int) (string, error)
+	MeshConnect(ctx context.Context, name, ticket string, localPort int) (string, error) // → local 0.0.0.0:localPort
+	MeshDrop(name string) (string, error)
+	Serve(app string, port int) (string, error) // (re)register app->port for the data plane, no deploy
 	Execute(ctx context.Context, command Command) (string, error)
 	Build(ctx context.Context, src BuildSource, registry, tag, hubBase string) (string, error)
 	ReadSpec(ctx context.Context, src BuildSource) (string, error) // fetch the source, return its portless.yaml ("" if absent)
@@ -70,22 +72,29 @@ type ShellRunner struct {
 	Docker      string
 	Token       string
 	Reg         *Registry    // records app->port on deploy so the data plane can proxy to it (loopback)
-	Mesh        *MeshManager // dumbpipe sidecars for cross-node service links
+	Mesh        *MeshManager // the erainfra-mesh endpoint, and legacy dumbpipe links during the expand release
 }
 
-// MeshShare exposes a local port on the mesh and returns the ticket. MeshConnect dials a ticket and
-// returns the local address it's surfaced on.
-func (r ShellRunner) MeshShare(name string, port int) (string, error) {
-	if r.Mesh == nil {
-		return "", fmt.Errorf("mesh not enabled on this agent")
-	}
-	return r.Mesh.Share(name, port)
+// MeshRunner is optional so runners without a mesh keep their command surface. The Hub drives the
+// sidecar through meshStatus and meshApply, both carrying meshVersion 1.
+type MeshRunner interface {
+	MeshStatus(context.Context) (string, error)
+	MeshApply(context.Context, meshclient.Desired, string) (string, error)
 }
-func (r ShellRunner) MeshConnect(name, ticket string, localPort int) (string, error) {
+
+// MeshShare, MeshConnect and MeshDrop serve the legacy dumbpipe transport for a link whose other end
+// has no sidecar. MeshManager refuses the first two for any name already on the mesh.
+func (r ShellRunner) MeshShare(ctx context.Context, name string, port int) (string, error) {
 	if r.Mesh == nil {
 		return "", fmt.Errorf("mesh not enabled on this agent")
 	}
-	return r.Mesh.Connect(name, ticket, localPort)
+	return r.Mesh.Share(ctx, name, port)
+}
+func (r ShellRunner) MeshConnect(ctx context.Context, name, ticket string, localPort int) (string, error) {
+	if r.Mesh == nil {
+		return "", fmt.Errorf("mesh not enabled on this agent")
+	}
+	return r.Mesh.Connect(ctx, name, ticket, localPort)
 }
 func (r ShellRunner) MeshDrop(name string) (string, error) {
 	if r.Mesh == nil {
@@ -95,6 +104,19 @@ func (r ShellRunner) MeshDrop(name string) (string, error) {
 		return "dropped", nil
 	}
 	return "no such link", nil
+}
+
+// MeshCapabilities is what the hello advertises. A Node without the sidecar advertises nothing, and
+// the Hub reports its links as unsupported instead of dialing it.
+func (r ShellRunner) MeshCapabilities() []string {
+	if r.Mesh.Enabled() {
+		return []string{meshclient.Capability}
+	}
+	return nil
+}
+func (r ShellRunner) MeshStatus(ctx context.Context) (string, error) { return r.Mesh.Status(ctx) }
+func (r ShellRunner) MeshApply(ctx context.Context, d meshclient.Desired, stage string) (string, error) {
+	return r.Mesh.Apply(ctx, d, stage)
 }
 
 func (r ShellRunner) cli() string {
@@ -425,25 +447,28 @@ func scrub(text, secret string) string {
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 type cmdMsg struct {
-	Type      string            `json:"type"`
-	ID        string            `json:"id"`
-	Cmd       string            `json:"cmd"`
-	Operation Operation         `json:"operation"`
-	Image     string            `json:"image"`
-	Name      string            `json:"name"`
-	Args      []string          `json:"args"`
-	Env       map[string]string `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
-	Port      int               `json:"port"`     // deploy: app's loopback port, recorded for the data plane
-	App       string            `json:"app"`      // deployApp: app name (per-app network + container prefix)
-	Services  []Service         `json:"services"` // deployApp: the services to bring up together
-	Ticket    string            `json:"ticket"`   // meshConnect: the mesh ticket to dial
-	RepoURL   string            `json:"repoUrl"`  // build/spec (git): git url (may embed a short-lived token)
-	Ref       string            `json:"ref"`      // build/spec (git): branch/tag to clone
-	TarURL    string            `json:"tarUrl"`   // build/spec (upload): hub url of the uploaded source.tgz
-	Dir       string            `json:"dir"`      // build: context subdir within the source
-	Registry  string            `json:"registry"` // build: where to push the image
-	Tag       string            `json:"tag"`      // build: image name:tag
-	HubBase   string            `json:"hubBase"`  // build: hub http base to fetch image.sh from
+	MeshVersion int                `json:"meshVersion"` // meshStatus/meshApply: control API version, must be 1
+	Desired     meshclient.Desired `json:"desired"`     // meshApply: the whole desired mesh view for this Node
+	Stage       string             `json:"stage"`       // meshApply: "authorize", "links" or "" for both
+	Type        string             `json:"type"`
+	ID          string             `json:"id"`
+	Cmd         string             `json:"cmd"`
+	Operation   Operation          `json:"operation"`
+	Image       string             `json:"image"`
+	Name        string             `json:"name"`
+	Args        []string           `json:"args"`
+	Env         map[string]string  `json:"env"`      // deploy: secrets → 0600 --env-file (never argv)
+	Port        int                `json:"port"`     // deploy: app's loopback port, recorded for the data plane
+	App         string             `json:"app"`      // deployApp: app name (per-app network + container prefix)
+	Services    []Service          `json:"services"` // deployApp: the services to bring up together
+	Ticket      string             `json:"ticket"`   // meshConnect (legacy): the dumbpipe ticket to dial
+	RepoURL     string             `json:"repoUrl"`  // build/spec (git): git url (may embed a short-lived token)
+	Ref         string             `json:"ref"`      // build/spec (git): branch/tag to clone
+	TarURL      string             `json:"tarUrl"`   // build/spec (upload): hub url of the uploaded source.tgz
+	Dir         string             `json:"dir"`      // build: context subdir within the source
+	Registry    string             `json:"registry"` // build: where to push the image
+	Tag         string             `json:"tag"`      // build: image name:tag
+	HubBase     string             `json:"hubBase"`  // build: hub http base to fetch image.sh from
 }
 
 type replyMsg struct {
@@ -488,11 +513,22 @@ func RunCmd(ctx context.Context, m cmdMsg, r Runner) replyMsg {
 	case "serve":
 		out, err = r.Serve(m.App, m.Port)
 	case "meshShare":
-		out, err = r.MeshShare(m.Name, m.Port) // Name=link name, Port=local service port → reply.output is the ticket
+		out, err = r.MeshShare(ctx, m.Name, m.Port) // Name=link name, Port=local service port → reply.output is the ticket
 	case "meshConnect":
-		out, err = r.MeshConnect(m.Name, m.Ticket, m.Port) // Name=link name, Ticket=ticket, Port=local port
+		out, err = r.MeshConnect(ctx, m.Name, m.Ticket, m.Port) // Name=link name, Ticket=ticket, Port=local port
 	case "meshDrop":
 		out, err = r.MeshDrop(m.Name)
+	case "meshStatus", "meshApply":
+		mesh, ok := r.(MeshRunner)
+		if !ok || m.MeshVersion != 1 {
+			err = meshclient.ErrUnsupported
+			break
+		}
+		if m.Cmd == "meshStatus" {
+			out, err = mesh.MeshStatus(ctx)
+		} else {
+			out, err = mesh.MeshApply(ctx, m.Desired, m.Stage)
+		}
 	case "build":
 		out, err = r.Build(ctx, BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL, Dir: m.Dir}, m.Registry, m.Tag, m.HubBase)
 	case "spec":
@@ -532,11 +568,15 @@ func decodeCmd(raw []byte) (cmdMsg, error) {
 
 // Connect dials the hub and serves commands forever, reconnecting with a fixed backoff on drop.
 func Connect(ctx context.Context, hubURL, token, agentID, version string, roles []Role, runner Runner) {
-	for {
+	for ctx.Err() == nil {
 		if err := connectOnce(ctx, hubURL, token, agentID, version, roles, runner); err != nil {
 			fmt.Printf("[agent] disconnected: %v — retrying in 3s\n", err)
 		}
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
 	}
 }
 
@@ -549,6 +589,9 @@ func connectOnce(ctx context.Context, hubURL, token, agentID, version string, ro
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+	c.SetReadLimit(meshclient.MaxMessage)
+	stopContext := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stopContext()
 	defer c.Close() //nolint:errcheck // the connection is being torn down either way; the caller logs the cause
 	// Writes come from two goroutines now (replies + heartbeats) — gorilla forbids concurrent writers,
 	// so guard every write with a mutex and a deadline (a black-hole hub then errors instead of hanging).
@@ -559,7 +602,11 @@ func connectOnce(ctx context.Context, hubURL, token, agentID, version string, ro
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return c.WriteJSON(v)
 	}
-	if err := writeJSON(map[string]any{"type": "hello", "agentId": agentID, "version": version, "roles": roles}); err != nil {
+	var capabilities []string
+	if capable, ok := runner.(interface{ MeshCapabilities() []string }); ok {
+		capabilities = capable.MeshCapabilities()
+	}
+	if err := writeJSON(map[string]any{"type": "hello", "agentId": agentID, "version": version, "roles": roles, "capabilities": capabilities}); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
 	fmt.Printf("[agent] connected to %s as %q\n", hubURL, agentID)

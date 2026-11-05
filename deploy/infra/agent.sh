@@ -126,7 +126,11 @@ install_agent() {
   chmod +x "$BIN/portless-agent"
 }
 
-# dumbpipe (iroh) powers cross-node service links (backend on this box → db on another NAT'd box).
+# dumbpipe (iroh) carries legacy cross-node links (backend on this box → db on another NAT'd box)
+# during the expand release of ADR 0016 phase 1b: the Hub uses it only for a link with an end that
+# has no erainfra-mesh. It is unauthenticated and unverified; the contract release removes it. A
+# Node installed with the control plane's `/install --role node --mesh` gets the pinned sidecar
+# instead (docs/runbooks/secure-node-mesh.md).
 # Prebuilt binary from its GitHub releases — no Rust toolchain. Best-effort: without it the node still
 # deploys fine; only cross-node `needs:` links are unavailable.
 DUMBPIPE_VERSION="${DUMBPIPE_VERSION:-v0.39.0}"

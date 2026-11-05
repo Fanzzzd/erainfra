@@ -5,8 +5,14 @@ import { agentGateway } from "./runtime/agents.ts";
 import { dataGateway } from "./runtime/dataplane.ts";
 import { gitProjects, startGitDeploy, startUploadDeploy } from "./runtime/gitdeploy.ts";
 import { deployments } from "./runtime/deployments.ts";
-import { removeApp, establishLink } from "./runtime/appdeploy.ts";
-import { linkStore } from "./runtime/links.ts";
+import {
+  removeApp,
+  establishLink,
+  meshRequired,
+  reconcileStoredMesh,
+} from "./runtime/appdeploy.ts";
+import { linkStore, linkTransports } from "./runtime/links.ts";
+import { describeLink, LEGACY_WARNING } from "./runtime/meshControl.ts";
 import { githubAppConfig } from "./runtime/github.ts";
 import { secretStore } from "./runtime/secrets.ts";
 import { routeStore } from "./runtime/routes.ts";
@@ -251,11 +257,12 @@ export const appRouter = router({
         }
       }),
 
-    // Wire a service on one node to a service on ANOTHER node over the mesh (dumbpipe/iroh), so e.g. a
-    // backend can reach its database with no public IP and without exposing the DB on a domain. The
-    // hub only brokers the ticket: the provider node `share`s its loopback port (→ ticket), the
-    // consumer node `connect`s it (→ a local port bound on all the node's interfaces). Data then flows
-    // P2P node-to-node, not through the hub. Returns the address the consumer's containers use
+    // Wire a service on one node to a service on ANOTHER node over the mesh (erainfra-mesh on iroh),
+    // so e.g. a backend can reach its database with no public IP and without exposing the DB on a
+    // domain. The hub only reconciles desired state (meshControl.ts): the provider's sidecar exposes
+    // its loopback port to the consumer's EndpointId alone, and the consumer's sidecar listens on a
+    // local port (bound on all the node's interfaces) that dials the provider. Data then flows P2P
+    // node-to-node, not through the hub. Returns the address the consumer's containers use
     // (host.docker.internal:<localPort> with --add-host host.docker.internal:host-gateway).
     linkService: requirePermission("app.deploy")
       .input(
@@ -284,25 +291,16 @@ export const appRouter = router({
           `${input.name}: ${input.provider}:${input.providerPort} → ${input.consumer}:${input.localPort}`,
         );
         try {
-          const share = await agentGateway.send(
-            input.provider,
-            { cmd: "meshShare", name: input.name, port: input.providerPort },
-            60_000,
-          );
-          if (!share.ok || !share.output)
-            throw new Error(`provider share failed: ${share.error ?? "no ticket returned"}`);
-          // The ticket is a capability to reach the service — kept hub-internal, never returned to the caller.
-          const conn = await agentGateway.send(
-            input.consumer,
-            {
-              cmd: "meshConnect",
-              name: input.name,
-              ticket: share.output.trim(),
-              port: input.localPort,
-            },
-            60_000,
-          );
-          if (!conn.ok) throw new Error(`consumer connect failed: ${conn.error}`);
+          const link = {
+            name: input.name,
+            provider: input.provider,
+            providerPort: input.providerPort,
+            consumer: input.consumer,
+            localPort: input.localPort,
+            createdBy: "user",
+          };
+          const { transport } = await establishLink(link);
+          linkStore.set(link);
           const op = recordOp(ctx, {
             action: "agents.linkService",
             target: input.name,
@@ -310,8 +308,10 @@ export const appRouter = router({
           });
           return {
             ok: true,
+            transport,
+            ...(transport === "legacy-dumbpipe" ? { warning: LEGACY_WARNING } : {}),
             address: `host.docker.internal:${input.localPort}`,
-            localAddress: (conn.output ?? "").trim(),
+            localAddress: `127.0.0.1:${input.localPort}`,
             ...op,
           };
         } catch (e) {
@@ -357,15 +357,25 @@ export const appRouter = router({
   }),
 
   // Standalone mesh links: reach <provider-node>:<port> from <consumer-node> at 127.0.0.1:<localPort>,
-  // node-to-node over iroh (dumbpipe) — no public IP, no tunnel, no per-app spec. Links are persisted
+  // node-to-node over iroh (erainfra-mesh) — no public IP, no tunnel, no per-app spec. Links are persisted
   // and healed across agent/hub restarts (installLinkHealer). This is the user-facing "machine+port"
   // internal wiring; app-declared `needs:` links live with their app instead.
   mesh: router({
+    // Every link the Hub keeps, standalone and app-declared (`app` set), with the transport it is
+    // on. `transport: "legacy-dumbpipe"` and `authenticated: false` mark a link still on the
+    // unauthenticated ticket transport; `state` says what the next healer pass will do with it.
     list: requirePermission("app.read").query(() => {
       const connected = new Set(agentGateway.list().map((a) => a.id));
-      return linkStore
-        .list()
-        .map((l) => ({ ...l, online: connected.has(l.provider) && connected.has(l.consumer) }));
+      const opts = { transports: linkTransports, require: meshRequired() };
+      const all = [
+        ...linkStore.list().map((l) => ({ ...l, app: undefined as string | undefined })),
+        ...appStore.list().flatMap((a) => (a.links ?? []).map((l) => ({ ...l, app: a.app }))),
+      ];
+      return all.map((l) => ({
+        ...l,
+        online: connected.has(l.provider) && connected.has(l.consumer),
+        ...describeLink(agentGateway, l, opts),
+      }));
     }),
 
     link: requirePermission("app.deploy")
@@ -411,12 +421,14 @@ export const appRouter = router({
           `${name}: ${input.provider}:${input.providerPort} → ${input.consumer}:${localPort}`,
         );
         try {
-          await establishLink(link);
+          const { transport } = await establishLink(link);
           linkStore.set(link);
           const op = recordOp(ctx, { action: "mesh.link", target: name, outcome: "success" });
           return {
             ok: true,
             name,
+            transport,
+            ...(transport === "legacy-dumbpipe" ? { warning: LEGACY_WARNING } : {}),
             address: `127.0.0.1:${localPort}`,
             containerAddress: `host.docker.internal:${localPort}`,
             ...op,
@@ -439,15 +451,28 @@ export const appRouter = router({
         if (!link)
           throw new TRPCError({ code: "NOT_FOUND", message: `no such link: ${input.name}` });
         requireDurableAudit(ctx, "mesh.unlink", input.name);
-        // Best-effort teardown on both ends (a node may be offline); the store forgets it either way,
-        // so the healer stops resurrecting it.
-        await agentGateway
-          .send(link.provider, { cmd: "meshDrop", name: link.name }, 30_000)
-          .catch(() => {});
-        await agentGateway
-          .send(link.consumer, { cmd: "meshDrop", name: link.name }, 30_000)
-          .catch(() => {});
+        // Remove desired state first, then revoke provider grants and consumer listeners. An
+        // unreachable provider gets the removal when it reconnects; never resurrect a deleted link.
         linkStore.delete(link.name);
+        // A dumbpipe pair started before this Hub process is not tracked by the pass below; end it
+        // on both ends here, best effort, as the Hub always has.
+        if (linkTransports.get(link.name) !== "mesh")
+          for (const node of [link.consumer, link.provider])
+            await agentGateway
+              .send(node, { cmd: "meshDrop", name: link.name }, 30_000)
+              .catch(() => {});
+        try {
+          const report = await reconcileStoredMesh();
+          if (report.errors.length) throw new Error(report.errors.join("; "));
+        } catch (e) {
+          // The link is gone from the store either way. Say plainly that a grant may still be live
+          // until the healer reaches the Node, rather than reporting a clean revocation.
+          recordOp(ctx, { action: "mesh.unlink", target: input.name, outcome: "failure" });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `link ${input.name} deleted, but revoking it failed and will be retried: ${(e as Error).message}`,
+          });
+        }
         const op = recordOp(ctx, { action: "mesh.unlink", target: input.name, outcome: "success" });
         return { ok: true, ...op };
       }),
