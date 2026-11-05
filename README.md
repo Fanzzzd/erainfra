@@ -278,12 +278,13 @@ pnpm run deploy:control-plane
 
 Set these deployment variables before production use:
 
-| Variable           | Purpose                                                          |
-| ------------------ | ---------------------------------------------------------------- |
-| `SITE_URL`         | Canonical HTTPS dashboard origin.                                |
-| `BOOTSTRAP_SECRET` | One-time first-admin bootstrap.                                  |
-| `CONTROLLER_TOKEN` | Long random bearer token shared only with scale-set controllers. |
-| `ALLOWED_REPOS`    | Legacy webhook allowlist; omit when that path is unused.         |
+| Variable                | Purpose                                                                                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SITE_URL`              | Canonical HTTPS dashboard origin.                                                                                                                 |
+| `BOOTSTRAP_SECRET`      | One-time first-admin bootstrap.                                                                                                                   |
+| `CONTROLLER_TOKEN`      | Long random bearer token shared only with scale-set controllers.                                                                                  |
+| `CONTROLLER_TOKEN_NEXT` | Optional second controller token, accepted beside `CONTROLLER_TOKEN` during a rotation ([runbook](docs/runbooks/operate-the-controller-host.md)). |
+| `ALLOWED_REPOS`         | Legacy webhook allowlist; omit when that path is unused.                                                                                          |
 
 The dashboard creates short-lived, single-use Worker enrollment commands. Machine credentials are
 stored in `~/.runner-center/agent/.env` with mode `600`; JIT configurations travel from Convex to the
@@ -394,6 +395,36 @@ Monday pull request stops arriving, re-enable **Toolchain pin bump** under the A
 One lightweight controller process owns one Profile. It can run on a small always-on host; it does
 not execute jobs or require KVM. A repository, organization, or enterprise URL is accepted.
 
+Install one with the control plane's installer, on a dedicated host or on a Worker host:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
+  --profile erainfra-4vcpu-ubuntu-2404 \
+  --github-config-url https://github.com/OWNER/REPOSITORY \
+  --executor firecracker \
+  --image-release ghcr.io/OWNER/runner-center-ubuntu-24.04-js@sha256:<digest> \
+  --vcpus 4 --memory-mib 16384 --max-runners 16 \
+  --controller-token-file "$PWD/controller-token" \
+  --github-app-client-id <client-id> --github-app-installation-id <installation-id> \
+  --github-app-private-key-file "$PWD/github-app.pem"
+```
+
+The installer downloads the controller binary that `AGENT_RELEASE` pins and refuses bytes whose
+SHA-256 differs, the same trust root as the other roles
+([ADR 0006](docs/adr/0006-one-onboarding-path-with-a-pinned-trust-root.md)). It installs the binary
+and `runner-center-controller@.service`, creates the unprivileged `runner-center-controller`
+account, copies the secret files to `/etc/runner-center/secrets/<profile>/`, writes
+`/etc/runner-center/profiles/<profile>.env` (mode 0600, secrets only as `*_FILE` paths), and starts
+`runner-center-controller@<profile>`. It leaves a Worker install on the same host alone.
+`--role controller --update` moves every running controller on the host to the pinned release and
+keeps the previous binary as `runner-center-controller.bak-<version>`. The controller pin is first
+filled at the release after v0.2.0-rc.10; until a deployment pins it, the installer refuses and the
+manual steps below apply. Updating, adding and retiring Profiles, rotating secrets, monitoring, back
+up and rebuild are in
+[Runbook: operate the controller host](docs/runbooks/operate-the-controller-host.md).
+
+The installer's flags map one to one to the environment the controller reads. To run it by hand:
+
 ```bash
 export RC_CONVEX_URL=https://<deployment>.convex.site
 export RC_CONTROLLER_TOKEN_FILE=/etc/runner-center/controller-token
@@ -445,6 +476,16 @@ sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
 stop prewarming and advertising it. It refuses while GitHub still counts busy runners or assigned
 or running jobs on the scale set; `--force` overrides that for a scale set whose controller is gone
 for good. Starting the Profile's unit again re-registers both.
+
+Two controllers for one Profile never both take jobs. GitHub gives a scale set one message session
+and refuses a second with `409 Conflict`. The second controller reports that it is waiting, retries
+every 10 to 60 seconds, and takes over within about a minute of the first one closing its session.
+A controller killed without closing its session leaves it on GitHub for a few minutes, so a restart
+after a crash can wait the same way.
+
+Every controller reports a heartbeat to the control plane every 30 seconds and whenever its
+session changes. The Profiles table shows it, and `/metrics` and the alerts read it; see
+[Monitor the fleet](#monitor-the-fleet).
 
 `RC_WARM_POOL` is an explicit Firecracker-only performance opt-in. Its target
 counts both parked and currently claimed single-use microVMs, and each one
@@ -513,8 +554,8 @@ and `DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}`, and Repository: 
 which GitHub requires before it delivers `workflow_job` events. Its delivery recovery calls
 `/app/hook/deliveries`, which takes the App's JWT and no installation permission.
 
-Use a process supervisor such as systemd with `Restart=always`, a private `EnvironmentFile`, and a
-dedicated unprivileged service account. Controller releases are static Linux/macOS x64/ARM64
+Without the installer, use a process supervisor such as systemd with `Restart=always`, a private
+`EnvironmentFile`, and a dedicated unprivileged service account. Controller releases are static Linux/macOS x64/ARM64
 binaries with SHA-256 sidecars and provenance attestations. They can safely run on a small Oracle
 VM; execution Workers cannot if the VM has no `/dev/kvm`.
 
@@ -1025,6 +1066,8 @@ workflow, Runner or job id.
 | `erainfra_machine_slots_used`                       | `machine`                              | Slots in use.                                                                                                              |
 | `erainfra_machine_benchmark_score`                  | `machine`, `dimension`                 | Benchmark score, 0 to 100, for `cpu`, `memory`, `disk`, `network`, `balanced`.                                             |
 | `erainfra_machine_benchmark_timestamp_seconds`      | `machine`                              | When the benchmark ran. Older than seven days, the scheduler ignores it.                                                   |
+| `erainfra_controller_up`                            | `profile`                              | 1 when a controller reported in the last 90 seconds and holds the GitHub session. Absent until the first heartbeat.        |
+| `erainfra_controller_last_heartbeat_age_seconds`    | `profile`                              | Seconds since any of the Profile's controllers reported. Absent until the first heartbeat.                                 |
 | `erainfra_alerts_firing`                            | `rule`                                 | Firing incidents per enabled alert rule.                                                                                   |
 | `erainfra_scrape_truncated`                         |                                        | 1 when a read cap (1,000 Profiles, Workers, readiness rows, or live Attempts per state) was reached.                       |
 
@@ -1044,6 +1087,9 @@ groups:
         expr: erainfra_attempt_queue_oldest_age_seconds > 900
       - alert: ErainfraWorkerSilent
         expr: erainfra_machine_heartbeat_age_seconds > 300
+      - alert: ErainfraControllerDown
+        expr: erainfra_controller_up == 0 and on (profile) erainfra_profile_info{state="active"} == 1
+        for: 3m
 ```
 
 ### Alerts
@@ -1060,6 +1106,16 @@ minute against the same fleet state `/metrics` reads.
 | Attempt failure rate                | Profile        | At least P% of Attempts finished in the last W minutes failed, once M have finished. Cancelled Attempts count toward neither side. |
 | Consecutive failed Attempts         | Profile        | The newest N finished Attempts (in the last 24 hours, cancellations skipped) all failed.                                           |
 | Attempt running too long            | Profile        | An Attempt has been running for N minutes.                                                                                         |
+| No controller listening             | Profile        | No controller has held an active Profile's GitHub session for N minutes (2 or more; 3 by default). See below.                      |
+
+A dead controller creates no Attempts, so without its own signal it looks like an idle Profile.
+Every controller reports a heartbeat to the control plane every 30 seconds and whenever its session
+state changes, and the **Controller** column on the Profiles table shows the result. A Profile no
+controller has ever reported for shows _Not reporting_ and is never alerted on: controllers built
+before the heartbeat send none, so the first heartbeat ever received for a Profile is what starts
+tracking it. After that, a controller that stops reporting, stops cleanly, or keeps reporting
+while GitHub refuses it the session counts as silent. A paused (retired) Profile is not alerted
+on.
 
 A rule can be limited to one Profile. Each rule and subject has at most one open incident, so a
 condition that keeps holding notifies once. The lifecycle:
@@ -1172,14 +1228,17 @@ twice byte-for-byte, checks the deployment pin, attests the artifacts, and publi
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never
 overwritten; a correction is a new version.
 
-All three parts of `AGENT_RELEASE` are pinned on the release commit, before the tag: `sha256` from
-the deterministic archive, and `infraAgent` and `cacheService` from
+All four parts of `AGENT_RELEASE` are pinned on the release commit, before the tag: `sha256` from
+the deterministic archive, and `infraAgent`, `cacheService` and `controller` from
 `pnpm --filter @erainfra/release build-go-assets` followed by
-`pnpm --filter @erainfra/backend print-infra-agent-pin` and
-`pnpm --filter @erainfra/backend print-cache-service-pin`, which read the digests out of the
-sidecars so nobody transcribes them by hand. The workflow refuses to publish a tag whose pin
-disagrees with the bytes it just built, or whose Infra Agent or cache-service pin covers only some
-of its targets.
+`pnpm --filter @erainfra/backend print-infra-agent-pin`,
+`pnpm --filter @erainfra/backend print-cache-service-pin` and
+`pnpm --filter @erainfra/backend print-controller-pin`, which read the digests out of the sidecars so
+nobody transcribes them by hand. The workflow refuses to publish a tag whose pin disagrees with the
+bytes it just built, or whose Infra Agent, cache-service or controller pin covers only some of its
+targets. The controller pin covers the two Linux targets the installer serves; the macOS controller
+binaries are published but not pinned. Pinned binaries are stamped with the version only, never the
+commit, so a digest does not depend on the commit it is written into.
 
 ## Repository layout
 
