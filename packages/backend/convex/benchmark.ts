@@ -297,11 +297,13 @@ export function benchmarkRecommendedSlots(
   ) {
     measuredScores.push(benchmark.scores.disk);
   }
-  if (
-    benchmark.network.some((row) => row.ttfbMs !== undefined || row.throughputMbps !== undefined)
-  ) {
-    measuredScores.push(benchmark.scores.network);
-  }
+  // Network is deliberately not a capacity input. The probe is one 1 MiB fetch
+  // per public endpoint, so its score is round-trip latency to GitHub, GHCR and
+  // npm -- a property of where the Worker sits, not of how many jobs it can
+  // carry. A 64-core host a few hundred milliseconds from those endpoints scored
+  // low enough to lose half its slots while every job slot it withheld had the
+  // same uplink as the ones it kept. The network score still ranks candidates
+  // for a Profile whose fit policy asks for it; it never shrinks the envelope.
   if (measuredScores.length === 0) return resourceSlots;
   // Benchmarks can conservatively reduce automatic fan-out, never inflate the
   // hard CPU/memory cap. A weak dimension can take a host down to one quarter
