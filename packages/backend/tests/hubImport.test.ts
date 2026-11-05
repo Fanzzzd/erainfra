@@ -49,11 +49,11 @@ const HUB_KEY = randomBytes(32);
 const MASTER_KEY = "33".repeat(32);
 const OWNER_PASSWORD = "hub-owner-password";
 
-/** apps/hub/src/runtime/users.ts hashPassword, with a lower N so the test stays fast. */
+/** apps/hub/src/runtime/users.ts hashPassword, including its production work factor. */
 function hubHash(password: string) {
   const salt = randomBytes(16);
-  const params = { N: 2 ** 10, r: 8, p: 1 };
-  const hash = scryptSync(password, salt, 64, params);
+  const params = { N: 2 ** 15, r: 8, p: 1 };
+  const hash = scryptSync(password, salt, 64, { ...params, maxmem: 128 * params.N * params.r * 2 });
   return `scrypt$${params.N}$${params.r}$${params.p}$${salt.toString("base64")}$${hash.toString("base64")}`;
 }
 

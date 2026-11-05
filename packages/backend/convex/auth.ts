@@ -1,6 +1,5 @@
 import { Password } from "@convex-dev/auth/providers/Password";
 import { convexAuth } from "@convex-dev/auth/server";
-import { Scrypt } from "lucia";
 import {
   INVALID_CREDENTIALS,
   isPasswordRequirementsError,
@@ -27,15 +26,6 @@ const passwordProvider = Password({
   },
   // Runs before any account lookup, on "signUp" and "reset-verification".
   validatePasswordRequirements,
-  // New and reset passwords get Convex Auth's default hash. An account the Hub importer brought
-  // over keeps the Hub's scrypt hash until its password is next reset, and signs in with it.
-  crypto: {
-    hashSecret: async (password) => await new Scrypt().hash(password),
-    verifySecret: async (password, hash) =>
-      isHubPasswordHash(hash)
-        ? await verifyHubPassword(password, hash)
-        : await new Scrypt().verify(hash, password),
-  },
 });
 
 type Authorize = (params: Record<string, unknown>, ctx: unknown) => Promise<unknown>;
@@ -65,8 +55,9 @@ function uniformFailure(flow: unknown, error: unknown) {
  *
  * `ConvexCredentials` keeps the real implementation on the internal `options`
  * object and the framework merges it over the provider at materialisation
- * time, so this replaces that one function and leaves hashing, the flows and
- * the callbacks untouched. If that shape ever changes the throw below fails the
+ * time. Keep its default crypto for new/reset passwords and native hashes; dispatch only Hub
+ * hashes to our verifier. This avoids depending on the provider's hashing library or its files.
+ * If that shape ever changes the throw below fails the
  * push rather than quietly shipping a provider that leaks again.
  */
 function withUniformFailures<Provider>(provider: Provider): Provider {
@@ -77,11 +68,30 @@ function withUniformFailures<Provider>(provider: Provider): Provider {
     );
   }
 
+  const defaultCrypto = options.crypto as
+    | {
+        hashSecret: (password: string) => Promise<string>;
+        verifySecret: (password: string, hash: string) => Promise<boolean>;
+      }
+    | undefined;
+  if (
+    typeof defaultCrypto?.hashSecret !== "function" ||
+    typeof defaultCrypto.verifySecret !== "function"
+  ) {
+    throw new Error("Password provider no longer exposes its default crypto");
+  }
   const authorize = options.authorize as Authorize;
   return {
     ...provider,
     options: {
       ...options,
+      crypto: {
+        hashSecret: (password: string) => defaultCrypto.hashSecret(password),
+        verifySecret: (password: string, hash: string) =>
+          isHubPasswordHash(hash)
+            ? verifyHubPassword(password, hash)
+            : defaultCrypto.verifySecret(password, hash),
+      },
       authorize: async (params: Record<string, unknown>, ctx: unknown) => {
         try {
           return await authorize(params, ctx);

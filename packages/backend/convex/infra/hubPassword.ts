@@ -1,13 +1,7 @@
-// Verifies passwords hashed by the Hub, so an account the importer brought over signs in with the
-// password it already had instead of needing a reset.
-//
-// The Hub stores `scrypt$N$r$p$<salt base64>$<hash base64>` (apps/hub/src/runtime/users.ts,
-// node:crypto scrypt, N=2^15 r=8 p=1). Convex Auth's own hashes are Lucia's `<salt>:<key>` form.
-// The prefix tells them apart. The cost is the same: both need 128 * N * r = 32 MiB.
-//
-// The scrypt here is the one Convex Auth's default hasher already runs (Lucia's, a port of
-// @noble/hashes), imported from its file because Lucia does not export it.
-import { scrypt } from "lucia/dist/scrypt/index.js";
+// Verifies the Hub's exact hash format (apps/hub/src/runtime/users.ts):
+// `scrypt$32768$8$1$<16-byte salt base64>$<64-byte hash base64>`.
+// Imported passwords use UTF-8 without normalization, as node:crypto scrypt does on the Hub.
+import { scrypt } from "@noble/hashes/scrypt.js";
 
 export const HUB_HASH_PREFIX = "scrypt$";
 
@@ -15,37 +9,47 @@ export function isHubPasswordHash(stored: string) {
   return stored.startsWith(HUB_HASH_PREFIX);
 }
 
-/** Bounds on the parameters a stored hash may ask for, so a corrupt row cannot exhaust memory. */
-const MAX_N = 2 ** 17;
-const MAX_R = 16;
-const MAX_P = 4;
+function decodeBase64(text: string, length: number) {
+  try {
+    const binary = atob(text);
+    // Require the canonical encoding the Hub writes, not a truncated or oversized digest.
+    if (binary.length !== length || btoa(binary) !== text) return null;
+    return Uint8Array.from(binary, (char) => char.codePointAt(0)!);
+  } catch {
+    return null;
+  }
+}
 
-function fromBase64(text: string) {
-  return Uint8Array.from(atob(text), (char) => char.codePointAt(0)!);
+/** Fixed-length comparison with no data-dependent early return. */
+function constantTimeEqual(actual: Uint8Array, expected: Uint8Array) {
+  let difference = 0;
+  for (let i = 0; i < expected.length; i += 1) difference |= actual[i] ^ expected[i];
+  return difference === 0;
 }
 
 export async function verifyHubPassword(password: string, stored: string) {
   const parts = stored.split("$");
-  if (parts.length !== 6 || parts[0] !== "scrypt") return false;
-  const [, nText, rText, pText, saltB64, hashB64] = parts;
-  const N = Number(nText);
-  const r = Number(rText);
-  const p = Number(pText);
-  if (![N, r, p].every(Number.isInteger) || N < 2 || N > MAX_N || (N & (N - 1)) !== 0) {
+  if (
+    parts.length !== 6 ||
+    parts[0] !== "scrypt" ||
+    parts[1] !== "32768" ||
+    parts[2] !== "8" ||
+    parts[3] !== "1"
+  ) {
     return false;
   }
-  if (r < 1 || r > MAX_R || p < 1 || p > MAX_P) return false;
-  const expected = fromBase64(hashB64);
-  // Node's scrypt takes the password as UTF-8 without normalization, so neither does this.
-  const actual = await scrypt(new TextEncoder().encode(password), fromBase64(saltB64), {
-    N,
-    r,
-    p,
-    dkLen: expected.length,
-    maxmem: 128 * N * r * 2,
+  const salt = decodeBase64(parts[4], 16);
+  const expected = decodeBase64(parts[5], 64);
+  if (salt === null || expected === null) return false;
+  // Sync scrypt avoids the timers scryptAsync uses to yield: Convex mutations have no timers.
+  // Parameters and output size are fixed to the Hub's values, so a corrupt row cannot ask for
+  // more memory or CPU. The Hub uses the same 32 MiB work factor.
+  const actual = scrypt(new TextEncoder().encode(password), salt, {
+    N: 2 ** 15,
+    r: 8,
+    p: 1,
+    dkLen: 64,
+    maxmem: 64 * 1024 * 1024,
   });
-  if (actual.length !== expected.length) return false;
-  let difference = 0;
-  for (let i = 0; i < actual.length; i += 1) difference |= actual[i] ^ expected[i];
-  return difference === 0;
+  return constantTimeEqual(actual, expected);
 }

@@ -144,6 +144,15 @@ closed rather than generating a new one. A value leaves Convex only through the 
 `infra/secrets:forNodeDeploy`, for a deploy that targets the asking Node and still holds its App's
 lease.
 
+### Rotate ERAINFRA_SECRETS_MASTER_KEY
+
+Master-key rotation is follow-up work. Today, replacing `ERAINFRA_SECRETS_MASTER_KEY` makes existing
+App data keys unreadable; the stored fingerprint detects the mismatch and secret reads and writes
+fail closed. Keep the current master key backed up and do not replace it in place. A rotation tool
+must unwrap each App data key with the old master key and re-wrap it with the new one, with an
+explicit transition that accepts both key versions until every App has moved. The encrypted secret
+values themselves need not change.
+
 ### Migration order
 
 1. Phase 1: `erainfra-mesh` replaces dumbpipe, still brokered by the Hub.
