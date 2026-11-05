@@ -168,6 +168,12 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s is required", name)
 		}
 	}
+	if err := ProfileNameError(c.Profile); err != nil {
+		return fmt.Errorf("RC_PROFILE: %w", err)
+	}
+	if err := ProfileNameError(c.ScaleSetName); err != nil {
+		return fmt.Errorf("RC_SCALE_SET_NAME: %w", err)
+	}
 	if c.MinRunners < 0 || c.MaxRunners < 1 || c.MinRunners > c.MaxRunners {
 		return errors.New("runner bounds require 0 <= RC_MIN_RUNNERS <= RC_MAX_RUNNERS and RC_MAX_RUNNERS >= 1")
 	}
