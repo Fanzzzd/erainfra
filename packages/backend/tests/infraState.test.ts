@@ -17,7 +17,15 @@ import {
   type PermissionRole,
 } from "../convex/infra/policy";
 import { MASK } from "../convex/infra/secrets";
-import { MASTER_KEY_ENV } from "../convex/infra/secretCrypto";
+import {
+  decryptValue,
+  encryptValue,
+  MASTER_KEY_ENV,
+  newDataKey,
+  requireMasterKey,
+  unwrapDataKey,
+  type SecretScope,
+} from "../convex/infra/secretCrypto";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -67,11 +75,11 @@ const token = (scope: "read" | "admin" | "metrics") => ({
   scope,
 });
 
-async function deployingTo(t: Harness, nodeId: Id<"nodes">) {
+async function deployingTo(t: Harness, nodeId: Id<"nodes">, app = "shop") {
   const deploymentId = await t.run(async (ctx) => {
     const { createDeployment } = await import("../convex/infra/deployments");
     return await createDeployment(ctx, {
-      app: "shop",
+      app,
       targetNodeIds: [nodeId],
       trigger: { kind: "manual" },
     });
@@ -682,7 +690,8 @@ describe("App secrets", () => {
     });
     await as(t, op).mutation(api.infra.secrets.set, { app: "shop", vars: { TOKEN: "app-level" } });
     await as(t, op).mutation(api.infra.secrets.set, {
-      app: "shop-web",
+      app: "shop",
+      service: "web",
       vars: { TOKEN: "service-level" },
     });
     const { deploymentId, epoch } = await deployingTo(t, target);
@@ -690,8 +699,8 @@ describe("App secrets", () => {
     expect(
       await t.query(internal.infra.secrets.forNodeDeploy, { nodeId: target, deploymentId }),
     ).toEqual({
-      shop: { TOKEN: "app-level" },
-      "shop-web": { TOKEN: "service-level" },
+      appWide: { TOKEN: "app-level" },
+      services: { web: { TOKEN: "service-level" } },
     });
     await expect(
       t.query(internal.infra.secrets.forNodeDeploy, { nodeId: bystander, deploymentId }),
@@ -729,12 +738,16 @@ describe("App secrets", () => {
         trigger: { kind: "manual" },
       });
     });
-    for (const [app, value] of [
-      ["shop", "shared-env"],
-      ["shop-web", "web-private"],
-      ["shop-db", "db-private"],
-    ]) {
-      await as(t, op).mutation(api.infra.secrets.set, { app, vars: { TOKEN: value } });
+    for (const [service, value] of [
+      [undefined, "shared-env"],
+      ["web", "web-private"],
+      ["db", "db-private"],
+    ] as Array<[string | undefined, string]>) {
+      await as(t, op).mutation(api.infra.secrets.set, {
+        app: "shop",
+        service,
+        vars: { TOKEN: value },
+      });
     }
     await t.mutation(internal.infra.deployments.begin, { deploymentId });
 
@@ -742,14 +755,14 @@ describe("App secrets", () => {
     expect(
       await t.query(internal.infra.secrets.forNodeDeploy, { nodeId: webNode, deploymentId }),
     ).toEqual({
-      shop: { TOKEN: "shared-env" },
-      "shop-web": { TOKEN: "web-private" },
+      appWide: { TOKEN: "shared-env" },
+      services: { web: { TOKEN: "web-private" } },
     });
     expect(
       await t.query(internal.infra.secrets.forNodeDeploy, { nodeId: dbNode, deploymentId }),
     ).toEqual({
-      shop: { TOKEN: "shared-env" },
-      "shop-db": { TOKEN: "db-private" },
+      appWide: { TOKEN: "shared-env" },
+      services: { db: { TOKEN: "db-private" } },
     });
     await expect(
       t.query(internal.infra.secrets.forNodeDeploy, { nodeId: bystander, deploymentId }),
@@ -778,12 +791,14 @@ describe("App secrets", () => {
     const nodeId = await addNode(t, "single-container");
     await as(t, op).mutation(api.infra.secrets.set, { app: "shop", vars: { TOKEN: "common" } });
     await as(t, op).mutation(api.infra.secrets.set, {
-      app: "shop-web",
+      app: "shop",
+      service: "web",
       vars: { TOKEN: "unplaced" },
     });
     const { deploymentId } = await deployingTo(t, nodeId);
     expect(await t.query(internal.infra.secrets.forNodeDeploy, { nodeId, deploymentId })).toEqual({
-      shop: { TOKEN: "common" },
+      appWide: { TOKEN: "common" },
+      services: {},
     });
   });
 
@@ -820,6 +835,165 @@ describe("App secrets", () => {
       as(t, op).mutation(api.infra.secrets.set, { app: "shop", vars: { GOOD: "1", "1BAD": "2" } }),
     ).rejects.toThrow(/Invalid environment variable name: 1BAD/);
     expect(await t.run(async (ctx) => await ctx.db.query("appSecrets").collect())).toEqual([]);
+  });
+
+  it("holds App and service names to the naming rule before writing anything", async () => {
+    const t = convexTest(schema, modules);
+    const op = await addUser(t, "op@x.dev", "operator");
+    await expect(
+      as(t, op).mutation(api.infra.secrets.set, { app: "web/api", vars: { A: "1" } }),
+    ).rejects.toThrow(/Invalid App name: web\/api/);
+    await expect(
+      as(t, op).mutation(api.infra.secrets.set, { app: "web", service: "-api", vars: { A: "1" } }),
+    ).rejects.toThrow(/Invalid service name: -api/);
+    await expect(
+      as(t, op).query(api.infra.secrets.list, { app: "web", service: "" }),
+    ).rejects.toThrow(/Invalid service name/);
+    expect(
+      await t.run(async (ctx) => ({
+        secrets: await ctx.db.query("appSecrets").collect(),
+        keys: await ctx.db.query("appDataKeys").collect(),
+      })),
+    ).toEqual({ secrets: [], keys: [] });
+  });
+
+  // App `web` with service `api`, and App `web-api`: the Hub's `<app>-<service>` string named both
+  // `web-api`, so each App's Node received the other's secrets.
+  async function collidingApps(t: Harness) {
+    const op = await addUser(t, "op@x.dev", "operator");
+    const webNode = await addNode(t, "web-node");
+    const webApiNode = await addNode(t, "web-api-node");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("apps", {
+        name: "web",
+        nodeId: webNode,
+        services: [{ name: "api", image: "r/web-api:1", args: [] }],
+        links: [],
+        updatedAt: T0,
+      });
+      await ctx.db.insert("apps", {
+        name: "web-api",
+        nodeId: webApiNode,
+        services: [{ name: "main", image: "r/web-api-app:1", args: [] }],
+        links: [],
+        updatedAt: T0,
+      });
+    });
+    return { op, webNode, webApiNode };
+  }
+
+  it("keeps service api of App web and App web-api apart, in both directions", async () => {
+    const t = convexTest(schema, modules);
+    const { op, webNode, webApiNode } = await collidingApps(t);
+    const set = (scope: SecretScope, value: string) =>
+      as(t, op).mutation(api.infra.secrets.set, { ...scope, vars: { TOKEN: value } });
+    await set({ app: "web" }, "web-common");
+    await set({ app: "web", service: "api" }, "web-api-service-private");
+    // Writing App web-api's App-wide scope second must not overwrite service api of App web.
+    await set({ app: "web-api" }, "web-api-app-wide");
+
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("appDataKeys").collect()).map((k) => [k.app, k.service ?? null]),
+      ),
+    ).toEqual([
+      ["web", null],
+      ["web", "api"],
+      ["web-api", null],
+    ]);
+    const names = async (scope: SecretScope) =>
+      (await as(t, op).query(api.infra.secrets.list, scope)).map((row) => row.name);
+    expect(await names({ app: "web-api" })).toEqual(["TOKEN"]);
+    expect(await names({ app: "web", service: "api" })).toEqual(["TOKEN"]);
+
+    // App web deploys: its Node gets web's scopes and nothing of App web-api.
+    const web = await deployingTo(t, webNode, "web");
+    const forWeb = await t.query(internal.infra.secrets.forNodeDeploy, {
+      nodeId: webNode,
+      deploymentId: web.deploymentId,
+    });
+    expect(forWeb).toEqual({
+      appWide: { TOKEN: "web-common" },
+      services: { api: { TOKEN: "web-api-service-private" } },
+    });
+    expect(JSON.stringify(forWeb)).not.toContain("web-api-app-wide");
+
+    // App web-api deploys: its Node gets web-api's App-wide scope and nothing of App web.
+    const webApi = await deployingTo(t, webApiNode, "web-api");
+    const forWebApi = await t.query(internal.infra.secrets.forNodeDeploy, {
+      nodeId: webApiNode,
+      deploymentId: webApi.deploymentId,
+    });
+    expect(forWebApi).toEqual({ appWide: { TOKEN: "web-api-app-wide" }, services: { main: {} } });
+    expect(JSON.stringify(forWebApi)).not.toContain("web-common");
+    expect(JSON.stringify(forWebApi)).not.toContain("service-private");
+
+    // Unsetting App web-api's variable leaves service api of App web alone, and the reverse.
+    expect(
+      await as(t, op).mutation(api.infra.secrets.unset, { app: "web-api", name: "TOKEN" }),
+    ).toBe(true);
+    expect(await names({ app: "web", service: "api" })).toEqual(["TOKEN"]);
+    expect(
+      await as(t, op).mutation(api.infra.secrets.unset, {
+        app: "web",
+        service: "api",
+        name: "TOKEN",
+      }),
+    ).toBe(true);
+    expect(await names({ app: "web" })).toEqual(["TOKEN"]);
+    expect(
+      await t.query(internal.infra.secrets.forNodeDeploy, {
+        nodeId: webNode,
+        deploymentId: web.deploymentId,
+      }),
+    ).toEqual({ appWide: { TOKEN: "web-common" }, services: { api: {} } });
+  });
+
+  it("binds data keys and values to (app, service), so web/api and web-api do not decrypt as each other", async () => {
+    const master = await requireMasterKey({ [MASTER_KEY_ENV]: MASTER_KEY });
+    const service: SecretScope = { app: "web", service: "api" };
+    const appWide: SecretScope = { app: "web-api" };
+    for (const [from, to] of [
+      [service, appWide],
+      [appWide, service],
+    ]) {
+      const created = await newDataKey(master, from);
+      const wrapped = { ...created.wrapped, masterKeyId: master.id };
+      const sealed = await encryptValue(created.key, from, "TOKEN", "value");
+      const unwrapped = await unwrapDataKey(master, from, wrapped);
+      expect(await decryptValue(unwrapped, from, "TOKEN", sealed)).toBe("value");
+      await expect(unwrapDataKey(master, to, wrapped)).rejects.toThrow();
+      await expect(decryptValue(created.key, to, "TOKEN", sealed)).rejects.toThrow();
+    }
+  });
+
+  it("refuses rows moved between scope web/api and scope web-api in the database, both ways", async () => {
+    const moves: Array<[SecretScope, SecretScope]> = [
+      [{ app: "web", service: "api" }, { app: "web-api" }],
+      [{ app: "web-api" }, { app: "web", service: "api" }],
+    ];
+    for (const [from, to] of moves) {
+      const t = convexTest(schema, modules);
+      const { op, webNode, webApiNode } = await collidingApps(t);
+      await as(t, op).mutation(api.infra.secrets.set, { ...from, vars: { TOKEN: "moved" } });
+      // Relabel the data key and the value together, the strongest move a database writer has.
+      await t.run(async (ctx) => {
+        for (const { _id, _creationTime, service: _service, ...rest } of await ctx.db
+          .query("appDataKeys")
+          .collect()) {
+          await ctx.db.replace(_id, { ...rest, ...to });
+        }
+        for (const { _id, _creationTime, service: _service, ...rest } of await ctx.db
+          .query("appSecrets")
+          .collect()) {
+          await ctx.db.replace(_id, { ...rest, ...to });
+        }
+      });
+      const nodeId = to.app === "web" ? webNode : webApiNode;
+      const { deploymentId } = await deployingTo(t, nodeId, to.app);
+      const read = () => t.query(internal.infra.secrets.forNodeDeploy, { nodeId, deploymentId });
+      await expect(read()).rejects.toThrow();
+    }
   });
 });
 

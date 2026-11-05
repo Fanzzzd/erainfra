@@ -144,8 +144,17 @@ authenticates with an `erainfra_node_` credential that an admin issues for that 
 the shared `operator` token. An imported account signs in with its Hub password; the Hub's scrypt
 hash is verified as is until the password is next reset.
 
-**Secrets** are encrypted with a random data key per App, and the data keys are encrypted with a
-master key you hold in the Convex environment. Generate one and set it before importing:
+**Secrets** belong to a scope, which is an App plus an optional service. The App-wide scope
+(`infra/secrets:set` with `app` only) is common environment for every service of the App. A
+service-private scope (`app` and `service`) reaches that one service only. Both names follow the
+App naming rule, and the scope is stored as two fields, never joined into one string. App and
+service names may contain `-`, so the Hub's `<app>-<service>` string `web-api` named both service
+`api` of App `web` and App `web-api`.
+
+Each scope's values are encrypted with a random data key for that scope, and the data keys are
+encrypted with a master key you hold in the Convex environment. The associated data of every
+encryption is a JSON array of the App, the service and the variable name, so a row moved to
+another scope or name fails to decrypt. Generate a master key and set it before importing:
 
 ```sh
 pnpm convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"
@@ -155,20 +164,20 @@ Keep a copy somewhere safe. Without it the stored secrets cannot be decrypted, a
 closed rather than generating a new one. A value leaves Convex only through the internal
 `infra/secrets:forNodeDeploy`, for a deploy that targets the asking Node and still holds its App's
 lease. Each targeted Node that hosts at least one service receives the App-wide scope, which is
-common environment injected into every service. It receives a service-private `<app>-<service>`
-scope only when `(service.nodeId ?? app.nodeId)` names that Node. A targeted Node hosting no
-services is refused. A single-container deploy with no `apps` row uses `targetNodeIds` as its
-placement record and receives only the App-wide scope. Put values that other service hosts must
+common environment injected into every service. It receives a service's private scope only when
+`(service.nodeId ?? app.nodeId)` names that Node. A targeted Node hosting no services is refused.
+A single-container deploy with no `apps` row uses `targetNodeIds` as its placement record and
+receives only the App-wide scope. Put values that other service hosts must
 not see in a service-private scope, not the App-wide scope.
 
 ### Rotate ERAINFRA_SECRETS_MASTER_KEY
 
 Master-key rotation is follow-up work. Today, replacing `ERAINFRA_SECRETS_MASTER_KEY` makes existing
-App data keys unreadable; the stored fingerprint detects the mismatch and secret reads and writes
-fail closed. Keep the current master key backed up and do not replace it in place. A rotation tool
-must unwrap each App data key with the old master key and re-wrap it with the new one, with an
-explicit transition that accepts both key versions until every App has moved. The encrypted secret
-values themselves need not change.
+data keys unreadable; the stored fingerprint detects the mismatch and secret reads and writes fail
+closed. Keep the current master key backed up and do not replace it in place. A rotation tool must
+unwrap each scope's data key with the old master key and re-wrap it with the new one, with an
+explicit transition that accepts both key versions until every scope has moved. The encrypted
+secret values themselves need not change.
 
 ### Migration order
 
@@ -201,6 +210,21 @@ does not copy:
 - Hub API tokens (`plt_…`): the importer lists each one. Replace CLI tokens with dashboard API
   tokens, and give each Node its own credential in phase 2b;
 - the AI transcript archive (`chat_*`), which is not control state and stays on the Hub for now.
+
+The Hub keyed secrets on one string, `<app>` or `<app>-<service>`, so the importer splits each one
+against the Hub's own Apps (`apps` and single-container `routes`) and their services:
+
+- `web-api` is an App and no App `web` has a service `api`: App `web-api`'s App-wide scope.
+- App `web` has a service `api` and `web-api` is not an App: service `api` of App `web`.
+- Both are true: the importer refuses. The Hub gave those variables to both, and no reading is
+  safe to guess. Rename the App or the service on the Hub, or unset the variables there and set
+  them in Convex after the import with an explicit `service`.
+- Neither is true and the string contains `-`: the importer refuses, since nothing says where the
+  split is. Unset the variables on the Hub, or deploy the App they belong to.
+
+A string with no `-` that names no known App is imported as that App's App-wide scope, its only
+reading. Refusals happen while reading the Hub, before anything is sent, so `--dry-run` reports
+them and a refused run writes nothing. The error names every scope it could not resolve.
 
 ## Opt-in Convex Node transport (phase 2b)
 

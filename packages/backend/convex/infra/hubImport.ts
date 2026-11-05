@@ -92,7 +92,15 @@ export const importBatchValidator = v.union(
   }),
   v.object({
     kind: v.literal("secrets"),
-    rows: v.array(v.object({ app: v.string(), values: v.record(v.string(), v.string()) })),
+    // One row per secret scope, already resolved from the Hub's `<app>-<service>` string by the
+    // importer script against the Hub's own apps (resolveHubSecretScopes).
+    rows: v.array(
+      v.object({
+        app: v.string(),
+        service: v.optional(v.string()),
+        values: v.record(v.string(), v.string()),
+      }),
+    ),
   }),
   v.object({
     kind: v.literal("gitBindings"),
@@ -293,7 +301,7 @@ export const apply = internalMutation({
         break;
       case "secrets": {
         const master = await requireMasterKey(process.env);
-        for (const row of batch.rows) await putSecrets(ctx, master, row.app, row.values);
+        for (const { values, ...scope } of batch.rows) await putSecrets(ctx, master, scope, values);
         break;
       }
       case "gitBindings":

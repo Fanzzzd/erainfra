@@ -9,10 +9,24 @@
 // Everything is AES-256-GCM with a fresh 96-bit nonce per encryption. Associated data binds a
 // wrapped data key to its scope and a value to its (scope, name), so swapping rows in the database
 // produces a decryption failure, not another App's secret.
+//
+// A scope is a structured (app, service?) pair, never a joined string: App and service names may
+// both contain `-`, so `web` + `api` and `web-api` would otherwise be the same scope. The
+// associated data is a JSON array of the fields, which no two distinct scopes can share.
 
 export const MASTER_KEY_ENV = "ERAINFRA_SECRETS_MASTER_KEY";
 
 export type MasterKey = { key: CryptoKey; id: string };
+
+/** Who may read a secret: every service of an App (`service` absent), or one service of it. */
+export type SecretScope = { app: string; service?: string };
+
+/** The scope in words, for error messages. */
+export function describeScope(scope: SecretScope) {
+  return scope.service === undefined
+    ? `App "${scope.app}"`
+    : `service "${scope.service}" of App "${scope.app}"`;
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -95,11 +109,14 @@ async function open(key: CryptoKey, sealed: { ciphertext: string; iv: string }, 
   );
 }
 
-const dataKeyAad = (scope: string) => `erainfra/app-data-key/v1\0${scope}`;
-const valueAad = (scope: string, name: string) => `erainfra/app-secret/v1\0${scope}\0${name}`;
+// JSON arrays of strings and null decode to exactly one tuple, so these encodings are injective.
+const dataKeyAad = (scope: SecretScope) =>
+  JSON.stringify(["erainfra/app-data-key/v2", scope.app, scope.service ?? null]);
+const valueAad = (scope: SecretScope, name: string) =>
+  JSON.stringify(["erainfra/app-secret/v2", scope.app, scope.service ?? null, name]);
 
 /** A fresh data key for a scope, and its wrapped form for storage. */
-export async function newDataKey(master: MasterKey, scope: string) {
+export async function newDataKey(master: MasterKey, scope: SecretScope) {
   const raw = crypto.getRandomValues(new Uint8Array(32));
   const wrapped = await seal(master.key, raw, dataKeyAad(scope));
   const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
@@ -108,25 +125,30 @@ export async function newDataKey(master: MasterKey, scope: string) {
 
 export async function unwrapDataKey(
   master: MasterKey,
-  scope: string,
+  scope: SecretScope,
   row: { wrappedKey: string; iv: string; masterKeyId: string },
 ) {
   if (row.masterKeyId !== master.id) {
     throw new Error(
-      `The data key for "${scope}" was wrapped by master key ${row.masterKeyId}, but ${MASTER_KEY_ENV} is ${master.id}`,
+      `The data key for ${describeScope(scope)} was wrapped by master key ${row.masterKeyId}, but ${MASTER_KEY_ENV} is ${master.id}`,
     );
   }
   const raw = await open(master.key, { ciphertext: row.wrappedKey, iv: row.iv }, dataKeyAad(scope));
   return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-export async function encryptValue(dataKey: CryptoKey, scope: string, name: string, value: string) {
+export async function encryptValue(
+  dataKey: CryptoKey,
+  scope: SecretScope,
+  name: string,
+  value: string,
+) {
   return await seal(dataKey, encoder.encode(value), valueAad(scope, name));
 }
 
 export async function decryptValue(
   dataKey: CryptoKey,
-  scope: string,
+  scope: SecretScope,
   name: string,
   sealed: { ciphertext: string; iv: string },
 ) {

@@ -265,7 +265,7 @@ export const payload = internalQuery({
       now: Date.now(),
     });
     const services = spec.services.map((s) => {
-      const env = { ...s.env, ...scopes[spec.app.name], ...scopes[`${spec.app.name}-${s.name}`] };
+      const env = { ...s.env, ...scopes.appWide, ...scopes.services[s.name] };
       if (s.env?.PORT) env.PORT = s.env.PORT;
       if (
         Object.values(env).some(

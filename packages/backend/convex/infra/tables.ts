@@ -153,25 +153,29 @@ export const infraTables = {
 
   // Envelope encryption for App secrets: one random data key per secret scope, stored wrapped by
   // the deployment master key (ERAINFRA_SECRETS_MASTER_KEY). `masterKeyId` names which master key
-  // wrapped it, so a wrong or rotated key fails with a message instead of a GCM error.
+  // wrapped it, so a wrong or rotated key fails with a message instead of a GCM error. A scope is
+  // (app, service): `service` absent is the App-wide scope every service of the App receives.
   appDataKeys: defineTable({
     app: v.string(),
+    service: v.optional(v.string()),
     wrappedKey: v.string(),
     iv: v.string(),
     masterKeyId: v.string(),
     createdAt: v.number(),
-  }).index("by_app", ["app"]),
+  }).index("by_app_service", ["app", "service"]),
 
-  // Hub `secrets`. `app` is the secret scope: an App name, or `<app>-<service>` for one service.
-  // `ciphertext` is AES-256-GCM under the scope's data key, bound to (app, name) as associated
-  // data so a row copied onto another name does not decrypt.
+  // Hub `secrets`, with the Hub's `<app>-<service>` scope string split into its two names, because
+  // both may contain `-` and the joined form named two scopes at once. `ciphertext` is AES-256-GCM
+  // under the scope's data key, bound to (app, service, name) as associated data so a row copied
+  // onto another name or scope does not decrypt.
   appSecrets: defineTable({
     app: v.string(),
+    service: v.optional(v.string()),
     name: v.string(),
     ciphertext: v.string(),
     iv: v.string(),
     updatedAt: v.number(),
-  }).index("by_app_name", ["app", "name"]),
+  }).index("by_app_service_name", ["app", "service", "name"]),
 
   // Hub `git_bindings`: push-to-deploy for one repository branch. (repoKey, branch) is unique.
   gitBindings: defineTable({

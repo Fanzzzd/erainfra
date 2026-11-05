@@ -15,31 +15,49 @@ import {
 } from "../_generated/server";
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
-import { isTerminalStage, isValidSecretName, leaseAdmits } from "./policy";
+import { isTerminalStage, isValidName, isValidSecretName, leaseAdmits } from "./policy";
 import {
   decryptValue,
+  describeScope,
   encryptValue,
   newDataKey,
   requireMasterKey,
   unwrapDataKey,
   type MasterKey,
+  type SecretScope,
 } from "./secretCrypto";
 
 export const MASK = "••••••";
 
-async function dataKeyRow(ctx: QueryCtx, scope: string) {
+/** A scope from caller input, with both names held to the App naming rule. */
+export function secretScope(app: string, service?: string): SecretScope {
+  if (!isValidName(app)) throw new ConvexError(`Invalid App name: ${app}`);
+  if (service === undefined) return { app };
+  if (!isValidName(service)) throw new ConvexError(`Invalid service name: ${service}`);
+  return { app, service };
+}
+
+const scopeArgs = { app: v.string(), service: v.optional(v.string()) };
+
+async function dataKeyRow(ctx: QueryCtx, scope: SecretScope) {
   return await ctx.db
     .query("appDataKeys")
-    .withIndex("by_app", (q) => q.eq("app", scope))
+    .withIndex("by_app_service", (q) => q.eq("app", scope.app).eq("service", scope.service))
     .unique();
 }
 
-async function writableDataKey(ctx: MutationCtx, master: MasterKey, scope: string) {
+function secretRows(ctx: QueryCtx, scope: SecretScope) {
+  return ctx.db
+    .query("appSecrets")
+    .withIndex("by_app_service_name", (q) => q.eq("app", scope.app).eq("service", scope.service));
+}
+
+async function writableDataKey(ctx: MutationCtx, master: MasterKey, scope: SecretScope) {
   const row = await dataKeyRow(ctx, scope);
   if (row !== null) return await unwrapDataKey(master, scope, row);
   const created = await newDataKey(master, scope);
   await ctx.db.insert("appDataKeys", {
-    app: scope,
+    ...scope,
     ...created.wrapped,
     masterKeyId: master.id,
     createdAt: Date.now(),
@@ -51,9 +69,10 @@ async function writableDataKey(ctx: MutationCtx, master: MasterKey, scope: strin
 export async function putSecrets(
   ctx: MutationCtx,
   master: MasterKey,
-  scope: string,
+  target: SecretScope,
   values: Record<string, string>,
 ) {
+  const scope = secretScope(target.app, target.service);
   for (const name of Object.keys(values)) {
     if (!isValidSecretName(name))
       throw new ConvexError(`Invalid environment variable name: ${name}`);
@@ -64,10 +83,12 @@ export async function putSecrets(
     const sealed = await encryptValue(dataKey, scope, name, value);
     const existing = await ctx.db
       .query("appSecrets")
-      .withIndex("by_app_name", (q) => q.eq("app", scope).eq("name", name))
+      .withIndex("by_app_service_name", (q) =>
+        q.eq("app", scope.app).eq("service", scope.service).eq("name", name),
+      )
       .unique();
     if (existing === null) {
-      await ctx.db.insert("appSecrets", { app: scope, name, ...sealed, updatedAt: now });
+      await ctx.db.insert("appSecrets", { ...scope, name, ...sealed, updatedAt: now });
     } else {
       await ctx.db.patch(existing._id, { ...sealed, updatedAt: now });
     }
@@ -75,53 +96,65 @@ export async function putSecrets(
 }
 
 /** Decrypted values for one scope. Not exported through any public function. */
-async function readSecrets(ctx: QueryCtx, master: MasterKey, scope: string) {
-  const rows = await ctx.db
-    .query("appSecrets")
-    .withIndex("by_app_name", (q) => q.eq("app", scope))
-    .collect();
+async function readSecrets(ctx: QueryCtx, master: MasterKey, scope: SecretScope) {
+  const rows = await secretRows(ctx, scope).collect();
   if (rows.length === 0) return {};
   const keyRow = await dataKeyRow(ctx, scope);
-  if (keyRow === null) throw new Error(`Secrets for "${scope}" have no data key`);
+  if (keyRow === null) throw new Error(`Secrets for ${describeScope(scope)} have no data key`);
   const dataKey = await unwrapDataKey(master, scope, keyRow);
   const values: Record<string, string> = {};
   for (const row of rows) values[row.name] = await decryptValue(dataKey, scope, row.name, row);
   return values;
 }
 
+/**
+ * Set variables for an App. Without `service` they go to the App-wide scope every service of the
+ * App receives; with it, only to that service.
+ */
 export const set = mutation({
-  args: { app: v.string(), vars: v.record(v.string(), v.string()) },
+  args: { ...scopeArgs, vars: v.record(v.string(), v.string()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    await putSecrets(ctx, await requireMasterKey(process.env), args.app, args.vars);
+    const scope = secretScope(args.app, args.service);
+    await putSecrets(ctx, await requireMasterKey(process.env), scope, args.vars);
     await appendAudit(ctx, {
       actor,
       action: "env.set",
       target: args.app,
       outcome: "success",
-      meta: { names: Object.keys(args.vars).toSorted() },
+      meta: {
+        ...(scope.service === undefined ? {} : { service: scope.service }),
+        names: Object.keys(args.vars).toSorted(),
+      },
     });
     return null;
   },
 });
 
 export const unset = mutation({
-  args: { app: v.string(), name: v.string() },
+  args: { ...scopeArgs, name: v.string() },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
+    const scope = secretScope(args.app, args.service);
     const row = await ctx.db
       .query("appSecrets")
-      .withIndex("by_app_name", (q) => q.eq("app", args.app).eq("name", args.name))
+      .withIndex("by_app_service_name", (q) =>
+        q.eq("app", scope.app).eq("service", scope.service).eq("name", args.name),
+      )
       .unique();
     if (row === null) return false;
     await ctx.db.delete(row._id);
     await appendAudit(ctx, {
       actor,
       action: "env.unset",
-      target: `${args.app}:${args.name}`,
+      target: args.app,
       outcome: "success",
+      meta: {
+        ...(scope.service === undefined ? {} : { service: scope.service }),
+        name: args.name,
+      },
     });
     return true;
   },
@@ -129,14 +162,11 @@ export const unset = mutation({
 
 /** Names and a mask. `secrets.read` could be broad, so no value is ever returned here. */
 export const list = query({
-  args: { app: v.string() },
+  args: scopeArgs,
   returns: v.array(v.object({ name: v.string(), preview: v.string(), updatedAt: v.number() })),
   handler: async (ctx, args) => {
     await requirePermission(ctx, "app.read");
-    const rows = await ctx.db
-      .query("appSecrets")
-      .withIndex("by_app_name", (q) => q.eq("app", args.app))
-      .collect();
+    const rows = await secretRows(ctx, secretScope(args.app, args.service)).collect();
     return rows.map((row) => ({ name: row.name, preview: MASK, updatedAt: row.updatedAt }));
   },
 });
@@ -144,8 +174,8 @@ export const list = query({
 /**
  * The plaintext a Node needs to start one deployment's containers. Each targeted Node that hosts
  * a service receives the App-wide scope (common environment injected into every service), plus
- * only the `<app>-<service>` scopes placed on that Node. An absent service.nodeId inherits
- * app.nodeId. A target hosting no services gets nothing. For a single-container deployment with
+ * only the (app, service) scopes of the services placed on that Node. An absent service.nodeId
+ * inherits app.nodeId. A target hosting no services gets nothing. For a single-container deployment with
  * no apps row, targetNodeIds is the placement record and grants the App-wide scope only.
  * Refused unless the deployment targets `nodeId`, is not finished, and holds a live App lease.
  */
@@ -179,18 +209,21 @@ export async function secretsForNodeDeploy(
     throw new ConvexError("No services of this App are placed on this Node");
   }
   const master = await requireMasterKey(process.env);
-  const scopes: Record<string, Record<string, string>> = {
-    [deployment.app]: await readSecrets(ctx, master, deployment.app),
-  };
+  const appWide = await readSecrets(ctx, master, { app: deployment.app });
+  const perService: Record<string, Record<string, string>> = {};
   for (const service of services) {
-    const scope = `${deployment.app}-${service.name}`;
-    scopes[scope] = await readSecrets(ctx, master, scope);
+    perService[service.name] = await readSecrets(ctx, master, {
+      app: deployment.app,
+      service: service.name,
+    });
   }
-  return scopes;
+  return { appWide, services: perService };
 }
+
+const values = v.record(v.string(), v.string());
 
 export const forNodeDeploy = internalQuery({
   args: { nodeId: v.id("nodes"), deploymentId: v.id("appDeployments") },
-  returns: v.record(v.string(), v.record(v.string(), v.string())),
+  returns: v.object({ appWide: values, services: v.record(v.string(), values) }),
   handler: async (ctx, args) => await secretsForNodeDeploy(ctx, { ...args, now: Date.now() }),
 });

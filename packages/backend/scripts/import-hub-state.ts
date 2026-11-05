@@ -71,6 +71,65 @@ export function parseHubSecretKey(hex: string) {
   return Buffer.from(trimmed, "hex");
 }
 
+/**
+ * Splits the Hub's secret scope strings into (app, service) pairs, or refuses the import.
+ *
+ * The Hub keyed a service's secrets on `<app>-<service>` and an App's on `<app>`, and App and
+ * service names may both contain `-`. So `web-api` is App `web-api`'s scope, service `api` of App
+ * `web`, or both at once, and the Hub injected it into every one of them. Each string is checked
+ * against the Hub's own Apps (the `apps` table and single-container `routes`) and services:
+ *
+ * - exactly one reading matches: that is the scope;
+ * - more than one matches: refused, because importing it either way would hand one App's values
+ *   to the other or silently drop what the Hub delivered;
+ * - none matches and the string contains `-`: refused, because nothing says where the split is;
+ * - none matches and the string has no `-`: the App-wide scope of an App not deployed yet, the
+ *   only reading such a string has.
+ *
+ * Every refused scope is reported in one error, before anything is sent to Convex.
+ */
+export function resolveHubSecretScopes(
+  scopes: readonly string[],
+  hub: { apps: readonly string[]; services: ReadonlyArray<{ app: string; service: string }> },
+) {
+  const apps = new Set(hub.apps);
+  const services = new Set(hub.services.map(({ app, service }) => JSON.stringify([app, service])));
+  const problems: string[] = [];
+  const resolved = scopes.map((scope): { app: string; service?: string } => {
+    const readings: Array<{ app: string; service?: string }> = [];
+    if (apps.has(scope)) readings.push({ app: scope });
+    for (let dash = scope.indexOf("-"); dash !== -1; dash = scope.indexOf("-", dash + 1)) {
+      const app = scope.slice(0, dash);
+      const service = scope.slice(dash + 1);
+      if (services.has(JSON.stringify([app, service]))) readings.push({ app, service });
+    }
+    if (readings.length === 1) return readings[0];
+    if (readings.length === 0 && !scope.includes("-")) return { app: scope };
+    if (readings.length === 0) {
+      problems.push(
+        `Hub secret scope "${scope}" names no App and no service of an App on this Hub, so it ` +
+          "cannot be split into an App and a service. Unset its variables on the Hub, or deploy " +
+          "the App they belong to, then run the import again.",
+      );
+    } else {
+      const names = readings.map((r) =>
+        r.service === undefined ? `App "${r.app}"` : `service "${r.service}" of App "${r.app}"`,
+      );
+      problems.push(
+        `Hub secret scope "${scope}" is ambiguous: it names ${names.join(" and ")}, and the Hub ` +
+          "injected its variables into each. Rename the App or the service on the Hub, or unset " +
+          "the variables there and set them again after the import with an explicit service, " +
+          "then run the import again.",
+      );
+    }
+    return { app: scope };
+  });
+  if (problems.length > 0) {
+    throw new Error(`Refusing to import secrets:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+  }
+  return resolved;
+}
+
 function inBatches<K extends ImportBatch["kind"]>(
   kind: K,
   rows: Extract<ImportBatch, { kind: K }>["rows"],
@@ -179,7 +238,11 @@ export function readHubState(dbPath: string, secretKey: Buffer): HubState {
       values[String(r.key)] = decryptHubSecret(secretKey, String(r.blob));
       secretsByApp.set(app, values);
     }
-    const secrets = [...secretsByApp].map(([app, values]) => ({ app, values }));
+    const scopeStrings = [...secretsByApp.keys()];
+    const secrets = resolveHubSecretScopes(scopeStrings, {
+      apps: [...routes.map((r) => r.name), ...apps.map((a) => a.name)],
+      services: apps.flatMap((a) => a.services.map((s) => ({ app: a.name, service: s.name }))),
+    }).map((scope, index) => ({ ...scope, values: secretsByApp.get(scopeStrings[index])! }));
 
     type HubBinding = {
       id: string;
