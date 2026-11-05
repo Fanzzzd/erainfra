@@ -1,0 +1,5 @@
+[    0.000000] Linux version 6.1.141
+[  120.5] Out of memory: Killed process 1234 (node) total-vm:9000kB
+runner: Out of memory? no, a job line without the kernel phrase
+[  300.1] Memory cgroup out of memory: Killed process 4321 (java)
+[  400.2] Out of memory: Kil

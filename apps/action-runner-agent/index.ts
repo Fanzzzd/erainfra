@@ -17,6 +17,7 @@ import {
   RECONCILE_INTERVAL_MS,
   withCores,
 } from "./cpuset.js";
+import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./job-metrics.js";
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
   spawnAttempt,
@@ -107,6 +108,11 @@ const reportAttempt = makeFunctionReference<
   { token: string; attemptId: string; exitCode: number },
   boolean
 >("workerApi:reportAttempt");
+const reportAttemptMetrics = makeFunctionReference<
+  "mutation",
+  { token: string; attemptId: string } & MetricsReport,
+  boolean
+>("workerApi:reportAttemptMetrics");
 const reportReadiness = makeFunctionReference<
   "mutation",
   {
@@ -177,6 +183,8 @@ let completedRecoveryRevision = 0;
 let recoveringRuntime = false;
 let recoveryRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let coreReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+/** Closing metrics uploads still running. Shutdown waits for them, bounded; nothing else does. */
+const metricsFlushes = new Set<Promise<void>>();
 
 /**
  * The Worker's CPUs, handed out in disjoint ranges so no two concurrent
@@ -336,14 +344,33 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
           cache: config.cache,
         });
         running.set(key, child);
+        let metrics: AttemptMetrics | undefined;
         try {
           if (child.pid === undefined) {
             throw new Error(`The ${claimed.executor} executor did not spawn`);
           }
+          metrics = startAttemptMetrics({
+            attemptId: item.id,
+            executor: claimed.executor,
+            runnerName: claimed.runnerName,
+            upload: (report) =>
+              client.mutation(reportAttemptMetrics, {
+                token: config.machineToken,
+                attemptId: item.id,
+                ...report,
+              }),
+          });
           const result = await child;
           return result.exitCode ?? 1;
         } finally {
           running.delete(key);
+          // Not awaited: the final snapshot uploads beside reportAttempt and the core release,
+          // never in front of them. The control plane accepts it after the Attempt settles.
+          if (metrics !== undefined) {
+            const flush = metrics.stop();
+            metricsFlushes.add(flush);
+            void flush.finally(() => metricsFlushes.delete(flush));
+          }
         }
       },
     );
@@ -812,6 +839,8 @@ async function shutdown(signal: string) {
   unsubscribeProfiles();
   for (const child of running.values()) child.kill();
   await Promise.allSettled(running.values());
+  // Each flush is already bounded; this only stops the client closing underneath them.
+  await Promise.allSettled(metricsFlushes);
   await clearReadinessSignal(process.env.RC_READY_FILE);
   await client.close();
 }

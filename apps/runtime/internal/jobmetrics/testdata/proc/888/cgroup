@@ -1,0 +1,6 @@
+12:pids:/docker/def456
+11:memory:/docker/def456
+9:blkio:/docker/def456
+4:cpu,cpuacct:/docker/def456
+1:name=systemd:/docker/def456
+0::/docker/def456

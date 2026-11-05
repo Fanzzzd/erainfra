@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 )
 
 type fakeExecutor struct {
@@ -107,7 +108,7 @@ func unixClient(t *testing.T, runtime executor.Executor) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &http.Server{Handler: handler(runtime)}
+	server := &http.Server{Handler: handler(runtime, jobmetrics.NewRegistry(time.Hour))}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {
 		_ = server.Close()
@@ -204,11 +205,86 @@ func TestInvalidRequestDoesNotEchoJITSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler(runtime).ServeHTTP(response, request)
+	handler(runtime, nil).ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", response.Code)
 	}
 	if body := response.Body.String(); strings.Contains(body, "do-not-echo") {
 		t.Fatalf("error response leaked JIT input: %s", body)
+	}
+}
+
+// measuredLease is a fakeLease whose boundary reports one more second of one
+// vCPU every time it is read.
+type measuredLease struct {
+	*fakeLease
+	mu    sync.Mutex
+	reads int
+}
+
+func (l *measuredLease) ResourceSource() (jobmetrics.Source, error) { return l, nil }
+func (*measuredLease) Kind() string                                  { return "fake-vmm" }
+func (l *measuredLease) Read(time.Time) (jobmetrics.Reading, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.reads++
+	return jobmetrics.Reading{
+		At:        time.Unix(1_700_000_000+int64(l.reads), 0),
+		CPUMicros: uint64(l.reads) * 1_000_000,
+	}, nil
+}
+
+type measuredExecutor struct {
+	fakeExecutor
+	measured *measuredLease
+}
+
+func (m *measuredExecutor) Start(_ context.Context, spec executor.Spec) (executor.Lease, error) {
+	m.startedSpec = spec
+	return m.measured, nil
+}
+
+func TestExecuteMeasuresACIAttemptAndKeepsItsFinalSnapshot(t *testing.T) {
+	lease := &measuredLease{fakeLease: &fakeLease{
+		wait:      func(context.Context) (executor.Result, error) { return executor.Result{}, nil },
+		cancelled: make(chan struct{}),
+	}}
+	client := unixClient(t, &measuredExecutor{measured: lease})
+	ctx := context.Background()
+
+	before, err := client.Metrics(ctx, "attempt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Found {
+		t.Fatal("an Attempt that never ran must not have metrics")
+	}
+	if _, err := client.Execute(ctx, testSpec(), time.Second, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// The response is written only after the sampler finished, so the
+	// Worker's collection right after Execute sees the final Snapshot.
+	after, err := client.Metrics(ctx, "attempt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Found || after.Live {
+		t.Fatalf("metrics found=%v live=%v, want a finished Snapshot", after.Found, after.Live)
+	}
+	if after.Snapshot.Source != "fake-vmm" || after.Snapshot.Samples != 2 || after.Snapshot.Points.CPUMs[0] != 1000 {
+		t.Fatalf("snapshot = %+v, want the baseline and the closing reading", after.Snapshot)
+	}
+
+	experiment := testSpec()
+	experiment.Kind = "experiment"
+	experiment.AttemptID = "experiment-1"
+	experiment.JITConfig = ""
+	experiment.Command = []string{"true"}
+	experiment.ResultToken = "token"
+	if _, err := client.Execute(ctx, experiment, time.Second, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if response, _ := client.Metrics(ctx, "experiment-1"); response.Found {
+		t.Fatal("only CI Attempts are measured")
 	}
 }

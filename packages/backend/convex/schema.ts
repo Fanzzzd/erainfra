@@ -1,6 +1,7 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { attemptMetricSummaryFields, attemptMetricsFields } from "./attemptMetricsModel";
 import {
   benchmarkSummaryValidator,
   fitPolicyValidator,
@@ -337,6 +338,16 @@ export default defineSchema({
     // completed range to the executor-drain window instead of the machine's
     // whole history. Live-state lookups use the (machineId, state) prefix.
     .index("by_machine_state_finishedAt", ["machineId", "state", "finishedAt"]),
+
+  // One bounded resource series per Attempt (at most 360 points per column), replaced whole by
+  // every upload from the Worker that ran it. Read only by the Attempt page.
+  attemptMetrics: defineTable(attemptMetricsFields).index("by_attempt", ["attemptId"]),
+
+  // The series' summary and upload bookkeeping, small enough for the Runs page to read one per
+  // listed Attempt. by_updatedAt drives the 14-day retention purge.
+  attemptMetricSummaries: defineTable(attemptMetricSummaryFields)
+    .index("by_attempt", ["attemptId"])
+    .index("by_updatedAt", ["updatedAt"]),
 
   // Credentials are deliberately absent from every scheduler/reconcile scan.
   // A Worker point-reads this row exactly once while claiming its Attempt.

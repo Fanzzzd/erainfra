@@ -732,6 +732,61 @@ retry/backoff state in `webhookRecovery`, and asks GitHub to redeliver only miss
 events. The dashboard exposes the latest scan and any recovered or abandoned delivery; deployments
 using only a legacy PAT can retry received rows but cannot recover events that never arrived.
 
+## Job metrics
+
+Every Linux Attempt gets a CPU, memory, network and disk chart. The **Runs** page shows each run's
+summary (for example `peak 11.2/16 GiB · cpu p95 3.6/4`, and any OOM kills); the summary links to the
+Attempt page with the charts, the totals and a table of every point.
+
+The Worker measures the boundary from the host and never asks the job:
+
+| Executor    | Source                                                                           | CPU                                   | Memory                                                                          | Network                                                               | Disk                                                   | OOM kills                                                       |
+| ----------- | -------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------- |
+| Firecracker | the VMM process, read by the privileged runtime                                  | `utime + stime` in `/proc/<pid>/stat` | `VmRSS`, peak from `VmHWM`                                                      | the VM's tap, through `/proc/<pid>/net/dev`                           | `read_bytes` / `write_bytes` in `/proc/<pid>/io`       | kernel OOM lines on the serial console                          |
+| Docker      | the container's cgroup, read by `runner-center-runtime sample` as the Agent user | `cpu.stat` (v2), `cpuacct.usage` (v1) | `memory.current` (v2) or `memory.usage_in_bytes` (v1), less inactive page cache | the container's interfaces except `lo`, through `/proc/<pid>/net/dev` | `io.stat` (v2), `blkio.throttle.io_service_bytes` (v1) | `oom_kill` in `memory.events` (v2) or `memory.oom_control` (v1) |
+
+Tart and Hyper-V Attempts are not measured.
+
+Things to know when reading the charts:
+
+- **Firecracker memory is what the host has backed for the guest.** A guest that touched 12 GiB
+  once, page cache included, keeps 12 GiB resident even after it frees it, because nothing balloons
+  memory back. The chart answers "how much of the Worker did this job take", which is close to, but
+  not the same as, what the guest's own `free` reports.
+- **Docker memory is the working set**, the number `docker stats` and Kubernetes report: charged
+  memory less inactive page cache, which the kernel reclaims before it OOM-kills anything.
+- **The Firecracker OOM count is the one number the guest writes.** The host captures the serial
+  console, but the guest kernel prints the line. It covers the guest running dry and a memory cgroup
+  inside the job hitting its own limit. A job that forges the line misleads only its own page.
+- **Cgroup v1 disk writes are low.** v1 charges buffered writes to the kernel thread that flushes
+  them, not the container; reads and direct I/O are exact. cgroup v2 charges both correctly.
+- **CPU p95 is over bucket averages.** A burst shorter than one bucket is averaged into it, which
+  is why the busiest single sample interval is shown beside it as the maximum. All CPU numbers are
+  vCPUs in use against the vCPUs the Profile allots.
+
+How the data moves, and what bounds it:
+
+1. A reading every 5 seconds: a few small procfs or cgroupfs files, no `docker stats`.
+2. A bounded series of at most 360 points per Attempt, whatever its length. Buckets start at 5
+   seconds and double, with adjacent pairs merged, each time the Attempt outlives 360 of them: a
+   10-minute job keeps 5-second points, a 6-hour job ends with 80-second ones. CPU time, traffic and
+   disk bytes add up when buckets merge, memory keeps its maximum, and the busiest sample interval
+   survives.
+3. Every 30 seconds while the series grows, and once when the executor exits, the Agent uploads the
+   whole snapshot with `workerApi:reportAttemptMetrics`, authenticated by the Worker's machine token.
+   A snapshot is complete, so the upload is idempotent: the control plane keeps the one with the
+   most samples, ignores replays and late duplicates, and accepts nothing after the final one or
+   later than 15 minutes after the Attempt settled.
+4. The control plane stores the series in `attemptMetrics` and its summary in
+   `attemptMetricSummaries`, refuses anything over the bounds (360 points per column, non-negative
+   integers, offsets on the bucket grid), and an hourly cron deletes both 14 days after the last
+   upload.
+
+Measurement never touches the job. The sampler only reads; at most one upload is in flight and only
+the newest waiting snapshot is kept behind it; the final collection and upload are bounded and run
+beside `reportAttempt`, never in front of it; and a sampler or upload failure is logged once and
+costs the chart, not the Attempt.
+
 ## Experiments
 
 The **Experiments** page runs a shell command in the selected Linux Profile. An Experiment:

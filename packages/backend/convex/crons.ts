@@ -24,4 +24,13 @@ crons.interval(
 // retention sweep.
 crons.interval("evaluate alert rules", { minutes: 1 }, internal.alerts.evaluate, {});
 
+// Per-Attempt resource series are kept 14 days after their last upload. Hourly keeps each run's
+// batch small; the purge reschedules itself while it finds full batches.
+crons.interval(
+  "purge expired Attempt metrics",
+  { hours: 1 },
+  internal.attemptMetrics.purgeExpired,
+  {},
+);
+
 export default crons;

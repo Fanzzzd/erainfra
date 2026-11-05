@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 )
 
 var errWarmPoolMiss = errors.New("no parked microVM is available")
@@ -422,6 +423,16 @@ func (l *warmPoolLease) Wait(ctx context.Context) (executor.Result, error) {
 		l.releaseOnce.Do(l.release)
 	}
 	return result, err
+}
+
+// ResourceSource passes through to the claimed VM: a warm VM is measured the
+// same way as a cold-booted one, from its claim onward.
+func (l *warmPoolLease) ResourceSource() (jobmetrics.Source, error) {
+	measurable, ok := l.Lease.(executor.Measurable)
+	if !ok {
+		return nil, errors.New("the claimed microVM cannot be measured")
+	}
+	return measurable.ResourceSource()
 }
 
 func (l *warmPoolLease) Cancel(ctx context.Context) error {

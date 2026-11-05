@@ -1,0 +1,11 @@
+Name:	firecracker
+Umask:	0077
+State:	S (sleeping)
+Tgid:	4242
+VmPeak:	 4297000 kB
+VmSize:	 4297000 kB
+VmLck:	       0 kB
+VmHWM:	 3145728 kB
+VmRSS:	 2097152 kB
+RssAnon:	 2090000 kB
+Threads:	6

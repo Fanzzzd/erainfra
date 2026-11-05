@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Activity } from "lucide-react";
 import { api } from "@erainfra/backend/api";
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNow } from "@/hooks/use-now";
+import { summaryLine } from "@/lib/metrics";
 import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +48,11 @@ function isActive(state: AttemptState) {
 
 function AttemptsPage() {
   const attempts = useQuery(api.attempts.list);
+  const summaries = useQuery(
+    api.attemptMetrics.summaries,
+    attempts === undefined ? "skip" : { attemptIds: attempts.map((attempt) => attempt._id) },
+  );
+  const summaryByAttempt = new Map(summaries?.map((row) => [row.attemptId, row.summary]));
   const now = useNow();
   const [filter, setFilter] = useState<Filter>("all");
   const counts = {
@@ -87,7 +93,7 @@ function AttemptsPage() {
       </Tabs>
 
       <Card className="overflow-hidden">
-        <Table className="min-w-[1050px]">
+        <Table className="min-w-[1250px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[120px]">State</TableHead>
@@ -96,15 +102,16 @@ function AttemptsPage() {
               <TableHead className="w-[150px]">Worker</TableHead>
               <TableHead className="w-[130px]">Executor</TableHead>
               <TableHead className="w-[170px]">Timing</TableHead>
+              <TableHead className="w-[200px]">Resources</TableHead>
               <TableHead>Image Release</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {visible === undefined ? (
-              <TableRowsSkeleton columns={7} rows={4} />
+              <TableRowsSkeleton columns={8} rows={4} />
             ) : visible.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={7} className="p-0">
+                <TableCell colSpan={8} className="p-0">
                   <EmptyState
                     icon={Activity}
                     title={counts.all === 0 ? "No runs yet" : `No ${filter} runs`}
@@ -198,6 +205,12 @@ function AttemptsPage() {
                         {formatRelativeTime(attempt.createdAt, now)}
                       </p>
                     </TableCell>
+                    <TableCell className="text-xs">
+                      <ResourceCell
+                        attemptId={attempt._id}
+                        summary={summaryByAttempt.get(attempt._id)}
+                      />
+                    </TableCell>
                     <TableCell>
                       <code
                         className="block max-w-[280px] truncate text-[10px] text-subtle-foreground"
@@ -214,6 +227,37 @@ function AttemptsPage() {
         </Table>
       </Card>
     </div>
+  );
+}
+
+function ResourceCell({
+  attemptId,
+  summary,
+}: {
+  attemptId: string;
+  summary: Parameters<typeof summaryLine>[0] | undefined;
+}) {
+  return (
+    <Link
+      to="/attempts/$attemptId"
+      params={{ attemptId }}
+      className="block underline-offset-2 hover:text-foreground hover:underline"
+    >
+      {summary === undefined ? (
+        <span className="text-subtle-foreground">Details</span>
+      ) : (
+        <>
+          <span className="tabular-nums whitespace-nowrap text-secondary-foreground">
+            {summaryLine(summary)}
+          </span>
+          {summary.oomKills !== null && summary.oomKills > 0 && (
+            <span className="mt-0.5 block text-[10px] text-destructive">
+              {summary.oomKills} OOM kill{summary.oomKills === 1 ? "" : "s"}
+            </span>
+          )}
+        </>
+      )}
+    </Link>
   );
 }
 

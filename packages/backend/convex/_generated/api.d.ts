@@ -15,6 +15,8 @@ import type * as alertDelivery from "../alertDelivery.js";
 import type * as alertNotify from "../alertNotify.js";
 import type * as alertRules from "../alertRules.js";
 import type * as alerts from "../alerts.js";
+import type * as attemptMetrics from "../attemptMetrics.js";
+import type * as attemptMetricsModel from "../attemptMetricsModel.js";
 import type * as attemptScheduler from "../attemptScheduler.js";
 import type * as attemptSecrets from "../attemptSecrets.js";
 import type * as attempts from "../attempts.js";
@@ -68,6 +70,8 @@ declare const fullApi: ApiFromModules<{
   alertNotify: typeof alertNotify;
   alertRules: typeof alertRules;
   alerts: typeof alerts;
+  attemptMetrics: typeof attemptMetrics;
+  attemptMetricsModel: typeof attemptMetricsModel;
   attemptScheduler: typeof attemptScheduler;
   attemptSecrets: typeof attemptSecrets;
   attempts: typeof attempts;
