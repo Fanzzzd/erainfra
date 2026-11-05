@@ -11,7 +11,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { api, internal } from "../convex/_generated/api";
 import { MASTER_KEY_ENV } from "../convex/infra/secretCrypto";
 import schema from "../convex/schema";
-import { planImportCalls, readHubState } from "../scripts/import-hub-state.ts";
+import { upsertRoute } from "../convex/infra/apps";
+import {
+  planImportCalls,
+  readHubState,
+  resolveHubRouteOwners,
+} from "../scripts/import-hub-state.ts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 type Harness = TestConvex<typeof schema>;
@@ -335,10 +340,22 @@ describe("Hub importer", () => {
     expect(first.meshLinks.map((l) => [l.name, l.localPort, l.createdBy])).toEqual([
       ["registry", 62003, "deploy"],
     ]);
-    expect(first.routes.map((r) => [r.name, nodeName(r.nodeId), r.port]).toSorted()).toEqual([
-      ["shop", "box-1", 62001],
-      ["solo", "box-2", 62000],
+    // Each route keeps its owner: shop's is service web of App shop, solo is its own App.
+    expect(
+      first.routes
+        .map((r) => [r.name, nodeName(r.nodeId), r.port, r.app, r.service ?? null])
+        .toSorted(),
+    ).toEqual([
+      ["shop", "box-1", 62001, "shop", "web"],
+      ["solo", "box-2", 62000, "solo", null],
     ]);
+    // So another App cannot take an imported label.
+    const box1 = first.nodes.find((n) => n.name === "box-1")!._id;
+    await expect(
+      t.run((ctx) =>
+        upsertRoute(ctx, { name: "solo", nodeId: box1, image: "x", port: 62009, app: "evil" }),
+      ),
+    ).rejects.toThrow(/belongs to App "solo"/);
 
     // Audit: Hub order and timestamps kept, numbered from this deployment's sequence.
     expect(first.audit.map((a) => [a.seq, a.hubSeq, a.action, a.at, a.metaJson])).toEqual([
@@ -608,3 +625,28 @@ async function snapshot(t: Harness) {
     };
   });
 }
+
+describe("Hub route owners", () => {
+  const apps = [
+    { name: "shop", services: [{ name: "web", route: "shop" }, { name: "db" }] },
+    { name: "shop-web", services: [{ name: "api", route: "shop-web-api" }] },
+  ];
+  it("names the App service that routes at each label, or the label's own single-container App", () => {
+    expect(
+      resolveHubRouteOwners([{ name: "shop" }, { name: "shop-web-api" }, { name: "solo" }], apps),
+    ).toEqual([
+      { name: "shop", app: "shop", service: "web" },
+      { name: "shop-web-api", app: "shop-web", service: "api" },
+      { name: "solo", app: "solo" },
+    ]);
+  });
+
+  it("refuses a label two Hub Apps route at, instead of copying the Hub's last writer", () => {
+    expect(() =>
+      resolveHubRouteOwners(
+        [{ name: "shop" }],
+        [...apps, { name: "evil", services: [{ name: "web", route: "shop" }] }],
+      ),
+    ).toThrow(/Hub route "shop" is claimed by App "shop" and App "evil"/);
+  });
+});

@@ -130,6 +130,39 @@ export function resolveHubSecretScopes(
   return resolved;
 }
 
+/**
+ * Names the owner of each Hub route, so Convex can refuse another App that claims the label later.
+ *
+ * The Hub's `routes` table is keyed by label only. A label one Hub App's service routes at belongs
+ * to that App and service. A label no App routes at is a single-container App the Hub deployed
+ * under that name. A label two Hub Apps route at is refused: the Hub served whichever deployed
+ * last, and copying either owner would hand the label to one App while the other still claims it.
+ */
+export function resolveHubRouteOwners<R extends { name: string }>(
+  routes: readonly R[],
+  apps: ReadonlyArray<{ name: string; services: ReadonlyArray<{ name: string; route?: string }> }>,
+): Array<R & { app: string; service?: string }> {
+  const problems: string[] = [];
+  const owned = routes.map((route) => {
+    const claims = apps.flatMap((a) =>
+      a.services
+        .filter((s) => s.route === route.name)
+        .map((s) => ({ app: a.name, service: s.name })),
+    );
+    if (new Set(claims.map((c) => c.app)).size > 1) {
+      problems.push(
+        `Hub route "${route.name}" is claimed by ${claims.map((c) => `App "${c.app}"`).join(" and ")}. ` +
+          "Change the route of all but one of them on the Hub and redeploy it, then run the import again.",
+      );
+    }
+    return { ...route, ...(claims[0] ?? { app: route.name }) };
+  });
+  if (problems.length > 0) {
+    throw new Error(`Refusing to import routes:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+  }
+  return owned;
+}
+
 function inBatches<K extends ImportBatch["kind"]>(
   kind: K,
   rows: Extract<ImportBatch, { kind: K }>["rows"],
@@ -162,7 +195,7 @@ export function readHubState(dbPath: string, secretKey: Buffer): HubState {
       createdAt: ms(r.created_at),
     }));
 
-    const routes = all("SELECT * FROM routes ORDER BY app").map((r) => ({
+    const hubRoutes = all("SELECT * FROM routes ORDER BY app").map((r) => ({
       name: String(r.app),
       node: String(r.node),
       image: String(r.image),
@@ -213,6 +246,8 @@ export function readHubState(dbPath: string, secretKey: Buffer): HubState {
       };
     });
 
+    const routes = resolveHubRouteOwners(hubRoutes, apps);
+
     const links = all("SELECT doc FROM links ORDER BY name").map((r) => {
       const l = json<HubLink & { createdBy?: "user" | "deploy" }>(r.doc, {} as never);
       return defined({
@@ -240,7 +275,7 @@ export function readHubState(dbPath: string, secretKey: Buffer): HubState {
     }
     const scopeStrings = [...secretsByApp.keys()];
     const secrets = resolveHubSecretScopes(scopeStrings, {
-      apps: [...routes.map((r) => r.name), ...apps.map((a) => a.name)],
+      apps: [...hubRoutes.map((r) => r.name), ...apps.map((a) => a.name)],
       services: apps.flatMap((a) => a.services.map((s) => ({ app: a.name, service: s.name }))),
     }).map((scope, index) => ({ ...scope, values: secretsByApp.get(scopeStrings[index])! }));
 

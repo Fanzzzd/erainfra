@@ -416,21 +416,31 @@ async function ingressFor(
   };
 }
 
-/** Which App service each route label belongs to, and where the App row places it. */
+/**
+ * Which App service each route label belongs to, and where the App row places it. A label two App
+ * rows route at is `conflict`, never the last one read: serving either would hand one App's
+ * visitors to the other, so the gateway serves it 503 until an operator removes one.
+ */
 function routeOwners(apps: Doc<"apps">[]) {
   const owners = new Map<
     string,
-    { app: string; service: string; nodeId: Id<"nodes">; port?: number }
+    { app: string; service: string; nodeId: Id<"nodes">; port?: number } | "conflict"
   >();
   for (const app of apps)
-    for (const s of app.services)
-      if (s.route !== undefined)
-        owners.set(s.route, {
-          app: app.name,
-          service: s.name,
-          nodeId: s.nodeId ?? app.nodeId,
-          ...(s.port === undefined ? {} : { port: s.port }),
-        });
+    for (const s of app.services) {
+      if (s.route === undefined) continue;
+      const previous = owners.get(s.route);
+      if (previous !== undefined && (previous === "conflict" || previous.app !== app.name)) {
+        owners.set(s.route, "conflict");
+        continue;
+      }
+      owners.set(s.route, {
+        app: app.name,
+        service: s.name,
+        nodeId: s.nodeId ?? app.nodeId,
+        ...(s.port === undefined ? {} : { port: s.port }),
+      });
+    }
   return owners;
 }
 
@@ -445,8 +455,20 @@ async function servesPlacement(
 ) {
   if (!Number.isInteger(route.port) || route.port < 1 || route.port > 65535) return false;
   const owner = owners.get(route.name);
+  if (owner === "conflict") {
+    console.warn(`route ${route.name}: claimed by more than one App; serving it 503`);
+    return false;
+  }
   if (owner === undefined || owner.nodeId !== route.nodeId || owner.port !== route.port)
     return false;
+  // A row that names its owner must name this one.
+  if (
+    route.app !== undefined &&
+    (route.app !== owner.app || (route.service !== undefined && route.service !== owner.service))
+  ) {
+    console.warn(`route ${route.name}: owned by ${route.app}, but App ${owner.app} routes at it`);
+    return false;
+  }
   const allocation = await ctx.db
     .query("portAllocations")
     .withIndex("by_node_port", (q) => q.eq("nodeId", route.nodeId).eq("port", route.port))

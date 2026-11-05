@@ -1,13 +1,16 @@
 // Apps, their public routes, and standalone mesh links: the Hub's `apps`, `routes` and `links`.
 import type { Infer } from "convex/values";
-import { v } from "convex/values";
-import type { Id } from "../_generated/dataModel";
-import { query, type MutationCtx } from "../_generated/server";
+import { ConvexError, v } from "convex/values";
+import type { Doc, Id } from "../_generated/dataModel";
+import { query, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { requirePermission } from "./access";
 import { appLinkValidator, appServiceValidator } from "./tables";
 
 type AppService = Infer<typeof appServiceValidator>;
 type AppLink = Infer<typeof appLinkValidator>;
+
+/** The fleet's App bound: the mesh snapshot (nodeState.ts) refuses more. */
+export const MAX_APPS = 500;
 
 export async function upsertApp(
   ctx: MutationCtx,
@@ -23,10 +26,72 @@ export async function upsertApp(
   return existing._id;
 }
 
+/**
+ * Who a route label belongs to. A row records its owner since route ownership was introduced. An
+ * older row's owner is the one App whose service routes at the label, or, when no App row routes
+ * there, the single-container App the Hub deployed under that name. Two App rows routing at one
+ * label is `ambiguous`: nobody may take it until an operator removes all but one of them.
+ */
+export type RouteOwner = { app: string; service?: string } | "ambiguous";
+
+export function ownerOfRoute(
+  route: Pick<Doc<"appRoutes">, "name" | "app" | "service">,
+  apps: ReadonlyArray<Pick<Doc<"apps">, "name" | "services">>,
+): RouteOwner {
+  if (route.app !== undefined)
+    return route.service === undefined
+      ? { app: route.app }
+      : { app: route.app, service: route.service };
+  const claims = apps.flatMap((a) =>
+    a.services.filter((s) => s.route === route.name).map((s) => ({ app: a.name, service: s.name })),
+  );
+  if (new Set(claims.map((c) => c.app)).size > 1) return "ambiguous";
+  return claims[0] ?? { app: route.name };
+}
+
+/** `ownerOfRoute`, reading the App rows itself when the route row does not name its owner. */
+export async function loadRouteOwner(ctx: QueryCtx, route: Doc<"appRoutes">) {
+  if (route.app !== undefined) return ownerOfRoute(route, []);
+  return ownerOfRoute(route, await ctx.db.query("apps").take(MAX_APPS));
+}
+
+/** Whether a route row is a single-container App the Hub deployed: its container is the label. */
+export function isSingleContainerRoute(route: Pick<Doc<"appRoutes">, "name">, owner: RouteOwner) {
+  return owner !== "ambiguous" && owner.service === undefined && owner.app === route.name;
+}
+
+/** Why `app` may not write the route `label`, or null when it may. */
+export async function routeRefusal(ctx: QueryCtx, label: string, app: string) {
+  const existing = await ctx.db
+    .query("appRoutes")
+    .withIndex("by_name", (q) => q.eq("name", label))
+    .unique();
+  if (existing === null) return null;
+  const owner = await loadRouteOwner(ctx, existing);
+  if (owner === "ambiguous")
+    return `the route ${label} is claimed by more than one App; remove all but one of them first`;
+  if (owner.app !== app)
+    return `App "${app}" cannot take the route ${label}: it belongs to App "${owner.app}"`;
+  return null;
+}
+
+/**
+ * Write a route row for its owner. Refused when the label belongs to another App. The owning App
+ * may move it between its services or Nodes (a redeploy or a failover); nobody else may take it.
+ */
 export async function upsertRoute(
   ctx: MutationCtx,
-  input: { name: string; nodeId: Id<"nodes">; image: string; port: number },
+  input: {
+    name: string;
+    nodeId: Id<"nodes">;
+    image: string;
+    port: number;
+    app: string;
+    service?: string;
+  },
 ) {
+  const refusal = await routeRefusal(ctx, input.name, input.app);
+  if (refusal !== null) throw new ConvexError(refusal);
   const existing = await ctx.db
     .query("appRoutes")
     .withIndex("by_name", (q) => q.eq("name", input.name))
