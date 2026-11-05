@@ -9,113 +9,90 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/cacheca"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestdocker"
 )
 
 const (
-	// cacheRedirectAddr is where the in-guest interceptor listens and the address
-	// the redirect DNATs the cache host to. It is a second address on loopback, so
-	// no interface module has to be present in the guest kernel, and it is out of
-	// 127.0.0.0/8, so the DNAT needs no route_localnet toggle. 100.64.0.0/10 is
+	// cacheRedirectAddr is where the in-guest interceptor listens and the
+	// address the guest pins GitHub's cache host to. It is a second address on
+	// loopback, so no interface module has to be present in the guest kernel,
+	// and it is out of 127.0.0.0/8, so a container on a Docker bridge reaches it
+	// through its default route like any other guest address, which a loopback
+	// address it would read as its own could not do. 100.64.0.0/10 is
 	// carrier-grade NAT space: never a job's address, never GitHub's.
 	cacheRedirectAddr = "100.64.0.1"
+	// cacheRedirectPort is 443 because a pinned client dials the cache host on
+	// the port its URL names, and that URL is GitHub's.
+	cacheRedirectPort = "443"
 	// cacheTrustAnchor is where the interceptor's per-guest CA is written. The
 	// name and .crt extension are what update-ca-certificates requires to fold it
 	// into the system trust store, and the runner is handed the same path as
-	// NODE_EXTRA_CA_CERTS because Node does not read that store.
-	cacheTrustAnchor = "/usr/local/share/ca-certificates/erainfra-cache.crt"
+	// NODE_EXTRA_CA_CERTS because Node does not read that store. The basename is
+	// also the one buildx keeps when it copies the CA into a builder.
+	cacheTrustAnchor = "/usr/local/share/ca-certificates/" + guestdocker.CAFileName
 )
 
-// startCacheRedirect points the runner's GitHub cache traffic at an in-guest
-// interceptor (ADR 0008). It is best-effort and transactional: on any failure it
-// tears down everything it built and returns the error, leaving the guest talking
-// to GitHub directly exactly as a guest without a cache does. On success it
-// returns the trust-anchor path to hand the runner as NODE_EXTRA_CA_CERTS and a
-// stop func, called once, that removes the redirect.
+// startCacheRedirect points GitHub's cache host at an in-guest interceptor
+// (ADR 0008) by pinning the name in the guest's /etc/hosts, and in the hosts
+// file of each container verified to trust the interceptor's CA. It is
+// best-effort and transactional: on any failure it leaves the guest talking to
+// GitHub directly exactly as a guest without a cache does, and returns why. On
+// success it returns the trust-anchor path to hand the runner as
+// NODE_EXTRA_CA_CERTS and a stop func, safe to call more than once.
 //
-// The redirect matches only the runner user's traffic. That catches its Node
-// cache client and the children it spawns while excluding the root interceptor,
-// so the interceptor's own forward to GitHub cannot loop back into itself, and
-// excluding container traffic, which never traverses the host's OUTPUT chain, so
-// a container job keeps reaching GitHub directly rather than failing TLS against
-// a certificate its image does not trust.
-func startCacheRedirect(ctx context.Context, md guest.Metadata, runnerUID uint32) (caPath string, stop func(), err error) {
-	var cleanup cleanupStack
-	defer func() {
-		if err != nil {
-			cleanup.run()
-		}
-	}()
-
-	// Resolve the real cache host to the addresses the runner would otherwise
-	// reach. The redirect is by address, not by name, so DNS still answers with
-	// GitHub's own IPs and the interceptor reaches them directly.
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", cacheca.CacheHost)
+// Every process on the guest itself resolves through /etc/hosts, so the
+// runner, its actions, and anything they start, as any user, reach the
+// interceptor. They trust it through the system store that
+// update-ca-certificates rebuilds (OpenSSL, Go, .NET, curl) or through the
+// variables in guestcache.TrustEnv (Node, Python requests, httpx), which a
+// sudoers drop-in keeps across sudo. The interceptor's own forward to GitHub
+// resolves through guestcache.Upstream, which never reads /etc/hosts, so it
+// cannot loop back into itself.
+func startCacheRedirect(ctx context.Context, md guest.Metadata) (caPath string, stop func(), err error) {
+	docker := guestdocker.NewClient(guestdocker.DefaultSocket)
+	redirect, err := guestcache.StartRedirect(ctx, guestcache.RedirectConfig{
+		CacheServiceURL: md.CacheServiceURL,
+		RunnerToken:     md.CacheRunnerToken,
+		ListenAddr:      net.JoinHostPort(cacheRedirectAddr, cacheRedirectPort),
+		HostsFile:       hostsFile,
+		// replace rather than add: a unit restarted after a crash finds the
+		// address still there, and that is not a reason to go without a cache.
+		AddAddress: func(ctx context.Context) error {
+			return runCmd(ctx, "ip", "addr", "replace", cacheRedirectAddr+"/32", "dev", "lo")
+		},
+		// Teardown runs on a fresh context: the job's is already cancelled by
+		// the time the redirect is being pulled.
+		RemoveAddress: func() {
+			_ = runCmd(context.Background(), "ip", "addr", "del", cacheRedirectAddr+"/32", "dev", "lo")
+		},
+		InstallTrustAnchor: installTrustAnchor(ctx),
+		Watch: func(ctx context.Context, caPEM []byte) (guestcache.ContainerWatcher, error) {
+			return guestdocker.StartWatcher(ctx, guestdocker.WatcherConfig{
+				Engine:   docker,
+				CAPEM:    caPEM,
+				Addr:     net.ParseIP(cacheRedirectAddr),
+				Host:     cacheca.CacheHost,
+				ReadFile: guestdocker.ReadInContainer,
+				Logf:     logf,
+			})
+		},
+		// sudo resets the environment, so without this `sudo pip install` or
+		// `sudo node` would drop the trust variables and fail TLS as root.
+		SudoersDir: "/etc/sudoers.d",
+		ValidateSudoers: func(ctx context.Context, path string) error {
+			return runCmd(ctx, "visudo", "-cf", path)
+		},
+		Logf: logf,
+	})
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve %s: %w", cacheca.CacheHost, err)
-	}
-	if len(ips) == 0 {
-		return "", nil, fmt.Errorf("resolve %s: no addresses", cacheca.CacheHost)
-	}
-
-	// A second address on loopback holds the interceptor's listener.
-	if err := runCmd(ctx, "ip", "addr", "add", cacheRedirectAddr+"/32", "dev", "lo"); err != nil {
 		return "", nil, err
 	}
-	// Teardown runs on a fresh context: the job's is already cancelled by the time
-	// the redirect is being pulled, and a killed iptables -D would leave a rule.
-	cleanup.push(func() { _ = runCmd(context.Background(), "ip", "addr", "del", cacheRedirectAddr+"/32", "dev", "lo") })
-
-	interceptor, err := guestcache.Start(guestcache.Config{
-		CacheServiceURL:    md.CacheServiceURL,
-		RunnerToken:        md.CacheRunnerToken,
-		InstallTrustAnchor: installTrustAnchor(ctx),
-		ListenAddr:         net.JoinHostPort(cacheRedirectAddr, "0"),
-	})
-	if err != nil {
-		return "", nil, fmt.Errorf("start interceptor: %w", err)
-	}
-	cleanup.push(func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = interceptor.Close(shutdownCtx)
-	})
-
-	_, port, err := net.SplitHostPort(interceptor.Addr().String())
-	if err != nil {
-		return "", nil, fmt.Errorf("interceptor address: %w", err)
-	}
-
-	uid := strconv.FormatUint(uint64(runnerUID), 10)
-	target := net.JoinHostPort(cacheRedirectAddr, port)
-	for _, ip := range ips {
-		match := []string{
-			"-p", "tcp", "-d", ip.String(), "--dport", "443",
-			"-m", "owner", "--uid-owner", uid,
-			"-j", "DNAT", "--to-destination", target,
-		}
-		if err := runCmd(ctx, "iptables", append([]string{"-t", "nat", "-A", "OUTPUT"}, match...)...); err != nil {
-			return "", nil, err
-		}
-		del := append([]string{"-t", "nat", "-D", "OUTPUT"}, match...)
-		cleanup.push(func() { _ = runCmd(context.Background(), "iptables", del...) })
-	}
-
-	stopOnce := sync.OnceFunc(cleanup.run)
-	go func() {
-		// If the interceptor stops for any reason, pull the redirect so the runner
-		// falls back to talking to GitHub directly (ADR 0008 §3).
-		_ = interceptor.Wait()
-		stopOnce()
-	}()
-	return cacheTrustAnchor, stopOnce, nil
+	return cacheTrustAnchor, redirect.Stop, nil
 }
 
 // installTrustAnchor writes the interceptor's per-guest CA and folds it into the
@@ -136,7 +113,7 @@ func installTrustAnchor(ctx context.Context) func([]byte) error {
 }
 
 // runCmd runs a command to completion, folding its output into the error so a
-// failed iptables or ip invocation says why rather than only that it failed.
+// failed ip or systemctl invocation says why rather than only that it failed.
 func runCmd(ctx context.Context, name string, args ...string) error {
 	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if err != nil {
@@ -145,14 +122,7 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 	return nil
 }
 
-// cleanupStack unwinds in reverse, so teardown removes the redirect rules before
-// stopping the interceptor before dropping its address.
-type cleanupStack struct{ fns []func() }
-
-func (c *cleanupStack) push(fn func()) { c.fns = append(c.fns, fn) }
-
-func (c *cleanupStack) run() {
-	for i := len(c.fns) - 1; i >= 0; i-- {
-		c.fns[i]()
-	}
+// logf writes to the guest journal, which is this service's stderr.
+func logf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }

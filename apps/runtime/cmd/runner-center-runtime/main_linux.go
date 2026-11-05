@@ -67,6 +67,7 @@ func run(ctx context.Context, args []string) (int, error) {
 		}
 		config.CacheSigningKey = key
 		config.CacheServiceURL = strings.TrimSpace(os.Getenv("RC_CACHE_SERVICE_URL"))
+		config.RegistryMirrorURL = strings.TrimSpace(os.Getenv("RC_REGISTRY_MIRROR_URL"))
 		runtime, err := firecracker.New(config)
 		if err != nil {
 			return 2, err

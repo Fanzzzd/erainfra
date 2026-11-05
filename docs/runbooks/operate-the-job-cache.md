@@ -530,12 +530,14 @@ its own job message, so no Worker-side variable reaches a cache client. That is 
 result, and what is left when a variable cannot win is intercepting the runner itself. This section
 is that interception, for the Firecracker fleet (ADR 0008, ADR 0009).
 
-A guest that is handed a cache resolves GitHub's one cache host, terminates its TLS locally against a
-CA it minted for this boot, and forwards the cache path to this service carrying a runner-auth
-bearer; everything else goes straight to GitHub. It works whichever way the §7 measurement came
-back, because it never relies on an environment variable surviving into an action step, and it is a
-guest mechanism, so it needs nothing in `provision-docker.sh`. A guest handed no cache runs exactly
-as one always did — direct to GitHub — so every part of this is inert until the last piece is set.
+A guest that is handed a cache pins GitHub's one cache host in its `/etc/hosts` to an interceptor on
+`100.64.0.1:443`, terminates that host's TLS locally against a CA it minted for this boot, and
+forwards the cache path to this service carrying a runner-auth bearer; everything else goes straight
+to GitHub (ADR 0012 says why the redirect is a name pin and not a packet rule). It works whichever
+way the §7 measurement came back, because it never relies on an environment variable surviving into
+an action step, and it is a guest mechanism, so it needs nothing in `provision-docker.sh`. A guest
+handed no cache runs exactly as one always did — direct to GitHub — so every part of this is inert
+until the last piece is set.
 
 ### One key, three holders
 
@@ -627,8 +629,63 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 Dispatch one job that saves and restores a cache. In the service log (§5) a `cache entry saved`
 followed by a hit on the next run, both under `blobs/<owner>/<repo>/`, is the whole chain working:
 bearer minted, facts pushed, scope resolved, TLS terminated in the guest. In the guest, the runner's
-environment carries `NODE_EXTRA_CA_CERTS` pointing at the interceptor's CA; its absence means the
-redirect did not come up and the job fell back to GitHub, which is a slower success, never a failure.
+environment carries `NODE_EXTRA_CA_CERTS` pointing at the interceptor's CA, `REQUESTS_CA_BUNDLE`
+and `SSL_CERT_FILE` pointing at `/etc/ssl/certs/ca-certificates.crt`, `/etc/sudoers.d/erainfra-cache`
+keeps those three across `sudo`, and `/etc/hosts` ends with a line marked
+`# erainfra-cache-interceptor`. Their absence means the redirect did not come up and
+the job fell back to GitHub, which is a slower success, never a failure. The guest journal
+(`journalctl -u runner-center-guest`) says why: `job cache redirect disabled: ...` at claim, or
+`job cache redirect withdrawn: ...` if it came down mid-job.
+
+### Docker builds and container jobs
+
+Everything the runner starts on the guest reaches the interceptor with no workflow change. A Docker
+container does not: it has its own hosts file and its image does not trust the per-guest CA, so the
+guest leaves it talking to GitHub unless it opts in. The guest watches container starts and pins the
+cache host inside a container only after reading, inside that container, the CA at a path its
+environment hands to a TLS stack (`SSL_CERT_FILE`, `SSL_CERT_DIR`, or `NODE_EXTRA_CA_CERTS`).
+
+A buildx builder, for BuildKit's `type=gha` cache, opts in with one line. The guest writes
+`~/.docker/buildx/buildkitd.default.toml` for the runner, which makes buildx copy the CA into every
+builder it creates; this line points the builder's Go TLS stack at the copy:
+
+```yaml
+- uses: docker/setup-buildx-action@<commit-sha>
+  with:
+    driver-opts: env.SSL_CERT_DIR=/etc/ssl/certs:/etc/buildkit/certs/results-receiver.actions.githubusercontent.com
+- uses: docker/build-push-action@<commit-sha>
+  with:
+    cache-from: type=gha
+    cache-to: type=gha,mode=max
+```
+
+The line is harmless off EraInfra: the directory does not exist there, and Go skips it. A workflow
+that passes its own `buildkitd-config` or `buildkitd-config-inline` replaces the default file, so it
+must add the CA entry itself:
+
+```toml
+[registry."results-receiver.actions.githubusercontent.com"]
+  ca = ["/usr/local/share/ca-certificates/erainfra-cache.crt"]
+```
+
+A `container:` job opts in by mounting the CA and naming it for Node, which runs every JavaScript
+action inside the container:
+
+```yaml
+container:
+  image: node:24
+  volumes:
+    - /usr/local/share/ca-certificates/erainfra-cache.crt:/etc/erainfra/erainfra-cache.crt:ro
+  env:
+    NODE_EXTRA_CA_CERTS: /etc/erainfra/erainfra-cache.crt
+```
+
+Where no cache is configured, or off EraInfra, the CA file does not exist, Docker mounts an empty
+directory in its place, and Node prints one "Ignoring extra certs" warning per process and carries
+on. Service containers do not call the cache host and are never pinned. A host-network container that
+has not opted in starts with a copy of the guest's `/etc/hosts`, pin included; the guest removes the
+pin from it within milliseconds of its start. If the guest cannot read or fix a container, it takes
+the whole redirect down rather than leave that container failing TLS.
 
 ### Roll back
 

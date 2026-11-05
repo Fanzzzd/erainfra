@@ -84,7 +84,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 			t.Fatalf("runner env %s = %q, want %q", name, got[name], value)
 		}
 	}
-	for _, absent := range []string{"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN", "NODE_EXTRA_CA_CERTS"} {
+	for _, absent := range []string{"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"} {
 		if _, present := got[absent]; present {
 			t.Fatalf("runner env carries %s with no cache endpoint configured", absent)
 		}
@@ -112,7 +112,15 @@ func TestRunnerEnvCarriesTheCacheTrustAnchorWhenRedirected(t *testing.T) {
 
 	env := runnerEnv(metadata, "/home/runner", "runner", "/usr/local/share/ca-certificates/erainfra-cache.crt")
 	joined := strings.Join(env, "\n")
-	if !strings.Contains(joined, "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/erainfra-cache.crt") {
-		t.Fatalf("redirected runner env missing the cache trust anchor: %q", joined)
+	for _, want := range []string{
+		"NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/erainfra-cache.crt",
+		// Python requests and httpx read certifi, not the system store; the
+		// rebuilt system bundle is public roots plus the interceptor's CA.
+		"REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+		"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("redirected runner env missing %s: %q", want, joined)
+		}
 	}
 }

@@ -148,12 +148,13 @@ A Firecracker Profile can have its GitHub Actions cache served by EraInfra's own
 `apps/cache-service`, which stores entries in an S3-compatible bucket the operator picks
 ([ADR 0007](docs/adr/0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md),
 [ADR 0009](docs/adr/0009-a-store-is-plugged-in-not-wired-in.md)). Workflows do not change. When a
-Worker's runtime is configured with a cache, the guest redirects the runner's connections to
-GitHub's cache host, `results-receiver.actions.githubusercontent.com`, to an interceptor inside the
+Worker's runtime is configured with a cache, the guest pins GitHub's cache host,
+`results-receiver.actions.githubusercontent.com`, in its `/etc/hosts` to an interceptor inside the
 guest. The interceptor terminates TLS with a CA minted for that boot, sends cache calls to the cache
 service, and forwards artifact calls and everything else to GitHub
-([ADR 0008](docs/adr/0008-win-the-cache-endpoint-below-the-environment.md)). The caches of
-`actions/cache`, `setup-node` and `setup-go` all take this path.
+([ADR 0008](docs/adr/0008-win-the-cache-endpoint-below-the-environment.md),
+[ADR 0012](docs/adr/0012-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)).
+The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
 
 - **Scope.** Entries are stored per repository and ref. The guest's token names only the runner.
   At `JobStarted` the controller reads the job's workflow run from GitHub, works out which refs the
@@ -167,10 +168,38 @@ service, and forwards artifact calls and everything else to GitHub
 - **Failure.** A cache service or store that cannot answer in time turns into a cache miss or a
   request forwarded to GitHub. A guest whose redirect does not come up talks to GitHub directly. A
   cache failure makes the cache step warn; it does not fail the job.
-- **Coverage.** Only processes running as the runner user are redirected. `container:` jobs,
-  service containers and BuildKit's `type=gha` cache run in containers whose traffic the redirect
-  does not match, so they use GitHub's cache. Docker, Tart and Hyper-V Profiles have no interceptor
-  and use GitHub's cache too.
+- **Passthrough.** The cache host also serves Artifacts v4 (`upload-artifact` and
+  `download-artifact` v4+). The interceptor serves only the cache path. Every other request,
+  artifacts included, goes to GitHub with its method, path, query, headers and body unchanged, and
+  GitHub's reply comes back the same way.
+- **Coverage.** Every process on the guest is redirected, as any user. Docker containers have their
+  own hosts file and an image does not trust the guest's CA, so a container is redirected only when
+  it opts in. A buildx builder for `type=gha` adds one `driver-opts` line, and a `container:` job
+  mounts the CA. Both are in
+  [the runbook](docs/runbooks/operate-the-job-cache.md#docker-builds-and-container-jobs).
+  Containers that do not opt in, service containers among them, use GitHub's cache. Docker, Tart
+  and Hyper-V Profiles have no interceptor and use GitHub's cache too.
+- **Trust.** Every client the redirect reaches must trust the guest's CA, or its cache and artifact
+  calls fail TLS. While the redirect is installed, the guest covers these clients with no workflow
+  change, as the runner user and through `sudo`: OpenSSL, Go, .NET and curl through the system store
+  `update-ca-certificates` rebuilds; Node through `NODE_EXTRA_CA_CERTS`; Python `requests` and `pip`
+  through `REQUESTS_CA_BUNDLE`; and `httpx` and conda's OpenSSL through `SSL_CERT_FILE`. The last two
+  point at the rebuilt system bundle. The JVM is not covered, because it reads its own truststore and
+  has no variable for a PEM file. Neither is a binary with a compiled-in root list, such as a Rust
+  tool built with `webpki-roots`. A job whose JVM calls the cache host itself (a Gradle build cache
+  plugin backed by the Actions cache, for example) adds one step after `setup-java`, and that step
+  does nothing where no cache is configured:
+
+  ```bash
+  f=/usr/local/share/ca-certificates/erainfra-cache.crt; [ -f "$f" ] && keytool -importcert -noprompt -cacerts -storepass changeit -alias erainfra-cache -file "$f"
+  ```
+
+  Any job can instead send its own cache and artifact traffic straight to GitHub for the rest of
+  the job: `sudo sed -i '/# erainfra-cache-interceptor$/d' /etc/hosts`.
+
+- **Registry mirror.** Workers can also give guests a Docker Hub pull-through mirror
+  ([runbook](docs/runbooks/operate-the-registry-mirror.md)). dockerd and buildx builders use it
+  with no workflow change, and fall back to Docker Hub when it is down.
 - **Activation.** The cache is off until an operator deploys the service and its bucket and turns
   the interception on, following
   [docs/runbooks/operate-the-job-cache.md](docs/runbooks/operate-the-job-cache.md). Until every

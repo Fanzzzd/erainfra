@@ -5,6 +5,8 @@
 - Owners: EraInfra
 - Amends: [ADR 0007](0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)
 - Related: [ADR 0009](0009-a-store-is-plugged-in-not-wired-in.md) (the store this points at)
+- Amended by: [ADR 0012](0012-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)
+  (§1's redirect is a name pin, not a packet rule; §5's container coverage is opt-in by verified trust)
 
 ## The measurement that forces this, and the protocol reality it runs into
 
@@ -340,3 +342,10 @@ bearer it cannot verify with `401`.
   floors as conformance keys (§2).
 - The trust-store delta and redirect as conformance-measured facts, as the
   Consequences section asks.
+
+[ADR 0012](0012-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)
+replaces the UID-matched rule described above, which the guest kernel cannot
+load (it has no `xt_owner`), with a name pin. It builds the first follow-up as
+opt-in container coverage and the fourth as fingerprint keys. The test matrix
+and the CA negative tests remain open, and none of ADR 0012 has run on a real
+guest yet.

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
 )
 
 var (
@@ -46,6 +47,11 @@ type Spec struct {
 	// empty, and empty composes exactly the environment a fleet without a cache
 	// composes. It rides the same MMDS write as the rest of the metadata.
 	CacheRunnerToken string
+	// RegistryMirrorURL is the Worker's pull-through mirror for Docker Hub, or
+	// empty. Like CacheServiceURL it is fleet-wide operator configuration the
+	// host fills in at claim, and empty composes exactly the guest a fleet
+	// without a mirror boots.
+	RegistryMirrorURL string
 }
 
 // Profile is the runtime-owned capacity contract for one immutable Image
@@ -129,6 +135,11 @@ func (s Spec) Validate() error {
 	}
 	if err := validateCacheEndpoint(s.CacheURL, s.CacheServiceV2); err != nil {
 		return err
+	}
+	if s.RegistryMirrorURL != "" {
+		if err := registrymirror.Validate(s.RegistryMirrorURL); err != nil {
+			return err
+		}
 	}
 	return nil
 }
