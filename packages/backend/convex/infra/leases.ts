@@ -7,7 +7,7 @@
 //
 // This does not stop an old holder's in-flight runtime request or make external side effects
 // exactly once. The runtime command path must also reject stale fencing epochs and deduplicate
-// stable operation/step idempotency keys. That execution protocol is not implemented in phase 2a.
+// stable operation/step idempotency keys, which the deploy pipeline does (pipeline.ts).
 import { ConvexError, v } from "convex/values";
 import { internalMutation, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { APP_LEASE_TTL_MS, decideLease, leaseAdmits } from "./policy";
@@ -77,7 +77,7 @@ const decisionValidator = v.union(
   v.object({ grant: v.literal(false), heldBy: v.string(), expiresAt: v.number() }),
 );
 
-/** For the scheduled pipeline steps that land in 2b; tests drive the rules through these. */
+/** Internal entry points to the lease rules; the pipeline calls the helpers above directly. */
 export const acquire = internalMutation({
   args: { app: v.string(), holder: v.string(), operation: operationValidator },
   returns: decisionValidator,
