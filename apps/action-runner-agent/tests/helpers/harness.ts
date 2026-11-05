@@ -45,6 +45,8 @@ export type RunResult = {
 export type RunningScript = {
   kill: (signal: NodeJS.Signals) => void;
   output: () => string;
+  /** Whether the script has exited, so a wait for a state it never reached can fail at once. */
+  exited: () => boolean;
   done: Promise<RunResult>;
 };
 
@@ -299,8 +301,10 @@ exit "\${RC_FAKE_DOCKER_EXIT:-0}"
     child.stdin.on("error", () => {});
     child.stdin.end(options.stdin ?? FAKE_JIT);
 
+    let closed = false;
     const done = new Promise<RunResult>((resolve) => {
       child.on("close", (code, signal) => {
+        closed = true;
         resolve({ code: code ?? -1, signal, stdout, stderr });
       });
     });
@@ -308,6 +312,7 @@ exit "\${RC_FAKE_DOCKER_EXIT:-0}"
     return {
       kill: (signal) => child.kill(signal),
       output: () => stdout + stderr,
+      exited: () => closed,
       done,
     };
   }
@@ -351,14 +356,28 @@ exit "\${RC_FAKE_DOCKER_EXIT:-0}"
   }
 }
 
-/** Resolves once `predicate` sees the text it wants, or rejects on timeout. */
-export async function waitFor(predicate: () => boolean, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
+/**
+ * Resolves once `predicate` sees the state it wants. This waits for a precondition, not for a
+ * timing claim, so its deadline is the same backstop as `run()`'s ceiling: provisioning under a
+ * loaded host can take more than half a minute before the state appears. Given the running script,
+ * it fails at once, with the script's output, when the script exits without reaching the state.
+ */
+export async function waitFor(
+  predicate: () => boolean,
+  options: { running?: RunningScript; timeoutMs?: number } = {},
+) {
+  const deadline = Date.now() + (options.timeoutMs ?? RUN_CEILING_MS);
   while (Date.now() < deadline) {
     if (predicate()) {
       return;
     }
+    if (options.running?.exited()) {
+      throw new Error(
+        `the provisioner exited before reaching the expected state; output:\n${options.running.output()}`,
+      );
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  options.running?.kill("SIGKILL");
   throw new Error("timed out waiting for the provisioner to reach the expected state");
 }
