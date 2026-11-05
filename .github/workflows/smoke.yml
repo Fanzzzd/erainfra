@@ -83,3 +83,90 @@ jobs:
           set -euo pipefail
           test -f README.md
           git -C "$GITHUB_WORKSPACE" rev-parse --verify HEAD >/dev/null
+
+  # A job with service containers: the runner creates a job network in the
+  # guest's dockerd, starts each service, and waits for its health check before
+  # the first step. A workflow that moved here from a hosted or Blacksmith label
+  # with a `services:` block needs exactly this to work unchanged. Images are
+  # pinned by index digest so a moved tag cannot turn the canary red on a day
+  # the fleet did not change.
+  services:
+    runs-on: rc-e2e
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: docker.io/library/postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_PASSWORD: smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - name: The service answered its health check and its published port
+        env:
+          POSTGRES_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          test "$(docker inspect --format '{{.State.Health.Status}}' "$POSTGRES_ID")" = healthy
+          # The job reaches the published port from the guest, the path a test
+          # suite's DATABASE_URL=postgres://localhost:5432 takes.
+          timeout 30 bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; do sleep 1; done'
+          # And the server behind it answers a query, not only a TCP accept.
+          test "$(docker exec "$POSTGRES_ID" psql -U postgres -tAc 'select 1')" = 1
+      # Compose v2 and Buildx are the two Docker CLI plugins ubuntu-latest
+      # carries and a workflow calls without installing. The Image Release adds
+      # both (#151); rc-e2e measures the image it is pinned to until it is
+      # repinned, so until the date below a missing plugin is a warning, and
+      # after it the canary goes red. The date matches the conformance
+      # allowlist's pending entries for the same two tools.
+      - name: The Docker CLI plugins answer
+        run: |
+          set -uo pipefail
+          missing=()
+          docker compose version || missing+=(compose)
+          docker buildx version || missing+=(buildx)
+          [ "${#missing[@]}" -eq 0 ] && exit 0
+          if [ "$(date -u +%Y%m%d)" -le 20261205 ]; then
+            echo "::warning::Docker CLI plugins missing until rc-e2e is repinned to an image with #151: ${missing[*]}"
+            exit 0
+          fi
+          echo "Docker CLI plugins missing: ${missing[*]}" >&2
+          exit 1
+
+  # A `container:` job: every step runs inside a container the runner starts in
+  # the guest, with a service reached by its name on the job network rather
+  # than through a published port.
+  container-job:
+    runs-on: rc-e2e
+    timeout-minutes: 10
+    container:
+      # The base of the Image Release itself, at the digest the Dockerfile pins.
+      image: docker.io/library/ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+    services:
+      redis:
+        image: docker.io/library/redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - name: The step runs in the job container and reaches the service by name
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /.dockerenv
+          grep -q '^ID=ubuntu$' /etc/os-release
+          # The runner's own Node, mounted into the container, is what every
+          # JavaScript action in a container job runs on.
+          ls /__e/node*/bin/node >/dev/null
+          # A RESP PING over bash's /dev/tcp: no client to install, and a
+          # reply only a live Redis gives.
+          exec 3<>/dev/tcp/redis/6379
+          printf 'PING\r\n' >&3
+          IFS= read -r -t 10 reply <&3
+          test "$reply" = $'+PONG\r'
