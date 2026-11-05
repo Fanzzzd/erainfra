@@ -23,8 +23,8 @@ import (
 
 func TestAPIURL(t *testing.T) {
 	for registration, want := range map[string]string{
-		"https://github.com/Fanzzzd/erainfra":    "https://api.github.com",
-		"https://www.github.com/Fanzzzd":         "https://api.github.com",
+		"https://github.com/Fanzzzd/erainfra":     "https://api.github.com",
+		"https://www.github.com/Fanzzzd":          "https://api.github.com",
 		"https://tenant.ghe.com/enterprises/acme": "https://api.tenant.ghe.com",
 		"https://ghes.example.com/org/repo/":      "https://ghes.example.com/api/v3",
 	} {
