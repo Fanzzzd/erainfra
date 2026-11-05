@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync, createPublicKey, verify } from "node:crypto";
 import {
   GITHUB_REQUEST_TIMEOUT_MS,
@@ -24,7 +24,14 @@ beforeAll(() => {
   privateKey = pair.privateKey.export({ format: "pem", type: "pkcs1" }).toString();
   pkcs8 = pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
 });
+// The fixture's rows are dated around NOW, and the lease reads Date.now() to judge whether a
+// Worker is still online. Freeze Date at NOW so the test does not depend on the wall clock. Only
+// Date is faked: the stall test needs real timers to fire its abort.
+beforeEach(() => {
+  vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
+});
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
