@@ -697,14 +697,16 @@ describe("mesh links from the pipeline", () => {
       service: "registry-node-b",
       listen: "127.0.0.1:5000",
     });
-    // node-a listens where its container reaches the host (host.docker.internal), at the port
-    // injected as DB_PORT.
+    // node-a listens where its container reaches the host (host.docker.internal resolves to the
+    // Docker bridge gateway), at the port injected as DB_PORT. Convex names the scope; the Node
+    // resolves its own bridge address. A snapshot with a scoped listener is version 2.
     const a = await snapshot("node-a");
+    expect(a.v).toBe(2);
     expect(a.links).toContainEqual({
       name: "shop-db",
       peer: keys["node-b"].id,
       service: "shop-db",
-      listen: `0.0.0.0:${web.env.DB_PORT}`,
+      listen: `bridge:${web.env.DB_PORT}`,
     });
     expect(web.env.DB_HOST).toBe("host.docker.internal");
     expect(web.args).toContain("--add-host=host.docker.internal:host-gateway");
@@ -715,6 +717,12 @@ describe("mesh links from the pipeline", () => {
       { name: "registry-node-b", target: "127.0.0.1:5000", allowed_peers: [keys["node-b"].id] },
     ]);
     expect(c.links).toEqual([]);
+    // Snapshots without a scoped listener stay version 1, for agents that know only it.
+    expect([b.v, c.v]).toEqual([1, 1]);
+    // No listener anywhere binds every interface.
+    for (const snap of [a, b, c])
+      for (const link of snap.links as Array<{ listen: string }>)
+        expect(link.listen).toMatch(/^(127\.0\.0\.1|bridge):\d+$/);
   });
 
   it("refuses to take over a registry link name that someone declared", async () => {

@@ -218,12 +218,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
         name: link.name,
         peer: peer.meshAddress.id,
         service: link.name,
-        // A service reaches its dependency at host.docker.internal:<localPort>, the host's address
-        // on the container's bridge, so an App link listens on every address, as the Hub's
-        // bridge-bound links did (apps/hub/src/runtime/meshControl.ts). Like those, the listener
-        // is reachable from the consumer Node's own networks; docs/infra-management.md says to
-        // firewall the 62000-63999 range on a Node with a public address.
-        listen: `${link.forApp ? "0.0.0.0" : "127.0.0.1"}:${link.localPort}`,
+        // A service reaches its dependency at host.docker.internal:<localPort>, which
+        // `--add-host host.docker.internal:host-gateway` resolves to the Docker bridge gateway.
+        // Convex cannot know that address, so an App link names the scope, `bridge:<port>`, and
+        // the Infra Agent binds the Node's own gateway address: reachable from the host and its
+        // containers, never from the Node's other networks. The Hub bound these on 0.0.0.0.
+        listen: link.forApp ? `bridge:${link.localPort}` : `127.0.0.1:${link.localPort}`,
       };
       const previous = outgoing.get(link.name);
       if (previous && JSON.stringify(previous) !== JSON.stringify(next)) {
@@ -233,8 +233,12 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     }
   }
   const self = await ctx.db.get(nodeId);
+  const listeners = [...outgoing.values()].toSorted((a, b) => a.name.localeCompare(b.name));
   return {
-    v: 1,
+    // Version 2 adds a scoped listener, `bridge:<port>`, which a version-1 Infra Agent cannot
+    // bind. It refuses a version it does not know and keeps its last snapshot, so it fails closed;
+    // a snapshot without a scoped listener stays version 1 for those agents.
+    v: listeners.some((l) => l.listen.startsWith("bridge:")) ? 2 : 1,
     // Full replacement snapshot. The future sidecar reconciler must unexpose/unlink absent names.
     fleet: [...peers.values()].toSorted((a, b) => a.id.localeCompare(b.id)),
     relays: {
@@ -244,7 +248,7 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     exposures: [...expose.values()]
       .map((e) => ({ ...e, allowed_peers: e.allowed_peers.toSorted() }))
       .toSorted((a, b) => a.name.localeCompare(b.name)),
-    links: [...outgoing.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
+    links: listeners,
   };
 }
 export const state = internalQuery({

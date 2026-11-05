@@ -50,6 +50,8 @@ type fakeLink struct {
 	name                 string
 	provider, consumer   string // credentials
 	providerPort, listen int
+	// bridge marks an App dependency link, whose consumer listens on the Docker bridge.
+	bridge bool
 }
 type fakeChallenge struct {
 	credential string
@@ -101,6 +103,13 @@ func (f *fakeConvex) link(name, provider, consumer string, providerPort, listen 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.links = append(f.links, fakeLink{name: name, provider: provider, consumer: consumer, providerPort: providerPort, listen: listen})
+}
+
+// appLink declares an App dependency link, as the deploy pipeline records one (nodeState.ts).
+func (f *fakeConvex) appLink(name, provider, consumer string, providerPort, listen int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.links = append(f.links, fakeLink{name: name, provider: provider, consumer: consumer, providerPort: providerPort, listen: listen, bridge: true})
 }
 
 func (f *fakeConvex) registered(credential string) (string, *meshclient.Peer) {
@@ -271,7 +280,11 @@ func (f *fakeConvex) desired(credential string) DesiredMesh {
 			}
 			e.AllowedPeers = append(e.AllowedPeers, peer.address.ID)
 		} else {
-			d.Links = append(d.Links, MeshLink{Name: l.name, Peer: peer.address.ID, Service: l.name, Listen: fmt.Sprintf("127.0.0.1:%d", l.listen)})
+			listen := fmt.Sprintf("127.0.0.1:%d", l.listen)
+			if l.bridge {
+				listen, d.V = fmt.Sprintf("bridge:%d", l.listen), 2
+			}
+			d.Links = append(d.Links, MeshLink{Name: l.name, Peer: peer.address.ID, Service: l.name, Listen: listen})
 		}
 	}
 	for _, p := range peers {

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient"
@@ -39,6 +42,9 @@ type MeshOptions struct {
 	MinPublishGap time.Duration
 	// StatePoll is how often the snapshot revision is checked. Default 10 s.
 	StatePoll time.Duration
+	// Bridge resolves the address a `bridge:<port>` listener binds (bridge.go). Nil closes every
+	// such link.
+	Bridge BridgeResolver
 	// Logf receives operator-facing messages. Default log.Printf. Messages never carry a
 	// credential, a relay token or a response body.
 	Logf func(format string, args ...any)
@@ -83,6 +89,8 @@ type meshLoop struct {
 	lastState   time.Time
 	stateDue    bool
 	lastFailure map[string]time.Time
+	// closed lists the snapshot's links this Node left closed, for tests and status.
+	closed []closedLink
 }
 
 func newMeshLoop(c *Client, o MeshOptions) *meshLoop {
@@ -248,7 +256,7 @@ func (m *meshLoop) syncState(ctx context.Context) {
 	if state.Unchanged && state.Revision == m.revision && m.applied != nil {
 		return
 	}
-	d, err := decodeSnapshot(state.Desired)
+	d, closed, err := decodeSnapshot(ctx, state.Desired, m.o.Bridge)
 	if err != nil {
 		m.fail("state", "refusing the mesh snapshot; keeping the last applied one: %v", err)
 		return
@@ -259,6 +267,15 @@ func (m *meshLoop) syncState(ctx context.Context) {
 		return
 	}
 	m.revision, m.applied = state.Revision, &d
+	m.closed = closed
+	if len(closed) > 0 {
+		for _, l := range closed {
+			m.fail("link "+l.name, "mesh link %s stays closed: %s", l.name, l.reason)
+		}
+		// Fetch the snapshot again at the next state poll, so a link closed for a transient reason
+		// (the Docker daemon still starting) opens without waiting for Convex to change.
+		m.revision = ""
+	}
 	// A local record of what is applied, for an operator. Never a secret: no relay token is in it.
 	recorded := d
 	recorded.Relays.AuthToken = ""
@@ -275,14 +292,21 @@ func shortRevision(r string) string {
 	return r
 }
 
-// decodeSnapshot checks a Convex snapshot and converts it into the reconciler's Desired.
-func decodeSnapshot(raw json.RawMessage) (meshclient.Desired, error) {
+// closedLink is a link of the snapshot this Node did not open, and why.
+type closedLink struct{ name, reason string }
+
+// decodeSnapshot checks a Convex snapshot and converts it into the reconciler's Desired. Every
+// listener becomes a literal address before the sidecar sees it: a version-2 `bridge:<port>`
+// listener is bound on this Node's Docker bridge gateway (bridge.go). A link whose listener
+// cannot be resolved, or would bind every interface, is left out of the Desired and reported, so
+// the reconciler keeps it closed; it never falls back to 0.0.0.0.
+func decodeSnapshot(ctx context.Context, raw json.RawMessage, bridge BridgeResolver) (meshclient.Desired, []closedLink, error) {
 	if len(raw) == 0 || len(raw) > 200*1024 || !json.Valid(raw) {
-		return meshclient.Desired{}, errors.New("invalid mesh desired state")
+		return meshclient.Desired{}, nil, errors.New("invalid mesh desired state")
 	}
 	var from DesiredMesh
-	if json.Unmarshal(raw, &from) != nil || from.V != 1 {
-		return meshclient.Desired{}, errors.New("unsupported mesh desired state")
+	if json.Unmarshal(raw, &from) != nil || (from.V != 1 && from.V != 2) {
+		return meshclient.Desired{}, nil, errors.New("unsupported mesh desired state")
 	}
 	d := meshclient.Desired{V: 1, Fleet: []meshclient.Peer{}, Exposures: []meshclient.Exposure{}, Links: []meshclient.Link{}}
 	for _, p := range from.Fleet {
@@ -291,13 +315,51 @@ func decodeSnapshot(raw json.RawMessage) (meshclient.Desired, error) {
 	for _, e := range from.Exposures {
 		d.Exposures = append(d.Exposures, meshclient.Exposure{Name: e.Name, Target: e.Target, AllowedPeers: e.AllowedPeers})
 	}
+	var closed []closedLink
+	var gateway netip.Addr
+	var gatewayErr error
+	resolved := false
 	for _, l := range from.Links {
-		d.Links = append(d.Links, meshclient.Link{Name: l.Name, Peer: l.Peer, Service: l.Service, Listen: l.Listen})
+		listen, reason := "", ""
+		if port, scoped := strings.CutPrefix(l.Listen, "bridge:"); scoped {
+			n, err := strconv.Atoi(port)
+			switch {
+			case from.V < 2:
+				reason = "a bridge listener needs snapshot version 2"
+			case err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port:
+				reason = "invalid bridge listener port"
+			default:
+				if !resolved {
+					resolved = true
+					if bridge == nil {
+						gatewayErr = errors.New("this agent has no Docker bridge resolver")
+					} else {
+						gateway, gatewayErr = bridge(ctx)
+					}
+				}
+				if gatewayErr != nil {
+					reason = "the Docker bridge address is unknown: " + gatewayErr.Error()
+				} else {
+					listen = netip.AddrPortFrom(gateway, uint16(n)).String()
+				}
+			}
+		} else if addr, err := netip.ParseAddrPort(l.Listen); err != nil {
+			reason = "invalid listener address"
+		} else if addr.Addr().IsUnspecified() {
+			reason = "refusing a listener on every interface"
+		} else {
+			listen = addr.String()
+		}
+		if reason != "" {
+			closed = append(closed, closedLink{name: l.Name, reason: reason})
+			continue
+		}
+		d.Links = append(d.Links, meshclient.Link{Name: l.Name, Peer: l.Peer, Service: l.Service, Listen: listen})
 	}
 	if err := d.Validate(); err != nil {
-		return meshclient.Desired{}, err
+		return meshclient.Desired{}, nil, err
 	}
-	return d, nil
+	return d, closed, nil
 }
 
 // drifted reports whether the sidecar no longer holds what was applied, for example after it

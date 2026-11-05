@@ -439,6 +439,8 @@ state feed before enabling this path at scale.
 
 The full desired snapshot is `convexnode.DesiredMesh` in the Go client:
 `{v:1,fleet:[{id,relay_urls,direct_addrs}],relays:{relays,n0_fallback},exposures,links}`.
+A link's `listen` is a loopback `IP:PORT`. Version 2 adds one more form, `bridge:<port>`, for an
+App dependency link ([Image registry and cross-Node links](#image-registry-and-cross-node-links)).
 It is derived only from standalone `meshLinks` and declared App dependency links involving this
 Node. Each exposure has the exact declared consumers' `allowed_peers`, never the whole fleet; a
 missing or empty grant denies everyone. A peer appears in `fleet` and in any `allowed_peers` only
@@ -574,13 +576,27 @@ fails instead of overwriting a link of that name that someone declared. Leave
 at `registry.example.com` (`docker login` on each Node when it is private); nothing is linked then.
 
 A `needs:` dependency on another Node becomes a link in the App row. The provider Node exposes the
-dependency's loopback host port to the consumer Node only. The consumer Node listens on
-`0.0.0.0:<port>`, the port injected as `<NEED>_PORT`, because a container reaches it at
-`host.docker.internal`, the host's address on its bridge; this matches the Hub's links. That
-listener is reachable from the consumer Node's own networks, so firewall ports 62000 to 63999 on a
-Node with a public address. Both ends must run `connect-convex` with a proven endpoint
-([Set up a Node](#set-up-a-node)); a Node without one is left out of its peers' snapshots and the
-link stays down.
+dependency's loopback host port to the consumer Node only. The consuming service is started with
+`--add-host=host.docker.internal:host-gateway` and reaches the dependency at
+`host.docker.internal:<port>`, the port injected as `<NEED>_PORT`.
+
+The consumer Node listens on the address `host-gateway` resolves to, not on every interface. That
+address is reachable from the host and its containers only, so the dependency never appears on the
+Node's LAN or public address. Convex cannot know the address, so the snapshot names the scope,
+`listen: "bridge:<port>"` (snapshot version 2), and the Infra Agent resolves it on the Node the
+way Docker does. The [dockerd reference](https://docs.docker.com/reference/cli/dockerd/) says
+`host-gateway` resolves to the IPv4 address of the default bridge unless `host-gateway-ips` (or
+the older `host-gateway-ip`) is set. So the Infra Agent reads those keys from
+`/etc/docker/daemon.json` first, then asks `docker network inspect bridge` for its gateway,
+usually `172.17.0.1`. If neither gives an IPv4 address, or the address is loopback or unspecified,
+the link stays closed. The agent logs `mesh link <name> stays closed: …` once a minute and retries
+at each state poll; it never binds `0.0.0.0` instead. A daemon given `--host-gateway-ip` on its
+command line rather than in daemon.json is not visible to the agent; move the setting into
+daemon.json. An Infra Agent that only understands snapshot version 1 refuses a version-2 snapshot
+and keeps its last one. Convex sends version 2 only to a Node that consumes such a link.
+
+Both ends must run `connect-convex` with a proven endpoint ([Set up a Node](#set-up-a-node)). A
+Node without one is left out of its peers' snapshots, and the link stays down.
 
 ### Failover
 
