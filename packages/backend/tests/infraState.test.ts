@@ -625,7 +625,11 @@ describe("push webhook intake", () => {
     expect(state.deployments[0]).toMatchObject({
       app: "shop",
       stage: "queued",
-      targetNodeIds: [node],
+      // The binding's deploy Node is where unpinned services land; the planning step sets the
+      // targets once it has read the spec.
+      defaultNodeId: node,
+      targetNodeIds: [],
+      source: { kind: "git", repo: "acme/shop", ref: "main" },
       trigger: { kind: "git", sha: "abc", deliveryId: "guid-1" },
     });
     expect(state.deliveries.map((d) => [d.deliveryId, d.status, d.push?.outcome])).toEqual([

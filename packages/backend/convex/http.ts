@@ -36,13 +36,17 @@ import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { renderWindowsInstallScript } from "./installScriptPowerShell";
 import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 
+import { registerDeployRoutes } from "./infra/deployHttp";
+import { parsePush } from "./infra/githubDeploy";
 import { registerNodeRoutes } from "./infra/nodeHttp";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
 registerStaticRoutes(http, components.staticHosting);
-// The operator API under /api/v1, for the `erainfra` CLI (operatorHttp.ts).
+// The operator API under /api/v1, for the `erainfra` CLI (operatorHttp.ts), and its App
+// deployment routes (infra/deployHttp.ts).
 registerOperatorRoutes(http);
+registerDeployRoutes(http);
 registerNodeRoutes(http);
 
 function jsonResponse(body: unknown, status: number) {
@@ -837,9 +841,13 @@ http.route({
     // offered so deliveries keep verifying mid-migration.
     const storedSecret = await ctx.runQuery(internal.githubApp.webhookSecret, {});
     const envSecret = process.env.GITHUB_WEBHOOK_SECRET;
+    // Push-to-deploy runs on the operator's own deploy App (infra/githubDeploy.ts), whose
+    // deliveries arrive here too.
+    const deploySecret = process.env.ERAINFRA_GH_WEBHOOK_SECRET;
     const secrets = [
       ...(storedSecret === null ? [] : [storedSecret]),
       ...(envSecret !== undefined && envSecret.length > 0 ? [envSecret] : []),
+      ...(deploySecret !== undefined && deploySecret.length > 0 ? [deploySecret] : []),
     ];
     if (secrets.length === 0) {
       console.error(
@@ -852,12 +860,12 @@ http.route({
     }
 
     const event = request.headers.get("X-GitHub-Event") ?? "";
-    if (event !== "workflow_job") {
+    if (event !== "workflow_job" && event !== "push") {
       return new Response("Ignored", { status: 200 });
     }
 
     const deliveryId = request.headers.get("X-GitHub-Delivery") ?? "";
-    if (deliveryId.length === 0) {
+    if (deliveryId.length === 0 || deliveryId.length > 200) {
       return new Response("Missing X-GitHub-Delivery", { status: 400 });
     }
 
@@ -866,6 +874,20 @@ http.route({
       payload = JSON.parse(new TextDecoder().decode(rawBody)) as unknown;
     } catch {
       return new Response("Invalid JSON", { status: 400 });
+    }
+
+    // Push-to-deploy (infra/git.ts). The delivery row and the run it queues commit together,
+    // keyed by X-GitHub-Delivery, so a redelivery deploys nothing a second time.
+    if (event === "push") {
+      const push = parsePush(payload);
+      if (push === null) return new Response("Ignored", { status: 200 });
+      const accepted = await ctx.runMutation(internal.infra.git.acceptPush, {
+        deliveryId,
+        ...push,
+      });
+      return new Response(accepted.outcome === "duplicate" ? "Duplicate" : "Accepted", {
+        status: 202,
+      });
     }
     const workflowJob = parseWorkflowJob(payload);
     if (workflowJob === null) {

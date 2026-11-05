@@ -38,7 +38,8 @@
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "convex": "catalog:",
-    "octokit": "5.0.5"
+    "octokit": "5.0.5",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",

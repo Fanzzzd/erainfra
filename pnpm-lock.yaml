@@ -325,6 +325,9 @@ importers:
       octokit:
         specifier: 5.0.5
         version: 5.0.5
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
     devDependencies:
       '@edge-runtime/vm':
         specifier: 5.0.0
@@ -5253,7 +5256,7 @@ snapshots:
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
-      '@jridgewell/sourcemap-codec': 1.5.5
+      '@jridgewell/sourcemap-codec': 1.6.0
       '@jridgewell/trace-mapping': 0.3.31
 
   '@jridgewell/remapping@2.3.5':
@@ -5270,7 +5273,7 @@ snapshots:
   '@jridgewell/trace-mapping@0.3.31':
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
-      '@jridgewell/sourcemap-codec': 1.5.5
+      '@jridgewell/sourcemap-codec': 1.6.0
 
   '@lukeed/ms@2.0.2': {}
 

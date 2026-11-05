@@ -42,4 +42,12 @@ crons.interval(
   {},
 );
 
+// The deploy pipeline's clock (infra/pipeline.ts): starts queued runs whose App is free, renews
+// the lease of every live run and applies step timeouts. A Node's report moves its run at once;
+// this is the fallback, and with nothing in flight it is a few indexed reads.
+crons.interval("advance App deploy runs", { seconds: 10 }, internal.infra.pipeline.pulse, {});
+
+// Failover for connect-convex Nodes (infra/failover.ts), decided from missed heartbeats.
+crons.interval("fail over silent Nodes", { seconds: 10 }, internal.infra.failover.check, {});
+
 export default crons;

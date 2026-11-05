@@ -199,10 +199,14 @@ export async function secretsForNodeDeploy(
   ) {
     throw new ConvexError("This deployment no longer holds its App's lease");
   }
-  const app = await ctx.db
-    .query("apps")
-    .withIndex("by_name", (q) => q.eq("name", deployment.app))
-    .unique();
+  // A pipeline run's plan is the placement it is deploying, ahead of the stored App, which is only
+  // rewritten once every Node of the run is up.
+  const app = deployment.plan
+    ? { nodeId: deployment.plan.nodeId, services: deployment.plan.services }
+    : await ctx.db
+        .query("apps")
+        .withIndex("by_name", (q) => q.eq("name", deployment.app))
+        .unique();
   const services =
     app?.services.filter((service) => (service.nodeId ?? app.nodeId) === input.nodeId) ?? [];
   if (app !== null && services.length === 0) {
