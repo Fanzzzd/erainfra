@@ -114,7 +114,13 @@ jobs:
           done
           echo "reordered-fail=$fail/5"
 
-      - name: Bench typecheck command (turbo, all packages)
+      - name: Docs test (slow writes)
+        working-directory: apps/docs
+        run: node --test test/*.test.mjs
+
+      - name: Bench typecheck command 3x (turbo, all packages)
         run: |
+          for i in 1 2 3; do
           pnpm exec turbo run typecheck --filter='!@erainfra/cache-service' --filter='!@erainfra/controller' --filter='!@erainfra/runtime' --no-cache >"$RUNNER_TEMP/turbo.log" 2>&1 && echo TURBO-OK || { echo TURBO-FAIL; grep -A8 'docs:typecheck' "$RUNNER_TEMP/turbo.log" | head -30; }
           wc -c apps/docs/.source/*
+          done
