@@ -81,6 +81,9 @@ func newHarnessWithEndpoint(t *testing.T, store *fakes3.Server, endpoint string,
 		t.Fatal(err)
 	}
 	h := &harness{t: t, store: store, clock: startedAt}
+	// The store stamps LastModified, which is where eviction reads last access
+	// from, so it runs on the test's clock too.
+	store.SetNow(h.now)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server, err := New(cfg, backing, logger)

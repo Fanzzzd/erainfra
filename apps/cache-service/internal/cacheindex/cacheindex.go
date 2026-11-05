@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
@@ -49,6 +50,10 @@ type Entry struct {
 	// object's own name, inverted, so a listing sorts newest-first without a
 	// read per candidate.
 	CreatedAt int64 `json:"createdAt"`
+	// Object is the name of the metadata object this entry was read from. It
+	// is not stored: it is where the entry was found, which is what an access
+	// marker and an eviction are keyed by.
+	Object string `json:"-"`
 }
 
 // Index answers key questions against a bucket.
@@ -59,6 +64,15 @@ type Index struct {
 	// than a race with the wall clock.
 	Now           func() time.Time
 	MaxCandidates int
+	// Retention is the eviction policy. A zero field takes its default.
+	Retention Retention
+
+	access accessLog
+	memo   metadataMemo
+
+	dirtyMu sync.Mutex
+	dirty   map[string]struct{}
+	sweepMu sync.Mutex
 }
 
 func New(store objectstore.Store, logger *slog.Logger) *Index {
@@ -124,6 +138,7 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 				return nil, err
 			}
 			if entry != nil {
+				i.recordAccess(entry.Object)
 				return entry, nil
 			}
 		}
@@ -136,6 +151,7 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 				return nil, err
 			}
 			if entry != nil {
+				i.recordAccess(entry.Object)
 				return entry, nil
 			}
 		}
@@ -197,6 +213,25 @@ func (i *Index) newest(ctx context.Context, repository, ref, versionSegment, enc
 			"object", best, "repository", entry.Repository, "ref", entry.Ref)
 		return nil, nil
 	}
+	// A hit must name bytes that are there. Eviction deletes the metadata
+	// before the blob and keeps the blob readable for a grace period, so this
+	// service never produces a dangling entry; but the bucket's lifecycle rule,
+	// an operator with the store's own tools, or a store that lost an object
+	// can. Answering such an entry would hand the job a URL that 404s, which
+	// some clients survive as a warning and BuildKit does not. One HEAD per hit
+	// turns every one of those into a miss.
+	if _, err := i.store.Stat(ctx, entry.Blob); err != nil {
+		if errors.Is(err, objectstore.ErrNotFound) {
+			i.logger.Warn("cache entry names a blob that is gone; answering a miss",
+				"object", best, "blob", entry.Blob)
+			// The next quota tick sweeps this repository, which removes the
+			// entry so the key can be saved again.
+			i.markDirty(repository)
+			return nil, nil
+		}
+		return nil, err
+	}
+	entry.Object = best
 	return &entry, nil
 }
 
@@ -221,8 +256,9 @@ func (i *Index) Exists(ctx context.Context, repository, ref, key, version string
 
 // NewBlob starts an upload of an entry's bytes and returns the object key it
 // will land at. The blob is written before the metadata that names it, so a
-// crash mid-save leaves an unreferenced object for the bucket's lifecycle rule
-// to remove rather than an entry pointing at bytes that are not there.
+// crash mid-save leaves an unreferenced object for the sweeper to remove (see
+// Retention.OrphanGrace) rather than an entry pointing at bytes that are not
+// there.
 func (i *Index) NewBlob(ctx context.Context, repository string) (string, objectstore.Upload, error) {
 	name := make([]byte, 16)
 	if _, err := rand.Read(name); err != nil {
@@ -252,7 +288,13 @@ func (i *Index) Commit(ctx context.Context, entry Entry) error {
 	}
 	object := scopePrefix(entry.Repository, entry.Ref, versionSegment(entry.Version)) +
 		hex.EncodeToString([]byte(entry.Key)) + "." + recencySuffix(entry.CreatedAt)
-	return i.store.PutBytes(ctx, object, "application/json", body)
+	if err := i.store.PutBytes(ctx, object, "application/json", body); err != nil {
+		return err
+	}
+	// The repository just grew. The next quota pass looks at it rather than
+	// waiting for the full sweep.
+	i.markDirty(entry.Repository)
+	return nil
 }
 
 // PresignBlob mints the URL a job downloads an entry through. It is a GET for

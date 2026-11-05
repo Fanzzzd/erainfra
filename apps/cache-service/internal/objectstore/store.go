@@ -17,10 +17,15 @@ import (
 // L007).
 var ErrNotFound = errors.New("object not found")
 
-// Object is one entry of a listing.
+// Object is one entry of a listing, or the answer to a Stat.
 type Object struct {
 	Key  string
 	Size int64
+	// LastModified is the store's own clock, at the store's own resolution
+	// (one second on most S3-compatible servers). Eviction reads an entry's
+	// last access from it, which is why the store's clock and not this
+	// service's decides: every replica then agrees on one clock.
+	LastModified time.Time
 }
 
 // Store is the whole of what the cache needs from a bucket.
@@ -37,6 +42,16 @@ type Store interface {
 	// picks "the newest match" out of a truncated page is picking out of the
 	// wrong set and should say so in a log line.
 	List(ctx context.Context, prefix string, max int) (objects []Object, truncated bool, err error)
+	// ListAfter is List continued: it returns objects under prefix whose key
+	// sorts strictly after startAfter. Eviction and the admin API walk a whole
+	// repository with it, one page at a time.
+	ListAfter(ctx context.Context, prefix, startAfter string, max int) (objects []Object, truncated bool, err error)
+	// Stat reports an object's size and modification time without reading it,
+	// and ErrNotFound when it is not there.
+	Stat(ctx context.Context, key string) (Object, error)
+	// Delete removes an object. Deleting an object that is already gone is not
+	// an error: two replicas evicting the same entry must both succeed.
+	Delete(ctx context.Context, key string) error
 	// NewUpload begins a streamed write of an object of unknown final size.
 	NewUpload(ctx context.Context, key string) (Upload, error)
 	// PresignGet returns a URL that reads exactly this object, by GET only,

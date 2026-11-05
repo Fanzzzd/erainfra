@@ -1,5 +1,7 @@
 // Command erainfra-cache-service serves GitHub's Actions cache protocol, both
-// generations, from an S3-compatible store.
+// generations, from an S3-compatible store. `erainfra-cache-service admin` is
+// the operator's client for the same service: list, delete and clear one
+// repository's entries.
 //
 // It is a standalone binary rather than part of an existing one on purpose:
 // apps/infra-agent ships five attested digests and one dependency, and Convex
@@ -35,6 +37,12 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "version" {
 		fmt.Printf("erainfra-cache-service %s\n", version)
 		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "admin" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := runAdmin(ctx, os.Args[2:], osAdminEnv())
+		cancel()
+		os.Exit(code)
 	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -75,7 +83,9 @@ func run() error {
 	errs := make(chan error, 1)
 	go func() {
 		logger.Info("cache service listening", "address", cfg.Listen,
-			"bucket", cfg.Store.Bucket, "downloadMode", cfg.DownloadMode)
+			"bucket", cfg.Store.Bucket, "downloadMode", cfg.DownloadMode,
+			"idleTTL", cfg.IdleTTL.String(), "repoQuotaBytes", cfg.RepoQuotaBytes,
+			"evictionInterval", cfg.EvictionInterval.String())
 		errs <- listener.ListenAndServe()
 	}()
 

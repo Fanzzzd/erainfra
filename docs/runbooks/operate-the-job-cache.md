@@ -6,9 +6,9 @@ reach it as an authenticated network client and nothing writable is added to any
 the whole reason [ADR 0007](../adr/0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)
 can add a cache without touching ADR 0002's isolation contract.
 
-**What this runbook covers:** choosing and provisioning the store, running the service, the bucket
-lifecycle rule that does the eviction, and the two Worker-side variables that offer the endpoint to
-jobs (§7). **What it does not cover:** the per-Attempt token, and adding the cache endpoint to
+**What this runbook covers:** choosing and provisioning the store, running the service, eviction and
+the lifecycle rule behind it (§4), the two Worker-side variables that offer the endpoint to jobs
+(§7), and listing or deleting a repository's entries (§9). **What it does not cover:** the per-Attempt token, and adding the cache endpoint to
 `apps/runtime/internal/netpolicy`'s allowed egress destinations. Until those land, this service runs
 and answers, and §7 has a measurement to pass before it is worth pointing anything at it.
 
@@ -59,8 +59,8 @@ podman run -d --name erainfra-cache-store \
 
 Then create a bucket and, **separately, a credential scoped to that bucket only**. The root
 credential above administers the store and must never be what the cache service holds; the service
-needs `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` and the multipart calls
-(`s3:AbortMultipartUpload`) on one bucket, and nothing else anywhere.
+needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` (eviction, §4), `s3:ListBucket` and the
+multipart calls (`s3:AbortMultipartUpload`) on one bucket, and nothing else anywhere.
 
 ```bash
 mc alias set erainfra https://store.lan:9000 "$store_root_user" "$store_root_password"
@@ -94,28 +94,31 @@ Use a bucket-scoped API token, not an account token.
 Every variable is new, so every variable is spelled `ERAINFRA_CACHE_*`. Nothing here is on
 [CONTEXT.md](../../CONTEXT.md) rule 4's frozen list.
 
-| variable                          | required | default                        | what it is                                             |
-| --------------------------------- | -------- | ------------------------------ | ------------------------------------------------------ |
-| `ERAINFRA_CACHE_S3_ENDPOINT`      | yes      | —                              | `http(s)://host:port` of the store                     |
-| `ERAINFRA_CACHE_S3_BUCKET`        | yes      | —                              | bucket name                                            |
-| `ERAINFRA_CACHE_S3_ACCESS_KEY`    | yes      | —                              | access key id                                          |
-| `ERAINFRA_CACHE_S3_SECRET`        | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`     |
-| `ERAINFRA_CACHE_S3_REGION`        | no       | `us-east-1`                    | signing region; R2 wants `auto`                        |
-| `ERAINFRA_CACHE_S3_PREFIX`        | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache |
-| `ERAINFRA_CACHE_S3_PATH_STYLE`    | no       | `true`                         | address the bucket as a path segment                   |
-| `ERAINFRA_CACHE_SIGNING_KEY`      | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes    |
-| `ERAINFRA_CACHE_LISTEN`           | no       | `:8721`                        | listen address                                         |
-| `ERAINFRA_CACHE_PUBLIC_URL`       | no       | taken from the request         | base URL jobs reach this service at                    |
-| `ERAINFRA_CACHE_DOWNLOAD_MODE`    | no       | `presign`                      | `presign` or `proxy`; see below                        |
-| `ERAINFRA_CACHE_DOWNLOAD_TTL`     | no       | `5m`                           | lifetime of a download URL                             |
-| `ERAINFRA_CACHE_UPLOAD_TTL`       | no       | `1h`                           | lifetime of an upload URL and of a spooled upload      |
-| `ERAINFRA_CACHE_LOOKUP_TIMEOUT`   | no       | `5s`                           | restore budget; overrun answers a miss                 |
-| `ERAINFRA_CACHE_RESERVE_TIMEOUT`  | no       | `10s`                          | reserve/finalize budget; overrun refuses the save      |
-| `ERAINFRA_CACHE_TRANSFER_TIMEOUT` | no       | `30m`                          | one request body, and the store write it drives        |
-| `ERAINFRA_CACHE_MAX_ENTRY_BYTES`  | no       | `10737418240` (10 GiB)         | per-entry ceiling                                      |
-| `ERAINFRA_CACHE_PART_BYTES`       | no       | `33554432` (32 MiB)            | multipart part size                                    |
-| `ERAINFRA_CACHE_SPOOL_DIR`        | no       | `$TMPDIR/erainfra-cache-spool` | where in-flight uploads land                           |
-| `ERAINFRA_CACHE_LOG_LEVEL`        | no       | `info`                         | `debug`, `info`, `warn`, `error`                       |
+| variable                           | required | default                        | what it is                                             |
+| ---------------------------------- | -------- | ------------------------------ | ------------------------------------------------------ |
+| `ERAINFRA_CACHE_S3_ENDPOINT`       | yes      | —                              | `http(s)://host:port` of the store                     |
+| `ERAINFRA_CACHE_S3_BUCKET`         | yes      | —                              | bucket name                                            |
+| `ERAINFRA_CACHE_S3_ACCESS_KEY`     | yes      | —                              | access key id                                          |
+| `ERAINFRA_CACHE_S3_SECRET`         | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`     |
+| `ERAINFRA_CACHE_S3_REGION`         | no       | `us-east-1`                    | signing region; R2 wants `auto`                        |
+| `ERAINFRA_CACHE_S3_PREFIX`         | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache |
+| `ERAINFRA_CACHE_S3_PATH_STYLE`     | no       | `true`                         | address the bucket as a path segment                   |
+| `ERAINFRA_CACHE_SIGNING_KEY`       | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes    |
+| `ERAINFRA_CACHE_LISTEN`            | no       | `:8721`                        | listen address                                         |
+| `ERAINFRA_CACHE_PUBLIC_URL`        | no       | taken from the request         | base URL jobs reach this service at                    |
+| `ERAINFRA_CACHE_DOWNLOAD_MODE`     | no       | `presign`                      | `presign` or `proxy`; see below                        |
+| `ERAINFRA_CACHE_DOWNLOAD_TTL`      | no       | `5m`                           | lifetime of a download URL                             |
+| `ERAINFRA_CACHE_UPLOAD_TTL`        | no       | `1h`                           | lifetime of an upload URL and of a spooled upload      |
+| `ERAINFRA_CACHE_LOOKUP_TIMEOUT`    | no       | `5s`                           | restore budget; overrun answers a miss                 |
+| `ERAINFRA_CACHE_RESERVE_TIMEOUT`   | no       | `10s`                          | reserve/finalize budget; overrun refuses the save      |
+| `ERAINFRA_CACHE_TRANSFER_TIMEOUT`  | no       | `30m`                          | one request body, and the store write it drives        |
+| `ERAINFRA_CACHE_MAX_ENTRY_BYTES`   | no       | `10737418240` (10 GiB)         | per-entry ceiling                                      |
+| `ERAINFRA_CACHE_PART_BYTES`        | no       | `33554432` (32 MiB)            | multipart part size                                    |
+| `ERAINFRA_CACHE_SPOOL_DIR`         | no       | `$TMPDIR/erainfra-cache-spool` | where in-flight uploads land                           |
+| `ERAINFRA_CACHE_IDLE_TTL`          | no       | `7d`                           | evict an entry not restored for this long (§4)         |
+| `ERAINFRA_CACHE_REPO_QUOTA_BYTES`  | no       | `10737418240` (10 GiB)         | one repository's entries, at most; LRU over it (§4)    |
+| `ERAINFRA_CACHE_EVICTION_INTERVAL` | no       | `1h`                           | how often the whole bucket is swept (§4)               |
+| `ERAINFRA_CACHE_LOG_LEVEL`         | no       | `info`                         | `debug`, `info`, `warn`, `error`                       |
 
 Every secret variable has a `_FILE` twin (`ERAINFRA_CACHE_SIGNING_KEY_FILE`,
 `ERAINFRA_CACHE_S3_SECRET_FILE`). Prefer them: a secret in an environment variable is readable by
@@ -256,14 +259,73 @@ the bucket is logged at `error` and answered as a miss, on purpose (see §5).
 
 ---
 
-## 4. Evict with a bucket lifecycle rule, not with an eviction engine
+## 4. Eviction: the service evicts, a lifecycle rule is the backstop
 
-The service does not delete anything. Give the bucket a lifecycle rule instead: it is one line of
-configuration, it runs in the store rather than in a service that could be down, and it survives
-this service being replaced.
+The service applies GitHub's retention rules itself. A bucket lifecycle rule cannot: it expires an
+object by the age of its creation, never by when it was last read, and it has no idea what a
+repository's entries add up to.
 
-GitHub evicts entries unused for 7 days and caps a repository at 10 GB. A reasonable starting point
-is an age-based expiry on the whole prefix:
+- **Idle.** An entry nobody has restored for `ERAINFRA_CACHE_IDLE_TTL` (7 days) is deleted. An entry
+  that was never restored counts from when it was saved.
+- **Quota.** When one repository's entries add up to more than `ERAINFRA_CACHE_REPO_QUOTA_BYTES`
+  (10 GiB), its least recently used entries are deleted until the total fits. A save that crosses
+  the quota is followed by that repository's check within about 30 seconds. Another repository's
+  entries never count against it and are never deleted to make room in it.
+- **Sweep.** The whole bucket is swept a minute after the service starts and then every
+  `ERAINFRA_CACHE_EVICTION_INTERVAL` (1 hour).
+
+Those are GitHub's numbers: 7 days idle and 10 GB per repository. Blacksmith uses the same rules at
+25 GB; set `ERAINFRA_CACHE_REPO_QUOTA_BYTES=26843545600` for that.
+
+### How last access is recorded
+
+A restore hit is noted in memory and written within 30 seconds as a small object under
+`<prefix>access/`. Its `LastModified` is the entry's last access, so the store's clock decides and
+every replica reads the same one. One process rewrites a given entry's marker at most once every 10
+minutes, and nothing is written on the request path, so a restore costs the job no extra store round
+trip. A crash loses at most the last 30 seconds of restores, which can only make an entry look
+older than it is.
+
+### What a deletion does, in order
+
+1. A tombstone for the entry's bytes is written under `<prefix>tombstones/`.
+2. The entry document is deleted. Every restore from this moment is a miss.
+3. The bytes stay for `ERAINFRA_CACHE_DOWNLOAD_TTL` + `ERAINFRA_CACHE_TRANSFER_TIMEOUT` + 5 minutes
+   (40 minutes with the defaults). A restore that found the entry just before step 2 holds a
+   download URL, and that download completes. The first sweep after that deletes the bytes.
+
+Every restore hit also checks that the entry's bytes exist (one `HEAD`), so an entry whose bytes
+went some other way, such as the lifecycle rule below or an operator's own tools, answers a miss
+rather than a URL that 404s. The next sweep removes that entry, so the key can be saved again.
+
+Bytes that no entry names, left by a save that never finished, are deleted once they are older than
+`ERAINFRA_CACHE_UPLOAD_TTL` + `ERAINFRA_CACHE_TRANSFER_TIMEOUT` + 15 minutes (1 hour 45 minutes with
+the defaults). Nothing younger can be deleted, because a v2 save writes its bytes up to one upload
+session before it publishes the entry.
+
+The quota is approximate in two bounded ways: a repository can sit over it between a save and the
+next 30-second check, and deleted entries' bytes stay in the bucket for the 40-minute grace period.
+
+### More than one replica
+
+Eviction keeps all of its state in the bucket, and every step is safe to repeat: two replicas that
+evict the same entry write the same tombstone and delete the same objects. Running it on several
+replicas costs duplicate listings; it cannot delete bytes a live entry names. The service as a whole
+is still single-replica today for a different reason: the controller pushes each runner's job facts
+to one process, and they live in that process's memory.
+
+### The credential needs delete
+
+The service now deletes objects, so the bucket credential from §1 needs `s3:DeleteObject` as well.
+Without it every sweep fails and logs `cache eviction sweep failed`; restores and saves keep working,
+and the bucket grows until the lifecycle rule below catches up.
+
+### Keep a lifecycle rule as the backstop
+
+Keep a rule for the day the service is stopped for a long time or loses its delete permission.
+Because a lifecycle rule counts from creation and not from last access, it also removes entries that
+are still being restored, so set it well above the idle TTL. **30 days** is the recommendation: a key
+restored every day is saved once more each month, which costs one cold run.
 
 **The filter must be the prefix the service is configured with.** `ERAINFRA_CACHE_S3_PREFIX` is an
 operator's setting and defaults to `erainfra-cache/v1/`; a rule that hardcodes the default against a
@@ -291,7 +353,7 @@ cat > "$rule" <<EOF
       "ID": "expire-cache-entries",
       "Status": "Enabled",
       "Filter": { "Prefix": "${prefix}" },
-      "Expiration": { "Days": 14 },
+      "Expiration": { "Days": 30 },
       "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
     }
   ]
@@ -301,18 +363,26 @@ mc ilm import erainfra/erainfra-cache < "$rule"
 mc ilm rule ls erainfra/erainfra-cache    # confirm the prefix that landed
 ```
 
-Two things that rule is doing, both of which matter:
+Two things that rule is doing:
 
-- **`Expiration`** removes entries and their blobs together. Below the configured prefix the layout
-  is `<prefix>entries/<owner>/<repo>/<ref>/<version>/<key>` for metadata and
-  `<prefix>blobs/<owner>/<repo>/<id>` for bytes, so an age rule on the prefix itself reaches both.
-  An entry whose blob has expired is served as a miss, not as an error.
-- **`AbortIncompleteMultipartUpload`** is the one people forget. A job that dies mid-save leaves a
-  multipart upload holding storage that no listing shows and no expiry rule reaches.
+- **`Expiration`** is the backstop. Below the configured prefix the layout is
+  `<prefix>entries/<owner>/<repo>/<ref>/<version>/<key>` for entry documents,
+  `<prefix>blobs/<owner>/<repo>/<id>` for bytes, and the `access/` and `tombstones/` trees above, so
+  an age rule on the prefix reaches all of them. Whatever it removes is safe to remove at any moment:
+  an entry whose bytes are gone answers a miss, bytes whose entry is gone are never served, and a
+  missing access marker only makes its entry look older.
+- **`AbortIncompleteMultipartUpload`** is not a backstop; it is the only cleanup there is for its
+  case. A job that dies mid-save can leave a multipart upload holding storage that no listing shows,
+  so the service's sweep cannot see it either.
 
-Per-repository policies are possible because the repository is a readable path segment: filter on
-`<prefix>entries/<owner>/<repo>/` and `<prefix>blobs/<owner>/<repo>/`, with the same `<prefix>` the
-service is configured with.
+### Upgrading from a version that did not evict
+
+Entries saved before this version have no access marker, so they count from creation. The first
+sweep, a minute after the upgraded service starts, deletes every entry older than the idle TTL that
+has not been restored since the upgrade. On a busy cache that is a burst of cold runs. To avoid it,
+start the upgraded service with `ERAINFRA_CACHE_IDLE_TTL=30d`, let the entries in use collect access
+markers for a week, then drop the variable. If the bucket still has the old 14-day rule, change it
+to 30 days at the same time.
 
 ---
 
@@ -356,6 +426,12 @@ journalctl -u erainfra-cache-service -f
 | `refused a cache write to a read-only token`                      | rule 2 working: a fork pull request tried to save                                   |
 | `cache key prefix has more entries than one listing page`         | a prefix has grown past one page; "newest wins" may be picking out of a partial set |
 | `cache entry metadata contradicts its own location`               | the bucket has been written to by something other than this service                 |
+| `cache entry evicted`                                             | one deletion; `reason` is `idle`, `quota` or `blob missing`                         |
+| `cache eviction sweep finished`                                   | the periodic sweep, with counts of what it evicted and deleted                      |
+| `cache eviction sweep failed`                                     | the store refused a listing or a delete; check `s3:DeleteObject` (§4)               |
+| `cache entry names a blob that is gone; answering a miss`         | an entry's bytes went outside the service, often the lifecycle rule; swept next     |
+| `cache entries deleted by an operator`                            | an `admin delete` or `admin clear` (§9)                                             |
+| `cache admin request rejected`                                    | a bad, stale or replayed admin signature                                            |
 
 ---
 
@@ -563,3 +639,67 @@ The archive `sha256`, which embeds the same commit-stamped controller, has carri
 it was introduced, so the release already has a way through; the cache-service target just has to
 join it. Resolve that in the release procedure before cutting step 1 — do not paper over it by
 tagging and retrying.
+
+---
+
+## 9. Manage a repository's cache entries
+
+`erainfra-cache-service admin` lists, deletes and clears one repository's entries. The verbs and
+flags are Blacksmith's (`blacksmith cache list|delete|clear`) and the JSON field names are GitHub's
+(`key`, `version`, `ref`, `size_in_bytes`, `created_at`, `last_accessed_at`), so a script written for
+either reads this one. Output is JSON unless you pass `--format table`.
+
+Run it on the cache service's host. It signs each request with the service's signing key, which on
+a systemd install is the root-only `/etc/erainfra/cache-signing-key` from §2:
+
+```bash
+cache() { sudo erainfra-cache-service admin "$@" --key-file /etc/erainfra/cache-signing-key; }
+
+# What does this repository hold? Most recently used first.
+cache list --repo Fanzzzd/erainfra --format table
+# Narrow it: by key prefix, by substring, by ref, by version; sort and page.
+cache list --repo Fanzzzd/erainfra --prefix node-cache- --ref refs/heads/main \
+  --sort-by size --sort-direction desc --per-page 100 --page 2
+
+# Delete one key: every version and every ref, unless narrowed.
+cache delete --repo Fanzzzd/erainfra --key "$key" --version "$version"
+# Delete every key that starts with a prefix.
+cache delete --repo Fanzzzd/erainfra --prefix go-build-
+# Delete everything the repository has.
+cache clear --repo Fanzzzd/erainfra
+```
+
+`delete` and `clear` ask before deleting when stdin is a terminal, and refuse without `--yes` when it
+is not, so a script has to say `--yes` to delete anything. Every command names exactly one
+repository with `--repo owner/name`; there is no wildcard and no command that reaches across
+repositories. `delete` takes exactly one of `--key` and `--prefix`; everything is `clear`.
+
+| flag / variable                     | default                                                                 |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `--url`, `ERAINFRA_CACHE_ADMIN_URL` | `http://127.0.0.1` on the port in `ERAINFRA_CACHE_LISTEN`, else `:8721` |
+| `--key-file`                        | `ERAINFRA_CACHE_SIGNING_KEY_FILE`, else `ERAINFRA_CACHE_SIGNING_KEY`    |
+
+Exit codes: `0` done, `1` the service refused or could not be reached (its message is printed), `2`
+the command line was wrong and nothing was sent.
+
+A deleted entry is a miss on the very next restore. Its bytes leave the bucket on the first sweep
+after the 40-minute grace period in §4, so `deleted_bytes` is what the repository's quota stops
+counting at once, and the bucket's usage drops within the grace period plus one sweep interval.
+
+### The API under it
+
+Scripts that would rather not shell out can call the API directly; the CLI is a thin client over it.
+`GET /_erainfra-cache-admin/entries?repository=owner/name` lists (filters `prefix`, `search`, `ref`,
+`version`; `sort`, `direction`, `page`, `per_page` up to 100), and `DELETE` on the same path deletes
+(`key` or `prefix` or `all=true`, narrowed by `version` and `ref`).
+
+Every request is signed under a key derived from the signing key, over its method, path, query, a
+Unix timestamp, a random nonce and the SHA-256 of its body, in three headers:
+`X-Erainfra-Cache-Admin-Timestamp`, `X-Erainfra-Cache-Admin-Nonce` and
+`X-Erainfra-Cache-Admin-Signature`. The service refuses a request whose timestamp is more than five
+minutes from its clock, compares the signature in constant time, and refuses a nonce it has already
+accepted, so a captured `clear` cannot be replayed to delete what was saved after it. Nonces are
+remembered per process; behind a balancer with several replicas, one request could be replayed once
+per other replica within the five minutes, and only as the same operation. The exact signing steps
+are in `apps/cache-service/internal/adminapi`. A rejected request answers `401` and logs
+`cache admin request rejected` with the reason.

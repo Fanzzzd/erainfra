@@ -233,16 +233,27 @@ func (s *S3) Open(ctx context.Context, key string) (io.ReadCloser, int64, error)
 type listResult struct {
 	IsTruncated bool `xml:"IsTruncated"`
 	Contents    []struct {
-		Key  string `xml:"Key"`
-		Size int64  `xml:"Size"`
+		Key          string `xml:"Key"`
+		Size         int64  `xml:"Size"`
+		LastModified string `xml:"LastModified"`
 	} `xml:"Contents"`
 }
 
 func (s *S3) List(ctx context.Context, prefix string, max int) ([]Object, bool, error) {
+	return s.ListAfter(ctx, prefix, "", max)
+}
+
+func (s *S3) ListAfter(ctx context.Context, prefix, startAfter string, max int) ([]Object, bool, error) {
 	query := url.Values{}
 	query.Set("list-type", "2")
 	query.Set("prefix", s.config.Prefix+prefix)
 	query.Set("max-keys", strconv.Itoa(max))
+	if startAfter != "" {
+		// start-after rather than a continuation token: the caller resumes
+		// from the last key it saw, which needs no state carried between
+		// pages and works the same against every S3-compatible store.
+		query.Set("start-after", s.config.Prefix+startAfter)
+	}
 
 	resp, err := s.do(ctx, http.MethodGet, s.bucketURL(), query, nil, nil, -1, emptyPayloadHash)
 	if err != nil {
@@ -259,9 +270,51 @@ func (s *S3) List(ctx context.Context, prefix string, max int) ([]Object, bool, 
 	}
 	objects := make([]Object, 0, len(parsed.Contents))
 	for _, item := range parsed.Contents {
-		objects = append(objects, Object{Key: strings.TrimPrefix(item.Key, s.config.Prefix), Size: item.Size})
+		object := Object{Key: strings.TrimPrefix(item.Key, s.config.Prefix), Size: item.Size}
+		if item.LastModified != "" {
+			modified, err := time.Parse(time.RFC3339Nano, item.LastModified)
+			if err != nil {
+				return nil, false, fmt.Errorf("listing for %q has an unreadable LastModified %q: %w",
+					item.Key, item.LastModified, err)
+			}
+			object.LastModified = modified
+		}
+		objects = append(objects, object)
 	}
 	return objects, parsed.IsTruncated, nil
+}
+
+func (s *S3) Stat(ctx context.Context, key string) (Object, error) {
+	resp, err := s.do(ctx, http.MethodHead, s.objectURL(key), nil, nil, nil, -1, emptyPayloadHash)
+	if err != nil {
+		return Object{}, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return Object{}, statusError(resp)
+	}
+	drain(resp)
+	object := Object{Key: key, Size: resp.ContentLength}
+	if value := resp.Header.Get("Last-Modified"); value != "" {
+		if modified, err := http.ParseTime(value); err == nil {
+			object.LastModified = modified
+		}
+	}
+	return object, nil
+}
+
+func (s *S3) Delete(ctx context.Context, key string) error {
+	resp, err := s.do(ctx, http.MethodDelete, s.objectURL(key), nil, nil, nil, 0, emptyPayloadHash)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode/100 != 2 {
+		if err := statusError(resp); !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		return nil
+	}
+	drain(resp)
+	return nil
 }
 
 func (s *S3) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
