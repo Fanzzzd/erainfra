@@ -15,8 +15,10 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/config"
 	rccontroller "github.com/Fanzzzd/erainfra/apps/controller/internal/controller"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/convexstore"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubapi"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubscale"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/heartbeat"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )
@@ -28,14 +30,26 @@ import (
 // costs only trivial memory.
 const cacheFactsTTL = 6 * time.Hour
 
+// version is stamped by the release build. commitSHA is stamped only by local
+// and development builds: a release binary is pinned by digest in
+// AGENT_RELEASE, and a commit stamp would make that digest depend on the commit
+// the pin is written into (#134 made the same change for the cache service).
+// The version names the tag, and the tag names the commit.
 var (
 	version   = "dev"
-	commitSHA = "unknown"
+	commitSHA = ""
 )
+
+func versionLine() string {
+	if commitSHA == "" {
+		return "runner-center-controller " + version
+	}
+	return fmt.Sprintf("runner-center-controller %s (%s)", version, commitSHA)
+}
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "version" {
-		fmt.Printf("runner-center-controller %s (%s)\n", version, commitSHA)
+		fmt.Println(versionLine())
 		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "retire" {
@@ -86,21 +100,6 @@ func run() error {
 	}
 	client.SetSystemInfo(systemInfo(scaleSet.ID))
 
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "controller"
-	}
-	owner := hostname + ":" + cfg.Profile
-	session, err := client.MessageSessionClient(ctx, scaleSet.ID, owner)
-	if err != nil {
-		return fmt.Errorf("create GitHub message session: %w", err)
-	}
-	defer func() {
-		if err := session.Close(context.Background()); err != nil {
-			logger.Error("failed to close GitHub message session", "error", err)
-		}
-	}()
-
 	issuer, err := githubscale.NewIssuer(client, scaleSet.ID)
 	if err != nil {
 		return err
@@ -127,27 +126,64 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	scaleSetListener, err := listener.New(session, listener.Config{
-		ScaleSetID: scaleSet.ID,
-		MaxRunners: cfg.MaxRunners,
-		Logger:     logger.WithGroup("listener"),
-	})
-	if err != nil {
-		return fmt.Errorf("configure GitHub scale-set listener: %w", err)
-	}
 
-	logger.Info(
-		"runner scale-set controller started",
-		"profile", cfg.Profile,
-		"scaleSet", cfg.ScaleSetName,
-		"scaleSetID", scaleSet.ID,
-		"maxRunners", cfg.MaxRunners,
-		"fitPolicy", cfg.FitPolicy,
-	)
-	if err := scaleSetListener.Run(ctx, scaler); err != nil && !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("run GitHub scale-set listener: %w", err)
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "controller"
 	}
-	return nil
+	// The heartbeat runs for the controller's whole life, including while it
+	// waits out a session conflict, so the control plane can tell "waiting for
+	// the session" from "gone".
+	reporter := heartbeat.New(store, fleet.ControllerHeartbeat{
+		Profile:    cfg.Profile,
+		Hostname:   hostname,
+		Version:    version,
+		ScaleSetID: scaleSet.ID,
+	}, heartbeat.WithLogger(logger.WithGroup("heartbeat")))
+	reportCtx, stopReporting := context.WithCancel(context.WithoutCancel(ctx))
+	reporting := make(chan struct{})
+	go func() {
+		defer close(reporting)
+		reporter.Run(reportCtx)
+	}()
+
+	owner := hostname + ":" + cfg.Profile
+	supervisor := &rccontroller.SessionSupervisor{
+		Open: func(ctx context.Context) (rccontroller.MessageSession, error) {
+			return client.MessageSessionClient(ctx, scaleSet.ID, owner)
+		},
+		Listen: func(ctx context.Context, session listener.Client) error {
+			scaleSetListener, err := listener.New(reporter.Observe(session), listener.Config{
+				ScaleSetID: scaleSet.ID,
+				MaxRunners: cfg.MaxRunners,
+				Logger:     logger.WithGroup("listener"),
+			}, listener.WithMetricsRecorder(reporter))
+			if err != nil {
+				return fmt.Errorf("configure GitHub scale-set listener: %w", err)
+			}
+			logger.Info(
+				"runner scale-set controller started",
+				"profile", cfg.Profile,
+				"scaleSet", cfg.ScaleSetName,
+				"scaleSetID", scaleSet.ID,
+				"maxRunners", cfg.MaxRunners,
+				"fitPolicy", cfg.FitPolicy,
+			)
+			return scaleSetListener.Run(ctx, scaler)
+		},
+		Observer: reporter,
+		Logger:   logger.WithGroup("session"),
+	}
+	runErr := supervisor.Run(ctx)
+	if errors.Is(runErr, context.Canceled) {
+		runErr = nil
+	}
+	// The last report says the controller stopped and why, so the dashboard
+	// shows a deliberate stop or a crash instead of waiting for silence.
+	reporter.SetSession(fleet.SessionStopped, runErr)
+	stopReporting()
+	<-reporting
+	return runErr
 }
 
 // cacheOptions builds the Scaler's cache-publishing option when a cache service

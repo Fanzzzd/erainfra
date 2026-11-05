@@ -28,6 +28,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
   AGENT_RELEASE,
+  CONTROLLER_TARGETS,
+  controllerAssetName,
   INFRA_AGENT_TARGETS,
   infraAgentAssetName,
   type AgentRelease,
@@ -40,6 +42,7 @@ import {
   FIRECRACKER_RUNTIME_UNIT_B64,
   FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "../convex/provisionerFirecrackerHost.generated.ts";
+import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "../convex/controllerUnit.generated.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
@@ -141,7 +144,7 @@ while [ "$count" -gt 0 ]; do
   arg=$1
   shift
   case "$arg" in
-    /etc/*|/run/systemd*) set -- "$@" "$RC_TEST_SUDO_ROOT$arg" ;;
+    /etc/*|/run/systemd*|/usr/local/*) set -- "$@" "$RC_TEST_SUDO_ROOT$arg" ;;
     *) set -- "$@" "$arg" ;;
   esac
   count=$((count - 1))
@@ -355,6 +358,7 @@ const CURRENT: AgentRelease = {
   sha256: "",
   infraAgent: {},
   cacheService: {},
+  controller: {},
 };
 const OLDER: AgentRelease = {
   repo: TEST_REPO,
@@ -362,6 +366,7 @@ const OLDER: AgentRelease = {
   sha256: "",
   infraAgent: {},
   cacheService: {},
+  controller: {},
 };
 
 describe("install", () => {
@@ -661,6 +666,20 @@ describe("rendered script", () => {
       expect(AGENT_RELEASE.infraAgent[target]).toMatch(/^[0-9a-f]{64}$/);
     }
   });
+
+  // The same shape for the controller: an x86 controller host verified and an ARM one not would be
+  // worse than refusing both.
+  it("pins every controller target, or none of them", () => {
+    const pinned = Object.keys(AGENT_RELEASE.controller);
+    expect(
+      pinned.length === 0 || pinned.length === CONTROLLER_TARGETS.length,
+      `controller covers ${pinned.length} of ${CONTROLLER_TARGETS.length} targets`,
+    ).toBeTruthy();
+    for (const target of pinned) {
+      expect(CONTROLLER_TARGETS).toContain(target);
+      expect(AGENT_RELEASE.controller[target]).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
 });
 
 function nodeArgs(extra: readonly string[] = []) {
@@ -894,7 +913,7 @@ describe("--role parsing", () => {
       // parser a bare rcreg_test — it rewrote the argument list instead of refusing.
       expect(result.status, args.join(" ")).toBe(1);
       expect(result.stderr, args.join(" ")).toMatch(
-        /--role requires a value: worker, node or worker-host/,
+        /--role requires a value: worker, node, worker-host or controller/,
       );
       expect(readLog(sandbox.npmLog), "nothing may be installed").toBe("");
     }
@@ -1163,5 +1182,473 @@ describe("--role worker-host", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Agent archive checksum verification failed");
     expect(result.stderr).toContain("Nothing was installed");
+  });
+});
+
+// /install --role controller. Every privileged path goes through sudo, which grantRoot redirects
+// under the sandbox, so these tests reach the systemd branch without writing /etc or /usr/local on
+// the machine running them. Each run passes --no-prompt: a suite started from a terminal would
+// otherwise inherit it, and a prompt would hang the test instead of exercising the refusal.
+
+/** A stand-in for the controller binary: it answers `version` the way the real one does. */
+function fakeController(version: string) {
+  return `#!/usr/bin/env bash\nif [ "$1" = version ]; then printf 'runner-center-controller ${version}\\n'; fi\n`;
+}
+
+/** Where the sandbox's sudo puts an absolute path. */
+function under(sandbox: Sandbox, absolute: string) {
+  return path.join(sandbox.sudoRoot, absolute);
+}
+
+function repoFile(...segments: string[]) {
+  return readFileSync(path.resolve(import.meta.dirname, "..", "..", "..", ...segments));
+}
+
+// Most of these run the real installer two or three times, as root, against a stubbed systemd.
+// Alone each takes a few seconds; under `pnpm check`, with every package's suite running at once,
+// one took 46 s. The budget is for that contention, not for anything the installer waits on.
+describe("--role controller", { timeout: 120_000 }, () => {
+  const PROFILE = "erainfra-4vcpu-ubuntu-2404";
+  const UNIT = `runner-center-controller@${PROFILE}`;
+  const IMAGE = `ghcr.io/owner/image@sha256:${"c".repeat(64)}`;
+  const ASSET = controllerAssetName("linux-x86_64");
+  const SECRETS_DIR = `/etc/runner-center/secrets/${PROFILE}`;
+
+  const CONTROLLER_SYSTEMCTL_STUB = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"
+case "$1" in
+  list-units)
+    if [ -f "$RC_TEST_ACTIVE_UNITS" ]; then
+      while read -r unit; do
+        printf '%s loaded active running EraInfra scale-set controller\\n' "$unit"
+      done < "$RC_TEST_ACTIVE_UNITS"
+    fi
+    ;;
+  is-active)
+    for unit in "$@"; do :; done
+    if [ -f "$RC_TEST_FAILING_UNITS" ] && grep -qx "$unit" "$RC_TEST_FAILING_UNITS"; then exit 3; fi
+    ;;
+esac
+exit 0
+`;
+
+  /** A Linux x86_64 host where the operator can sudo, with the account tools stubbed and logged. */
+  function controllerSandbox(release: AgentRelease = CURRENT) {
+    const sandbox = createSandbox(release);
+    grantRoot(sandbox);
+    const bin = path.join(sandbox.root, "bin");
+    writeExecutable(
+      path.join(bin, "uname"),
+      `#!/usr/bin/env bash\ncase "$1" in -m) printf 'x86_64\\n' ;; *) printf 'Linux\\n' ;; esac\n`,
+    );
+    writeExecutable(path.join(bin, "systemctl"), CONTROLLER_SYSTEMCTL_STUB);
+    writeExecutable(path.join(bin, "sleep"), "#!/usr/bin/env bash\nexit 0\n");
+    writeExecutable(path.join(bin, "getent"), "#!/usr/bin/env bash\nexit 2\n");
+    for (const tool of ["useradd", "chgrp"]) {
+      writeExecutable(
+        path.join(bin, tool),
+        `#!/usr/bin/env bash\nprintf '${tool} %s\\n' "$*" >> "$RC_TEST_ACCOUNT_LOG"\n`,
+      );
+    }
+    writeExecutable(
+      path.join(bin, "journalctl"),
+      `#!/usr/bin/env bash\nprintf 'journal for %s\\n' "$2"\n`,
+    );
+    const secrets = path.join(sandbox.fixtures, "secrets");
+    mkdirSync(secrets, { recursive: true });
+    writeFileSync(path.join(secrets, "controller-token"), "ctl-token-value\n");
+    writeFileSync(path.join(secrets, "github-app.pem"), "-----BEGIN PRIVATE KEY-----\nkey\n");
+    writeFileSync(path.join(secrets, "cache-key"), "k".repeat(32));
+    return { sandbox, secrets };
+  }
+
+  function publishController(sandbox: Sandbox, release: AgentRelease, body: string) {
+    const published = path.join(sandbox.fixtures, ASSET);
+    writeFileSync(published, body);
+    route(
+      sandbox,
+      `https://github.com/${release.repo}/releases/download/v${release.version}/${ASSET}`,
+      published,
+    );
+    return { sha256: createHash("sha256").update(body).digest("hex"), binaryPath: published };
+  }
+
+  function pinnedController(digest: string): AgentRelease {
+    return { ...CURRENT, controller: { "linux-x86_64": digest } };
+  }
+
+  /** A sandbox whose script pins the published controller 1.4.2. */
+  function readyToInstall() {
+    const { sandbox, secrets } = controllerSandbox();
+    const published = publishController(sandbox, CURRENT, fakeController("1.4.2"));
+    repin(sandbox, pinnedController(published.sha256));
+    return { sandbox, secrets, published };
+  }
+
+  function ctlRun(sandbox: Sandbox, args: readonly string[]) {
+    const options = spawnOptions(sandbox);
+    return spawnSync("bash", [sandbox.scriptPath, "--role", "controller", "--no-prompt", ...args], {
+      ...options,
+      env: {
+        ...options.env,
+        RC_TEST_ACCOUNT_LOG: path.join(sandbox.root, "account.log"),
+        RC_TEST_ACTIVE_UNITS: path.join(sandbox.root, "active-units"),
+        RC_TEST_FAILING_UNITS: path.join(sandbox.root, "failing-units"),
+      },
+    });
+  }
+
+  function installArgs(secrets: string, extra: readonly string[] = []) {
+    return [
+      "--profile",
+      PROFILE,
+      "--github-config-url",
+      "https://github.com/owner/repo",
+      "--executor",
+      "firecracker",
+      "--image-release",
+      IMAGE,
+      "--max-runners",
+      "4",
+      "--controller-token-file",
+      path.join(secrets, "controller-token"),
+      "--github-app-client-id",
+      "Iv1.abc",
+      "--github-app-installation-id",
+      "42",
+      "--github-app-private-key-file",
+      path.join(secrets, "github-app.pem"),
+      ...extra,
+    ];
+  }
+
+  const binaryPath = (sandbox: Sandbox) =>
+    under(sandbox, "/usr/local/lib/runner-center/runner-center-controller");
+  const envPath = (sandbox: Sandbox) =>
+    under(sandbox, `/etc/runner-center/profiles/${PROFILE}.env`);
+  const serviceLog = (sandbox: Sandbox) =>
+    readLog(path.join(sandbox.root, "service.log")).trimEnd().split("\n");
+
+  it("embeds deploy/systemd/runner-center-controller@.service byte for byte", () => {
+    const repoUnit = repoFile("deploy", "systemd", "runner-center-controller@.service");
+    const embedded = Buffer.from(CONTROLLER_UNIT_B64.replaceAll("\n", ""), "base64");
+    expect(
+      embedded.equals(repoUnit),
+      "regenerate with: pnpm --filter @erainfra/backend embed-controller-unit",
+    ).toBe(true);
+    expect(createHash("sha256").update(repoUnit).digest("hex")).toBe(CONTROLLER_UNIT_SHA256);
+    expect(renderInstallScript(SITE_URL, CURRENT)).toContain(CONTROLLER_UNIT_B64);
+  });
+
+  it("names the published asset for every pinned target", () => {
+    expect(CONTROLLER_TARGETS.map(controllerAssetName)).toEqual([
+      "runner-center-controller-linux-x86_64",
+      "runner-center-controller-linux-arm64",
+    ]);
+  });
+
+  it("prints usage without needing root", () => {
+    const sandbox = createSandbox(CURRENT);
+    const result = ctlRun(sandbox, ["--help"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("runner-center-controller@NAME");
+    expect(readLog(path.join(sandbox.root, "sudo.log"))).toBe("");
+  });
+
+  it("refuses an unpinned deployment while the operator is still unprivileged", () => {
+    const { sandbox, secrets } = controllerSandbox(); // CURRENT pins no controller
+    const result = ctlRun(sandbox, installArgs(secrets));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("pins no controller build for linux-x86_64");
+    expect(readLog(path.join(sandbox.root, "sudo.log"))).toBe("");
+  });
+
+  it("refuses a host target this deployment pins no digest for", () => {
+    const { sandbox, secrets } = controllerSandbox();
+    repin(sandbox, { ...CURRENT, controller: { "linux-arm64": "a".repeat(64) } });
+    const result = ctlRun(sandbox, installArgs(secrets));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("pins no controller build for linux-x86_64");
+    expect(readLog(sandbox.curlLog)).toBe("");
+  });
+
+  it("lists every missing setting when there is no terminal to ask on", () => {
+    const { sandbox } = readyToInstall();
+    const result = ctlRun(sandbox, []);
+    expect(result.status).toBe(1);
+    for (const flag of [
+      "--profile",
+      "--github-config-url",
+      "--executor",
+      "--image-release",
+      "--controller-token-file",
+      "--github-token-file",
+    ]) {
+      expect(result.stderr).toContain(flag);
+    }
+    expect(existsSync(binaryPath(sandbox))).toBe(false);
+  });
+
+  it("refuses bad values before writing anything", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const cases: [string[], RegExp][] = [
+      [["--profile", "Bad_Name"], /Profile name Bad_Name must be lowercase/],
+      [["--profile", "two--hyphens"], /single hyphens/],
+      [["--image-release", "ghcr.io/owner/image:latest"], /must be immutable/],
+      [["--labels", "a b"], /no spaces, quotes/],
+      [["--scale-set-name", "it's"], /no spaces, quotes/],
+      [["--runner-group", "$HOME"], /no spaces, quotes/],
+      [["--max-runners", "four"], /--max-runners must be a whole number/],
+      [["--executor", "kvm"], /--executor must be/],
+      [["--github-token-file", path.join(secrets, "controller-token")], /not both/],
+    ];
+    for (const [override, message] of cases) {
+      const result = ctlRun(sandbox, [...installArgs(secrets), ...override]);
+      expect(result.status, override.join(" ")).toBe(1);
+      expect(result.stderr, override.join(" ")).toMatch(message);
+    }
+    expect(readLog(path.join(sandbox.root, "sudo.log"))).toBe("");
+    expect(readLog(sandbox.curlLog)).toBe("");
+  });
+
+  it("installs the verified binary, the unit, a root-only env file and group-readable secrets", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const result = ctlRun(
+      sandbox,
+      installArgs(secrets, [
+        "--cache-facts-url",
+        "https://cache.example/facts",
+        "--cache-signing-key-file",
+        path.join(secrets, "cache-key"),
+      ]),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(
+      `Verified ${ASSET} against the checksum pinned by this EraInfra deployment`,
+    );
+
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.4.2"));
+    expect(statSync(binaryPath(sandbox)).mode & 0o777).toBe(0o755);
+    const unit = under(sandbox, "/etc/systemd/system/runner-center-controller@.service");
+    expect(
+      readFileSync(unit).equals(repoFile("deploy", "systemd", "runner-center-controller@.service")),
+    ).toBe(true);
+
+    const env = readFileSync(envPath(sandbox), "utf8");
+    expect(statSync(envPath(sandbox)).mode & 0o777).toBe(0o600);
+    expect(env).toMatch(/^RC_CONVEX_URL=https:\/\/example\.convex\.site$/m);
+    expect(env).toMatch(new RegExp(`^RC_PROFILE=${PROFILE}$`, "m"));
+    expect(env).toMatch(/^RC_EXECUTOR=firecracker$/m);
+    expect(env).toMatch(/^RC_MAX_RUNNERS=4$/m);
+    expect(env).toMatch(/^RC_GITHUB_APP_INSTALLATION_ID=42$/m);
+    expect(env).toContain(`RC_CONTROLLER_TOKEN_FILE=${SECRETS_DIR}/controller-token\n`);
+    expect(env).toContain(`RC_GITHUB_APP_PRIVATE_KEY_FILE=${SECRETS_DIR}/github-app.pem\n`);
+    expect(env).toContain(`RC_CACHE_SIGNING_KEY_FILE=${SECRETS_DIR}/cache-signing-key\n`);
+    // Only the keys given: the controller's own defaults stand for the rest.
+    expect(env).not.toMatch(/^RC_VCPUS=/m);
+    expect(env).not.toMatch(/^RC_GITHUB_TOKEN_FILE=/m);
+    // Secrets are paths, never values.
+    expect(env).not.toContain("ctl-token-value");
+    expect(env).not.toContain("PRIVATE KEY");
+
+    const token = under(sandbox, `${SECRETS_DIR}/controller-token`);
+    expect(readFileSync(token, "utf8")).toBe("ctl-token-value\n");
+    expect(statSync(token).mode & 0o777).toBe(0o640);
+    expect(statSync(under(sandbox, `${SECRETS_DIR}/github-app.pem`)).mode & 0o777).toBe(0o640);
+
+    // Each secret is created restricted, filled, then opened to the service account's group, and
+    // the env file is created 0600 before anything is written into it.
+    const sudo = readLog(path.join(sandbox.root, "sudo.log")).trimEnd().split("\n");
+    const created = sudo.indexOf(`install -m 0600 /dev/null ${SECRETS_DIR}/controller-token`);
+    const filled = sudo.findIndex(
+      (line) => line.startsWith("cp ") && line.endsWith(`${SECRETS_DIR}/controller-token`),
+    );
+    const opened = sudo.indexOf(`chmod 0640 ${SECRETS_DIR}/controller-token`);
+    expect(created, sudo.join(" / ")).toBeGreaterThanOrEqual(0);
+    expect(created).toBeLessThan(filled);
+    expect(filled).toBeLessThan(opened);
+    const envFile = `/etc/runner-center/profiles/${PROFILE}.env`;
+    expect(sudo.indexOf(`install -m 0600 /dev/null ${envFile}`)).toBeGreaterThanOrEqual(0);
+    expect(sudo.indexOf(`install -m 0600 /dev/null ${envFile}`)).toBeLessThan(
+      sudo.indexOf(`tee ${envFile}`),
+    );
+
+    const account = readLog(path.join(sandbox.root, "account.log"));
+    expect(account).toMatch(
+      /^useradd --system --user-group --no-create-home .* runner-center-controller$/m,
+    );
+    expect(account).toContain(
+      `chgrp runner-center-controller ${sandbox.sudoRoot}${SECRETS_DIR}/controller-token`,
+    );
+
+    const service = serviceLog(sandbox);
+    const enabled = service.indexOf(`enable --now ${UNIT}`);
+    expect(enabled).toBeGreaterThan(service.indexOf("daemon-reload"));
+    expect(service.indexOf(`restart ${UNIT}`)).toBeGreaterThan(enabled);
+    expect(service).toContain(`is-active --quiet ${UNIT}`);
+  });
+
+  it("installs nothing when the bytes do not match the pin, and leaves an installed binary alone", () => {
+    const { sandbox, secrets } = controllerSandbox();
+    publishController(sandbox, CURRENT, fakeController("1.4.2"));
+    repin(sandbox, pinnedController("0".repeat(64)));
+    mkdirSync(path.dirname(binaryPath(sandbox)), { recursive: true });
+    writeExecutable(binaryPath(sandbox), fakeController("1.3.0"));
+
+    const result = ctlRun(sandbox, installArgs(secrets));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Controller checksum verification failed");
+    expect(result.stderr).toContain("Nothing was installed");
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
+    expect(existsSync(envPath(sandbox))).toBe(false);
+    expect(readLog(path.join(sandbox.root, "service.log"))).toBe("");
+  });
+
+  it("verifies a --source install exactly as a release install, and refuses corrupted bytes", () => {
+    const { sandbox, secrets, published } = readyToInstall();
+    const corrupted = path.join(sandbox.fixtures, "corrupted-controller");
+    writeFileSync(corrupted, `${fakeController("1.4.2")}#\n`);
+    const refused = ctlRun(sandbox, installArgs(secrets, ["--source", `file://${corrupted}`]));
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("Controller checksum verification failed");
+    expect(existsSync(binaryPath(sandbox))).toBe(false);
+
+    const result = ctlRun(
+      sandbox,
+      installArgs(secrets, ["--source", `file://${published.binaryPath}`]),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.4.2"));
+    expect(readLog(sandbox.curlLog)).not.toContain(ASSET);
+  });
+
+  it("keeps an existing env file unless --reconfigure is given", () => {
+    const { sandbox, secrets } = readyToInstall();
+    mkdirSync(path.dirname(envPath(sandbox)), { recursive: true });
+    writeFileSync(envPath(sandbox), "RC_PROFILE=hand-written\n", { mode: 0o600 });
+
+    const kept = ctlRun(sandbox, installArgs(secrets));
+    expect(kept.status, `${kept.stdout}\n${kept.stderr}`).toBe(0);
+    expect(kept.stderr).toContain("rerun with --reconfigure");
+    expect(readFileSync(envPath(sandbox), "utf8")).toBe("RC_PROFILE=hand-written\n");
+    // A kept Profile still gets the verified binary and a restart onto it.
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.4.2"));
+    expect(serviceLog(sandbox)).toContain(`restart ${UNIT}`);
+
+    // Only --profile is needed to refresh a Profile this host already serves.
+    const refreshed = ctlRun(sandbox, ["--profile", PROFILE]);
+    expect(refreshed.status, `${refreshed.stdout}\n${refreshed.stderr}`).toBe(0);
+
+    const replaced = ctlRun(sandbox, installArgs(secrets, ["--reconfigure"]));
+    expect(replaced.status, `${replaced.stdout}\n${replaced.stderr}`).toBe(0);
+    expect(readFileSync(envPath(sandbox), "utf8")).toMatch(
+      new RegExp(`^RC_PROFILE=${PROFILE}$`, "m"),
+    );
+    expect(statSync(envPath(sandbox)).mode & 0o777).toBe(0o600);
+  });
+
+  it("leaves a Worker host's files exactly as they were", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const seeded: [string, string, number][] = [
+      ["/usr/local/lib/runner-center/runner-center-runtime", "#!/bin/sh\n# runtime\n", 0o755],
+      ["/etc/runner-center/runtime.env", "RC_RUNTIME=1\n", 0o600],
+      ["/etc/systemd/system/runner-center-runtime.service", "[Unit]\n", 0o644],
+    ];
+    for (const [file, contents, mode] of seeded) {
+      mkdirSync(path.dirname(under(sandbox, file)), { recursive: true });
+      writeFileSync(under(sandbox, file), contents);
+      chmodSync(under(sandbox, file), mode);
+    }
+    // Unusual directory modes, so a chmod of a shared directory would show.
+    chmodSync(under(sandbox, "/etc/runner-center"), 0o751);
+    chmodSync(under(sandbox, "/usr/local/lib/runner-center"), 0o751);
+
+    const result = ctlRun(sandbox, installArgs(secrets));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    for (const [file, contents, mode] of seeded) {
+      expect(readFileSync(under(sandbox, file), "utf8"), file).toBe(contents);
+      expect(statSync(under(sandbox, file)).mode & 0o777, file).toBe(mode);
+    }
+    expect(statSync(under(sandbox, "/etc/runner-center")).mode & 0o777).toBe(0o751);
+    expect(statSync(under(sandbox, "/usr/local/lib/runner-center")).mode & 0o777).toBe(0o751);
+    expect(serviceLog(sandbox).join("\n")).not.toContain("runner-center-runtime");
+    expect(readLog(path.join(sandbox.root, "account.log"))).not.toMatch(/ runner-center$/m);
+  });
+
+  function installedForUpdate(oldVersion = "1.3.0") {
+    const { sandbox } = readyToInstall();
+    mkdirSync(path.dirname(binaryPath(sandbox)), { recursive: true });
+    writeExecutable(binaryPath(sandbox), fakeController(oldVersion));
+    // Two running Profiles. A retired one is installed but stopped, so it is not listed active.
+    writeFileSync(
+      path.join(sandbox.root, "active-units"),
+      "runner-center-controller@rc-linux-js.service\nrunner-center-controller@rc-e2e.service\n",
+    );
+    return sandbox;
+  }
+
+  it("--update keeps the old binary and restarts only the instances that were running", () => {
+    const sandbox = installedForUpdate();
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.4.2"));
+    expect(readFileSync(`${binaryPath(sandbox)}.bak-1.3.0`, "utf8")).toBe(fakeController("1.3.0"));
+
+    const service = serviceLog(sandbox);
+    const restarts = service.filter((line) => line.startsWith("restart "));
+    expect(restarts).toEqual([
+      "restart runner-center-controller@rc-linux-js.service",
+      "restart runner-center-controller@rc-e2e.service",
+    ]);
+    // No start, restart or enable ever names a pattern, which would revive a stopped instance.
+    expect(
+      service.filter((line) => /^(start|restart|enable)\b/.test(line) && line.includes("*")),
+    ).toEqual([]);
+    expect(service.indexOf("daemon-reload")).toBeLessThan(service.indexOf(restarts[0] ?? ""));
+  });
+
+  it("--update rolls back when an instance does not come back", () => {
+    const sandbox = installedForUpdate();
+    writeFileSync(
+      path.join(sandbox.root, "failing-units"),
+      "runner-center-controller@rc-e2e.service\n",
+    );
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Rolled back to 1.3.0");
+    expect(result.stdout + result.stderr).toContain(
+      "journal for runner-center-controller@rc-e2e.service",
+    );
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
+    // Both instances restarted onto the new binary, then both again onto the restored one.
+    expect(serviceLog(sandbox).filter((line) => line.startsWith("restart "))).toHaveLength(4);
+  });
+
+  it("--update with the pinned binary already installed changes nothing", () => {
+    const sandbox = installedForUpdate("1.4.2");
+    const result = ctlRun(sandbox, ["--update"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("nothing changed");
+    expect(existsSync(`${binaryPath(sandbox)}.bak-1.4.2`)).toBe(false);
+    expect(readLog(path.join(sandbox.root, "service.log"))).toBe("");
+  });
+
+  it("--update refuses Profile settings, which belong to --reconfigure", () => {
+    const sandbox = installedForUpdate();
+    const result = ctlRun(sandbox, ["--update", "--profile", PROFILE]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--reconfigure");
+  });
+
+  // A Worker host can also run a controller, so the Firecracker host's uninstall must take only its
+  // own files out of the shared lib directory.
+  it("leaves the controller binary behind when the Firecracker host is uninstalled", () => {
+    const provisioner = repoFile("deploy", "provision-firecracker-host.sh").toString("utf8");
+    const start = provisioner.indexOf("uninstall() {");
+    const uninstall = provisioner.slice(start, provisioner.indexOf("\n}\n", start));
+    expect(uninstall).not.toMatch(/rm -rf[^\n]*"\$RC_LIB_DIR"/);
+    expect(uninstall).toContain(
+      'rm -f "$RC_LIB_DIR/runner-center-runtime" "$RC_LIB_DIR/thinpool-setup.sh"',
+    );
   });
 });

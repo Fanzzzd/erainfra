@@ -47,6 +47,7 @@ const CURRENT: AgentRelease = {
   sha256: "",
   infraAgent: {},
   cacheService: {},
+  controller: {},
 };
 const OLDER: AgentRelease = { ...CURRENT, version: "1.3.0" };
 const WINDOWS_PINNED: AgentRelease = {

@@ -82,6 +82,59 @@ export const pauseProfile = internalMutation({
   },
 });
 
+/**
+ * Upserts one controller's report, keyed by Profile and host. Staleness is judged by
+ * `receivedAt`, this deployment's clock, never by a time the controller sent: a controller host
+ * with a wrong clock must not look alive or dead because of it.
+ */
+export const recordHeartbeat = internalMutation({
+  args: {
+    profile: v.string(),
+    hostname: v.string(),
+    version: v.string(),
+    scaleSetId: v.optional(v.number()),
+    sessionState: v.union(
+      v.literal("starting"),
+      v.literal("listening"),
+      v.literal("conflict"),
+      v.literal("stopped"),
+    ),
+    lastMessageAt: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+    assignedJobs: v.number(),
+    runningJobs: v.number(),
+    lastError: v.optional(v.string()),
+    tokenSlot: v.union(v.literal("current"), v.literal("next")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("controllerHeartbeats")
+      .withIndex("by_profile_hostname", (q) =>
+        q.eq("profile", args.profile).eq("hostname", args.hostname),
+      )
+      .unique();
+    const report = {
+      ...args,
+      receivedAt: now,
+      // Optional fields are written explicitly so a report that no longer carries one (a
+      // restarted controller has no lastMessageAt yet, a recovered one no lastError) clears it.
+      scaleSetId: args.scaleSetId,
+      lastMessageAt: args.lastMessageAt,
+      startedAt: args.startedAt,
+      lastError: args.lastError,
+      lastListeningAt: args.sessionState === "listening" ? now : existing?.lastListeningAt,
+    };
+    if (existing === null) {
+      await ctx.db.insert("controllerHeartbeats", { ...report, firstSeenAt: now });
+    } else {
+      await ctx.db.patch(existing._id, report);
+    }
+    return null;
+  },
+});
+
 export const listActiveAttempts = internalQuery({
   args: { profile: v.string() },
   returns: v.array(

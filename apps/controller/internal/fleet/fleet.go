@@ -115,3 +115,41 @@ type Store interface {
 	MarkJobStarted(ctx context.Context, event JobStarted) error
 	MarkJobCompleted(ctx context.Context, event JobCompleted) error
 }
+
+// SessionState is what a controller is doing with its scale set's GitHub
+// message session. GitHub allows one session per scale set, so of several
+// controllers for one Profile at most one is SessionListening.
+type SessionState string
+
+const (
+	// SessionStarting: registered with the control plane, no session yet.
+	SessionStarting SessionState = "starting"
+	// SessionListening: this controller holds the session and turns demand
+	// into Attempts.
+	SessionListening SessionState = "listening"
+	// SessionConflict: GitHub refused a session because one already exists
+	// for the scale set. The controller backs off and retries.
+	SessionConflict SessionState = "conflict"
+	// SessionStopped: the controller is exiting and has released its session.
+	SessionStopped SessionState = "stopped"
+)
+
+// ControllerHeartbeat is one controller's liveness report. Hostname is the
+// machine the controller runs on, which is what tells two controllers for the
+// same Profile apart.
+type ControllerHeartbeat struct {
+	Profile      string
+	Hostname     string
+	Version      string
+	ScaleSetID   int
+	SessionState SessionState
+	// LastMessageAt is the last time GitHub answered the message long poll,
+	// with a message or with an empty reply. Zero until the first answer.
+	LastMessageAt time.Time
+	// AssignedJobs and RunningJobs are GitHub's counts for the scale set, from
+	// the newest statistics it sent.
+	AssignedJobs int
+	RunningJobs  int
+	StartedAt    time.Time
+	LastError    string
+}

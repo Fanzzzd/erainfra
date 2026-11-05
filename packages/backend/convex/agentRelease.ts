@@ -24,6 +24,16 @@ export type AgentRelease = {
    * second target (an arm host) is a data change, not a shape change.
    */
   cacheService: Record<string, string>;
+  /**
+   * SHA-256 of `runner-center-controller-<target>` — the scale-set controller, which
+   * `/install --role controller` puts on a controller host or a Worker host — keyed by target:
+   * `linux-x86_64`, `linux-arm64`.
+   *
+   * Linux only, although the release also publishes macOS controller binaries: the installer writes
+   * a systemd unit, so a macOS controller is run by hand and nothing here would verify it. Both
+   * Linux CPUs, because a small always-on VM is as likely to be an ARM instance as an x86 one.
+   */
+  controller: Record<string, string>;
 };
 
 /**
@@ -69,6 +79,12 @@ export const AGENT_RELEASE: AgentRelease = {
   cacheService: {
     "linux-x86_64": "743a47bf00fdb2ca4b82020f9980e6c7bb097b6c91d93be98c76ef5ca77f20e3",
   },
+  // Empty until the next release cut, which is the first to build the controller version-only
+  // (rc.10 and earlier stamped -X main.commitSHA, so no digest of theirs can be pinned). Filled
+  // exactly as `infraAgent` was at rc.6 and `cacheService` at rc.9: the release workflow's coverage
+  // and pin-match gates run only on a tag, so an empty map is safe on main and refused the moment a
+  // release is cut without it. Until then `--role controller` refuses, naming the missing target.
+  controller: {},
 };
 
 /** The targets a release publishes an Infra Agent binary for, and `infraAgent` must cover. */
@@ -91,4 +107,12 @@ export const CACHE_SERVICE_TARGETS = ["linux-x86_64"] as const;
 /** The published asset name for a cache-service target. Linux-only, so never an extension. */
 export function cacheServiceAssetName(target: string) {
   return `erainfra-cache-service-${target}`;
+}
+
+/** The targets a release publishes a pinned controller binary for, and `controller` must cover. */
+export const CONTROLLER_TARGETS = ["linux-x86_64", "linux-arm64"] as const;
+
+/** The published asset name for a controller target. Linux-only here, so never an extension. */
+export function controllerAssetName(target: string) {
+  return `runner-center-controller-${target}`;
 }

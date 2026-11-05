@@ -3,6 +3,7 @@
 // lives in alerts.ts; this file only answers "which subjects breach this condition right now".
 
 import { v, type Infer } from "convex/values";
+import { CONTROLLER_OFFLINE_AFTER_MS, controllerSilentForMs } from "./controllerLiveness";
 import type { FleetObservation, ObservedProfile } from "./fleetObservation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -27,6 +28,10 @@ export const alertConditionValidator = v.union(
   v.object({ kind: v.literal("consecutive-failures"), count: v.number() }),
   // An Attempt on the Profile has been running for `minutes`.
   v.object({ kind: v.literal("attempt-duration"), minutes: v.number() }),
+  // No controller has held an active Profile's GitHub message session for `minutes`: it stopped
+  // reporting, or reports but cannot get the session. A Profile no controller has ever reported
+  // for is not tracked (controllerLiveness.ts), so controllers older than the heartbeat never fire.
+  v.object({ kind: v.literal("controller-silent"), minutes: v.number() }),
 );
 
 export type AlertCondition = Infer<typeof alertConditionValidator>;
@@ -46,7 +51,11 @@ export const ALERT_CONDITION_KINDS = [
   "failure-rate",
   "consecutive-failures",
   "attempt-duration",
+  "controller-silent",
 ] as const satisfies readonly AlertConditionKind[];
+
+/** The threshold a new controller-silent rule starts from. */
+export const DEFAULT_CONTROLLER_SILENT_MINUTES = 3;
 
 function integerIn(value: number, min: number, max: number) {
   return Number.isInteger(value) && value >= min && value <= max;
@@ -61,6 +70,13 @@ export function conditionError(condition: AlertCondition): string | undefined {
       return integerIn(condition.minutes, WORKER_OFFLINE_AFTER_MS / 60_000, 7 * 24 * 60)
         ? undefined
         : `Offline minutes must be a whole number from ${WORKER_OFFLINE_AFTER_MS / 60_000} to 10080`;
+    case "controller-silent": {
+      // Below the offline cutoff a single late report would page.
+      const floor = Math.ceil(CONTROLLER_OFFLINE_AFTER_MS / 60_000);
+      return integerIn(condition.minutes, floor, 7 * 24 * 60)
+        ? undefined
+        : `Silent minutes must be a whole number from ${floor} to 10080`;
+    }
     case "queue-backlog":
     case "attempt-duration":
       return integerIn(condition.minutes, 1, 7 * 24 * 60)
@@ -215,6 +231,16 @@ export function evaluateCondition(
           },
         ];
       });
+    case "controller-silent": {
+      const thresholdMs = condition.minutes * 60_000;
+      return profilesInScope(observation, scope).flatMap((profile) => {
+        const silentMs = controllerSilentForMs(profile.controller, now);
+        if (silentMs === undefined || silentMs < thresholdMs) return [];
+        return [
+          { subject: profile.name, summary: describeSilentController(profile, silentMs, now) },
+        ];
+      });
+    }
     case "attempt-duration": {
       const thresholdMs = condition.minutes * 60_000;
       return profilesInScope(observation, scope).flatMap((profile) => {
@@ -235,6 +261,27 @@ export function evaluateCondition(
   }
 }
 
+function describeSilentController(profile: ObservedProfile, silentMs: number, now: number) {
+  const controller = profile.controller;
+  const primary = controller.primary;
+  const subject = `Profile ${profile.name} has had no listening controller for ${formatAge(silentMs)}`;
+  if (primary === undefined) return `${subject}.`;
+  const who = `${primary.hostname} (${primary.version})`;
+  const why = primary.lastError === undefined ? "" : `: ${primary.lastError}`;
+  if (controller.status === "waiting") {
+    return primary.sessionState === "conflict"
+      ? `${subject}; ${who} is reporting but GitHub refuses it the session because another one exists${why}`
+      : `${subject}; ${who} is reporting but has not opened a session yet${why}`;
+  }
+  const last =
+    controller.lastHeartbeatAt === undefined
+      ? ""
+      : ` ${formatAge(Math.max(0, now - controller.lastHeartbeatAt))} ago`;
+  return primary.sessionState === "stopped"
+    ? `${subject}; ${who} stopped${last}${why}`
+    : `${subject}; the last report came from ${who}${last}.`;
+}
+
 /** One line describing the condition, for notifications and the dashboard. */
 export function describeCondition(condition: AlertCondition) {
   switch (condition.kind) {
@@ -252,5 +299,7 @@ export function describeCondition(condition: AlertCondition) {
       return `${condition.count} consecutive failed Attempts`;
     case "attempt-duration":
       return `Attempt running longer than ${condition.minutes}m`;
+    case "controller-silent":
+      return `No controller listening for ${condition.minutes}m`;
   }
 }

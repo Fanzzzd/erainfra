@@ -136,6 +136,14 @@ export function buildMetricFamilies(
     "erainfra_recent_attempts_sample_truncated",
     "1 when the Profile ran more Attempts in the window than one scrape reads, so the recent-window gauges describe only the newest of them.",
   );
+  const controllerUp = family(
+    "erainfra_controller_up",
+    "1 when a controller for the Profile reported within the last 90 seconds and holds the GitHub message session. Absent until a controller first reports for the Profile, so a controller older than the heartbeat is never reported down.",
+  );
+  const controllerAge = family(
+    "erainfra_controller_last_heartbeat_age_seconds",
+    "Seconds since any controller for the Profile last reported, at scrape time. Absent until a controller first reports for the Profile.",
+  );
 
   for (const profile of observation.profiles) {
     const labels = { profile: profile.name };
@@ -191,6 +199,14 @@ export function buildMetricFamilies(
       ),
     );
     sampleTruncated.samples.push({ labels, value: profile.recentTruncated ? 1 : 0 });
+    const controller = profile.controller;
+    if (controller.status !== "unknown" && controller.lastHeartbeatAt !== undefined) {
+      controllerUp.samples.push({ labels, value: controller.status === "online" ? 1 : 0 });
+      controllerAge.samples.push({
+        labels,
+        value: Math.max(0, now - controller.lastHeartbeatAt) / 1_000,
+      });
+    }
   }
 
   const machineInfo = family(
@@ -307,6 +323,8 @@ export function buildMetricFamilies(
     queueWait,
     runDuration,
     sampleTruncated,
+    controllerUp,
+    controllerAge,
     window,
     machineInfo,
     online,
