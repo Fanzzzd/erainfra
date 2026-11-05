@@ -1,11 +1,13 @@
-// Per-App operation leases. The deploy pipeline and failover are the Hub's exactly-once
-// operations; the Hub kept them single by being one process. Here each runs under its App's lease,
-// granted and fenced the way ADR 0014 grants and fences a Profile's controller lease:
+// Per-App operation leases for deploy and failover, following ADR 0014's controller pattern:
 //
 // - one row per App with a holder, an expiry and an epoch;
 // - a free or expired lease goes to whoever asks, and every change of holder raises the epoch;
-// - every write an operation makes carries its epoch, and a stale epoch is refused, so a holder
-//   that stalled past its expiry cannot act after another took over, even before it notices.
+// - fenced Convex writes carry the epoch, so a holder that stalled past its expiry cannot commit
+//   them after another took over, even before it notices.
+//
+// This does not stop an old holder's in-flight runtime request or make external side effects
+// exactly once. The runtime command path must also reject stale fencing epochs and deduplicate
+// stable operation/step idempotency keys. That execution protocol is not implemented in phase 2a.
 import { ConvexError, v } from "convex/values";
 import { internalMutation, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { APP_LEASE_TTL_MS, decideLease, leaseAdmits } from "./policy";

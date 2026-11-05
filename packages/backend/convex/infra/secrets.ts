@@ -142,10 +142,12 @@ export const list = query({
 });
 
 /**
- * The plaintext a Node needs to start one deployment's containers: the App's scope and each of
- * its services' `<app>-<service>` scopes, as the Hub injected them. Refused unless the deployment
- * targets `nodeId`, is not finished, and still holds the App's lease, so a Node can read only what
- * a live deploy addressed to it uses, and only while that deploy runs.
+ * The plaintext a Node needs to start one deployment's containers. Each targeted Node that hosts
+ * a service receives the App-wide scope (common environment injected into every service), plus
+ * only the `<app>-<service>` scopes placed on that Node. An absent service.nodeId inherits
+ * app.nodeId. A target hosting no services gets nothing. For a single-container deployment with
+ * no apps row, targetNodeIds is the placement record and grants the App-wide scope only.
+ * Refused unless the deployment targets `nodeId`, is not finished, and holds a live App lease.
  */
 export async function secretsForNodeDeploy(
   ctx: QueryCtx,
@@ -171,11 +173,16 @@ export async function secretsForNodeDeploy(
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", deployment.app))
     .unique();
+  const services =
+    app?.services.filter((service) => (service.nodeId ?? app.nodeId) === input.nodeId) ?? [];
+  if (app !== null && services.length === 0) {
+    throw new ConvexError("No services of this App are placed on this Node");
+  }
   const master = await requireMasterKey(process.env);
   const scopes: Record<string, Record<string, string>> = {
     [deployment.app]: await readSecrets(ctx, master, deployment.app),
   };
-  for (const service of app?.services ?? []) {
+  for (const service of services) {
     const scope = `${deployment.app}-${service.name}`;
     scopes[scope] = await readSecrets(ctx, master, scope);
   }

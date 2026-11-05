@@ -703,6 +703,90 @@ describe("App secrets", () => {
     ).rejects.toThrow(/finished/);
   });
 
+  it("isolates service-private scopes by placement on a split App, even among deployment targets", async () => {
+    const t = convexTest(schema, modules);
+    const op = await addUser(t, "op@x.dev", "operator");
+    const webNode = await addNode(t, "web-node");
+    const dbNode = await addNode(t, "db-node");
+    const bystander = await addNode(t, "bystander");
+    const unusedTarget = await addNode(t, "unused-target");
+    const deploymentId = await t.run(async (ctx) => {
+      await ctx.db.insert("apps", {
+        name: "shop",
+        nodeId: webNode,
+        services: [
+          // An absent nodeId inherits the App's primary Node.
+          { name: "web", image: "r/shop:1", args: [] },
+          { name: "db", image: "postgres:16", args: [], nodeId: dbNode },
+        ],
+        links: [],
+        updatedAt: T0,
+      });
+      const { createDeployment } = await import("../convex/infra/deployments");
+      return await createDeployment(ctx, {
+        app: "shop",
+        targetNodeIds: [webNode, dbNode, unusedTarget],
+        trigger: { kind: "manual" },
+      });
+    });
+    for (const [app, value] of [
+      ["shop", "shared-env"],
+      ["shop-web", "web-private"],
+      ["shop-db", "db-private"],
+    ]) {
+      await as(t, op).mutation(api.infra.secrets.set, { app, vars: { TOKEN: value } });
+    }
+    await t.mutation(internal.infra.deployments.begin, { deploymentId });
+
+    // Both service hosts receive the common environment, but neither gets the other's private scope.
+    expect(
+      await t.query(internal.infra.secrets.forNodeDeploy, { nodeId: webNode, deploymentId }),
+    ).toEqual({
+      shop: { TOKEN: "shared-env" },
+      "shop-web": { TOKEN: "web-private" },
+    });
+    expect(
+      await t.query(internal.infra.secrets.forNodeDeploy, { nodeId: dbNode, deploymentId }),
+    ).toEqual({
+      shop: { TOKEN: "shared-env" },
+      "shop-db": { TOKEN: "db-private" },
+    });
+    await expect(
+      t.query(internal.infra.secrets.forNodeDeploy, { nodeId: bystander, deploymentId }),
+    ).rejects.toThrow(/does not target this Node/);
+    await expect(
+      t.query(internal.infra.secrets.forNodeDeploy, { nodeId: unusedTarget, deploymentId }),
+    ).rejects.toThrow(/No services of this App are placed on this Node/);
+
+    // A new lease holder fences secret reads from the old deployment on both legitimate hosts.
+    vi.setSystemTime(T0 + APP_LEASE_TTL_MS + 1);
+    await t.mutation(internal.infra.leases.acquire, {
+      app: "shop",
+      holder: "replacement",
+      operation: "deploy",
+    });
+    for (const nodeId of [webNode, dbNode]) {
+      await expect(
+        t.query(internal.infra.secrets.forNodeDeploy, { nodeId, deploymentId }),
+      ).rejects.toThrow(/no longer holds its App's lease/);
+    }
+  });
+
+  it("returns only the App-wide scope for a targeted single-container deployment with no apps row", async () => {
+    const t = convexTest(schema, modules);
+    const op = await addUser(t, "op@x.dev", "operator");
+    const nodeId = await addNode(t, "single-container");
+    await as(t, op).mutation(api.infra.secrets.set, { app: "shop", vars: { TOKEN: "common" } });
+    await as(t, op).mutation(api.infra.secrets.set, {
+      app: "shop-web",
+      vars: { TOKEN: "unplaced" },
+    });
+    const { deploymentId } = await deployingTo(t, nodeId);
+    expect(await t.query(internal.infra.secrets.forNodeDeploy, { nodeId, deploymentId })).toEqual({
+      shop: { TOKEN: "common" },
+    });
+  });
+
   it("refuses to read with a different master key and to decrypt a row moved to another name", async () => {
     const t = convexTest(schema, modules);
     const op = await addUser(t, "op@x.dev", "operator");

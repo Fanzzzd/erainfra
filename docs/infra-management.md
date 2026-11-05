@@ -116,11 +116,17 @@ and Convex holds a copy.
 | `deployments`  | `appDeployments`               | newest 1000 kept; a run whose lease lapsed is failed by a cron                   |
 | `audit`        | `auditEvents`, `infraCounters` | a gapless sequence in commit order; a dangerous action is audited before it runs |
 | (none)         | `nodes`                        | one row per Node, keyed by its iroh EndpointId once phase 1 registers one        |
-| (none)         | `appLeases`                    | one deploy or failover per App at a time; a stale holder is refused by its epoch |
+| (none)         | `appLeases`                    | one live lease per App; fenced Convex writes reject a stale epoch                |
 | (none)         | `webhookDeliveries`            | a push delivery queues at most one deploy, keyed by `X-GitHub-Delivery`          |
 
 Other tables reference a Node by its Convex id, not its name, so a Node's identity can move from the
 name it announced to the Hub to its iroh EndpointId without rewriting them.
+
+App lease epochs fence Convex state transitions only. They cannot cancel an old holder's in-flight
+runtime request or guarantee exactly-once external side effects. Before enabling the deploy and
+failover command paths, those paths must carry stable operation/step idempotency keys, and the
+runtime must reject stale fencing epochs and deduplicate retries. Phase 2a does not implement that
+runtime protocol.
 
 **One identity system.** Hub accounts become Convex Auth accounts with a permission role
 (`owner`, `admin`, `operator`, `viewer`) and the Hub's permission table (`infra/policy.ts`; the
@@ -142,7 +148,12 @@ pnpm convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"
 Keep a copy somewhere safe. Without it the stored secrets cannot be decrypted, and Convex fails
 closed rather than generating a new one. A value leaves Convex only through the internal
 `infra/secrets:forNodeDeploy`, for a deploy that targets the asking Node and still holds its App's
-lease.
+lease. Each targeted Node that hosts at least one service receives the App-wide scope, which is
+common environment injected into every service. It receives a service-private `<app>-<service>`
+scope only when `(service.nodeId ?? app.nodeId)` names that Node. A targeted Node hosting no
+services is refused. A single-container deploy with no `apps` row uses `targetNodeIds` as its
+placement record and receives only the App-wide scope. Put values that other service hosts must
+not see in a service-private scope, not the App-wide scope.
 
 ### Rotate ERAINFRA_SECRETS_MASTER_KEY
 

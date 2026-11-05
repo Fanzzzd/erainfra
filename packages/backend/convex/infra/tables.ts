@@ -219,9 +219,9 @@ export const infraTables = {
     .index("by_stage", ["stage"])
     .index("by_legacyId", ["legacyId"]),
 
-  // One lease per App, the ADR 0014 controller pattern applied to App operations: the deploy
-  // pipeline and failover each run under it, so two of them never act on one App at once, and a
-  // holder that lost the lease is refused by its epoch even before it notices.
+  // One lease per App, the ADR 0014 controller pattern applied to deploy/failover coordination.
+  // A stale holder's fenced Convex writes are refused. External runtime side effects still need
+  // runtime-side epoch checks and stable operation/step idempotency keys (leases.ts).
   appLeases: defineTable({
     app: v.string(),
     holder: v.optional(v.string()),

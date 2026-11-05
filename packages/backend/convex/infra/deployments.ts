@@ -1,6 +1,7 @@
-// Deploy pipeline records (the Hub's `deployments`) and the two exactly-once operations that act
-// on an App: a deploy run and a failover. Both run under the App's lease (leases.ts), and every
-// write either makes is fenced on the lease epoch it was granted.
+// Deploy pipeline records (the Hub's `deployments`) and App-scoped coordination for deploy and
+// failover. Their Convex progress/placement writes are fenced on the App lease epoch (leases.ts).
+// This does not make runtime side effects exactly once: the future command path needs stable
+// operation/step idempotency keys and runtime-side fencing too.
 //
 // The Hub marked in-flight deploys failed at boot (`failStale`), because a restart killed them.
 // There is no boot here; `sweepStale` runs on a schedule and fails any run whose lease lapsed.
@@ -74,7 +75,8 @@ const holderOf = (deploymentId: Id<"appDeployments">) => `deployment:${deploymen
 
 /**
  * Start a queued run by taking its App's lease. A second run for the same App waits in `queued`
- * until the first finishes or its lease lapses; it is never run beside it.
+ * until the first finishes or its lease lapses. Only one live lease can commit fenced Convex
+ * writes; an earlier holder's outstanding external work must be fenced at the runtime as well.
  */
 export const begin = internalMutation({
   args: { deploymentId: v.id("appDeployments") },

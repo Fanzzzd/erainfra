@@ -384,7 +384,6 @@ describe("Hub importer", () => {
     ).toEqual({
       shop: { DATABASE_URL: "postgres://shop:s3cret@db/shop" },
       "shop-web": { SESSION_KEY: "päss wörd ✓" },
-      "shop-db": {},
     });
   });
 
