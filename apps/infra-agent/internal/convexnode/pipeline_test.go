@@ -2,6 +2,7 @@ package convexnode
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -138,6 +139,80 @@ func TestSpecStepReportsTheSpecTextAndIsReadAgainWhenRedelivered(t *testing.T) {
 	defer failing.mu.Unlock()
 	if failing.result != "failure" || failing.spec != "" {
 		t.Fatalf("result = %q, spec = %q", failing.result, failing.spec)
+	}
+}
+
+// logReader reads a fixed log tail and counts how often it was asked.
+type logReader struct {
+	recordingExecutor
+	reads     int
+	output    []byte
+	truncated bool
+	err       error
+}
+
+func (r *logReader) ReadLogs(_ context.Context, p Payload) ([]byte, bool, error) {
+	r.payloads = append(r.payloads, p)
+	r.reads++
+	return r.output, r.truncated, r.err
+}
+
+func TestLogsStepUploadsTheTailAndIsReadAgainWhenRedelivered(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeAPI{kind: "logs", reportFail: true}
+	tail := []byte("GET / 200\n\x1b[31mERROR\x1b[0m db timeout\n\xff\n")
+	exec := &logReader{output: tail, truncated: true}
+	c, _ := clientFor(t, api, privateDir(t), nil)
+	c.exec = exec
+	defer func() { _ = c.Close() }()
+	if _, err := c.Step(ctx); err == nil {
+		t.Fatal("expected the result to fail")
+	}
+	api.mu.Lock()
+	api.reportFail, api.result = false, ""
+	api.mu.Unlock()
+	if _, err := c.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Not journaled: a re-delivered tail is read again, never replayed without its output.
+	if exec.reads != 2 {
+		t.Fatalf("log reads = %d", exec.reads)
+	}
+	if got := exec.payloads[0].Operation; got.Name != "container.logs" || got.Args["name"] != "shop-web" {
+		t.Fatalf("operation = %+v", got)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	decoded, err := base64.StdEncoding.DecodeString(api.output)
+	if api.result != "success" || err != nil || string(decoded) != string(tail) || api.truncated != true {
+		t.Fatalf("result = %q, output = %q (%v), truncated = %v", api.result, decoded, err, api.truncated)
+	}
+
+	failing := &fakeAPI{kind: "logs"}
+	d, _ := clientFor(t, failing, privateDir(t), nil)
+	d.exec = &logReader{err: errors.New("no such container")}
+	defer func() { _ = d.Close() }()
+	if _, err := d.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	failing.mu.Lock()
+	defer failing.mu.Unlock()
+	if failing.result != "failure" || failing.output != "" {
+		t.Fatalf("result = %q, output = %q", failing.result, failing.output)
+	}
+}
+
+func TestLocalExecutorReadsOnlyLogOperations(t *testing.T) {
+	for name, p := range map[string]Payload{
+		"an operate payload": {Kind: "operate", Operation: agent.Operation{Name: "container.logs", Args: map[string]string{"name": "shop-web"}}},
+		"a restart":          {Kind: "logs", Operation: agent.Operation{Name: "systemctl.restart", Args: map[string]string{"unit": "portless-agent"}}},
+		"a foreign unit":     {Kind: "logs", Operation: agent.Operation{Name: "service.logs", Args: map[string]string{"unit": "sshd"}}},
+		"too many lines":     {Kind: "logs", Operation: agent.Operation{Name: "container.logs", Args: map[string]string{"name": "shop-web", "lines": "1001"}}},
+		"an option as name":  {Kind: "logs", Operation: agent.Operation{Name: "container.logs", Args: map[string]string{"name": "--all"}}},
+	} {
+		if _, _, err := (LocalExecutor{}).ReadLogs(context.Background(), p); err == nil {
+			t.Fatalf("%s was not refused", name)
+		}
 	}
 }
 

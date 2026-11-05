@@ -37,6 +37,9 @@ type fakeAPI struct {
 	kind string
 	// spec is the spec text the last result carried.
 	spec string
+	// output and truncated are what the last logs result carried.
+	output    string
+	truncated any
 }
 
 func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +98,10 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 				"source": map[string]any{"kind": "upload", "url": "https://deployment.convex.cloud/api/storage/abc"}})
 			return
 		}
+		if f.kind == "logs" {
+			send(map[string]any{"kind": "logs", "operation": map[string]any{"name": "container.logs", "args": map[string]string{"name": "shop-web", "lines": "50"}}})
+			return
+		}
 		send(map[string]any{"kind": "operate", "operation": map[string]any{"name": "systemctl.restart", "args": map[string]string{"unit": "portless-agent"}}})
 	case "/api/v1/nodes/commands/renew":
 		if f.renewFail {
@@ -114,7 +121,10 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.result, _ = b["outcome"].(string)
 		f.spec, _ = b["spec"].(string)
-		if len(b) != 4 && (len(b) != 5 || f.spec == "") {
+		f.output, _ = b["output"].(string)
+		f.truncated = b["truncated"]
+		logs := f.kind == "logs" && len(b) == 6 && b["output"] != nil && b["truncated"] != nil
+		if len(b) != 4 && (len(b) != 5 || f.spec == "") && !logs {
 			w.WriteHeader(400)
 			return
 		}

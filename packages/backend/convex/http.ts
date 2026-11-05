@@ -39,14 +39,17 @@ import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 import { registerDeployRoutes } from "./infra/deployHttp";
 import { parsePush, webhookSecretsFor } from "./infra/githubDeploy";
 import { registerNodeRoutes } from "./infra/nodeHttp";
+import { registerInfraRoutes } from "./infra/operatorRoutes";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
 registerStaticRoutes(http, components.staticHosting);
 // The operator API under /api/v1, for the `erainfra` CLI (operatorHttp.ts), and its App
-// deployment routes (infra/deployHttp.ts).
+// deployment routes (infra/deployHttp.ts) and infrastructure-management routes (Nodes, Apps, env,
+// links, log tails: infra/operatorRoutes.ts).
 registerOperatorRoutes(http);
 registerDeployRoutes(http);
+registerInfraRoutes(http);
 registerNodeRoutes(http);
 
 function jsonResponse(body: unknown, status: number) {

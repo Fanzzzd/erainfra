@@ -348,6 +348,31 @@ export const infraTables = {
     .index("by_seq", ["seq"])
     .index("by_hubSeq", ["hubSeq"]),
 
+  // One log tail an operator asked for (infra/logs.ts): the last lines of a container or a
+  // platform unit, uploaded by the Node that ran the `logs` command. Logs can hold secrets, so the
+  // row is readable by the requesting API token only, and is deleted on its first read or at
+  // `expiresAt`, whichever comes first. `text` is bounded by MAX_LOG_BYTES.
+  logTails: defineTable({
+    requesterTokenId: v.id("apiTokens"),
+    nodeId: v.id("nodes"),
+    commandId: v.optional(v.id("nodeCommands")),
+    target: v.union(
+      v.object({
+        kind: v.literal("container"),
+        app: v.string(),
+        service: v.string(),
+        container: v.string(),
+      }),
+      v.object({ kind: v.literal("unit"), unit: v.string() }),
+    ),
+    lines: v.number(),
+    state: v.union(v.literal("pending"), v.literal("ready"), v.literal("failed")),
+    text: v.optional(v.string()),
+    truncated: v.optional(v.boolean()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  }).index("by_command", ["commandId"]),
+
   // Named counters: `auditSeq` (last audit sequence issued), `deployments` (rows retained in
   // appDeployments) and `hubAuditImportedThrough` (highest Hub audit seq imported). One row each,
   // so an audit append and a deploy never contend on the same document.

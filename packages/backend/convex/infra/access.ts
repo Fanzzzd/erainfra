@@ -1,4 +1,4 @@
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";
@@ -40,6 +40,27 @@ export async function requirePermission(ctx: QueryCtx, permission: Permission) {
     throw new ConvexError(`The ${principal.role} role does not allow ${permission}`);
   }
   return { user, principal, actor: user._id as string };
+}
+
+/**
+ * The operator API's caller: an API token the HTTP layer already authenticated (operatorHttp.ts).
+ * Internal functions behind /api/v1 take it as an argument and check it against the same
+ * permission table a signed-in person is checked against, so the route's scope check and the
+ * policy cannot drift apart.
+ */
+export const apiCallerValidator = v.object({
+  tokenId: v.id("apiTokens"),
+  name: v.string(),
+  scope: v.union(v.literal("read"), v.literal("admin"), v.literal("metrics")),
+});
+export type ApiCaller = Infer<typeof apiCallerValidator>;
+
+/** The audit actor for an API token, `token:<name>`, as the deployment routes record it. */
+export function requireTokenPermission(caller: ApiCaller, permission: Permission) {
+  if (!can({ kind: "token", tokenId: caller.tokenId, scope: caller.scope }, permission)) {
+    throw new ConvexError(`A ${caller.scope} token does not allow ${permission}`);
+  }
+  return { actor: `token:${caller.name}` };
 }
 
 export function normalizeEmail(email: string) {

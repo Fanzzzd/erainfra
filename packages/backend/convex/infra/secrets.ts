@@ -111,54 +111,76 @@ async function readSecrets(ctx: QueryCtx, master: MasterKey, scope: SecretScope)
  * Set variables for an App. Without `service` they go to the App-wide scope every service of the
  * App receives; with it, only to that service.
  */
+/** The body of `set`, shared with the operator API (infra/operator.ts). */
+export async function setSecrets(
+  ctx: MutationCtx,
+  input: { app: string; service?: string; vars: Record<string, string>; actor: string },
+) {
+  const scope = secretScope(input.app, input.service);
+  await putSecrets(ctx, await requireMasterKey(process.env), scope, input.vars);
+  await appendAudit(ctx, {
+    actor: input.actor,
+    action: "env.set",
+    target: input.app,
+    outcome: "success",
+    meta: {
+      ...(scope.service === undefined ? {} : { service: scope.service }),
+      names: Object.keys(input.vars).toSorted(),
+    },
+  });
+}
+
 export const set = mutation({
   args: { ...scopeArgs, vars: v.record(v.string(), v.string()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    const scope = secretScope(args.app, args.service);
-    await putSecrets(ctx, await requireMasterKey(process.env), scope, args.vars);
-    await appendAudit(ctx, {
-      actor,
-      action: "env.set",
-      target: args.app,
-      outcome: "success",
-      meta: {
-        ...(scope.service === undefined ? {} : { service: scope.service }),
-        names: Object.keys(args.vars).toSorted(),
-      },
-    });
+    await setSecrets(ctx, { ...args, actor });
     return null;
   },
 });
+
+/** The body of `unset`: whether the variable existed. Shared with the operator API. */
+export async function unsetSecret(
+  ctx: MutationCtx,
+  input: { app: string; service?: string; name: string; actor: string },
+) {
+  const scope = secretScope(input.app, input.service);
+  const row = await ctx.db
+    .query("appSecrets")
+    .withIndex("by_app_service_name", (q) =>
+      q.eq("app", scope.app).eq("service", scope.service).eq("name", input.name),
+    )
+    .unique();
+  if (row === null) return false;
+  await ctx.db.delete(row._id);
+  await appendAudit(ctx, {
+    actor: input.actor,
+    action: "env.unset",
+    target: input.app,
+    outcome: "success",
+    meta: {
+      ...(scope.service === undefined ? {} : { service: scope.service }),
+      name: input.name,
+    },
+  });
+  return true;
+}
 
 export const unset = mutation({
   args: { ...scopeArgs, name: v.string() },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    const scope = secretScope(args.app, args.service);
-    const row = await ctx.db
-      .query("appSecrets")
-      .withIndex("by_app_service_name", (q) =>
-        q.eq("app", scope.app).eq("service", scope.service).eq("name", args.name),
-      )
-      .unique();
-    if (row === null) return false;
-    await ctx.db.delete(row._id);
-    await appendAudit(ctx, {
-      actor,
-      action: "env.unset",
-      target: args.app,
-      outcome: "success",
-      meta: {
-        ...(scope.service === undefined ? {} : { service: scope.service }),
-        name: args.name,
-      },
-    });
-    return true;
+    return await unsetSecret(ctx, { ...args, actor });
   },
 });
+
+/** Names and a mask for one scope. No value ever leaves through here. */
+export async function maskedSecrets(ctx: QueryCtx, app: string, service?: string) {
+  const rows = await secretRows(ctx, secretScope(app, service)).collect();
+  return rows.map((row) => ({ name: row.name, preview: MASK, updatedAt: row.updatedAt }));
+}
 
 /** Names and a mask. `secrets.read` could be broad, so no value is ever returned here. */
 export const list = query({
@@ -166,8 +188,7 @@ export const list = query({
   returns: v.array(v.object({ name: v.string(), preview: v.string(), updatedAt: v.number() })),
   handler: async (ctx, args) => {
     await requirePermission(ctx, "app.read");
-    const rows = await secretRows(ctx, secretScope(args.app, args.service)).collect();
-    return rows.map((row) => ({ name: row.name, preview: MASK, updatedAt: row.updatedAt }));
+    return await maskedSecrets(ctx, args.app, args.service);
   },
 });
 

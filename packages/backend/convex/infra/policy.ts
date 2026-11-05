@@ -16,12 +16,15 @@ export type PermissionRole = (typeof PERMISSION_ROLES)[number];
 
 /**
  * The Hub's permissions (apps/hub/src/rbac.ts), in EraInfra words. The Hub's `agent.run`, the
- * right to run an allowlisted host operation on a Node, is `node.run` here.
+ * right to run an allowlisted host operation on a Node, is `node.run` here. `node.admin` is new:
+ * enrolling a Node, revoking its credentials, resetting its endpoint and setting its placement
+ * roles. The Hub had no such right because every Node joined with the shared operator token.
  */
 export const PERMISSIONS = [
   "app.read",
   "app.deploy",
   "node.run",
+  "node.admin",
   "audit.read",
   "account.admin",
   "chat.read",
@@ -34,7 +37,15 @@ const READ_ONLY: readonly Permission[] = ["app.read", "audit.read"];
 /** The Hub's role table, unchanged apart from the `node.run` rename. */
 const ROLE_PERMISSIONS: Record<PermissionRole, readonly Permission[]> = {
   owner: PERMISSIONS,
-  admin: [...READ_ONLY, "app.deploy", "node.run", "account.admin", "chat.read", "chat.write"],
+  admin: [
+    ...READ_ONLY,
+    "app.deploy",
+    "node.run",
+    "node.admin",
+    "account.admin",
+    "chat.read",
+    "chat.write",
+  ],
   operator: [...READ_ONLY, "app.deploy"],
   viewer: READ_ONLY,
 };
@@ -44,10 +55,15 @@ const ROLE_PERMISSIONS: Record<PermissionRole, readonly Permission[]> = {
  * accounts: no HTTP route mints a token or a user (apiTokens.ts), so a leaked token cannot outlive
  * its own revocation. Transcripts stay with humans for the same reason the Hub kept them from
  * operator tokens.
+ *
+ * An admin token administers Nodes (`node.admin`), because the operator API is how Nodes are
+ * enrolled from a terminal. A Node credential is not an API token and is refused on /api/v1, so a
+ * leaked admin token still cannot mint its own replacement. It reaches nothing the token could not
+ * already reach: `app.deploy` runs any image on any Node.
  */
 const SCOPE_PERMISSIONS: Record<"read" | "admin" | "metrics", readonly Permission[]> = {
   read: READ_ONLY,
-  admin: [...READ_ONLY, "app.deploy", "node.run"],
+  admin: [...READ_ONLY, "app.deploy", "node.run", "node.admin"],
   metrics: [],
 };
 

@@ -11,6 +11,7 @@ import {
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
 import { assertAppLease } from "./leases";
+import { recordLogOutput } from "./logs";
 import { requireNode } from "./nodes";
 import { COMMAND_TTL_MS, commandOutcome, nodeCommand, validateOperation } from "./nodeCommandModel";
 import { secretsForNodeDeploy } from "./secrets";
@@ -160,6 +161,9 @@ export const enqueue = mutation({
   handler: async (ctx, args) => {
     if (args.command.kind === "spec" || args.command.kind === "build")
       throw new ConvexError("Spec and build commands are issued by the deploy pipeline only");
+    // A logs command uploads output, which only a logTails row bound to its requester may hold.
+    if (args.command.kind === "logs")
+      throw new ConvexError("Ask for logs through /api/v1/logs, which binds them to the requester");
     const { actor } = await requirePermission(
       ctx,
       args.command.kind === "operate" ? "node.run" : "app.deploy",
@@ -209,7 +213,7 @@ export const cancel = mutation({
     if (!row) throw new ConvexError("No such command");
     const { actor } = await requirePermission(
       ctx,
-      row.command.kind === "operate" ? "node.run" : "app.deploy",
+      row.command.kind === "operate" || row.command.kind === "logs" ? "node.run" : "app.deploy",
     );
     if (row.status === "running" || row.status === "pending") {
       await ctx.db.patch(row._id, {
@@ -300,7 +304,13 @@ export const renew = internalMutation({
   },
 });
 export const report = internalMutation({
-  args: { ...claimFields, outcome: commandOutcome, spec: v.optional(v.string()) },
+  args: {
+    ...claimFields,
+    outcome: commandOutcome,
+    spec: v.optional(v.string()),
+    output: v.optional(v.string()),
+    truncated: v.optional(v.boolean()),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     // Permit retry of the exact terminal report, but never a stale epoch or another owner.
@@ -314,6 +324,18 @@ export const report = internalMutation({
         throw new ConvexError("Only a successful spec command reports a spec");
       if (new TextEncoder().encode(args.spec).length > MAX_SPEC_BYTES)
         throw new ConvexError("Spec file too large");
+    }
+    if (args.output !== undefined || args.truncated !== undefined) {
+      // Only a log tail uploads output, and it goes to the requester's row, never to this one.
+      if (row.command.kind !== "logs" || args.outcome !== "success")
+        throw new ConvexError("Only a successful logs command reports output");
+    }
+    if (row.command.kind === "logs") {
+      await recordLogOutput(ctx, row, {
+        outcome: args.outcome,
+        ...(args.output === undefined ? {} : { output: args.output }),
+        ...(args.truncated === undefined ? {} : { truncated: args.truncated }),
+      });
     }
     await ctx.db.patch(row._id, {
       status: args.outcome,
@@ -362,6 +384,12 @@ export const payload = internalQuery({
     const row = await claimed(ctx, args);
     if (row.command.kind === "operate")
       return { kind: "operate" as const, operation: row.command.operation };
+    if (row.command.kind === "logs") {
+      const name = row.command.operation.name;
+      if (name !== "container.logs" && name !== "service.logs")
+        throw new ConvexError("A logs command runs a logs operation only");
+      return { kind: "logs" as const, operation: row.command.operation };
+    }
     if (row.command.kind === "spec") {
       const dep = await activeDeployment(
         ctx,

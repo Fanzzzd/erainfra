@@ -22,6 +22,9 @@ export const nodeCommand = v.union(
     deploymentId: v.id("appDeployments"),
     service: v.string(),
   }),
+  // Log tails only (infra/logs.ts): a `container.logs` or `service.logs` operation whose output
+  // the Node uploads with its result, into the requester's short-lived logTails row.
+  v.object({ kind: v.literal("logs"), operation: nodeOperation }),
 );
 export const commandOutcome = v.union(
   v.literal("success"),
@@ -57,6 +60,7 @@ export const nodeTransportTables = {
     owner: v.optional(v.string()),
     leaseUntil: v.optional(v.number()),
     // Outcomes only. Never stdout, stderr, environment or exception text: those can hold secrets.
+    // A `logs` command's output goes to its logTails row, which only the requesting token reads.
     outcome: v.optional(commandOutcome),
     finishedAt: v.optional(v.number()),
     // The pipeline run this command is a step of, so the run finds its steps by index.
