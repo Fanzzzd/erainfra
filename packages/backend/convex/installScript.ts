@@ -782,7 +782,7 @@ CTL_UNIT_B64
   # Install to a temporary name in the same directory, then rename: a running instance that
   # restarts mid-install execs either the old file or the new one, never a partial copy.
   ctl_swap_binary() {
-    $CTL_SUDO install -m 0755 "$1" "$CTL_BINARY.new"
+    $CTL_SUDO install -m 0755 "$1" "$CTL_BINARY.new" || return $?
     $CTL_SUDO mv -f "$CTL_BINARY.new" "$CTL_BINARY"
   }
   ctl_mkdir() {
@@ -803,45 +803,114 @@ CTL_UNIT_B64
     CTL_BACKUP="$CTL_BINARY.bak-$CTL_OLD_VERSION"
     # Only the instances running now. Restarting a pattern would also start a stopped instance,
     # which for a retired Profile re-registers a scale set nobody wants.
-    CTL_ACTIVE=$($CTL_SUDO systemctl list-units --type=service --state=active --plain --no-legend \
-      'runner-center-controller@*' | awk '$1 ~ /^runner-center-controller@[a-z0-9-]+\.service$/ { print $1 }' || true)
+    CTL_ACTIVE_ROWS=$($CTL_SUDO systemctl list-units --type=service --state=active --plain --no-legend \
+      'runner-center-controller@*') || ctl_fail 'Could not list active controllers; nothing was changed.'
+    CTL_ACTIVE=$(printf '%s\n' "$CTL_ACTIVE_ROWS" |
+      awk '$1 ~ /^runner-center-controller@[a-z0-9-]+\.service$/ { print $1 }')
     $CTL_SUDO cp -p "$CTL_BINARY" "$CTL_BACKUP"
     ctl_log "Kept the previous controller ($CTL_OLD_VERSION) at $CTL_BACKUP."
+    CTL_HAD_UNIT=0
+    CTL_UNIT_BACKUP='none (no unit existed)'
     if $CTL_SUDO test -f "$CTL_UNIT_PATH"; then
-      $CTL_SUDO cp "$CTL_UNIT_PATH" "$CTL_TMP/previous.service"
+      # Keep this beside the binary backup, not under the EXIT-cleaned temporary directory:
+      # a failed unit restore must leave its source available for manual recovery.
+      CTL_UNIT_BACKUP="$CTL_UNIT_PATH.bak-$CTL_OLD_VERSION"
+      $CTL_SUDO cp -p "$CTL_UNIT_PATH" "$CTL_UNIT_BACKUP"
+      CTL_HAD_UNIT=1
     fi
-    ctl_swap_binary "$CTL_DOWNLOAD"
-    $CTL_SUDO install -m 0644 "$CTL_TMP/runner-center-controller@.service" "$CTL_UNIT_PATH"
-    $CTL_SUDO systemctl daemon-reload
-    ctl_log "Installed the controller $CTL_VERSION at $CTL_BINARY."
-    if [ -z "$CTL_ACTIVE" ]; then
-      ctl_log 'No controller instance is running on this host; the next one to start runs the new binary.'
+
+    # The whole replacement, including reload and restart, is guarded. set -e used to exit on
+    # a failed restart before the health-check rollback could run. A function used as an if
+    # condition also disables errexit inside it, so every fallible step must return explicitly.
+    # Keep command stderr on the terminal, and name the command and its exit status in the final
+    # report so a failed recovery cannot hide the original update failure.
+    ctl_update_step() {
+      ctl_step_label=$1
+      shift
+      if "$@"; then
+        return 0
+      else
+        ctl_step_status=$?
+        CTL_STEP_ERROR="$ctl_step_label failed (exit $ctl_step_status)"
+        return 1
+      fi
+    }
+    ctl_apply_update() {
+      ctl_update_step 'install controller binary' ctl_swap_binary "$CTL_DOWNLOAD" || return 1
+      ctl_update_step 'install controller unit' $CTL_SUDO install -m 0644 \
+        "$CTL_TMP/runner-center-controller@.service" "$CTL_UNIT_PATH" || return 1
+      ctl_update_step 'daemon-reload' $CTL_SUDO systemctl daemon-reload || return 1
+      for ctl_unit in $CTL_ACTIVE; do
+        ctl_update_step "restart $ctl_unit" $CTL_SUDO systemctl restart "$ctl_unit" || return 1
+      done
+      if [ -n "$CTL_ACTIVE" ]; then
+        ctl_update_step 'wait for controllers' sleep 3 || return 1
+      fi
+      CTL_HEALTH_ERRORS=''
+      for ctl_unit in $CTL_ACTIVE; do
+        if ! ctl_update_step "health check $ctl_unit" $CTL_SUDO systemctl is-active --quiet "$ctl_unit"; then
+          CTL_HEALTH_ERRORS="$CTL_HEALTH_ERRORS$CTL_STEP_ERROR; "
+          $CTL_SUDO journalctl -u "$ctl_unit" -n 20 --no-pager >&2 || true
+        fi
+      done
+      if [ -n "$CTL_HEALTH_ERRORS" ]; then
+        CTL_STEP_ERROR=$CTL_HEALTH_ERRORS
+        return 1
+      fi
+      return 0
+    }
+    if ctl_apply_update; then
+      ctl_log "Installed the controller $CTL_VERSION at $CTL_BINARY."
+      if [ -z "$CTL_ACTIVE" ]; then
+        ctl_log 'No controller instance is running on this host; the next one to start runs the new binary.'
+      else
+        for ctl_unit in $CTL_ACTIVE; do ctl_log "$ctl_unit restarted on $CTL_VERSION."; done
+      fi
       exit 0
     fi
-    for ctl_unit in $CTL_ACTIVE; do
-      $CTL_SUDO systemctl restart "$ctl_unit"
-    done
-    sleep 3
-    CTL_FAILED=''
-    for ctl_unit in $CTL_ACTIVE; do
-      $CTL_SUDO systemctl is-active --quiet "$ctl_unit" || CTL_FAILED="$CTL_FAILED $ctl_unit"
-    done
-    if [ -z "$CTL_FAILED" ]; then
-      for ctl_unit in $CTL_ACTIVE; do ctl_log "$ctl_unit restarted on $CTL_VERSION."; done
-      exit 0
+    CTL_UPDATE_ERROR=$CTL_STEP_ERROR
+
+    # Recovery is best effort across all of the saved instances, even if the first restart fails.
+    # Never enumerate units again: stopped/retired instances must remain stopped. Do not restart
+    # anything if either file could not be restored, since that could execute the rejected build.
+    CTL_ROLLBACK_ERRORS=''
+    ctl_rollback_step() {
+      if ctl_update_step "$@"; then
+        return 0
+      fi
+      CTL_ROLLBACK_ERRORS="$CTL_ROLLBACK_ERRORS$CTL_STEP_ERROR; "
+      return 1
+    }
+    CTL_FILES_RESTORED=1
+    ctl_rollback_step 'restore controller binary' ctl_swap_binary "$CTL_BACKUP" || CTL_FILES_RESTORED=0
+    if [ "$CTL_HAD_UNIT" -eq 1 ]; then
+      ctl_rollback_step 'restore controller unit' $CTL_SUDO cp -p \
+        "$CTL_UNIT_BACKUP" "$CTL_UNIT_PATH" || CTL_FILES_RESTORED=0
+    else
+      ctl_rollback_step 'remove newly installed controller unit' $CTL_SUDO rm -f \
+        "$CTL_UNIT_PATH" || CTL_FILES_RESTORED=0
     fi
-    for ctl_unit in $CTL_FAILED; do
-      $CTL_SUDO journalctl -u "$ctl_unit" -n 20 --no-pager >&2 || true
-    done
-    ctl_swap_binary "$CTL_BACKUP"
-    if [ -f "$CTL_TMP/previous.service" ]; then
-      $CTL_SUDO install -m 0644 "$CTL_TMP/previous.service" "$CTL_UNIT_PATH"
+    ctl_rollback_step 'rollback daemon-reload' $CTL_SUDO systemctl daemon-reload || true
+    if [ "$CTL_FILES_RESTORED" -eq 1 ]; then
+      for ctl_unit in $CTL_ACTIVE; do
+        ctl_rollback_step "rollback restart $ctl_unit" $CTL_SUDO systemctl restart "$ctl_unit" || true
+      done
+      if [ -n "$CTL_ACTIVE" ]; then
+        ctl_rollback_step 'wait for restored controllers' sleep 3 || true
+      fi
+      for ctl_unit in $CTL_ACTIVE; do
+        if ! ctl_rollback_step "rollback health check $ctl_unit" $CTL_SUDO systemctl is-active --quiet "$ctl_unit"; then
+          $CTL_SUDO journalctl -u "$ctl_unit" -n 20 --no-pager >&2 || true
+        fi
+      done
+      CTL_RESTORED="Rolled back to $CTL_OLD_VERSION (binary and unit)."
+    else
+      CTL_RESTORED='Could not restore both files; skipped controller restarts to avoid running the rejected build.'
     fi
-    $CTL_SUDO systemctl daemon-reload
-    for ctl_unit in $CTL_ACTIVE; do
-      $CTL_SUDO systemctl restart "$ctl_unit" || true
-    done
-    ctl_fail "Did not stay running on $CTL_VERSION:$CTL_FAILED. Rolled back to $CTL_OLD_VERSION from $CTL_BACKUP and restarted the instances that were running."
+    if [ -n "$CTL_ROLLBACK_ERRORS" ]; then
+      ctl_fail "Update to $CTL_VERSION failed: $CTL_UPDATE_ERROR. $CTL_RESTORED Rollback recovery failed: $CTL_ROLLBACK_ERRORS Manual recovery required; binary backup: $CTL_BACKUP; unit backup: $CTL_UNIT_BACKUP."
+    fi
+    ctl_fail "Update to $CTL_VERSION failed: $CTL_UPDATE_ERROR. $CTL_RESTORED Restarted and checked the previously active instances."
   fi
 
   # A fresh Profile, or a rerun for one this host already serves.
