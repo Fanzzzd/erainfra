@@ -360,13 +360,26 @@ describe("provision-mac.sh VM lifecycle", () => {
     assert.match(harness.argv(), /\tdelete\trc-test-runner/);
   });
 
+  it("fails a state wait at once, with output, when the provisioner exits first", async () => {
+    const harness = newHarness();
+    const running = harness.start(PROVISION_MAC, { env: { RC_FAKE_INSTALL_EXIT: "1" } });
+    const started = Date.now();
+    await assert.rejects(
+      waitFor(() => running.output().includes("Starting ephemeral runner"), { running }),
+      /exited before reaching the expected state; output:[\s\S]*Failed to install actions\/runner/,
+    );
+    // The wait ended on the exit, not on its sixty-second backstop.
+    assert.ok(Date.now() - started < 55_000);
+    await running.done;
+  });
+
   it("deletes the VM when the provisioner is terminated", async () => {
     const harness = newHarness();
     const running = harness.start(PROVISION_MAC, {
       env: { RC_FAKE_RUNNER_SLEEP: "60" },
     });
 
-    await waitFor(() => running.output().includes("Starting ephemeral runner"));
+    await waitFor(() => running.output().includes("Starting ephemeral runner"), { running });
     running.kill("SIGTERM");
     const result = await running.done;
 
