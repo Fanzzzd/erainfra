@@ -463,11 +463,35 @@ processes, and a mismatch fails closed rather than serving a wrong scope:
 | the Worker runtime | `RC_CACHE_SIGNING_KEY`(`_FILE`) | mints the runner bearer at claim                   |
 
 The repository a warm VM will serve is unknown when it boots, so the bearer names only the runner.
-The controller pushes the repository, event and ref to the service at `JobStarted`, and the service
-scopes the bearer to that repository at request time. This is why the controller needs a URL and the
-runtime does not push anything. The controller names no head repository, base ref or default branch,
-so a `pull_request` job scopes to nothing and reads a cold cache — the safe direction — while every
-other event, a branch push included, gets read-write to its own ref.
+The controller pushes the job's facts to the service at `JobStarted`, and the service scopes the
+bearer at request time. This is why the controller needs a URL and the runtime does not push
+anything.
+
+The scale-set message is not enough to build those facts. Its workflow ref names the ref of the
+workflow file a job came from, and for a reusable workflow called as `owner/repo/.github/workflows/x.yml@main`
+that is `main` whatever branch was pushed. So at `JobStarted` the controller reads the workflow run
+(`GET /repos/{owner}/{repo}/actions/runs/{run_id}`) and the repository's default branch with its own
+GitHub credentials, and applies GitHub's rule for its hosted cache:
+
+| job                                   | writes to             | reads, in order                                              |
+| ------------------------------------- | --------------------- | ------------------------------------------------------------ |
+| push to a branch, or any branch event | `refs/heads/<branch>` | own branch, default branch                                   |
+| push of a tag                         | `refs/tags/<tag>`     | own tag, default branch                                      |
+| pull request from the same repository | `refs/pull/<n>/merge` | merge ref, base branch, default branch                       |
+| pull request from a fork              | nothing               | base branch if GitHub lists the pull request, default branch |
+| GitHub lookup failed or took over 3 s | nothing               | nothing                                                      |
+
+A sibling branch is never on the read list. The lookups run beside `MarkJobStarted`, not before it,
+so they never delay a job; a job whose lookup fails gets facts that grant nothing, and its restores
+miss. Jobs of one run share one lookup for ten minutes, so a matrix costs GitHub one request.
+
+The controller's credentials need read access to Actions (for the run) and, for a job inside a
+reusable workflow, to Contents (to tell a tag from a branch). For a GitHub App that is
+`Actions: Read` and `Contents: Read` on the repositories it serves; for a classic PAT, `repo`.
+Without `Actions: Read` every job reads cold; without `Contents: Read`, jobs inside reusable
+workflows on branch and tag events do. Either way the controller logs
+`could not establish the job's cache scope; publishing read-only facts` with GitHub's status code.
+A successful push logs `published cache facts` with the ref, base ref and default branch it sent.
 
 ### Roll it out, in order
 
@@ -508,7 +532,8 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 4. **A controller that pushes facts.** Set `RC_CACHE_FACTS_URL` (the same service, its admin path is
    internal to the client) and `RC_CACHE_SIGNING_KEY` on the controller, both together or neither,
    then `deploy:control-plane`. Without the push, every job scopes to nothing and reads a cold cache —
-   safe, but pointless.
+   safe, but pointless. Grant the controller's GitHub App `Actions: Read` and `Contents: Read` first
+   (see "One key, three holders"), or every job's lookup fails and reads cold the same way.
 
 ### Verify
 

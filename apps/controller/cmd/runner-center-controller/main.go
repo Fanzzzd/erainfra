@@ -15,6 +15,7 @@ import (
 	rccontroller "github.com/Fanzzzd/erainfra/apps/controller/internal/controller"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/convexstore"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubapi"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubscale"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
@@ -160,9 +161,25 @@ func cacheOptions(cfg config.Config, logger *slog.Logger) ([]rccontroller.Option
 	if err != nil {
 		return nil, fmt.Errorf("configure cache facts client: %w", err)
 	}
-	logger.Info("cache facts publishing enabled", "url", cfg.CacheFactsURL)
+	// The cache scope is derived from the job's workflow run, read with the same
+	// credentials the scale set uses. A failed lookup at JobStarted gives that
+	// job read-only facts with nothing to read; it never widens the scope.
+	apiURL, err := githubapi.APIURL(cfg.RegistrationURL)
+	if err != nil {
+		return nil, fmt.Errorf("configure GitHub API client: %w", err)
+	}
+	runs, err := githubapi.New(githubapi.Config{
+		APIURL: apiURL,
+		Token:  cfg.GitHubToken,
+		App:    cfg.GitHubApp,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure GitHub API client: %w", err)
+	}
+	logger.Info("cache facts publishing enabled", "url", cfg.CacheFactsURL, "githubAPI", apiURL)
 	return []rccontroller.Option{
 		rccontroller.WithCachePublisher(publisher, logger.WithGroup("cachefacts")),
+		rccontroller.WithWorkflowRuns(runs),
 	}, nil
 }
 

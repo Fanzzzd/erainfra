@@ -82,8 +82,14 @@ type Scaler struct {
 	issuer  JITIssuer
 	newName func() (string, error)
 	cache   CachePublisher
+	runs    WorkflowRuns
 	logger  *slog.Logger
 	mu      sync.Mutex
+
+	// cacheScopeBudget bounds the GitHub lookups behind one job's cache facts,
+	// and publishing tracks the pushes still in flight.
+	cacheScopeBudget time.Duration
+	publishing       sync.WaitGroup
 }
 
 // Option configures optional Scaler behaviour without widening the constructor
@@ -100,6 +106,13 @@ func WithCachePublisher(cache CachePublisher, logger *slog.Logger) Option {
 			s.logger = logger
 		}
 	}
+}
+
+// WithWorkflowRuns gives the Scaler the GitHub API it derives each job's cache
+// scope from. Without it, every job's cache facts are cold: read-only with
+// nothing to read.
+func WithWorkflowRuns(runs WorkflowRuns) Option {
+	return func(s *Scaler) { s.runs = runs }
 }
 
 func NewScaler(
@@ -127,6 +140,8 @@ func NewScaler(
 		issuer:  issuer,
 		newName: newName,
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+
+		cacheScopeBudget: defaultCacheScopeBudget,
 	}
 	for _, opt := range opts {
 		opt(scaler)
@@ -250,9 +265,10 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 	if job == nil {
 		return errors.New("job started message is nil")
 	}
-	// Publish before recording the start so the facts are in place by the time
-	// the runner issues its first cache request. This is best effort: the cache
-	// is an optimization, so a publish failure must not fail the job.
+	// The cache facts are published off this path: they need GitHub lookups, and
+	// neither MarkJobStarted nor the listener's next message should wait on them.
+	// This is best effort: the cache is an optimization, so a publish failure
+	// must not fail the job.
 	s.publishCacheFacts(ctx, job)
 	return s.store.MarkJobStarted(ctx, fleet.JobStarted{
 		Profile:          s.config.Profile,
@@ -271,27 +287,39 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 	})
 }
 
-// publishCacheFacts tells the cache service which repository this runner's job
-// belongs to. A failure is logged, not returned: the worst case is a cold cache,
-// which is exactly what the service already serves when facts are missing.
+// publishCacheFacts tells the cache service which repository and refs this
+// runner's job may use, in the background. The GitHub lookups are bounded by
+// cacheScopeBudget; if they fail or run out of time the job gets cold facts,
+// read-only with nothing to read, which is never broader than the real scope. A
+// push failure is logged, not returned: the worst case is a cold cache.
 func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted) {
 	if s.cache == nil {
 		return
 	}
-	// A head repository, base ref and default branch would let a pull request
-	// read the base branch's cache; the scale-set message carries none of them,
-	// so a fork or pull-request job scopes to nothing and reads a cold cache,
-	// which is the safe direction. Branch pushes — the common case — carry the
-	// ref and event that grant read-write to their own scope.
-	err := s.cache.Push(ctx, cachefacts.Facts{
-		Runner:     job.RunnerName,
-		Repository: repositorySlug(job.OwnerName, job.RepositoryName),
-		Event:      job.EventName,
-		Ref:        refFromWorkflowRef(job.JobWorkflowRef),
-	})
-	if err != nil {
-		s.logger.Warn("could not publish cache facts", "runner", job.RunnerName, "error", err)
-	}
+	started := *job
+	base := context.WithoutCancel(ctx)
+	s.publishing.Add(1)
+	go func() {
+		defer s.publishing.Done()
+		lookupCtx, cancelLookup := context.WithTimeout(base, s.cacheScopeBudget)
+		facts, err := resolveCacheFacts(lookupCtx, s.runs, &started)
+		cancelLookup()
+		if err != nil {
+			s.logger.Warn("could not establish the job's cache scope; publishing read-only facts",
+				"runner", started.RunnerName, "workflowRunID", started.WorkflowRunID, "error", err)
+			facts = coldCacheFacts(&started)
+		}
+		pushCtx, cancelPush := context.WithTimeout(base, cachePushBudget)
+		defer cancelPush()
+		if err := s.cache.Push(pushCtx, facts); err != nil {
+			s.logger.Warn("could not publish cache facts", "runner", started.RunnerName, "error", err)
+			return
+		}
+		s.logger.Info("published cache facts",
+			"runner", facts.Runner, "repository", facts.Repository, "event", facts.Event,
+			"ref", facts.Ref, "baseRef", facts.BaseRef, "defaultBranch", facts.DefaultBranch,
+			"headRepository", facts.HeadRepository)
+	}()
 }
 
 // repositorySlug joins an owner and repository into the "owner/repo" the cache
@@ -303,20 +331,6 @@ func repositorySlug(owner, repository string) string {
 		return ""
 	}
 	return owner + "/" + repository
-}
-
-// refFromWorkflowRef pulls the git ref out of a job's workflow ref, whose shape
-// is "{owner}/{repo}/{path}@{ref}" — for example
-// "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main". The ref is
-// whatever follows the last "@"; a workflow ref without one yields no ref, which
-// the cache service treats as unscopable and refuses.
-func refFromWorkflowRef(workflowRef string) string {
-	workflowRef = strings.TrimSpace(workflowRef)
-	at := strings.LastIndex(workflowRef, "@")
-	if at < 0 {
-		return ""
-	}
-	return workflowRef[at+1:]
 }
 
 func (s *Scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobCompleted) error {

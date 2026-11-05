@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,13 +15,22 @@ import (
 )
 
 type fakeCache struct {
+	mu     sync.Mutex
 	pushed []cachefacts.Facts
 	err    error
 }
 
 func (f *fakeCache) Push(_ context.Context, facts cachefacts.Facts) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.pushed = append(f.pushed, facts)
 	return f.err
+}
+
+func (f *fakeCache) facts() []cachefacts.Facts {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]cachefacts.Facts(nil), f.pushed...)
 }
 
 type fakeStore struct {
@@ -302,10 +312,10 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 	}
 }
 
-// A branch push is the common case: the controller learns the repository from the
-// owner and repository halves, the ref from the workflow ref, and publishes them
-// so the runner's cache scopes to its own repository with read-write.
-func TestScalerPublishesCacheFactsAtJobStart(t *testing.T) {
+// With no GitHub API to read the workflow run from, the controller cannot tell a
+// job's real ref from the ref of the workflow file it came from, so it publishes
+// read-only facts with nothing to read rather than trusting the workflow ref.
+func TestScalerPublishesColdCacheFactsWithoutGitHub(t *testing.T) {
 	cache := &fakeCache{}
 	scaler, err := NewScaler(
 		validConfig("rc-linux-js", 1),
@@ -331,14 +341,17 @@ func TestScalerPublishesCacheFactsAtJobStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	scaler.publishing.Wait()
+
 	want := cachefacts.Facts{
-		Runner:     "rc-linux-js-a",
-		Repository: "Fanzzzd/EraInfra",
-		Event:      "push",
-		Ref:        "refs/heads/main",
+		Runner:         "rc-linux-js-a",
+		Repository:     "Fanzzzd/EraInfra",
+		HeadRepository: unverifiedHeadRepository,
+		Event:          "push",
+		Ref:            unresolvedRef,
 	}
-	if len(cache.pushed) != 1 || cache.pushed[0] != want {
-		t.Fatalf("pushed facts = %#v, want one %#v", cache.pushed, want)
+	if pushed := cache.facts(); len(pushed) != 1 || pushed[0] != want {
+		t.Fatalf("pushed facts = %#v, want one %#v", pushed, want)
 	}
 }
 
@@ -370,6 +383,7 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a cache publish failure failed the job: %v", err)
 	}
+	scaler.publishing.Wait()
 	if len(store.started) != 1 {
 		t.Fatalf("job start was not recorded despite cache failure: %#v", store.started)
 	}
