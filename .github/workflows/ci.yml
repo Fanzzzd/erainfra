@@ -296,7 +296,9 @@ jobs:
       # the provider, a fleet member with no grant), revocation closing an open stream, identity
       # across restarts, and a second daemon refused. The connect-convex test runs three agents
       # against a fake Convex: endpoint proof through the real sign_challenge, a declared link that
-      # carries traffic, and an enrolled Node with no link that stays denied. `go test ./...` in
+      # carries traffic, and an enrolled Node with no link that stays denied. The gateway test puts
+      # the gateway proxy in front of a gateway Node and reaches an App Node over the mesh (HTTP, a
+      # streamed upload, a WebSocket) while a third Node is refused. `go test ./...` in
       # `check` skips these tests, because only this job has the binary.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
