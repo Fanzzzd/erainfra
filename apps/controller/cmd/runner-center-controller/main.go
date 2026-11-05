@@ -226,7 +226,7 @@ func cacheOptions(cfg config.Config, logger *slog.Logger) ([]rccontroller.Option
 func retire(args []string) error {
 	flags := flag.NewFlagSet("retire", flag.ContinueOnError)
 	apply := flags.Bool("yes", false, "delete the scale set and pause the Profile; without it, only report")
-	force := flags.Bool("force", false, "delete even while GitHub still counts busy runners or jobs on the scale set")
+	force := flags.Bool("force", false, "delete even when activity statistics are unavailable or GitHub still counts busy runners or jobs")
 	flags.Usage = func() {
 		_, _ = fmt.Fprintln(flags.Output(), "usage: runner-center-controller retire [--yes] [--force]")
 		_, _ = fmt.Fprintln(flags.Output(), "Deletes the GitHub scale set named by RC_SCALE_SET_NAME (default RC_PROFILE) and pauses the Profile.")
@@ -256,6 +256,8 @@ func retire(args []string) error {
 	switch {
 	case !plan.Found:
 		fmt.Printf("no scale set named %q is registered at %s\n", plan.Name, cfg.RegistrationURL)
+	case !*apply && !plan.StatisticsKnown:
+		fmt.Printf("scale set %q (id %d): activity statistics unknown; deletion requires --yes --force\n", plan.Name, plan.ID)
 	case !*apply:
 		fmt.Printf("would delete scale set %q (id %d): %d busy runner(s), %d assigned, %d running job(s)\n",
 			plan.Name, plan.ID, plan.BusyRunners, plan.AssignedJobs, plan.RunningJobs)

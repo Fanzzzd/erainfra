@@ -486,9 +486,10 @@ sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
 ```
 
 `retire --yes` deletes the GitHub scale set and pauses the Profile in the control plane, so Workers
-stop prewarming and advertising it. It refuses while GitHub still counts busy runners or assigned
-or running jobs on the scale set; `--force` overrides that for a scale set whose controller is gone
-for good. Starting the Profile's unit again re-registers both.
+stop prewarming and advertising it. It refuses when GitHub supplies no activity statistics, or still
+counts busy runners or assigned or running jobs. A dry run reports missing statistics as unknown.
+`--force` overrides either check for a scale set whose controller is gone for good. Starting the
+Profile's unit again re-registers both.
 
 Two controllers for one Profile never both take jobs. GitHub gives a scale set one message session
 and refuses a second with `409 Conflict`. The second controller reports that it is waiting, retries
