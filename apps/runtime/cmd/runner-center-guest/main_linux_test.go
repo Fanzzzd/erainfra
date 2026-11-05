@@ -17,7 +17,7 @@ func TestResolverConfigKeepsOnlyResolverDirectives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolverConfig returned %v", err)
 	}
-	want := "nameserver 1.1.1.1\nnameserver 9.9.9.9\n"
+	want := "nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions edns0\n"
 	if config != want {
 		t.Fatalf("resolverConfig produced %q, want %q", config, want)
 	}
@@ -28,9 +28,28 @@ func TestResolverConfigKeepsSearchAndDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolverConfig returned %v", err)
 	}
-	want := "domain example.test\nsearch a.test b.test\nnameserver 10.0.0.53\n"
+	want := "domain example.test\nsearch a.test b.test\nnameserver 10.0.0.53\noptions edns0\n"
 	if config != want {
 		t.Fatalf("resolverConfig produced %q, want %q", config, want)
+	}
+}
+
+// The options line is a decision, not something the kernel publication can
+// carry: edns0 as ubuntu-latest has it, and never trust-ad, which would make
+// glibc believe the AD bit from a resolver across the network.
+func TestResolverConfigAsksForEDNS0AndNotTrustAD(t *testing.T) {
+	config, err := resolverConfig([]byte("#MANUAL\nnameserver 1.1.1.1\n"))
+	if err != nil {
+		t.Fatalf("resolverConfig returned %v", err)
+	}
+	var options []string
+	for _, line := range strings.Split(config, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "options" {
+			options = append(options, fields[1:]...)
+		}
+	}
+	if strings.Join(options, " ") != "edns0" {
+		t.Fatalf("resolverConfig options are %q, want exactly edns0 (config %q)", options, config)
 	}
 }
 

@@ -15,12 +15,14 @@ router, or a corporate firewall participates like any other.
   own guest kernel, copy-on-write root, point-to-point network, and single-use credentials —
   torn down on every exit path, including Worker crashes.
 - **Verified, not assumed.** The isolation boundary is checked by the runtime itself: a Worker
-  whose network policy drifts from its Profile stops being ready, and a daily canary exercises
-  scheduling through the executor's in-job isolation probes. Live Firecracker boot and post-job
-  teardown remain part of issue #17's production gate.
+  whose live nftables table drifts from the policy its runtime rendered stops being ready, and a
+  daily canary exercises scheduling through the executor's in-job isolation probes. The fleet has
+  run its Linux Profiles in Firecracker microVMs since 2026-08-20, when the live boot and teardown
+  validation in issue #17 closed.
 - **Immutable by construction.** Images are pinned by digest, the agent release is pinned by
-  checksum, and nothing writable survives a job. Warm state comes from prewarmed images, not
-  shared caches.
+  checksum, and nothing writable survives a job on the Worker. Warm state on the Worker comes
+  from prewarmed images; dependency caches live off the Worker, in GitHub's cache or in
+  [EraInfra's job cache](#the-job-cache).
 - **Drop-in adoption.** `runs-on: <profile>` is the entire workflow change. An optional router
   job sends a run to GitHub-hosted runners instead when the Profile has no ready Worker or no
   free slot ([below](#fall-back-to-github-hosted-runners)).
@@ -86,8 +88,11 @@ For a Firecracker Profile, each Attempt gets:
   path, socket, volume or device is shared, and the snapshot is discarded on exit;
 - a point-to-point job network whose policy is rendered and verified by the runtime itself. Traffic
   to the host, to other guests, and to RFC1918, CGNAT, link-local and other special-purpose ranges
-  is dropped; an operator adds destinations explicitly, or switches a Profile to allowlist-only
-  egress. A Worker whose nftables table no longer matches its Profile stops being ready;
+  is dropped. An operator adds destinations explicitly, or switches the host to allowlist-only
+  egress. Both settings belong to the Worker's runtime (`RC_EGRESS_ALLOW` and `RC_EGRESS_MODE`,
+  written by the provisioner's `--egress-allow` and `--egress-mode`), so they apply to every
+  Firecracker Profile that Worker serves. A Worker whose nftables table no longer matches the
+  policy its runtime rendered stops being ready;
 - single-use JIT credentials over MMDSv2, never in argv, an image layer, a host environment or a
   log;
 - teardown on success, failure, cancellation, timeout, and controller reconciliation. After an Agent
@@ -133,11 +138,43 @@ and `RC_MEMORY_MIB` in its environment, holding the limits actually enforced on 
 sizes a heap or a worker pool from total RAM — `--max-old-space-size` is the usual one — should read
 `RC_MEMORY_MIB` rather than believe `free`.
 
-Nothing writable survives a job on either Linux executor. Warm state comes from the immutable Image
-Release; cross-job dependency caching belongs to GitHub's own cache service, which is authenticated
-and scoped by repository, branch and key, and is reachable over allowed egress. See
-[ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md) for why EraInfra does not run a
-second cache service of its own.
+Nothing writable survives a job on either Linux executor, so the only warm state on a Worker is
+the immutable Image Release. Dependency caches are kept off the Worker, in GitHub's cache or in
+EraInfra's job cache.
+
+### The job cache
+
+A Firecracker Profile can have its GitHub Actions cache served by EraInfra's own cache service,
+`apps/cache-service`, which stores entries in an S3-compatible bucket the operator picks
+([ADR 0007](docs/adr/0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md),
+[ADR 0009](docs/adr/0009-a-store-is-plugged-in-not-wired-in.md)). Workflows do not change. When a
+Worker's runtime is configured with a cache, the guest redirects the runner's connections to
+GitHub's cache host, `results-receiver.actions.githubusercontent.com`, to an interceptor inside the
+guest. The interceptor terminates TLS with a CA minted for that boot, sends cache calls to the cache
+service, and forwards artifact calls and everything else to GitHub
+([ADR 0008](docs/adr/0008-win-the-cache-endpoint-below-the-environment.md)). The caches of
+`actions/cache`, `setup-node` and `setup-go` all take this path.
+
+- **Scope.** Entries are stored per repository and ref. The guest's token names only the runner.
+  At `JobStarted` the controller reads the job's workflow run from GitHub, works out which refs the
+  job may read and the one it may write, and pushes those facts to the cache service, which applies
+  them to every request. The rules follow GitHub's own cache restrictions: a branch or tag job reads
+  its own ref, then the default branch; a pull request reads `refs/pull/<n>/merge`, then its base
+  branch, then the default branch, and writes only to its merge ref; a pull request from a fork
+  writes nothing; a sibling branch is never readable. A lookup that fails or takes over 3 s gives
+  the job a cold cache, never a wider one. The exact table is in
+  [the runbook](docs/runbooks/operate-the-job-cache.md#one-key-three-holders).
+- **Failure.** A cache service or store that cannot answer in time turns into a cache miss or a
+  request forwarded to GitHub. A guest whose redirect does not come up talks to GitHub directly. A
+  cache failure makes the cache step warn; it does not fail the job.
+- **Coverage.** Only processes running as the runner user are redirected. `container:` jobs,
+  service containers and BuildKit's `type=gha` cache run in containers whose traffic the redirect
+  does not match, so they use GitHub's cache. Docker, Tart and Hyper-V Profiles have no interceptor
+  and use GitHub's cache too.
+- **Activation.** The cache is off until an operator deploys the service and its bucket and turns
+  the interception on, following
+  [docs/runbooks/operate-the-job-cache.md](docs/runbooks/operate-the-job-cache.md). Until every
+  step there is done, jobs use GitHub's cache exactly as before.
 
 ## Develop locally
 
@@ -308,7 +345,7 @@ export RC_FIT_POLICY=balanced # balanced, cpu, network, or io
 export RC_MIN_RUNNERS=0
 export RC_MAX_RUNNERS=16
 
-# Prefer a GitHub App. A PAT is supported for an initial repository-scoped canary.
+# Prefer a GitHub App. An enterprise URL needs RC_GITHUB_TOKEN instead (see the permissions below).
 export RC_GITHUB_APP_CLIENT_ID=<client-id>
 export RC_GITHUB_APP_INSTALLATION_ID=<installation-id>
 export RC_GITHUB_APP_PRIVATE_KEY_FILE=/etc/runner-center/github-app.pem
@@ -326,9 +363,69 @@ never in place, because GitHub holds the scale-set name.
 `RC_WARM_POOL` is an explicit Firecracker-only performance opt-in. Its target
 counts both parked and currently claimed single-use microVMs, and each one
 reserves a Worker slot, vCPUs, memory, a CNI address, and devmapper headroom.
-Start small and validate it on the issue #17 KVM host using
+Start small and validate it on one KVM Worker using
 [ADR 0003](docs/adr/0003-warm-microvm-capacity.md); Docker, Tart, and Hyper-V
 Profiles must leave it at zero.
+
+### GitHub permissions the controller needs
+
+Registering the scale set takes one GitHub REST call that needs a permission: the controller
+creates a runner registration token at the scope `RC_GITHUB_CONFIG_URL` names. The scale-set client
+exchanges that token for an Actions service session, and every later scale-set operation goes
+through that session, not the REST API: creating or updating the scale set, issuing JIT
+configurations, removing runners, and polling for jobs. Minting a GitHub App installation token is
+signed with the App's own key and needs no permission.
+
+| `RC_GITHUB_CONFIG_URL`                      | GitHub App                                        | Personal access token                                                    |
+| ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
+| `https://github.com/OWNER/REPOSITORY`       | Repository: Administration, read and write        | fine-grained: the same; classic: `repo`                                  |
+| `https://github.com/ORGANIZATION`           | Organization: Self-hosted runners, read and write | fine-grained: the same; classic: `admin:org`                             |
+| `https://github.com/enterprises/ENTERPRISE` | not possible; the controller refuses it at start  | classic only, with `manage_runners:enterprise`, set as `RC_GITHUB_TOKEN` |
+
+An organization scale set needs no Administration permission. GitHub gives every App with a
+repository permission read-only Metadata. A GitHub Enterprise Server host follows the same path
+rules, so `https://ghes.example/ORGANIZATION` is an organization scope.
+
+A controller that pushes cache facts (`RC_CACHE_FACTS_URL` set) also reads three repository
+endpoints at `JobStarted` for [the job cache](#the-job-cache), with the same credentials. An
+organization or enterprise scale set needs these on every repository whose jobs it serves.
+
+| endpoint                                          | why                                                    | GitHub App permission      |
+| ------------------------------------------------- | ------------------------------------------------------ | -------------------------- |
+| `GET /repos/{owner}/{repo}/actions/runs/{run_id}` | the job's head branch, event, pull requests and fork   | Repository: Actions, read  |
+| `GET /repos/{owner}/{repo}`                       | the default branch                                     | Repository: Metadata, read |
+| `GET /repos/{owner}/{repo}/git/ref/{ref}`         | whether a reusable workflow's ref is a tag or a branch | Repository: Contents, read |
+
+A fine-grained token needs the same three; a classic token needs `repo` for private repositories.
+Without Actions read, every job's lookup fails and reads a cold cache. Without Contents read, jobs
+inside reusable workflows on branch and tag events do. The controller logs
+`could not establish the job's cache scope; publishing read-only facts` with GitHub's status code in
+either case.
+
+Sources, per endpoint: GitHub's
+[permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
+and
+[for fine-grained personal access tokens](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)
+(`POST /repos/{owner}/{repo}/actions/runners/registration-token` under Administration,
+`POST /orgs/{org}/actions/runners/registration-token` under Self-hosted runners,
+`GET /repos/{owner}/{repo}/actions/runs/{run_id}` under Actions,
+`GET /repos/{owner}/{repo}` under Metadata, `GET /repos/{owner}/{repo}/git/ref/{ref}` under
+Contents);
+[the enterprise registration-token endpoint](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/self-hosted-runners#create-a-registration-token-for-an-enterprise)
+for `manage_runners:enterprise`; and
+[ARC's authentication guide](https://docs.github.com/en/actions/tutorials/use-actions-runner-controller/authenticate-to-the-api),
+which uses the same scale-set protocol, for Metadata and for "You cannot authenticate using a
+GitHub App for runners at the enterprise level."
+
+The controller does not use the App the dashboard's GitHub App setup creates. It authenticates
+only with its own `RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials, so the cache-facts permissions
+above belong on the controller's App, and the dashboard App's manifest stays as it is. That App
+serves the legacy `workflow_job` webhook path. Its manifest
+(`packages/backend/convex/githubAppConfig.ts`) asks for Repository: Administration, read and write,
+for `POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig`
+and `DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}`, and Repository: Actions, read-only,
+which GitHub requires before it delivers `workflow_job` events. Its delivery recovery calls
+`/app/hook/deliveries`, which takes the App's JWT and no installation permission.
 
 Use a process supervisor such as systemd with `Restart=always`, a private `EnvironmentFile`, and a
 dedicated unprivileged service account. Controller releases are static Linux/macOS x64/ARM64
@@ -553,11 +650,13 @@ jobs:
 ```
 
 Node is already in the Image Release's toolcache, so `setup-node` validates/selects it without a
-network download. Nothing writable survives a job, so a dependency cache has to come from outside
-the guest: `actions/cache` is authenticated and scoped by repository, branch and key, and a remote
-build cache such as Turborepo's works the same way. Both consume Actions storage and can be slower
-than a warm immutable image, so prefer prewarming the Image Release for anything that changes
-rarely. A Profile on allowlist-only egress needs its cache endpoint declared with `--egress-allow`.
+network download. `actions/cache` and the `cache:` input of the setup actions work unchanged: on a
+Firecracker Worker with [the job cache](#the-job-cache) turned on, EraInfra's cache service answers
+them, and everywhere else GitHub's cache does, counted against the repository's Actions storage. A
+remote build cache such as Turborepo's works over allowed egress. Any cache can still be slower than
+a warm immutable image, so prefer prewarming the Image Release for anything that changes rarely. A
+Worker on allowlist-only egress needs every cache endpoint its jobs reach declared, as a CIDR, in
+`--egress-allow`.
 
 ### Fall back to GitHub-hosted runners
 
@@ -654,7 +753,7 @@ for mutually trusted jobs in one trust domain; use Firecracker for untrusted wor
 
 - Every CI Attempt gets a fresh VM and single-use JIT registration.
 - The job network policy is rendered and verified by the same runtime build that enforces it; a
-  Worker whose live nftables table drifts from its Profile stops being ready.
+  Worker whose live nftables table drifts from that rendered policy stops being ready.
 - No host path, socket, volume or device is shared with a job, and nothing writable outlives one.
 - Image and product releases are immutable and checksum/provenance verified.
 - The Linux guest obtains workload metadata through MMDSv2; it has no host SSH path.

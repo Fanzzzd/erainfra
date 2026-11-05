@@ -29,6 +29,13 @@ RestartSec=2s
 # was chosen to prevent. 65536 for both is what ubuntu-latest grants, and
 # parity, not headroom, is the promise.
 LimitNOFILE=65536
+# ubuntu-latest gives a job a 16 MiB soft stack and an unlimited hard one; the
+# guest kernel's default soft limit is 8 MiB, which deeply recursive compilers,
+# parsers and test suites notice (#96). The Docker executor already passes
+# --ulimit stack=16777216:-1, and this is the same pair. Unlike nofile, .NET
+# does not raise the stack soft limit to the hard one, so the split reaches
+# jobs as written.
+LimitSTACK=16777216:infinity
 
 [Install]
 WantedBy=multi-user.target

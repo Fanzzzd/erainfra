@@ -70,6 +70,7 @@ grep -q 'LANG=C.UTF-8' /usr/local/bin/runner-center-guest
 grep -Fxq 'fs.inotify.max_user_watches=655360' /etc/sysctl.d/90-runner-center-hosted-parity.conf
 grep -Fxq 'fs.inotify.max_user_instances=1280' /etc/sysctl.d/90-runner-center-hosted-parity.conf
 grep -Fxq 'LimitNOFILE=65536' /etc/systemd/system/runner-center-guest.service
+grep -Fxq 'LimitSTACK=16777216:infinity' /etc/systemd/system/runner-center-guest.service
 # ubuntu-latest leaves LC_ALL unset; setting it here would be a new difference,
 # not a fix for this one.
 test -z "${LC_ALL:-}"

@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/actions/scaleset"
+)
 
 func validConfig() Config {
 	return Config{
@@ -81,5 +86,81 @@ func TestValidateWarmPool(t *testing.T) {
 	config.Executor = "docker"
 	if err := config.Validate(); err == nil {
 		t.Fatal("Docker warm pool was accepted")
+	}
+}
+
+// RC_GITHUB_CONFIG_URL decides where the scale set is registered, and the
+// README promises a repository, organization or enterprise URL. Each of the
+// three must pass validation and be read as the scope the scale-set client will
+// register against, with a credential that scope accepts.
+func TestValidateAcceptsEveryRegistrationScope(t *testing.T) {
+	app := &scaleset.GitHubAppAuth{ClientID: "Iv1.client", InstallationID: 42, PrivateKey: "key"}
+	cases := []struct {
+		url   string
+		app   bool
+		scope Scope
+	}{
+		{"https://github.com/Fanzzzd/erainfra", true, ScopeRepository},
+		{"https://github.com/Fanzzzd/erainfra/", false, ScopeRepository},
+		{"https://github.com/Fanzzzd", true, ScopeOrganization},
+		{"https://github.com/Fanzzzd", false, ScopeOrganization},
+		{"https://ghes.example.test/platform", true, ScopeOrganization},
+		{"https://github.com/enterprises/era", false, ScopeEnterprise},
+		{"https://github.com/Enterprises/era/", false, ScopeEnterprise},
+	}
+	for _, tc := range cases {
+		config := validConfig()
+		config.RegistrationURL = tc.url
+		if tc.app {
+			config.GitHubToken = ""
+			config.GitHubApp = app
+		}
+		if err := config.Validate(); err != nil {
+			t.Fatalf("%s (app=%v) should be valid: %v", tc.url, tc.app, err)
+		}
+		scope, err := RegistrationScope(tc.url)
+		if err != nil {
+			t.Fatalf("RegistrationScope(%q): %v", tc.url, err)
+		}
+		if scope != tc.scope {
+			t.Fatalf("RegistrationScope(%q) = %q, want %q", tc.url, scope, tc.scope)
+		}
+	}
+}
+
+// GitHub documents that a GitHub App cannot authenticate runners at the
+// enterprise level, so the scale-set client would fail at its first
+// registration-token call. Refusing that at startup names the fix instead.
+func TestValidateRejectsAGitHubAppForAnEnterprise(t *testing.T) {
+	config := validConfig()
+	config.RegistrationURL = "https://github.com/enterprises/era"
+	config.GitHubToken = ""
+	config.GitHubApp = &scaleset.GitHubAppAuth{ClientID: "Iv1.client", InstallationID: 42, PrivateKey: "key"}
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("a GitHub App was accepted for an enterprise scale set")
+	}
+	if !strings.Contains(err.Error(), "RC_GITHUB_TOKEN") {
+		t.Fatalf("the error should name the credential that works: %v", err)
+	}
+}
+
+// A URL the scale-set client would misread must fail at startup. Without a
+// scheme, "github.com/owner" parses as a bare path and would be registered as a
+// repository named "owner" in an organization named "github.com".
+func TestValidateRejectsAMalformedRegistrationURL(t *testing.T) {
+	for _, raw := range []string{
+		"github.com/Fanzzzd",
+		"https://github.com",
+		"https://github.com/",
+		"https://github.com/Fanzzzd/erainfra/actions",
+		"ftp://github.com/Fanzzzd",
+		"https://github.com/Fanzzzd/erainfra?ref=main",
+	} {
+		config := validConfig()
+		config.RegistrationURL = raw
+		if err := config.Validate(); err == nil {
+			t.Fatalf("%q was accepted as a registration URL", raw)
+		}
 	}
 }

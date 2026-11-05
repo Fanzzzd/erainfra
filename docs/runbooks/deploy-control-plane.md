@@ -38,6 +38,12 @@ decisions made mid-deploy land on whichever code version answers.
 pnpm run deploy:control-plane
 ```
 
+The script calls the backend's `deploy` script through `pnpm run`, because pnpm 11 treats a bare
+`pnpm deploy` as its own built-in command. The inner `convex deploy` asks for confirmation when
+`CONVEX_DEPLOYMENT` names a dev deployment, and it fails in a shell that cannot prompt. In that case
+run the two halves yourself from `packages/backend`: `npx convex deploy -y`, then
+`pnpm run deploy --skip-convex` to build and upload the dashboard.
+
 ## 3. Verify, in this order
 
 1. **Dashboard loads and shows every Profile** with its isolation badge, worker readiness and
