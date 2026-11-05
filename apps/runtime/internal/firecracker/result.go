@@ -38,7 +38,7 @@ func consoleContainsMarker(path, marker string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer console.Close()
+	defer console.Close() //nolint:errcheck // read-only file; a close error loses nothing
 	info, err := console.Stat()
 	if err != nil {
 		return false, err
@@ -59,7 +59,7 @@ func parseExperimentResult(path string, token string) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("open Experiment console result: %w", err)
 	}
-	defer console.Close()
+	defer console.Close() //nolint:errcheck // read-only file; a close error loses nothing
 	info, err := console.Stat()
 	if err != nil {
 		return 1, fmt.Errorf("stat Experiment console result: %w", err)
@@ -75,7 +75,7 @@ func parseExperimentResult(path string, token string) (int, error) {
 	marker := "\x1eRUNNER_CENTER_RESULT:" + token + ":"
 	index := strings.LastIndex(string(payload), marker)
 	if index < 0 {
-		return 1, errors.New("Experiment exited without an authenticated result marker")
+		return 1, errors.New("Experiment exited without an authenticated result marker") //nolint:staticcheck // ST1005: Experiment is a capitalized domain term here, like Attempt
 	}
 	value := string(payload[index+len(marker):])
 	if lineEnd := strings.IndexByte(value, '\n'); lineEnd >= 0 {
@@ -83,7 +83,7 @@ func parseExperimentResult(path string, token string) (int, error) {
 	}
 	parsed, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || parsed < 0 || parsed > 255 {
-		return 1, errors.New("Experiment returned an invalid exit code marker")
+		return 1, errors.New("Experiment returned an invalid exit code marker") //nolint:staticcheck // ST1005: Experiment is a capitalized domain term here, like Attempt
 	}
 	return parsed, nil
 }

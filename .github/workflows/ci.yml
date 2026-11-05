@@ -186,6 +186,16 @@ jobs:
         run: go test ./...
       - name: Vet the root Go module
         run: go vet ./...
+      # .golangci.yml picks the linters, so this run and a contributor's local
+      # `GOOS=linux golangci-lint run ./...` report the same issues. The version
+      # is pinned too: a new golangci-lint release adds checks, and a gate that
+      # moves without a commit here is one nobody can reproduce.
+      - name: Lint the root Go module
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: linux
+        with:
+          version: v2.12.2
       - name: Compile the root Go module for shipped Linux targets
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

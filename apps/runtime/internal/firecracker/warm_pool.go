@@ -221,7 +221,7 @@ func (p *warmPoolManager) Claim(
 	}
 	if !sameSpecProfile(spec, state.profile) {
 		p.mu.Unlock()
-		return nil, errors.New("Attempt does not match its prepared warm pool contract")
+		return nil, errors.New("Attempt does not match its prepared warm pool contract") //nolint:staticcheck // ST1005: Attempt is a CONTEXT.md domain term
 	}
 	var id uint64
 	var slot warmSlot
@@ -400,7 +400,7 @@ func (p *warmPoolManager) Shutdown(ctx context.Context) error {
 	// Cancellation makes it unwind; waiting here prevents a late VM from
 	// appearing after shutdown has already returned.
 	p.reconcileMu.Lock()
-	p.reconcileMu.Unlock()
+	p.reconcileMu.Unlock() //nolint:staticcheck // SA2001: an empty critical section is the point; it waits out an in-flight reconcile
 	var cleanupErrors []error
 	for _, slot := range slots {
 		if err := slot.Close(ctx); err != nil {

@@ -136,16 +136,16 @@ func DefaultPolicy(name string) Policy {
 // produces a different identity for control-plane readiness evidence.
 func (p Policy) IdentityHash() string {
 	hash := sha256.New()
-	fmt.Fprintf(hash, "runner-center-network-policy/v1\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n",
+	fmt.Fprintf(hash, "runner-center-network-policy/v1\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n", //nolint:errcheck // hash.Hash.Write never returns an error
 		p.Name, p.Subnet, p.EgressMode, p.MTU)
 	for _, destination := range p.AllowedDestinations {
-		fmt.Fprintf(hash, "allow=%q\n", destination)
+		fmt.Fprintf(hash, "allow=%q\n", destination) //nolint:errcheck // hash.Hash.Write never returns an error
 	}
 	for _, nameserver := range p.Nameservers {
-		fmt.Fprintf(hash, "nameserver=%q\n", nameserver)
+		fmt.Fprintf(hash, "nameserver=%q\n", nameserver) //nolint:errcheck // hash.Hash.Write never returns an error
 	}
 	for _, argument := range RequiredKernelArgs {
-		fmt.Fprintf(hash, "kernel-argument=%q\n", argument)
+		fmt.Fprintf(hash, "kernel-argument=%q\n", argument) //nolint:errcheck // hash.Hash.Write never returns an error
 	}
 	return fmt.Sprintf("sha256:%x", hash.Sum(nil))
 }

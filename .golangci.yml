@@ -1,0 +1,16 @@
+# golangci-lint v2.12.2, the version CI pins. CI runs `GOOS=linux golangci-lint run ./...`, the
+# platform the Go binaries ship for; the module also lints clean with GOOS=darwin.
+version: "2"
+
+linters:
+  # Added to the default set: errcheck, govet, ineffassign, staticcheck and unused.
+  enable:
+    # An HTTP request, dial, listen or exec without a context cannot be cancelled by its caller.
+    - noctx
+    # Every exception has the form `//nolint:<linter> // <reason>`: it names what it silences, says
+    # why, and fails the run once nothing on its line needs it.
+    - nolintlint
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true

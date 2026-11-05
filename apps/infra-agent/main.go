@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,6 +24,10 @@ func main() {
 		os.Exit(2)
 	}
 
+	// The root of every context below. Nothing cancels it: the agent has no graceful shutdown, and a
+	// signal ends the process as it always has.
+	ctx := context.Background()
+
 	switch os.Args[1] {
 	case "version":
 		// The release workflow greps this exact line off the shipped bytes, which is what turns the
@@ -39,13 +44,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: portless-agent benchmark <host:port>")
 			os.Exit(2)
 		}
-		writeJSON(agent.BenchmarkTCP(os.Args[2], 5, 2*time.Second))
+		writeJSON(agent.BenchmarkTCP(ctx, os.Args[2], 5, 2*time.Second))
 	case "op":
 		// Reads an Operation from stdin and prints the resolved allowlisted command.
 		// Dry-run only: this never executes, and there is no raw-shell path.
 		runOp()
 	case "connect":
-		runConnect()
+		runConnect(ctx)
 	default:
 		usage()
 		os.Exit(2)
@@ -58,7 +63,7 @@ func usage() {
 
 // connect dials the hub over WSS and serves its commands (deploy containers, exec). The agent dials
 // OUT — no inbound port — so it works on a NAT'd box with no public IP.
-func runConnect() {
+func runConnect(ctx context.Context) {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
 	// The systemd unit feeds these through /etc/portless/agent.env, so both names have to be
 	// accepted here before any installer starts writing the new one into that file.
@@ -75,9 +80,9 @@ func runConnect() {
 	// (reads it to reverse-proxy <app>.<domain> → loopback). Data channel = control URL with /agent→/data.
 	reg := agent.NewRegistry()
 	dataURL := strings.TrimSuffix(*hub, "/agent") + "/data"
-	go agent.ConnectData(dataURL, *token, *name, reg)
+	go agent.ConnectData(ctx, dataURL, *token, *name, reg)
 	mesh := agent.NewMeshManager() // dumbpipe sidecars for cross-node service links
-	agent.Connect(*hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token, Reg: reg, Mesh: mesh})
+	agent.Connect(ctx, *hub, *token, *name, version, []agent.Role{agent.RoleWorker}, agent.ShellRunner{Docker: *docker, Token: *token, Reg: reg, Mesh: mesh})
 }
 
 func runPlan() {

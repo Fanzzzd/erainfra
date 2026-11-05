@@ -81,6 +81,7 @@ func parseTicket(s string) string {
 // Share exposes local 127.0.0.1:<port> on the mesh and returns the ticket to hand to the other node.
 func (m *MeshManager) Share(name string, port int) (string, error) {
 	_ = m.Drop(name) // replace any prior link with this name
+	//nolint:noctx // the sidecar outlives the command that starts it; Drop ends it
 	cmd := exec.Command(dumbpipeBin(), "listen-tcp", "--host", fmt.Sprintf("127.0.0.1:%d", port))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -130,6 +131,7 @@ func (m *MeshManager) Share(name string, port int) (string, error) {
 // it's ready; a bad ticket exits fast.
 func (m *MeshManager) Connect(name, ticket string, localPort int) (string, error) {
 	_ = m.Drop(name)
+	//nolint:noctx // the sidecar outlives the command that starts it; Drop ends it
 	cmd := exec.Command(dumbpipeBin(), "connect-tcp", "--addr", fmt.Sprintf("0.0.0.0:%d", localPort), ticket)
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("dumbpipe start: %w", err)

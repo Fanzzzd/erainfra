@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,15 +27,15 @@ import (
 // (docker CLI now, like Coolify; the Docker Go SDK later for typed lifecycle/events) and so tests
 // can use a fake.
 type Runner interface {
-	Deploy(image, name string, args []string, env map[string]string, port int) (string, error)
-	DeployApp(app string, services []Service) (string, error)
+	Deploy(ctx context.Context, image, name string, args []string, env map[string]string, port int) (string, error)
+	DeployApp(ctx context.Context, app string, services []Service) (string, error)
 	MeshShare(name string, port int) (string, error)                // expose a local port on the mesh → ticket
 	MeshConnect(name, ticket string, localPort int) (string, error) // dial a ticket → local 127.0.0.1:localPort
 	MeshDrop(name string) (string, error)                           // tear down a mesh link by name
 	Serve(app string, port int) (string, error)                     // (re)register app->port for the data plane, no deploy
-	Execute(command Command) (string, error)
-	Build(src BuildSource, registry, tag, hubBase string) (string, error)
-	ReadSpec(src BuildSource) (string, error) // fetch the source, return its portless.yaml ("" if absent)
+	Execute(ctx context.Context, command Command) (string, error)
+	Build(ctx context.Context, src BuildSource, registry, tag, hubBase string) (string, error)
+	ReadSpec(ctx context.Context, src BuildSource) (string, error) // fetch the source, return its portless.yaml ("" if absent)
 }
 
 // Service is one container of a multi-service ("compose-like") app. The whole app shares a per-app
@@ -102,18 +103,18 @@ func (r ShellRunner) cli() string {
 	return "docker"
 }
 
-func (r ShellRunner) Execute(command Command) (string, error) {
+func (r ShellRunner) Execute(ctx context.Context, command Command) (string, error) {
 	if command.Path == "" || len(command.Argv) == 0 || command.Argv[0] != command.Path {
 		return "", fmt.Errorf("invalid resolved command")
 	}
-	out, err := exec.Command(command.Path, command.Argv[1:]...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, command.Path, command.Argv[1:]...).CombinedOutput()
 	return string(out), err
 }
 
 // Deploy pulls the image from the registry and (re)runs it detached. Idempotent on name. Secrets
 // arrive as a map and are written to a 0600 --env-file (never argv) so they don't show in `ps` or
 // leak into the reply output; the file is removed after the run.
-func (r ShellRunner) Deploy(image, name string, args []string, env map[string]string, port int) (string, error) {
+func (r ShellRunner) Deploy(ctx context.Context, image, name string, args []string, env map[string]string, port int) (string, error) {
 	if err := validateDockerArgs(args); err != nil {
 		return "", err
 	}
@@ -121,8 +122,8 @@ func (r ShellRunner) Deploy(image, name string, args []string, env map[string]st
 	var b strings.Builder
 	// Pull only if the image isn't already present locally. This supports pre-loaded / air-gapped
 	// nodes (self-hosted, no Docker Hub) and skips a needless registry round-trip on every deploy.
-	if exec.Command(d, "image", "inspect", image).Run() != nil {
-		if out, err := exec.Command(d, "pull", image).CombinedOutput(); err != nil {
+	if exec.CommandContext(ctx, d, "image", "inspect", image).Run() != nil {
+		if out, err := exec.CommandContext(ctx, d, "pull", image).CombinedOutput(); err != nil {
 			return string(out), fmt.Errorf("pull: %w", err)
 		} else {
 			b.Write(out)
@@ -133,13 +134,13 @@ func (r ShellRunner) Deploy(image, name string, args []string, env map[string]st
 		if err != nil {
 			return "", fmt.Errorf("env-file: %w", err)
 		}
-		defer os.Remove(ef)
+		defer removeSecretPath(ef)
 		args = append([]string{"--env-file", ef}, args...) // before args, so a platform -e PORT still wins
 	}
-	_ = exec.Command(d, "rm", "-f", name).Run() // replace any prior container with this name
+	_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace any prior container with this name
 	runArgs := append([]string{"run", "-d", "--name", name}, args...)
 	runArgs = append(runArgs, image)
-	out, err := exec.Command(d, runArgs...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, d, runArgs...).CombinedOutput()
 	b.Write(out)
 	if err != nil {
 		return b.String(), fmt.Errorf("run: %w", err)
@@ -167,7 +168,7 @@ func (r ShellRunner) Serve(app string, port int) (string, error) {
 // network. Idempotent on the app+service names. Exposed services (Route set) register app->port so the
 // data plane can reverse-proxy them — their Args must publish the port (e.g. -p 127.0.0.1:port:cport).
 // Best-effort sequential: a service that fails to run aborts and returns the output so far.
-func (r ShellRunner) DeployApp(app string, services []Service) (string, error) {
+func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Service) (string, error) {
 	for _, service := range services {
 		if err := validateDockerArgs(service.Args); err != nil {
 			return "", fmt.Errorf("service %s: %w", service.Name, err)
@@ -178,15 +179,15 @@ func (r ShellRunner) DeployApp(app string, services []Service) (string, error) {
 	var b strings.Builder
 	// Ensure the shared network. `network create` errors if it already exists — that's fine on
 	// re-deploy, so only surface a failure when the network still isn't there afterwards.
-	if out, err := exec.Command(d, "network", "create", net).CombinedOutput(); err != nil {
-		if exec.Command(d, "network", "inspect", net).Run() != nil {
+	if out, err := exec.CommandContext(ctx, d, "network", "create", net).CombinedOutput(); err != nil {
+		if exec.CommandContext(ctx, d, "network", "inspect", net).Run() != nil {
 			return string(out), fmt.Errorf("network %s: %w", net, err)
 		}
 	}
 	for _, s := range services {
 		name := app + "-" + s.Name
-		if exec.Command(d, "image", "inspect", s.Image).Run() != nil {
-			if out, err := exec.Command(d, "pull", s.Image).CombinedOutput(); err != nil {
+		if exec.CommandContext(ctx, d, "image", "inspect", s.Image).Run() != nil {
+			if out, err := exec.CommandContext(ctx, d, "pull", s.Image).CombinedOutput(); err != nil {
 				return b.String() + string(out), fmt.Errorf("pull %s: %w", s.Name, err)
 			} else {
 				b.Write(out)
@@ -198,13 +199,13 @@ func (r ShellRunner) DeployApp(app string, services []Service) (string, error) {
 			if err != nil {
 				return b.String(), fmt.Errorf("env-file %s: %w", s.Name, err)
 			}
-			defer os.Remove(ef)
+			defer removeSecretPath(ef)
 			run = append(run, "--env-file", ef)
 		}
 		run = append(run, s.Args...)
 		run = append(run, s.Image)
-		_ = exec.Command(d, "rm", "-f", name).Run() // replace any prior container with this name
-		out, err := exec.Command(d, run...).CombinedOutput()
+		_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace any prior container with this name
+		out, err := exec.CommandContext(ctx, d, run...).CombinedOutput()
 		b.Write(out)
 		if err != nil {
 			return b.String(), fmt.Errorf("run %s: %w", s.Name, err)
@@ -224,8 +225,8 @@ func writeEnvFile(env map[string]string) (string, error) {
 		return "", err
 	}
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close() // the Chmod error is the one to report
+		removeSecretPath(f.Name())
 		return "", err
 	}
 	var b strings.Builder
@@ -236,28 +237,37 @@ func writeEnvFile(env map[string]string) (string, error) {
 		b.WriteByte('\n')
 	}
 	if _, err := f.WriteString(b.String()); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close() // the write error is the one to report
+		removeSecretPath(f.Name())
 		return "", err
 	}
 	return f.Name(), f.Close()
 }
 
+// removeSecretPath deletes a temp path that can hold a secret: an env file, or a checkout whose
+// .git/config keeps a clone URL with a GitHub App token in it. A failure leaves that secret on disk,
+// so it is logged rather than dropped.
+func removeSecretPath(path string) {
+	if err := os.RemoveAll(path); err != nil {
+		fmt.Printf("[agent] could not remove %s: %v\n", path, err)
+	}
+}
+
 // fetchSource materializes a BuildSource (git clone OR tarball download) into dir. Git urls may embed
 // a short-lived GitHub App token; tarballs are fetched with the agent's own hub token. Neither is
 // persisted, and clone errors are scrubbed of the url before they leave this box.
-func (r ShellRunner) fetchSource(dir string, src BuildSource) (string, error) {
+func (r ShellRunner) fetchSource(ctx context.Context, dir string, src BuildSource) (string, error) {
 	switch {
 	case src.TarURL != "":
 		// Token via env (not argv) so it doesn't show in `ps`. The /builds route is app.deploy-gated.
-		cmd := exec.Command("sh", "-c", fmt.Sprintf(`curl -fsSL -H "Authorization: Bearer $PL_TOK" %s | tar -xz -C %s`, shellQuote(src.TarURL), shellQuote(dir)))
+		cmd := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(`curl -fsSL -H "Authorization: Bearer $PL_TOK" %s | tar -xz -C %s`, shellQuote(src.TarURL), shellQuote(dir)))
 		cmd.Env = append(os.Environ(), "PL_TOK="+r.Token)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return string(out), fmt.Errorf("fetch source: %w", err)
 		}
 		return "", nil
 	default:
-		clone := exec.Command("git", "clone", "--depth", "1", "--branch", src.Ref, src.RepoURL, dir)
+		clone := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", src.Ref, src.RepoURL, dir)
 		out, err := clone.CombinedOutput()
 		if err != nil {
 			return scrub(string(out), src.RepoURL), fmt.Errorf("clone: %w", err)
@@ -307,26 +317,26 @@ func contains(root, p string) bool {
 
 // Build fetches a source into a temp dir, then builds+pushes its (sub)directory as an image, reusing
 // the hub's image.sh (Dockerfile-or-nixpacks auto-detect) so there's one source of build logic.
-func (r ShellRunner) Build(src BuildSource, registry, tag, hubBase string) (string, error) {
+func (r ShellRunner) Build(ctx context.Context, src BuildSource, registry, tag, hubBase string) (string, error) {
 	dir, err := os.MkdirTemp("", "pl-build-")
 	if err != nil {
 		return "", fmt.Errorf("tempdir: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer removeSecretPath(dir)
 	var b strings.Builder
-	out, err := r.fetchSource(dir, src)
+	out, err := r.fetchSource(ctx, dir, src)
 	b.WriteString(out)
 	if err != nil {
 		return b.String(), err
 	}
-	ctx, err := contextDir(dir, src.Dir)
+	buildDir, err := contextDir(dir, src.Dir)
 	if err != nil {
 		return b.String(), err
 	}
 	// Build + push via the hub's image.sh (auto-detects Dockerfile vs nixpacks), targeting the registry.
 	sh := fmt.Sprintf("curl -fsSL %s/image.sh | PORTLESS_REGISTRY=%s sh -s -- ship %s %s",
-		shellQuote(hubBase), shellQuote(registry), shellQuote(ctx), shellQuote(tag))
-	sout, err := exec.Command("sh", "-c", sh).CombinedOutput()
+		shellQuote(hubBase), shellQuote(registry), shellQuote(buildDir), shellQuote(tag))
+	sout, err := exec.CommandContext(ctx, "sh", "-c", sh).CombinedOutput()
 	b.Write(sout)
 	if err != nil {
 		return b.String(), fmt.Errorf("build: %w", err)
@@ -337,13 +347,13 @@ func (r ShellRunner) Build(src BuildSource, registry, tag, hubBase string) (stri
 // ReadSpec fetches the source and returns its portless.yaml (or .yml) content, "" when the repo has
 // none — the hub then falls back to a single-service deploy. Kept as its own cheap command so the hub
 // can plan (services, builds, placement, links) BEFORE kicking off any build.
-func (r ShellRunner) ReadSpec(src BuildSource) (string, error) {
+func (r ShellRunner) ReadSpec(ctx context.Context, src BuildSource) (string, error) {
 	dir, err := os.MkdirTemp("", "pl-spec-")
 	if err != nil {
 		return "", fmt.Errorf("tempdir: %w", err)
 	}
-	defer os.RemoveAll(dir)
-	if out, err := r.fetchSource(dir, src); err != nil {
+	defer removeSecretPath(dir)
+	if out, err := r.fetchSource(ctx, dir, src); err != nil {
 		return out, err
 	}
 	return specFromCheckout(dir), nil
@@ -445,7 +455,7 @@ type replyMsg struct {
 
 // RunCmd dispatches one hub command to the runner and builds the reply. Pure given the runner, so
 // it's unit-testable with a fake.
-func RunCmd(m cmdMsg, r Runner) replyMsg {
+func RunCmd(ctx context.Context, m cmdMsg, r Runner) replyMsg {
 	reply := replyMsg{Type: "reply", ID: m.ID}
 	var out string
 	var err error
@@ -458,11 +468,11 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 		var command Command
 		command, err = Resolve(m.Operation)
 		if err == nil {
-			out, err = r.Execute(command)
+			out, err = r.Execute(ctx, command)
 		}
 	case "deploy":
 		if err = validateDockerArgs(m.Args); err == nil {
-			out, err = r.Deploy(m.Image, m.Name, m.Args, m.Env, m.Port)
+			out, err = r.Deploy(ctx, m.Image, m.Name, m.Args, m.Env, m.Port)
 		}
 	case "deployApp":
 		for _, service := range m.Services {
@@ -472,7 +482,7 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 			}
 		}
 		if err == nil {
-			out, err = r.DeployApp(m.App, m.Services)
+			out, err = r.DeployApp(ctx, m.App, m.Services)
 		}
 	case "serve":
 		out, err = r.Serve(m.App, m.Port)
@@ -483,9 +493,9 @@ func RunCmd(m cmdMsg, r Runner) replyMsg {
 	case "meshDrop":
 		out, err = r.MeshDrop(m.Name)
 	case "build":
-		out, err = r.Build(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL, Dir: m.Dir}, m.Registry, m.Tag, m.HubBase)
+		out, err = r.Build(ctx, BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL, Dir: m.Dir}, m.Registry, m.Tag, m.HubBase)
 	case "spec":
-		out, err = r.ReadSpec(BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL})
+		out, err = r.ReadSpec(ctx, BuildSource{RepoURL: m.RepoURL, Ref: m.Ref, TarURL: m.TarURL})
 	default:
 		reply.OK = false
 		reply.Error = "unknown cmd: " + m.Cmd
@@ -520,25 +530,25 @@ func decodeCmd(raw []byte) (cmdMsg, error) {
 }
 
 // Connect dials the hub and serves commands forever, reconnecting with a fixed backoff on drop.
-func Connect(hubURL, token, agentID, version string, roles []Role, runner Runner) {
+func Connect(ctx context.Context, hubURL, token, agentID, version string, roles []Role, runner Runner) {
 	for {
-		if err := connectOnce(hubURL, token, agentID, version, roles, runner); err != nil {
+		if err := connectOnce(ctx, hubURL, token, agentID, version, roles, runner); err != nil {
 			fmt.Printf("[agent] disconnected: %v — retrying in 3s\n", err)
 		}
 		time.Sleep(3 * time.Second)
 	}
 }
 
-func connectOnce(hubURL, token, agentID, version string, roles []Role, runner Runner) error {
+func connectOnce(ctx context.Context, hubURL, token, agentID, version string, roles []Role, runner Runner) error {
 	h := http.Header{}
 	if token != "" {
 		h.Set("Authorization", "Bearer "+token)
 	}
-	c, _, err := websocket.DefaultDialer.Dial(hubURL, h)
+	c, _, err := websocket.DefaultDialer.DialContext(ctx, hubURL, h)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
-	defer c.Close()
+	defer c.Close() //nolint:errcheck // the connection is being torn down either way; the caller logs the cause
 	// Writes come from two goroutines now (replies + heartbeats) — gorilla forbids concurrent writers,
 	// so guard every write with a mutex and a deadline (a black-hole hub then errors instead of hanging).
 	var wmu sync.Mutex
@@ -566,7 +576,7 @@ func connectOnce(hubURL, token, agentID, version string, roles []Role, runner Ru
 				return
 			case <-t.C:
 				if err := writeJSON(map[string]any{"type": "heartbeat"}); err != nil {
-					c.Close() // dead hub → unblock the read loop → reconnect
+					_ = c.Close() // dead hub → unblock the read loop → reconnect
 					return
 				}
 			}
@@ -586,7 +596,7 @@ func connectOnce(hubURL, token, agentID, version string, roles []Role, runner Ru
 		if m.Type != "cmd" {
 			continue
 		}
-		if err := writeJSON(RunCmd(m, runner)); err != nil {
+		if err := writeJSON(RunCmd(ctx, m, runner)); err != nil {
 			return fmt.Errorf("write reply: %w", err)
 		}
 	}

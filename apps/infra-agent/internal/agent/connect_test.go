@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,21 +15,31 @@ type fakeRunner struct {
 	execErr, depErr, buildErr, appErr, meshErr error
 	executed                                   *Command
 	deployCalled                               *bool
+	contexts                                   *[]context.Context
 }
 
-func (f fakeRunner) Execute(command Command) (string, error) {
+func (f fakeRunner) saw(ctx context.Context) {
+	if f.contexts != nil {
+		*f.contexts = append(*f.contexts, ctx)
+	}
+}
+
+func (f fakeRunner) Execute(ctx context.Context, command Command) (string, error) {
+	f.saw(ctx)
 	if f.executed != nil {
 		*f.executed = command
 	}
 	return f.execOut, f.execErr
 }
-func (f fakeRunner) Deploy(image, name string, a []string, env map[string]string, port int) (string, error) {
+func (f fakeRunner) Deploy(ctx context.Context, image, name string, a []string, env map[string]string, port int) (string, error) {
+	f.saw(ctx)
 	if f.deployCalled != nil {
 		*f.deployCalled = true
 	}
 	return f.depOut, f.depErr
 }
-func (f fakeRunner) DeployApp(app string, services []Service) (string, error) {
+func (f fakeRunner) DeployApp(ctx context.Context, app string, services []Service) (string, error) {
+	f.saw(ctx)
 	return f.appOut, f.appErr
 }
 func (f fakeRunner) MeshShare(name string, port int) (string, error) { return f.meshOut, f.meshErr }
@@ -36,13 +48,17 @@ func (f fakeRunner) MeshConnect(name, ticket string, localPort int) (string, err
 }
 func (f fakeRunner) MeshDrop(name string) (string, error)       { return f.meshOut, f.meshErr }
 func (f fakeRunner) Serve(app string, port int) (string, error) { return "registered " + app, nil }
-func (f fakeRunner) Build(src BuildSource, reg, tag, hub string) (string, error) {
+func (f fakeRunner) Build(ctx context.Context, src BuildSource, reg, tag, hub string) (string, error) {
+	f.saw(ctx)
 	return f.buildOut, f.buildErr
 }
-func (f fakeRunner) ReadSpec(src BuildSource) (string, error) { return f.buildOut, f.buildErr }
+func (f fakeRunner) ReadSpec(ctx context.Context, src BuildSource) (string, error) {
+	f.saw(ctx)
+	return f.buildOut, f.buildErr
+}
 
 func TestRunCmdPing(t *testing.T) {
-	r := RunCmd(cmdMsg{Type: "cmd", ID: "1", Cmd: "ping"}, fakeRunner{})
+	r := RunCmd(t.Context(), cmdMsg{Type: "cmd", ID: "1", Cmd: "ping"}, fakeRunner{})
 	if !r.OK || r.Output != "pong" || r.ID != "1" || r.Type != "reply" {
 		t.Fatalf("ping: %+v", r)
 	}
@@ -50,7 +66,7 @@ func TestRunCmdPing(t *testing.T) {
 
 func TestRunCmdResolvesTypedOperationAtTheNodeBoundary(t *testing.T) {
 	var executed Command
-	r := RunCmd(cmdMsg{ID: "2", Cmd: "operate", Operation: Operation{Name: "disk.usage", Args: map[string]string{}}}, fakeRunner{execOut: "disk\n", executed: &executed})
+	r := RunCmd(t.Context(), cmdMsg{ID: "2", Cmd: "operate", Operation: Operation{Name: "disk.usage", Args: map[string]string{}}}, fakeRunner{execOut: "disk\n", executed: &executed})
 	if !r.OK || r.Output != "disk\n" {
 		t.Fatalf("operate: %+v", r)
 	}
@@ -60,7 +76,7 @@ func TestRunCmdResolvesTypedOperationAtTheNodeBoundary(t *testing.T) {
 }
 
 func TestRunCmdOperationErr(t *testing.T) {
-	r := RunCmd(cmdMsg{ID: "3", Cmd: "operate", Operation: Operation{Name: "disk.usage"}}, fakeRunner{execErr: errors.New("boom")})
+	r := RunCmd(t.Context(), cmdMsg{ID: "3", Cmd: "operate", Operation: Operation{Name: "disk.usage"}}, fakeRunner{execErr: errors.New("boom")})
 	if r.OK || r.Error != "boom" {
 		t.Fatalf("operation err: %+v", r)
 	}
@@ -74,7 +90,7 @@ func TestDecodeCmdRejectsCallerControlledArgv(t *testing.T) {
 }
 
 func TestRunCmdDeploy(t *testing.T) {
-	r := RunCmd(cmdMsg{ID: "4", Cmd: "deploy", Image: "busybox", Name: "demo"}, fakeRunner{depOut: "started"})
+	r := RunCmd(t.Context(), cmdMsg{ID: "4", Cmd: "deploy", Image: "busybox", Name: "demo"}, fakeRunner{depOut: "started"})
 	if !r.OK || r.Output != "started" {
 		t.Fatalf("deploy: %+v", r)
 	}
@@ -82,28 +98,109 @@ func TestRunCmdDeploy(t *testing.T) {
 
 func TestRunCmdDeployApp(t *testing.T) {
 	m := cmdMsg{ID: "7", Cmd: "deployApp", App: "flight", Services: []Service{{Name: "web", Image: "nginx", Port: 80, Route: "flight"}, {Name: "db", Image: "postgres"}}}
-	r := RunCmd(m, fakeRunner{appOut: "up"})
+	r := RunCmd(t.Context(), m, fakeRunner{appOut: "up"})
 	if !r.OK || r.Output != "up" {
 		t.Fatalf("deployApp: %+v", r)
 	}
 }
 
 func TestRunCmdMesh(t *testing.T) {
-	share := RunCmd(cmdMsg{ID: "8", Cmd: "meshShare", Name: "db", Port: 5432}, fakeRunner{meshOut: "TICKET123"})
+	share := RunCmd(t.Context(), cmdMsg{ID: "8", Cmd: "meshShare", Name: "db", Port: 5432}, fakeRunner{meshOut: "TICKET123"})
 	if !share.OK || share.Output != "TICKET123" {
 		t.Fatalf("meshShare: %+v", share)
 	}
-	conn := RunCmd(cmdMsg{ID: "9", Cmd: "meshConnect", Name: "db", Ticket: "TICKET123", Port: 15432}, fakeRunner{meshOut: "127.0.0.1:15432"})
+	conn := RunCmd(t.Context(), cmdMsg{ID: "9", Cmd: "meshConnect", Name: "db", Ticket: "TICKET123", Port: 15432}, fakeRunner{meshOut: "127.0.0.1:15432"})
 	if !conn.OK || conn.Output != "127.0.0.1:15432" {
 		t.Fatalf("meshConnect: %+v", conn)
 	}
 }
 
 func TestRunCmdBuild(t *testing.T) {
-	r := RunCmd(cmdMsg{ID: "6", Cmd: "build", RepoURL: "https://x@github.com/o/r.git", Ref: "main", Tag: "r:abc"}, fakeRunner{buildOut: "shipped"})
+	r := RunCmd(t.Context(), cmdMsg{ID: "6", Cmd: "build", RepoURL: "https://x@github.com/o/r.git", Ref: "main", Tag: "r:abc"}, fakeRunner{buildOut: "shipped"})
 	if !r.OK || r.Output != "shipped" {
 		t.Fatalf("build: %+v", r)
 	}
+}
+
+// Every command that shells out runs under the caller's context, so cancelling it reaches the
+// child process instead of stopping at RunCmd.
+func TestRunCmdPassesTheCallerContextToTheRunner(t *testing.T) {
+	type key struct{}
+	ctx := context.WithValue(t.Context(), key{}, "caller")
+	var seen []context.Context
+	runner := fakeRunner{contexts: &seen}
+	for _, m := range []cmdMsg{
+		{ID: "a", Cmd: "operate", Operation: Operation{Name: "disk.usage", Args: map[string]string{}}},
+		{ID: "b", Cmd: "deploy", Image: "busybox", Name: "demo"},
+		{ID: "c", Cmd: "deployApp", App: "flight", Services: []Service{{Name: "web", Image: "nginx"}}},
+		{ID: "d", Cmd: "build", RepoURL: "https://github.com/o/r.git", Ref: "main", Tag: "r:abc"},
+		{ID: "e", Cmd: "spec", RepoURL: "https://github.com/o/r.git", Ref: "main"},
+	} {
+		if r := RunCmd(ctx, m, runner); !r.OK {
+			t.Fatalf("%s: %+v", m.Cmd, r)
+		}
+	}
+	if len(seen) != 5 {
+		t.Fatalf("runner saw %d contexts, want 5", len(seen))
+	}
+	for i, got := range seen {
+		if got.Value(key{}) != "caller" {
+			t.Fatalf("call %d ran under a context that is not the caller's", i)
+		}
+	}
+}
+
+// A temp env file or checkout that cannot be removed leaves a secret on disk, so the failure is
+// reported instead of dropped.
+func TestRemoveSecretPathRemovesTreesAndReportsFailure(t *testing.T) {
+	root := t.TempDir()
+	checkout := filepath.Join(root, "checkout")
+	mustMkdirAll(t, filepath.Join(checkout, ".git"))
+	if err := os.WriteFile(filepath.Join(checkout, ".git", "config"), []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removeSecretPath(checkout)
+	if _, err := os.Lstat(checkout); !os.IsNotExist(err) {
+		t.Fatalf("checkout still present after removal: %v", err)
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so the failure case cannot be staged")
+	}
+	locked := filepath.Join(root, "locked")
+	envFile := filepath.Join(locked, "pl-env-1")
+	mustMkdirAll(t, locked)
+	if err := os.WriteFile(envFile, []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	output := captureStdout(t, func() { removeSecretPath(envFile) })
+	if !strings.Contains(output, "could not remove "+envFile) {
+		t.Fatalf("failure was not reported; stdout = %q", output)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = write
+	fn()
+	os.Stdout = original
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 func TestShellQuote(t *testing.T) {
@@ -116,7 +213,7 @@ func TestShellQuote(t *testing.T) {
 }
 
 func TestRunCmdUnknown(t *testing.T) {
-	r := RunCmd(cmdMsg{ID: "5", Cmd: "frob"}, fakeRunner{})
+	r := RunCmd(t.Context(), cmdMsg{ID: "5", Cmd: "frob"}, fakeRunner{})
 	if r.OK || r.Error == "" {
 		t.Fatalf("unknown: %+v", r)
 	}

@@ -128,7 +128,7 @@ func reportResult(token string, exitCode int) error {
 	if err != nil {
 		return fmt.Errorf("open guest console: %w", err)
 	}
-	defer console.Close()
+	defer console.Close() //nolint:errcheck // the marker went out in write(2) to a character device; close flushes nothing
 	if _, err := fmt.Fprintf(console, "\x1eRUNNER_CENTER_RESULT:%s:%d\n", token, exitCode); err != nil {
 		return fmt.Errorf("report Experiment result: %w", err)
 	}
@@ -140,7 +140,7 @@ func reportWarmReady() error {
 	if err != nil {
 		return fmt.Errorf("open guest console: %w", err)
 	}
-	defer console.Close()
+	defer console.Close() //nolint:errcheck // the marker went out in write(2) to a character device; close flushes nothing
 	if _, err := io.WriteString(console, warmReadyMarker); err != nil {
 		return fmt.Errorf("report warm readiness: %w", err)
 	}
@@ -298,7 +298,9 @@ func run(ctx context.Context) error {
 		// what the VMM listens for: with reboot=k on the command line the kernel
 		// pulses the i8042 reset line, Firecracker sees it and exits. systemd
 		// still stops every unit and unmounts the root first.
-		reset := exec.Command("systemctl", "reboot", "--no-block")
+		// Without cancel: a SIGTERM that lands after the runner has exited must
+		// not stop the reset, since the reset is what ends the VMM.
+		reset := exec.CommandContext(context.WithoutCancel(ctx), "systemctl", "reboot", "--no-block")
 		if resetErr := reset.Run(); resetErr != nil {
 			return fmt.Errorf("reset the microVM after runner exit: %w", resetErr)
 		}

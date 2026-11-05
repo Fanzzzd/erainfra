@@ -33,7 +33,7 @@ func readMeminfo() (totalMB, availMB int64) {
 	if err != nil {
 		return 0, 0
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file; a close error loses nothing
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		fields := strings.Fields(s.Text())

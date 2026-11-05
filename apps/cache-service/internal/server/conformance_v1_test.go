@@ -219,7 +219,7 @@ func TestV1ReserveRefusesAnExistingEntry(t *testing.T) {
 
 	response := h.postJSON(v1Path("caches"), token,
 		jsonBody(map[string]any{"key": "key-A1", "version": versionA}))
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("second reserve = %d, want 409", response.StatusCode)
 	}
@@ -241,10 +241,10 @@ func TestV1CommitRefusesASizeMismatch(t *testing.T) {
 	body := payload(100)
 	patch := h.do(http.MethodPatch, v1Path("caches/")+itoa(reserved.CacheID), token,
 		bytes.NewReader(body), map[string]string{"Content-Range": "bytes 0-99/*"})
-	patch.Body.Close()
+	_ = patch.Body.Close()
 
 	commit := h.postJSON(v1Path("caches/")+itoa(reserved.CacheID), token, `{"size":200}`)
-	defer commit.Body.Close()
+	defer commit.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if commit.StatusCode != http.StatusBadRequest {
 		t.Fatalf("commit = %d, want 400", commit.StatusCode)
 	}
@@ -265,7 +265,7 @@ func TestV1UploadRefusesAShortChunk(t *testing.T) {
 
 	response := h.do(http.MethodPatch, v1Path("caches/")+itoa(reserved.CacheID), token,
 		strings.NewReader("short"), map[string]string{"Content-Range": "bytes 0-99/*"})
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("PATCH = %d, want 400", response.StatusCode)
 	}

@@ -151,7 +151,7 @@ func (h *harness) pushToken(repository, ref string) string {
 
 func (h *harness) do(method, path, token string, body io.Reader, headers map[string]string) *http.Response {
 	h.t.Helper()
-	request, err := http.NewRequest(method, h.http.URL+path, body)
+	request, err := http.NewRequestWithContext(h.t.Context(), method, h.http.URL+path, body)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -175,7 +175,11 @@ func (h *harness) postJSON(path, token, body string) *http.Response {
 
 func (h *harness) getURL(url string) *http.Response {
 	h.t.Helper()
-	response, err := h.http.Client().Get(url)
+	request, err := http.NewRequestWithContext(h.t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	response, err := h.http.Client().Do(request)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -184,7 +188,7 @@ func (h *harness) getURL(url string) *http.Response {
 
 func readAll(t *testing.T, response *http.Response) []byte {
 	t.Helper()
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +235,7 @@ func (h *harness) saveV1(token, key, version string, body []byte, chunks []chunk
 		if response.StatusCode != http.StatusNoContent {
 			h.t.Fatalf("PATCH at %d = %d %s", part.start, response.StatusCode, readAll(h.t, response))
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 	}
 
 	commit := h.postJSON(v1Path("caches/")+itoa(reserved.CacheID), token,
@@ -239,7 +243,7 @@ func (h *harness) saveV1(token, key, version string, body []byte, chunks []chunk
 	if commit.StatusCode != http.StatusNoContent {
 		h.t.Fatalf("commit = %d %s", commit.StatusCode, readAll(h.t, commit))
 	}
-	commit.Body.Close()
+	_ = commit.Body.Close()
 }
 
 type chunk struct {

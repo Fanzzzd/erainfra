@@ -154,7 +154,7 @@ func (c *Client) do(ctx context.Context, path string, input any, output any) err
 	if err != nil {
 		return fmt.Errorf("call privileged runtime: %w", err)
 	}
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	responsePayload, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBytes+1))
 	if err != nil {
 		return fmt.Errorf("read runtime response: %w", err)
@@ -204,11 +204,11 @@ func Serve(
 	if err != nil {
 		return fmt.Errorf("open runtime service lock: %w", err)
 	}
-	defer lock.Close()
+	defer lock.Close() //nolint:errcheck // Serve is returning; the kernel drops the flock with the descriptor, error or not
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return errors.New("another runtime service already holds the socket lock")
 	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck -- process exit releases it too
+	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck // lock.Close, deferred above, releases it regardless
 	if info, err := os.Lstat(socketPath); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return errors.New("refusing to replace a non-socket runtime path")
@@ -224,7 +224,8 @@ func Serve(
 			return fmt.Errorf("recover abandoned runtime state: %w", err)
 		}
 	}
-	listener, err := net.Listen("unix", socketPath)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("listen on runtime socket: %w", err)
 	}
@@ -387,7 +388,7 @@ func handler(runtime executor.Executor) http.Handler {
 }
 
 func decodeRequest(request *http.Request, output any) error {
-	defer request.Body.Close()
+	defer request.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	payload, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
 	if err != nil {
 		return fmt.Errorf("read runtime request: %w", err)

@@ -9,21 +9,6 @@ import (
 	"strings"
 )
 
-// The names firecracker-go-sdk derives from a Machine's VMID, which Runner
-// Center sets to the Attempt ID. Recovery reconstructs them to release what
-// the SDK's own teardown would have released had the runtime not been killed.
-const (
-	// guestInterfaceName is the interface CNI configures inside the guest's
-	// network namespace.
-	guestInterfaceName = "eth0"
-	// cniCacheRoot is the SDK's default libcni cache directory; the cached ADD
-	// result under <root>/<containerID> is what lets a later DEL tear down the
-	// firewall and masquerade rules the plugins created.
-	cniCacheRoot = "/var/lib/cni"
-	// netNSDir is where the SDK mounts each VM's network namespace.
-	netNSDir = "/var/run/netns"
-)
-
 // A cniReservation is one address file written by the host-local IPAM plugin
 // under the network's data directory: the file is named after the allocated
 // IP and its first line is the owning container ID — for EraInfra, the

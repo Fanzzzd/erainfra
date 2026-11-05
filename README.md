@@ -153,10 +153,16 @@ Validation:
 pnpm check
 go test ./...
 go vet ./...
+GOOS=linux golangci-lint run ./...
 ```
 
 `pnpm check` is the JavaScript gate for the whole workspace: lint, formatting, type checking, and
-tests. CI also runs the production build, tests and vets the Go module, compiles both shipped Linux
+tests. The last line needs golangci-lint v2.12.2, the version CI pins. It reads `.golangci.yml`,
+which adds `noctx` and `nolintlint` to the default linters. `GOOS=linux` lints the code that ships;
+the module also lints clean with `GOOS=darwin`. A `//nolint` must name its linter and give a reason:
+`//nolint:errcheck // read-only body; a close error loses nothing`.
+
+CI also runs the production build, lints, tests and vets the Go module, compiles both shipped Linux
 architectures, asserts that the Infra Agent still links exactly one dependency, refuses any rename of
 an identifier a customer's machine already holds, and verifies that the npm lockfile used by
 installed Workers is current.

@@ -9,7 +9,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 )
 
-var errUnsupported = errors.New("Firecracker executor requires Linux with KVM")
+var errUnsupported = errors.New("Firecracker executor requires Linux with KVM") //nolint:staticcheck // ST1005: Firecracker is a product name
 
 type Runtime struct{}
 

@@ -163,7 +163,7 @@ func (s *S3) do(ctx context.Context, method string, target *url.URL, query url.V
 // statusError turns a non-2xx response into an error, reading a bounded amount
 // of the store's XML so an operator sees the store's own reason.
 func statusError(resp *http.Response) error {
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrNotFound
 	}
@@ -208,7 +208,7 @@ func (s *S3) GetBytes(ctx context.Context, key string, limit int64) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer reader.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return nil, err
@@ -251,7 +251,7 @@ func (s *S3) List(ctx context.Context, prefix string, max int) ([]Object, bool, 
 	if resp.StatusCode/100 != 2 {
 		return nil, false, statusError(resp)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 
 	var parsed listResult
 	if err := xml.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&parsed); err != nil {
@@ -396,7 +396,7 @@ func (u *s3Upload) begin(ctx context.Context) error {
 	if resp.StatusCode/100 != 2 {
 		return statusError(resp)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	var parsed struct {
 		UploadID string `xml:"UploadId"`
 	}
@@ -455,7 +455,7 @@ func (u *s3Upload) Complete(ctx context.Context) error {
 	if resp.StatusCode/100 != 2 {
 		return statusError(resp)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	// A multipart completion can fail inside a 200 response: the store starts
 	// the body, then writes an <Error> element into it. Treating 200 as success
 	// here would commit a cache entry that does not exist.

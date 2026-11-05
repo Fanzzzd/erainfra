@@ -203,11 +203,15 @@ func TestPresignedURLReadsExactlyOneObjectByGET(t *testing.T) {
 		t.Fatal("presigned URL leaked the secret key")
 	}
 
-	resp, err := http.Get(signed)
+	get, err := http.NewRequestWithContext(t.Context(), http.MethodGet, signed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	resp, err := http.DefaultClient.Do(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK || string(body) != "payload" {
 		t.Fatalf("GET presigned = %d %q", resp.StatusCode, body)
@@ -215,12 +219,12 @@ func TestPresignedURLReadsExactlyOneObjectByGET(t *testing.T) {
 
 	// Same URL, different method. The method is inside the signature, so the
 	// store refuses it.
-	req, _ := http.NewRequest(http.MethodPut, signed, strings.NewReader("poison"))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPut, signed, strings.NewReader("poison"))
 	replay, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replay.Body.Close()
+	defer replay.Body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if replay.StatusCode == http.StatusOK {
 		t.Fatal("a GET presigned URL was accepted as a PUT")
 	}

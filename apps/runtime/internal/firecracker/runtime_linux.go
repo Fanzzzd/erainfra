@@ -110,7 +110,7 @@ func (r *Runtime) recover(ctx context.Context, policy recoveryPolicy) error {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("connect to containerd: %w", err))
 		return errors.Join(cleanupErrors...)
 	}
-	defer client.Close()
+	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
 	ctx = namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
 	all, err := client.LeasesService().List(ctx)
 	if err != nil {
@@ -349,7 +349,7 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 		report.Fail(executor.CheckSnapshotter, fmt.Errorf("connect to containerd: %w", err))
 		return
 	}
-	defer client.Close()
+	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
 	response, err := client.IntrospectionService().Plugins(ctx, snapshotterFilter(r.config.Snapshotter))
 	if err != nil {
 		report.Fail(executor.CheckSnapshotter, fmt.Errorf("query containerd snapshotter: %w", err))
@@ -414,7 +414,7 @@ func (r *Runtime) checkAddressReservations(ctx context.Context, report *executor
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf("connect to containerd: %w", err))
 		return
 	}
-	defer client.Close()
+	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
 	all, err := client.LeasesService().List(namespaces.WithNamespace(ctx, r.config.ContainerdNamespace))
 	if err != nil {
 		report.Fail(executor.CheckCNIReservations, fmt.Errorf("list containerd leases: %w", err))
@@ -473,7 +473,7 @@ func (r *Runtime) PrepareProfile(
 	if err != nil {
 		return executor.WarmPoolStatus{}, fmt.Errorf("connect to containerd: %w", err)
 	}
-	defer client.Close()
+	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
 	containerdContext := namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
 	if _, err = ensureImage(containerdContext, client, r.config.Snapshotter, profile.ImageRelease); err != nil {
 		return executor.WarmPoolStatus{}, err
@@ -889,7 +889,7 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 			// StopVMM and therefore expected; only failing to exit matters.
 			exitContext, cancelExit := context.WithTimeout(context.WithoutCancel(ctx), vmmExitTimeout)
 			if err := l.machine.Wait(exitContext); errors.Is(err, context.DeadlineExceeded) {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf(
+				cleanupErrors = append(cleanupErrors, fmt.Errorf( //nolint:staticcheck // ST1005: Firecracker is a product name
 					"Firecracker VM did not exit within %s of being stopped", vmmExitTimeout,
 				))
 			}
@@ -967,7 +967,7 @@ func readableRegularFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer file.Close() //nolint:errcheck // read-only file; a close error loses nothing
 	info, err := file.Stat()
 	if err != nil {
 		return err
