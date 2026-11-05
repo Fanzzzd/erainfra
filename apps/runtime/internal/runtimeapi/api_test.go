@@ -223,7 +223,7 @@ type measuredLease struct {
 }
 
 func (l *measuredLease) ResourceSource() (jobmetrics.Source, error) { return l, nil }
-func (*measuredLease) Kind() string                                  { return "fake-vmm" }
+func (*measuredLease) Kind() string                                 { return "fake-vmm" }
 func (l *measuredLease) Read(time.Time) (jobmetrics.Reading, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
