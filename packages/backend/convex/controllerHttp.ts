@@ -99,6 +99,140 @@ function optionalNonnegativeInteger(value: unknown): value is number | undefined
 
 const immutableImagePattern = /@sha256:[0-9a-f]{64}$/;
 
+export type RegistrationScope =
+  | { kind: "repository"; host: string; owner: string; repository: string }
+  | { kind: "organization"; host: string; organization: string }
+  | { kind: "enterprise"; host: string; enterprise: string };
+
+const githubNamePattern = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/**
+ * Classifies a GitHub config URL by the rules the controller applies
+ * (apps/controller/internal/config RegistrationScope): one path segment is an organization,
+ * `enterprises/<slug>` an enterprise, any other two segments a repository. Anything else, or a URL
+ * with credentials, a query or a fragment, is refused.
+ */
+export function parseRegistrationScope(raw: unknown): RegistrationScope | null {
+  if (typeof raw !== "string" || raw.length > 512) return null;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.host.length === 0 ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    return null;
+  }
+  const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  if (!segments.every((segment) => githubNamePattern.test(segment))) return null;
+  if (segments.length === 1) {
+    return { kind: "organization", host: url.host, organization: segments[0] };
+  }
+  if (segments.length === 2 && segments[0].toLowerCase() === "enterprises") {
+    return { kind: "enterprise", host: url.host, enterprise: segments[1] };
+  }
+  if (segments.length === 2) {
+    return { kind: "repository", host: url.host, owner: segments[0], repository: segments[1] };
+  }
+  return null;
+}
+
+const MAX_LABELS = 32;
+
+function parseRegistration(payload: Record<string, unknown>) {
+  const { githubConfigUrl, githubCacheFacts, runnerGroup, labels } = payload;
+  if (githubCacheFacts !== undefined && typeof githubCacheFacts !== "boolean") return null;
+  if (githubConfigUrl === undefined) {
+    return runnerGroup === undefined && labels === undefined ? {} : null;
+  }
+  if (typeof githubConfigUrl !== "string" || parseRegistrationScope(githubConfigUrl) === null) {
+    return null;
+  }
+  if (
+    runnerGroup !== undefined &&
+    (typeof runnerGroup !== "string" || runnerGroup.trim().length === 0 || runnerGroup.length > 128)
+  ) {
+    return null;
+  }
+  if (
+    labels !== undefined &&
+    (!Array.isArray(labels) ||
+      labels.length > MAX_LABELS ||
+      !labels.every(
+        (label) =>
+          typeof label === "string" &&
+          label.trim().length > 0 &&
+          label.length <= 256 &&
+          !/\p{Cc}/u.test(label),
+      ))
+  ) {
+    return null;
+  }
+  return {
+    githubConfigUrl: githubConfigUrl.trim(),
+    ...(githubCacheFacts === undefined ? {} : { githubCacheFacts: githubCacheFacts as boolean }),
+    ...(runnerGroup === undefined ? {} : { runnerGroup: (runnerGroup as string).trim() }),
+    ...(labels === undefined ? {} : { labels: (labels as string[]).map((label) => label.trim()) }),
+  };
+}
+
+/** The header every controller request carries its lease epoch in, once it holds the lease. */
+export const LEASE_EPOCH_HEADER = "X-EraInfra-Lease-Epoch";
+
+/**
+ * The epoch a request carries: undefined when the header is absent, null when it is malformed (a
+ * malformed epoch is refused, never read as "no epoch", which would be the legacy path).
+ */
+export function parseLeaseEpoch(header: string | null): number | undefined | null {
+  if (header === null) return undefined;
+  const trimmed = header.trim();
+  if (!/^[1-9][0-9]{0,14}$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
+/** A controller process names itself with a random instance id; any printable token will do. */
+function instanceId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value);
+}
+
+export function parseLeaseRequest(payload: unknown) {
+  if (
+    !isRecord(payload) ||
+    !nonEmptyString(payload.profile) ||
+    !/^[A-Za-z0-9_.-]{1,64}$/.test(payload.profile.trim()) ||
+    !instanceId(payload.instance) ||
+    (payload.activate !== undefined && typeof payload.activate !== "boolean") ||
+    !token(payload.hostname, 255)
+  ) {
+    return null;
+  }
+  return {
+    profile: payload.profile.trim(),
+    instance: payload.instance,
+    hostname: payload.hostname.trim(),
+    activate: payload.activate === true,
+  };
+}
+
+export function parseGitHubTokenRequest(payload: unknown) {
+  if (
+    !isRecord(payload) ||
+    !nonEmptyString(payload.profile) ||
+    !/^[A-Za-z0-9_.-]{1,64}$/.test(payload.profile.trim()) ||
+    (payload.cacheFacts !== undefined && typeof payload.cacheFacts !== "boolean")
+  ) {
+    return null;
+  }
+  return { profile: payload.profile.trim(), cacheFacts: payload.cacheFacts === true };
+}
+
 export function parseRegisterProfile(payload: unknown) {
   if (
     !isRecord(payload) ||
@@ -139,7 +273,12 @@ export function parseRegisterProfile(payload: unknown) {
   if (!egress.ok || (egress.egress.mode !== "public" && payload.executor !== "firecracker")) {
     return null;
   }
+  // Where the scale set is registered. Optional so a controller built before standbys existed
+  // still registers; a standby cannot serve such a Profile until one that sends them does.
+  const registration = parseRegistration(payload);
+  if (registration === null) return null;
   return {
+    ...registration,
     egress: egress.egress,
     name: payload.name.trim(),
     scaleSetName: payload.scaleSetName.trim(),
@@ -251,7 +390,8 @@ export function parseJobStarted(payload: unknown) {
   };
 }
 
-const SESSION_STATES = ["starting", "listening", "conflict", "stopped"] as const;
+const SESSION_STATES = ["starting", "standby", "listening", "conflict", "stopped"] as const;
+const LEASE_ROLES = ["holder", "standby"] as const;
 export type ControllerSessionState = (typeof SESSION_STATES)[number];
 
 /** Longest `lastError` accepted. The controller caps its own at 500 characters. */
@@ -266,6 +406,17 @@ function token(value: unknown, maxLength: number): value is string {
   return (
     typeof value === "string" && value.length <= maxLength && /^[\x21-\x7e]+$/.test(value.trim())
   );
+}
+
+function parseHeartbeatLease(
+  value: unknown,
+): { leaseRole?: "holder" | "standby"; leaseEpoch?: number } | null {
+  if (value === undefined) return {};
+  if (!isRecord(value) || !LEASE_ROLES.includes(value.role as "holder" | "standby")) return null;
+  if (value.role === "standby") {
+    return value.epoch === undefined ? { leaseRole: "standby" } : null;
+  }
+  return safePositiveInteger(value.epoch) ? { leaseRole: "holder", leaseEpoch: value.epoch } : null;
 }
 
 export function parseControllerHeartbeat(payload: unknown) {
@@ -286,7 +437,17 @@ export function parseControllerHeartbeat(payload: unknown) {
   ) {
     return null;
   }
+  const lease = parseHeartbeatLease(payload.lease);
+  // A standby holds no session, so it cannot be listening; a holder names the epoch it holds.
+  if (
+    lease === null ||
+    (lease.leaseRole === "standby" && payload.sessionState === "listening") ||
+    (lease.leaseRole !== "standby" && payload.sessionState === "standby")
+  ) {
+    return null;
+  }
   return {
+    ...lease,
     profile: payload.profile.trim(),
     hostname: payload.hostname.trim(),
     version: payload.version.trim(),

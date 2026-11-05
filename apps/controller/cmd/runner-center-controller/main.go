@@ -14,13 +14,9 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/config"
 	rccontroller "github.com/Fanzzzd/erainfra/apps/controller/internal/controller"
-	"github.com/Fanzzzd/erainfra/apps/controller/internal/convexstore"
-	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubapi"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubscale"
-	"github.com/Fanzzzd/erainfra/apps/controller/internal/heartbeat"
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/listener"
 )
 
 // cacheFactsTTL is how long a pushed job's facts stay usable. It must outlive the
@@ -78,112 +74,7 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := convexstore.New(cfg.ConvexURL, cfg.ControllerToken, nil)
-	if err != nil {
-		return fmt.Errorf("configure Fleet client: %w", err)
-	}
-	if err := store.RegisterProfile(ctx, cfg.ProfileSpec()); err != nil {
-		return fmt.Errorf("register Profile: %w", err)
-	}
-	client, err := newGitHubClient(cfg)
-	if err != nil {
-		return fmt.Errorf("configure GitHub client: %w", err)
-	}
-
-	scaleSet, err := githubscale.EnsureScaleSet(ctx, client, githubscale.ScaleSetSpec{
-		Name:        cfg.ScaleSetName,
-		RunnerGroup: cfg.RunnerGroup,
-		Labels:      cfg.Labels,
-	})
-	if err != nil {
-		return err
-	}
-	client.SetSystemInfo(systemInfo(scaleSet.ID))
-
-	issuer, err := githubscale.NewIssuer(client, scaleSet.ID)
-	if err != nil {
-		return err
-	}
-	scalerOpts, err := cacheOptions(cfg, logger)
-	if err != nil {
-		return err
-	}
-	scaler, err := rccontroller.NewScaler(
-		rccontroller.Config{
-			Profile:      cfg.Profile,
-			Executor:     cfg.Executor,
-			ImageRelease: cfg.ImageRelease,
-			VCPUs:        cfg.VCPUs,
-			MemoryMiB:    cfg.MemoryMiB,
-			MinRunners:   cfg.MinRunners,
-			MaxRunners:   cfg.MaxRunners,
-		},
-		store,
-		issuer,
-		func() (string, error) { return githubscale.RunnerName(cfg.Profile) },
-		scalerOpts...,
-	)
-	if err != nil {
-		return err
-	}
-
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "controller"
-	}
-	// The heartbeat runs for the controller's whole life, including while it
-	// waits out a session conflict, so the control plane can tell "waiting for
-	// the session" from "gone".
-	reporter := heartbeat.New(store, fleet.ControllerHeartbeat{
-		Profile:    cfg.Profile,
-		Hostname:   hostname,
-		Version:    version,
-		ScaleSetID: scaleSet.ID,
-	}, heartbeat.WithLogger(logger.WithGroup("heartbeat")))
-	reportCtx, stopReporting := context.WithCancel(context.WithoutCancel(ctx))
-	reporting := make(chan struct{})
-	go func() {
-		defer close(reporting)
-		reporter.Run(reportCtx)
-	}()
-
-	owner := hostname + ":" + cfg.Profile
-	supervisor := &rccontroller.SessionSupervisor{
-		Open: func(ctx context.Context) (rccontroller.MessageSession, error) {
-			return client.MessageSessionClient(ctx, scaleSet.ID, owner)
-		},
-		Listen: func(ctx context.Context, session listener.Client) error {
-			scaleSetListener, err := listener.New(reporter.Observe(session), listener.Config{
-				ScaleSetID: scaleSet.ID,
-				MaxRunners: cfg.MaxRunners,
-				Logger:     logger.WithGroup("listener"),
-			}, listener.WithMetricsRecorder(reporter))
-			if err != nil {
-				return fmt.Errorf("configure GitHub scale-set listener: %w", err)
-			}
-			logger.Info(
-				"runner scale-set controller started",
-				"profile", cfg.Profile,
-				"scaleSet", cfg.ScaleSetName,
-				"scaleSetID", scaleSet.ID,
-				"maxRunners", cfg.MaxRunners,
-				"fitPolicy", cfg.FitPolicy,
-			)
-			return scaleSetListener.Run(ctx, scaler)
-		},
-		Observer: reporter,
-		Logger:   logger.WithGroup("session"),
-	}
-	runErr := supervisor.Run(ctx)
-	if errors.Is(runErr, context.Canceled) {
-		runErr = nil
-	}
-	// The last report says the controller stopped and why, so the dashboard
-	// shows a deliberate stop or a crash instead of waiting for silence.
-	reporter.SetSession(fleet.SessionStopped, runErr)
-	stopReporting()
-	<-reporting
-	return runErr
+	return serveLeased(ctx, cfg, logger)
 }
 
 // cacheOptions builds the Scaler's cache-publishing option when a cache service
@@ -230,7 +121,7 @@ func retire(args []string) error {
 	flags.Usage = func() {
 		_, _ = fmt.Fprintln(flags.Output(), "usage: runner-center-controller retire [--yes] [--force]")
 		_, _ = fmt.Fprintln(flags.Output(), "Deletes the GitHub scale set named by RC_SCALE_SET_NAME (default RC_PROFILE) and pauses the Profile.")
-		_, _ = fmt.Fprintln(flags.Output(), "Stop the Profile's controller unit first, or it re-registers both within seconds.")
+		_, _ = fmt.Fprintln(flags.Output(), "Stop every controller unit for this Profile first, including Worker standbys. Retirement requires its lease.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -249,38 +140,22 @@ func retire(args []string) error {
 	if err != nil {
 		return fmt.Errorf("configure GitHub client: %w", err)
 	}
-	plan, err := githubscale.Retire(ctx, client, cfg.ScaleSetName, cfg.RunnerGroup, *apply, *force)
+	if *apply {
+		return retireLeased(ctx, cfg, client, *force)
+	}
+	plan, err := githubscale.Retire(ctx, client, cfg.ScaleSetName, cfg.RunnerGroup, false, *force)
 	if err != nil {
 		return err
 	}
-	switch {
-	case !plan.Found:
+	if !plan.Found {
 		fmt.Printf("no scale set named %q is registered at %s\n", plan.Name, cfg.RegistrationURL)
-	case !*apply && !plan.StatisticsKnown:
+	} else if !plan.StatisticsKnown {
 		fmt.Printf("scale set %q (id %d): activity statistics unknown; deletion requires --yes --force\n", plan.Name, plan.ID)
-	case !*apply:
+	} else {
 		fmt.Printf("would delete scale set %q (id %d): %d busy runner(s), %d assigned, %d running job(s)\n",
 			plan.Name, plan.ID, plan.BusyRunners, plan.AssignedJobs, plan.RunningJobs)
-	default:
-		fmt.Printf("deleted scale set %q (id %d)\n", plan.Name, plan.ID)
 	}
-	if !*apply {
-		fmt.Printf("would pause Profile %q in the control plane; rerun with --yes to do both\n", cfg.Profile)
-		return nil
-	}
-	store, err := convexstore.New(cfg.ConvexURL, cfg.ControllerToken, nil)
-	if err != nil {
-		return fmt.Errorf("configure Fleet client: %w", err)
-	}
-	found, err := store.PauseProfile(ctx, cfg.Profile)
-	if err != nil {
-		return fmt.Errorf("pause Profile %q: %w", cfg.Profile, err)
-	}
-	if found {
-		fmt.Printf("paused Profile %q; Workers stop advertising it on their next refresh\n", cfg.Profile)
-	} else {
-		fmt.Printf("the control plane has no Profile %q; nothing to pause\n", cfg.Profile)
-	}
+	fmt.Printf("would pause Profile %q in the control plane; rerun with --yes to do both\n", cfg.Profile)
 	return nil
 }
 

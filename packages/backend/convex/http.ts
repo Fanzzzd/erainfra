@@ -5,16 +5,25 @@ import { auth } from "./auth";
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { findImageLabel, IMAGE_CATALOG } from "./catalog";
+import { mintInstallationToken } from "./controllerGithubToken";
 import {
   controllerAuthorization,
+  LEASE_EPOCH_HEADER,
   parseCancelAttempt,
   parseCompleteRunnerCleanup,
   parseControllerHeartbeat,
   parseCreateAttempt,
+  parseGitHubTokenRequest,
   parseJobCompleted,
   parseJobStarted,
+  parseLeaseEpoch,
+  parseLeaseRequest,
   parseRegisterProfile,
 } from "./controllerHttp";
+import { LEASE_LOST_STATUS, refusalOf, type ControllerCaller } from "./controllerLease";
+
+/** A Worker's machine token: 32 hex characters (machines.ts, apps/action-runner-agent/config.ts). */
+const MACHINE_TOKEN_PATTERN = /^[0-9a-f]{32}$/i;
 import {
   describeSetupState,
   parseManifestConversion,
@@ -40,14 +49,46 @@ function jsonResponse(body: unknown, status: number) {
   });
 }
 
-function controllerAuth(request: Request) {
+type ResolvedController =
+  | { failure: Response }
+  | { failure: null; caller: ControllerCaller; slot: "current" | "next" | "machine" };
+
+/**
+ * Who is calling a controller route. The shared CONTROLLER_TOKEN (or CONTROLLER_TOKEN_NEXT) is
+ * checked here, in constant time. A bearer shaped like a Worker's machine token is passed on as a
+ * machine caller and checked inside the mutation, together with the lease, because a machine token
+ * is a controller credential only while its Worker holds the Profile's lease (ADR 0014). The lease
+ * epoch rides in a header on every request once the controller holds the lease.
+ */
+function controllerCaller(request: Request): ResolvedController {
+  const epoch = parseLeaseEpoch(request.headers.get(LEASE_EPOCH_HEADER));
+  if (epoch === null) {
+    return { failure: jsonResponse({ error: "Invalid lease epoch" }, 400) };
+  }
+  const authorization = request.headers.get("Authorization");
   const verdict = controllerAuthorization(
-    request.headers.get("Authorization"),
+    authorization,
     process.env.CONTROLLER_TOKEN,
     process.env.CONTROLLER_TOKEN_NEXT,
   );
   if (verdict.status === "ok") {
-    return { failure: null, slot: verdict.slot };
+    return {
+      failure: null,
+      caller: {
+        kind: "controllerToken",
+        slot: verdict.slot,
+        ...(epoch === undefined ? {} : { epoch }),
+      },
+      slot: verdict.slot,
+    };
+  }
+  const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
+  if (MACHINE_TOKEN_PATTERN.test(bearer)) {
+    return {
+      failure: null,
+      caller: { kind: "machine", token: bearer, ...(epoch === undefined ? {} : { epoch }) },
+      slot: "machine",
+    };
   }
   if (verdict.status === "not-configured") {
     console.error("Controller API refused a request because CONTROLLER_TOKEN is not configured");
@@ -56,8 +97,24 @@ function controllerAuth(request: Request) {
   return { failure: jsonResponse({ error: "Unauthorized" }, 401) };
 }
 
-function controllerAuthFailure(request: Request) {
-  return controllerAuth(request).failure;
+/**
+ * The response for a refused lease or credential, or null for any other error. A stale epoch gets
+ * its own status, 412, which the controller reads as "you no longer hold this Profile": it closes
+ * its session and goes back to standing by.
+ */
+function controllerRefusal(error: unknown) {
+  const refusal = refusalOf(error);
+  if (refusal === "lease") {
+    return jsonResponse(
+      { error: "This controller does not hold the Profile's lease", code: "lease-lost" },
+      LEASE_LOST_STATUS,
+    );
+  }
+  if (refusal === "unauthorized") return jsonResponse({ error: "Unauthorized" }, 401);
+  if (refusal === "forbidden") {
+    return jsonResponse({ error: "This credential may not do that" }, 403);
+  }
+  return null;
 }
 
 async function requestJson(request: Request) {
@@ -349,22 +406,172 @@ http.route({
   }),
 });
 
-// The controller API is separate from both dashboard auth and Worker tokens.
-// It is a machine-to-machine seam for the long-running official scale-set
-// listener; every route fails closed when neither CONTROLLER_TOKEN nor CONTROLLER_TOKEN_NEXT is set.
+// The controller API is separate from dashboard auth. It is a machine-to-machine seam for the
+// long-running official scale-set listener. A controller authenticates with the shared
+// CONTROLLER_TOKEN (or CONTROLLER_TOKEN_NEXT) on a dedicated host, or with its Worker's machine
+// token on a Worker; the second is valid only while that Worker holds the Profile's lease. Every
+// route that reads or writes a Profile's state checks the lease epoch the request carries
+// (controllerLease.ts) and answers 412 to a stale one.
+
+// The lease routes (ADR 0014). A controller asks for the lease, renews it every 10 s while it
+// serves, and releases it when it stops. The answers carry the timings, so the constants live in
+// controllerLease.ts alone.
+http.route({
+  path: "/controller/lease/acquire",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
+    const body = await requestJson(request);
+    const lease = body.ok ? parseLeaseRequest(body.payload) : null;
+    if (lease === null) return jsonResponse({ error: "Invalid lease request" }, 400);
+    try {
+      const result = await ctx.runMutation(internal.controllerLease.acquire, {
+        ...lease,
+        caller: resolved.caller,
+      });
+      return jsonResponse(result, 200);
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
+  }),
+});
+
+http.route({
+  path: "/controller/lease/renew",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
+    const body = await requestJson(request);
+    const lease = body.ok ? parseLeaseRequest(body.payload) : null;
+    if (lease === null) return jsonResponse({ error: "Invalid lease request" }, 400);
+    try {
+      const result = await ctx.runMutation(internal.controllerLease.renew, {
+        profile: lease.profile,
+        instance: lease.instance,
+        caller: resolved.caller,
+      });
+      return jsonResponse(result, 200);
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
+  }),
+});
+
+http.route({
+  path: "/controller/lease/release",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
+    const body = await requestJson(request);
+    const lease = body.ok ? parseLeaseRequest(body.payload) : null;
+    if (lease === null) return jsonResponse({ error: "Invalid lease request" }, 400);
+    await ctx.runMutation(internal.controllerLease.release, {
+      profile: lease.profile,
+      instance: lease.instance,
+      caller: resolved.caller,
+    });
+    return new Response(null, { status: 204 });
+  }),
+});
+
+// A one-hour GitHub App installation token for the lease holder, scoped to the Profile's repository
+// or organization (controllerGithubToken.ts). The App's private key never leaves this deployment.
+http.route({
+  path: "/controller/github-token",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
+    const body = await requestJson(request);
+    const wanted = body.ok ? parseGitHubTokenRequest(body.payload) : null;
+    if (wanted === null) return jsonResponse({ error: "Invalid token request" }, 400);
+    let target: { githubConfigUrl: string; cacheFacts: boolean } | null;
+    try {
+      target = await ctx.runQuery(internal.controllerLease.githubTokenTarget, {
+        profile: wanted.profile,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
+    if (target === null) {
+      return jsonResponse({ error: "The Profile has no GitHub config URL registered" }, 409);
+    }
+    const clientId = process.env.CONTROLLER_GITHUB_APP_CLIENT_ID?.trim() ?? "";
+    const privateKey = process.env.CONTROLLER_GITHUB_APP_PRIVATE_KEY?.trim() ?? "";
+    if (clientId.length === 0 || privateKey.length === 0) {
+      return jsonResponse(
+        {
+          error:
+            "This deployment holds no controller GitHub App; set CONTROLLER_GITHUB_APP_CLIENT_ID and CONTROLLER_GITHUB_APP_PRIVATE_KEY",
+        },
+        503,
+      );
+    }
+    const minted = await mintInstallationToken({
+      clientId,
+      privateKey,
+      githubConfigUrl: target.githubConfigUrl,
+      // The operator registered whether this Profile publishes cache facts. A Worker cannot
+      // widen its repository permissions merely by asking for those reads.
+      cacheFacts: wanted.cacheFacts && target.cacheFacts,
+      now: Date.now(),
+      fetch: (input, init) => fetch(input, init),
+    });
+    if (!minted.ok) {
+      console.error(`Controller GitHub token for ${wanted.profile}: ${minted.error}`);
+      return jsonResponse({ error: minted.error }, minted.status);
+    }
+    // Signing and GitHub's API calls run outside a transaction. Recheck after them: a lease that
+    // expired during minting must not deliver credentials to its former holder.
+    try {
+      await ctx.runQuery(internal.controllerLease.githubTokenTarget, {
+        profile: wanted.profile,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
+    return new Response(JSON.stringify({ token: minted.token, expiresAt: minted.expiresAt }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }),
+});
+
 http.route({
   path: "/controller/profiles",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const profile = body.ok ? parseRegisterProfile(body.payload) : null;
     if (profile === null) {
       return jsonResponse({ error: "Invalid Profile" }, 400);
     }
-    await ctx.runMutation(internal.controllerApi.registerProfile, profile);
+    try {
+      await ctx.runMutation(internal.controllerApi.registerProfile, {
+        ...profile,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
     return new Response(null, { status: 204 });
   }),
 });
@@ -375,18 +582,30 @@ http.route({
   path: "/controller/heartbeat",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const caller = controllerAuth(request);
-    if (caller.failure !== null) return caller.failure;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const heartbeat = body.ok ? parseControllerHeartbeat(body.payload) : null;
-    if (heartbeat === null) {
+    if (
+      heartbeat === null ||
+      // A holder reports the epoch it holds in the body and fences with it in the header. They
+      // must agree, or the report would describe one grant while being checked against another.
+      (heartbeat.leaseRole === "holder" && heartbeat.leaseEpoch !== resolved.caller.epoch)
+    ) {
       return jsonResponse({ error: "Invalid heartbeat" }, 400);
     }
-    await ctx.runMutation(internal.controllerApi.recordHeartbeat, {
-      ...heartbeat,
-      tokenSlot: caller.slot,
-    });
+    try {
+      await ctx.runMutation(internal.controllerApi.recordHeartbeat, {
+        ...heartbeat,
+        tokenSlot: resolved.slot,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
     return new Response(null, { status: 204 });
   }),
 });
@@ -395,8 +614,8 @@ http.route({
   path: "/controller/profiles/pause",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const name =
@@ -409,7 +628,17 @@ http.route({
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
       return jsonResponse({ error: "Invalid Profile" }, 400);
     }
-    const found = await ctx.runMutation(internal.controllerApi.pauseProfile, { name });
+    let found: boolean;
+    try {
+      found = await ctx.runMutation(internal.controllerApi.pauseProfile, {
+        name,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
     return found
       ? new Response(null, { status: 204 })
       : jsonResponse({ error: "Unknown Profile" }, 404);
@@ -420,15 +649,24 @@ http.route({
   path: "/controller/attempts",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const profile = new URL(request.url).searchParams.get("profile")?.trim() ?? "";
     if (profile.length === 0) {
       return jsonResponse({ error: "profile is required" }, 400);
     }
-    const attempts = await ctx.runQuery(internal.controllerApi.listActiveAttempts, { profile });
-    return jsonResponse({ attempts }, 200);
+    try {
+      const attempts = await ctx.runQuery(internal.controllerApi.listActiveAttempts, {
+        profile,
+        caller: resolved.caller,
+      });
+      return jsonResponse({ attempts }, 200);
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
   }),
 });
 
@@ -436,8 +674,8 @@ http.route({
   path: "/controller/attempts",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const attempt = body.ok ? parseCreateAttempt(body.payload) : null;
@@ -446,9 +684,15 @@ http.route({
       return jsonResponse({ error: "Invalid Attempt" }, 400);
     }
     try {
-      await ctx.runMutation(internal.controllerApi.createAttempt, attempt);
-    } catch {
-      return jsonResponse({ error: "Attempt conflicts with existing state" }, 409);
+      await ctx.runMutation(internal.controllerApi.createAttempt, {
+        ...attempt,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      return (
+        controllerRefusal(error) ??
+        jsonResponse({ error: "Attempt conflicts with existing state" }, 409)
+      );
     }
     return new Response(null, { status: 204 });
   }),
@@ -458,8 +702,8 @@ http.route({
   path: "/controller/attempts/cancel",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const attempt = body.ok ? parseCancelAttempt(body.payload) : null;
@@ -467,9 +711,12 @@ http.route({
       return jsonResponse({ error: "Invalid cancellation" }, 400);
     }
     try {
-      await ctx.runMutation(internal.controllerApi.cancelAttempt, attempt);
-    } catch {
-      return jsonResponse({ error: "Attempt is already running" }, 409);
+      await ctx.runMutation(internal.controllerApi.cancelAttempt, {
+        ...attempt,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      return controllerRefusal(error) ?? jsonResponse({ error: "Attempt is already running" }, 409);
     }
     return new Response(null, { status: 204 });
   }),
@@ -479,13 +726,22 @@ http.route({
   path: "/controller/runner-cleanups",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const profile = new URL(request.url).searchParams.get("profile")?.trim() ?? "";
     if (profile.length === 0) return jsonResponse({ error: "profile is required" }, 400);
-    const cleanups = await ctx.runQuery(internal.controllerApi.listRunnerCleanups, { profile });
-    return jsonResponse({ cleanups }, 200);
+    try {
+      const cleanups = await ctx.runQuery(internal.controllerApi.listRunnerCleanups, {
+        profile,
+        caller: resolved.caller,
+      });
+      return jsonResponse({ cleanups }, 200);
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
   }),
 });
 
@@ -493,13 +749,23 @@ http.route({
   path: "/controller/runner-cleanups/complete",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const cleanup = body.ok ? parseCompleteRunnerCleanup(body.payload) : null;
     if (cleanup === null) return jsonResponse({ error: "Invalid runner cleanup" }, 400);
-    const completed = await ctx.runMutation(internal.controllerApi.completeRunnerCleanup, cleanup);
+    let completed: boolean;
+    try {
+      completed = await ctx.runMutation(internal.controllerApi.completeRunnerCleanup, {
+        ...cleanup,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      const refused = controllerRefusal(error);
+      if (refused !== null) return refused;
+      throw error;
+    }
     if (!completed) return jsonResponse({ error: "Unknown runner cleanup" }, 404);
     return new Response(null, { status: 204 });
   }),
@@ -509,8 +775,8 @@ http.route({
   path: "/controller/jobs/started",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const event = body.ok ? parseJobStarted(body.payload) : null;
@@ -518,9 +784,12 @@ http.route({
       return jsonResponse({ error: "Invalid JobStarted event" }, 400);
     }
     try {
-      await ctx.runMutation(internal.controllerApi.markJobStarted, event);
-    } catch {
-      return jsonResponse({ error: "Unknown Attempt" }, 409);
+      await ctx.runMutation(internal.controllerApi.markJobStarted, {
+        ...event,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      return controllerRefusal(error) ?? jsonResponse({ error: "Unknown Attempt" }, 409);
     }
     return new Response(null, { status: 204 });
   }),
@@ -530,8 +799,8 @@ http.route({
   path: "/controller/jobs/completed",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const unauthorized = controllerAuthFailure(request);
-    if (unauthorized !== null) return unauthorized;
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
     const event = body.ok ? parseJobCompleted(body.payload) : null;
@@ -539,9 +808,12 @@ http.route({
       return jsonResponse({ error: "Invalid JobCompleted event" }, 400);
     }
     try {
-      await ctx.runMutation(internal.controllerApi.markJobCompleted, event);
-    } catch {
-      return jsonResponse({ error: "Unknown Attempt" }, 409);
+      await ctx.runMutation(internal.controllerApi.markJobCompleted, {
+        ...event,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      return controllerRefusal(error) ?? jsonResponse({ error: "Unknown Attempt" }, 409);
     }
     return new Response(null, { status: 204 });
   }),

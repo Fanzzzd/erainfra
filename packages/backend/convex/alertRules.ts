@@ -269,6 +269,9 @@ function describeSilentController(profile: ObservedProfile, silentMs: number, no
   const who = `${primary.hostname} (${primary.version})`;
   const why = primary.lastError === undefined ? "" : `: ${primary.lastError}`;
   if (controller.status === "waiting") {
+    if (primary.sessionState === "standby") {
+      return `${subject}; ${who} is standing by, waiting for the Profile's controller lease${why}`;
+    }
     return primary.sessionState === "conflict"
       ? `${subject}; ${who} is reporting but GitHub refuses it the session because another one exists${why}`
       : `${subject}; ${who} is reporting but has not opened a session yet${why}`;

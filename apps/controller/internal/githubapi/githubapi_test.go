@@ -251,3 +251,131 @@ func TestMemo(t *testing.T) {
 		t.Fatalf("memo holds %d entries, bound is 2", len(m.entries))
 	}
 }
+
+func TestDynamicTokenSourceRefreshAndFailClosed(t *testing.T) {
+	var requests atomic.Int32
+	var credential atomic.Value
+	credential.Store("first-token")
+	var unavailable atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer "+credential.Load().(string) {
+			t.Errorf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		APIURL: server.URL,
+		TokenSource: func(ctx context.Context) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if unavailable.Load() {
+				return "", errors.New("upstream contains secret-token")
+			}
+			return credential.Load().(string), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DefaultBranch(t.Context(), "o/first"); err != nil {
+		t.Fatal(err)
+	}
+	credential.Store("second-token")
+	if _, err := client.DefaultBranch(t.Context(), "o/second"); err != nil {
+		t.Fatal(err)
+	}
+	unavailable.Store(true)
+	if _, err := client.DefaultBranch(t.Context(), "o/third"); err == nil || strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("unavailable credential error = %v", err)
+	}
+	if requests.Load() != 2 {
+		t.Fatal("unavailable credential sent a request")
+	}
+	unavailable.Store(false)
+	credential.Store("")
+	if _, err := client.DefaultBranch(t.Context(), "o/fourth"); err == nil {
+		t.Fatal("empty credential was accepted")
+	}
+	credential.Store("secret\r\nInjected: yes")
+	if _, err := client.DefaultBranch(t.Context(), "o/fifth"); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("invalid token error = %v", err)
+	}
+	if requests.Load() != 2 {
+		t.Fatal("invalid credential sent a request")
+	}
+}
+
+func TestDynamicTokenSourceIsExclusive(t *testing.T) {
+	source := func(context.Context) (string, error) { return "dynamic", nil }
+	for _, config := range []Config{
+		{Token: "static", TokenSource: source},
+		{App: &scaleset.GitHubAppAuth{}, TokenSource: source},
+		{Token: "static", App: &scaleset.GitHubAppAuth{}, TokenSource: source},
+	} {
+		config.APIURL = "https://api.github.com"
+		if _, err := New(config); err == nil {
+			t.Fatal("ambiguous credential configuration accepted")
+		}
+	}
+}
+
+func TestDynamicTokenRequestsKeepIndependentAuthorization(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, repository, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+		if got := r.Header.Get("Authorization"); got != "Bearer "+repository {
+			t.Errorf("Authorization = %q for %s", got, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+	}))
+	defer server.Close()
+	client, err := New(Config{APIURL: server.URL, TokenSource: func(ctx context.Context) (string, error) {
+		value, _ := ctx.Value(dynamicTestKey{}).(string)
+		return value, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group sync.WaitGroup
+	for n := range 30 {
+		group.Go(func() {
+			name := fmt.Sprintf("repo-%d", n)
+			ctx := context.WithValue(t.Context(), dynamicTestKey{}, name)
+			if _, err := client.DefaultBranch(ctx, "o/"+name); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	group.Wait()
+}
+
+type dynamicTestKey struct{}
+
+func TestDynamicTokenClientRejectsRedirectWithoutChangingSharedClient(t *testing.T) {
+	var redirected atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/target" {
+			redirected.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Redirect(w, r, "/target", http.StatusFound)
+	}))
+	defer server.Close()
+	shared := &http.Client{}
+	client, err := New(Config{APIURL: server.URL, HTTPClient: shared, TokenSource: func(context.Context) (string, error) { return "secret", nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DefaultBranch(t.Context(), "o/r"); err == nil {
+		t.Fatal("redirect was accepted")
+	}
+	if redirected.Load() != 0 {
+		t.Fatal("redirect target received a request")
+	}
+	if shared.CheckRedirect != nil {
+		t.Fatal("mutated caller-owned HTTP client")
+	}
+}

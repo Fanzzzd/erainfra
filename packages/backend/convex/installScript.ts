@@ -516,6 +516,10 @@ WH_RUNTIME_UNIT_B64
 # root-only env file whose secrets are paths, never values. --update moves every running instance
 # on the host to the pinned release, keeping the old binary to roll back to.
 #
+# Without --controller-token-file, on a host that is already a Worker, the role installs a standby
+# instead (ADR 0014): it signs in with the Worker's own machine credential and reads the Profile and
+# GitHub credentials from the control plane, so the host holds no controller token and no GitHub key.
+#
 # Sharing a machine with a Worker is a supported shape, so this role owns only what it names:
 # runner-center-controller*, its unit, its account, and the profiles/ and secrets/ trees. It
 # creates the shared runner-center directories only when they are missing and never changes an
@@ -556,6 +560,8 @@ __CONTROLLER_DIGESTS__
   }
   ctl_usage() {
     printf '%s\n' 'Usage: curl -fsSL <site>/install | sudo bash -s -- --role controller --profile NAME'
+    printf '%s\n' '         [--worker-env-file PATH] [--cache-facts-url URL --cache-signing-key-file PATH]'
+    printf '%s\n' '       curl -fsSL <site>/install | sudo bash -s -- --role controller --profile NAME'
     printf '%s\n' '         --github-config-url URL --executor docker|firecracker|tart|hyperv'
     printf '%s\n' '         --image-release REF@sha256:DIGEST --controller-token-file PATH'
     printf '%s\n' '         (--github-app-client-id ID --github-app-installation-id ID'
@@ -571,6 +577,8 @@ __CONTROLLER_DIGESTS__
     printf '%s\n' '/etc/runner-center/secrets/NAME/; the env file /etc/runner-center/profiles/NAME.env'
     printf '%s\n' 'is kept on a rerun unless --reconfigure is given. --update moves every running'
     printf '%s\n' 'instance on this host to the release this deployment pins.'
+    printf '%s\n' "Without --controller-token-file, on a Worker, it installs a standby that signs in with the Worker's"
+    printf '%s\n' 'MACHINE_TOKEN (--worker-env-file, default ~SUDO_USER/.runner-center/agent/.env) and takes no other settings.'
   }
   # A flag's value, refused when it is missing rather than silently taking the next flag.
   ctl_take() {
@@ -598,12 +606,18 @@ __CONTROLLER_DIGESTS__
   CTL_TOKEN_FILE=''
   CTL_CACHE_FACTS_URL=''
   CTL_CACHE_KEY_FILE=''
+  CTL_WORKER_ENV_FILE=''
   CTL_SOURCE=''
   CTL_RECONFIGURE=0
   CTL_UPDATE=0
   CTL_PROMPT=1
   CTL_CONFIG_GIVEN=0
+  CTL_SHAPE_GIVEN=''
   while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --github-config-url|--executor|--image-release|--vcpus|--memory-mib|--warm-pool|--fit-policy|--min-runners|--max-runners|--scale-set-name|--labels|--runner-group|--github-app-*|--github-token-file)
+        CTL_SHAPE_GIVEN="$CTL_SHAPE_GIVEN $1" ;;
+    esac
     case "$1" in
       --profile) ctl_take "$1" "$#"; CTL_PROFILE=$2; shift 2 ;;
       --github-config-url) ctl_take "$1" "$#"; CTL_GITHUB_CONFIG_URL=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
@@ -625,6 +639,7 @@ __CONTROLLER_DIGESTS__
       --controller-token-file) ctl_take "$1" "$#"; CTL_TOKEN_FILE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --cache-facts-url) ctl_take "$1" "$#"; CTL_CACHE_FACTS_URL=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --cache-signing-key-file) ctl_take "$1" "$#"; CTL_CACHE_KEY_FILE=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --worker-env-file) ctl_take "$1" "$#"; CTL_WORKER_ENV_FILE=$2; shift 2 ;;
       --source) ctl_take "$1" "$#"; CTL_SOURCE=$2; shift 2 ;;
       --reconfigure) CTL_RECONFIGURE=1; shift ;;
       --update) CTL_UPDATE=1; shift ;;
@@ -635,9 +650,17 @@ __CONTROLLER_DIGESTS__
   done
 
   if [ "$CTL_UPDATE" -eq 1 ]; then
-    if [ -n "$CTL_PROFILE" ] || [ "$CTL_CONFIG_GIVEN" -eq 1 ] || [ "$CTL_RECONFIGURE" -eq 1 ]; then
+    if [ -n "$CTL_PROFILE" ] || [ "$CTL_CONFIG_GIVEN" -eq 1 ] || [ "$CTL_RECONFIGURE" -eq 1 ] ||
+      [ -n "$CTL_WORKER_ENV_FILE" ]; then
       ctl_fail '--update moves every controller on this host to the pinned release and takes no Profile settings; change a Profile with --profile NAME --reconfigure instead'
     fi
+  fi
+
+  # A standby takes both the Profile and GitHub credentials from Convex. Refuse these flags even
+  # when their values are empty or there is no Worker credential, so they cannot turn into local
+  # settings by accident. Dedicated-host settings require an explicit controller token file.
+  if [ -z "$CTL_TOKEN_FILE" ] && [ -n "$CTL_SHAPE_GIVEN" ]; then
+    ctl_fail "A Worker's standby reads the Profile and GitHub credentials from the control plane. Remove$CTL_SHAPE_GIVEN, or add --controller-token-file to install a dedicated controller host that takes them."
   fi
 
   # Every value below ends up in an EnvironmentFile, which systemd parses with its own quoting and
@@ -694,6 +717,7 @@ __CONTROLLER_DIGESTS__
     ctl_absolute --github-app-private-key-file "$CTL_APP_KEY_FILE"
     ctl_absolute --github-token-file "$CTL_GITHUB_TOKEN_FILE"
     ctl_absolute --cache-signing-key-file "$CTL_CACHE_KEY_FILE"
+    ctl_absolute --worker-env-file "$CTL_WORKER_ENV_FILE"
     if [ -n "$CTL_GITHUB_TOKEN_FILE" ] &&
       { [ -n "$CTL_APP_CLIENT_ID" ] || [ -n "$CTL_APP_INSTALLATION_ID" ] || [ -n "$CTL_APP_KEY_FILE" ]; }; then
       ctl_fail 'Give GitHub App credentials or --github-token-file, not both'
@@ -933,17 +957,81 @@ CTL_UNIT_B64
   ctl_need CTL_PROFILE --profile 'Profile name (for example erainfra-4vcpu-ubuntu-2404)'
   ctl_validate
 
+  CTL_ENV_FILE="$CTL_ETC_DIR/profiles/$CTL_PROFILE.env"
+  CTL_SECRETS_DIR="$CTL_ETC_DIR/secrets/$CTL_PROFILE"
+  CTL_MACHINE_TOKEN_PATH="$CTL_SECRETS_DIR/machine-token"
+  CTL_UNIT="runner-center-controller@$CTL_PROFILE"
+
   # Without a Profile there is no env file to keep, so every setting counts as missing and the
   # refusal below lists them all at once.
   CTL_WRITE_CONFIG=1
-  if [ -n "$CTL_PROFILE" ] && $CTL_SUDO test -f "$CTL_ETC_DIR/profiles/$CTL_PROFILE.env" &&
-    [ "$CTL_RECONFIGURE" -eq 0 ]; then
+  if [ -n "$CTL_PROFILE" ] && $CTL_SUDO test -f "$CTL_ENV_FILE" && [ "$CTL_RECONFIGURE" -eq 0 ]; then
     CTL_WRITE_CONFIG=0
     [ "$CTL_CONFIG_GIVEN" -eq 0 ] ||
-      ctl_warn "Kept the existing $CTL_ETC_DIR/profiles/$CTL_PROFILE.env and ignored the settings given; rerun with --reconfigure to replace it."
+      ctl_warn "Kept the existing $CTL_ENV_FILE and ignored the settings given; rerun with --reconfigure to replace it."
   fi
 
+  # The Worker's machine credential, from the env file the Worker installer wrote in its account's
+  # ~/.runner-center. Under sudo that account is SUDO_USER; root itself never runs a Worker. A
+  # default file that is not there only means this host is not a Worker, but a path the operator
+  # named has to hold a token. The value stays in a variable and is never printed.
+  CTL_MACHINE_TOKEN=''
+  CTL_WORKER_ENV=''
+  ctl_find_worker_token() {
+    CTL_WORKER_ENV=$CTL_WORKER_ENV_FILE
+    if [ -n "$CTL_WORKER_ENV" ]; then
+      $CTL_SUDO test -r "$CTL_WORKER_ENV" || ctl_fail "Cannot read the Worker env file $CTL_WORKER_ENV"
+    else
+      ctl_sudo_user=$(printenv SUDO_USER || true)
+      if [ -z "$ctl_sudo_user" ] || [ "$ctl_sudo_user" = 'root' ]; then return 0; fi
+      ctl_worker_home=$(getent passwd "$ctl_sudo_user" 2>/dev/null | cut -d : -f 6 || true)
+      if [ -z "$ctl_worker_home" ]; then return 0; fi
+      CTL_WORKER_ENV="$ctl_worker_home/.runner-center/agent/.env"
+      $CTL_SUDO test -f "$CTL_WORKER_ENV" || return 0
+    fi
+    $CTL_SUDO test -r "$CTL_WORKER_ENV" || ctl_fail "Cannot read the Worker env file $CTL_WORKER_ENV"
+    if ! $CTL_SUDO grep -q '^MACHINE_TOKEN=' "$CTL_WORKER_ENV"; then
+      [ -z "$CTL_WORKER_ENV_FILE" ] ||
+        ctl_fail "$CTL_WORKER_ENV holds no MACHINE_TOKEN line; install and register the Worker first"
+      return 0
+    fi
+    CTL_MACHINE_TOKEN=$($CTL_SUDO sed -n 's/^MACHINE_TOKEN=//p' "$CTL_WORKER_ENV") ||
+      ctl_fail "Cannot read the Worker env file $CTL_WORKER_ENV"
+    # The rule apps/action-runner-agent/config.ts enforces, so a value the Worker itself would
+    # refuse never becomes the controller's credential.
+    if ! [[ "$CTL_MACHINE_TOKEN" =~ ^[0-9a-fA-F]{32}$ ]]; then
+      CTL_MACHINE_TOKEN=''
+      ctl_fail "The MACHINE_TOKEN in $CTL_WORKER_ENV is not the 32 hex characters a registered Worker holds; nothing was written"
+    fi
+  }
+
+  # Which controller this is. A controller token makes it a dedicated host, exactly as before; with
+  # no token, a Worker's credential makes it a standby. A kept env file already says which it is,
+  # and for a standby the rerun refreshes the token copy, because a Worker that re-registers gets a
+  # new token and the old copy stops working.
+  CTL_STANDBY=0
+  CTL_REFRESH_TOKEN=0
   if [ "$CTL_WRITE_CONFIG" -eq 1 ]; then
+    if [ -z "$CTL_TOKEN_FILE" ]; then
+      ctl_find_worker_token
+      [ -z "$CTL_MACHINE_TOKEN" ] || CTL_STANDBY=1
+    elif [ -n "$CTL_WORKER_ENV_FILE" ]; then
+      ctl_warn 'Ignored --worker-env-file: with --controller-token-file this is a dedicated controller host, which signs in with the controller token.'
+    fi
+  elif $CTL_SUDO grep -q '^RC_MACHINE_TOKEN_FILE=' "$CTL_ENV_FILE"; then
+    CTL_STANDBY=1
+    CTL_MACHINE_TOKEN_PATH=$($CTL_SUDO sed -n 's/^RC_MACHINE_TOKEN_FILE=//p' "$CTL_ENV_FILE")
+    [ -n "$CTL_MACHINE_TOKEN_PATH" ] || ctl_fail "RC_MACHINE_TOKEN_FILE in $CTL_ENV_FILE is empty"
+    ctl_absolute RC_MACHINE_TOKEN_FILE "$CTL_MACHINE_TOKEN_PATH"
+    ctl_find_worker_token
+    [ -z "$CTL_MACHINE_TOKEN" ] || CTL_REFRESH_TOKEN=1
+  fi
+
+  if [ "$CTL_WRITE_CONFIG" -eq 1 ] && [ "$CTL_STANDBY" -eq 1 ]; then
+    [ -z "$CTL_MISSING" ] || { ctl_usage >&2; ctl_fail "Missing:$CTL_MISSING"; }
+    [ -z "$CTL_CACHE_KEY_FILE" ] || $CTL_SUDO test -r "$CTL_CACHE_KEY_FILE" ||
+      ctl_fail "Cannot read $CTL_CACHE_KEY_FILE"
+  elif [ "$CTL_WRITE_CONFIG" -eq 1 ]; then
     ctl_need CTL_GITHUB_CONFIG_URL --github-config-url 'GitHub repository, organization or enterprise URL'
     ctl_need CTL_EXECUTOR --executor 'Executor (docker, firecracker, tart or hyperv)'
     ctl_need CTL_IMAGE_RELEASE --image-release 'Image Release (ending in @sha256:<digest>)'
@@ -968,9 +1056,6 @@ CTL_UNIT_B64
       [ -z "$ctl_source" ] || $CTL_SUDO test -r "$ctl_source" || ctl_fail "Cannot read $ctl_source"
     done
   fi
-  CTL_ENV_FILE="$CTL_ETC_DIR/profiles/$CTL_PROFILE.env"
-  CTL_SECRETS_DIR="$CTL_ETC_DIR/secrets/$CTL_PROFILE"
-  CTL_UNIT="runner-center-controller@$CTL_PROFILE"
 
   # Nothing on this machine has changed yet. Past the verification, it does.
   if [ "$(ctl_installed_sha)" = "$CTL_EXPECTED_SHA" ]; then
@@ -991,36 +1076,65 @@ CTL_UNIT_B64
     ctl_log "Created the unprivileged $CTL_ACCOUNT account."
   fi
 
-  if [ "$CTL_WRITE_CONFIG" -eq 1 ]; then
+  ctl_secrets_dirs() {
     ctl_mkdir "$CTL_ETC_DIR" 0755
     ctl_mkdir "$CTL_ETC_DIR/profiles" 0755
     ctl_mkdir "$CTL_ETC_DIR/secrets" 0750
     $CTL_SUDO chgrp "$CTL_ACCOUNT" "$CTL_ETC_DIR/secrets"
     ctl_mkdir "$CTL_SECRETS_DIR" 0750
     $CTL_SUDO chgrp "$CTL_ACCOUNT" "$CTL_SECRETS_DIR"
+  }
+  # systemd reads the env file as root, but the controller reads every *_FILE path itself, as its
+  # unprivileged account. So the env file is root-only and each secret is group-readable by that
+  # account alone: created 0600, filled, then opened to the group, so no other local user ever sees
+  # a window in which it is readable.
+  ctl_secret() {
+    if [ -z "$1" ]; then return 0; fi
+    if [ "$1" != "$2" ]; then
+      $CTL_SUDO install -m 0600 /dev/null "$2"
+      $CTL_SUDO cp "$1" "$2"
+    fi
+    $CTL_SUDO chgrp "$CTL_ACCOUNT" "$2"
+    $CTL_SUDO chmod 0640 "$2"
+  }
+  # The machine token is written from the value read out of the Worker's env file, not copied from
+  # that file, which holds more than the token. printf is a builtin, so the value reaches tee
+  # through a pipe and never appears in any process's arguments.
+  ctl_machine_token_secret() {
+    $CTL_SUDO install -m 0600 /dev/null "$CTL_MACHINE_TOKEN_PATH"
+    printf '%s' "$CTL_MACHINE_TOKEN" | $CTL_SUDO tee "$CTL_MACHINE_TOKEN_PATH" >/dev/null
+    ctl_secret "$CTL_MACHINE_TOKEN_PATH" "$CTL_MACHINE_TOKEN_PATH"
+  }
 
-    # systemd reads the env file as root, but the controller reads every *_FILE path itself, as
-    # its unprivileged account. So the env file is root-only and each secret is group-readable by
-    # that account alone: created 0600, filled, then opened to the group, so no other local user
-    # ever sees a window in which it is readable.
-    ctl_secret() {
-      if [ -z "$1" ]; then return 0; fi
-      if [ "$1" != "$2" ]; then
-        $CTL_SUDO install -m 0600 /dev/null "$2"
-        $CTL_SUDO cp "$1" "$2"
+  ctl_line() { [ -z "$2" ] || printf '%s=%s\n' "$1" "$2"; }
+  CTL_HEADER="# Written by $CTL_SITE/install --role controller. Rerun it with --reconfigure to replace this file."
+  if [ "$CTL_WRITE_CONFIG" -eq 1 ] && [ "$CTL_STANDBY" -eq 1 ]; then
+    ctl_secrets_dirs
+    ctl_machine_token_secret
+    ctl_secret "$CTL_CACHE_KEY_FILE" "$CTL_SECRETS_DIR/cache-signing-key"
+    $CTL_SUDO install -m 0600 /dev/null "$CTL_ENV_FILE"
+    {
+      printf '%s\n' "$CTL_HEADER"
+      printf '%s\n' '# A standby on a Worker: it reads its Profile and GitHub credentials from the control plane.'
+      ctl_line RC_CONVEX_URL "$CTL_SITE"
+      ctl_line RC_PROFILE "$CTL_PROFILE"
+      ctl_line RC_MACHINE_TOKEN_FILE "$CTL_MACHINE_TOKEN_PATH"
+      if [ -n "$CTL_CACHE_FACTS_URL" ]; then
+        ctl_line RC_CACHE_FACTS_URL "$CTL_CACHE_FACTS_URL"
+        ctl_line RC_CACHE_SIGNING_KEY_FILE "$CTL_SECRETS_DIR/cache-signing-key"
       fi
-      $CTL_SUDO chgrp "$CTL_ACCOUNT" "$2"
-      $CTL_SUDO chmod 0640 "$2"
-    }
+    } | $CTL_SUDO tee "$CTL_ENV_FILE" >/dev/null
+    ctl_log "Wrote $CTL_ENV_FILE (mode 0600) and the Worker's machine token under $CTL_SECRETS_DIR."
+  elif [ "$CTL_WRITE_CONFIG" -eq 1 ]; then
+    ctl_secrets_dirs
     ctl_secret "$CTL_TOKEN_FILE" "$CTL_SECRETS_DIR/controller-token"
     ctl_secret "$CTL_APP_KEY_FILE" "$CTL_SECRETS_DIR/github-app.pem"
     ctl_secret "$CTL_GITHUB_TOKEN_FILE" "$CTL_SECRETS_DIR/github-token"
     ctl_secret "$CTL_CACHE_KEY_FILE" "$CTL_SECRETS_DIR/cache-signing-key"
 
-    ctl_line() { [ -z "$2" ] || printf '%s=%s\n' "$1" "$2"; }
     $CTL_SUDO install -m 0600 /dev/null "$CTL_ENV_FILE"
     {
-      printf '%s\n' "# Written by $CTL_SITE/install --role controller. Rerun it with --reconfigure to replace this file."
+      printf '%s\n' "$CTL_HEADER"
       ctl_line RC_CONVEX_URL "$CTL_SITE"
       ctl_line RC_CONTROLLER_TOKEN_FILE "$CTL_SECRETS_DIR/controller-token"
       ctl_line RC_GITHUB_CONFIG_URL "$CTL_GITHUB_CONFIG_URL"
@@ -1051,6 +1165,11 @@ CTL_UNIT_B64
     ctl_log "Wrote $CTL_ENV_FILE (mode 0600) and the secrets under $CTL_SECRETS_DIR."
   else
     ctl_log "Kept the existing $CTL_ENV_FILE."
+    if [ "$CTL_REFRESH_TOKEN" -eq 1 ]; then
+      ctl_secrets_dirs
+      ctl_machine_token_secret
+      ctl_log "Refreshed $CTL_MACHINE_TOKEN_PATH from the Worker's credential in $CTL_WORKER_ENV."
+    fi
   fi
 
   $CTL_SUDO systemctl daemon-reload
@@ -1065,7 +1184,13 @@ CTL_UNIT_B64
     $CTL_SUDO journalctl -u "$CTL_UNIT" -n 20 --no-pager >&2 || true
     ctl_fail "$CTL_UNIT did not stay running; its last log lines are above. Fix $CTL_ENV_FILE and rerun, or: sudo systemctl restart $CTL_UNIT"
   fi
-  ctl_log "$CTL_UNIT is running the controller $CTL_VERSION."
+  if [ "$CTL_STANDBY" -eq 1 ]; then
+    ctl_log "$CTL_UNIT is running the controller $CTL_VERSION as a standby on this Worker."
+    printf '%s\n' "  It takes the Profile's lease when no other controller holds it; the dashboard's Profiles table shows its status."
+    printf '%s\n' "  After this Worker re-registers, rerun with --profile $CTL_PROFILE to refresh its machine token."
+  else
+    ctl_log "$CTL_UNIT is running the controller $CTL_VERSION."
+  fi
   printf '%s\n' "  Status:   systemctl status $CTL_UNIT"
   printf '%s\n' "  Logs:     journalctl -u $CTL_UNIT -f"
   printf '%s\n' "  Config:   $CTL_ENV_FILE (secrets in $CTL_SECRETS_DIR)"

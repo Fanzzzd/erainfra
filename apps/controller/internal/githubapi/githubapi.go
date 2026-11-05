@@ -49,14 +49,17 @@ const (
 // ErrNotFound is GitHub answering 404.
 var ErrNotFound = errors.New("not found on GitHub")
 
-// Config is how to reach GitHub and as whom. Exactly one of Token and App is set,
-// as for the scale-set client.
+// Config is how to reach GitHub and as whom. Exactly one of Token, TokenSource,
+// and App is set.
 type Config struct {
 	// APIURL is the REST base, for example https://api.github.com. Use APIURL to
 	// derive it from the scale-set registration URL.
 	APIURL string
 	Token  string
 	App    *scaleset.GitHubAppAuth
+	// TokenSource returns a current credential for each uncached REST request.
+	// The source owns refresh and expiry checks and must be safe for concurrent use.
+	TokenSource func(context.Context) (string, error)
 	// HTTPClient is optional. Requests carry their own deadlines from the caller's
 	// context, so the default client has no overall timeout of its own.
 	HTTPClient *http.Client
@@ -64,12 +67,13 @@ type Config struct {
 
 // Client is a GitHub REST client. Safe for concurrent use.
 type Client struct {
-	apiURL string
-	token  string
-	app    *scaleset.GitHubAppAuth
-	key    *rsa.PrivateKey
-	http   *http.Client
-	now    func() time.Time
+	apiURL      string
+	token       string
+	tokenSource func(context.Context) (string, error)
+	app         *scaleset.GitHubAppAuth
+	key         *rsa.PrivateKey
+	http        *http.Client
+	now         func() time.Time
 
 	tokenMu      sync.Mutex
 	installToken string
@@ -87,18 +91,38 @@ func New(config Config) (*Client, error) {
 	if apiURL == "" {
 		return nil, errors.New("GitHub API URL is required")
 	}
-	if (config.Token == "") == (config.App == nil) {
-		return nil, errors.New("exactly one of a GitHub token or a GitHub App is required")
+	credentials := 0
+	if config.Token != "" {
+		credentials++
+	}
+	if config.App != nil {
+		credentials++
+	}
+	if config.TokenSource != nil {
+		credentials++
+	}
+	if credentials != 1 {
+		return nil, errors.New("exactly one of a GitHub token, token source, or GitHub App is required")
 	}
 	client := &Client{
-		apiURL: apiURL,
-		token:  config.Token,
-		app:    config.App,
-		http:   config.HTTPClient,
-		now:    time.Now,
+		apiURL:      apiURL,
+		token:       config.Token,
+		tokenSource: config.TokenSource,
+		app:         config.App,
+		http:        config.HTTPClient,
+		now:         time.Now,
 	}
 	if client.http == nil {
 		client.http = &http.Client{}
+	}
+	if config.TokenSource != nil {
+		// Do not mutate a shared caller-owned client or forward a rotating
+		// credential to a redirect target, including one on the same origin.
+		httpClient := *client.http
+		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return errors.New("GitHub redirects are disabled")
+		}
+		client.http = &httpClient
 	}
 	if config.App != nil {
 		if err := config.App.Validate(); err != nil {
@@ -300,6 +324,15 @@ func setHeaders(req *http.Request, authorization string) {
 // authorization returns the Authorization header value: the PAT, or a cached
 // installation token minted from the App's JWT when the cached one is near expiry.
 func (c *Client) authorization(ctx context.Context) (string, error) {
+	if c.tokenSource != nil {
+		token, err := c.tokenSource(ctx)
+		if err != nil || token == "" || strings.ContainsFunc(token, func(r rune) bool { return r < '!' || r > '~' }) {
+			// A control-plane error can contain credential material. Do not
+			// include it in errors that callers may log.
+			return "", errors.New("GitHub credential unavailable")
+		}
+		return "Bearer " + token, nil
+	}
 	if c.app == nil {
 		return "Bearer " + c.token, nil
 	}

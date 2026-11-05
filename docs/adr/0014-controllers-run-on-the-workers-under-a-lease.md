@@ -1,6 +1,6 @@
 # ADR 0014: Controllers run on the Workers, under a lease
 
-- Status: Accepted; implementation in progress (until it lands, controllers run as ADR 0013 describes)
+- Status: Implemented; live-fleet migration is an operator step
 - Date: 2026-11-05
 - Owners: EraInfra
 - Supersedes: [ADR 0013](0013-run-controllers-off-the-workers.md)
@@ -55,16 +55,53 @@ arbiter.
    holds the Profile's lease. It obtains GitHub credentials from Convex as a short-lived GitHub App
    installation token for the Profile's scale-set URL, renewed before expiry. The App's private key
    and the shared `CONTROLLER_TOKEN` stay in Convex. A compromised Worker host can act as the
-   controller of the Profiles it already serves, for as long as it holds their leases, and nothing
-   more.
+   controller of the Profiles it already serves. Its Convex writes stop being accepted when its
+   lease ends. An installation token already issued to it can remain valid at GitHub until its
+   one-hour expiry; the lease does not revoke that credential.
 6. **A dedicated controller host is still allowed.** A machine enrolled for the controller role only
    competes for leases like any Worker. Existing per-Profile env files and units keep working
    during migration; a unit started with `CONTROLLER_TOKEN` behaves as a permanent lease candidate.
 
+## Implementation choices
+
+- `controllerLeases` holds one row per Profile. Worker identity comes from its machine token, not
+  a machine ID in the request. Dedicated hosts use the shared controller credential and a random
+  process instance ID. Every grant, holder change and release advances the fence as appropriate;
+  renew keeps the same epoch. The 10-second renew and 30-second expiry, the network threshold and
+  its 15-second head start live in `controllerLease.ts`. Clients receive those timings and count
+  grants from request start with a monotonic clock, so latency never extends their authority.
+- Controller routes check the epoch in the same Convex transaction as the write. HTTP 412 means
+  lease lost, distinct from GitHub's 409 session conflict. Dedicated hosts have no unfenced legacy
+  path. A standby heartbeat is a separate, non-authoritative report; it cannot claim to listen or
+  overwrite another machine's row.
+- A dedicated holder registers the Profile's complete contract and GitHub settings from its env.
+  Worker standbys read them from the acquire response and cannot register or pause Profiles. This
+  uses the existing registration path, rather than adding a second Profile editor. A dedicated
+  process deliberately activates a paused Profile only on its first grant after startup; after a
+  live retirement it stays in standby until restarted.
+- The controller App uses new Convex environment variables, `CONTROLLER_GITHUB_APP_CLIENT_ID` and
+  `CONTROLLER_GITHUB_APP_PRIVATE_KEY`. The dashboard's `githubApp` table belongs to the webhook
+  App, whose manifest lacks organization runner management and Contents read. Reusing it would
+  widen that path's permissions. Tokens are scoped to the registered repository or organization's
+  installation and the README's permission table. Cache-facts read permissions also require the
+  registered Profile setting. Convex rechecks the lease after minting and never returns the key
+  or App JWT. Enterprise runner registrations remain on the dedicated PAT path because GitHub
+  does not support App authentication for them.
+- The scaleset v0.4.0 client has no mutable token provider. `githubscale.TokenClient` keeps its
+  inner client and message session, and supplies the current token only on the exact GitHub
+  registration-token request. Its adapter rejects redirects and prevents a request with an
+  expired/unavailable credential from reaching the network, including on cached HTTP/2
+  connections. Token refresh happens five minutes before expiry. Session polling gets a separate
+  retry client because this scaleset version mutates retry settings during admin-token refresh.
+- `retire --yes` holds the lease, checks busy counters, pauses, then deletes the scale set. It keeps
+  renewing while deleting. Pausing before deletion prevents another standby from recreating it.
+  All controller instances must be stopped first; `--force` overrides busy counters, not leases.
+
 ## Consequences
 
-- The minimum deployment is Convex plus the Workers. The controller VM can be retired once a Worker
-  has held each Profile's lease through a rollout.
+- For repository and organization Profiles, the minimum deployment is Convex plus the Workers.
+  The controller VM can be retired once a Worker has held each Profile's lease through a rollout.
+  Enterprise Profiles still need the dedicated PAT path.
 - The controller's heartbeat (who holds the lease, since when, last GitHub message) is the liveness
   signal the dashboard, `/metrics` and the "controller silent" alert read.
 - A Worker reboot with no other Worker hands the lease to nobody until it is back. That is a delay,

@@ -22,6 +22,37 @@ async function registerProfile(t: TestConvex<typeof schema>) {
   });
 }
 
+describe("Profile registration", () => {
+  it("clears cache read permission when a current registration disables cache facts, but preserves legacy settings", async () => {
+    const t = convexTest(schema, modules);
+    const registration = {
+      name: "rc-linux-js",
+      scaleSetName: "rc-linux-js",
+      ...CONTRACT,
+      minRunners: 0,
+      maxRunners: 4,
+      githubConfigUrl: "https://github.com/acme/widgets",
+    };
+    await t.mutation(internal.controllerApi.registerProfile, {
+      ...registration,
+      githubCacheFacts: true,
+      labels: ["custom"],
+    });
+    // A controller predating these fields must not erase them.
+    await registerProfile(t);
+    expect(await t.run((ctx) => ctx.db.query("profiles").unique())).toMatchObject({
+      githubCacheFacts: true,
+      labels: ["custom"],
+    });
+    // Go omits a false bool on the wire. A current registration therefore has
+    // to clear the permission explicitly, not leave the previous true value.
+    await t.mutation(internal.controllerApi.registerProfile, registration);
+    const stored = await t.run((ctx) => ctx.db.query("profiles").unique());
+    expect(stored?.githubCacheFacts).toBe(false);
+    expect(stored?.labels).toBeUndefined();
+  });
+});
+
 describe("scale-set Attempt protocol", () => {
   it("creates an idempotent active Attempt without returning JIT", async () => {
     const t = convexTest(schema, modules);
@@ -290,15 +321,24 @@ describe("POST /controller/profiles/pause", () => {
     try {
       const t = convexTest(schema, modules);
       await registerProfile(t);
-      const post = (body: unknown, authorization?: string) =>
-        t.fetch("/controller/profiles/pause", {
+      const post = async (body: unknown, authorization?: string) => {
+        const grant = await t.mutation(internal.controllerLease.acquire, {
+          profile: (body as { name: string }).name,
+          hostname: "retire-test",
+          instance: "retire-test-instance",
+          caller: { kind: "controllerToken", slot: "current" },
+        });
+        if (!grant.granted) throw new Error("retire test needs a lease");
+        return t.fetch("/controller/profiles/pause", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "X-EraInfra-Lease-Epoch": String(grant.epoch),
             ...(authorization === undefined ? {} : { Authorization: authorization }),
           },
           body: JSON.stringify(body),
         });
+      };
 
       expect((await post({ name: "rc-linux-js" })).status).toBe(401);
       expect((await post({ name: "rc-linux-js" }, "Bearer wrong")).status).toBe(401);

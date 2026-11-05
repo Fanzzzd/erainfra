@@ -24,6 +24,13 @@ type Store struct {
 	baseURL string
 	token   string
 	client  *http.Client
+	// Immutable per grant. Never change the epoch of a Store a previous holder
+	// goroutine still uses: it must not inherit its successor's authority.
+	epoch       int64
+	onLeaseLost context.CancelFunc
+	// ActivateProfile is consumed on the first successful acquire of a
+	// dedicated process. Later acquires respect an operator's pause.
+	ActivateProfile bool
 }
 
 func New(baseURL, token string, client *http.Client) (*Store, error) {
@@ -222,16 +229,17 @@ func (s *Store) SendHeartbeat(ctx context.Context, report fleet.ControllerHeartb
 		lastError = append(lastError[:maxHeartbeatErrorRunes-1], '…')
 	}
 	return s.doJSON(ctx, http.MethodPost, "/controller/heartbeat", struct {
-		Profile       string `json:"profile"`
-		Hostname      string `json:"hostname"`
-		Version       string `json:"version"`
-		ScaleSetID    int    `json:"scaleSetId,omitempty"`
-		SessionState  string `json:"sessionState"`
-		LastMessageAt *int64 `json:"lastMessageAt,omitempty"`
-		AssignedJobs  int    `json:"assignedJobs"`
-		RunningJobs   int    `json:"runningJobs"`
-		StartedAt     *int64 `json:"startedAt,omitempty"`
-		LastError     string `json:"lastError,omitempty"`
+		Profile       string          `json:"profile"`
+		Hostname      string          `json:"hostname"`
+		Version       string          `json:"version"`
+		ScaleSetID    int             `json:"scaleSetId,omitempty"`
+		SessionState  string          `json:"sessionState"`
+		LastMessageAt *int64          `json:"lastMessageAt,omitempty"`
+		AssignedJobs  int             `json:"assignedJobs"`
+		RunningJobs   int             `json:"runningJobs"`
+		StartedAt     *int64          `json:"startedAt,omitempty"`
+		LastError     string          `json:"lastError,omitempty"`
+		Lease         *heartbeatLease `json:"lease,omitempty"`
 	}{
 		Profile:       report.Profile,
 		Hostname:      report.Hostname,
@@ -243,6 +251,7 @@ func (s *Store) SendHeartbeat(ctx context.Context, report fleet.ControllerHeartb
 		RunningJobs:   max(0, report.RunningJobs),
 		StartedAt:     unixMillis(report.StartedAt),
 		LastError:     string(lastError),
+		Lease:         leaseReport(report),
 	}, nil, true)
 }
 
@@ -284,6 +293,9 @@ func (s *Store) doJSON(
 	}
 	request.Header.Set("Authorization", "Bearer "+s.token)
 	request.Header.Set("Accept", "application/json")
+	if s.epoch > 0 {
+		request.Header.Set("X-EraInfra-Lease-Epoch", strconv.FormatInt(s.epoch, 10))
+	}
 	if requestBody != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -301,6 +313,12 @@ func (s *Store) doJSON(
 	}
 	if len(data) > maxResponseBytes {
 		return errors.New("controller response exceeded 1 MiB")
+	}
+	if response.StatusCode == http.StatusPreconditionFailed {
+		if s.onLeaseLost != nil {
+			s.onLeaseLost()
+		}
+		return fleet.ErrLeaseLost
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		apiErr := &APIError{StatusCode: response.StatusCode, Status: response.Status}

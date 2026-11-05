@@ -1128,9 +1128,17 @@ const CONTROLLER_COPY = {
 
 const SESSION_COPY = {
   starting: "starting",
+  standby: "standing by for the lease",
   listening: "listening",
   conflict: "refused the session (another one exists)",
   stopped: "stopped",
+} as const;
+
+/** Which credential the controller reported with: a dedicated host's token, or its Worker's. */
+const TOKEN_SLOT_COPY = {
+  current: "CONTROLLER_TOKEN",
+  next: "CONTROLLER_TOKEN_NEXT",
+  machine: "Worker credential",
 } as const;
 
 /**
@@ -1204,7 +1212,10 @@ function ControllerStatus({
         {liveness.controllers.map((row) => (
           <p key={row.hostname} className="font-mono text-[11px]">
             {row.hostname} · {row.version} · {SESSION_COPY[row.sessionState]} ·{" "}
-            {row.tokenSlot === "next" ? "CONTROLLER_TOKEN_NEXT" : "CONTROLLER_TOKEN"} ·{" "}
+            {TOKEN_SLOT_COPY[row.tokenSlot]} ·{" "}
+            {row.leaseRole === "holder" && row.leaseEpoch !== undefined
+              ? `lease epoch ${row.leaseEpoch} · `
+              : ""}
             {formatRelativeTime(row.receivedAt, now)}
           </p>
         ))}

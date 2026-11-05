@@ -18,6 +18,7 @@ import (
 type Config struct {
 	ConvexURL       string
 	ControllerToken string
+	MachineToken    string
 	RegistrationURL string
 	Profile         string
 	Executor        string
@@ -96,6 +97,10 @@ func Load() (Config, error) {
 
 	var err error
 	config.ControllerToken, err = readSecret("RC_CONTROLLER_TOKEN", "RC_CONTROLLER_TOKEN_FILE")
+	if err != nil {
+		return Config{}, err
+	}
+	config.MachineToken, err = readSecret("RC_MACHINE_TOKEN", "RC_MACHINE_TOKEN_FILE")
 	if err != nil {
 		return Config{}, err
 	}
@@ -182,6 +187,28 @@ func Load() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.MachineToken != "" {
+		if c.ControllerToken != "" || c.GitHubToken != "" || c.GitHubApp != nil {
+			return errors.New("a Worker standby uses only RC_MACHINE_TOKEN_FILE, not controller or GitHub credentials")
+		}
+		if matched, _ := regexp.MatchString(`^[0-9a-fA-F]{32}$`, c.MachineToken); !matched {
+			return errors.New("RC_MACHINE_TOKEN must be the Worker's 32-character hexadecimal credential")
+		}
+		parsed, err := url.Parse(c.ConvexURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return errors.New("RC_CONVEX_URL must be an absolute HTTPS URL")
+		}
+		if err := ProfileNameError(c.Profile); err != nil {
+			return fmt.Errorf("RC_PROFILE: %w", err)
+		}
+		if c.RegistrationURL != "" || c.Executor != "" || c.ImageRelease != "" {
+			return errors.New("a Worker standby reads its Profile from Convex; do not set local Profile or GitHub settings")
+		}
+		if (c.CacheFactsURL == "") != (c.CacheSigningKey == "") || (c.CacheSigningKey != "" && len(c.CacheSigningKey) < 32) {
+			return errors.New("cache facts require RC_CACHE_FACTS_URL and a signing key of at least 32 bytes")
+		}
+		return nil
+	}
 	for name, value := range map[string]string{
 		"RC_CONVEX_URL":        c.ConvexURL,
 		"RC_CONTROLLER_TOKEN":  c.ControllerToken,
@@ -254,16 +281,20 @@ func (c Config) Validate() error {
 // ProfileSpec is the Profile contract this controller publishes.
 func (c Config) ProfileSpec() fleet.ProfileSpec {
 	spec := fleet.ProfileSpec{
-		Name:         c.Profile,
-		ScaleSetName: c.ScaleSetName,
-		Executor:     c.Executor,
-		ImageRelease: c.ImageRelease,
-		VCPUs:        c.VCPUs,
-		MemoryMiB:    c.MemoryMiB,
-		WarmPool:     c.WarmPool,
-		FitPolicy:    c.FitPolicy,
-		MinRunners:   c.MinRunners,
-		MaxRunners:   c.MaxRunners,
+		Name:             c.Profile,
+		ScaleSetName:     c.ScaleSetName,
+		Executor:         c.Executor,
+		ImageRelease:     c.ImageRelease,
+		VCPUs:            c.VCPUs,
+		MemoryMiB:        c.MemoryMiB,
+		WarmPool:         c.WarmPool,
+		FitPolicy:        c.FitPolicy,
+		MinRunners:       c.MinRunners,
+		MaxRunners:       c.MaxRunners,
+		RegistrationURL:  c.RegistrationURL,
+		GitHubCacheFacts: c.CacheFactsURL != "",
+		RunnerGroup:      c.RunnerGroup,
+		Labels:           c.Labels,
 	}
 	if c.Egress.Published() {
 		spec.Egress = &fleet.ProfileEgress{

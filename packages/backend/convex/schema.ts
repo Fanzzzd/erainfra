@@ -134,11 +134,42 @@ export default defineSchema({
     // is what every Profile registered before the field existed means, so no
     // migration backfills it. Stored normalized; see egress.ts.
     egress: v.optional(profileEgressValidator),
+    // Where the scale set is registered and how: the GitHub repository, organization or enterprise
+    // URL, the runner group and the labels. A controller started with the Profile's settings
+    // publishes them; a standby controller on a Worker has no settings of its own and reads them
+    // here (ADR 0014). Absent on Profiles registered before the lease, which a standby therefore
+    // cannot serve until a controller with the settings registers the Profile once more.
+    githubConfigUrl: v.optional(v.string()),
+    githubCacheFacts: v.optional(v.boolean()),
+    runnerGroup: v.optional(v.string()),
+    labels: v.optional(v.array(v.string())),
     state: v.union(v.literal("active"), v.literal("paused")),
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
     .index("by_state", ["state"]),
+
+  // One row per Profile: which controller may serve it (ADR 0014). The holder is a credential (the
+  // shared controller token, or one Worker's machine token) plus a random instance id the
+  // controller process picks when it starts, so a restarted process is a new holder. `epoch`
+  // increases on every change of holder; every controller write carries the epoch it holds, and a
+  // write with any other epoch is refused. `expiresAt` is this deployment's clock. A row with no
+  // holder is free, and its `expiresAt` says since when, which the network head start counts from.
+  controllerLeases: defineTable({
+    profile: v.string(),
+    epoch: v.number(),
+    holder: v.optional(
+      v.object({
+        credential: v.union(v.literal("controllerToken"), v.literal("machine")),
+        machineId: v.optional(v.id("machines")),
+        hostname: v.string(),
+        instance: v.string(),
+      }),
+    ),
+    acquiredAt: v.optional(v.number()),
+    renewedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+  }).index("by_profile", ["profile"]),
 
   // One row per controller process: a Profile and the host it runs on. Kept out of `profiles` on
   // purpose: a write every 30 s per controller would otherwise invalidate every query that reads
@@ -146,30 +177,41 @@ export default defineSchema({
   // controller that reports, so its liveness is unknown rather than down (fleetObservation.ts).
   controllerHeartbeats: defineTable({
     profile: v.string(),
+    // Credential-derived row identity. A Worker cannot overwrite another controller's report by
+    // choosing its hostname. Absent on the pre-lease rows, which their next report upgrades.
+    reporter: v.optional(v.string()),
     hostname: v.string(),
     version: v.string(),
     scaleSetId: v.optional(v.number()),
     sessionState: v.union(
       v.literal("starting"),
+      v.literal("standby"),
       v.literal("listening"),
       v.literal("conflict"),
       v.literal("stopped"),
     ),
+    // The lease as this controller saw it when it reported: held, under which epoch, or waited
+    // for. Absent from controllers built before the lease.
+    leaseRole: v.optional(v.union(v.literal("holder"), v.literal("standby"))),
+    leaseEpoch: v.optional(v.number()),
     // Controller clock: when GitHub last answered the long poll, and when the process started.
     lastMessageAt: v.optional(v.number()),
     startedAt: v.optional(v.number()),
     assignedJobs: v.number(),
     runningJobs: v.number(),
     lastError: v.optional(v.string()),
-    // Which configured controller token authenticated the newest report, so a token rotation can
-    // see every controller move to the new token before the old one is withdrawn.
-    tokenSlot: v.union(v.literal("current"), v.literal("next")),
+    // Which credential authenticated the newest report: one of the two configured controller
+    // tokens, so a token rotation can see every controller move to the new one before the old one
+    // is withdrawn, or the machine token of the Worker the controller runs on.
+    tokenSlot: v.union(v.literal("current"), v.literal("next"), v.literal("machine")),
     // Control-plane clock, which is what staleness is judged by.
     firstSeenAt: v.number(),
     receivedAt: v.number(),
     // The newest report in which this controller held the session.
     lastListeningAt: v.optional(v.number()),
-  }).index("by_profile_hostname", ["profile", "hostname"]),
+  })
+    .index("by_profile_hostname", ["profile", "hostname"])
+    .index("by_profile_reporter", ["profile", "reporter"]),
 
   registrationTokens: defineTable({
     token: v.string(),

@@ -19,6 +19,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -435,7 +436,10 @@ describe("install", () => {
   });
 });
 
-describe("update", () => {
+// These cases execute complete install/update shell sandboxes, just like the controller-role
+// suite below. Give them the same budget: subprocess scheduling on a loaded two-core runner can
+// exceed the 30-second unit-test default even when every assertion succeeds.
+describe("update", { timeout: 120_000 }, () => {
   it("can replace the legacy CLI without corrupting its running shell", () => {
     const sandbox = createSandbox(CURRENT);
     publishRelease(sandbox, CURRENT, "new agent");
@@ -559,7 +563,7 @@ describe("checksum verification", () => {
   });
 });
 
-describe("rollback", () => {
+describe("rollback", { timeout: 120_000 }, () => {
   // This one waits out the installer's own connect timeout before rolling
   // back, so it needs more than vitest's 5s default. The wait is the
   // behaviour under test: the script must not declare success early.
@@ -1200,6 +1204,11 @@ function under(sandbox: Sandbox, absolute: string) {
   return path.join(sandbox.sudoRoot, absolute);
 }
 
+/** The env file the Worker installer writes, holding the Worker's machine credential. */
+function writeWorkerEnv(envFile: string, token: string) {
+  writeFileSync(envFile, `CONVEX_URL=https://example.convex.cloud\nMACHINE_TOKEN=${token}\n`);
+}
+
 function repoFile(...segments: string[]) {
   return readFileSync(path.resolve(import.meta.dirname, "..", "..", "..", ...segments));
 }
@@ -1285,7 +1294,7 @@ exit 0
     return { sandbox, secrets, published };
   }
 
-  function ctlRun(sandbox: Sandbox, args: readonly string[]) {
+  function ctlRun(sandbox: Sandbox, args: readonly string[], env: Record<string, string> = {}) {
     const options = spawnOptions(sandbox);
     return spawnSync("bash", [sandbox.scriptPath, "--role", "controller", "--no-prompt", ...args], {
       ...options,
@@ -1294,6 +1303,7 @@ exit 0
         RC_TEST_ACCOUNT_LOG: path.join(sandbox.root, "account.log"),
         RC_TEST_ACTIVE_UNITS: path.join(sandbox.root, "active-units"),
         RC_TEST_FAILING_UNITS: path.join(sandbox.root, "failing-units"),
+        ...env,
       },
     });
   }
@@ -1400,6 +1410,7 @@ exit 0
       [["--runner-group", "$HOME"], /no spaces, quotes/],
       [["--max-runners", "four"], /--max-runners must be a whole number/],
       [["--executor", "kvm"], /--executor must be/],
+      [["--worker-env-file", "relative.env"], /--worker-env-file must be an absolute path/],
       [["--github-token-file", path.join(secrets, "controller-token")], /not both/],
     ];
     for (const [override, message] of cases) {
@@ -1573,6 +1584,315 @@ exit 0
     expect(statSync(under(sandbox, "/usr/local/lib/runner-center")).mode & 0o777).toBe(0o751);
     expect(serviceLog(sandbox).join("\n")).not.toContain("runner-center-runtime");
     expect(readLog(path.join(sandbox.root, "account.log"))).not.toMatch(/ runner-center$/m);
+  });
+
+  // A standby on a Worker signs in with the Worker's machine credential (ADR 0014). The Worker's
+  // account is modeled as "worker", whose home getent reports as a directory in the sandbox, so
+  // the SUDO_USER default is exercised exactly as it resolves on a real host.
+  const WORKER_TOKEN = "0123456789abcdef0123456789ABCDEF";
+  const MACHINE_TOKEN_PATH = `${SECRETS_DIR}/machine-token`;
+  const AS_WORKER = { SUDO_USER: "worker" };
+
+  function workerHost(sandbox: Sandbox, token = WORKER_TOKEN) {
+    const home = path.join(sandbox.root, "worker-home");
+    const envFile = path.join(home, ".runner-center", "agent", ".env");
+    mkdirSync(path.dirname(envFile), { recursive: true });
+    writeWorkerEnv(envFile, token);
+    writeExecutable(
+      path.join(sandbox.root, "bin", "getent"),
+      [
+        "#!/usr/bin/env bash",
+        `if [ "$1" = passwd ] && [ "$2" = worker ]; then printf 'worker:x:1000:1000::%s:/bin/bash\\n' '${home}'; exit 0; fi`,
+        "exit 2",
+        "",
+      ].join("\n"),
+    );
+    return envFile;
+  }
+
+  function secretsWritten(sandbox: Sandbox) {
+    const directory = under(sandbox, SECRETS_DIR);
+    return existsSync(directory) ? readdirSync(directory).toSorted() : [];
+  }
+
+  /** Nothing of the Profile, the binary or the unit is on the host. */
+  function expectNothingWritten(sandbox: Sandbox) {
+    expect(existsSync(envPath(sandbox))).toBe(false);
+    expect(existsSync(binaryPath(sandbox))).toBe(false);
+    expect(existsSync(under(sandbox, SECRETS_DIR))).toBe(false);
+    expect(readLog(path.join(sandbox.root, "service.log"))).toBe("");
+  }
+
+  it("installs a standby from a Worker env file, with the Worker's token and nothing else", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const result = ctlRun(sandbox, [
+      "--profile",
+      PROFILE,
+      "--worker-env-file",
+      workerEnv,
+      "--cache-facts-url",
+      "https://cache.example/facts",
+      "--cache-signing-key-file",
+      path.join(secrets, "cache-key"),
+    ]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    expect(readFileSync(envPath(sandbox), "utf8")).toBe(
+      [
+        `# Written by ${SITE_URL}/install --role controller. Rerun it with --reconfigure to replace this file.`,
+        "# A standby on a Worker: it reads its Profile and GitHub credentials from the control plane.",
+        `RC_CONVEX_URL=${SITE_URL}`,
+        `RC_PROFILE=${PROFILE}`,
+        `RC_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}`,
+        "RC_CACHE_FACTS_URL=https://cache.example/facts",
+        `RC_CACHE_SIGNING_KEY_FILE=${SECRETS_DIR}/cache-signing-key`,
+        "",
+      ].join("\n"),
+    );
+    expect(statSync(envPath(sandbox)).mode & 0o777).toBe(0o600);
+
+    // The token alone, not the Worker's whole env file, restricted then opened to the group.
+    const token = under(sandbox, MACHINE_TOKEN_PATH);
+    expect(readFileSync(token, "utf8")).toBe(WORKER_TOKEN);
+    expect(statSync(token).mode & 0o777).toBe(0o640);
+    expect(readLog(path.join(sandbox.root, "account.log"))).toContain(
+      `chgrp runner-center-controller ${sandbox.sudoRoot}${MACHINE_TOKEN_PATH}`,
+    );
+    const sudo = readLog(path.join(sandbox.root, "sudo.log")).trimEnd().split("\n");
+    const created = sudo.indexOf(`install -m 0600 /dev/null ${MACHINE_TOKEN_PATH}`);
+    expect(created, sudo.join(" / ")).toBeGreaterThanOrEqual(0);
+    expect(created).toBeLessThan(sudo.indexOf(`tee ${MACHINE_TOKEN_PATH}`));
+    expect(sudo.indexOf(`tee ${MACHINE_TOKEN_PATH}`)).toBeLessThan(
+      sudo.indexOf(`chmod 0640 ${MACHINE_TOKEN_PATH}`),
+    );
+
+    // No controller token and no GitHub credential on the host.
+    expect(secretsWritten(sandbox)).toEqual(["cache-signing-key", "machine-token"]);
+    // The token never reaches a command line or the output.
+    expect(sudo.join("\n")).not.toContain(WORKER_TOKEN);
+    expect(result.stdout + result.stderr).not.toContain(WORKER_TOKEN);
+
+    expect(result.stdout).toContain(`${UNIT} is running the controller 1.4.2 as a standby`);
+    expect(result.stdout).toContain(
+      "It takes the Profile's lease when no other controller holds it; the dashboard's Profiles table shows its status.",
+    );
+    expect(serviceLog(sandbox)).toContain(`restart ${UNIT}`);
+  });
+
+  it("finds the Worker env file in the sudo user's home, and never in root's", () => {
+    const { sandbox } = readyToInstall();
+    workerHost(sandbox);
+    const asRoot = ctlRun(sandbox, ["--profile", PROFILE], { SUDO_USER: "root" });
+    expect(asRoot.status).toBe(1);
+    expect(asRoot.stderr).toContain("--controller-token-file");
+    expectNothingWritten(sandbox);
+
+    const result = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(envPath(sandbox), "utf8")).toBe(
+      [
+        `# Written by ${SITE_URL}/install --role controller. Rerun it with --reconfigure to replace this file.`,
+        "# A standby on a Worker: it reads its Profile and GitHub credentials from the control plane.",
+        `RC_CONVEX_URL=${SITE_URL}`,
+        `RC_PROFILE=${PROFILE}`,
+        `RC_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}`,
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(under(sandbox, MACHINE_TOKEN_PATH), "utf8")).toBe(WORKER_TOKEN);
+    expect(secretsWritten(sandbox)).toEqual(["machine-token"]);
+  });
+
+  it("refuses Profile and GitHub settings on a standby, and writes nothing", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const viaFlag = ctlRun(sandbox, [
+      "--profile",
+      PROFILE,
+      "--worker-env-file",
+      workerEnv,
+      "--executor",
+      "firecracker",
+      "--github-token-file",
+      path.join(secrets, "github-app.pem"),
+    ]);
+    expect(viaFlag.status).toBe(1);
+    expect(viaFlag.stderr).toContain(
+      "reads the Profile and GitHub credentials from the control plane",
+    );
+    expect(viaFlag.stderr).toContain("Remove --executor --github-token-file");
+    expect(viaFlag.stderr).toContain("--controller-token-file");
+    expectNothingWritten(sandbox);
+
+    // The dedicated-host flags minus the controller token, on a Worker found through sudo.
+    const dedicatedArgs = installArgs(secrets);
+    const tokenFlag = dedicatedArgs.indexOf("--controller-token-file");
+    dedicatedArgs.splice(tokenFlag, 2);
+    const viaSudo = ctlRun(sandbox, dedicatedArgs, AS_WORKER);
+    expect(viaSudo.status).toBe(1);
+    expect(viaSudo.stderr).toContain(
+      "Remove --github-config-url --executor --image-release --max-runners --github-app-client-id --github-app-installation-id --github-app-private-key-file",
+    );
+    expectNothingWritten(sandbox);
+  });
+
+  it("requires --controller-token-file for every Profile-shape and GitHub flag, even without a Worker", () => {
+    const { sandbox } = readyToInstall();
+    for (const flag of [
+      "--github-config-url",
+      "--executor",
+      "--image-release",
+      "--vcpus",
+      "--memory-mib",
+      "--warm-pool",
+      "--fit-policy",
+      "--min-runners",
+      "--max-runners",
+      "--scale-set-name",
+      "--labels",
+      "--runner-group",
+      "--github-app-client-id",
+      "--github-app-installation-id",
+      "--github-app-private-key-file",
+      "--github-token-file",
+    ]) {
+      // An empty or invalid value must still get the explanation for standby settings.
+      for (const value of ["", "unused"]) {
+        const result = ctlRun(sandbox, ["--profile", PROFILE, flag, value]);
+        expect(result.status, flag).toBe(1);
+        expect(result.stderr, flag).toContain(
+          "A Worker's standby reads the Profile and GitHub credentials from the control plane.",
+        );
+        expect(result.stderr, flag).toContain(`Remove ${flag}, or add --controller-token-file`);
+        expectNothingWritten(sandbox);
+      }
+    }
+    expect(readLog(path.join(sandbox.root, "sudo.log"))).toBe("");
+  });
+
+  it("refuses a Worker env file whose token is not 32 hex characters, and writes nothing", () => {
+    const { sandbox } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    for (const token of [
+      "",
+      "abc123",
+      "g".repeat(32),
+      "a".repeat(33),
+      `${"a".repeat(31)} `,
+      `${WORKER_TOKEN}\nMACHINE_TOKEN=${WORKER_TOKEN}`,
+    ]) {
+      writeWorkerEnv(workerEnv, token);
+      for (const [args, env] of [
+        [["--profile", PROFILE, "--worker-env-file", workerEnv], {}],
+        [["--profile", PROFILE], AS_WORKER],
+      ] as const) {
+        const result = ctlRun(sandbox, args, env);
+        expect(result.status, token).toBe(1);
+        expect(result.stderr, token).toContain("is not the 32 hex characters");
+        if (token.trim()) expect(result.stderr, token).not.toContain(token.trim());
+        expectNothingWritten(sandbox);
+      }
+    }
+
+    // A named file with no token in it is refused too, where a missing default is not a Worker.
+    writeFileSync(workerEnv, "CONVEX_URL=https://example.convex.cloud\n");
+    const empty = ctlRun(sandbox, ["--profile", PROFILE, "--worker-env-file", workerEnv]);
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toContain("holds no MACHINE_TOKEN line");
+    const missing = ctlRun(sandbox, [
+      "--profile",
+      PROFILE,
+      "--worker-env-file",
+      path.join(sandbox.root, "absent.env"),
+    ]);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("Cannot read the Worker env file");
+    expectNothingWritten(sandbox);
+  });
+
+  it("refreshes a standby's machine token on a rerun with only --profile", () => {
+    const { sandbox } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const installed = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(installed.status, `${installed.stdout}\n${installed.stderr}`).toBe(0);
+    const envBefore = readFileSync(envPath(sandbox), "utf8");
+
+    // The Worker re-registered and holds a new token.
+    const renewed = "f".repeat(32);
+    writeWorkerEnv(workerEnv, renewed);
+    const repaired = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(repaired.status, `${repaired.stdout}\n${repaired.stderr}`).toBe(0);
+    expect(repaired.stdout).toContain(`Refreshed ${MACHINE_TOKEN_PATH}`);
+    expect(repaired.stdout).toContain("as a standby");
+    expect(readFileSync(envPath(sandbox), "utf8")).toBe(envBefore);
+    const token = under(sandbox, MACHINE_TOKEN_PATH);
+    expect(readFileSync(token, "utf8")).toBe(renewed);
+    expect(statSync(token).mode & 0o777).toBe(0o640);
+    expect(repaired.stdout + repaired.stderr).not.toContain(renewed);
+
+    // With no Worker credential to read, the rerun keeps the copy it has.
+    const kept = ctlRun(sandbox, ["--profile", PROFILE]);
+    expect(kept.status, `${kept.stdout}\n${kept.stderr}`).toBe(0);
+    expect(kept.stdout).not.toContain("Refreshed");
+    expect(readFileSync(token, "utf8")).toBe(renewed);
+  });
+
+  it("installs a dedicated host with --controller-token-file even where a Worker env exists", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const result = ctlRun(
+      sandbox,
+      installArgs(secrets, ["--worker-env-file", workerEnv]),
+      AS_WORKER,
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).toContain("Ignored --worker-env-file");
+    expect(result.stdout).not.toContain("standby");
+
+    const env = readFileSync(envPath(sandbox), "utf8");
+    expect(env).toContain(`RC_CONTROLLER_TOKEN_FILE=${SECRETS_DIR}/controller-token\n`);
+    expect(env).toMatch(/^RC_EXECUTOR=firecracker$/m);
+    expect(env).not.toContain("RC_MACHINE_TOKEN_FILE");
+    expect(env).not.toContain("standby");
+    expect(secretsWritten(sandbox)).toEqual(["controller-token", "github-app.pem"]);
+
+    // A rerun of the kept dedicated env file leaves the Worker's token off the host.
+    const rerun = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(rerun.status, `${rerun.stdout}\n${rerun.stderr}`).toBe(0);
+    expect(rerun.stdout).not.toContain("Refreshed");
+    expect(secretsWritten(sandbox)).toEqual(["controller-token", "github-app.pem"]);
+  });
+
+  it("selects standby or dedicated mode again when --reconfigure replaces the env file", () => {
+    const { sandbox, secrets } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const installed = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(installed.status, `${installed.stdout}\n${installed.stderr}`).toBe(0);
+    const standbyEnv = readFileSync(envPath(sandbox), "utf8");
+
+    // The controller token takes precedence without even reading a malformed Worker credential.
+    writeWorkerEnv(workerEnv, "malformed");
+    const dedicated = ctlRun(sandbox, installArgs(secrets, ["--reconfigure"]), AS_WORKER);
+    expect(dedicated.status, `${dedicated.stdout}\n${dedicated.stderr}`).toBe(0);
+    expect(readFileSync(envPath(sandbox), "utf8")).toContain(
+      `RC_CONTROLLER_TOKEN_FILE=${SECRETS_DIR}/controller-token\n`,
+    );
+    expect(readFileSync(envPath(sandbox), "utf8")).not.toContain("RC_MACHINE_TOKEN_FILE");
+
+    writeWorkerEnv(workerEnv, WORKER_TOKEN);
+    const standby = ctlRun(sandbox, ["--profile", PROFILE, "--reconfigure"], AS_WORKER);
+    expect(standby.status, `${standby.stdout}\n${standby.stderr}`).toBe(0);
+    expect(readFileSync(envPath(sandbox), "utf8")).toBe(standbyEnv);
+  });
+
+  it("needs only --profile when it finds a Worker credential", () => {
+    const { sandbox } = readyToInstall();
+    workerHost(sandbox);
+    const result = ctlRun(sandbox, [], AS_WORKER);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Missing: --profile\n");
+    expectNothingWritten(sandbox);
   });
 
   function installedForUpdate(oldVersion = "1.3.0") {

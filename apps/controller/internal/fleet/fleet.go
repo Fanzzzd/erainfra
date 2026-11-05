@@ -35,16 +35,20 @@ type RunnerCleanup struct {
 // ProfileSpec is the durable workflow-facing contract a controller owns.
 // Workers discover it from the Fleet instead of carrying local image config.
 type ProfileSpec struct {
-	Name         string `json:"name"`
-	ScaleSetName string `json:"scaleSetName"`
-	Executor     string `json:"executor"`
-	ImageRelease string `json:"imageRelease"`
-	VCPUs        int64  `json:"vcpus"`
-	MemoryMiB    int64  `json:"memoryMiB"`
-	WarmPool     int    `json:"warmPool"`
-	FitPolicy    string `json:"fitPolicy"`
-	MinRunners   int    `json:"minRunners"`
-	MaxRunners   int    `json:"maxRunners"`
+	Name             string   `json:"name"`
+	ScaleSetName     string   `json:"scaleSetName"`
+	Executor         string   `json:"executor"`
+	ImageRelease     string   `json:"imageRelease"`
+	VCPUs            int64    `json:"vcpus"`
+	MemoryMiB        int64    `json:"memoryMiB"`
+	WarmPool         int      `json:"warmPool"`
+	FitPolicy        string   `json:"fitPolicy"`
+	MinRunners       int      `json:"minRunners"`
+	MaxRunners       int      `json:"maxRunners"`
+	RegistrationURL  string   `json:"githubConfigUrl,omitempty"`
+	GitHubCacheFacts bool     `json:"githubCacheFacts,omitempty"`
+	RunnerGroup      string   `json:"runnerGroup,omitempty"`
+	Labels           []string `json:"labels,omitempty"`
 	// Egress is the Profile's egress policy, or nil for public egress. It is
 	// omitted rather than sent as public so a control plane that predates it
 	// reads the same Profile it always did.
@@ -124,6 +128,8 @@ type SessionState string
 const (
 	// SessionStarting: registered with the control plane, no session yet.
 	SessionStarting SessionState = "starting"
+	// SessionStandby: waiting for the Profile's Convex lease, not opening a session.
+	SessionStandby SessionState = "standby"
 	// SessionListening: this controller holds the session and turns demand
 	// into Attempts.
 	SessionListening SessionState = "listening"
@@ -143,6 +149,8 @@ type ControllerHeartbeat struct {
 	Version      string
 	ScaleSetID   int
 	SessionState SessionState
+	LeaseRole    string
+	LeaseEpoch   int64
 	// LastMessageAt is the last time GitHub answered the message long poll,
 	// with a message or with an empty reply. Zero until the first answer.
 	LastMessageAt time.Time
