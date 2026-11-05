@@ -320,6 +320,23 @@ function readLog(filePath: string) {
   return existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
 }
 
+/**
+ * Reads a log written by a process the installer started in the background. The installer returns
+ * as soon as it has launched `nohup … &`, so the child may not have written its first line yet; on
+ * a loaded machine that gap is long enough for a single read to see an empty file. Polls until
+ * `expected` matches or the deadline passes, then returns whatever is there, so the caller's
+ * assertion still reports the real content when the line never arrives.
+ */
+async function waitForLog(filePath: string, expected: RegExp, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let contents = readLog(filePath);
+  while (!expected.test(contents) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    contents = readLog(filePath);
+  }
+  return contents;
+}
+
 function agentMarker(sandbox: Sandbox, directory = "agent") {
   return readFileSync(path.join(sandbox.rcHome, directory, "dist", "index.js"), "utf8").trim();
 }
@@ -699,7 +716,7 @@ sleep 5
     return { ...release, infraAgent: { [HOST_TARGET]: digest } };
   }
 
-  it("installs the binary this deployment pins, and says what it verified it against", () => {
+  it("installs the binary this deployment pins, and says what it verified it against", async () => {
     const sandbox = createSandbox(CURRENT);
     const published = publishInfraAgent(sandbox, CURRENT);
     repin(sandbox, pinned(CURRENT, published.sha256));
@@ -722,7 +739,10 @@ sleep 5
     // is not on that command line. /proc/<pid>/cmdline is world-readable, so a token in argv is a
     // token every local user can read for as long as the agent runs; the agent takes it from
     // PORTLESS_TOKEN instead, the same channel the systemd unit uses.
-    const argv = readLog(path.join(sandbox.root, "infra-agent.log"));
+    const argv = await waitForLog(
+      path.join(sandbox.root, "infra-agent.log"),
+      /^connect --name node-01$/m,
+    );
     expect(argv).toMatch(/^connect --name node-01$/m);
     expect(argv).not.toMatch(/plt_node_token/);
   });

@@ -1,6 +1,10 @@
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { query } from "./_generated/server";
+
+/** How many Attempts the Runs page shows, newest first. */
+export const ATTEMPT_LIST_LIMIT = 200;
 
 const stateValidator = v.union(
   v.literal("pending"),
@@ -11,6 +15,43 @@ const stateValidator = v.union(
   v.literal("cancelled"),
   v.literal("failed"),
 );
+
+/**
+ * How long GitHub held the job before a Runner of ours picked it up, or null when the controller
+ * never reported when the job was queued.
+ *
+ * Both ends come from GitHub's JobStarted message (queueTime and runnerAssignTime), so the
+ * difference is measured on one clock. Only when GitHub omitted the assignment time does this fall
+ * back to `startedAt`, the control plane's receipt of JobStarted, which can be skewed against
+ * GitHub's clock; a negative result from that skew reads as zero, not as a wait.
+ */
+export function queueWaitMs(
+  attempt: Pick<Doc<"attempts">, "queueTime" | "runnerAssignedAt" | "startedAt">,
+): number | null {
+  if (attempt.queueTime === undefined) return null;
+  const start = attempt.runnerAssignedAt ?? attempt.startedAt;
+  if (start === undefined) return null;
+  return Math.max(0, start - attempt.queueTime);
+}
+
+/**
+ * The GitHub Actions run this Attempt served. GitHub's JobStarted carries the repository name and
+ * its owner separately, and both plus the run id must be known. That message has no numeric job
+ * id, which a `/job/<id>` link would need, so the link stops at the run.
+ */
+export function workflowRunUrl(
+  attempt: Pick<Doc<"attempts">, "owner" | "repo" | "workflowRunId">,
+): string | undefined {
+  if (attempt.repo === undefined || attempt.workflowRunId === undefined) return undefined;
+  const fullName = attempt.repo.includes("/")
+    ? attempt.repo
+    : attempt.owner === undefined
+      ? undefined
+      : `${attempt.owner}/${attempt.repo}`;
+  const [owner, name, extra] = fullName?.split("/") ?? [];
+  if (!owner || !name || extra !== undefined) return undefined;
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs/${attempt.workflowRunId}`;
+}
 
 export const list = query({
   args: {},
@@ -30,12 +71,16 @@ export const list = query({
       machineName: v.optional(v.string()),
       selectionReason: v.optional(v.string()),
       repo: v.optional(v.string()),
+      owner: v.optional(v.string()),
       displayName: v.optional(v.string()),
       workflowRunId: v.optional(v.number()),
+      workflowRunUrl: v.optional(v.string()),
       result: v.optional(v.string()),
       lastError: v.optional(v.string()),
       cancelReason: v.optional(v.string()),
       createdAt: v.number(),
+      queueTime: v.optional(v.number()),
+      queueWaitMs: v.union(v.number(), v.null()),
       startedAt: v.optional(v.number()),
       finishedAt: v.optional(v.number()),
     }),
@@ -43,7 +88,7 @@ export const list = query({
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
     const [attempts, machines] = await Promise.all([
-      ctx.db.query("attempts").order("desc").take(200),
+      ctx.db.query("attempts").order("desc").take(ATTEMPT_LIST_LIMIT),
       ctx.db.query("machines").collect(),
     ]);
     const machineNames = new Map(machines.map((machine) => [machine._id, machine.name]));
@@ -58,12 +103,16 @@ export const list = query({
         attempt.machineId === undefined ? undefined : machineNames.get(attempt.machineId),
       selectionReason: attempt.selectionReason,
       repo: attempt.repo,
+      owner: attempt.owner,
       displayName: attempt.displayName,
       workflowRunId: attempt.workflowRunId,
+      workflowRunUrl: workflowRunUrl(attempt),
       result: attempt.result,
       lastError: attempt.lastError,
       cancelReason: attempt.cancelReason,
       createdAt: attempt.createdAt,
+      queueTime: attempt.queueTime,
+      queueWaitMs: queueWaitMs(attempt),
       startedAt: attempt.startedAt,
       finishedAt: attempt.finishedAt,
     }));

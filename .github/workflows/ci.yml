@@ -126,7 +126,10 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
-      - run: pnpm test
+      # --continue: by default Turbo cancels every other package's tests at the first failure, so
+      # one red suite shows up as "cancelled" siblings and hides whether they would have passed.
+      # The step still fails when any suite fails.
+      - run: pnpm exec turbo run test --continue
       - run: pnpm build
       # The Node suite pins server.ts's four import.meta.dirname defaults as they resolve from a
       # checkout. hub.sh no longer mounts a checkout — it mounts dist/hub — and all four of those

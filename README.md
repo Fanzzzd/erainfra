@@ -21,8 +21,9 @@ router, or a corporate firewall participates like any other.
 - **Immutable by construction.** Images are pinned by digest, the agent release is pinned by
   checksum, and nothing writable survives a job. Warm state comes from prewarmed images, not
   shared caches.
-- **Drop-in adoption.** `runs-on: <profile>` is the entire workflow change, with an optional
-  fallback to GitHub-hosted runners when the fleet has no capacity.
+- **Drop-in adoption.** `runs-on: <profile>` is the entire workflow change. An optional router
+  job sends a run to GitHub-hosted runners instead when the Profile has no ready Worker or no
+  free slot ([below](#fall-back-to-github-hosted-runners)).
 
 The design combines:
 
@@ -502,10 +503,68 @@ build cache such as Turborepo's works the same way. Both consume Actions storage
 than a warm immutable image, so prefer prewarming the Image Release for anything that changes
 rarely. A Profile on allowlist-only egress needs its cache endpoint declared with `--egress-allow`.
 
-Keep the label behind a repository variable with a hosted fallback, and agree on a queue limit with
-whoever operates the Profile: GitHub has no runner fallback of its own and cancels a queued
-self-hosted job only after 24 hours. Before an operation takes a Profile's only Worker away for
-longer than that limit, the operator follows
+### Fall back to GitHub-hosted runners
+
+GitHub has no runner fallback of its own: a job queued on a Profile label waits for that Profile,
+and GitHub cancels a queued self-hosted job only after 24 hours. The control plane answers the
+question a workflow needs instead. `GET /runs-on?profile=<name>&fallback=<label>` on the
+deployment's site URL returns `{"runs-on": "<name>"}` when a job sent to the Profile now would
+start without waiting, and `{"runs-on": "<label>"}` otherwise. A Profile has room when it is
+active, at least one Worker is ready for it, its live Attempts are below `maxRunners`, and either
+one of its `minRunners` warm Runners is idle or the scheduler would place one more Attempt on a
+ready Worker behind everything already queued. Readiness, slots, CPU, memory, disk and warm-pool
+rules are the scheduler's own. An unknown or paused Profile, no ready Worker, or a full Profile all answer the
+fallback, which defaults to `ubuntu-latest` (`macos-latest` for Tart, `windows-latest` for
+Hyper-V).
+
+A small router job at the top of the workflow asks once and every other job reads its answer:
+
+```yaml
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runs-on: ${{ steps.route.outputs.runs-on }}
+    steps:
+      - id: route
+        env:
+          CONTROL_PLANE: https://<deployment>.convex.site
+          PROFILE: rc-linux-js
+          FALLBACK: ubuntu-24.04
+        run: |
+          # Any failure (control plane down, timeout, unexpected body) routes to FALLBACK.
+          label=$(curl --fail --silent --show-error --max-time 10 --retry 2 --get \
+            --data-urlencode "profile=$PROFILE" --data-urlencode "fallback=$FALLBACK" \
+            "$CONTROL_PLANE/runs-on" | jq -er '."runs-on" | strings') || label=$FALLBACK
+          echo "routing to $label"
+          echo "runs-on=$label" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: route
+    runs-on: ${{ needs.route.outputs.runs-on }}
+    steps:
+      - uses: actions/checkout@<commit-sha>
+      - run: pnpm test
+```
+
+The endpoint takes no credential, on purpose. Pull requests from forks get no secrets, so an
+authenticated probe would fail exactly where routing matters, or need a token committed to the
+workflow. It returns only the Profile's name or the caller's own fallback label, so an anonymous
+caller learns whether that Profile has room right now and nothing else; the reason for a fallback
+goes to the deployment's log. It makes no GitHub API call, so callers cannot spend the GitHub
+App's rate limit, and it reads only indexed rows bounded by live work and Worker count. It
+rejects labels outside `[A-Za-z0-9._-]` (up to 100 characters) rather than echo them.
+
+The answer covers one job. Jobs that share it, such as a matrix, all go to the Profile on a "yes"
+even when only one slot was free; the rest queue there. The router itself runs on a GitHub-hosted
+runner, a few seconds per workflow run.
+
+The older form `/runs-on?labels=rc-linux` still answers for the pre-Profile webhook path, from that
+path's machine slots. It knows nothing of Profiles.
+
+Agree on a queue limit with whoever operates the Profile. Before an operation takes a Profile's
+only Worker away for longer than that limit, the operator follows
 [docs/runbooks/take-the-only-worker-away.md](docs/runbooks/take-the-only-worker-away.md).
 
 ## Legacy webhook delivery recovery
