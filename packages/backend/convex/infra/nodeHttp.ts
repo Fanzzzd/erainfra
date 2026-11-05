@@ -1,10 +1,12 @@
 import type { HttpRouter } from "convex/server";
+import { ConvexError } from "convex/values";
 import { internal } from "../_generated/api";
 import { httpAction } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import { bearerToken } from "../apiTokenPolicy";
 import { isWellFormedNodeCredential } from "./policy";
 import { MAX_BODY_BYTES } from "./nodeCommandModel";
+import { ENDPOINT_REFUSALS } from "./nodeState";
 
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -37,6 +39,12 @@ async function bodyObject(request: Request) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("Expected object");
   return parsed as Record<string, unknown>;
+}
+function endpointRefusal(error: unknown) {
+  if (!(error instanceof ConvexError)) return undefined;
+  const data: unknown = error.data;
+  if (typeof data !== "object" || data === null || !("code" in data)) return undefined;
+  return ENDPOINT_REFUSALS.find((code) => code === data.code);
 }
 export function registerNodeRoutes(http: HttpRouter) {
   for (const [method, path] of [
@@ -142,11 +150,13 @@ export function registerNodeRoutes(http: HttpRouter) {
           if (new TextEncoder().encode(JSON.stringify(result)).length > MAX_BODY_BYTES)
             return response({ error: "response_too_large" }, 413);
           return response(result);
-        } catch {
+        } catch (error) {
           // Do not echo validation errors, command data, credential or secret payload into logs or
           // HTTP errors. A revocation that raced the first auth check must still return 401.
           const live = await ctx.runQuery(internal.infra.nodes.authenticate, { credential });
-          return response({ error: live ? "request_refused" : "unauthorized" }, live ? 409 : 401);
+          if (!live) return response({ error: "unauthorized" }, 401);
+          // The fixed endpoint refusal codes carry no data, only which operator action is due.
+          return response({ error: endpointRefusal(error) ?? "request_refused" }, 409);
         }
       }),
     });

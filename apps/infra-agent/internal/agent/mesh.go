@@ -24,6 +24,7 @@ type MeshManager struct {
 	client    *meshclient.Client
 	reconcile *meshclient.Reconciler
 	lock      *meshclient.Lock
+	socket    *meshclient.Lock
 	child     *meshclient.Supervisor
 	legacy    legacyPipes
 
@@ -50,11 +51,19 @@ func OpenMesh(ctx context.Context, opts MeshOptions) (*MeshManager, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The control-directory lock alone lets two agents configured with different directories
+	// drive one sidecar. The socket lock is keyed on the sidecar itself.
+	socket, err := meshclient.AcquireSocket(opts.Socket)
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
 	m := NewMeshManager()
-	m.lock, m.client = lock, meshclient.New(opts.Socket)
+	m.lock, m.socket, m.client = lock, socket, meshclient.New(opts.Socket)
 	if opts.Binary != "" {
 		m.child, err = meshclient.Start(ctx, meshclient.SupervisorConfig{Binary: opts.Binary, Dir: filepath.Join(opts.Dir, "sidecar"), Socket: opts.Socket})
 		if err != nil {
+			_ = socket.Close()
 			_ = lock.Close()
 			return nil, err
 		}
@@ -75,6 +84,9 @@ func (m *MeshManager) Close() error {
 	if m.child != nil {
 		_ = m.child.Close()
 	}
+	if m.socket != nil {
+		_ = m.socket.Close()
+	}
 	if m.lock != nil {
 		return m.lock.Close()
 	}
@@ -92,8 +104,34 @@ func (m *MeshManager) Status(ctx context.Context) (string, error) {
 	return string(b), err
 }
 func (m *MeshManager) Apply(ctx context.Context, d meshclient.Desired, stage string) (string, error) {
+	s, err := m.apply(ctx, d, stage)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(s)
+	return string(b), err
+}
+
+// EndpointStatus, SignChallenge and ApplyDesired are what connect-convex drives: it publishes the
+// sidecar's address with a signed challenge and applies Convex's complete snapshot in one stage.
+func (m *MeshManager) EndpointStatus(ctx context.Context) (meshclient.Status, error) {
 	if !m.Enabled() {
-		return "", meshclient.ErrUnsupported
+		return meshclient.Status{}, meshclient.ErrUnsupported
+	}
+	return m.client.Status(ctx)
+}
+func (m *MeshManager) SignChallenge(ctx context.Context, message string) (meshclient.Signature, error) {
+	if !m.Enabled() {
+		return meshclient.Signature{}, meshclient.ErrUnsupported
+	}
+	return m.client.SignChallenge(ctx, message)
+}
+func (m *MeshManager) ApplyDesired(ctx context.Context, d meshclient.Desired) (meshclient.Status, error) {
+	return m.apply(ctx, d, "")
+}
+func (m *MeshManager) apply(ctx context.Context, d meshclient.Desired, stage string) (meshclient.Status, error) {
+	if !m.Enabled() {
+		return meshclient.Status{}, meshclient.ErrUnsupported
 	}
 	// Record the names before applying: from here on this Node refuses dumbpipe for them, even if
 	// the apply below fails halfway. The view is complete, so it replaces the previous set: a link
@@ -108,12 +146,7 @@ func (m *MeshManager) Apply(ctx context.Context, d meshclient.Desired, stage str
 	m.namesMu.Lock()
 	m.onMesh = names
 	m.namesMu.Unlock()
-	s, err := m.reconcile.Apply(ctx, d, stage)
-	if err != nil {
-		return "", err
-	}
-	b, err := json.Marshal(s)
-	return string(b), err
+	return m.reconcile.Apply(ctx, d, stage)
 }
 
 // ErrOnMesh refuses a dumbpipe command for a link the Hub has moved to the mesh.

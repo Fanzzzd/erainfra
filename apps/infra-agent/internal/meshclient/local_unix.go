@@ -57,6 +57,28 @@ func Acquire(path string) (*Lock, error) {
 	}
 	return &Lock{f: f}, nil
 }
+
+// AcquireSocket takes the controller lock of the sidecar listening on socket. It locks the
+// directory that holds the socket, so every controller of one sidecar contends on the same inode
+// whatever control directory it was configured with: a Hub-mode and a Convex-mode agent, or two
+// agents with different ERAINFRA_MESH_CONTROL_DIR values, cannot both drive it. Opening the
+// directory needs only read access, which an agent in the sidecar's group already has.
+func AcquireSocket(socket string) (*Lock, error) {
+	f, err := os.Open(filepath.Dir(socket))
+	if err != nil {
+		return nil, fmt.Errorf("mesh socket directory: %w", err)
+	}
+	if info, err := f.Stat(); err != nil || !info.IsDir() {
+		_ = f.Close()
+		return nil, errors.New("mesh socket directory is not a directory")
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("mesh already has a controller for %s: %w", socket, err)
+	}
+	return &Lock{f: f}, nil
+}
+
 func (l *Lock) Close() error        { return l.f.Close() }
 func privileged() bool              { return os.Geteuid() == 0 }
 func terminate(p *os.Process) error { return p.Signal(os.Interrupt) }

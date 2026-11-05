@@ -2,7 +2,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { ConvexError, v } from "convex/values";
 import type { Id, Doc } from "../_generated/dataModel";
 import { internalMutation, internalQuery, type QueryCtx } from "../_generated/server";
-import { requireNode } from "./nodes";
+import { hasLiveCredential, requireNode } from "./nodes";
 import { meshAddress } from "./nodeCommandModel";
 import { hashApiToken } from "../apiTokenPolicy";
 
@@ -12,13 +12,38 @@ export const heartbeat = internalMutation({
     const { nodeId } = await requireNode(ctx, args.credential);
     if (args.version.length > 100) throw new ConvexError("Version too long");
     await ctx.db.patch(nodeId, { lastSeenAt: Date.now(), infraAgentVersion: args.version });
-    return { nodeId, heartbeatAfterMs: 15000 };
+    const node = await ctx.db.get(nodeId);
+    // The Node's own registered key (public), so the Infra Agent can tell a key it may publish
+    // from one Convex will refuse, and notice an operator reset, without retrying a refusal.
+    return { nodeId, heartbeatAfterMs: 15000, endpointId: node?.endpointId ?? null };
   },
 });
 
-// The phase-1b worker owns the coordinated sidecar sign_challenge extension. Until the Go
-// transport integrates that client, registration requires a separate holder of the endpoint key;
-// status alone is never treated as proof of possession.
+/**
+ * Refusals the Infra Agent must surface and stop retrying, because only an operator can clear
+ * them. nodeHttp returns the code as the 409 body; every other refusal stays an opaque
+ * `request_refused`.
+ */
+export const ENDPOINT_REFUSALS = ["endpoint_key_changed", "endpoint_in_use"] as const;
+type EndpointRefusal = (typeof ENDPOINT_REFUSALS)[number];
+function refuse(code: EndpointRefusal, message: string): never {
+  throw new ConvexError({ code, message });
+}
+async function assertEndpointAvailable(ctx: QueryCtx, nodeId: Id<"nodes">, endpointId: string) {
+  const node = await ctx.db.get(nodeId);
+  if (!node) throw new ConvexError("No such Node");
+  if (node.endpointId !== undefined && node.endpointId !== endpointId)
+    refuse("endpoint_key_changed", "Operator must reset the endpoint before changing its key");
+  const other = await ctx.db
+    .query("nodes")
+    .withIndex("by_endpointId", (q) => q.eq("endpointId", endpointId))
+    .first();
+  if (other && other._id !== nodeId)
+    refuse("endpoint_in_use", "Endpoint already registered to another Node");
+}
+
+// The Infra Agent has its erainfra-mesh sidecar sign `message` with `sign_challenge`; status
+// alone is never treated as proof of possession.
 export const challenge = internalMutation({
   args: { credential: v.string(), address: meshAddress },
   handler: async (ctx, args) => {
@@ -37,6 +62,8 @@ export const challenge = internalMutation({
       if (u.protocol !== "https:" || u.username || u.password || u.search || u.hash)
         throw new ConvexError("Invalid relay URL");
     }
+    // Refuse a key change before issuing a challenge, so the Node learns it without signing.
+    await assertEndpointAvailable(ctx, nodeId, a.id);
     const old = await ctx.db
       .query("nodeEndpointChallenges")
       .withIndex("by_node", (q) => q.eq("nodeId", nodeId))
@@ -96,15 +123,7 @@ export const publish = internalMutation({
       valid = false;
     }
     if (!valid) throw new ConvexError("Invalid endpoint signature");
-    const node = await ctx.db.get(nodeId);
-    if (!node || (node.endpointId !== undefined && node.endpointId !== proof.address.id))
-      throw new ConvexError("Operator must reset the endpoint before changing its key");
-    const other = await ctx.db
-      .query("nodes")
-      .withIndex("by_endpointId", (q) => q.eq("endpointId", proof.address.id))
-      .first();
-    if (other && other._id !== nodeId)
-      throw new ConvexError("Endpoint already registered to another Node");
+    await assertEndpointAvailable(ctx, nodeId, proof.address.id);
     await ctx.db.patch(nodeId, {
       endpointId: proof.address.id,
       meshAddress: proof.address,
@@ -165,7 +184,16 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
       throw new ConvexError("Invalid stored mesh link");
     const peerId = link.providerNodeId === nodeId ? link.consumerNodeId : link.providerNodeId;
     const peer = await ctx.db.get(peerId);
-    if (!peer?.meshAddress || peer.endpointProvenAt === undefined) continue;
+    // A peer is granted only while its endpoint key is proven and it still holds a live
+    // credential. Revoking the last credential also clears the endpoint (nodes.revokeCredential);
+    // this check keeps a revoked Node out even if a row predates that rule.
+    if (
+      !peer?.meshAddress ||
+      peer.endpointProvenAt === undefined ||
+      peer.endpointId !== peer.meshAddress.id ||
+      !(await hasLiveCredential(ctx, peer._id))
+    )
+      continue;
     peers.set(peer.meshAddress.id, peer.meshAddress);
     if (link.providerNodeId === nodeId) {
       const target = `127.0.0.1:${link.providerPort}`;

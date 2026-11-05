@@ -89,3 +89,35 @@ func TestOnlyOneControllerHoldsTheLock(t *testing.T) {
 	}
 	_ = again.Close()
 }
+
+// The socket lock is per sidecar: two controllers of one socket conflict, whatever control
+// directory they use, and controllers of different sidecars do not.
+func TestOnlyOneControllerPerSidecarSocket(t *testing.T) {
+	dir, other := t.TempDir(), t.TempDir()
+	first, err := AcquireSocket(filepath.Join(dir, "mesh.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, err := AcquireSocket(filepath.Join(dir, "mesh.sock")); err == nil {
+		_ = second.Close()
+		t.Fatal("a second controller locked the same sidecar")
+	} else if !strings.Contains(err.Error(), "already has a controller") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	elsewhere, err := AcquireSocket(filepath.Join(other, "mesh.sock"))
+	if err != nil {
+		t.Fatalf("another sidecar's controller refused: %v", err)
+	}
+	_ = elsewhere.Close()
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := AcquireSocket(filepath.Join(dir, "mesh.sock"))
+	if err != nil {
+		t.Fatalf("lock not released on close: %v", err)
+	}
+	_ = again.Close()
+	if _, err := AcquireSocket(filepath.Join(dir, "missing", "mesh.sock")); err == nil {
+		t.Fatal("locked a socket directory that does not exist")
+	}
+}

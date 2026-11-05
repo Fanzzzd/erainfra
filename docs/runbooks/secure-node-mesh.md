@@ -45,8 +45,11 @@ socket, all private). It refuses to supervise a root sidecar, and refuses to sta
 on a socket that already answers.
 
 Only one controller drives a sidecar. The Infra Agent holds an exclusive lock on
-`controller.lock` in the control directory for its whole lifetime, so a second agent process, or a
-Hub-mode and a Convex-mode agent on the same Node, fails at startup instead of fighting over grants.
+`controller.lock` in the control directory, and another on the directory that holds the sidecar's
+socket, for its whole lifetime. A second agent process, or a Hub-mode and a Convex-mode
+(`connect-convex`) agent on the same Node, fails at startup instead of fighting over grants, even
+when the two were given different control directories. On Windows only the control-directory lock
+exists, and `connect-convex` refuses to drive a sidecar there.
 
 On Windows, the mesh pipe has an explicit protected DACL for SYSTEM and its owner. Key and state
 directories receive a protected DACL for SYSTEM and the agent user. Windows sidecar installation is

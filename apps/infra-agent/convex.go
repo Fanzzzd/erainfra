@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/agent"
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/convexnode"
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient"
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
 )
 
@@ -57,12 +62,65 @@ func runConnectConvex(ctx context.Context) error {
 	defer func() { _ = client.Close() }()
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	mesh, err := convexMesh(ctx)
+	if err != nil {
+		return err
+	}
+	if mesh != nil {
+		defer func() { _ = mesh.Close() }()
+		relays, err := meshRelayPolicy()
+		if err != nil {
+			return err
+		}
+		client.Mesh = &convexnode.MeshOptions{Sidecar: mesh, Relays: relays}
+	} else {
+		log.Printf("connect-convex: no erainfra-mesh sidecar configured (ERAINFRA_MESH_SOCKET or ERAINFRA_MESH_BIN); this Node publishes no endpoint and runs no mesh links")
+	}
 	err = client.Run(ctx)
 	if ctx.Err() != nil {
 		return nil
 	}
 	return err
 }
+
+// convexMesh opens the sidecar under the same controller locks Hub mode takes, so the two modes
+// can never drive one sidecar at once. It returns nil when no sidecar is configured.
+func convexMesh(ctx context.Context) (*agent.MeshManager, error) {
+	if os.Getenv("ERAINFRA_MESH_SOCKET") == "" && os.Getenv("ERAINFRA_MESH_BIN") == "" {
+		return nil, nil
+	}
+	if runtime.GOOS == "windows" {
+		// A named pipe has no directory to lock, so the per-sidecar controller lock does not exist
+		// there yet (meshclient.AcquireSocket).
+		return nil, errors.New("connect-convex drives an erainfra-mesh sidecar only on Linux and macOS; unset ERAINFRA_MESH_SOCKET and ERAINFRA_MESH_BIN")
+	}
+	mesh, err := connectMesh(ctx, "convex")
+	if err != nil {
+		return nil, fmt.Errorf("secure mesh startup: %w", err)
+	}
+	return mesh, nil
+}
+
+// meshRelayPolicy reads the relay policy from the same variables the Hub reads it from. In
+// connect-convex mode each Node holds its own: Convex stores no relay token.
+func meshRelayPolicy() (meshclient.Relays, error) {
+	policy := meshclient.Relays{URLs: []string{}}
+	if raw := os.Getenv("ERAINFRA_MESH_RELAYS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &policy.URLs); err != nil || policy.URLs == nil {
+			return policy, errors.New("ERAINFRA_MESH_RELAYS must be a JSON URL array")
+		}
+	}
+	switch os.Getenv("ERAINFRA_MESH_N0_FALLBACK") {
+	case "", "false":
+	case "true":
+		policy.N0Fallback = true
+	default:
+		return policy, errors.New("ERAINFRA_MESH_N0_FALLBACK must be true or false")
+	}
+	policy.AuthToken = os.Getenv("ERAINFRA_MESH_RELAY_TOKEN")
+	return policy, nil
+}
+
 func trimCredential(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
 		s = s[:len(s)-1]

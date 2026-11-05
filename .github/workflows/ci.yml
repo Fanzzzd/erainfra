@@ -294,8 +294,10 @@ jobs:
             "erainfra-mesh $(node -p "require('./package.json').version")"
       # The Infra Agent drives the sidecar it just built: three Nodes on loopback (a granted consumer,
       # the provider, a fleet member with no grant), revocation closing an open stream, identity
-      # across restarts, and a second daemon refused. `go test ./...` in `check` skips this test,
-      # because only this job has the binary.
+      # across restarts, and a second daemon refused. The connect-convex test runs three agents
+      # against a fake Convex: endpoint proof through the real sign_challenge, a declared link that
+      # carries traffic, and an enrolled Node with no link that stays denied. `go test ./...` in
+      # `check` skips these tests, because only this job has the binary.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -304,7 +306,7 @@ jobs:
         working-directory: .
         run: |
           MESH_TEST_BINARY="$PWD/dist/mesh-ci/erainfra-mesh-linux-x86_64" \
-            go test -race -count=1 -run 'TestBuiltSidecar' -v ./apps/infra-agent/internal/agent/
+            go test -race -count=1 -run 'TestBuiltSidecar' -v ./apps/infra-agent/internal/agent/ ./apps/infra-agent/internal/convexnode/
       # The control socket is a named pipe on Windows, so that code only compiles there. The
       # release builds it with MSVC on a Windows runner; Zig's MinGW lets this job type-check and
       # lint the same cfg(windows) code on every pull request without one.
