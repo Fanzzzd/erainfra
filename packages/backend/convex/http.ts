@@ -37,7 +37,7 @@ import { renderWindowsInstallScript } from "./installScriptPowerShell";
 import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 
 import { registerDeployRoutes } from "./infra/deployHttp";
-import { parsePush } from "./infra/githubDeploy";
+import { parsePush, webhookSecretsFor } from "./infra/githubDeploy";
 import { registerNodeRoutes } from "./infra/nodeHttp";
 
 const http = httpRouter();
@@ -837,21 +837,23 @@ http.route({
     const rawBody = await request.arrayBuffer();
     const signature = request.headers.get("X-Hub-Signature-256") ?? "";
 
-    // A Manifest-created App's secret outranks the environment, but both are
-    // offered so deliveries keep verifying mid-migration.
+    // One secret per purpose (infra/githubDeploy.ts, webhookSecretsFor): the event type picks the
+    // secrets before anything is verified, so a holder of the CI App's secret cannot sign a push
+    // that deploys, and a holder of the deploy App's secret cannot queue a job. A Manifest-created
+    // CI App's secret outranks the environment, but both are offered so deliveries keep verifying
+    // mid-migration.
+    const event = request.headers.get("X-GitHub-Event") ?? "";
     const storedSecret = await ctx.runQuery(internal.githubApp.webhookSecret, {});
-    const envSecret = process.env.GITHUB_WEBHOOK_SECRET;
-    // Push-to-deploy runs on the operator's own deploy App (infra/githubDeploy.ts), whose
-    // deliveries arrive here too.
-    const deploySecret = process.env.ERAINFRA_GH_WEBHOOK_SECRET;
-    const secrets = [
-      ...(storedSecret === null ? [] : [storedSecret]),
-      ...(envSecret !== undefined && envSecret.length > 0 ? [envSecret] : []),
-      ...(deploySecret !== undefined && deploySecret.length > 0 ? [deploySecret] : []),
-    ];
+    const secrets = webhookSecretsFor(event, {
+      ciStored: storedSecret,
+      ciEnv: process.env.GITHUB_WEBHOOK_SECRET,
+      deploy: process.env.ERAINFRA_GH_WEBHOOK_SECRET,
+    });
     if (secrets.length === 0) {
       console.error(
-        "Rejecting webhook: no secret is configured. Connect a GitHub App from the dashboard, or set GITHUB_WEBHOOK_SECRET.",
+        event === "push"
+          ? "Rejecting push webhook: ERAINFRA_GH_WEBHOOK_SECRET is not set (docs/infra-management.md, Push-to-deploy)."
+          : "Rejecting webhook: no secret is configured. Connect a GitHub App from the dashboard, or set GITHUB_WEBHOOK_SECRET.",
       );
       return new Response("Invalid signature", { status: 401 });
     }
@@ -859,7 +861,6 @@ http.route({
       return new Response("Invalid signature", { status: 401 });
     }
 
-    const event = request.headers.get("X-GitHub-Event") ?? "";
     if (event !== "workflow_job" && event !== "push") {
       return new Response("Ignored", { status: 200 });
     }

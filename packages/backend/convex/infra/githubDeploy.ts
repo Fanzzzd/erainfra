@@ -24,6 +24,26 @@ export function deployAppConfig(env: Record<string, string | undefined>): Deploy
   return { appId, privateKey };
 }
 
+const present = (value: string | null | undefined): value is string =>
+  value !== null && value !== undefined && value.length > 0;
+
+/**
+ * The secrets a delivery of `event` may be signed with, chosen before verification. A `push`
+ * deploys, so only the deploy App's secret signs it; a `workflow_job` queues CI work, so only the
+ * CI App's secrets (the Manifest record, then GITHUB_WEBHOOK_SECRET) sign it. Any other event is
+ * acknowledged and ignored, so either App's secret may sign it (GitHub's `ping` comes from both).
+ */
+export function webhookSecretsFor(
+  event: string,
+  configured: { ciStored: string | null; ciEnv?: string; deploy?: string },
+): string[] {
+  const ci = [configured.ciStored, configured.ciEnv].filter(present);
+  const deploy = [configured.deploy].filter(present);
+  if (event === "push") return deploy;
+  if (event === "workflow_job") return ci;
+  return [...ci, ...deploy];
+}
+
 export type PushEvent = { repo: string; branch: string; sha: string };
 
 /** What a deploy needs from a push event; null for a tag, a branch deletion or a malformed body. */

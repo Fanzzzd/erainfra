@@ -43,6 +43,9 @@ afterEach(() => {
     "ERAINFRA_GH_APP_ID",
     "ERAINFRA_GH_APP_KEY",
     "ERAINFRA_GH_WEBHOOK_SECRET",
+    "GITHUB_WEBHOOK_SECRET",
+    "ERAINFRA_REGISTRY",
+    "ERAINFRA_REGISTRY_NODE",
   ])
     delete process.env[name];
 });
@@ -553,6 +556,188 @@ describe("push-to-deploy", () => {
     await s.agent("node-a"); // deploy
     const status = await s.t.run((ctx) => ctx.db.get(binding));
     expect(status?.lastStatus).toMatchObject({ sha, ok: true, stage: "done" });
+  });
+});
+
+describe("webhook secrets", () => {
+  // One secret per purpose: the event type picks the secret before the signature is checked.
+  const deliver = async (
+    s: Awaited<ReturnType<typeof setup>>,
+    event: string,
+    secret: string,
+    body: string,
+  ) =>
+    await s.t.fetch("/github/webhook", {
+      method: "POST",
+      headers: {
+        "X-GitHub-Event": event,
+        "X-GitHub-Delivery": `delivery-${event}-${secret}`,
+        "X-Hub-Signature-256": await sign(secret, body),
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+  const push = JSON.stringify({
+    ref: "refs/heads/main",
+    after: "b".repeat(40),
+    repository: { full_name: "acme/shop" },
+  });
+  const job = JSON.stringify({
+    action: "queued",
+    workflow_job: { id: 1, labels: ["self-hosted"], workflow_name: "ci" },
+    repository: { full_name: "acme/shop", private: false },
+  });
+
+  it("refuses a push signed with the CI App's secret, and a job signed with the deploy secret", async () => {
+    const s = await setup();
+    await s.beat();
+    await s.human.mutation(api.infra.git.bind, { repo: "acme/shop", branch: "main", app: "shop" });
+    process.env.GITHUB_WEBHOOK_SECRET = "ci-secret";
+    process.env.ERAINFRA_GH_WEBHOOK_SECRET = "deploy-secret";
+
+    expect((await deliver(s, "push", "ci-secret", push)).status).toBe(401);
+    expect((await deliver(s, "workflow_job", "deploy-secret", job)).status).toBe(401);
+    const recorded = await s.t.run(async (ctx) => ({
+      runs: await ctx.db.query("appDeployments").collect(),
+      deliveries: await ctx.db.query("webhookDeliveries").collect(),
+    }));
+    expect(recorded).toEqual({ runs: [], deliveries: [] });
+
+    // Each secret still works for its own purpose.
+    expect((await deliver(s, "push", "deploy-secret", push)).status).toBe(202);
+    expect((await deliver(s, "workflow_job", "ci-secret", job)).status).not.toBe(401);
+    // GitHub's ping comes from either App and does nothing.
+    expect((await deliver(s, "ping", "deploy-secret", "{}")).status).toBe(200);
+    expect((await deliver(s, "ping", "ci-secret", "{}")).status).toBe(200);
+    await s.settle();
+    expect(await s.t.run((ctx) => ctx.db.query("appDeployments").collect())).toHaveLength(1);
+  });
+
+  it("refuses every push while no deploy secret is set, even one signed with the CI secret", async () => {
+    const s = await setup();
+    process.env.GITHUB_WEBHOOK_SECRET = "ci-secret";
+    expect((await deliver(s, "push", "ci-secret", push)).status).toBe(401);
+  });
+});
+
+type Key = { pair: CryptoKeyPair; id: string };
+async function newKey(): Promise<Key> {
+  const pair = (await crypto.subtle.generateKey("Ed25519", true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  return { pair, id: Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("") };
+}
+
+describe("mesh links from the pipeline", () => {
+  it("publishes cross-Node needs and the registry links in each Node's mesh snapshot", async () => {
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
+    process.env.ERAINFRA_REGISTRY_NODE = "node-c";
+    const s = await setup();
+    await s.beat();
+    // Each Node proves its endpoint key the way connect-convex does with its sidecar.
+    const keys: Record<string, Key> = {};
+    for (const name of ["node-a", "node-b", "node-c"]) {
+      keys[name] = await newKey();
+      const address = { id: keys[name].id, relay_urls: [], direct_addrs: ["127.0.0.1:4433"] };
+      const challenge = await s.nodeApi("endpoint/challenge", name, { address });
+      expect(challenge.status).toBe(200);
+      const { challengeId, message } = (await challenge.json()) as {
+        challengeId: string;
+        message: string;
+      };
+      const signature = new Uint8Array(
+        await crypto.subtle.sign(
+          "Ed25519",
+          keys[name].pair.privateKey,
+          new TextEncoder().encode(message),
+        ),
+      );
+      const published = await s.nodeApi("endpoint", name, {
+        challengeId,
+        signature: btoa(String.fromCharCode(...signature)),
+      });
+      expect(published.status).toBe(200);
+    }
+    const snapshot = async (name: string) => {
+      const res = await s.nodeApi("state", name);
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { desired: any }).desired;
+    };
+
+    const id = await s.startUpload("shop", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    // Planning wired the registry before the build: node-a pushes, node-a and node-b pull.
+    expect((await snapshot("node-a")).links).toContainEqual({
+      name: "registry-node-a",
+      peer: keys["node-c"].id,
+      service: "registry-node-a",
+      listen: "127.0.0.1:5000",
+    });
+    await s.agent("node-a"); // build
+    const deployedA = await s.agent("node-a");
+    await s.agent("node-b");
+    expect((await s.deployment(id)).stage).toBe("done");
+    const web = deployedA[0].payload.services[0];
+    const db = (await s.t.run((ctx) => ctx.db.query("apps").first()))!.services.find(
+      (x) => x.name === "db",
+    )!;
+
+    // node-b provides db to node-a only, at db's loopback host port.
+    const b = await snapshot("node-b");
+    expect(b.exposures).toContainEqual({
+      name: "shop-db",
+      target: `127.0.0.1:${db.port}`,
+      allowed_peers: [keys["node-a"].id],
+    });
+    expect(b.links).toContainEqual({
+      name: "registry-node-b",
+      peer: keys["node-c"].id,
+      service: "registry-node-b",
+      listen: "127.0.0.1:5000",
+    });
+    // node-a listens where its container reaches the host (host.docker.internal), at the port
+    // injected as DB_PORT.
+    const a = await snapshot("node-a");
+    expect(a.links).toContainEqual({
+      name: "shop-db",
+      peer: keys["node-b"].id,
+      service: "shop-db",
+      listen: `0.0.0.0:${web.env.DB_PORT}`,
+    });
+    expect(web.env.DB_HOST).toBe("host.docker.internal");
+    expect(web.args).toContain("--add-host=host.docker.internal:host-gateway");
+    // node-c, the registry Node, grants each consumer its own link and nothing else.
+    const c = await snapshot("node-c");
+    expect(c.exposures).toEqual([
+      { name: "registry-node-a", target: "127.0.0.1:5000", allowed_peers: [keys["node-a"].id] },
+      { name: "registry-node-b", target: "127.0.0.1:5000", allowed_peers: [keys["node-b"].id] },
+    ]);
+    expect(c.links).toEqual([]);
+  });
+
+  it("refuses to take over a registry link name that someone declared", async () => {
+    process.env.ERAINFRA_REGISTRY_NODE = "node-c";
+    const s = await setup();
+    await s.beat();
+    await s.t.run((ctx) =>
+      ctx.db.insert("meshLinks", {
+        name: "registry-node-a",
+        providerNodeId: s.nodes["node-b"].nodeId,
+        providerPort: 8080,
+        consumerNodeId: s.nodes["node-a"].nodeId,
+        localPort: 8080,
+        createdBy: "user",
+        updatedAt: T0,
+      }),
+    );
+    const id = await s.startUpload("shop", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    expect(await s.deployment(id)).toMatchObject({
+      stage: "failed",
+      error: "the mesh link name registry-node-a is taken by a link someone declared",
+    });
   });
 });
 
