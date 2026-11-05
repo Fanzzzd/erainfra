@@ -12,6 +12,7 @@ import {
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "../_generated/server";
 import { hashApiToken } from "../apiTokenPolicy";
 import { requirePermission } from "./access";
@@ -119,6 +120,8 @@ export const resetEndpoint = mutation({
       endpointId: undefined,
       endpointAddr: undefined,
       endpointUpdatedAt: undefined,
+      meshAddress: undefined,
+      endpointProvenAt: undefined,
     });
     await appendAudit(ctx, {
       actor,
@@ -131,6 +134,24 @@ export const resetEndpoint = mutation({
   },
 });
 
+/** Shared by every Node API transaction; revocation is checked again at commit, not cached. */
+export async function authenticateNode(ctx: QueryCtx, credential: string) {
+  if (!isWellFormedNodeCredential(credential)) return null;
+  const tokenHash = await hashApiToken(credential);
+  const row = await ctx.db
+    .query("nodeCredentials")
+    .withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+    .unique();
+  if (row === null || row.revokedAt !== undefined) return null;
+  return { nodeId: row.nodeId, credentialId: row._id };
+}
+
+export async function requireNode(ctx: QueryCtx, credential: string) {
+  const principal = await authenticateNode(ctx, credential);
+  if (principal === null) throw new ConvexError("Unauthorized Node credential");
+  return principal;
+}
+
 /** The Node a presented credential belongs to, or null for an unknown or revoked one. */
 export const authenticate = internalQuery({
   args: { credential: v.string() },
@@ -139,14 +160,7 @@ export const authenticate = internalQuery({
     v.object({ nodeId: v.id("nodes"), credentialId: v.id("nodeCredentials") }),
   ),
   handler: async (ctx, args) => {
-    if (!isWellFormedNodeCredential(args.credential)) return null;
-    const tokenHash = await hashApiToken(args.credential);
-    const row = await ctx.db
-      .query("nodeCredentials")
-      .withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
-      .unique();
-    if (row === null || row.revokedAt !== undefined) return null;
-    return { nodeId: row.nodeId, credentialId: row._id };
+    return await authenticateNode(ctx, args.credential);
   },
 });
 

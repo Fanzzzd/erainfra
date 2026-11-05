@@ -168,7 +168,7 @@ values themselves need not change.
 
 1. Phase 1: `erainfra-mesh` replaces dumbpipe, still brokered by the Hub.
 2. Phase 2a (now): Convex holds the state and its invariants, and the importer copies the Hub into
-   it. Nothing reads the copy yet.
+   it. Existing Hub-mode Nodes do not read the copy.
 3. Phase 2b: the Infra Agent dials Convex with its Node credential, registers its EndpointId, and
    reads secrets for deploys addressed to it.
 4. Phase 3: gateway ingress, the deploy pipeline and failover run from Convex, the CLI and dashboard
@@ -194,6 +194,119 @@ does not copy:
 - Hub API tokens (`plt_…`): the importer lists each one. Replace CLI tokens with dashboard API
   tokens, and give each Node its own credential in phase 2b;
 - the AI transcript archive (`chat_*`), which is not control state and stays on the Hub for now.
+
+## Opt-in Convex Node transport (phase 2b)
+
+`connect-convex` is a separate Infra Agent mode. Existing `connect` processes, `PORTLESS_*`
+settings, service units and installer defaults do not change. No live Hub database is imported by
+this mode. Use it on a test Node with state deliberately created in Convex. Gateway ingress, the
+build/deploy pipeline, failover scheduling and the CLI/dashboard migration remain phase 3 work.
+
+Build the Infra Agent from a checkout containing this mode, or use a release that includes it.
+An authenticated owner/admin issues a credential with `infra/nodes:enroll`. Put the returned
+`erainfra_node_…` value in a 0600 file. This credential is for one Node, not an operator or shared
+fleet token. On Linux/macOS, stop any existing Hub-connected process before starting the opt-in
+process, use a private persistent directory, and keep the credential out of argv:
+
+```sh
+install -d -m 0700 /var/lib/erainfra-node
+# Write the enrollment credential to /etc/erainfra-node.credential, mode 0600.
+env -u PORTLESS_HUB -u ERAINFRA_HUB \
+  ERAINFRA_CONVEX_SITE=https://<deployment>.convex.site \
+  ./infra-agent connect-convex \
+    --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node
+```
+
+`ERAINFRA_NODE_CREDENTIAL_FILE` and `ERAINFRA_NODE_STATE_DIR` can supply the two paths instead.
+`ERAINFRA_NODE_CREDENTIAL` is an alternative to the file, not an additional credential. Both modes
+refuse mixed Hub/Convex configuration. There is no fallback to a Hub token or a simultaneous Hub
+data channel. The journal requires private POSIX permissions and directory fsync; Windows opt-in
+needs separate ACL/durability validation before support. This command does not install a service
+or switch an existing service's defaults.
+
+### Node API and execution
+
+The versioned API is `/api/v1/nodes/`, on the Convex **site** origin. Every route requires the
+per-Node credential, derives the Node from its digest, and checks revocation again in the database
+transaction. No request accepts a Node id to select a different Node. Operator API tokens are
+refused here; Node credentials are refused on the operator API.
+
+| Method | Path                 | Purpose                                                         |
+| ------ | -------------------- | --------------------------------------------------------------- |
+| POST   | `heartbeat`          | publish Infra Agent version/liveness                            |
+| GET    | `state?revision=…`   | conditional full mesh snapshot; unchanged responses omit data   |
+| GET    | `commands?cursor=…`  | at most 25 unsettled commands; opaque pagination cursor         |
+| POST   | `commands/claim`     | atomically claim one addressed command, returning its epoch     |
+| POST   | `commands/renew`     | renew a live claim, with owner and epoch                        |
+| POST   | `commands/payload`   | claim-gated operation or placed deployment services and secrets |
+| POST   | `commands/result`    | report only `success`, `failure` or `unknown`                   |
+| POST   | `endpoint/challenge` | request a one-use key-possession challenge for an EndpointAddr  |
+| POST   | `endpoint`           | publish that address with its signed challenge                  |
+
+Humans enqueue through `infra/nodeCommands:enqueue`, with `node.run` for the existing Go operation
+allowlist or `app.deploy` for deployment commands. The enqueue and durable audit row commit in one
+transaction. A deployment command references an active deployment on the target Node, uses the
+stored App specification, and requires the matching live App lease epoch and operation
+(`deploy` or `failover`). This API does not start the phase-3 pipeline or create a deployment for
+it. No raw argv, script, caller environment or source/build URL is accepted. The server and Go
+executor both validate operations and Docker arguments. Use a stable idempotency key per intended
+operation/step, such as App revision plus Node and step. Reusing a key for different work is refused.
+
+Commands are delivered at least once. A 60-second claim lease fences Convex payload/result writes;
+the Infra Agent renews every 10 seconds and cancels the child context if renewal fails or the
+operator calls `infra/nodeCommands:cancel`. Cancellation cannot undo an effect already performed.
+The command lease does not extend the App lease: the deploying coordinator must keep that lease
+live too, or payload/result requests are refused. Execution is sequential per Node, which also prevents parallel commands for the same App. A local
+append-only journal fsyncs acceptance before an effect and its outcome before reporting. On restart,
+accepted-but-unfinished work becomes `unknown`; a restart/deploy with an interrupted outcome is
+never automatically repeated. Failed result delivery replays the journaled outcome, not the effect.
+No output, environment or secret is journaled or uploaded as a result. Child output capture is
+bounded to 16 KiB per subprocess, HTTP bodies to 256 KiB, and execution to 10 minutes.
+
+Keep the state directory across upgrades, outages and rollbacks. It is locked against another local
+process and bound to the Convex origin and Node. Do not enroll a second machine with the same Node
+credential or delete/copy its journal to bypass the lock. The journal stops accepting new work at
+10,000 keys or 16 MiB; a torn record fails closed for manual recovery. Unknown outcomes require
+inspection of the actual workload before a human deliberately issues a new operation key. Lease
+epochs and the local journal do not provide globally exactly-once external effects across cloned
+hosts or loss of the journal.
+
+The client uses bounded HTTPS polling, not a generic Convex WebSocket or a sleeping action. Busy
+polling is about one second; idle/error backoff doubles from 2 to 30 seconds, with ±20% jitter.
+Healthy idle Nodes therefore usually see newly queued commands within about 36 seconds, plus
+network latency, at roughly six HTTP requests per minute. Heartbeats are sent on polls at least
+15 seconds apart, so an idle heartbeat can be 36 seconds apart. Revision matching saves response
+bytes, not database reads. Mesh snapshots refuse more than 500 Apps, 500 standalone links or 2000
+combined links rather than silently returning partial grants. Larger fleets need a more incremental
+state feed before enabling this path at scale.
+
+### Mesh contract and key possession
+
+The full desired snapshot is `convexnode.DesiredMesh` in the Go client:
+`{v:1,fleet:[{id,relay_urls,direct_addrs}],relays:{relays,n0_fallback},exposures,links}`.
+It is derived only from standalone `meshLinks` and declared App dependency links involving this
+Node. Each exposure has the exact declared consumers' `allowed_peers`, never the whole fleet.
+Peers without a successful key-possession proof are omitted. Addresses retain all relay URLs in
+`nodes.meshAddress`; the phase-2a singular `endpointAddr.relayUrl/directAddresses` has an explicit
+legacy conversion and is never silently treated as the Rust wire shape.
+
+A future reconciler maps this snapshot to #181's NDJSON v1 `set_fleet`, `set_relays`, `expose` and
+`link`, and removes absent names with `unexpose`/`unlink`. Missing/empty grants deny all. This PR
+only saves `desired.json`; it does not launch or configure a sidecar, gateway or ingress proxy.
+The phase-1b worker owns the reusable Go mesh client/reconciler and legacy Hub adapter.
+
+Endpoint registration signs a server-generated UTF-8 message of at most 4096 bytes:
+`erainfra/node-endpoint/v1\n` followed by JSON containing the authenticated Node id, credential id,
+random 256-bit nonce and exact `{id,relay_urls,direct_addrs}` address. The challenge expires after
+60 seconds and is consumed once. Its Ed25519 signature is verified with pinned pure-JavaScript
+`@noble/curves`; no unverified EndpointId is accepted through HTTP. The coordinated sidecar
+extension is `{v:1,op:"sign_challenge",message}` returning a base64 `signature` and `endpoint_id`.
+The registration path remains provisional until that sidecar operation/client is integrated; the
+Go poller does not publish `status` as if it proved key possession.
+
+To roll back, stop `connect-convex`, unset its configuration, and restore the original Hub `connect`
+command and environment. Keep the Node journal even while the Hub serves it. Do not run both
+controllers against the same workloads: the Hub cannot observe Convex leases or journal outcomes.
 
 ## Develop
 

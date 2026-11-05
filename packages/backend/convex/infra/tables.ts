@@ -74,6 +74,17 @@ export const infraTables = {
     endpointId: v.optional(v.string()),
     endpointAddr: v.optional(endpointAddrValidator),
     endpointUpdatedAt: v.optional(v.number()),
+    // Canonical #181 PeerSpec, accepted only after an Ed25519 possession challenge.
+    meshAddress: v.optional(
+      v.object({
+        id: v.string(),
+        relay_urls: v.array(v.string()),
+        direct_addrs: v.array(v.string()),
+      }),
+    ),
+    endpointProvenAt: v.optional(v.number()),
+    lastSeenAt: v.optional(v.number()),
+    infraAgentVersion: v.optional(v.string()),
   })
     .index("by_name", ["name"])
     .index("by_endpointId", ["endpointId"]),

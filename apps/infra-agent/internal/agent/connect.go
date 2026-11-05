@@ -66,10 +66,11 @@ type BuildSource struct {
 // we need fine-grained control (events, streamed logs, inspect).
 // Token is the agent's own hub token, used to fetch app.deploy-gated uploaded sources.
 type ShellRunner struct {
-	Docker string
-	Token  string
-	Reg    *Registry    // records app->port on deploy so the data plane can proxy to it (loopback)
-	Mesh   *MeshManager // dumbpipe sidecars for cross-node service links
+	OutputLimit int // opt-in bounded capture; zero preserves the legacy Hub behavior
+	Docker      string
+	Token       string
+	Reg         *Registry    // records app->port on deploy so the data plane can proxy to it (loopback)
+	Mesh        *MeshManager // dumbpipe sidecars for cross-node service links
 }
 
 // MeshShare exposes a local port on the mesh and returns the ticket. MeshConnect dials a ticket and
@@ -107,7 +108,7 @@ func (r ShellRunner) Execute(ctx context.Context, command Command) (string, erro
 	if command.Path == "" || len(command.Argv) == 0 || command.Argv[0] != command.Path {
 		return "", fmt.Errorf("invalid resolved command")
 	}
-	out, err := exec.CommandContext(ctx, command.Path, command.Argv[1:]...).CombinedOutput()
+	out, err := r.combinedOutput(exec.CommandContext(ctx, command.Path, command.Argv[1:]...))
 	return string(out), err
 }
 
@@ -123,7 +124,7 @@ func (r ShellRunner) Deploy(ctx context.Context, image, name string, args []stri
 	// Pull only if the image isn't already present locally. This supports pre-loaded / air-gapped
 	// nodes (self-hosted, no Docker Hub) and skips a needless registry round-trip on every deploy.
 	if exec.CommandContext(ctx, d, "image", "inspect", image).Run() != nil {
-		if out, err := exec.CommandContext(ctx, d, "pull", image).CombinedOutput(); err != nil {
+		if out, err := r.combinedOutput(exec.CommandContext(ctx, d, "pull", image)); err != nil {
 			return string(out), fmt.Errorf("pull: %w", err)
 		} else {
 			b.Write(out)
@@ -140,7 +141,7 @@ func (r ShellRunner) Deploy(ctx context.Context, image, name string, args []stri
 	_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace any prior container with this name
 	runArgs := append([]string{"run", "-d", "--name", name}, args...)
 	runArgs = append(runArgs, image)
-	out, err := exec.CommandContext(ctx, d, runArgs...).CombinedOutput()
+	out, err := r.combinedOutput(exec.CommandContext(ctx, d, runArgs...))
 	b.Write(out)
 	if err != nil {
 		return b.String(), fmt.Errorf("run: %w", err)
@@ -179,7 +180,7 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 	var b strings.Builder
 	// Ensure the shared network. `network create` errors if it already exists — that's fine on
 	// re-deploy, so only surface a failure when the network still isn't there afterwards.
-	if out, err := exec.CommandContext(ctx, d, "network", "create", net).CombinedOutput(); err != nil {
+	if out, err := r.combinedOutput(exec.CommandContext(ctx, d, "network", "create", net)); err != nil {
 		if exec.CommandContext(ctx, d, "network", "inspect", net).Run() != nil {
 			return string(out), fmt.Errorf("network %s: %w", net, err)
 		}
@@ -187,7 +188,7 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 	for _, s := range services {
 		name := app + "-" + s.Name
 		if exec.CommandContext(ctx, d, "image", "inspect", s.Image).Run() != nil {
-			if out, err := exec.CommandContext(ctx, d, "pull", s.Image).CombinedOutput(); err != nil {
+			if out, err := r.combinedOutput(exec.CommandContext(ctx, d, "pull", s.Image)); err != nil {
 				return b.String() + string(out), fmt.Errorf("pull %s: %w", s.Name, err)
 			} else {
 				b.Write(out)
@@ -205,7 +206,7 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 		run = append(run, s.Args...)
 		run = append(run, s.Image)
 		_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace any prior container with this name
-		out, err := exec.CommandContext(ctx, d, run...).CombinedOutput()
+		out, err := r.combinedOutput(exec.CommandContext(ctx, d, run...))
 		b.Write(out)
 		if err != nil {
 			return b.String(), fmt.Errorf("run %s: %w", s.Name, err)
@@ -262,13 +263,13 @@ func (r ShellRunner) fetchSource(ctx context.Context, dir string, src BuildSourc
 		// Token via env (not argv) so it doesn't show in `ps`. The /builds route is app.deploy-gated.
 		cmd := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(`curl -fsSL -H "Authorization: Bearer $PL_TOK" %s | tar -xz -C %s`, shellQuote(src.TarURL), shellQuote(dir)))
 		cmd.Env = append(os.Environ(), "PL_TOK="+r.Token)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		if out, err := r.combinedOutput(cmd); err != nil {
 			return string(out), fmt.Errorf("fetch source: %w", err)
 		}
 		return "", nil
 	default:
 		clone := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", src.Ref, src.RepoURL, dir)
-		out, err := clone.CombinedOutput()
+		out, err := r.combinedOutput(clone)
 		if err != nil {
 			return scrub(string(out), src.RepoURL), fmt.Errorf("clone: %w", err)
 		}
@@ -336,7 +337,7 @@ func (r ShellRunner) Build(ctx context.Context, src BuildSource, registry, tag, 
 	// Build + push via the hub's image.sh (auto-detects Dockerfile vs nixpacks), targeting the registry.
 	sh := fmt.Sprintf("curl -fsSL %s/image.sh | PORTLESS_REGISTRY=%s sh -s -- ship %s %s",
 		shellQuote(hubBase), shellQuote(registry), shellQuote(buildDir), shellQuote(tag))
-	sout, err := exec.CommandContext(ctx, "sh", "-c", sh).CombinedOutput()
+	sout, err := r.combinedOutput(exec.CommandContext(ctx, "sh", "-c", sh))
 	b.Write(sout)
 	if err != nil {
 		return b.String(), fmt.Errorf("build: %w", err)
