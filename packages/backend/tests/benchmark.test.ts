@@ -79,6 +79,26 @@ describe("worker benchmark policy", () => {
     expect(benchmarkRecommendedSlots(16, weakDisk, NOW)).toBe(4);
   });
 
+  it("never lets network latency shrink a Worker's slot envelope", () => {
+    const farFromGitHub = normalizeBenchmark(
+      report({
+        network: [
+          { target: "github" as const, ttfbMs: 1_400, throughputMbps: 2, bytes: 1_024 },
+          { target: "ghcr" as const, ttfbMs: 1_400, throughputMbps: 2, bytes: 1_024 },
+          { target: "npm" as const, ttfbMs: 1_400, throughputMbps: 2, bytes: 1_024 },
+        ],
+      }),
+      NOW,
+    );
+    const nextToGitHub = normalizeBenchmark(report(), NOW);
+    expect(farFromGitHub.scores.network).toBeLessThan(10);
+    expect(farFromGitHub.scores.network).toBeLessThan(nextToGitHub.scores.network);
+    expect(benchmarkRecommendedSlots(16, farFromGitHub, NOW)).toBe(
+      benchmarkRecommendedSlots(16, nextToGitHub, NOW),
+    );
+    expect(benchmarkScore(farFromGitHub, "network", NOW).score).toBe(farFromGitHub.scores.network);
+  });
+
   it("uses the shared resource policy with and without memory discovery", () => {
     expect(resourceRecommendedSlots("linux", 64, 256 * 1_024)).toBe(16);
     expect(resourceRecommendedSlots("linux", 32, undefined)).toBe(8);

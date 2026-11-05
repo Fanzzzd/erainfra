@@ -306,8 +306,11 @@ credentials, and reports raw observations plus measurement metadata. `rc benchma
 publishes the same transparent measurements on demand. The dashboard shows raw results, normalized
 scores, configured/resource/recommended/effective slots, and each assigned run's selection reason.
 For automatic capacity, a fresh benchmark reduces the resource slot ceiling to
-`max(1, floor(resource slots × (0.25 + 0.75 × weakest measured score / 100)))`; at seven days old it
-is stale and no longer affects slot reduction or candidate ranking.
+`max(1, floor(resource slots × (0.25 + 0.75 × weakest measured score / 100)))`, where the weakest
+score is taken over CPU, memory and disk only; at seven days old it is stale and no longer affects
+slot reduction or candidate ranking. The network score ranks Workers for a `network` fit policy and
+never reduces slots: one 1 MiB fetch per endpoint measures how far the Worker is from GitHub, not how
+many jobs it can carry.
 
 ### Linux Worker prerequisites
 
