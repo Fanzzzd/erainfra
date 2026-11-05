@@ -10,7 +10,11 @@ import {
 } from "@tanstack/react-router";
 import {
   Activity,
+  Boxes,
   FlaskConical,
+  HardDrive,
+  Link2,
+  Rocket,
   ListChecks,
   LogOut,
   Server,
@@ -56,6 +60,15 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/attempts", label: "Runs", icon: Activity },
   { to: "/experiments", label: "Experiments", icon: FlaskConical },
   { to: "/settings", label: "Alerts and metrics", icon: Settings },
+];
+
+// Infrastructure management: the Apps on Nodes, run from Convex since the Hub's state moved here
+// (ADR 0016). A group of its own, so CI and infrastructure read as two surfaces of one product.
+const INFRA_NAV: NavItem[] = [
+  { to: "/nodes", label: "Nodes", icon: HardDrive },
+  { to: "/apps", label: "Apps", icon: Boxes },
+  { to: "/deployments", label: "Deployments", icon: Rocket },
+  { to: "/links", label: "Links", icon: Link2 },
 ];
 
 // Kept reachable but visually demoted below the separator: the webhook runner
@@ -112,6 +125,10 @@ function RootComponent() {
 
           <nav className="mt-6 flex flex-col gap-1.5" aria-label="Primary navigation">
             {PRIMARY_NAV.map((item) => (
+              <RailLink key={item.label} item={item} />
+            ))}
+            <Separator className="my-1.5 w-6 self-center" />
+            {INFRA_NAV.map((item) => (
               <RailLink key={item.label} item={item} />
             ))}
             <Separator className="my-1.5 w-6 self-center" />

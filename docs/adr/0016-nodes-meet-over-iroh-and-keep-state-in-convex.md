@@ -118,7 +118,11 @@ the Hub's web app folds into the EraInfra dashboard.
      Hub is retired. Gateway ingress (3b) carries each routed App on an ordinary `erainfra/tcp/1`
      link from each gateway to an exposure granted to exactly the gateway Nodes, not on a separate
      `erainfra/ingress/1` protocol: the grant is already that narrow, and a second protocol would
-     change the sidecar without narrowing who can connect.
+     change the sidecar without narrowing who can connect. The CLI and UI (3c) are `erainfra` over
+     `/api/v1` and the EraInfra dashboard; the Hub's one unbounded data path, container logs, becomes
+     a log tail that only the requesting admin token reads once. Retiring the Hub keeps its
+     `portless-data` volume as the rollback source and does not import its chat transcripts
+     ([retire-the-hub.md](../runbooks/retire-the-hub.md)).
 - Identifiers a running Node or Hub already holds (`PORTLESS_*`, `/etc/portless/agent.env`,
   `portless-agent.service`, the `portless-data` volume) change only through the dual-read migration
   rules in CONTEXT.md rule 4, never as part of a phase.

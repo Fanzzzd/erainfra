@@ -304,6 +304,11 @@ const deploymentView = v.object({
   error: v.optional(v.string()),
   startedAt: v.number(),
   finishedAt: v.optional(v.number()),
+  // Absent on a run copied from the Hub, which predates the pipeline.
+  operation: v.optional(v.union(v.literal("deploy"), v.literal("failover"))),
+  trigger: v.optional(v.string()),
+  actor: v.optional(v.string()),
+  sha: v.optional(v.string()),
 });
 
 function view(row: Doc<"appDeployments">) {
@@ -316,6 +321,10 @@ function view(row: Doc<"appDeployments">) {
     error: row.error,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
+    operation: row.operation,
+    trigger: row.trigger?.kind,
+    actor: row.trigger?.actor,
+    sha: row.trigger?.sha,
   };
 }
 

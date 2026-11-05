@@ -14,7 +14,8 @@
     "./authPolicy": "./convex/authPolicy.ts",
     "./catalog": "./convex/catalog.ts",
     "./controllerLiveness": "./convex/controllerLiveness.ts",
-    "./githubAppConfig": "./convex/githubAppConfig.ts"
+    "./githubAppConfig": "./convex/githubAppConfig.ts",
+    "./infraPolicy": "./convex/infra/policy.ts"
   },
   "scripts": {
     "dev": "convex dev",

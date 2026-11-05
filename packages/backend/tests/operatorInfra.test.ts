@@ -720,3 +720,55 @@ describe("log tails", () => {
     expect(result.status).toBe(409);
   });
 });
+
+describe("dashboard functions", () => {
+  it("lets a viewer read Nodes, Apps, links and runs, and only an operator or above change them", async () => {
+    const f = await fixture();
+    const a = await liveNode(f, "node-a");
+    await liveNode(f, "node-b");
+    await seedApp(f, a.id);
+    await f.t.run((ctx) =>
+      ctx.db.insert("appDeployments", {
+        app: "shop",
+        stage: "done",
+        detail: "deployed",
+        urls: [],
+        startedAt: Date.now(),
+        targetNodeIds: [a.id],
+        operation: "failover",
+        trigger: { kind: "failover", actor: "system:failover" },
+      }),
+    );
+    const viewerId = await f.t.run((ctx) =>
+      ctx.db.insert("users", { email: "viewer@example.test", role: "viewer" }),
+    );
+    const viewer = f.t.withIdentity({ subject: `${viewerId}|s` });
+    expect((await viewer.query(api.infra.operator.nodes, {})).map((n) => n.name)).toEqual([
+      "node-a",
+      "node-b",
+    ]);
+    expect((await viewer.query(api.infra.operator.apps, {}))[0]).toMatchObject({
+      name: "shop",
+      lastDeployment: { operation: "failover", stage: "done" },
+    });
+    expect(await viewer.query(api.infra.operator.links, {})).toEqual([]);
+    expect((await viewer.query(api.infra.deployments.list, {}))[0]).toMatchObject({
+      operation: "failover",
+      trigger: "failover",
+      actor: "system:failover",
+    });
+    const link = { provider: "node-a", providerPort: 80, consumer: "node-b" };
+    await expect(viewer.mutation(api.infra.operator.link, link)).rejects.toThrow(/viewer/);
+    await expect(viewer.mutation(api.infra.operator.remove, { app: "shop" })).rejects.toThrow(
+      /viewer/,
+    );
+    expect((await f.human.mutation(api.infra.operator.link, link)).name).toBe("node-a-80-node-b");
+    await f.human.mutation(api.infra.operator.unlink, { name: "node-a-80-node-b" });
+    const actions = (await f.audit()).filter((r) => r.action.startsWith("mesh."));
+    expect(actions.map((r) => [r.action, r.actor.startsWith("token:")])).toEqual([
+      ["mesh.link", false],
+      ["mesh.unlink", false],
+    ]);
+    await expect(f.t.query(api.infra.operator.nodes, {})).rejects.toThrow(/Authentication/);
+  });
+});

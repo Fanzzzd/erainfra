@@ -10,10 +10,14 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppsRouteImport } from './routes/apps'
 import { Route as AttemptsRouteImport } from './routes/attempts'
+import { Route as DeploymentsRouteImport } from './routes/deployments'
 import { Route as ExperimentsRouteImport } from './routes/experiments'
 import { Route as JobsRouteImport } from './routes/jobs'
+import { Route as LinksRouteImport } from './routes/links'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as NodesRouteImport } from './routes/nodes'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AttemptsAttemptIdRouteImport } from './routes/attempts_.$attemptId'
 
@@ -22,9 +26,19 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppsRoute = AppsRouteImport.update({
+  id: '/apps',
+  path: '/apps',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AttemptsRoute = AttemptsRouteImport.update({
   id: '/attempts',
   path: '/attempts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeploymentsRoute = DeploymentsRouteImport.update({
+  id: '/deployments',
+  path: '/deployments',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExperimentsRoute = ExperimentsRouteImport.update({
@@ -37,9 +51,19 @@ const JobsRoute = JobsRouteImport.update({
   path: '/jobs',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LinksRoute = LinksRouteImport.update({
+  id: '/links',
+  path: '/links',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NodesRoute = NodesRouteImport.update({
+  id: '/nodes',
+  path: '/nodes',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -55,29 +79,41 @@ const AttemptsAttemptIdRoute = AttemptsAttemptIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/apps': typeof AppsRoute
   '/attempts': typeof AttemptsRoute
+  '/deployments': typeof DeploymentsRoute
   '/experiments': typeof ExperimentsRoute
   '/jobs': typeof JobsRoute
+  '/links': typeof LinksRoute
   '/login': typeof LoginRoute
+  '/nodes': typeof NodesRoute
   '/settings': typeof SettingsRoute
   '/attempts/$attemptId': typeof AttemptsAttemptIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/apps': typeof AppsRoute
   '/attempts': typeof AttemptsRoute
+  '/deployments': typeof DeploymentsRoute
   '/experiments': typeof ExperimentsRoute
   '/jobs': typeof JobsRoute
+  '/links': typeof LinksRoute
   '/login': typeof LoginRoute
+  '/nodes': typeof NodesRoute
   '/settings': typeof SettingsRoute
   '/attempts/$attemptId': typeof AttemptsAttemptIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/apps': typeof AppsRoute
   '/attempts': typeof AttemptsRoute
+  '/deployments': typeof DeploymentsRoute
   '/experiments': typeof ExperimentsRoute
   '/jobs': typeof JobsRoute
+  '/links': typeof LinksRoute
   '/login': typeof LoginRoute
+  '/nodes': typeof NodesRoute
   '/settings': typeof SettingsRoute
   '/attempts_/$attemptId': typeof AttemptsAttemptIdRoute
 }
@@ -85,38 +121,54 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/apps'
     | '/attempts'
+    | '/deployments'
     | '/experiments'
     | '/jobs'
+    | '/links'
     | '/login'
+    | '/nodes'
     | '/settings'
     | '/attempts/$attemptId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/apps'
     | '/attempts'
+    | '/deployments'
     | '/experiments'
     | '/jobs'
+    | '/links'
     | '/login'
+    | '/nodes'
     | '/settings'
     | '/attempts/$attemptId'
   id:
     | '__root__'
     | '/'
+    | '/apps'
     | '/attempts'
+    | '/deployments'
     | '/experiments'
     | '/jobs'
+    | '/links'
     | '/login'
+    | '/nodes'
     | '/settings'
     | '/attempts_/$attemptId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AppsRoute: typeof AppsRoute
   AttemptsRoute: typeof AttemptsRoute
+  DeploymentsRoute: typeof DeploymentsRoute
   ExperimentsRoute: typeof ExperimentsRoute
   JobsRoute: typeof JobsRoute
+  LinksRoute: typeof LinksRoute
   LoginRoute: typeof LoginRoute
+  NodesRoute: typeof NodesRoute
   SettingsRoute: typeof SettingsRoute
   AttemptsAttemptIdRoute: typeof AttemptsAttemptIdRoute
 }
@@ -130,11 +182,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/apps': {
+      id: '/apps'
+      path: '/apps'
+      fullPath: '/apps'
+      preLoaderRoute: typeof AppsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/attempts': {
       id: '/attempts'
       path: '/attempts'
       fullPath: '/attempts'
       preLoaderRoute: typeof AttemptsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/deployments': {
+      id: '/deployments'
+      path: '/deployments'
+      fullPath: '/deployments'
+      preLoaderRoute: typeof DeploymentsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/experiments': {
@@ -151,11 +217,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof JobsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/links': {
+      id: '/links'
+      path: '/links'
+      fullPath: '/links'
+      preLoaderRoute: typeof LinksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/nodes': {
+      id: '/nodes'
+      path: '/nodes'
+      fullPath: '/nodes'
+      preLoaderRoute: typeof NodesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -177,10 +257,14 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AppsRoute: AppsRoute,
   AttemptsRoute: AttemptsRoute,
+  DeploymentsRoute: DeploymentsRoute,
   ExperimentsRoute: ExperimentsRoute,
   JobsRoute: JobsRoute,
+  LinksRoute: LinksRoute,
   LoginRoute: LoginRoute,
+  NodesRoute: NodesRoute,
   SettingsRoute: SettingsRoute,
   AttemptsAttemptIdRoute: AttemptsAttemptIdRoute,
 }
