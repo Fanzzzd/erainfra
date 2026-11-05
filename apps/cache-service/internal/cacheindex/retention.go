@@ -20,6 +20,9 @@ package cacheindex
 //
 //	access/<entry object>          one per entry restored at least once. Its
 //	                               LastModified is the entry's last access.
+//	access/<entry object>~adopted  one per entry a sweep found with no access
+//	                               marker. Its LastModified is when, and it is
+//	                               where that entry's idle clock starts.
 //	tombstones/<blob object>       one per blob whose entry was deleted. Its
 //	                               LastModified is when, and the blob is kept
 //	                               until BlobGrace has passed.
@@ -41,6 +44,11 @@ const (
 	blobsRoot     = "blobs/"
 	accessRoot    = "access/"
 	tombstoneRoot = "tombstones/"
+
+	// adoptedSuffix names an adoption marker beside an entry's access marker.
+	// An entry object's last segment is hex, a dot and hex, so the suffix can
+	// never be part of an entry's own name.
+	adoptedSuffix = "~adopted"
 
 	// listPage is S3's own ceiling for one ListObjectsV2 page.
 	listPage = 1000
@@ -118,7 +126,21 @@ func (r Retention) withDefaults() Retention {
 // it was last restored.
 type Record struct {
 	Entry
+	// LastAccess is the last restore, or the creation time for an entry
+	// never restored. Least-recently-used order is by this.
 	LastAccess time.Time
+
+	// idleSince is where the idle clock runs from: the later of LastAccess
+	// and the adoption marker. marked is whether either marker exists.
+	//
+	// An entry with neither has never been seen by a sweep. It may predate
+	// access tracking altogether — saved by a version that recorded no
+	// restores — so its creation time says nothing about whether it is in
+	// use, and it is never evicted for idleness on that alone. The sweep that
+	// first sees it adopts it instead, and its idle clock starts then. Quota
+	// eviction does not wait: an unmarked entry is ordered by creation time.
+	idleSince time.Time
+	marked    bool
 }
 
 // Created is the entry's creation time.
@@ -269,6 +291,7 @@ type snapshot struct {
 	repository string
 	entries    []string
 	markers    map[string]objectstore.Object
+	adopted    map[string]objectstore.Object
 	blobs      map[string]objectstore.Object
 	tombstones map[string]objectstore.Object
 }
@@ -321,6 +344,7 @@ func (i *Index) scan(ctx context.Context, repository string, garbage bool) (map[
 			snap = &snapshot{
 				repository: repo,
 				markers:    map[string]objectstore.Object{},
+				adopted:    map[string]objectstore.Object{},
 				blobs:      map[string]objectstore.Object{},
 				tombstones: map[string]objectstore.Object{},
 			}
@@ -344,9 +368,16 @@ func (i *Index) scan(ctx context.Context, repository string, garbage bool) (map[
 		return nil, err
 	}
 	for _, object := range markers {
-		if repo, ok := repositoryOf(object.Key, accessRoot+entriesRoot); ok {
-			at(repo).markers[strings.TrimPrefix(object.Key, accessRoot)] = object
+		repo, ok := repositoryOf(object.Key, accessRoot+entriesRoot)
+		if !ok {
+			continue
 		}
+		entryObject := strings.TrimPrefix(object.Key, accessRoot)
+		if adoptedOf, isAdoption := strings.CutSuffix(entryObject, adoptedSuffix); isAdoption {
+			at(repo).adopted[adoptedOf] = object
+			continue
+		}
+		at(repo).markers[entryObject] = object
 	}
 	if !garbage {
 		return snapshots, nil
@@ -429,9 +460,16 @@ func (i *Index) records(ctx context.Context, snap *snapshot) ([]Record, error) {
 					continue
 				}
 				record := Record{Entry: *entry, LastAccess: time.UnixMilli(entry.CreatedAt).UTC()}
-				if marker, ok := snap.markers[object]; ok && marker.LastModified.After(record.LastAccess) {
+				marker, accessed := snap.markers[object]
+				if accessed && marker.LastModified.After(record.LastAccess) {
 					record.LastAccess = marker.LastModified.UTC()
 				}
+				record.idleSince = record.LastAccess
+				adoption, adopted := snap.adopted[object]
+				if adopted && adoption.LastModified.After(record.idleSince) {
+					record.idleSince = adoption.LastModified.UTC()
+				}
+				record.marked = accessed || adopted
 				results <- result{at: at, record: &record}
 			}
 		}()
@@ -474,7 +512,7 @@ func (i *Index) records(ctx context.Context, snap *snapshot) ([]Record, error) {
 //     an unreferenced, old blob and delete it at once, inside the window where
 //     a restore that found this entry a moment ago is still downloading it.
 //  2. the entry document. From here every restore is a miss.
-//  3. the access marker, which is now meaningless.
+//  3. the access and adoption markers, which are now meaningless.
 //
 // The blob goes in a later sweep, after BlobGrace. Two replicas evicting the
 // same entry write the same tombstone and delete the same objects; both succeed.
@@ -495,7 +533,10 @@ func (i *Index) evict(ctx context.Context, record Record) error {
 		return err
 	}
 	i.memo.forget(record.Object)
-	return i.store.Delete(ctx, accessRoot+record.Object)
+	if err := i.store.Delete(ctx, accessRoot+record.Object); err != nil {
+		return err
+	}
+	return i.store.Delete(ctx, accessRoot+record.Object+adoptedSuffix)
 }
 
 // SweepReport is what one sweep did.
@@ -505,6 +546,7 @@ type SweepReport struct {
 	EvictedQuota      int
 	EvictedDangling   int
 	EvictedBytes      int64
+	EntriesAdopted    int
 	BlobsDeleted      int
 	BlobBytesDeleted  int64
 	MarkersDeleted    int
@@ -517,6 +559,7 @@ func (r *SweepReport) add(other SweepReport) {
 	r.EvictedQuota += other.EvictedQuota
 	r.EvictedDangling += other.EvictedDangling
 	r.EvictedBytes += other.EvictedBytes
+	r.EntriesAdopted += other.EntriesAdopted
 	r.BlobsDeleted += other.BlobsDeleted
 	r.BlobBytesDeleted += other.BlobBytesDeleted
 	r.MarkersDeleted += other.MarkersDeleted
@@ -622,7 +665,7 @@ func (i *Index) sweepSnapshot(ctx context.Context, snap *snapshot) (SweepReport,
 		// answer it as a miss, but it would still make Exists refuse a fresh
 		// save of the same key, so it goes now rather than after the idle TTL.
 		_, hasBlob := snap.blobs[record.Blob]
-		idle := record.LastAccess.Before(idleBefore)
+		idle := record.marked && record.idleSince.Before(idleBefore)
 		if !hasBlob || idle {
 			if err := i.evict(ctx, record); err != nil {
 				return report, nil, err
@@ -664,6 +707,20 @@ func (i *Index) sweepSnapshot(ctx context.Context, snap *snapshot) (SweepReport,
 		evicted++
 	}
 	keep = keep[evicted:]
+
+	// Adopt every surviving entry no sweep has seen before. Its idle clock
+	// starts now, so the sweep that first meets an entry saved by a version
+	// without access tracking never evicts it for idleness.
+	for _, record := range keep {
+		if record.marked {
+			continue
+		}
+		if err := i.store.PutBytes(ctx, accessRoot+record.Object+adoptedSuffix, "text/plain",
+			[]byte(now.UTC().Format(time.RFC3339))); err != nil {
+			return report, nil, err
+		}
+		report.EntriesAdopted++
+	}
 
 	live := map[string]bool{}
 	gone := map[string]bool{}
@@ -729,20 +786,25 @@ func (i *Index) sweepSnapshot(ctx context.Context, snap *snapshot) (SweepReport,
 	}
 	// Markers for entries that are gone. One written by a restore that raced an
 	// eviction is young, which is why this waits MarkerGrace.
-	for object, marker := range snap.markers {
-		if live[object] {
-			continue
+	for _, set := range []struct {
+		markers map[string]objectstore.Object
+		suffix  string
+	}{{snap.markers, ""}, {snap.adopted, adoptedSuffix}} {
+		for object, marker := range set.markers {
+			if live[object] {
+				continue
+			}
+			if gone[object] {
+				continue // evict already deleted it
+			}
+			if now.Sub(marker.LastModified) < policy.MarkerGrace {
+				continue
+			}
+			if err := i.store.Delete(ctx, accessRoot+object+set.suffix); err != nil {
+				return report, live, err
+			}
+			report.MarkersDeleted++
 		}
-		if gone[object] {
-			continue // evict already deleted it
-		}
-		if now.Sub(marker.LastModified) < policy.MarkerGrace {
-			continue
-		}
-		if err := i.store.Delete(ctx, accessRoot+object); err != nil {
-			return report, live, err
-		}
-		report.MarkersDeleted++
 	}
 	return report, live, nil
 }

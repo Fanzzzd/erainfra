@@ -2,6 +2,7 @@ package cacheindex
 
 import (
 	"context"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -85,11 +86,15 @@ const repo = "Fanzzzd/erainfra"
 const main = "refs/heads/main"
 
 // GitHub's rule: an entry nobody has restored for the idle TTL goes. Restoring
-// it is what keeps it, and creation counts as the first access.
+// it is what keeps it. The idle clock of an entry never restored starts at the
+// first sweep that sees it, which for a new entry is within a minute of its save.
 func TestIdleEntriesAreEvictedAndRestoredOnesAreKept(t *testing.T) {
 	f := newFixture(t, Retention{IdleTTL: 7 * 24 * time.Hour})
 	f.save(repo, main, "never-restored", "v1", 10)
 	f.save(repo, main, "restored", "v1", 10)
+	if report := f.sweep(); report.EntriesAdopted != 2 || report.EvictedIdle != 0 {
+		t.Fatalf("first sweep = %+v, want both entries adopted and nothing evicted", report)
+	}
 
 	f.advance(3 * 24 * time.Hour)
 	if f.restore(repo, "restored", "v1") == nil {
@@ -152,6 +157,71 @@ func TestQuotaEvictsLeastRecentlyUsedFirst(t *testing.T) {
 	}
 }
 
+// An upgrade evicts nothing on day one. Entries saved by a version that kept no
+// access markers carry only their creation time, which says nothing about
+// whether they are in use, so the first sweep adopts them instead of evicting
+// them, and the normal idle TTL runs from that sweep.
+func TestEntriesFromBeforeAccessTrackingSurviveTheFirstSweep(t *testing.T) {
+	f := newFixture(t, Retention{IdleTTL: 7 * 24 * time.Hour})
+	f.save(repo, main, "old-unused", "v1", 10)
+	f.save(repo, main, "old-in-use", "v1", 10)
+	f.advance(30 * 24 * time.Hour) // the upgrade lands 30 days later
+
+	report := f.sweep()
+	if report.EvictedIdle != 0 || report.EntriesAdopted != 2 {
+		t.Fatalf("first sweep after the upgrade = %+v, want nothing evicted and both adopted", report)
+	}
+	if !f.present(repo, "old-unused") || !f.present(repo, "old-in-use") {
+		t.Fatal("an entry from before the upgrade was evicted by the first sweep")
+	}
+
+	f.advance(3 * 24 * time.Hour)
+	if f.restore(repo, "old-in-use", "v1") == nil {
+		t.Fatal("restore of an adopted entry missed")
+	}
+	f.advance(3*24*time.Hour + 23*time.Hour) // 6 days 23 hours after the first sweep
+	if report := f.sweep(); report.EvictedIdle != 0 || report.EntriesAdopted != 0 {
+		t.Fatalf("sweep inside the TTL = %+v, want nothing evicted and nobody adopted twice", report)
+	}
+
+	f.advance(2 * time.Hour) // 7 days 1 hour after the first sweep
+	if report := f.sweep(); report.EvictedIdle != 1 {
+		t.Fatalf("sweep after the TTL = %+v, want the never-restored entry evicted", report)
+	}
+	if f.present(repo, "old-unused") {
+		t.Error("an adopted entry never restored outlived the 7 days after its adoption")
+	}
+	if !f.present(repo, "old-in-use") {
+		t.Error("an adopted entry restored 4 days ago was evicted")
+	}
+	for _, key := range f.store.Keys() {
+		if strings.Contains(key, hexKey("old-unused")) {
+			t.Errorf("the evicted entry left %s behind", key)
+		}
+	}
+}
+
+// Over quota, entries no sweep has adopted yet are ordered by creation time:
+// adoption protects them from idle eviction, not from the quota.
+func TestUnmarkedEntriesAreOrderedByCreationForTheQuota(t *testing.T) {
+	f := newFixture(t, Retention{RepoQuotaBytes: 100})
+	f.save(repo, main, "oldest", "v1", 40)
+	f.advance(time.Minute)
+	f.save(repo, main, "middle", "v1", 40)
+	f.advance(time.Minute)
+	f.save(repo, main, "newest", "v1", 40)
+
+	report := f.sweep()
+	if report.EvictedQuota != 1 || report.EntriesAdopted != 2 {
+		t.Fatalf("report = %+v, want one quota eviction and the two survivors adopted", report)
+	}
+	if f.present(repo, "oldest") || !f.present(repo, "middle") || !f.present(repo, "newest") {
+		t.Fatal("quota eviction of unmarked entries did not take the oldest")
+	}
+}
+
+func hexKey(key string) string { return hex.EncodeToString([]byte(key)) }
+
 // A quota belongs to one repository. Another repository's bytes never count
 // against it and are never evicted to make room in it.
 func TestQuotaIsPerRepository(t *testing.T) {
@@ -177,6 +247,7 @@ func TestQuotaIsPerRepository(t *testing.T) {
 func TestEvictedBytesOutliveTheirEntryForTheGracePeriod(t *testing.T) {
 	f := newFixture(t, Retention{IdleTTL: time.Hour, BlobGrace: 30 * time.Minute})
 	entry := f.save(repo, main, "k", "v1", 10)
+	f.sweep() // adopts it; its idle clock starts here
 	f.advance(2 * time.Hour)
 
 	if report := f.sweep(); report.EvictedIdle != 1 || report.BlobsDeleted != 0 {

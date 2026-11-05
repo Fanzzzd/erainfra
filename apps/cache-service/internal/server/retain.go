@@ -91,6 +91,7 @@ func (s *Server) logSweep(message string, report cacheindex.SweepReport) {
 		"evictedQuota", report.EvictedQuota,
 		"evictedDangling", report.EvictedDangling,
 		"evictedBytes", report.EvictedBytes,
+		"entriesAdopted", report.EntriesAdopted,
 		"blobsDeleted", report.BlobsDeleted,
 		"blobBytesDeleted", report.BlobBytesDeleted,
 		"markersDeleted", report.MarkersDeleted,

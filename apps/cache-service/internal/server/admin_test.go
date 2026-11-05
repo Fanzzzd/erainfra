@@ -337,6 +337,10 @@ func TestRestoreDuringEvictionIsAMissNeverAnError(t *testing.T) {
 			token := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
 			want := payload(6 << 20) // over one 5 MiB part, so the multipart path is in play
 			h.saveV1(token, "racing", "v1", want, wholeBody(want))
+			// The first sweep adopts the entry and starts its idle clock.
+			if _, err := h.server.index.Sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 			// Idle past the TTL but well inside the token's 30 minutes.
 			h.advance(11 * time.Minute)
 

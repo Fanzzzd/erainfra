@@ -266,7 +266,8 @@ object by the age of its creation, never by when it was last read, and it has no
 repository's entries add up to.
 
 - **Idle.** An entry nobody has restored for `ERAINFRA_CACHE_IDLE_TTL` (7 days) is deleted. An entry
-  that was never restored counts from when it was saved.
+  that was never restored counts from the first sweep that saw it, which for a new entry is within a
+  minute of its save (see "Entries no sweep has seen" below).
 - **Quota.** When one repository's entries add up to more than `ERAINFRA_CACHE_REPO_QUOTA_BYTES`
   (10 GiB), its least recently used entries are deleted until the total fits. A save that crosses
   the quota is followed by that repository's check within about 30 seconds. Another repository's
@@ -285,6 +286,18 @@ every replica reads the same one. One process rewrites a given entry's marker at
 minutes, and nothing is written on the request path, so a restore costs the job no extra store round
 trip. A crash loses at most the last 30 seconds of restores, which can only make an entry look
 older than it is.
+
+### Entries no sweep has seen
+
+An entry with no access marker is never evicted for idleness on its creation time alone. Its
+creation time says nothing about whether it is in use: it may have been saved by a version of this
+service that recorded no restores at all. The first sweep that sees such an entry writes an adoption
+marker beside it (`<prefix>access/<entry>~adopted`) and leaves it alone, and its idle clock starts
+then. So an upgrade from a version without eviction deletes nothing for idleness on the first day,
+and an entry from before the upgrade that nobody restores goes 7 days after the first sweep.
+
+Adoption protects an entry from idle eviction only. Over quota, an entry that has never been
+restored is ordered by its creation time, so the oldest of them goes first.
 
 ### What a deletion does, in order
 
@@ -369,20 +382,17 @@ Two things that rule is doing:
   `<prefix>entries/<owner>/<repo>/<ref>/<version>/<key>` for entry documents,
   `<prefix>blobs/<owner>/<repo>/<id>` for bytes, and the `access/` and `tombstones/` trees above, so
   an age rule on the prefix reaches all of them. Whatever it removes is safe to remove at any moment:
-  an entry whose bytes are gone answers a miss, bytes whose entry is gone are never served, and a
-  missing access marker only makes its entry look older.
+  an entry whose bytes are gone answers a miss, bytes whose entry is gone are never served, and an
+  entry that loses its markers is adopted again by the next sweep, which restarts its idle clock.
 - **`AbortIncompleteMultipartUpload`** is not a backstop; it is the only cleanup there is for its
   case. A job that dies mid-save can leave a multipart upload holding storage that no listing shows,
   so the service's sweep cannot see it either.
 
 ### Upgrading from a version that did not evict
 
-Entries saved before this version have no access marker, so they count from creation. The first
-sweep, a minute after the upgraded service starts, deletes every entry older than the idle TTL that
-has not been restored since the upgrade. On a busy cache that is a burst of cold runs. To avoid it,
-start the upgraded service with `ERAINFRA_CACHE_IDLE_TTL=30d`, let the entries in use collect access
-markers for a week, then drop the variable. If the bucket still has the old 14-day rule, change it
-to 30 days at the same time.
+Nothing to do for the entries already in the bucket: the first sweep adopts them (above). If the
+bucket still has the old 14-day lifecycle rule, change it to 30 days, or it will keep removing
+entries that are still in use.
 
 ---
 
