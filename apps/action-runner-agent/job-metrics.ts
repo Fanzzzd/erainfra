@@ -67,8 +67,25 @@ const noMetrics: AttemptMetrics = { stop: async () => {} };
 const defaultSpawn: SpawnSampler = (file, args, options) =>
   spawn(file, args, { env: options.env, stdio: ["pipe", "pipe", "inherit"] });
 
-function delay(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
+/**
+ * Waits for `promise` or `ms`, whichever comes first.
+ *
+ * The timer is referenced and cleared the moment the race settles. An unreferenced timer cannot
+ * bound anything: when nothing else holds the event loop open (a quiet Agent mid-shutdown, or
+ * the test runner) the loop drains with the wait still pending and the bound never fires. A
+ * referenced one that is not cleared would hold the loop open for its full length after the
+ * race was already decided.
+ */
+async function within(promise: Promise<unknown>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Whether a parsed line has the shape the sampler writes. */
@@ -189,7 +206,7 @@ export function startAttemptMetrics(options: AttemptMetricsOptions): AttemptMetr
     // Closing stdin is the sampler's signal that the Attempt is over.
     child.stdin?.end();
     const exitTimeout = options.exitTimeoutMs ?? DEFAULT_EXIT_TIMEOUT_MS;
-    await Promise.race([exit, delay(exitTimeout)]);
+    await within(exit, exitTimeout);
     if (!exited) {
       log(`${label}: sampler did not exit within ${exitTimeout} ms; killing it`);
       child.kill("SIGKILL");
@@ -198,10 +215,7 @@ export function startAttemptMetrics(options: AttemptMetricsOptions): AttemptMetr
     const deadline = Date.now() + flushTimeout;
     while (busy() && Date.now() < deadline) {
       pump();
-      await Promise.race([
-        inFlight ?? Promise.resolve(),
-        delay(Math.max(0, deadline - Date.now())),
-      ]);
+      await within(inFlight ?? Promise.resolve(), Math.max(0, deadline - Date.now()));
     }
     if (busy()) {
       log(`${label}: final upload abandoned after ${flushTimeout} ms`);
