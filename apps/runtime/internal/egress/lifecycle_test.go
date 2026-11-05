@@ -94,8 +94,8 @@ func TestTeardownCannotDeleteReusedAddressMembership(t *testing.T) {
 			select {
 			case err := <-replacement:
 				unblock()
-				<-done
-				t.Fatalf("replacement registered before old kernel cleanup completed: %v", err)
+				cleanupErr := <-done
+				t.Fatalf("replacement registered before old kernel cleanup completed: %v (old cleanup: %v)", err, cleanupErr)
 			case <-time.After(2 * time.Second):
 			}
 			// Another address must not wait behind external calls for this address.
