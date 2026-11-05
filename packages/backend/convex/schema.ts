@@ -6,6 +6,7 @@ import {
   fitPolicyValidator,
   storedBenchmarkValidator,
 } from "./benchmark";
+import { alertConditionValidator } from "./alertRules";
 
 export default defineSchema({
   ...authTables,
@@ -522,6 +523,96 @@ export default defineSchema({
     machineId: v.id("machines"),
     benchmark: storedBenchmarkValidator,
   }).index("by_machine", ["machineId"]),
+
+  // Bearer tokens for `GET /metrics`. Minted in the dashboard and shown once; only the SHA-256 is
+  // stored, so a database export holds nothing a scraper could present. Several may be live at
+  // once so a token can be rotated without a scrape gap: mint the new one, update Prometheus,
+  // revoke the old one. A revoked row stays for the audit trail and is refused at the door.
+  metricsTokens: defineTable({
+    label: v.string(),
+    tokenHash: v.string(),
+    // The first characters of the token, so an operator can match a row to a scrape config
+    // without the dashboard ever showing the secret again.
+    prefix: v.string(),
+    createdAt: v.number(),
+    createdBy: v.optional(v.id("users")),
+    lastUsedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+  }).index("by_tokenHash", ["tokenHash"]),
+
+  // Where alert notifications go. The URL and signing secret are write-only: dashboard queries
+  // return `urlHint`, never `url` or `signingSecret`. A Slack incoming-webhook URL is itself the
+  // credential, which is why the URL is treated as a secret for every destination kind.
+  alertDestinations: defineTable({
+    name: v.string(),
+    kind: v.union(v.literal("webhook"), v.literal("slack")),
+    url: v.string(),
+    urlHint: v.string(),
+    // HMAC-SHA256 key for generic webhooks, generated here and shown once. Stored raw because
+    // signing needs it; only the delivery action reads it.
+    signingSecret: v.optional(v.string()),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }),
+
+  // Operator-authored alert rules, evaluated every minute by the alert cron.
+  alertRules: defineTable({
+    name: v.string(),
+    condition: alertConditionValidator,
+    // Limit the rule to one Profile. Absent means every Profile (and every Worker, for
+    // worker-offline).
+    profile: v.optional(v.string()),
+    // How long the condition must hold before the incident fires, like Prometheus `for:`.
+    forMinutes: v.number(),
+    // Minimum gap between firing notifications for the same rule and subject.
+    cooldownMinutes: v.number(),
+    mutedUntil: v.optional(v.number()),
+    destinationIds: v.array(v.id("alertDestinations")),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_enabled", ["enabled"]),
+
+  // One row per time a rule's condition held for a subject (a Worker, a Profile, or a
+  // Profile/Worker pair). At most one pending or firing row exists per rule and subject; that is
+  // the dedup key. Resolved rows are kept for 30 days so cooldown and history can read them.
+  alertIncidents: defineTable({
+    ruleId: v.id("alertRules"),
+    subject: v.string(),
+    status: v.union(v.literal("pending"), v.literal("firing"), v.literal("resolved")),
+    summary: v.string(),
+    // When the condition was first observed for this incident.
+    since: v.number(),
+    firedAt: v.optional(v.number()),
+    resolvedAt: v.optional(v.number()),
+    // Set when a firing notification was enqueued. Absent while muted or cooling down; a resolve
+    // is only announced for an incident whose firing was.
+    firingNotifiedAt: v.optional(v.number()),
+    lastEvaluatedAt: v.number(),
+  })
+    .index("by_rule_status", ["ruleId", "status"])
+    .index("by_rule_subject", ["ruleId", "subject"])
+    .index("by_status_resolvedAt", ["status", "resolvedAt"]),
+
+  // Outbound notifications. The evaluator only inserts a row and schedules the delivery action,
+  // so a slow or failing receiver never holds up a mutation. `body` is built once, so every retry
+  // sends the same bytes; the signature is computed per attempt because it covers a timestamp.
+  alertDeliveries: defineTable({
+    destinationId: v.id("alertDestinations"),
+    incidentId: v.optional(v.id("alertIncidents")),
+    event: v.union(v.literal("firing"), v.literal("resolved"), v.literal("test")),
+    body: v.string(),
+    status: v.union(v.literal("pending"), v.literal("delivered"), v.literal("failed")),
+    attempts: v.number(),
+    createdAt: v.number(),
+    nextAttemptAt: v.optional(v.number()),
+    deliveredAt: v.optional(v.number()),
+    lastStatusCode: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_destination", ["destinationId"])
+    .index("by_status_createdAt", ["status", "createdAt"]),
 
   // Work queue for deleting JIT runner registrations that were created on
   // GitHub but never consumed. Mutations cannot call GitHub, so they enqueue

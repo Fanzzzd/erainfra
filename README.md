@@ -749,6 +749,170 @@ Experiment image grants the `runner` user passwordless sudo, so Experiment autho
 root inside their disposable guest. The same image under the shared-kernel Docker executor is only
 for mutually trusted jobs in one trust domain; use Firecracker for untrusted workloads.
 
+## Monitor the fleet
+
+The control plane exports fleet state to Prometheus and evaluates its own alert rules. Both are
+configured on the dashboard's **Settings** page (the gear in the rail).
+
+### Prometheus metrics
+
+`GET https://<deployment>.convex.site/metrics` serves the Prometheus text format (version 0.0.4).
+It needs a bearer token: create one under Settings, Metrics. The token is shown once and only its
+SHA-256 is stored. Several tokens can be live at once, so rotate by creating a new token,
+reloading Prometheus, and revoking the old one. A revoked or unknown token gets 401 with no reason.
+
+```yaml
+scrape_configs:
+  - job_name: erainfra
+    scrape_interval: 30s
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/erainfra-metrics-token
+    static_configs:
+      - targets: ["<deployment>.convex.site"]
+```
+
+A token rather than a `METRICS_TOKEN` environment variable: an env var takes deploy credentials
+to change, allows one value at a time (so rotation has a scrape gap), and sits in the deployment
+in plaintext. A minted token can be revoked by any operator from the dashboard.
+
+Every metric is a gauge. The endpoint keeps no process state: each scrape is computed from stored
+rows, and finished Attempts are read through a one-hour window. A counter rebuilt from that window
+would drop whenever an old Attempt left it, which `rate()` reads as a reset. So outcomes are counts
+over the last hour and durations are quantiles over the same hour; use them directly, without
+`rate()`. Labels come from small operator-owned sets. No series carries a repository, branch,
+workflow, Runner or job id.
+
+| Metric                                              | Labels                                 | Meaning                                                                                                                    |
+| --------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `erainfra_profile_info`                             | `profile`, `executor`, `state`         | Always 1. Join it to add `executor` to any per-Profile series.                                                             |
+| `erainfra_profile_runners_min` / `_max`             | `profile`                              | `minRunners` and `maxRunners`.                                                                                             |
+| `erainfra_profile_workers`                          | `profile`, `state`                     | Workers by readiness (`preparing`, `ready`, `degraded`, `failed`). A ready report that fails admission counts as degraded. |
+| `erainfra_profile_workers_schedulable`              | `profile`                              | Workers the scheduler would use now: ready, admitted, fresh, online. 0 when paused.                                        |
+| `erainfra_attempts`                                 | `profile`, `state`                     | Live Attempts. `state="pending"` is the queue of unassigned Attempts.                                                      |
+| `erainfra_attempt_queue_oldest_age_seconds`         | `profile`                              | Age of the oldest pending Attempt, 0 when the queue is empty.                                                              |
+| `erainfra_recent_attempts_finished`                 | `profile`, `result`                    | Attempts finished in the last hour by `succeeded`, `failed`, `cancelled`, `unknown`.                                       |
+| `erainfra_recent_attempt_queue_wait_seconds`        | `profile`, `quantile`                  | p50, p90, p99 and max (`quantile="1"`) of GitHub queue wait over the last hour.                                            |
+| `erainfra_recent_attempt_run_duration_seconds`      | `profile`, `quantile`                  | The same quantiles of run time, JobStarted to finish.                                                                      |
+| `erainfra_recent_attempts_sample_truncated`         | `profile`                              | 1 when the Profile ran more than 200 Attempts in the hour, so the window gauges cover the newest 200.                      |
+| `erainfra_recent_window_seconds`                    |                                        | 3600.                                                                                                                      |
+| `erainfra_machine_info`                             | `machine`, `os`, `arch`, `slot_policy` | Always 1.                                                                                                                  |
+| `erainfra_machine_online`                           | `machine`                              | 1 when the Worker heartbeated in the last two minutes.                                                                     |
+| `erainfra_machine_last_heartbeat_timestamp_seconds` | `machine`                              | Unix time of the last heartbeat. Absent before the first.                                                                  |
+| `erainfra_machine_heartbeat_age_seconds`            | `machine`                              | Seconds since that heartbeat, at scrape time.                                                                              |
+| `erainfra_machine_slots_configured`                 | `machine`                              | Operator-fixed slots. Absent under the auto policy.                                                                        |
+| `erainfra_machine_slots_recommended`                | `machine`                              | Slots the resources and benchmark recommend.                                                                               |
+| `erainfra_machine_slots_effective`                  | `machine`                              | Slots the scheduler fills.                                                                                                 |
+| `erainfra_machine_slots_used`                       | `machine`                              | Slots in use.                                                                                                              |
+| `erainfra_machine_benchmark_score`                  | `machine`, `dimension`                 | Benchmark score, 0 to 100, for `cpu`, `memory`, `disk`, `network`, `balanced`.                                             |
+| `erainfra_machine_benchmark_timestamp_seconds`      | `machine`                              | When the benchmark ran. Older than seven days, the scheduler ignores it.                                                   |
+| `erainfra_alerts_firing`                            | `rule`                                 | Firing incidents per enabled alert rule.                                                                                   |
+| `erainfra_scrape_truncated`                         |                                        | 1 when a read cap (1,000 Profiles, Workers, readiness rows, or live Attempts per state) was reached.                       |
+
+Cache hit rates are not here: the control plane does not see cache traffic. The cache service
+logs it.
+
+Example Prometheus alerting rules, if you prefer Alertmanager to the built-in alerts:
+
+```yaml
+groups:
+  - name: erainfra
+    rules:
+      - alert: ErainfraProfileWithoutWorker
+        expr: erainfra_profile_workers_schedulable == 0 and on (profile) erainfra_profile_info{state="active"} == 1
+        for: 5m
+      - alert: ErainfraQueueBacklog
+        expr: erainfra_attempt_queue_oldest_age_seconds > 900
+      - alert: ErainfraWorkerSilent
+        expr: erainfra_machine_heartbeat_age_seconds > 300
+```
+
+### Alerts
+
+Settings, Alerts holds rules, destinations and incidents. A cron evaluates every enabled rule each
+minute against the same fleet state `/metrics` reads.
+
+| Condition                           | Subject        | Fires when                                                                                                                         |
+| ----------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Worker offline                      | Worker         | No heartbeat for N minutes (2 or more). A Worker that never connected is ignored.                                                  |
+| Profile has no ready Worker         | Profile        | An active Profile has no schedulable Worker.                                                                                       |
+| Worker readiness degraded or failed | Profile/Worker | A Worker reports degraded or failed readiness for an active Profile.                                                               |
+| Queue backlog                       | Profile        | The oldest pending Attempt has waited N minutes.                                                                                   |
+| Attempt failure rate                | Profile        | At least P% of Attempts finished in the last W minutes failed, once M have finished. Cancelled Attempts count toward neither side. |
+| Consecutive failed Attempts         | Profile        | The newest N finished Attempts (in the last 24 hours, cancellations skipped) all failed.                                           |
+| Attempt running too long            | Profile        | An Attempt has been running for N minutes.                                                                                         |
+
+A rule can be limited to one Profile. Each rule and subject has at most one open incident, so a
+condition that keeps holding notifies once. The lifecycle:
+
+- The incident is pending until the condition has held for the rule's pending time, then it fires.
+  A condition that clears while pending is dropped without a notification.
+- A firing incident notifies every enabled destination on the rule, unless the rule is muted or
+  the same rule and subject notified within the cooldown. Either way the incident still shows on
+  the dashboard and in `erainfra_alerts_firing`, and it is announced at the first evaluation after
+  the mute or cooldown ends, if it is still firing.
+- When the condition clears, the incident resolves and a resolved notification goes out, but only
+  if the firing one did.
+- Disabling a rule closes its incidents without notifying. Resolved incidents are kept 30 days.
+
+Destinations are a Slack incoming webhook (any Slack-compatible receiver works) or a generic
+webhook. Both need https. URLs and signing secrets are write-only: the dashboard shows the host
+and the last four characters of the path. Each destination has a Test button.
+
+Delivery never blocks evaluation. The cron writes a delivery row and schedules a send. A 2xx is
+delivered; 408, 429, 5xx, timeouts (10 seconds) and network errors are retried with exponential
+backoff from 30 seconds, plus up to 20% jitter, honouring `Retry-After`, for 8 attempts in about an
+hour; any other status fails at once. Delivery is at least once, so dedupe on
+`X-EraInfra-Delivery`.
+
+A generic webhook receives:
+
+```json
+{
+  "version": 1,
+  "event": "alert.firing",
+  "rule": {
+    "id": "…",
+    "name": "Queue backlog",
+    "kind": "queue-backlog",
+    "condition": "Oldest queued Attempt older than 15m",
+    "profile": "rc-linux-js"
+  },
+  "incident": {
+    "id": "…",
+    "status": "firing",
+    "subject": "rc-linux-js",
+    "summary": "3 Attempts queued on Profile rc-linux-js; the oldest has waited 16m.",
+    "since": "2026-11-05T11:44:00.000Z",
+    "firedAt": "2026-11-05T12:00:00.000Z",
+    "resolvedAt": null
+  },
+  "sentAt": "2026-11-05T12:00:00.000Z"
+}
+```
+
+`event` is `alert.firing`, `alert.resolved` or `alert.test`. The request carries
+`X-EraInfra-Event`, `X-EraInfra-Delivery` and `X-EraInfra-Signature: t=<unix seconds>,v1=<hex>`,
+where `v1` is HMAC-SHA256 of `<t>.<raw body>` keyed with the whole signing secret (`whsec_…`),
+the scheme Stripe uses. The timestamp lets a receiver refuse replays. To verify in Node:
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verify(secret, header, rawBody, toleranceSeconds = 300) {
+  const { t, v1 } = Object.fromEntries(header.split(",").map((part) => part.split("=")));
+  if (Math.abs(Date.now() / 1000 - Number(t)) > toleranceSeconds) return false;
+  const expected = createHmac("sha256", secret).update(`${t}.${rawBody}`).digest();
+  const given = Buffer.from(v1 ?? "", "hex");
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+```
+
+The signing secret is shown once when the destination is created or rotated. Rotation takes
+effect at once.
+
 ## Security and operations
 
 - Every CI Attempt gets a fresh VM and single-use JIT registration.

@@ -10,6 +10,7 @@ import {
 import { query } from "./_generated/server";
 import { isSchedulableReadiness } from "./attemptScheduler";
 import { fitPolicyValidator } from "./benchmark";
+import { effectiveReadinessState } from "./fleetObservation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const executorValidator = v.union(
@@ -145,12 +146,7 @@ export const list = query({
             {
               machineId: row.machineId,
               machineName: machine.name,
-              state:
-                row.state === "ready" && admissionError !== undefined
-                  ? row.preparedAt === undefined
-                    ? ("failed" as const)
-                    : ("degraded" as const)
-                  : row.state,
+              state: effectiveReadinessState(row, evidence),
               checkedAt: row.checkedAt,
               preparedAt: row.preparedAt,
               statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
