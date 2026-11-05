@@ -120,6 +120,12 @@ function AttemptsPage() {
               visible.map((attempt) => {
                 const end = attempt.finishedAt ?? now;
                 const detail = attempt.lastError ?? attempt.cancelReason;
+                const repository =
+                  attempt.repo === undefined
+                    ? undefined
+                    : attempt.owner === undefined || attempt.repo.includes("/")
+                      ? attempt.repo
+                      : `${attempt.owner}/${attempt.repo}`;
                 return (
                   <TableRow key={attempt._id}>
                     <TableCell>
@@ -132,8 +138,24 @@ function AttemptsPage() {
                       <code className="text-xs text-secondary-foreground">{attempt.profile}</code>
                     </TableCell>
                     <TableCell>
-                      <p className="max-w-[190px] truncate font-mono text-xs text-secondary-foreground">
-                        {attempt.repo ?? "Waiting for GitHub"}
+                      <p
+                        className="max-w-[190px] truncate font-mono text-xs text-secondary-foreground"
+                        title={repository}
+                      >
+                        {repository === undefined ? (
+                          "Waiting for GitHub"
+                        ) : attempt.workflowRunUrl === undefined ? (
+                          repository
+                        ) : (
+                          <a
+                            href={attempt.workflowRunUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline-offset-2 hover:text-foreground hover:underline"
+                          >
+                            {repository}
+                          </a>
+                        )}
                       </p>
                       <p
                         className={cn(
@@ -161,6 +183,14 @@ function AttemptsPage() {
                       {attempt.startedAt === undefined
                         ? `queued ${formatDuration(end - attempt.createdAt)}`
                         : `ran ${formatDuration(end - attempt.startedAt)}`}
+                      {attempt.queueWaitMs !== null && (
+                        <p
+                          className="mt-0.5 text-[10px] text-subtle-foreground"
+                          title="Time GitHub held the job before a Runner on this Profile picked it up"
+                        >
+                          waited {formatDuration(attempt.queueWaitMs)} in queue
+                        </p>
+                      )}
                       <p
                         className="mt-0.5 text-[10px] text-subtle-foreground"
                         title={formatAbsoluteTime(attempt.createdAt)}

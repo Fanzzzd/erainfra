@@ -8,6 +8,7 @@ import {
   readinessCheckValidator,
 } from "./isolation";
 import { query } from "./_generated/server";
+import { isSchedulableReadiness } from "./attemptScheduler";
 import { fitPolicyValidator } from "./benchmark";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -117,20 +118,21 @@ export const list = query({
             row.executor === profile.executor &&
             row.imageRelease === profile.imageRelease,
         );
-        const workers = rows
-          .filter(
-            (row) =>
-              row.state === "ready" &&
-              profile.state === "active" &&
-              now - row.checkedAt < 12 * 60 * 60_000 &&
-              readinessAdmissionError(row, evidenceByKey.get(`${row.machineId}:${row.profile}`)) ===
-                undefined,
-          )
-          .map((row) => machineById.get(row.machineId))
-          .filter(
-            (machine): machine is NonNullable<typeof machine> =>
-              machine !== undefined && now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
-          );
+        const workers =
+          profile.state === "active"
+            ? rows.flatMap((row) => {
+                const machine = machineById.get(row.machineId);
+                return isSchedulableReadiness(
+                  row,
+                  evidenceByKey.get(`${row.machineId}:${row.profile}`),
+                  machine,
+                  profile,
+                  now,
+                )
+                  ? [machine]
+                  : [];
+              })
+            : [];
         const workerDetail = rows.flatMap((row) => {
           const machine = machineById.get(row.machineId);
           if (machine === undefined) return [];

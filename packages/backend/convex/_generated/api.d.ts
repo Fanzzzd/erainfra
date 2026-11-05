@@ -39,6 +39,7 @@ import type * as profiles from "../profiles.js";
 import type * as reconcile from "../reconcile.js";
 import type * as recovery from "../recovery.js";
 import type * as retry from "../retry.js";
+import type * as routing from "../routing.js";
 import type * as runners from "../runners.js";
 import type * as scheduler from "../scheduler.js";
 import type * as settings from "../settings.js";
@@ -84,6 +85,7 @@ declare const fullApi: ApiFromModules<{
   reconcile: typeof reconcile;
   recovery: typeof recovery;
   retry: typeof retry;
+  routing: typeof routing;
   runners: typeof runners;
   scheduler: typeof scheduler;
   settings: typeof settings;

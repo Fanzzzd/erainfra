@@ -567,24 +567,81 @@ function defaultGitHubHostedFallback(labels: string[]) {
   return LATEST_HOSTED_RUNNER_BY_OS[os];
 }
 
-// Capacity probe for drop-in fallback. A cheap "router" job calls this and
-// routes the real job to self-hosted labels or a GitHub-hosted fallback:
-//   GET /runs-on?labels=rc-linux&fallback=ubuntu-latest
-// → {"runs-on": ["self-hosted","rc-linux"]} or {"runs-on": "ubuntu-latest"}
-// The fallback defaults to the requested image label when GitHub hosts it
-// (e.g. macos-15), else the latest hosted runner for that OS.
-// Read-only, unauthenticated by design: it leaks only "capacity yes/no".
+const HOSTED_RUNNER_BY_EXECUTOR = {
+  docker: "ubuntu-latest",
+  firecracker: "ubuntu-latest",
+  tart: "macos-latest",
+  hyperv: "windows-latest",
+} as const;
+
+// A runs-on label as GitHub-hosted, larger-runner and scale-set names spell
+// them. The probe echoes `fallback` back, so it accepts nothing else.
+const RUNS_ON_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+function runsOnResponse(label: string | string[]) {
+  return new Response(JSON.stringify({ "runs-on": label }), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      // The answer is only true now; no proxy or client may reuse it.
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+// Capacity probe for drop-in fallback. A router job at the top of a workflow
+// calls it and sends the real jobs to the fleet or to a GitHub-hosted fallback:
+//   GET /runs-on?profile=rc-linux-js&fallback=ubuntu-24.04
+// → {"runs-on": "rc-linux-js"} or {"runs-on": "ubuntu-24.04"}
+// The Profile is the answer when a job sent to it now would start without
+// waiting (routing.profileRoute has the rule). `fallback` defaults to the
+// latest GitHub-hosted runner for the Profile's OS.
+//
+// Unauthenticated on purpose. A router job runs on pull requests from forks,
+// which receive no secrets, so a token here would either be missing exactly
+// when routing matters or have to be committed to the workflow. The response
+// is one label, the Profile's own name or the caller's fallback, so an
+// anonymous caller learns only whether that Profile has room now. The probe
+// makes no GitHub API call, so callers cannot spend the App's rate limit, and
+// its reads are index-bounded by live work and Worker count. Fallback reasons
+// go to the deployment log, not to the caller.
+//
+// The legacy form `?labels=rc-linux[,…]` still answers from the pre-Profile
+// `machines`/`jobs` path (machines.hasCapacity), which webhook-intake jobs
+// still use.
 http.route({
   path: "/runs-on",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
     const url = new URL(request.url);
+    const profile = url.searchParams.get("profile");
+    if (profile !== null) {
+      if (url.searchParams.has("labels")) {
+        return jsonResponse({ error: "use either profile or labels, not both" }, 400);
+      }
+      const fallbackParam = url.searchParams.get("fallback");
+      if (!RUNS_ON_LABEL.test(profile)) {
+        return jsonResponse({ error: "profile is not a valid runs-on label" }, 400);
+      }
+      if (fallbackParam !== null && !RUNS_ON_LABEL.test(fallbackParam)) {
+        return jsonResponse({ error: "fallback is not a valid runs-on label" }, 400);
+      }
+      const decision = await ctx.runQuery(internal.routing.profileRoute, { profile });
+      if (decision.route === "profile") {
+        return runsOnResponse(profile);
+      }
+      const fallback =
+        fallbackParam ?? HOSTED_RUNNER_BY_EXECUTOR[decision.executor ?? "firecracker"];
+      console.info(`/runs-on: Profile ${profile} → ${fallback} (${decision.reason})`);
+      return runsOnResponse(fallback);
+    }
+
     const labels = (url.searchParams.get("labels") ?? "")
       .split(",")
       .map((label) => label.trim())
       .filter((label) => label.length > 0);
     if (labels.length === 0) {
-      return jsonResponse({ error: "labels is required" }, 400);
+      return jsonResponse({ error: "profile or labels is required" }, 400);
     }
     const fallback = url.searchParams.get("fallback") ?? defaultGitHubHostedFallback(labels);
 
