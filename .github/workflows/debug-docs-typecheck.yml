@@ -1,0 +1,120 @@
+name: debug docs typecheck (temporary)
+
+# Temporary evidence-gathering workflow; it never lands on main.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/debug-docs-typecheck.yml
+      - .github/debug/**
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    name: ${{ matrix.leg }}
+    runs-on: ${{ matrix.leg == 'hosted' && 'ubuntu-latest' || 'rc-e2e' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [hosted, profile]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
+        with:
+          node-version: 22
+
+      - name: Environment
+        run: |
+          set -x
+          node --version
+          pnpm --version
+          uname -a
+          nproc
+          free -m || true
+          umask
+          locale || true
+          ulimit -a
+          findmnt -T . || true
+          cat /proc/mounts | grep -E ' / | /opt| /home' || true
+          for f in /proc/sys/fs/inotify/*; do echo "$f=$(cat $f)"; done
+          date -u
+          command -v strace || echo "no strace"
+          env | sort | grep -viE 'token|secret|key|password|jit' || true
+
+      - name: Install (same as bench.sh)
+        run: |
+          export npm_config_store_dir="$RUNNER_TEMP/pnpm-store"
+          pnpm install --frozen-lockfile >"$RUNNER_TEMP/install.log" 2>&1 || { tail -40 "$RUNNER_TEMP/install.log"; exit 1; }
+          grep -iE 'docs|postinstall|fumadocs|MDX' "$RUNNER_TEMP/install.log" || true
+          ls -la --time-style=full-iso apps/docs/.source
+          wc -c apps/docs/.source/*
+          readlink -f apps/docs/node_modules/fumadocs-mdx apps/docs/node_modules/next apps/docs/node_modules/typescript
+
+      - name: Split typecheck with fs trace
+        working-directory: apps/docs
+        run: |
+          probe() { echo "== $1"; ls -la --time-style=full-iso .source; wc -c .source/*; }
+          trace="--import=$GITHUB_WORKSPACE/.github/debug/trace-fs.mjs"
+          probe before
+          time NODE_OPTIONS="$trace" node_modules/.bin/fumadocs-mdx
+          probe after-fumadocs-mdx
+          time NODE_OPTIONS="$trace" node_modules/.bin/next typegen
+          probe after-typegen
+          echo "== head -40 .source/server.ts"
+          head -40 .source/server.ts
+          node_modules/.bin/tsc --noEmit && echo TSC-OK || echo TSC-FAIL
+
+      - name: Loop next typegen 20x and count damaged .source files
+        working-directory: apps/docs
+        run: |
+          node_modules/.bin/fumadocs-mdx >/dev/null
+          want=$(wc -c .source/* | sort | md5sum)
+          wc -c .source/*
+          bad=0
+          for i in $(seq 1 20); do
+            node_modules/.bin/next typegen >/dev/null 2>&1
+            got=$(wc -c .source/* | sort | md5sum)
+            if [ "$got" != "$want" ]; then
+              bad=$((bad+1)); echo "run $i damaged:"; wc -c .source/*
+              node_modules/.bin/fumadocs-mdx >/dev/null
+            fi
+          done
+          echo "damaged=$bad/20"
+
+      - name: strace one typegen (if available)
+        working-directory: apps/docs
+        run: |
+          command -v strace || { echo "no strace"; exit 0; }
+          node_modules/.bin/fumadocs-mdx >/dev/null
+          strace -f -tt -e trace=openat,write,exit_group -o "$RUNNER_TEMP/st" node_modules/.bin/next typegen || true
+          grep -E '\.source|exit_group' "$RUNNER_TEMP/st" | tail -40
+          wc -c .source/*
+
+      - name: Original typecheck script 5x
+        working-directory: apps/docs
+        run: |
+          fail=0
+          for i in 1 2 3 4 5; do
+            if pnpm run typecheck >"$RUNNER_TEMP/tc.log" 2>&1; then echo "run $i ok"; else fail=$((fail+1)); echo "run $i FAIL"; tail -6 "$RUNNER_TEMP/tc.log"; fi
+            wc -c .source/server.ts
+          done
+          echo "original-fail=$fail/5"
+
+      - name: Reordered script (next typegen, then fumadocs-mdx, then tsc) 5x
+        working-directory: apps/docs
+        run: |
+          fail=0
+          for i in 1 2 3 4 5; do
+            if { node_modules/.bin/next typegen && node_modules/.bin/fumadocs-mdx && node_modules/.bin/tsc --noEmit; } >"$RUNNER_TEMP/tc.log" 2>&1; then echo "run $i ok"; else fail=$((fail+1)); echo "run $i FAIL"; tail -6 "$RUNNER_TEMP/tc.log"; fi
+          done
+          echo "reordered-fail=$fail/5"
+
+      - name: Bench typecheck command (turbo, all packages)
+        run: |
+          pnpm exec turbo run typecheck --filter='!@erainfra/cache-service' --filter='!@erainfra/controller' --filter='!@erainfra/runtime' --no-cache >"$RUNNER_TEMP/turbo.log" 2>&1 && echo TURBO-OK || { echo TURBO-FAIL; grep -A8 'docs:typecheck' "$RUNNER_TEMP/turbo.log" | head -30; }
+          wc -c apps/docs/.source/*
