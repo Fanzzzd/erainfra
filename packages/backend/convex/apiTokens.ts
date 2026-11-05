@@ -1,23 +1,30 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import {
   API_TOKEN_HINT_LENGTH,
   hashApiToken,
   MAX_API_TOKEN_NAME_LENGTH,
   newApiToken,
   normalizeApiTokenName,
-  shouldTouchLastUsed,
 } from "./apiTokenPolicy";
 import { requireDashboardAuth } from "./dashboardAuth";
 
-const scopeValidator = v.union(v.literal("read"), v.literal("admin"));
+export const scopeValidator = v.union(v.literal("read"), v.literal("admin"), v.literal("metrics"));
+
+/** How many tokens the dashboard lists, newest first. */
+const LIST_LIMIT = 200;
 
 /**
- * Mint an operator API token. The token is returned once and never readable
- * again. Only a signed-in dashboard operator can mint one, and the API itself
- * has no route that mints or lists tokens: an admin token that could create
- * more tokens would let a leaked credential outlive its own revocation.
+ * Mint an API token for /api/v1 or /metrics. The token is returned once and
+ * never readable again. Only a signed-in dashboard operator can mint one, and
+ * no HTTP route mints or lists tokens: an admin token that could create more
+ * tokens would let a leaked credential outlive its own revocation.
+ *
+ * A token rather than an environment variable such as METRICS_TOKEN: an env var
+ * takes deploy credentials to change, allows one live value at a time (so
+ * rotation means a gap), and sits in the deployment in plaintext. Several tokens
+ * can be live at once, so a replacement overlaps the one it retires.
  */
 export const create = mutation({
   args: { name: v.string(), scope: scopeValidator },
@@ -58,7 +65,7 @@ export const list = query({
   ),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    const tokens = await ctx.db.query("apiTokens").order("desc").collect();
+    const tokens = await ctx.db.query("apiTokens").order("desc").take(LIST_LIMIT);
     return Promise.all(
       tokens.map(async (token) => {
         const creator = token.createdBy === undefined ? null : await ctx.db.get(token.createdBy);
@@ -93,15 +100,19 @@ export const revoke = mutation({
 });
 
 /**
- * Resolve a presented token's digest to its scope, or null for an unknown or
- * revoked token. A mutation rather than a query so it can record `lastUsedAt`,
- * which it writes at most once per LAST_USED_RESOLUTION_MS.
+ * The live token a presented digest belongs to, or null for an unknown or
+ * revoked one. A query, so a request whose `lastUsedAt` is fresh writes nothing.
  */
-export const authenticate = internalMutation({
+export const lookup = internalQuery({
   args: { tokenHash: v.string() },
   returns: v.union(
     v.null(),
-    v.object({ tokenId: v.id("apiTokens"), name: v.string(), scope: scopeValidator }),
+    v.object({
+      tokenId: v.id("apiTokens"),
+      name: v.string(),
+      scope: scopeValidator,
+      lastUsedAt: v.optional(v.number()),
+    }),
   ),
   handler: async (ctx, args) => {
     const token = await ctx.db
@@ -109,10 +120,22 @@ export const authenticate = internalMutation({
       .withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
       .unique();
     if (token === null || token.revokedAt !== undefined) return null;
-    const now = Date.now();
-    if (shouldTouchLastUsed(token.lastUsedAt, now)) {
-      await ctx.db.patch(token._id, { lastUsedAt: now });
-    }
-    return { tokenId: token._id, name: token.name, scope: token.scope };
+    return {
+      tokenId: token._id,
+      name: token.name,
+      scope: token.scope,
+      ...(token.lastUsedAt === undefined ? {} : { lastUsedAt: token.lastUsedAt }),
+    };
+  },
+});
+
+export const recordUse = internalMutation({
+  args: { tokenId: v.id("apiTokens"), at: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const token = await ctx.db.get(args.tokenId);
+    if (token === null || token.revokedAt !== undefined) return null;
+    await ctx.db.patch(token._id, { lastUsedAt: args.at });
+    return null;
   },
 });

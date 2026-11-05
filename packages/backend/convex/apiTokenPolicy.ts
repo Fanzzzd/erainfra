@@ -1,14 +1,22 @@
-// Pure rules for operator API tokens, kept free of Convex bindings so they can
-// be unit tested directly, the same way authPolicy.ts and bootstrapPolicy.ts are.
+// Pure rules for the control plane's API tokens, kept free of Convex bindings so
+// they can be unit tested directly, the same way authPolicy.ts and
+// bootstrapPolicy.ts are.
 
 /**
- * A token reads the fleet (`read`) or also performs the actions the dashboard
- * offers (`admin`). Two scopes rather than per-route grants: the API exposes a
- * handful of reads and one action, and a finer split would be a permission
- * system nobody asked for. Blacksmith draws the same line between a user token
- * and an org token.
+ * One token system for every machine credential an operator mints in the
+ * dashboard, told apart by scope:
+ *
+ * - `metrics` scrapes `GET /metrics` and nothing else. It lives in a Prometheus
+ *   config file, the most widely copied place a token ends up, so it reads no
+ *   per-job detail.
+ * - `read` reads the operator API (`/api/v1`) and may also scrape.
+ * - `admin` adds the actions the dashboard offers through the API.
+ *
+ * GitLab's personal access tokens and Grafana's service-account tokens draw the
+ * same lines: one table, one surface, a scope per token.
  */
-export type ApiTokenScope = "read" | "admin";
+export const API_TOKEN_SCOPES = ["read", "admin", "metrics"] as const;
+export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number];
 
 /**
  * Every token starts with this, so a leaked one is recognisable in a log line or
@@ -23,12 +31,12 @@ export const API_TOKEN_HINT_LENGTH = API_TOKEN_PREFIX.length + 8;
 
 /**
  * `lastUsedAt` is written at most once per this interval per token. Writing it
- * on every request would turn each read into a write on a hot row; a minute is
- * finer than anyone reads a "last used" column at.
+ * on every request would turn each read, and each 15-second scrape, into a
+ * write on the token's row.
  */
-export const LAST_USED_RESOLUTION_MS = 60_000;
+export const LAST_USED_RESOLUTION_MS = 5 * 60_000;
 
-export const MAX_API_TOKEN_NAME_LENGTH = 64;
+export const MAX_API_TOKEN_NAME_LENGTH = 100;
 
 export function newApiToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -68,8 +76,16 @@ export function normalizeApiTokenName(name: string) {
   return trimmed;
 }
 
+/** Whether a token of scope `granted` may use a route that needs `needed`. */
 export function scopeAllows(granted: ApiTokenScope, needed: ApiTokenScope) {
-  return needed === "read" || granted === "admin";
+  switch (needed) {
+    case "metrics":
+      return true;
+    case "read":
+      return granted === "read" || granted === "admin";
+    case "admin":
+      return granted === "admin";
+  }
 }
 
 export function shouldTouchLastUsed(lastUsedAt: number | undefined, now: number) {

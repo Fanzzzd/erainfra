@@ -18,8 +18,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function mint(t: Harness, label = "prometheus") {
-  return (await operator(t)).mutation(api.metrics.mintToken, { label });
+async function mint(
+  t: Harness,
+  name = "prometheus",
+  scope: "read" | "admin" | "metrics" = "metrics",
+) {
+  const { _id, token } = await (await operator(t)).mutation(api.apiTokens.create, { name, scope });
+  return { id: _id, token };
 }
 
 function scrape(t: Harness, authorization?: string) {
@@ -134,7 +139,7 @@ describe("GET /metrics authentication", () => {
     const { token } = await mint(t);
     expect((await scrape(t, token)).status).toBe(401);
     expect((await scrape(t, `Basic ${token}`)).status).toBe(401);
-    expect((await scrape(t, `Bearer eim_${"0".repeat(64)}`)).status).toBe(401);
+    expect((await scrape(t, `Bearer erainfra_${"0".repeat(64)}`)).status).toBe(401);
     expect((await scrape(t, `Bearer ${token}x`)).status).toBe(401);
   });
 
@@ -145,7 +150,7 @@ describe("GET /metrics authentication", () => {
     expect(ok.status).toBe(200);
     expect(ok.headers.get("Content-Type")).toBe("text/plain; version=0.0.4; charset=utf-8");
 
-    await (await operator(t)).mutation(api.metrics.revokeToken, { id });
+    await (await operator(t)).mutation(api.apiTokens.revoke, { tokenId: id });
     const refused = await scrape(t, `Bearer ${token}`);
     expect(refused.status).toBe(401);
     expect(await refused.text()).toBe("Unauthorized\n");
@@ -155,54 +160,42 @@ describe("GET /metrics authentication", () => {
     const t = convexTest(schema, modules);
     const old = await mint(t, "old");
     const replacement = await mint(t, "new");
-    await (await operator(t)).mutation(api.metrics.revokeToken, { id: old.id });
+    await (await operator(t)).mutation(api.apiTokens.revoke, { tokenId: old.id });
     expect((await scrape(t, `Bearer ${old.token}`)).status).toBe(401);
     expect((await scrape(t, `Bearer ${replacement.token}`)).status).toBe(200);
   });
 
-  it("stores only the token's SHA-256 and shows it to the dashboard by prefix", async () => {
+  it("lets a metrics token scrape and nothing else, and any API token scrape", async () => {
     const t = convexTest(schema, modules);
-    const { token } = await mint(t);
-    expect(token).toMatch(/^eim_[0-9a-f]{64}$/);
-    const rows = await t.run((ctx) => ctx.db.query("metricsTokens").collect());
-    expect(rows).toHaveLength(1);
-    expect(JSON.stringify(rows)).not.toContain(token.slice(4));
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-    expect(rows[0]?.tokenHash).toBe(
-      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
-    );
-
-    const listed = await (await operator(t)).query(api.metrics.listTokens, {});
-    expect(listed).toEqual([
-      expect.objectContaining({ label: "prometheus", prefix: token.slice(0, 12) }),
-    ]);
-    expect(JSON.stringify(listed)).not.toContain(token.slice(12));
+    const metrics = await mint(t, "prometheus", "metrics");
+    const read = await mint(t, "laptop", "read");
+    const admin = await mint(t, "ops", "admin");
+    for (const { token } of [metrics, read, admin]) {
+      expect((await scrape(t, `Bearer ${token}`)).status).toBe(200);
+    }
+    const refused = await t.fetch("/api/v1/profiles", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${metrics.token}` },
+    });
+    expect(refused.status).toBe(403);
+    const registration = await t.fetch("/api/v1/workers/registration-tokens", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${metrics.token}` },
+    });
+    expect(registration.status).toBe(403);
   });
 
   it("records when a token was last used, at most every five minutes", async () => {
     const t = convexTest(schema, modules);
-    const { token } = await mint(t);
+    const { id, token } = await mint(t);
+    const lastUsed = async () => (await t.run((ctx) => ctx.db.get(id)))?.lastUsedAt;
     await scrape(t, `Bearer ${token}`);
     vi.setSystemTime(NOW + MINUTE);
     await scrape(t, `Bearer ${token}`);
-    let [row] = await t.run((ctx) => ctx.db.query("metricsTokens").collect());
-    expect(row?.lastUsedAt).toBe(NOW);
+    expect(await lastUsed()).toBe(NOW);
     vi.setSystemTime(NOW + 6 * MINUTE);
     await scrape(t, `Bearer ${token}`);
-    [row] = await t.run((ctx) => ctx.db.query("metricsTokens").collect());
-    expect(row?.lastUsedAt).toBe(NOW + 6 * MINUTE);
-  });
-
-  it("requires a dashboard login to mint, list or revoke", async () => {
-    const t = convexTest(schema, modules);
-    await expect(t.mutation(api.metrics.mintToken, { label: "x" })).rejects.toThrow(
-      /Authentication required/,
-    );
-    await expect(t.query(api.metrics.listTokens, {})).rejects.toThrow(/Authentication required/);
-    const { id } = await mint(t);
-    await expect(t.mutation(api.metrics.revokeToken, { id })).rejects.toThrow(
-      /Authentication required/,
-    );
+    expect(await lastUsed()).toBe(NOW + 6 * MINUTE);
   });
 });
 
@@ -395,7 +388,7 @@ describe("GET /metrics exposition", () => {
       destinationIds: [],
     });
     await t.action(internal.alerts.evaluate, {});
-    const { token } = await ops.mutation(api.metrics.mintToken, { label: "p" });
+    const { token } = await ops.mutation(api.apiTokens.create, { name: "p", scope: "metrics" });
     const parsed = parseExposition(await (await scrape(t, `Bearer ${token}`)).text());
     expect(valueOf(parsed, "erainfra_alerts_firing", { rule: "Queue backlog" })).toBe(1);
     expect(valueOf(parsed, "erainfra_alerts_firing", { rule: "Stuck jobs" })).toBe(0);

@@ -33,9 +33,16 @@ The Convex control plane exposed no authenticated read path other than the dashb
    Convex functions directly. Convex function names are an implementation detail that has already
    moved (`machines`, `attempts`, `workerApi`), while a script needs a contract that holds across
    releases. The tokens are separate from dashboard sessions: minted by a signed-in operator in the
-   dashboard, stored as a SHA-256 digest, scoped `read` or `admin`, revocable, and stamped with
-   when they were last used. The API has no route that mints or lists tokens, so a leaked admin
-   token cannot create its own replacement.
+   dashboard, stored as a SHA-256 digest, revocable, and stamped with when they were last used.
+   The API has no route that mints or lists tokens, so a leaked admin token cannot create its own
+   replacement.
+
+   They are the same tokens Prometheus scrapes `/metrics` with: one table, one dashboard list
+   (Settings, API tokens), and a scope per token. `read` reads `/api/v1`, `admin` adds the admin
+   route, and `metrics` scrapes and does nothing else, because a scrape token sits in Prometheus
+   configuration, the most widely copied place a token ends up. #160 shipped metrics tokens in a
+   table of their own; it was folded into this one before any deployment held a row, so two
+   parallel token systems never reached the field.
 
 3. **Admin routes exist only for actions the dashboard already offers**, and reuse its code. Today
    that is minting a Worker registration token (Add Worker). The dashboard has no pause or drain

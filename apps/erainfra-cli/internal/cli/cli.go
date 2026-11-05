@@ -113,7 +113,7 @@ Environment:
 Exit codes:
   0 success, 1 the request failed, 2 usage error, 4 not logged in or token refused
 
-Create an API token in the dashboard (Machines, API tokens), then:
+Create a read or admin token in the dashboard (Settings, API tokens), then:
   erainfra auth login --url https://<deployment>.convex.site --token <token>
 `
 

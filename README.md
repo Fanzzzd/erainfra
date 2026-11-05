@@ -791,11 +791,19 @@ install -m 0755 erainfra-linux-x86_64 ~/.local/bin/erainfra
 go install github.com/Fanzzzd/erainfra/apps/erainfra-cli/cmd/erainfra@latest
 ```
 
-Create a token in the dashboard under **Machines → API tokens**. A **read** token reads; an
-**admin** token can also mint Worker registration tokens (`erainfra workers add`), the one dashboard
-action the API offers. The dashboard shows a new token once, stores only its SHA-256, records when
-each token was last used, and revokes a token on its next request. The API cannot mint tokens, so a
-leaked admin token cannot create its own replacement.
+Create a token in the dashboard under **Settings → API tokens**. The same list holds every token
+the control plane accepts, told apart by scope:
+
+| Scope     | `/api/v1` reads | `/api/v1` admin route | `/metrics` |
+| --------- | --------------- | --------------------- | ---------- |
+| `read`    | yes             | no                    | yes        |
+| `admin`   | yes             | yes                   | yes        |
+| `metrics` | no              | no                    | yes        |
+
+The admin route mints Worker registration tokens (`erainfra workers add`), the one dashboard action
+the API offers. The dashboard shows a new token once, stores only its SHA-256, records when each
+token was last used (to five minutes), and revokes a token on its next request. No route mints
+tokens, so a leaked admin token cannot create its own replacement.
 
 ```bash
 erainfra auth login --url https://<deployment>.convex.site --token -   # reads the token from stdin
@@ -925,9 +933,11 @@ configured on the dashboard's **Settings** page (the gear in the rail).
 ### Prometheus metrics
 
 `GET https://<deployment>.convex.site/metrics` serves the Prometheus text format (version 0.0.4).
-It needs a bearer token: create one under Settings, Metrics. The token is shown once and only its
-SHA-256 is stored. Several tokens can be live at once, so rotate by creating a new token,
-reloading Prometheus, and revoking the old one. A revoked or unknown token gets 401 with no reason.
+It needs a bearer token: create a `metrics` token under Settings, Metrics (or Settings, API tokens),
+which can scrape and do nothing else. A `read` or `admin` token also scrapes. The token is shown once
+and only its SHA-256 is stored. Several tokens can be live at once, so rotate by creating a new
+token, reloading Prometheus, and revoking the old one under Settings, API tokens. A revoked or
+unknown token gets 401 with no reason.
 
 ```yaml
 scrape_configs:

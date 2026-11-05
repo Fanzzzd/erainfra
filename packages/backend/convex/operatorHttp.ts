@@ -7,6 +7,7 @@ import {
   hashApiToken,
   isWellFormedApiToken,
   scopeAllows,
+  shouldTouchLastUsed,
 } from "./apiTokenPolicy";
 import { queueWaitMs, workflowRunUrl } from "./attempts";
 import { resolveSiteUrl } from "./githubAppConfig";
@@ -288,32 +289,65 @@ export function attemptDetailJson(attempt: OperatorAttempt) {
 type Caller = { name: string; scope: ApiTokenScope };
 
 /**
- * Wraps a handler in bearer authentication. An unknown, malformed and revoked
- * token all get the same 401, so the answer does not tell a holder of an old
- * token whether it was revoked or never existed. A valid token without the
- * scope a route needs gets 403.
+ * Resolve a request's bearer token, for /api/v1 and /metrics alike.
+ *
+ * `missing` and `invalid` are separate only so /api/v1 can say how to send a
+ * token; an unknown, malformed and revoked token are all `invalid`, so the
+ * answer never tells the holder of an old token whether it was revoked or never
+ * existed. `lastUsedAt` is refreshed at most every LAST_USED_RESOLUTION_MS.
+ */
+export async function authenticateBearer(
+  ctx: ActionCtx,
+  request: Request,
+  needed: ApiTokenScope,
+): Promise<
+  { ok: true; caller: Caller } | { ok: false; reason: "missing" | "invalid" | "forbidden" }
+> {
+  const token = bearerToken(request.headers.get("Authorization"));
+  if (token === null) return { ok: false, reason: "missing" };
+  const found = isWellFormedApiToken(token)
+    ? await ctx.runQuery(internal.apiTokens.lookup, { tokenHash: await hashApiToken(token) })
+    : null;
+  if (found === null) return { ok: false, reason: "invalid" };
+  if (!scopeAllows(found.scope, needed)) return { ok: false, reason: "forbidden" };
+  const now = Date.now();
+  if (shouldTouchLastUsed(found.lastUsedAt, now)) {
+    await ctx.runMutation(internal.apiTokens.recordUse, { tokenId: found.tokenId, at: now });
+  }
+  return { ok: true, caller: { name: found.name, scope: found.scope } };
+}
+
+/**
+ * Wraps a handler in bearer authentication: 401 without a valid token, 403 for
+ * a valid token without the scope the route needs.
  */
 function operatorRoute(
   needed: ApiTokenScope,
   handler: (ctx: ActionCtx, request: Request, caller: Caller) => Promise<Response>,
 ) {
   return httpAction(async (ctx, request) => {
-    const token = bearerToken(request.headers.get("Authorization"));
-    if (token === null) {
-      return apiError(401, "unauthorized", "Send an API token as Authorization: Bearer <token>");
+    const auth = await authenticateBearer(ctx, request, needed);
+    if (!auth.ok) {
+      switch (auth.reason) {
+        case "missing":
+          return apiError(
+            401,
+            "unauthorized",
+            "Send an API token as Authorization: Bearer <token>",
+          );
+        case "invalid":
+          return apiError(401, "unauthorized", "The API token is not valid or has been revoked");
+        case "forbidden":
+          return apiError(
+            403,
+            "forbidden",
+            needed === "admin"
+              ? "This route needs an admin token"
+              : "This route needs a read or admin token",
+          );
+      }
     }
-    const caller = isWellFormedApiToken(token)
-      ? await ctx.runMutation(internal.apiTokens.authenticate, {
-          tokenHash: await hashApiToken(token),
-        })
-      : null;
-    if (caller === null) {
-      return apiError(401, "unauthorized", "The API token is not valid or has been revoked");
-    }
-    if (!scopeAllows(caller.scope, needed)) {
-      return apiError(403, "forbidden", `This route needs an ${needed} token`);
-    }
-    return await handler(ctx, request, caller);
+    return await handler(ctx, request, auth.caller);
   });
 }
 

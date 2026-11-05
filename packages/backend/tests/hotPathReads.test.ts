@@ -11,11 +11,6 @@ type FullScanAllowance = {
 // complete dashboard joins. The occurrence count keeps a justified scan from
 // silently allowing a second scan of the same table elsewhere in the module.
 const justifiedFullScans: Record<string, FullScanAllowance> = {
-  "apiTokens.ts:apiTokens": {
-    occurrences: 1,
-    reason:
-      "Operator API tokens are minted one at a time by a signed-in operator and listed in full on the dashboard; requests authenticate through by_tokenHash.",
-  },
   "attempts.ts:machines": {
     occurrences: 1,
     reason: "The bounded 200-row Attempt dashboard joins the operator-managed Worker fleet.",

@@ -21,9 +21,10 @@ var authLoginCommand = command{
 	summary: "Store the deployment URL and an API token",
 	long: `
 Checks the token against the deployment, then stores both in the config file
-with mode 0600. Create the token in the dashboard under Machines, API tokens.
-Pass --token - to read it from standard input, which keeps it out of the shell
-history and the process list.`,
+with mode 0600. Create a read or admin token in the dashboard under Settings,
+API tokens; a metrics token only scrapes /metrics. Pass --token - to read it
+from standard input, which keeps it out of the shell history and the process
+list.`,
 	flags: []flagSpec{
 		{name: "url", metavar: "URL", usage: "the deployment's site URL, https://<deployment>.convex.site"},
 		{name: "token", metavar: "TOKEN", usage: "an API token, or - to read it from standard input"},
