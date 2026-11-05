@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/egress"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
@@ -44,6 +46,9 @@ type Runtime struct {
 	// and what kernel would change it.
 	rootfsIoEngine       string
 	rootfsIoEngineDetail string
+	// egress owns every guest's per-guest egress state and the host resolver
+	// audit and allowlist guests are redirected to.
+	egress *egress.Guard
 
 	recoveryMu sync.Mutex
 	activeMu   sync.Mutex
@@ -162,8 +167,30 @@ func New(config Config) (*Runtime, error) {
 		}
 		runtime.cacheIssuer = issuer
 	}
+	runtime.egress = egress.NewGuard(config.Network, egress.NftApplier{Binary: config.NftBinary})
 	runtime.pool = newWarmPoolManager(runtime.newWarmSlot)
 	return runtime, nil
+}
+
+// ServeEgress starts the host resolver on the guest gateway address. A
+// failure is returned, not fatal: public Profiles do not need the resolver,
+// and every audit or allowlist Profile fails its egress-policy check until it
+// is serving, so the Worker is not ready for them.
+func (r *Runtime) ServeEgress(ctx context.Context) error {
+	address, err := egress.ListenAddress(r.config.Network)
+	if err != nil {
+		return err
+	}
+	packet, stream, err := egress.Listen(ctx, address)
+	if err != nil {
+		return err
+	}
+	r.egress.Resolver().Serve(packet, stream)
+	return nil
+}
+
+func (r *Runtime) effectiveEgress(profile netpolicy.ProfileEgress) (netpolicy.EffectiveEgress, error) {
+	return netpolicy.Effective(r.config.Network, profile, r.config.CacheServiceURL, r.config.RegistryMirrorURL)
 }
 
 // mintCacheBearer mints the runner-auth bearer for a claim, or returns empty when
@@ -214,17 +241,19 @@ func (r *Runtime) forgetLease(attemptID string, lease *machineLease) {
 // broken check in the dashboard. The network policy is checked by content
 // rather than by existence — a conflist file that is present but no longer
 // denies host, RFC1918 and east-west traffic is the failure mode that matters.
-func (r *Runtime) Preflight(ctx context.Context) (executor.Report, error) {
+//
+// The report is for one Profile's egress: its network policy hash and egress
+// mode describe what that Profile's guests get on this host, and the
+// egress-policy check proves this Worker can enforce it.
+func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.ProfileEgress) (executor.Report, error) {
+	network, egressCheck := egressReadiness(
+		r.config.Network, profileEgress,
+		[]string{r.config.CacheServiceURL, r.config.RegistryMirrorURL}, r.egress.Health,
+	)
 	report := executor.Report{
 		Isolation: executor.IsolationFirecracker,
 		Boundary:  executor.BoundaryGuestKernel,
-		Network: executor.Network{
-			PolicyName:          r.config.Network.Name,
-			PolicyHash:          r.config.Network.IdentityHash(),
-			Subnet:              r.config.Network.Subnet,
-			EgressMode:          string(r.config.Network.EgressMode),
-			AllowedDestinations: r.config.Network.AllowedDestinations,
-		},
+		Network:   network,
 		// Nothing writable outlives an Attempt: the root is a per-Attempt
 		// copy-on-write snapshot and no host path is mounted into the guest.
 		Cache: executor.Cache{
@@ -303,6 +332,11 @@ func (r *Runtime) Preflight(ctx context.Context) (executor.Report, error) {
 				r.config.Network.EgressMode,
 			))
 		}
+	}
+	if egressCheck.Passed {
+		report.Pass(egressCheck.Name, egressCheck.Detail)
+	} else {
+		report.Fail(egressCheck.Name, errors.New(egressCheck.Detail))
 	}
 
 	r.checkSnapshotter(ctx, &report)
@@ -467,7 +501,7 @@ func (r *Runtime) PrepareProfile(
 	if err := profile.Validate(); err != nil {
 		return executor.WarmPoolStatus{}, err
 	}
-	if _, err := r.Preflight(ctx); err != nil {
+	if _, err := r.Preflight(ctx, profile.Egress); err != nil {
 		return executor.WarmPoolStatus{}, err
 	}
 	client, err := containerd.New(r.config.ContainerdAddress)
@@ -505,7 +539,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if err := spec.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid Attempt: %w", err)
 	}
-	if _, err := r.Preflight(ctx); err != nil {
+	if _, err := r.Preflight(ctx, spec.Egress); err != nil {
 		return nil, err
 	}
 	// Mint the runner-auth bearer here, at claim, where the runner name is known.
@@ -529,13 +563,20 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if !errors.Is(err, errWarmPoolMiss) {
 		return nil, err
 	}
+	// The cache endpoint the guest is handed is the one it must be able to
+	// reach, so the allowlist is computed from the spec's, not the daemon's.
+	effective, err := netpolicy.Effective(r.config.Network, spec.Egress, spec.CacheServiceURL, spec.RegistryMirrorURL)
+	if err != nil {
+		return nil, fmt.Errorf("egress: %w", err)
+	}
 	return r.bootVM(ctx, vmDefinition{
 		id:          spec.AttemptID,
 		attemptID:   spec.AttemptID,
 		leaseID:     "runner-center/attempts/" + spec.AttemptID,
-		profile:     executor.Profile{Name: spec.Profile, ImageRelease: spec.ImageRelease, VCPUs: spec.VCPUs, MemoryMiB: spec.MemoryMiB},
+		profile:     executor.Profile{Name: spec.Profile, ImageRelease: spec.ImageRelease, VCPUs: spec.VCPUs, MemoryMiB: spec.MemoryMiB, Egress: spec.Egress},
 		metadata:    metadataFor(spec),
 		resultToken: spec.ResultToken,
+		egress:      effective,
 	})
 }
 
@@ -546,6 +587,9 @@ type vmDefinition struct {
 	profile     executor.Profile
 	metadata    map[string]any
 	resultToken string
+	// egress is what the guest's per-guest sets are filled from before it
+	// boots. Its owner in the guard is id.
+	egress netpolicy.EffectiveEgress
 }
 
 func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machineLease, returnedError error) {
@@ -664,6 +708,31 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 		cancelVMM()
 		return nil, fmt.Errorf("create Firecracker VM: %w", err)
 	}
+	// The guest's address exists once CNI has run, which is the first FcInit
+	// handler, and the guest runs nothing until InstanceStart, which follows
+	// every FcInit handler. Registering here therefore puts the guest into its
+	// Profile's sets before its first packet, and a guest whose sets cannot be
+	// written never starts.
+	var guestAddress netip.Addr
+	machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.Handler{
+		Name: "erainfra.RegisterGuestEgress",
+		Fn: func(handlerContext context.Context, machine *fc.Machine) error {
+			address, err := guestAddressOf(machine)
+			if err != nil {
+				return err
+			}
+			if err := r.egress.Register(handlerContext, address, definition.id, definition.egress); err != nil {
+				return err
+			}
+			guestAddress = address
+			return nil
+		},
+	})
+	defer func() {
+		if returnedError != nil && guestAddress.IsValid() {
+			_, _ = r.egress.Unregister(context.WithoutCancel(ctx), guestAddress, definition.id)
+		}
+	}()
 	if definition.metadata != nil {
 		machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.NewSetMetadataHandler(definition.metadata))
 	}
@@ -681,6 +750,9 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 		consolePath:  consolePath,
 		workDir:      workDir,
 		resultToken:  definition.resultToken,
+		egress:       r.egress,
+		guestAddress: guestAddress,
+		egressOwner:  definition.id,
 	}
 	if definition.attemptID != "" {
 		lease.onCleanup = func() { r.forgetLease(definition.attemptID, lease) }
@@ -688,6 +760,26 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 	}
 	leaseOwned = false
 	return lease, nil
+}
+
+// guestAddressOf reads the address CNI gave the guest. The SDK fills the
+// static configuration from the CNI result during its network setup handler.
+func guestAddressOf(machine *fc.Machine) (netip.Addr, error) {
+	for _, networkInterface := range machine.Cfg.NetworkInterfaces {
+		if networkInterface.CNIConfiguration == nil {
+			continue
+		}
+		configuration := networkInterface.StaticConfiguration
+		if configuration == nil || configuration.IPConfiguration == nil {
+			return netip.Addr{}, errors.New("CNI set up the guest network but reported no guest address")
+		}
+		address, ok := netip.AddrFromSlice(configuration.IPConfiguration.IPAddr.IP.To4())
+		if !ok {
+			return netip.Addr{}, fmt.Errorf("guest address %s is not IPv4", configuration.IPConfiguration.IPAddr.IP)
+		}
+		return address, nil
+	}
+	return netip.Addr{}, errors.New("the guest has no CNI network interface")
 }
 
 func metadataFor(spec executor.Spec) map[string]any {
@@ -733,10 +825,15 @@ func (r *Runtime) newWarmSlot(
 		defer cancel()
 	}
 	vmID := fmt.Sprintf("warm-%d", id)
+	effective, err := r.effectiveEgress(profile.Egress)
+	if err != nil {
+		return nil, fmt.Errorf("egress: %w", err)
+	}
 	lease, err := r.bootVM(ctx, vmDefinition{
 		id:      vmID,
 		leaseID: "runner-center/warm/" + vmID,
 		profile: profile,
+		egress:  effective,
 	})
 	if err != nil {
 		return nil, err
@@ -767,6 +864,10 @@ func (s *firecrackerWarmSlot) Claim(
 	spec executor.Spec,
 ) (executor.Lease, error) {
 	if err := s.reserveClaim(); err != nil {
+		return nil, err
+	}
+	// Before the metadata write, which is what lets the guest start the job.
+	if err := s.lease.claimEgress(ctx, spec.AttemptID); err != nil {
 		return nil, err
 	}
 	metadata := metadataFor(spec)
@@ -852,7 +953,29 @@ type machineLease struct {
 	onCleanup    func()
 	cleanupOnce  sync.Once
 	cleanupError error
+	// egress, guestAddress and egressOwner identify the guest's per-guest
+	// egress state; egressRecord is what teardown collected from it.
+	egress       *egress.Guard
+	guestAddress netip.Addr
+	egressOwner  string
+	egressRecord *executor.EgressRecord
 }
+
+// claimEgress hands a parked guest's egress state to the Attempt claiming it.
+func (l *machineLease) claimEgress(ctx context.Context, attemptID string) error {
+	if !l.guestAddress.IsValid() {
+		return nil
+	}
+	if err := l.egress.Claim(ctx, l.guestAddress, l.egressOwner, attemptID); err != nil {
+		return fmt.Errorf("claim parked guest egress: %w", err)
+	}
+	l.egressOwner = attemptID
+	return nil
+}
+
+// EgressRecord is what the guest talked to, available once teardown ran. The
+// runtime API reads it for an Attempt that timed out and was cancelled.
+func (l *machineLease) EgressRecord() *executor.EgressRecord { return l.egressRecord }
 
 func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 	err := l.machine.Wait(ctx)
@@ -870,9 +993,9 @@ func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 	}
 	cleanupErr := l.cleanup(context.Background(), false)
 	if err != nil || resultError != nil || cleanupErr != nil {
-		return executor.Result{ExitCode: 1}, errors.Join(err, resultError, cleanupErr)
+		return executor.Result{ExitCode: 1, Egress: l.egressRecord}, errors.Join(err, resultError, cleanupErr)
 	}
-	return executor.Result{ExitCode: exitCode}, nil
+	return executor.Result{ExitCode: exitCode, Egress: l.egressRecord}, nil
 }
 
 // ResourceSource measures this microVM from the host: the VMM process's CPU,
@@ -923,6 +1046,19 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 				))
 			}
 			cancelExit()
+		}
+		if l.guestAddress.IsValid() {
+			// The guest is gone, so its record is complete. A removal that fails
+			// does not fail the job: the guard keeps the state as stale, purges
+			// it before the address is reused, and reports the Worker unhealthy
+			// for audit and allowlist Profiles until it is gone.
+			egressContext, cancelEgress := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			record, err := l.egress.Unregister(egressContext, l.guestAddress, l.egressOwner)
+			cancelEgress()
+			l.egressRecord = record
+			if err != nil {
+				logrus.WithError(err).WithField("guest", l.guestAddress.String()).Warn("could not remove guest egress state")
+			}
 		}
 		l.cancelVMM()
 		if err := l.console.Close(); err != nil {

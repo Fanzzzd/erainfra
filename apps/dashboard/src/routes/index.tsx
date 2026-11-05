@@ -56,6 +56,7 @@ import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { describeProfileEgress, egressTooltip } from "@/lib/egress";
 
 export const Route = createFileRoute("/")({ component: MachinesPage });
 
@@ -1018,6 +1019,17 @@ function ProfileRow({
             {profile.executor}
             {profile.trustedOnly && " · trusted only"}
           </p>
+          <p
+            className={cn(
+              "mt-0.5 font-mono text-[10px]",
+              profile.egress.mode === "public"
+                ? "text-subtle-foreground"
+                : "text-secondary-foreground",
+            )}
+            title={egressTooltip(profile.egress)}
+          >
+            {describeProfileEgress(profile.egress)}
+          </p>
         </TableCell>
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
@@ -1124,6 +1136,17 @@ function workerFacts(worker: ProfileSummary["workers"][number]): Fact[] {
       value: [network.subnet, network.egressMode, network.policyName]
         .filter((part): part is string => part !== undefined && part.length > 0)
         .join(" · "),
+    });
+  }
+  // Legacy inline readiness rows carry no egress evidence; only the split
+  // evidence row does.
+  const egress = network?.egress;
+  if (egress !== undefined) {
+    facts.push({
+      label: "Egress",
+      value:
+        `${egress.mode} for this Profile (Profile ${egress.profileMode}, host ${egress.hostMode})` +
+        (egress.allowedDomainCount > 0 ? ` · ${egress.allowedDomainCount} allowed domains` : ""),
     });
   }
 

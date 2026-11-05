@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
 )
 
@@ -52,6 +53,9 @@ type Spec struct {
 	// host fills in at claim, and empty composes exactly the guest a fleet
 	// without a mirror boots.
 	RegistryMirrorURL string
+	// Egress is the Profile's published egress policy. The zero value is
+	// public egress, which is what a Profile without one means.
+	Egress netpolicy.ProfileEgress
 }
 
 // Profile is the runtime-owned capacity contract for one immutable Image
@@ -62,9 +66,15 @@ type Profile struct {
 	VCPUs        int64  `json:"vcpus"`
 	MemoryMiB    int64  `json:"memoryMiB"`
 	WarmPool     int    `json:"warmPool"`
+	// Egress is part of the contract a warm guest was booted under: a parked
+	// guest is already in its Profile's per-guest sets.
+	Egress netpolicy.ProfileEgress `json:"egress"`
 }
 
 func (p Profile) Validate() error {
+	if err := p.Egress.Validate(); err != nil {
+		return fmt.Errorf("egress: %w", err)
+	}
 	if strings.TrimSpace(p.Name) == "" {
 		return errors.New("profile is required")
 	}
@@ -94,6 +104,9 @@ type WarmPoolStatus struct {
 }
 
 func (s Spec) Validate() error {
+	if err := s.Egress.Validate(); err != nil {
+		return fmt.Errorf("egress: %w", err)
+	}
 	if !safeIdentity.MatchString(s.AttemptID) {
 		return errors.New("attempt ID must be a safe 1-128 character identity")
 	}
@@ -176,6 +189,9 @@ func validateCacheEndpoint(cacheURL, serviceV2 string) error {
 
 type Result struct {
 	ExitCode int
+	// Egress is what the guest talked to, for an audit or allowlist Attempt,
+	// and nil for a public one.
+	Egress *EgressRecord
 }
 
 type Lease interface {
@@ -194,8 +210,9 @@ type Executor interface {
 	// Preflight returns the full readiness Report even when it fails, so the
 	// control plane can show which prerequisite is broken rather than only that
 	// something is. A non-nil error always accompanies a Report that is not
-	// Ready.
-	Preflight(ctx context.Context) (Report, error)
+	// Ready. egress is the Profile's published egress policy; the report's
+	// network evidence and egress-policy check are for that Profile.
+	Preflight(ctx context.Context, egress netpolicy.ProfileEgress) (Report, error)
 	PrepareProfile(ctx context.Context, profile Profile) (WarmPoolStatus, error)
 	RemoveProfile(ctx context.Context, profile string) error
 	Shutdown(ctx context.Context) error

@@ -1,0 +1,86 @@
+{
+  "_comment": "Profile egress policies that the control plane (packages/backend/convex/egress.ts) and the Worker runtime (apps/runtime/internal/netpolicy/egress.go) must judge identically. Each valid case lists the normalized form both sides store and enforce.",
+  "valid": [
+    {
+      "name": "absent is public",
+      "input": null,
+      "normalized": { "mode": "public", "presets": [], "domains": [], "cidrs": [] }
+    },
+    {
+      "name": "explicit public",
+      "input": { "mode": "public" },
+      "normalized": { "mode": "public", "presets": [], "domains": [], "cidrs": [] }
+    },
+    {
+      "name": "audit without a list",
+      "input": { "mode": "audit" },
+      "normalized": { "mode": "audit", "presets": [], "domains": [], "cidrs": [] }
+    },
+    {
+      "name": "audit with the list it will later enforce",
+      "input": { "mode": "audit", "presets": ["github"], "domains": ["registry.npmjs.org"] },
+      "normalized": {
+        "mode": "audit",
+        "presets": ["github"],
+        "domains": ["registry.npmjs.org"],
+        "cidrs": []
+      }
+    },
+    {
+      "name": "allowlist spellings normalize to one form",
+      "input": {
+        "mode": "allowlist",
+        "presets": [" GitHub ", "github"],
+        "domains": [
+          "Registry.NPMJS.org.",
+          "registry.npmjs.org",
+          "*.Example.com",
+          "_acme.example.org"
+        ],
+        "cidrs": ["140.82.112.7/20", "1.2.3.4", "1.2.3.4/32"]
+      },
+      "normalized": {
+        "mode": "allowlist",
+        "presets": ["github"],
+        "domains": ["*.example.com", "_acme.example.org", "registry.npmjs.org"],
+        "cidrs": ["1.2.3.4/32", "140.82.112.0/20"]
+      }
+    },
+    {
+      "name": "allowlist by CIDR alone",
+      "input": { "mode": "allowlist", "cidrs": ["0.0.0.0/0"] },
+      "normalized": { "mode": "allowlist", "presets": [], "domains": [], "cidrs": ["0.0.0.0/0"] }
+    }
+  ],
+  "invalid": [
+    { "name": "an unknown mode", "input": { "mode": "block" } },
+    { "name": "public with a list", "input": { "mode": "public", "domains": ["github.com"] } },
+    { "name": "an allowlist that allows nothing", "input": { "mode": "allowlist" } },
+    { "name": "an unknown preset", "input": { "mode": "allowlist", "presets": ["gitlab"] } },
+    {
+      "name": "a wildcard in the middle",
+      "input": { "mode": "allowlist", "domains": ["a.*.example.com"] }
+    },
+    { "name": "a bare wildcard", "input": { "mode": "allowlist", "domains": ["*"] } },
+    { "name": "a single label", "input": { "mode": "allowlist", "domains": ["localhost"] } },
+    {
+      "name": "an address listed as a domain",
+      "input": { "mode": "allowlist", "domains": ["10.0.0.1"] }
+    },
+    {
+      "name": "a label starting with a dash",
+      "input": { "mode": "allowlist", "domains": ["-bad.example.com"] }
+    },
+    {
+      "name": "a URL instead of a domain",
+      "input": { "mode": "allowlist", "domains": ["https://example.com"] }
+    },
+    { "name": "an IPv6 CIDR", "input": { "mode": "allowlist", "cidrs": ["2001:db8::/32"] } },
+    {
+      "name": "an out-of-range octet",
+      "input": { "mode": "allowlist", "cidrs": ["300.1.1.0/24"] }
+    },
+    { "name": "a leading zero", "input": { "mode": "allowlist", "cidrs": ["010.1.1.0/24"] } },
+    { "name": "a prefix longer than 32", "input": { "mode": "allowlist", "cidrs": ["1.2.3.4/33"] } }
+  ]
+}

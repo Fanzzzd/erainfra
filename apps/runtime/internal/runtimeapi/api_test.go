@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -15,10 +16,12 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 )
 
 type fakeExecutor struct {
 	preflightError  error
+	preflightEgress netpolicy.ProfileEgress
 	preparedProfile executor.Profile
 	removedProfile  string
 	recoveredIDs    []string
@@ -26,7 +29,8 @@ type fakeExecutor struct {
 	startedSpec     executor.Spec
 }
 
-func (f *fakeExecutor) Preflight(context.Context) (executor.Report, error) {
+func (f *fakeExecutor) Preflight(_ context.Context, egress netpolicy.ProfileEgress) (executor.Report, error) {
+	f.preflightEgress = egress
 	report := executor.Report{
 		Isolation: executor.IsolationFirecracker,
 		Boundary:  executor.BoundaryGuestKernel,
@@ -123,23 +127,35 @@ func unixClient(t *testing.T, runtime executor.Executor) *Client {
 }
 
 func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
+	record := &executor.EgressRecord{
+		Mode:  "allowlist",
+		Names: []executor.EgressNameSeen{{Name: "github.com", Verdict: executor.EgressAllowed, Queries: 3}},
+		Flows: []executor.EgressFlowSeen{{Destination: "1.1.1.1", Protocol: "tcp", Port: 443, Verdict: executor.EgressBlocked}},
+	}
 	lease := &fakeLease{
-		wait:      func(context.Context) (executor.Result, error) { return executor.Result{ExitCode: 17}, nil },
+		wait: func(context.Context) (executor.Result, error) {
+			return executor.Result{ExitCode: 17, Egress: record}, nil
+		},
 		cancelled: make(chan struct{}),
 	}
 	runtime := &fakeExecutor{lease: lease}
 	client := unixClient(t, runtime)
 	ctx := context.Background()
 
-	report, err := client.Preflight(ctx)
+	allowlist := netpolicy.ProfileEgress{Mode: netpolicy.EgressAllowlist, Presets: []string{"github"}}
+	report, err := client.Preflight(ctx, allowlist)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !report.Ready() || report.Boundary != executor.BoundaryGuestKernel {
 		t.Fatalf("the readiness report did not cross the socket intact: %+v", report)
 	}
+	if !reflect.DeepEqual(runtime.preflightEgress, allowlist) {
+		t.Fatalf("readiness was checked for %+v, want the Profile's %+v", runtime.preflightEgress, allowlist)
+	}
 	profile := executor.Profile{
 		Name: "rc-linux-js", ImageRelease: testSpec().ImageRelease, VCPUs: 2, MemoryMiB: 4096, WarmPool: 2,
+		Egress: allowlist,
 	}
 	status, err := client.PrepareProfile(ctx, profile)
 	if err != nil {
@@ -158,7 +174,10 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ExitCode != 17 || runtime.preparedProfile != profile || runtime.removedProfile != profile.Name {
+	if !reflect.DeepEqual(result.Egress, record) {
+		t.Fatalf("the egress record did not cross the socket: %+v", result.Egress)
+	}
+	if result.ExitCode != 17 || !reflect.DeepEqual(runtime.preparedProfile, profile) || runtime.removedProfile != profile.Name {
 		t.Fatalf("unexpected result=%+v prepared=%+v removed=%q", result, runtime.preparedProfile, runtime.removedProfile)
 	}
 	if runtime.startedSpec.JITConfig != "secret-jit" {

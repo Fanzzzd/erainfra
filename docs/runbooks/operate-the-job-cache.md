@@ -610,11 +610,16 @@ Each step is inert on its own; the cache serves its first byte only once all fou
    ```bash
    RC_CACHE_SIGNING_KEY_FILE=/etc/runner-center/cache-signing-key   # the §2 key, 0600, root
    RC_CACHE_SERVICE_URL=https://cache.internal:8721                 # reachable from the guest subnet
-   RC_EGRESS_ALLOW=...,10.0.0.5/32                                  # the service's address as a CIDR; keep the rest
+   RC_EGRESS_ALLOW=...,10.20.0.5/32                                 # the service's address; keep the rest
    ```
 
-   `RC_EGRESS_ALLOW` takes IPv4 CIDRs only (`netpolicy.Policy.Validate` refuses a hostname), so
-   name the address `cache.internal` resolves to. The service must sit where a guest job can reach it. A store or service on a Worker's own host is
+   `RC_EGRESS_ALLOW` takes IPv4 CIDRs only; a host name there fails runtime startup. It is needed
+   only when the service's address is in a private range, which the guest policy drops by default.
+   A Profile on audit or allowlist egress allows the `RC_CACHE_SERVICE_URL` host on its own, by
+   name or address, so its list does not need it (see
+   [restrict-job-egress](restrict-job-egress.md)).
+
+   The service must sit where a guest job can reach it. A store or service on a Worker's own host is
    dropped by the guest network policy (§1, Case A): reach it over the bridge as a routed
    destination, never by holing the host-input drop. Restart the runtime.
 

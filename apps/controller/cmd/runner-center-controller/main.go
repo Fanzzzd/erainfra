@@ -15,7 +15,6 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/config"
 	rccontroller "github.com/Fanzzzd/erainfra/apps/controller/internal/controller"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/convexstore"
-	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubapi"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubscale"
 	"github.com/actions/scaleset"
@@ -69,18 +68,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("configure Fleet client: %w", err)
 	}
-	if err := store.RegisterProfile(ctx, fleet.ProfileSpec{
-		Name:         cfg.Profile,
-		ScaleSetName: cfg.ScaleSetName,
-		Executor:     cfg.Executor,
-		ImageRelease: cfg.ImageRelease,
-		VCPUs:        cfg.VCPUs,
-		MemoryMiB:    cfg.MemoryMiB,
-		WarmPool:     cfg.WarmPool,
-		FitPolicy:    cfg.FitPolicy,
-		MinRunners:   cfg.MinRunners,
-		MaxRunners:   cfg.MaxRunners,
-	}); err != nil {
+	if err := store.RegisterProfile(ctx, cfg.ProfileSpec()); err != nil {
 		return fmt.Errorf("register Profile: %w", err)
 	}
 	client, err := newGitHubClient(cfg)

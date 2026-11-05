@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 )
 
 var errWarmPoolMiss = errors.New("no parked microVM is available")
@@ -107,7 +109,19 @@ func sameWarmProfile(left, right executor.Profile) bool {
 	return left.Name == right.Name &&
 		left.ImageRelease == right.ImageRelease &&
 		left.VCPUs == right.VCPUs &&
-		left.MemoryMiB == right.MemoryMiB
+		left.MemoryMiB == right.MemoryMiB &&
+		sameEgress(left.Egress, right.Egress)
+}
+
+// sameEgress compares two egress policies in canonical form. A parked guest is
+// already in its Profile's per-guest sets, so one booted under another policy
+// is not the same capacity.
+func sameEgress(left, right netpolicy.ProfileEgress) bool {
+	left, right = left.Normalized(), right.Normalized()
+	return left.Mode == right.Mode &&
+		slices.Equal(left.Presets, right.Presets) &&
+		slices.Equal(left.Domains, right.Domains) &&
+		slices.Equal(left.CIDRs, right.CIDRs)
 }
 
 func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) error {
@@ -264,7 +278,8 @@ func (p *warmPoolManager) Claim(
 
 func sameSpecProfile(spec executor.Spec, profile executor.Profile) bool {
 	return spec.Profile == profile.Name && spec.ImageRelease == profile.ImageRelease &&
-		spec.VCPUs == profile.VCPUs && spec.MemoryMiB == profile.MemoryMiB
+		spec.VCPUs == profile.VCPUs && spec.MemoryMiB == profile.MemoryMiB &&
+		sameEgress(spec.Egress, profile.Egress)
 }
 
 func (p *warmPoolManager) release(profileName string, id uint64, slot warmSlot) {
@@ -439,4 +454,13 @@ func (l *warmPoolLease) Cancel(ctx context.Context) error {
 	err := l.Lease.Cancel(ctx)
 	l.releaseOnce.Do(l.release)
 	return err
+}
+
+// EgressRecord forwards to the claimed guest's lease, so a cancelled warm
+// Attempt reports its record like a cold one.
+func (l *warmPoolLease) EgressRecord() *executor.EgressRecord {
+	if recorded, ok := l.Lease.(interface{ EgressRecord() *executor.EgressRecord }); ok {
+		return recorded.EgressRecord()
+	}
+	return nil
 }

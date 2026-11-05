@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { egressRecordValidator } from "./egress";
 import { query } from "./_generated/server";
 
 /** How many Attempts the Runs page shows, newest first. */
@@ -116,5 +117,27 @@ export const list = query({
       startedAt: attempt.startedAt,
       finishedAt: attempt.finishedAt,
     }));
+  },
+});
+
+/**
+ * What one Attempt's guest talked to, for an audit or allowlist Profile, or
+ * null when the Worker recorded nothing: a public Profile, an Agent that
+ * predates egress records, or an Attempt that never ran.
+ */
+export const egress = query({
+  args: { attemptId: v.id("attempts") },
+  returns: v.union(
+    v.null(),
+    v.object({ profile: v.string(), recordedAt: v.number(), record: egressRecordValidator }),
+  ),
+  handler: async (ctx, args) => {
+    await requireDashboardAuth(ctx);
+    const row = await ctx.db
+      .query("attemptEgress")
+      .withIndex("by_attempt", (q) => q.eq("attemptId", args.attemptId))
+      .unique();
+    if (row === null) return null;
+    return { profile: row.profile, recordedAt: row.recordedAt, record: row.record };
   },
 });

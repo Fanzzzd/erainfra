@@ -32,6 +32,7 @@ import type * as controllerApi from "../controllerApi.js";
 import type * as controllerHttp from "../controllerHttp.js";
 import type * as crons from "../crons.js";
 import type * as dashboardAuth from "../dashboardAuth.js";
+import type * as egress from "../egress.js";
 import type * as experiments from "../experiments.js";
 import type * as fleetObservation from "../fleetObservation.js";
 import type * as github from "../github.js";
@@ -91,6 +92,7 @@ declare const fullApi: ApiFromModules<{
   controllerHttp: typeof controllerHttp;
   crons: typeof crons;
   dashboardAuth: typeof dashboardAuth;
+  egress: typeof egress;
   experiments: typeof experiments;
   fleetObservation: typeof fleetObservation;
   github: typeof github;

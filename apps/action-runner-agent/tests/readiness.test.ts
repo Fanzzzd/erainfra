@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -19,6 +19,7 @@ import {
   parseWarmPoolStatus,
   PIDS_LIMIT,
   prepareProfile,
+  profileEgressEnvironment,
   processBound,
   readinessRefreshDelay,
   UNHEALTHY_READINESS_REFRESH_MS,
@@ -376,6 +377,104 @@ describe("warm pool readiness", () => {
     assert.match(warmPoolCapacityError([profile], 2, 2, 32_768) ?? "", /vCPUs/);
     assert.match(warmPoolCapacityError([profile], 2, 8, 4_096) ?? "", /MiB/);
     assert.equal(warmPoolCapacityError([profile], 2, 8, 32_768), undefined);
+  });
+});
+
+// A stand-in runtime that reports what it was asked: the egress policy each
+// command received, so the test sees exactly what the Agent hands over.
+async function fakeEgressRuntime(directory: string) {
+  const script = join(directory, "runner-center-runtime");
+  await writeFile(
+    script,
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$1=$RC_PROFILE_EGRESS" >> "${join(directory, "calls")}"`,
+      'if [ "$1" = preflight ]; then',
+      "  cat <<'JSON'",
+      JSON.stringify({
+        isolation: "firecracker-microvm",
+        boundary: "guest-kernel",
+        checks: [{ name: "egress-policy", passed: true, detail: "allowlist egress" }],
+        network: {
+          policyName: "runner-center",
+          policyHash: `sha256:${"d".repeat(64)}`,
+          subnet: "10.241.0.0/16",
+          egressMode: "allowlist",
+          allowedDestinations: ["192.168.50.10/32"],
+          egress: {
+            mode: "allowlist",
+            hostMode: "public",
+            profileMode: "allowlist",
+            presets: ["github"],
+            allowedDomainCount: 19,
+          },
+        },
+        cache: { scope: "immutable-image", sharedWritable: false },
+      }),
+      "JSON",
+      "else",
+      `  printf '%s\\n' '{"target":0,"parked":0,"claimed":0,"healthy":true}'`,
+      "fi",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return script;
+}
+
+describe("Profile egress readiness", () => {
+  it("asks the runtime about the Profile's egress and forwards only what the control plane stores", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rc-agent-egress-"));
+    const previous = process.env.RC_RUNTIME_BINARY;
+    process.env.RC_RUNTIME_BINARY = await fakeEgressRuntime(directory);
+    try {
+      const egress = {
+        mode: "allowlist" as const,
+        presets: ["github"],
+        domains: [],
+        cidrs: [],
+      };
+      const result = await prepareProfile({
+        profile: "rc-linux-locked",
+        executor: "firecracker",
+        imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+        egress,
+      });
+      assert.equal(result.state, "ready");
+      const calls = (await readFile(join(directory, "calls"), "utf8")).trim().split("\n");
+      assert.deepEqual(
+        calls.map((call) => call.split("=")[0]),
+        ["preflight", "prepare"],
+      );
+      for (const call of calls) {
+        assert.deepEqual(JSON.parse(call.slice(call.indexOf("=") + 1)), egress);
+      }
+      // The host's own destinations are runtime detail the control plane's
+      // validator does not accept; forwarding them would fail every report.
+      assert.equal("allowedDestinations" in (result.network ?? {}), false);
+      assert.deepEqual(result.network?.egress, {
+        mode: "allowlist",
+        hostMode: "public",
+        profileMode: "allowlist",
+        presets: ["github"],
+        domains: [],
+        cidrs: [],
+        allowedDomainCount: 19,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.RC_RUNTIME_BINARY;
+      else process.env.RC_RUNTIME_BINARY = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("sends public explicitly so an inherited value cannot stand in for the Profile's", () => {
+    assert.deepEqual(profileEgressEnvironment(undefined), { RC_PROFILE_EGRESS: "" });
+    assert.deepEqual(
+      profileEgressEnvironment({ mode: "public", presets: [], domains: [], cidrs: [] }),
+      { RC_PROFILE_EGRESS: "" },
+    );
   });
 });
 

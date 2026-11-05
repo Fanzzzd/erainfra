@@ -39,6 +39,11 @@ const justifiedFullScans: Record<string, FullScanAllowance> = {
     occurrences: 1,
     reason: "The fleet dashboard intentionally returns every operator-managed Worker.",
   },
+  "machines.ts:profiles": {
+    occurrences: 1,
+    reason:
+      "Profiles are a small operator-authored dimension; the fleet dashboard judges each Worker's readiness against its Profile's egress policy.",
+  },
   "machines.ts:readinessEvidence": {
     occurrences: 1,
     reason: "Readiness evidence is bounded to one row per Worker/Profile dashboard pair.",

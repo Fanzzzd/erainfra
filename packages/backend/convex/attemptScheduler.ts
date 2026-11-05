@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
+import { profileEgressOf, type ProfileEgress } from "./egress";
 import { hasSnapshotHeadroomForGuests, readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -36,6 +37,8 @@ export function isSchedulableReadiness(
   evidence: Doc<"readinessEvidence"> | undefined,
   machine: Doc<"machines"> | undefined,
   contract: { executor: Doc<"profiles">["executor"]; imageRelease: string },
+  // The Profile's egress, which the evidence must prove; see egressEvidenceError.
+  profileEgress: ProfileEgress,
   now: number,
 ): machine is Doc<"machines"> {
   return (
@@ -43,7 +46,7 @@ export function isSchedulableReadiness(
     readiness.executor === contract.executor &&
     readiness.imageRelease === contract.imageRelease &&
     now - readiness.checkedAt < READINESS_STALE_AFTER_MS &&
-    readinessAdmissionError(readiness, evidence) === undefined &&
+    readinessAdmissionError(readiness, evidence, profileEgress) === undefined &&
     machine !== undefined &&
     now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS
   );
@@ -272,6 +275,7 @@ export function placeInOrder<I extends { work: WorkContract }>(
           ),
           entry.machine,
           work,
+          profileEgressOf(snapshot.activeProfileByName.get(work.profile) ?? {}),
           now,
         ),
       )

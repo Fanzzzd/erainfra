@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
 )
 
@@ -34,6 +36,27 @@ type Config struct {
 	GitHubToken     string
 	CacheFactsURL   string
 	CacheSigningKey string
+	// Egress is the Profile's egress policy, published with the rest of the
+	// contract. Empty mode is public egress.
+	Egress Egress
+}
+
+// Egress is RC_EGRESS_MODE, RC_EGRESS_PRESETS and RC_EGRESS_ALLOW, with
+// RC_EGRESS_ALLOW split into the domains and CIDRs it names. The control plane
+// validates every entry again before it stores the Profile, and each Worker
+// validates it once more before it enforces it.
+type Egress struct {
+	Mode    string   `json:"mode"`
+	Presets []string `json:"presets,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+	CIDRs   []string `json:"cidrs,omitempty"`
+}
+
+// Published reports whether the Profile carries an egress policy at all. A
+// controller with none configured publishes none, which every reader treats
+// as public egress.
+func (e Egress) Published() bool {
+	return e.Mode != "" || len(e.Presets)+len(e.Domains)+len(e.CIDRs) > 0
 }
 
 func Load() (Config, error) {
@@ -114,6 +137,9 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("RC_MEMORY_MIB must be an integer: %w", err)
 		}
 	}
+	config.Egress = parseEgress(
+		os.Getenv("RC_EGRESS_MODE"), os.Getenv("RC_EGRESS_PRESETS"), os.Getenv("RC_EGRESS_ALLOW"),
+	)
 	if value := strings.TrimSpace(os.Getenv("RC_WARM_POOL")); value != "" {
 		config.WarmPool, err = strconv.Atoi(value)
 		if err != nil {
@@ -221,6 +247,106 @@ func (c Config) Validate() error {
 	}
 	if c.CacheSigningKey != "" && len(c.CacheSigningKey) < 32 {
 		return errors.New("RC_CACHE_SIGNING_KEY must be at least 32 bytes")
+	}
+	return c.Egress.validate(c.Executor)
+}
+
+// ProfileSpec is the Profile contract this controller publishes.
+func (c Config) ProfileSpec() fleet.ProfileSpec {
+	spec := fleet.ProfileSpec{
+		Name:         c.Profile,
+		ScaleSetName: c.ScaleSetName,
+		Executor:     c.Executor,
+		ImageRelease: c.ImageRelease,
+		VCPUs:        c.VCPUs,
+		MemoryMiB:    c.MemoryMiB,
+		WarmPool:     c.WarmPool,
+		FitPolicy:    c.FitPolicy,
+		MinRunners:   c.MinRunners,
+		MaxRunners:   c.MaxRunners,
+	}
+	if c.Egress.Published() {
+		spec.Egress = &fleet.ProfileEgress{
+			Mode:    c.Egress.Mode,
+			Presets: c.Egress.Presets,
+			Domains: c.Egress.Domains,
+			CIDRs:   c.Egress.CIDRs,
+		}
+	}
+	return spec
+}
+
+// parseEgress splits RC_EGRESS_ALLOW by what each entry is: an IPv4 address or
+// CIDR is a CIDR, anything else is a domain. Presets are their own variable so
+// that "github" is never mistaken for a one-label domain.
+func parseEgress(mode, presets, allow string) Egress {
+	egress := Egress{Mode: strings.ToLower(strings.TrimSpace(mode))}
+	for _, preset := range strings.Split(presets, ",") {
+		if value := strings.ToLower(strings.TrimSpace(preset)); value != "" {
+			egress.Presets = append(egress.Presets, value)
+		}
+	}
+	for _, entry := range strings.Split(allow, ",") {
+		value := strings.TrimSpace(entry)
+		if value == "" {
+			continue
+		}
+		if address, err := netip.ParseAddr(value); err == nil {
+			egress.CIDRs = append(egress.CIDRs, netip.PrefixFrom(address, address.BitLen()).String())
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(value); err == nil {
+			egress.CIDRs = append(egress.CIDRs, prefix.Masked().String())
+			continue
+		}
+		egress.Domains = append(egress.Domains, strings.TrimSuffix(strings.ToLower(value), "."))
+	}
+	if egress.Published() && egress.Mode == "" {
+		// A list without a mode is almost certainly an allowlist someone forgot
+		// to switch on. Refusing it is safer than guessing either way.
+		egress.Mode = "unset"
+	}
+	return egress
+}
+
+func (e Egress) validate(executor string) error {
+	if !e.Published() {
+		return nil
+	}
+	switch e.Mode {
+	case "public":
+		if len(e.Presets)+len(e.Domains)+len(e.CIDRs) > 0 {
+			return errors.New("RC_EGRESS_MODE=public takes no RC_EGRESS_ALLOW or RC_EGRESS_PRESETS; use audit or allowlist")
+		}
+	case "audit", "allowlist":
+	case "unset":
+		return errors.New("RC_EGRESS_ALLOW and RC_EGRESS_PRESETS need RC_EGRESS_MODE=audit or allowlist")
+	default:
+		return errors.New("RC_EGRESS_MODE must be public, audit, or allowlist")
+	}
+	// Only the Firecracker runtime renders and verifies a per-guest egress
+	// policy. Publishing one for another executor would advertise a boundary
+	// no Worker enforces.
+	if e.Mode != "public" && executor != "firecracker" {
+		return fmt.Errorf("RC_EGRESS_MODE=%s is enforced only by the firecracker executor", e.Mode)
+	}
+	for _, preset := range e.Presets {
+		if preset != "github" {
+			return fmt.Errorf("RC_EGRESS_PRESETS: unknown preset %q; the only preset is github", preset)
+		}
+	}
+	for _, cidr := range e.CIDRs {
+		if prefix, err := netip.ParsePrefix(cidr); err != nil || !prefix.Addr().Is4() {
+			return fmt.Errorf("RC_EGRESS_ALLOW: %q must be an IPv4 address or CIDR; guests have no IPv6 egress", cidr)
+		}
+	}
+	for _, domain := range e.Domains {
+		if !strings.Contains(strings.TrimPrefix(domain, "*."), ".") || strings.ContainsAny(domain, " /:") {
+			return fmt.Errorf("RC_EGRESS_ALLOW: %q is neither an IPv4 CIDR nor a domain with at least two labels", domain)
+		}
+	}
+	if e.Mode == "allowlist" && len(e.Presets)+len(e.Domains)+len(e.CIDRs) == 0 {
+		return errors.New("RC_EGRESS_MODE=allowlist with nothing allowed denies GitHub itself; set RC_EGRESS_PRESETS=github")
 	}
 	return nil
 }

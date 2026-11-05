@@ -8,6 +8,7 @@ import {
   storedBenchmarkValidator,
 } from "./benchmark";
 import { alertConditionValidator } from "./alertRules";
+import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 
 export default defineSchema({
   ...authTables,
@@ -101,6 +102,10 @@ export default defineSchema({
     fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
+    // What this Profile's guests may reach. Absent means public egress, which
+    // is what every Profile registered before the field existed means, so no
+    // migration backfills it. Stored normalized; see egress.ts.
+    egress: v.optional(profileEgressValidator),
     state: v.union(v.literal("active"), v.literal("paused")),
     updatedAt: v.number(),
   })
@@ -545,9 +550,23 @@ export default defineSchema({
         policyHash: v.optional(v.string()),
         subnet: v.optional(v.string()),
         egressMode: v.optional(v.string()),
+        // Absent on evidence from a runtime that predates Profile egress;
+        // that evidence still proves a public Profile, and nothing else.
+        egress: v.optional(egressEvidenceValidator),
       }),
     ),
   }).index("by_machine_profile", ["machineId", "profile"]),
+
+  // What one Attempt's guest talked to, as the Worker's host measured it, for
+  // audit and allowlist Profiles. Kept out of the attempts row so the hot
+  // scheduler and Worker reads never carry it; deleted with its Attempt.
+  attemptEgress: defineTable({
+    attemptId: v.id("attempts"),
+    machineId: v.id("machines"),
+    profile: v.string(),
+    recordedAt: v.number(),
+    record: egressRecordValidator,
+  }).index("by_attempt", ["attemptId"]),
 
   benchmarkEvidence: defineTable({
     machineId: v.id("machines"),

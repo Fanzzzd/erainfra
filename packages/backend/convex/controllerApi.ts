@@ -4,6 +4,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import { releaseAttemptSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import { fitPolicyValidator } from "./benchmark";
+import { profileEgressValidator } from "./egress";
 
 const activeAttemptState = v.union(
   v.literal("pending"),
@@ -32,6 +33,7 @@ export const registerProfile = internalMutation({
     fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
+    egress: v.optional(profileEgressValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -43,6 +45,11 @@ export const registerProfile = internalMutation({
       ...args,
       fitPolicy: args.fitPolicy ?? "balanced",
       warmPool: args.warmPool ?? 0,
+      // Public is stored as no field at all, the same shape every Profile
+      // registered before egress existed has, so one reading covers both. A
+      // controller that drops its policy clears it: patch removes an
+      // undefined field.
+      egress: args.egress === undefined || args.egress.mode === "public" ? undefined : args.egress,
       state: "active" as const,
       updatedAt: Date.now(),
     };

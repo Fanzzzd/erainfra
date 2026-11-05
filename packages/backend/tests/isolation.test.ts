@@ -8,6 +8,7 @@ import {
   isTrustedOnly,
   SNAPSHOT_RESERVE_MIB,
 } from "../convex/isolation.ts";
+import { PUBLIC_EGRESS } from "../convex/egress.ts";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -53,6 +54,16 @@ const FIRECRACKER_FACTS = {
   },
 };
 
+function assertPublicContract(
+  ...args: [
+    Parameters<typeof assertReadinessContract>[0],
+    Parameters<typeof assertReadinessContract>[1],
+    Parameters<typeof assertReadinessContract>[2],
+  ]
+) {
+  assertReadinessContract(...args, PUBLIC_EGRESS);
+}
+
 describe("EXECUTOR_BOUNDARY", () => {
   it("never claims a guest kernel for a shared-kernel executor", () => {
     expect(EXECUTOR_BOUNDARY.docker).toBe("shared-kernel");
@@ -65,12 +76,12 @@ describe("EXECUTOR_BOUNDARY", () => {
 
 describe("assertReadinessContract", () => {
   it("accepts a self-consistent ready report", () => {
-    expect(() => assertReadinessContract("ready", "firecracker", FIRECRACKER_FACTS)).not.toThrow();
+    expect(() => assertPublicContract("ready", "firecracker", FIRECRACKER_FACTS)).not.toThrow();
   });
 
   it("does not constrain a Worker that is not claiming readiness", () => {
     expect(() =>
-      assertReadinessContract("failed", "firecracker", {
+      assertPublicContract("failed", "firecracker", {
         ...FIRECRACKER_FACTS,
         checks: [{ name: "kvm-device", passed: false, detail: "no /dev/kvm" }],
       }),
@@ -78,12 +89,12 @@ describe("assertReadinessContract", () => {
   });
 
   it("does not broaden Docker's ready-report requirements", () => {
-    expect(() => assertReadinessContract("ready", "docker", {})).not.toThrow();
+    expect(() => assertPublicContract("ready", "docker", {})).not.toThrow();
   });
 
   it("rejects readiness alongside a failing check", () => {
     expect(() =>
-      assertReadinessContract("ready", "firecracker", {
+      assertPublicContract("ready", "firecracker", {
         ...FIRECRACKER_FACTS,
         checks: [
           { name: "kvm-device", passed: true },
@@ -95,7 +106,7 @@ describe("assertReadinessContract", () => {
 
   it("rejects a boundary the executor cannot provide", () => {
     expect(() =>
-      assertReadinessContract("ready", "docker", {
+      assertPublicContract("ready", "docker", {
         ...FIRECRACKER_FACTS,
         isolation: "docker-container",
         boundary: "guest-kernel",
@@ -105,7 +116,7 @@ describe("assertReadinessContract", () => {
 
   it("rejects a Worker that shares writable storage between Jobs", () => {
     expect(() =>
-      assertReadinessContract("ready", "docker", {
+      assertPublicContract("ready", "docker", {
         isolation: "docker-container",
         boundary: "shared-kernel",
         checks: [{ name: "docker-daemon", passed: true }],
@@ -117,7 +128,7 @@ describe("assertReadinessContract", () => {
 
   it("rejects an isolation claim with no evidence behind it", () => {
     expect(() =>
-      assertReadinessContract("ready", "firecracker", {
+      assertPublicContract("ready", "firecracker", {
         isolation: "firecracker-microvm",
         boundary: "guest-kernel",
         checks: [],
@@ -126,11 +137,11 @@ describe("assertReadinessContract", () => {
   });
 
   it("rejects blank or partial Firecracker readiness evidence", () => {
-    expect(() => assertReadinessContract("ready", "firecracker", {})).toThrow(
+    expect(() => assertPublicContract("ready", "firecracker", {})).toThrow(
       /guest-kernel.*hardware\.kvm.*devmapper.*network\.policyHash.*required checks/s,
     );
     expect(() =>
-      assertReadinessContract("ready", "firecracker", {
+      assertPublicContract("ready", "firecracker", {
         ...FIRECRACKER_FACTS,
         hardware: { kvm: false },
         network: { policyName: "runner-center", policyHash: "sha256:not-a-digest" },

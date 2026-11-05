@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { internalQuery } from "./_generated/server";
+import { profileEgressOf } from "./egress";
 import {
   isSchedulableReadiness,
   loadSchedulerSnapshot,
@@ -70,6 +71,7 @@ export const profileRoute = internalQuery({
         snapshot.evidenceByMachineProfile.get(`${readiness.machineId}:${readiness.profile}`),
         snapshot.machineById.get(readiness.machineId),
         profile,
+        profileEgressOf(profile),
         now,
       ),
     );
