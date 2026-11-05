@@ -552,6 +552,25 @@ describe("App leases", () => {
         toNodeId: survivor,
       }),
     ).rejects.toThrow(/Stale lease/);
+    // Not redeployed on the survivor yet: there is no port there, so nothing moves. Keeping 62000
+    // would name whatever holds 62000 on the survivor.
+    await expect(
+      t.mutation(internal.infra.deployments.completeFailover, {
+        app: "shop",
+        epoch,
+        fromNodeId: lost,
+        toNodeId: survivor,
+      }),
+    ).rejects.toThrow(/no port on the target Node/);
+    await t.run((ctx) =>
+      ctx.db.insert("portAllocations", {
+        nodeId: survivor,
+        key: "shop/web",
+        port: 62003,
+        app: "shop",
+        allocatedAt: T0,
+      }),
+    );
     await t.mutation(internal.infra.deployments.completeFailover, {
       app: "shop",
       epoch,
@@ -559,10 +578,13 @@ describe("App leases", () => {
       toNodeId: survivor,
     });
     const moved = await t.run(async (ctx) => ({
-      app: (await ctx.db.query("apps").first())?.nodeId,
-      route: (await ctx.db.query("appRoutes").first())?.nodeId,
+      app: await ctx.db.query("apps").first(),
+      route: await ctx.db.query("appRoutes").first(),
     }));
-    expect(moved).toEqual({ app: survivor, route: survivor });
+    // Node and port move together, to the survivor's own allocation.
+    expect(moved.app?.nodeId).toBe(survivor);
+    expect(moved.app?.services[0]).toMatchObject({ nodeId: survivor, port: 62003 });
+    expect(moved.route).toMatchObject({ nodeId: survivor, port: 62003 });
   });
 });
 

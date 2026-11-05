@@ -813,8 +813,11 @@ Convex.
 
 ### Failover timing
 
-When failover moves a route (`deployments.completeFailover` patches `appRoutes`), the gateways and
-the App's new Node see the change on their next snapshot poll. With the default intervals:
+A failover run of the deploy pipeline redeploys the App on a survivor, which allocates its own
+ports there, and then rewrites the App row and its route rows with the survivor's Node and port in
+one transaction under the App lease (`pipeline.ts` `commit`; `deployments.completeFailover` does
+the same and refuses a service with no port allocated on the target). The gateways and the App's
+new Node see the change on their next snapshot poll. With the default intervals:
 
 | step                                                               | at most        |
 | ------------------------------------------------------------------ | -------------- |
@@ -824,9 +827,11 @@ the App's new Node see the change on their next snapshot poll. With the default 
 | new App Node grants the gateways (its own poll, in parallel)       | 15 s           |
 
 So the gateway serves the new Node within about 16 seconds of the Convex write, plus network
-latency. The route keeps its loopback port, so the proxy's upstream does not change; the proxy
-drops idle pooled connections when a new table loads. Until then requests to that App get 502.
-Detecting the lost Node and redeploying happen before this and are not included.
+latency. Detecting the lost Node takes at least the missed-heartbeat window plus the failover grace
+period (phase 3a above), and the redeploy takes as long as the survivor needs to pull and start the
+images; both come before this. The route keeps its gateway-side loopback port, so the proxy's
+upstream does not change; the proxy drops idle pooled connections when a new table loads. Until
+then requests to that App get 502.
 
 ### Limits of this phase
 

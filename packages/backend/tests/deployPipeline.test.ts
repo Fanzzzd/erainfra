@@ -836,6 +836,102 @@ describe("failover", () => {
     ]);
   });
 
+  it("moves a route to the survivor's own port, and gateway ingress follows it there", async () => {
+    const s = await setup();
+    await s.beat();
+    await s.deployShop();
+    const a = s.nodes["node-a"].nodeId;
+    const b = s.nodes["node-b"].nodeId;
+    const c = s.nodes["node-c"].nodeId;
+    const allocation = (nodeId: Id<"nodes">, key: string) =>
+      s.t.run((ctx) =>
+        ctx.db
+          .query("portAllocations")
+          .withIndex("by_node_key", (q) => q.eq("nodeId", nodeId).eq("key", key))
+          .unique(),
+      );
+    const oldPort = (await allocation(a, "shop/web"))!.port;
+    // On the survivor, web's old port number already belongs to another App.
+    await s.t.run((ctx) =>
+      ctx.db.insert("portAllocations", {
+        nodeId: b,
+        key: "other/web",
+        port: oldPort,
+        app: "other",
+        allocatedAt: T0,
+      }),
+    );
+    // node-c is a gateway; node-b and node-c prove their mesh keys.
+    const prove = async (name: string) => {
+      const key = await newKey();
+      const address = { id: key.id, relay_urls: [], direct_addrs: ["127.0.0.1:4433"] };
+      const res = await s.nodeApi("endpoint/challenge", name, { address });
+      expect(res.status).toBe(200);
+      const { challengeId, message } = (await res.json()) as {
+        challengeId: string;
+        message: string;
+      };
+      const signature = new Uint8Array(
+        await crypto.subtle.sign("Ed25519", key.pair.privateKey, new TextEncoder().encode(message)),
+      );
+      const published = await s.nodeApi("endpoint", name, {
+        challengeId,
+        signature: btoa(String.fromCharCode(...signature)),
+      });
+      expect(published.status).toBe(200);
+      return key.id;
+    };
+    const idB = await prove("node-b");
+    const idC = await prove("node-c");
+    await s.human.mutation(api.infra.nodes.setPlacementRoles, { nodeId: c, roles: ["gateway"] });
+
+    let now = T0 + NODE_SILENCE_MS + 1_000;
+    vi.setSystemTime(now);
+    await s.beat("node-b", "node-c");
+    await s.t.mutation(internal.infra.failover.check, {});
+    now += FAILOVER_GRACE_MS;
+    vi.setSystemTime(now);
+    await s.beat("node-b", "node-c");
+    const [runId] = await s.t.mutation(internal.infra.failover.check, {});
+    await s.settle();
+    await s.agent("node-b");
+    expect((await s.deployment(runId)).stage).toBe("done");
+
+    const newPort = (await allocation(b, "shop/web"))!.port;
+    expect(newPort).not.toBe(oldPort);
+    const state = await s.t.run(async (ctx) => ({
+      route: await ctx.db.query("appRoutes").first(),
+      app: await ctx.db.query("apps").first(),
+    }));
+    expect(state.route).toMatchObject({ nodeId: b, port: newPort });
+    expect(state.app?.services.find((x) => x.name === "web")).toMatchObject({
+      nodeId: b,
+      port: newPort,
+    });
+    const snapshot = async (name: string) => {
+      const r = await s.t.query(internal.infra.nodeState.state, {
+        credential: s.nodes[name].credential,
+      });
+      if (r.unchanged) throw new Error("expected a full snapshot");
+      return r.desired;
+    };
+    // The exposure on the new Node targets the port web was deployed on there, never `other`'s.
+    const onB = (await snapshot("node-b")).exposures.filter((e) => e.name === "ingress.shop");
+    expect(onB).toEqual([
+      {
+        name: "ingress.shop",
+        target: `127.0.0.1:${newPort}`,
+        allowed_peers: [idC],
+        max_connections: 1024,
+      },
+    ]);
+    const gateway = await snapshot("node-c");
+    expect(gateway.links.find((l) => l.name === "ingress.shop")?.peer).toBe(idB);
+    expect(gateway.ingress?.routes).toEqual([
+      { host: "shop", upstream: expect.stringMatching(/^127\.0\.0\.1:61\d{3}$/) },
+    ]);
+  });
+
   it("moves a service on a lost secondary Node and records each service's new Node", async () => {
     const s = await setup();
     await s.beat();
