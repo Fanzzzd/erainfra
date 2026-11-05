@@ -1915,6 +1915,63 @@ exit 0
     expect(readFileSync(token, "utf8")).toBe(renewed);
   });
 
+  // The dual-name release (docs/runbooks/rename-phase-2.md, section 1): an operator moving a
+  // Profile's env file to the new names (section 3, step 1) must not turn a rerun into a
+  // dedicated-host install or a lost token refresh.
+  it("reads a kept standby env file under either name for the machine token file", () => {
+    const { sandbox } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const installed = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(installed.status, `${installed.stdout}\n${installed.stderr}`).toBe(0);
+    const legacy = readFileSync(envPath(sandbox), "utf8");
+    expect(legacy).toContain(`RC_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}\n`);
+
+    for (const [label, env] of [
+      ["only the new name", legacy.replace("RC_MACHINE_TOKEN_FILE=", "ERAINFRA_MACHINE_TOKEN_FILE=")],
+      [
+        "both names, equal",
+        legacy.replace(
+          `RC_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}\n`,
+          `RC_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}\nERAINFRA_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}\n`,
+        ),
+      ],
+    ] as const) {
+      writeFileSync(envPath(sandbox), env);
+      const renewed = (label.length % 10).toString().repeat(32);
+      writeWorkerEnv(workerEnv, renewed);
+      const rerun = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+      expect(rerun.status, `${label}: ${rerun.stdout}\n${rerun.stderr}`).toBe(0);
+      expect(rerun.stdout, label).toContain(`Refreshed ${MACHINE_TOKEN_PATH}`);
+      expect(rerun.stdout, label).toContain("as a standby");
+      expect(readFileSync(under(sandbox, MACHINE_TOKEN_PATH), "utf8"), label).toBe(renewed);
+      // The operator's file is theirs; a rerun that keeps it does not rewrite it.
+      expect(readFileSync(envPath(sandbox), "utf8"), label).toBe(env);
+    }
+  });
+
+  it("refuses a kept env file whose two names for the token file disagree", () => {
+    const { sandbox } = readyToInstall();
+    const workerEnv = workerHost(sandbox);
+    const installed = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(installed.status, `${installed.stdout}\n${installed.stderr}`).toBe(0);
+    const token = under(sandbox, MACHINE_TOKEN_PATH);
+    const before = readFileSync(token, "utf8");
+    writeFileSync(
+      envPath(sandbox),
+      `${readFileSync(envPath(sandbox), "utf8")}ERAINFRA_MACHINE_TOKEN_FILE=/etc/runner-center/secrets/elsewhere/machine-token\n`,
+    );
+    writeWorkerEnv(workerEnv, "e".repeat(32));
+
+    const rerun = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
+    expect(rerun.status).toBe(1);
+    expect(rerun.stderr).toContain(
+      "ERAINFRA_MACHINE_TOKEN_FILE and RC_MACHINE_TOKEN_FILE in",
+    );
+    expect(rerun.stderr).toContain("are both set, to different values");
+    expect(rerun.stderr).not.toContain("elsewhere");
+    expect(readFileSync(token, "utf8")).toBe(before);
+  });
+
   it("installs a dedicated host with --controller-token-file even where a Worker env exists", () => {
     const { sandbox, secrets } = readyToInstall();
     const workerEnv = workerHost(sandbox);
