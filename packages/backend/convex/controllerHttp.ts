@@ -1,28 +1,59 @@
 import { parseProfileEgress } from "./egress";
 
-type ControllerAuth = "ok" | "not-configured" | "unauthorized";
+/** Which configured token a request presented. */
+export type ControllerTokenSlot = "current" | "next";
 
+type ControllerAuth =
+  | { status: "ok"; slot: ControllerTokenSlot }
+  | { status: "not-configured" }
+  | { status: "unauthorized" };
+
+/**
+ * Compares without branching on where the strings first differ, and without returning early on a
+ * length mismatch, so the time taken says nothing about how much of a guess was right.
+ */
+function constantTimeEqual(actual: string, expected: string) {
+  let mismatch = actual.length ^ expected.length;
+  for (let index = 0; index < expected.length; index += 1) {
+    // charCodeAt past the end is NaN, which `| 0` turns into 0; the length term above has already
+    // recorded the mismatch.
+    mismatch |= (actual.charCodeAt(index) | 0) ^ expected.charCodeAt(index);
+  }
+  return mismatch === 0;
+}
+
+/**
+ * Checks a controller's bearer token against CONTROLLER_TOKEN and the optional
+ * CONTROLLER_TOKEN_NEXT. Both are valid at once so the token can be rotated without an outage:
+ * set NEXT, move every controller to it, then promote it to CONTROLLER_TOKEN and clear NEXT
+ * (docs/runbooks/operate-the-controller-host.md). Both candidates are always compared, so the
+ * work does not reveal which one matched.
+ */
 export function controllerAuthorization(
   authorization: string | null,
   configuredToken: string | undefined,
+  nextToken?: string | undefined,
 ): ControllerAuth {
-  const expected = configuredToken?.trim() ?? "";
-  if (expected.length === 0) {
-    return "not-configured";
+  const candidates: Array<{ slot: ControllerTokenSlot; token: string }> = [];
+  const current = configuredToken?.trim() ?? "";
+  const next = nextToken?.trim() ?? "";
+  if (current.length > 0) candidates.push({ slot: "current", token: current });
+  if (next.length > 0) candidates.push({ slot: "next", token: next });
+  if (candidates.length === 0) {
+    return { status: "not-configured" };
   }
   const prefix = "Bearer ";
   if (authorization === null || !authorization.startsWith(prefix)) {
-    return "unauthorized";
+    return { status: "unauthorized" };
   }
   const actual = authorization.slice(prefix.length);
-  if (actual.length !== expected.length) {
-    return "unauthorized";
+  let matched: ControllerTokenSlot | undefined;
+  for (const candidate of candidates) {
+    if (constantTimeEqual(actual, candidate.token) && matched === undefined) {
+      matched = candidate.slot;
+    }
   }
-  let mismatch = 0;
-  for (let index = 0; index < expected.length; index += 1) {
-    mismatch |= actual.charCodeAt(index) ^ expected.charCodeAt(index);
-  }
-  return mismatch === 0 ? "ok" : "unauthorized";
+  return matched === undefined ? { status: "unauthorized" } : { status: "ok", slot: matched };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +248,55 @@ export function parseJobStarted(payload: unknown) {
     queueTime: payload.queueTime,
     assignedAt: payload.assignedAt,
     runnerAssignedAt: payload.runnerAssignedAt,
+  };
+}
+
+const SESSION_STATES = ["starting", "listening", "conflict", "stopped"] as const;
+export type ControllerSessionState = (typeof SESSION_STATES)[number];
+
+/** Longest `lastError` accepted. The controller caps its own at 500 characters. */
+export const HEARTBEAT_ERROR_MAX_LENGTH = 1_000;
+
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Printable ASCII without spaces: a hostname or a version string, never free text. */
+function token(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" && value.length <= maxLength && /^[\x21-\x7e]+$/.test(value.trim())
+  );
+}
+
+export function parseControllerHeartbeat(payload: unknown) {
+  if (
+    !isRecord(payload) ||
+    !nonEmptyString(payload.profile) ||
+    !/^[A-Za-z0-9_.-]{1,64}$/.test(payload.profile.trim()) ||
+    !token(payload.hostname, 255) ||
+    !token(payload.version, 64) ||
+    !optionalPositiveInteger(payload.scaleSetId) ||
+    !SESSION_STATES.includes(payload.sessionState as ControllerSessionState) ||
+    !optionalTimestamp(payload.lastMessageAt) ||
+    !optionalTimestamp(payload.startedAt) ||
+    !nonNegativeInteger(payload.assignedJobs) ||
+    !nonNegativeInteger(payload.runningJobs) ||
+    !optionalString(payload.lastError) ||
+    (typeof payload.lastError === "string" && payload.lastError.length > HEARTBEAT_ERROR_MAX_LENGTH)
+  ) {
+    return null;
+  }
+  return {
+    profile: payload.profile.trim(),
+    hostname: payload.hostname.trim(),
+    version: payload.version.trim(),
+    scaleSetId: payload.scaleSetId,
+    sessionState: payload.sessionState as ControllerSessionState,
+    lastMessageAt: payload.lastMessageAt,
+    startedAt: payload.startedAt,
+    assignedJobs: payload.assignedJobs,
+    runningJobs: payload.runningJobs,
+    lastError: payload.lastError?.trim() || undefined,
   };
 }
 

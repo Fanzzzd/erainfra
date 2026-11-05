@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@erainfra/backend/api";
+import { controllerLiveness, type ControllerLiveness } from "@erainfra/backend/controllerLiveness";
 import { EmptyState } from "@/components/empty-state";
 import { GithubAppSetup } from "@/components/github-app-setup";
 import { PageHeader } from "@/components/page-header";
@@ -95,6 +96,7 @@ function MachinesPage() {
   const attempts = useQuery(api.attempts.list);
   const profiles = useQuery(api.profiles.list);
   const activity = useQuery(api.profiles.activity);
+  const controllers = useQuery(api.profiles.controllers);
   const createRegistrationToken = useMutation(api.machines.createRegistrationToken);
   const now = useNow();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -441,10 +443,11 @@ function MachinesPage() {
             </code>
           </CardAction>
         </CardHeader>
-        <Table className="min-w-[1100px]">
+        <Table className="min-w-[1300px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[240px]">Profile / scale set</TableHead>
+              <TableHead className="w-[200px]">Controller</TableHead>
               <TableHead className="w-[190px]">Isolation boundary</TableHead>
               <TableHead className="w-[150px]">Resources</TableHead>
               <TableHead className="w-[130px]">Ready Workers</TableHead>
@@ -455,10 +458,10 @@ function MachinesPage() {
           </TableHeader>
           <TableBody>
             {profiles === undefined ? (
-              <TableRowsSkeleton columns={7} rows={2} />
+              <TableRowsSkeleton columns={8} rows={2} />
             ) : profiles.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={7} className="p-0">
+                <TableCell colSpan={8} className="p-0">
                   <EmptyState
                     icon={ShieldCheck}
                     title="No Profiles registered"
@@ -472,6 +475,14 @@ function MachinesPage() {
                   key={profile._id}
                   profile={profile}
                   activity={activity?.find((entry) => entry.name === profile.name)}
+                  controller={
+                    controllers === undefined
+                      ? undefined
+                      : controllerLiveness(
+                          controllers.filter((row) => row.profile === profile.name),
+                          now,
+                        )
+                  }
                   now={now}
                 />
               ))
@@ -957,10 +968,12 @@ const BOUNDARY_COPY = {
 function ProfileRow({
   profile,
   activity,
+  controller,
   now,
 }: {
   profile: ProfileSummary;
   activity: ProfileActivity | undefined;
+  controller: ControllerLiveness | undefined;
   now: number;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1004,6 +1017,9 @@ function ProfileRow({
               <p className="mt-0.5 text-[10px] text-subtle-foreground">{profile.scaleSetName}</p>
             </div>
           </div>
+        </TableCell>
+        <TableCell className="text-xs">
+          <ControllerStatus liveness={controller} paused={profile.state === "paused"} now={now} />
         </TableCell>
         <TableCell>
           <Tooltip>
@@ -1085,7 +1101,7 @@ function ProfileRow({
       </TableRow>
       {expanded && (
         <TableRow className="hover:bg-transparent">
-          <TableCell colSpan={7} id={panelId} className="bg-sunken px-4 py-3.5">
+          <TableCell colSpan={8} id={panelId} className="bg-sunken px-4 py-3.5">
             {profile.workers.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No Worker has reported readiness for this Profile yet.
@@ -1101,6 +1117,99 @@ function ProfileRow({
         </TableRow>
       )}
     </>
+  );
+}
+
+const CONTROLLER_COPY = {
+  online: { label: "Online", tone: "success" },
+  waiting: { label: "Waiting for session", tone: "warning" },
+  offline: { label: "Offline", tone: "destructive" },
+} as const;
+
+const SESSION_COPY = {
+  starting: "starting",
+  listening: "listening",
+  conflict: "refused the session (another one exists)",
+  stopped: "stopped",
+} as const;
+
+/**
+ * Whether anything is listening for the Profile's jobs. A dead controller creates no Attempts, so
+ * without this column it reads exactly like an idle Profile. Status is computed here against the
+ * page clock, not in the query: a controller that died writes nothing, so a reactive query would
+ * never notice.
+ */
+function ControllerStatus({
+  liveness,
+  paused,
+  now,
+}: {
+  liveness: ControllerLiveness | undefined;
+  paused: boolean;
+  now: number;
+}) {
+  if (liveness === undefined) return <Skeleton className="h-3.5 w-24" />;
+  if (liveness.status === "unknown") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="text-muted-foreground">Not reporting</span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs">
+          No controller has ever reported a heartbeat for this Profile. Controllers built before the
+          heartbeat do not send one; liveness is tracked from the first report on.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  const copy = CONTROLLER_COPY[liveness.status];
+  const primary = liveness.primary;
+  const lastHeartbeatAt = liveness.lastHeartbeatAt;
+  const detail =
+    liveness.status === "online" && primary?.lastMessageAt !== undefined
+      ? `GitHub answered ${formatRelativeTime(primary.lastMessageAt, now)}`
+      : lastHeartbeatAt === undefined
+        ? undefined
+        : `reported ${formatRelativeTime(lastHeartbeatAt, now)}`;
+  // A retired Profile's controller is meant to be stopped.
+  const tone = paused && liveness.status !== "online" ? "muted" : copy.tone;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="min-w-0">
+          <span className="inline-flex items-center gap-2">
+            <StatusDot tone={tone} live={liveness.status === "online"} />
+            <span className={cn(tone === "muted" ? "text-muted-foreground" : "text-foreground")}>
+              {copy.label}
+            </span>
+          </span>
+          {primary !== undefined && (
+            <p className="mt-0.5 truncate font-mono text-[10px] text-subtle-foreground">
+              {primary.hostname} · {primary.version}
+            </p>
+          )}
+          {detail !== undefined && (
+            <p className="mt-0.5 tabular-nums text-[10px] text-subtle-foreground">{detail}</p>
+          )}
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-sm space-y-1">
+        {liveness.primary?.lastError !== undefined && (
+          <p className="break-words">{liveness.primary.lastError}</p>
+        )}
+        <p>
+          GitHub counts {primary?.assignedJobs ?? 0} assigned and {primary?.runningJobs ?? 0}{" "}
+          running jobs.
+        </p>
+        {liveness.controllers.map((row) => (
+          <p key={row.hostname} className="font-mono text-[11px]">
+            {row.hostname} · {row.version} · {SESSION_COPY[row.sessionState]} ·{" "}
+            {row.tokenSlot === "next" ? "CONTROLLER_TOKEN_NEXT" : "CONTROLLER_TOKEN"} ·{" "}
+            {formatRelativeTime(row.receivedAt, now)}
+          </p>
+        ))}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

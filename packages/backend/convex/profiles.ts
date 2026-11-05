@@ -216,6 +216,9 @@ export async function listProfiles(ctx: QueryCtx) {
 // a Profile that ran more than this many Attempts in seven days reports the
 // sample size instead of a count.
 export const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
+/** One row per Profile and controller host; far above any fleet's Profiles times hosts. */
+const CONTROLLER_HEARTBEAT_READ_LIMIT = 1_000;
 export const ACTIVITY_SAMPLE = 100;
 
 /**
@@ -273,5 +276,54 @@ export const activity = query({
           };
         }),
     );
+  },
+});
+
+/**
+ * Every controller heartbeat row, for the Profiles table. Raw rows rather than a computed status:
+ * a reactive query re-runs when data changes, not when time passes, and a controller that died
+ * changes no data. The dashboard applies controllerLiveness() against its own clock instead.
+ * A separate query from `list` so a heartbeat every 30 s re-runs only this small read.
+ */
+export const controllers = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      profile: v.string(),
+      hostname: v.string(),
+      version: v.string(),
+      sessionState: v.union(
+        v.literal("starting"),
+        v.literal("listening"),
+        v.literal("conflict"),
+        v.literal("stopped"),
+      ),
+      receivedAt: v.number(),
+      firstSeenAt: v.number(),
+      lastListeningAt: v.optional(v.number()),
+      lastMessageAt: v.optional(v.number()),
+      assignedJobs: v.number(),
+      runningJobs: v.number(),
+      lastError: v.optional(v.string()),
+      tokenSlot: v.union(v.literal("current"), v.literal("next")),
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireDashboardAuth(ctx);
+    const rows = await ctx.db.query("controllerHeartbeats").take(CONTROLLER_HEARTBEAT_READ_LIMIT);
+    return rows.map((row) => ({
+      profile: row.profile,
+      hostname: row.hostname,
+      version: row.version,
+      sessionState: row.sessionState,
+      receivedAt: row.receivedAt,
+      firstSeenAt: row.firstSeenAt,
+      ...(row.lastListeningAt === undefined ? {} : { lastListeningAt: row.lastListeningAt }),
+      ...(row.lastMessageAt === undefined ? {} : { lastMessageAt: row.lastMessageAt }),
+      assignedJobs: row.assignedJobs,
+      runningJobs: row.runningJobs,
+      ...(row.lastError === undefined ? {} : { lastError: row.lastError }),
+      tokenSlot: row.tokenSlot,
+    }));
   },
 });

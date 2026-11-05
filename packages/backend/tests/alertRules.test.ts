@@ -11,6 +11,7 @@ import {
   webhookBody,
   type NotificationContent,
 } from "../convex/alertNotify";
+import { controllerLiveness, type ControllerHeartbeatRow } from "../convex/controllerLiveness";
 import type {
   FinishedAttempt,
   FleetObservation,
@@ -47,8 +48,38 @@ function profile(name: string, fields: Partial<ObservedProfile> = {}): ObservedP
     running: [],
     recentFinished: [],
     recentTruncated: false,
+    controller: { status: "unknown", live: 0, controllers: [] },
     ...fields,
   };
+}
+
+function heartbeat(
+  hostname: string,
+  sessionState: ControllerHeartbeatRow["sessionState"],
+  minutesAgo: number,
+  fields: Partial<ControllerHeartbeatRow> = {},
+): ControllerHeartbeatRow {
+  const receivedAt = NOW - minutesAgo * MINUTE;
+  return {
+    hostname,
+    version: "0.2.0-rc.11",
+    sessionState,
+    receivedAt,
+    firstSeenAt: NOW - 24 * 60 * MINUTE,
+    ...(sessionState === "listening" ? { lastListeningAt: receivedAt } : {}),
+    assignedJobs: 0,
+    runningJobs: 0,
+    tokenSlot: "current",
+    ...fields,
+  };
+}
+
+function withControllers(
+  name: string,
+  rows: ControllerHeartbeatRow[],
+  fields: Partial<ObservedProfile> = {},
+) {
+  return profile(name, { controller: controllerLiveness(rows, NOW), ...fields });
 }
 
 function worker(
@@ -237,6 +268,107 @@ describe("evaluateCondition", () => {
     ]);
     expect(subjects({ kind: "attempt-duration", minutes: 120 }, observation)).toEqual([]);
   });
+
+  it("controller-silent: a Profile whose controller stopped reporting fires after the threshold", () => {
+    const condition: AlertCondition = { kind: "controller-silent", minutes: 3 };
+    // Silent for 2 minutes: offline already, not yet past the threshold.
+    expect(
+      subjects(condition, fleet([withControllers("a", [heartbeat("ctl-1", "listening", 2)])])),
+    ).toEqual([]);
+    const observation = fleet([withControllers("a", [heartbeat("ctl-1", "listening", 7)])]);
+    expect(evaluateCondition(condition, undefined, observation)).toEqual([
+      {
+        subject: "a",
+        summary:
+          "Profile a has had no listening controller for 7m; the last report came from ctl-1 (0.2.0-rc.11) 7m ago.",
+      },
+    ]);
+  });
+
+  it("controller-silent: resolves as soon as a controller listens again", () => {
+    const condition: AlertCondition = { kind: "controller-silent", minutes: 3 };
+    const recovered = fleet([
+      withControllers("a", [
+        heartbeat("ctl-1", "listening", 0.2, { lastListeningAt: NOW - 0.2 * MINUTE }),
+      ]),
+    ]);
+    expect(subjects(condition, recovered)).toEqual([]);
+  });
+
+  it("controller-silent: a Profile no controller ever reported for is unknown, never silent", () => {
+    // An upgrade window: the Profile is served by a controller that predates the heartbeat.
+    expect(subjects({ kind: "controller-silent", minutes: 3 }, fleet([profile("legacy")]))).toEqual(
+      [],
+    );
+  });
+
+  it("controller-silent: a paused (retired) Profile is not alerted on", () => {
+    const observation = fleet([
+      withControllers("retired", [heartbeat("ctl-1", "stopped", 60)], { state: "paused" }),
+    ]);
+    expect(subjects({ kind: "controller-silent", minutes: 3 }, observation)).toEqual([]);
+  });
+
+  it("controller-silent: reporting without the session counts as silent, and says why", () => {
+    const observation = fleet([
+      withControllers("a", [
+        heartbeat("ctl-2", "conflict", 0.1, {
+          lastListeningAt: NOW - 10 * MINUTE,
+          lastError: "409 Conflict",
+        }),
+      ]),
+    ]);
+    expect(
+      evaluateCondition({ kind: "controller-silent", minutes: 3 }, undefined, observation),
+    ).toEqual([
+      {
+        subject: "a",
+        summary:
+          "Profile a has had no listening controller for 10m; ctl-2 (0.2.0-rc.11) is reporting but GitHub refuses it the session because another one exists: 409 Conflict",
+      },
+    ]);
+  });
+
+  it("controller-silent: one listening controller is enough, whatever the others do", () => {
+    const observation = fleet([
+      withControllers("a", [
+        heartbeat("ctl-1", "listening", 0.3),
+        heartbeat("ctl-2", "conflict", 0.1),
+        heartbeat("old-host", "stopped", 600),
+      ]),
+    ]);
+    expect(subjects({ kind: "controller-silent", minutes: 3 }, observation)).toEqual([]);
+  });
+
+  it("controller-silent: a controller that stopped says so, with its reason", () => {
+    const observation = fleet([
+      withControllers("a", [
+        heartbeat("ctl-1", "stopped", 5, {
+          lastListeningAt: NOW - 5 * MINUTE,
+          lastError: "run GitHub scale-set listener: connection reset",
+        }),
+      ]),
+    ]);
+    expect(
+      evaluateCondition({ kind: "controller-silent", minutes: 3 }, undefined, observation),
+    ).toEqual([
+      {
+        subject: "a",
+        summary:
+          "Profile a has had no listening controller for 5m; ctl-1 (0.2.0-rc.11) stopped 5m ago: run GitHub scale-set listener: connection reset",
+      },
+    ]);
+  });
+
+  it("controller-silent: a controller that never got the session counts from its first report", () => {
+    const observation = fleet([
+      withControllers("a", [
+        heartbeat("ctl-1", "conflict", 0.1, { firstSeenAt: NOW - 4 * MINUTE }),
+      ]),
+    ]);
+    expect(subjects({ kind: "controller-silent", minutes: 3 }, observation)).toEqual(["a"]);
+    expect(subjects({ kind: "controller-silent", minutes: 5 }, observation)).toEqual([]);
+  });
 });
 
 describe("conditionError", () => {
@@ -252,6 +384,9 @@ describe("conditionError", () => {
     ).toBeDefined();
     expect(conditionError({ kind: "consecutive-failures", count: 0 })).toBeDefined();
     expect(conditionError({ kind: "profile-no-ready-worker" })).toBeUndefined();
+    // Below the 90-second offline cutoff one late report would page.
+    expect(conditionError({ kind: "controller-silent", minutes: 1 })).toMatch(/2 to 10080/);
+    expect(conditionError({ kind: "controller-silent", minutes: 3 })).toBeUndefined();
   });
 });
 

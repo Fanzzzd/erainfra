@@ -9,6 +9,7 @@ import {
   controllerAuthorization,
   parseCancelAttempt,
   parseCompleteRunnerCleanup,
+  parseControllerHeartbeat,
   parseCreateAttempt,
   parseJobCompleted,
   parseJobStarted,
@@ -39,19 +40,24 @@ function jsonResponse(body: unknown, status: number) {
   });
 }
 
-function controllerAuthFailure(request: Request) {
-  const authStatus = controllerAuthorization(
+function controllerAuth(request: Request) {
+  const verdict = controllerAuthorization(
     request.headers.get("Authorization"),
     process.env.CONTROLLER_TOKEN,
+    process.env.CONTROLLER_TOKEN_NEXT,
   );
-  if (authStatus === "ok") {
-    return null;
+  if (verdict.status === "ok") {
+    return { failure: null, slot: verdict.slot };
   }
-  if (authStatus === "not-configured") {
+  if (verdict.status === "not-configured") {
     console.error("Controller API refused a request because CONTROLLER_TOKEN is not configured");
-    return jsonResponse({ error: "Controller API is not configured" }, 503);
+    return { failure: jsonResponse({ error: "Controller API is not configured" }, 503) };
   }
-  return jsonResponse({ error: "Unauthorized" }, 401);
+  return { failure: jsonResponse({ error: "Unauthorized" }, 401) };
+}
+
+function controllerAuthFailure(request: Request) {
+  return controllerAuth(request).failure;
 }
 
 async function requestJson(request: Request) {
@@ -345,7 +351,7 @@ http.route({
 
 // The controller API is separate from both dashboard auth and Worker tokens.
 // It is a machine-to-machine seam for the long-running official scale-set
-// listener; every route fails closed when CONTROLLER_TOKEN is absent.
+// listener; every route fails closed when neither CONTROLLER_TOKEN nor CONTROLLER_TOKEN_NEXT is set.
 http.route({
   path: "/controller/profiles",
   method: "POST",
@@ -359,6 +365,28 @@ http.route({
       return jsonResponse({ error: "Invalid Profile" }, 400);
     }
     await ctx.runMutation(internal.controllerApi.registerProfile, profile);
+    return new Response(null, { status: 204 });
+  }),
+});
+
+// A controller reports every 30 s and on every session change. This is the only signal that tells
+// a dead controller from an idle fleet: a controller that is gone creates no Attempts at all.
+http.route({
+  path: "/controller/heartbeat",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const caller = controllerAuth(request);
+    if (caller.failure !== null) return caller.failure;
+
+    const body = await requestJson(request);
+    const heartbeat = body.ok ? parseControllerHeartbeat(body.payload) : null;
+    if (heartbeat === null) {
+      return jsonResponse({ error: "Invalid heartbeat" }, 400);
+    }
+    await ctx.runMutation(internal.controllerApi.recordHeartbeat, {
+      ...heartbeat,
+      tokenSlot: caller.slot,
+    });
     return new Response(null, { status: 204 });
   }),
 });

@@ -2,6 +2,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { isSchedulableReadiness } from "./attemptScheduler";
 import { queueWaitMs } from "./attempts";
+import { controllerLiveness, type ControllerLiveness } from "./controllerLiveness";
 import { profileEgressOf, type ProfileEgress } from "./egress";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
@@ -17,6 +18,8 @@ export const OBSERVATION_DIMENSION_LIMIT = 1_000;
 export const LIVE_ATTEMPT_LIMIT = 1_000;
 /** Newest Attempts read per Profile for the recent window. */
 export const RECENT_ATTEMPT_SAMPLE = 200;
+/** Controller heartbeat rows read per Profile: one per host that has run its controller. */
+export const CONTROLLER_ROW_LIMIT = 50;
 
 export const LIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 export type LiveAttemptState = (typeof LIVE_ATTEMPT_STATES)[number];
@@ -105,6 +108,8 @@ export type ObservedProfile = {
   recentFinished: FinishedAttempt[];
   /** True when the sample was full and its oldest Attempt was created inside the window. */
   recentTruncated: boolean;
+  /** Whether a controller is listening for the Profile; `unknown` until one first reports. */
+  controller: ControllerLiveness;
 };
 
 export type ObservedMachine = {
@@ -166,7 +171,7 @@ export async function loadFleetObservation(
 
   const profiles = await Promise.all(
     profileRows.map(async (profile): Promise<ObservedProfile> => {
-      const [readinessByState, liveByState, recent] = await Promise.all([
+      const [readinessByState, liveByState, recent, controllers] = await Promise.all([
         Promise.all(
           READINESS_STATES.map((state) =>
             ctx.db
@@ -192,6 +197,10 @@ export async function loadFleetObservation(
           .withIndex("by_profile", (q) => q.eq("profile", profile.name))
           .order("desc")
           .take(RECENT_ATTEMPT_SAMPLE),
+        ctx.db
+          .query("controllerHeartbeats")
+          .withIndex("by_profile_hostname", (q) => q.eq("profile", profile.name))
+          .take(CONTROLLER_ROW_LIMIT),
       ]);
       if (readinessByState.some((rows) => rows.length === OBSERVATION_DIMENSION_LIMIT)) {
         dimensionsTruncated = true;
@@ -296,6 +305,7 @@ export async function loadFleetObservation(
           recent.length === RECENT_ATTEMPT_SAMPLE &&
           oldestSampled !== undefined &&
           oldestSampled.createdAt >= since,
+        controller: controllerLiveness(controllers, now),
       };
     }),
   );

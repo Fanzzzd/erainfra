@@ -30,6 +30,7 @@ import type * as bootstrapPolicy from "../bootstrapPolicy.js";
 import type * as catalog from "../catalog.js";
 import type * as controllerApi from "../controllerApi.js";
 import type * as controllerHttp from "../controllerHttp.js";
+import type * as controllerLiveness from "../controllerLiveness.js";
 import type * as crons from "../crons.js";
 import type * as dashboardAuth from "../dashboardAuth.js";
 import type * as egress from "../egress.js";
@@ -90,6 +91,7 @@ declare const fullApi: ApiFromModules<{
   catalog: typeof catalog;
   controllerApi: typeof controllerApi;
   controllerHttp: typeof controllerHttp;
+  controllerLiveness: typeof controllerLiveness;
   crons: typeof crons;
   dashboardAuth: typeof dashboardAuth;
   egress: typeof egress;

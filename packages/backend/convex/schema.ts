@@ -112,6 +112,37 @@ export default defineSchema({
     .index("by_name", ["name"])
     .index("by_state", ["state"]),
 
+  // One row per controller process: a Profile and the host it runs on. Kept out of `profiles` on
+  // purpose: a write every 30 s per controller would otherwise invalidate every query that reads
+  // Profiles, including the scheduler's. A Profile with no row has never been served by a
+  // controller that reports, so its liveness is unknown rather than down (fleetObservation.ts).
+  controllerHeartbeats: defineTable({
+    profile: v.string(),
+    hostname: v.string(),
+    version: v.string(),
+    scaleSetId: v.optional(v.number()),
+    sessionState: v.union(
+      v.literal("starting"),
+      v.literal("listening"),
+      v.literal("conflict"),
+      v.literal("stopped"),
+    ),
+    // Controller clock: when GitHub last answered the long poll, and when the process started.
+    lastMessageAt: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+    assignedJobs: v.number(),
+    runningJobs: v.number(),
+    lastError: v.optional(v.string()),
+    // Which configured controller token authenticated the newest report, so a token rotation can
+    // see every controller move to the new token before the old one is withdrawn.
+    tokenSlot: v.union(v.literal("current"), v.literal("next")),
+    // Control-plane clock, which is what staleness is judged by.
+    firstSeenAt: v.number(),
+    receivedAt: v.number(),
+    // The newest report in which this controller held the session.
+    lastListeningAt: v.optional(v.number()),
+  }).index("by_profile_hostname", ["profile", "hostname"]),
+
   registrationTokens: defineTable({
     token: v.string(),
     createdAt: v.number(),

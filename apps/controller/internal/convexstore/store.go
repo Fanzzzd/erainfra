@@ -210,6 +210,42 @@ func (s *Store) MarkJobCompleted(ctx context.Context, event fleet.JobCompleted) 
 	return nil
 }
 
+// maxHeartbeatErrorRunes caps the error a heartbeat carries. GitHub's 409 body
+// alone is a few hundred characters; the control plane rejects anything longer
+// than it stores rather than truncating someone else's text.
+const maxHeartbeatErrorRunes = 500
+
+// SendHeartbeat reports the controller's liveness (POST /controller/heartbeat).
+func (s *Store) SendHeartbeat(ctx context.Context, report fleet.ControllerHeartbeat) error {
+	lastError := []rune(report.LastError)
+	if len(lastError) > maxHeartbeatErrorRunes {
+		lastError = append(lastError[:maxHeartbeatErrorRunes-1], '…')
+	}
+	return s.doJSON(ctx, http.MethodPost, "/controller/heartbeat", struct {
+		Profile       string `json:"profile"`
+		Hostname      string `json:"hostname"`
+		Version       string `json:"version"`
+		ScaleSetID    int    `json:"scaleSetId,omitempty"`
+		SessionState  string `json:"sessionState"`
+		LastMessageAt *int64 `json:"lastMessageAt,omitempty"`
+		AssignedJobs  int    `json:"assignedJobs"`
+		RunningJobs   int    `json:"runningJobs"`
+		StartedAt     *int64 `json:"startedAt,omitempty"`
+		LastError     string `json:"lastError,omitempty"`
+	}{
+		Profile:       report.Profile,
+		Hostname:      report.Hostname,
+		Version:       report.Version,
+		ScaleSetID:    report.ScaleSetID,
+		SessionState:  string(report.SessionState),
+		LastMessageAt: unixMillis(report.LastMessageAt),
+		AssignedJobs:  max(0, report.AssignedJobs),
+		RunningJobs:   max(0, report.RunningJobs),
+		StartedAt:     unixMillis(report.StartedAt),
+		LastError:     string(lastError),
+	}, nil, true)
+}
+
 func optionalInt64(value int64) string {
 	if value <= 0 {
 		return ""
