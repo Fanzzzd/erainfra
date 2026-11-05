@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
+import { childEnvironment, dualEnv, runtimeBinary } from "./dual-env.ts";
 
 /**
  * A Profile's egress policy as the control plane publishes it. The runtime
@@ -709,11 +710,11 @@ async function runDockerProbe(args: string[]): Promise<ProbeResult> {
 }
 
 async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult> {
-  const binary = process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime";
+  const binary = runtimeBinary();
   let report: RuntimeReport = {};
   try {
     const preflight = await execa(binary, ["preflight"], {
-      env: { ...process.env, ...profileEgressEnvironment(profile.egress) },
+      env: childEnvironment(profileEgressEnvironment(profile.egress)),
       timeout: 60_000,
       reject: false,
     });
@@ -723,15 +724,14 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
       return { state: "failed", error: failureOf(facts, preflight.stderr), ...facts };
     }
     const prepared = await execa(binary, ["prepare"], {
-      env: {
-        ...process.env,
+      env: childEnvironment({
         RC_PROFILE: profile.profile,
         RC_IMAGE_RELEASE: profile.imageRelease,
         RC_VCPUS: String(profile.vcpus),
         RC_MEMORY_MIB: String(profile.memoryMiB),
         RC_WARM_POOL: String(profile.warmPool ?? 0),
         ...profileEgressEnvironment(profile.egress),
-      },
+      }),
       timeout: 60 * 60_000,
       reject: false,
     });
@@ -979,11 +979,18 @@ async function prepareHyperV(profile: ProfileSpec): Promise<ReadinessResult> {
 
   let checks: ReadinessCheck[] = [];
   try {
+    const rcHome = dualEnv("RC_HOME");
     const probe = await execa(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", HYPERV_PROBE],
       {
-        env: { ...process.env, RC_PROBE_IMAGE: profile.imageRelease },
+        // The probe is PowerShell with no dual read of its own, so the Agent
+        // resolves the state directory and hands it over under the name the
+        // probe reads.
+        env: childEnvironment({
+          RC_PROBE_IMAGE: profile.imageRelease,
+          ...(rcHome === undefined ? {} : { RC_HOME: rcHome }),
+        }),
         timeout: 60_000,
       },
     );
@@ -1008,9 +1015,9 @@ async function prepareHyperV(profile: ProfileSpec): Promise<ReadinessResult> {
 }
 
 export async function removePreparedFirecrackerProfile(profile: string) {
-  const binary = process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime";
+  const binary = runtimeBinary();
   await execa(binary, ["remove-profile"], {
-    env: { ...process.env, RC_PROFILE: profile },
+    env: childEnvironment({ RC_PROFILE: profile }),
     timeout: 60_000,
   });
 }

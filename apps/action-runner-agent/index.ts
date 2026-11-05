@@ -10,6 +10,7 @@ import {
   type BenchmarkReport,
 } from "./benchmark.js";
 import { config } from "./config.js";
+import { dualEnv } from "./dual-env.js";
 import {
   CoreAllocator,
   CoreExhaustedError,
@@ -774,7 +775,7 @@ console.log(
 );
 await heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), config.heartbeatMs);
-await publishReadinessSignal(process.env.RC_READY_FILE, process.env.RC_AGENT_VERSION);
+await publishReadinessSignal(dualEnv("RC_READY_FILE"), dualEnv("RC_AGENT_VERSION"));
 console.log(`EraInfra Worker connected to ${config.convexUrl}; discovering compatible Profiles`);
 acceptingWork = true;
 
@@ -862,7 +863,7 @@ async function shutdown(signal: string) {
   await Promise.allSettled(running.values());
   // Each flush is already bounded; this only stops the client closing underneath them.
   await Promise.allSettled(metricsFlushes);
-  await clearReadinessSignal(process.env.RC_READY_FILE);
+  await clearReadinessSignal(dualEnv("RC_READY_FILE"));
   await client.close();
 }
 

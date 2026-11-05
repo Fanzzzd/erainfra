@@ -1,3 +1,5 @@
+import { assertNoDualEnvConflicts } from "./dual-env.ts";
+
 function requireEnv(name: "CONVEX_URL" | "MACHINE_TOKEN") {
   const value = process.env[name]?.trim();
   if (value === undefined || value.length === 0) {
@@ -62,6 +64,11 @@ function cacheEnvironment() {
     ...(serviceV2 !== undefined && serviceV2.length > 0 ? { serviceV2 } : {}),
   };
 }
+
+// Every RC_<NAME> the Agent and the processes it starts read is also accepted as
+// ERAINFRA_<NAME>. Two that disagree stop the Agent here, before it registers,
+// rather than at the first Attempt that happens to read one of them.
+assertNoDualEnvConflicts();
 
 export const config = {
   convexUrl: requireEnv("CONVEX_URL"),

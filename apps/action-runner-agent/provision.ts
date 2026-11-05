@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { ProfileEgress } from "./readiness.js";
+import { childEnvironment, runtimeBinary } from "./dual-env.ts";
 
 export type MachineOs = "linux" | "mac" | "win";
 
@@ -172,7 +173,7 @@ export function attemptInvocation(
 ): ProvisionInvocation {
   if (attempt.executor === "firecracker") {
     return {
-      file: process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime",
+      file: runtimeBinary(),
       args: ["run"],
       env: {
         RC_ATTEMPT_ID: attempt.attemptId,
@@ -250,10 +251,13 @@ export function attemptEnvironment(env: Record<string, string>): NodeJS.ProcessE
   delete inherited.ERAINFRA_CACHE_URL;
   delete inherited.ERAINFRA_CACHE_SERVICE_V2;
   // The same rule for the egress seam: what an Attempt may reach and where its
-  // record goes are decided per Attempt, never inherited.
+  // record goes are decided per Attempt, never inherited. Under both names,
+  // because the runtime reads both.
   delete inherited.RC_PROFILE_EGRESS;
   delete inherited.RC_EGRESS_RECORD_FILE;
-  return { ...inherited, ...env };
+  delete inherited.ERAINFRA_PROFILE_EGRESS;
+  delete inherited.ERAINFRA_EGRESS_RECORD_FILE;
+  return childEnvironment(env, inherited);
 }
 
 export function spawnAttempt(attempt: AttemptExecution) {
@@ -273,7 +277,7 @@ export function experimentInvocation(
   experiment: Omit<ExperimentExecution, "command">,
 ): ProvisionInvocation {
   return {
-    file: process.env.RC_RUNTIME_BINARY?.trim() || "runner-center-runtime",
+    file: runtimeBinary(),
     args: ["experiment"],
     env: {
       RC_ATTEMPT_ID: experiment.experimentId,
@@ -291,7 +295,7 @@ export function experimentInvocation(
 export function spawnExperiment(experiment: ExperimentExecution) {
   const { file, args, env } = experimentInvocation(experiment);
   return execa(file, args, {
-    env: { ...process.env, ...env },
+    env: childEnvironment(env),
     input: JSON.stringify(experiment.command),
     stdout: "inherit",
     stderr: "inherit",

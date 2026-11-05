@@ -60,6 +60,26 @@ $ProgressPreference = 'SilentlyContinue'
 # Runner root inside the guest. Keep in sync with build-image.ps1.
 $RunnerRoot = 'C:\actions-runner'
 
+# The dual-name read (docs/runbooks/rename-phase-2.md, section 1), the PowerShell
+# copy of internal/dualenv: ERAINFRA_<NAME> wins over RC_<NAME>, a blank value
+# counts as unset (as it does for Get-EnvOrDefault), and the two set to different
+# values stop the script naming both. It resolves in place, into this process's
+# RC_<NAME>, so every read below stays as it was. -cne, because PowerShell's -ne
+# ignores case and a path or token that differs only in case is still different.
+function Resolve-DualEnv([string] $Name) {
+    $newName = 'ERAINFRA_' + $Name.Substring(3)
+    $current = [Environment]::GetEnvironmentVariable($newName)
+    $legacy = [Environment]::GetEnvironmentVariable($Name)
+    $hasCurrent = -not [string]::IsNullOrWhiteSpace($current)
+    $hasLegacy = -not [string]::IsNullOrWhiteSpace($legacy)
+    if ($hasCurrent -and $hasLegacy -and ($current -cne $legacy)) {
+        throw "$newName and $Name are both set, to different values; remove one, or give both the same value."
+    }
+    if ($hasCurrent) {
+        [Environment]::SetEnvironmentVariable($Name, $current)
+    }
+}
+
 function Get-RequiredEnv([string] $Name) {
     $value = [Environment]::GetEnvironmentVariable($Name)
     if ([string]::IsNullOrWhiteSpace($value)) {
@@ -139,6 +159,9 @@ if ($jitConfig -notmatch '^[A-Za-z0-9+/=]+$') {
     throw 'The JIT configuration read from stdin is not base64. Pipe the value of encoded_jit_config verbatim.'
 }
 
+foreach ($dualName in @('RC_HOME', 'RC_BOOT_TIMEOUT_S', 'RC_JOB_TIMEOUT_S')) {
+    Resolve-DualEnv $dualName
+}
 $rcHome = Get-EnvOrDefault 'RC_HOME' (Join-Path $env:USERPROFILE '.runner-center')
 $cpuCount = Get-PositiveIntEnv 'VM_CPU_COUNT' 4
 $memoryGb = Get-PositiveIntEnv 'VM_MEMORY_GB' 8
