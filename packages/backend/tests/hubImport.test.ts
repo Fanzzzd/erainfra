@@ -382,8 +382,8 @@ describe("Hub importer", () => {
     expect(
       await t.query(internal.infra.secrets.forNodeDeploy, { nodeId: node, deploymentId }),
     ).toEqual({
-      shop: { DATABASE_URL: "postgres://shop:s3cret@db/shop" },
-      "shop-web": { SESSION_KEY: "päss wörd ✓" },
+      appWide: { DATABASE_URL: "postgres://shop:s3cret@db/shop" },
+      services: { web: { SESSION_KEY: "päss wörd ✓" } },
     });
   });
 
@@ -450,6 +450,134 @@ describe("Hub importer", () => {
   });
 });
 
+/**
+ * A Hub database holding only Apps, single-container routes and secrets, to test how the importer
+ * reads the Hub's `<app>-<service>` secret scope strings.
+ */
+function scopeFixture(
+  name: string,
+  hub: {
+    apps?: Record<string, string[]>;
+    routes?: string[];
+    secrets: Record<string, Record<string, string>>;
+  },
+) {
+  const path = join(dir, `${name}.db`);
+  const db = new DatabaseSync(path);
+  db.exec(HUB_SCHEMA);
+  for (const [app, services] of Object.entries(hub.apps ?? {})) {
+    db.prepare("INSERT INTO apps VALUES (?, ?, ?)").run(
+      app,
+      "box-1",
+      JSON.stringify({
+        node: "box-1",
+        services: services.map((service) => ({ name: service, image: `r/${app}-${service}:1` })),
+        links: [],
+      }),
+    );
+  }
+  for (const app of hub.routes ?? []) {
+    db.prepare("INSERT INTO routes VALUES (?, ?, ?, ?)").run(app, "box-1", `r/${app}:1`, 62000);
+  }
+  for (const [scope, values] of Object.entries(hub.secrets)) {
+    for (const [key, value] of Object.entries(values)) {
+      db.prepare("INSERT INTO secrets VALUES (?, ?, ?)").run(scope, key, hubEncrypt(value));
+    }
+  }
+  db.close();
+  return path;
+}
+
+const secretRowsOf = (path: string) =>
+  readHubState(path, HUB_KEY).batches.flatMap((b) => (b.kind === "secrets" ? b.rows : []));
+
+describe("Hub secret scopes", () => {
+  it("reads `x-y` as App x-y's scope when x-y is an App and App x has no service y", () => {
+    const path = scopeFixture("app-only", {
+      apps: { "web-api": ["main"], web: ["worker"] },
+      secrets: { "web-api": { TOKEN: "app" } },
+    });
+    expect(secretRowsOf(path)).toEqual([{ app: "web-api", values: { TOKEN: "app" } }]);
+    // A single-container App known only from `routes` counts as an App too.
+    const routed = scopeFixture("route-only", {
+      routes: ["web-api"],
+      secrets: { "web-api": { TOKEN: "app" } },
+    });
+    expect(secretRowsOf(routed)).toEqual([{ app: "web-api", values: { TOKEN: "app" } }]);
+  });
+
+  it("reads `x-y` as service y of App x when App x has service y and x-y is not an App", () => {
+    const path = scopeFixture("service-only", {
+      apps: { web: ["api"] },
+      secrets: { web: { COMMON: "1" }, "web-api": { TOKEN: "service" } },
+    });
+    expect(secretRowsOf(path)).toEqual([
+      { app: "web", values: { COMMON: "1" } },
+      { app: "web", service: "api", values: { TOKEN: "service" } },
+    ]);
+  });
+
+  it("refuses the import when `x-y` is both an App and a service of App x", async () => {
+    const path = scopeFixture("both", {
+      apps: { web: ["api"], "web-api": ["main"] },
+      secrets: { web: { COMMON: "1" }, "web-api": { TOKEN: "which" } },
+    });
+    expect(() => readHubState(path, HUB_KEY)).toThrow(
+      /Hub secret scope "web-api" is ambiguous: it names App "web-api" and service "api" of App "web"/,
+    );
+  });
+
+  it("refuses the import when `x-y` names no App and no service", async () => {
+    const path = scopeFixture("neither", {
+      apps: { web: ["api"] },
+      secrets: { "ghost-db": { TOKEN: "orphan" }, "web-worker": { TOKEN: "orphan" } },
+    });
+    let message = "";
+    try {
+      readHubState(path, HUB_KEY);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    // Every unresolved scope is named in the one refusal, and no value is echoed.
+    expect(message).toMatch(/Hub secret scope "ghost-db" names no App and no service/);
+    expect(message).toMatch(/Hub secret scope "web-worker" names no App and no service/);
+    expect(message).not.toContain("orphan");
+  });
+
+  it("reads a scope with no `-` as an App-wide scope even before the App is deployed", () => {
+    const path = scopeFixture("undeployed", { secrets: { later: { TOKEN: "early" } } });
+    expect(secretRowsOf(path)).toEqual([{ app: "later", values: { TOKEN: "early" } }]);
+  });
+
+  it("splits every `-` position, so `a-b-c` is refused when two splits are services", () => {
+    const path = scopeFixture("two-splits", {
+      apps: { a: ["b-c"], "a-b": ["c"] },
+      secrets: { "a-b-c": { TOKEN: "x" } },
+    });
+    expect(() => readHubState(path, HUB_KEY)).toThrow(
+      /it names service "b-c" of App "a" and service "c" of App "a-b"/,
+    );
+  });
+
+  it("imports resolved scopes so App web and App web-api deploy with their own values", async () => {
+    const t = convexTest(schema, modules);
+    const path = scopeFixture("resolved-import", {
+      apps: { web: ["api"] },
+      routes: ["web-app"],
+      secrets: { "web-api": { TOKEN: "service" }, "web-app": { TOKEN: "app" } },
+    });
+    const state = readHubState(path, HUB_KEY);
+    await t.action(internal.infra.hubImport.run, { batches: state.batches });
+    const stored = await t.run(async (ctx) =>
+      (await ctx.db.query("appSecrets").collect()).map((r) => [r.app, r.service ?? null, r.name]),
+    );
+    expect(stored.toSorted()).toEqual([
+      ["web", "api", "TOKEN"],
+      ["web-app", null, "TOKEN"],
+    ]);
+  });
+});
+
 /** Drops the fields a repeat import legitimately rewrites: write times, not content. */
 const strip = <T extends { _creationTime: number; updatedAt?: number; allocatedAt?: number }>(
   rows: T[],
@@ -469,8 +597,9 @@ async function snapshot(t: Harness) {
       routes: strip(await ctx.db.query("appRoutes").collect()),
       meshLinks: strip(await ctx.db.query("meshLinks").collect()),
       ports: strip(await ctx.db.query("portAllocations").collect()),
-      secretRows: (await ctx.db.query("appSecrets").collect()).map(({ app, name }) => ({
+      secretRows: (await ctx.db.query("appSecrets").collect()).map(({ app, service, name }) => ({
         app,
+        service,
         name,
       })),
       bindings: strip(await ctx.db.query("gitBindings").collect()),

@@ -307,12 +307,12 @@ describe("scoped Node HTTP API", () => {
         command: { ...deploy, operation: "failover" },
       }),
     ).rejects.toThrow(/lease operation/);
-    for (const [app, value] of [
-      ["shop", "common"],
-      ["shop-web", "web-private"],
-      ["shop-db", "db-private"],
-    ])
-      await human.mutation(api.infra.secrets.set, { app, vars: { TOKEN: value } });
+    for (const [service, value] of [
+      [undefined, "common"],
+      ["web", "web-private"],
+      ["db", "db-private"],
+    ] as Array<[string | undefined, string]>)
+      await human.mutation(api.infra.secrets.set, { app: "shop", service, vars: { TOKEN: value } });
     const id = await human.mutation(api.infra.nodeCommands.enqueue, {
       nodeId: a.nodeId,
       idempotencyKey: "deploy-1",
