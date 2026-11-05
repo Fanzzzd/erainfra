@@ -270,5 +270,5 @@ pending dns_search_domain_count=0 2026-11-16  # #96: the resolver shape a contai
 # the Profiles are repinned, so the live Profile still reports both absent. Pinned at the measured
 # value: the line dies the moment a repinned Profile reports `yes`, and goes red if the repin never
 # happens.
-pending tool_docker_compose_present=no 2026-12-05  # until the Profiles are repinned to an image built from this change
-pending tool_docker_buildx_present=no 2026-12-05  # same
+pending tool_docker_compose_present=no 2026-12-05  # #151: until the Profiles are repinned to an image built from this change
+pending tool_docker_buildx_present=no 2026-12-05  # #151: same
