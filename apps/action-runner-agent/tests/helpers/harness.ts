@@ -161,6 +161,9 @@ case "$payload" in
     # The sleep gets its own descriptors so that killing this fake releases the
     # inherited stdout immediately, the way killing a real ssh client would.
     sleep "\${RC_FAKE_RUNNER_SLEEP:-0}" >/dev/null 2>&1
+    if [ -n "\${RC_FAKE_RUNNER_IGNORE_TERM:-}" ]; then
+      printf '%s\\n' 'runner-natural-exit' >> "$RC_ARGV_LOG"
+    fi
     exit "\${RC_FAKE_RUNNER_EXIT:-0}"
     ;;
   *"tar -xzf"*)
