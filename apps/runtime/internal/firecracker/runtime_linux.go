@@ -21,9 +21,9 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/leases"
-	"github.com/containerd/containerd/namespaces"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/leases"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
 	"github.com/coreos/go-iptables/iptables"
 	fc "github.com/firecracker-microvm/firecracker-go-sdk"
@@ -385,7 +385,7 @@ func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report)
 		return
 	}
 	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
-	response, err := client.IntrospectionService().Plugins(ctx, snapshotterFilter(r.config.Snapshotter))
+	response, err := client.IntrospectionService().Plugins(ctx, snapshotterFilter(r.config.Snapshotter)...)
 	if err != nil {
 		report.Fail(executor.CheckSnapshotter, fmt.Errorf("query containerd snapshotter: %w", err))
 		return
@@ -931,7 +931,9 @@ func startMachine(
 		return nil
 	case <-ctx.Done():
 		cancelVMM()
-		<-started
+		// Wait for Start to return so no goroutine outlives the call.
+		<-started //nolint:errcheck // Start's error is the cancel just issued; the deadline is the cause
+
 		return fmt.Errorf("start Firecracker VM: %w", ctx.Err())
 	}
 }

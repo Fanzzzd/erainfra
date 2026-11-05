@@ -4,7 +4,8 @@
 // repository's entries.
 //
 // It is a standalone binary rather than part of an existing one on purpose:
-// apps/infra-agent ships five attested digests and one dependency, and Convex
+// apps/infra-agent ships five attested digests to every customer box and should
+// not link an S3 client to serve a cache it does not run, and Convex
 // cannot stream a PATCH body into a bucket.
 package main
 

@@ -55,6 +55,9 @@ type bumper struct {
 	// verifyNode checks SHASUMS256.txt against its detached signature.
 	verifyNode func(ctx context.Context, data, signature []byte) error
 	cache      map[string][]byte
+	// goLine, when set, is the MAJOR.MINOR Go line to move to. Empty keeps
+	// go.mod's own line, which is what the weekly bump does.
+	goLine string
 }
 
 func (b *bumper) fetch(ctx context.Context, url string) ([]byte, error) {
@@ -456,10 +459,16 @@ type goRelease struct {
 	} `json:"files"`
 }
 
-// bumpGo moves Go to the newest patch of the minor go.mod is on. The image's
-// tool-cache Go, the builder stage that compiles runner-center-guest, and the
-// module's go directive are one version on purpose (see the Dockerfile), so
-// they move together.
+// bumpGo moves Go to the newest patch of the minor go.mod is on, or of the
+// line -go-line names. The image's tool-cache Go, the builder stage that
+// compiles runner-center-guest, and the module's go directive are one version
+// on purpose (see the Dockerfile), so they move together.
+//
+// A new minor is never taken on a schedule: it can change language semantics
+// and vet checks, and golangci-lint refuses a go directive newer than the Go it
+// was built with. -go-line makes that move deliberate, and only onto a line Go
+// still supports (the two newest minors), so it cannot strand the module on a
+// line that no longer gets security fixes.
 func (b *bumper) bumpGo(ctx context.Context) (*outcome, error) {
 	cur, ok, err := b.dockerfileArg("GO_VERSION")
 	if err != nil {
@@ -483,6 +492,12 @@ func (b *bumper) bumpGo(ctx context.Context) (*outcome, error) {
 	if err != nil {
 		return nil, err
 	}
+	line := curV
+	if b.goLine != "" {
+		if line, err = parseVersion(b.goLine); err != nil || len(line) != 2 {
+			return nil, fmt.Errorf("-go-line %q is not a MAJOR.MINOR Go line", b.goLine)
+		}
+	}
 
 	var releases []goRelease
 	if err := b.fetchJSON(ctx, "https://go.dev/dl/?mode=json&include=all", &releases); err != nil {
@@ -501,12 +516,15 @@ func (b *bumper) bumpGo(ctx context.Context) (*outcome, error) {
 		if newest == nil || rv.compare(newest) > 0 {
 			newest = rv
 		}
-		if rv.at(0) == curV.at(0) && rv.at(1) == curV.at(1) && (best == nil || rv.compare(best) > 0) {
+		if rv.at(0) == line.at(0) && rv.at(1) == line.at(1) && (best == nil || rv.compare(best) > 0) {
 			best, bestRelease = rv, r
 		}
 	}
 	if best == nil {
-		return nil, fmt.Errorf("go.dev lists no stable Go %d.%d release", curV.at(0), curV.at(1))
+		return nil, fmt.Errorf("go.dev lists no stable Go %d.%d release", line.at(0), line.at(1))
+	}
+	if b.goLine != "" && !supportedGoLine(line, newest) {
+		return nil, fmt.Errorf("go %s is no longer supported: Go %s is out, and Go supports only its two newest minor releases", b.goLine, newest)
 	}
 	v := best.String()
 	if err := checkNotOlder("Go", cur, v); err != nil {
@@ -555,9 +573,15 @@ func (b *bumper) bumpGo(ctx context.Context) (*outcome, error) {
 	o.moved("Go (go.mod, image tool cache)", cur, v, "go.dev/dl JSON sha256")
 	o.moved("golang builder image", priorBuilder, builder, "Docker Hub manifest digest")
 	if newest != nil && (newest.at(0) != best.at(0) || newest.at(1) != best.at(1)) {
-		o.note("Go %s is out: this repository is on Go %d.%d and Go supports only its two newest minor releases. Moving go.mod to a new minor is a deliberate change, so the bump does not make it.", newest, best.at(0), best.at(1))
+		o.note("Go %s is out: this repository is on Go %d.%d and Go supports only its two newest minor releases. Moving go.mod to a new minor is a deliberate change, so the weekly bump does not make it; `go run ./scripts/pinbump -only go -go-line %d.%d` does.", newest, best.at(0), best.at(1), newest.at(0), newest.at(1))
 	}
 	return o, nil
+}
+
+// supportedGoLine reports whether line is one of the two newest Go minors,
+// the ones that still get security fixes.
+func supportedGoLine(line, newest version) bool {
+	return line.at(0) == newest.at(0) && line.at(1) <= newest.at(1) && line.at(1) >= newest.at(1)-1
 }
 
 // --- GitHub CLI -------------------------------------------------------------

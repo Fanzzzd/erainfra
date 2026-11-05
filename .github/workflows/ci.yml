@@ -193,32 +193,37 @@ jobs:
       # .golangci.yml picks the linters, so this run and a contributor's local
       # `GOOS=linux golangci-lint run ./...` report the same issues. The version
       # is pinned too: a new golangci-lint release adds checks, and a gate that
-      # moves without a commit here is one nobody can reproduce.
+      # moves without a commit here is one nobody can reproduce. A golangci-lint
+      # built with an older Go than go.mod's go line refuses to run, so moving
+      # Go to a new minor moves this pin with it.
       - name: Lint the root Go module
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         env:
           GOOS: linux
         with:
-          version: v2.12.2
+          version: v2.15.0
       - name: Compile the root Go module for shipped Linux targets
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -o "$RUNNER_TEMP/erainfra-linux-amd64/" ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
             go build -o "$RUNNER_TEMP/erainfra-linux-arm64/" ./...
-      # apps/infra-agent used to be its own Go module, so the compiler refused any import of a root
-      # package and that refusal WAS the guarantee. Joining the root module removes the refusal
-      # without removing the requirement: this binary runs as root on customer Nodes, and a helper
-      # that innocently imports an apps/controller package would hand it containerd's transitive
-      # tree with a perfectly green build. Assert on the shipped bytes rather than on go.mod —
-      # go.mod is the whole platform's now, and says nothing about what this binary linked.
-      - name: The Infra Agent ships exactly one dependency
+      # Fails on any known vulnerability that shipped code can reach: govulncheck's default
+      # symbol-level scan walks the call graph from each main package, the standard library
+      # included, and exits non-zero only when a vulnerable function is actually called. An
+      # advisory in a package that is imported but never called is listed and does not fail.
+      # One scan per OS a release ships Go binaries for (packages/release/bin/build-go-assets.ts):
+      # build tags differ per OS, and so does the reachable code. Windows ships only the Infra
+      # Agent and the CLI, and the rest of the module does not build there.
+      # `go install module@version` is pinned by the Go checksum database, as a commit SHA pins an
+      # Action; it builds for the host, which `GOOS=x go run` would not. The vulnerability database
+      # is not pinned, by design: a new advisory against shipped code should turn the next build red.
+      - name: No known vulnerability is reachable from shipped code
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -o "$RUNNER_TEMP/infra-agent" ./apps/infra-agent
-          deps=$(go version -m "$RUNNER_TEMP/infra-agent" | awk '$1 == "dep" { print $2, $3 }')
-          echo "$deps"
-          test "$deps" = "github.com/gorilla/websocket v1.5.3"
+          GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          GOOS=linux "$RUNNER_TEMP/bin/govulncheck" ./...
+          GOOS=darwin "$RUNNER_TEMP/bin/govulncheck" ./...
+          GOOS=windows "$RUNNER_TEMP/bin/govulncheck" ./apps/infra-agent/... ./apps/erainfra-cli/...
       # Runner machines install the agent with npm, not pnpm, so its lockfile
       # has to stay in sync with its package.json. This replaces the pnpm
       # node_modules in apps/action-runner-agent, so keep it last.

@@ -1,4 +1,4 @@
-# golangci-lint v2.12.2, the version CI pins. CI runs `GOOS=linux golangci-lint run ./...`, the
+# golangci-lint v2.15.0, the version CI pins. CI runs `GOOS=linux golangci-lint run ./...`, the
 # platform the Go binaries ship for; the module also lints clean with GOOS=darwin.
 version: "2"
 

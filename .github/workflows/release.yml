@@ -389,16 +389,18 @@ jobs:
           }
           NODE
 
-      # This binary runs as root on customer Nodes. Assert on the shipped bytes rather than on
-      # go.mod: go.mod is the whole platform's now and says nothing about what this binary linked,
-      # so a helper that innocently imported an apps/controller package would widen the dependency
-      # surface with a perfectly green build. ci.yml makes the same assertion on every push; this
-      # one makes it about the artifact being published.
-      - name: The published Infra Agent ships exactly one dependency
+      # ci.yml scans the source on every push; this scans the bytes being published, so an advisory
+      # disclosed between that push and this tag still stops the release. Binary mode reads the
+      # module list and the function table each Go executable carries (`-s -w` keeps both) and
+      # fails when a vulnerable function was linked in, the standard library included.
+      - name: No published Go binary links a known-vulnerable function
         run: |
-          deps=$(go version -m dist/release/infra-agent-linux-x86_64 | awk '$1 == "dep" { print $2, $3 }')
-          echo "$deps"
-          test "$deps" = "github.com/gorilla/websocket v1.5.3"
+          GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          for asset in dist/release/*; do
+            case "$asset" in *.sha256 | *.tar.gz) continue ;; esac
+            echo "govulncheck ${asset##*/}"
+            "$RUNNER_TEMP/bin/govulncheck" -mode binary "$asset"
+          done
 
       # Exactly the command a machine runs during install.
       - name: Verify the agent lockfile installs cleanly

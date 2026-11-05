@@ -144,7 +144,10 @@ func (m *MeshManager) Connect(name, ticket string, localPort int) (string, error
 	case <-time.After(1500 * time.Millisecond):
 	}
 	m.add(name, &meshLink{cmd: cmd, role: "connect", port: localPort})
-	go func() { <-exited; m.removeIf(name, cmd) }()
+	go func() {
+		<-exited //nolint:errcheck // how dumbpipe exited changes nothing: the link is gone either way
+		m.removeIf(name, cmd)
+	}()
 	return fmt.Sprintf("127.0.0.1:%d", localPort), nil
 }
 

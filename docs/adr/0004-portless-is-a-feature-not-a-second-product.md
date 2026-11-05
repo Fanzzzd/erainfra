@@ -64,6 +64,8 @@ lockfile, and a release that ships what it gates on.
   `github.com/gorilla/websocket v1.5.3` — it is not, and never was, standard-library only,
   so the module boundary was not protecting a zero-dependency guarantee. What that boundary
   did provide is replaced by an explicit `go version -m` assertion on the shipped bytes.
+  That assertion was later dropped in favour of govulncheck in CI and in the release
+  workflow, which fails on a reachable known vulnerability rather than on any new module.
 - The naming collision must be resolved, because two things called "agent" cannot live in
   one `apps/`. See [CONTEXT.md](../../CONTEXT.md) for the resolved vocabulary.
 - **The name "Portless" is retired** as a user-facing surface name. This does not follow
