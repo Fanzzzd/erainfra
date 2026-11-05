@@ -22,13 +22,15 @@ import {
   type SetupStateStatus,
 } from "./githubAppConfig";
 import { renderInstallScript } from "./installScript";
-import { bearerToken, LAST_USED_RESOLUTION_MS, sha256Hex } from "./metrics";
 import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { renderWindowsInstallScript } from "./installScriptPowerShell";
+import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
 registerStaticRoutes(http, components.staticHosting);
+// The operator API under /api/v1, for the `erainfra` CLI (operatorHttp.ts).
+registerOperatorRoutes(http);
 
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
@@ -680,9 +682,10 @@ http.route({
   }),
 });
 
-// Prometheus scrape endpoint. Authenticated with a dashboard-minted bearer token (see metrics.ts):
-// the exposition names every Worker and Profile, which is fleet inventory, not public data. A
-// refusal says nothing about why, so a revoked token and a guessed one look the same.
+// Prometheus scrape endpoint. Authenticated with a dashboard-minted API token of any scope
+// (apiTokens.ts); a `metrics` token can do nothing else. The exposition names every Worker and
+// Profile, which is fleet inventory, not public data. A refusal says nothing about why, so a
+// revoked token and a guessed one look the same.
 function metricsUnauthorized() {
   return new Response("Unauthorized\n", {
     status: 401,
@@ -698,17 +701,8 @@ http.route({
   path: "/metrics",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const token = bearerToken(request.headers.get("Authorization"));
-    if (token === null) return metricsUnauthorized();
-    const grant = await ctx.runQuery(internal.metrics.authorizeScrape, {
-      tokenHash: await sha256Hex(token),
-    });
-    if (grant === null) return metricsUnauthorized();
-
-    const now = Date.now();
-    if (grant.lastUsedAt === undefined || now - grant.lastUsedAt >= LAST_USED_RESOLUTION_MS) {
-      await ctx.runMutation(internal.metrics.recordScrape, { id: grant.id, at: now });
-    }
+    const scraper = await authenticateBearer(ctx, request, "metrics");
+    if (!scraper.ok) return metricsUnauthorized();
     return new Response(await ctx.runQuery(internal.metrics.exposition, {}), {
       status: 200,
       headers: { "Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store" },

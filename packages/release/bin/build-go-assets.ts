@@ -108,6 +108,24 @@ const targets: Target[] = [
     package: "./apps/cache-service/cmd/erainfra-cache-service",
     ldflags: `-s -w -buildid= -X main.version=${version}`,
   },
+  // The `erainfra` operator CLI. It runs on an operator's own machine, so it ships for the same
+  // five platforms as the Infra Agent. Nothing pins its digest, but version-only ldflags keep it
+  // reproducible by the same rule as every other binary here.
+  ...(
+    [
+      { os: "linux", arch: "amd64" },
+      { os: "linux", arch: "arm64" },
+      { os: "darwin", arch: "amd64" },
+      { os: "darwin", arch: "arm64" },
+      { os: "windows", arch: "amd64" },
+    ] as const
+  ).map(({ os, arch }) => ({
+    os,
+    arch,
+    output: path.join(releaseOut, assetName("erainfra", os, arch)),
+    package: "./apps/erainfra-cli/cmd/erainfra",
+    ldflags: `-s -w -buildid= -X main.version=${version}`,
+  })),
 ];
 
 rmSync(runtimeOut, { recursive: true, force: true });

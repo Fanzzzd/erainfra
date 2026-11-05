@@ -1,0 +1,9 @@
+{
+  "name": "@erainfra/erainfra-cli",
+  "private": true,
+  "scripts": {
+    "build": "mkdir -p dist && go build -o dist/erainfra ./cmd/erainfra",
+    "test": "go test ./...",
+    "typecheck": "go vet ./..."
+  }
+}

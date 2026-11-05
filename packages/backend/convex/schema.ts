@@ -28,6 +28,25 @@ export default defineSchema({
     invitedBy: v.optional(v.id("users")),
   }).index("by_tokenHash", ["tokenHash"]),
 
+  // Bearer credentials for the operator API (/api/v1/*) and `GET /metrics`,
+  // minted by a signed-in operator in the dashboard. `scope` decides which
+  // (apiTokenPolicy.ts). Only the SHA-256 of a token is stored, like
+  // signupGrants, so a database export holds nothing a client could present;
+  // `hint` is its first characters so the dashboard can tell tokens apart.
+  // Several may be live at once, so a token is rotated without a gap. A revoked
+  // row is kept, not deleted, so the dashboard still shows what was revoked and
+  // when.
+  apiTokens: defineTable({
+    name: v.string(),
+    scope: v.union(v.literal("read"), v.literal("admin"), v.literal("metrics")),
+    tokenHash: v.string(),
+    hint: v.string(),
+    createdBy: v.optional(v.id("users")),
+    createdAt: v.number(),
+    lastUsedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+  }).index("by_tokenHash", ["tokenHash"]),
+
   // Failed-bootstrap throttle. At most one row: bootstrap is a single
   // instance-wide event, and Convex mutations cannot see a client address, so
   // the counter is deliberately global rather than per-caller.
@@ -534,22 +553,6 @@ export default defineSchema({
     machineId: v.id("machines"),
     benchmark: storedBenchmarkValidator,
   }).index("by_machine", ["machineId"]),
-
-  // Bearer tokens for `GET /metrics`. Minted in the dashboard and shown once; only the SHA-256 is
-  // stored, so a database export holds nothing a scraper could present. Several may be live at
-  // once so a token can be rotated without a scrape gap: mint the new one, update Prometheus,
-  // revoke the old one. A revoked row stays for the audit trail and is refused at the door.
-  metricsTokens: defineTable({
-    label: v.string(),
-    tokenHash: v.string(),
-    // The first characters of the token, so an operator can match a row to a scrape config
-    // without the dashboard ever showing the secret again.
-    prefix: v.string(),
-    createdAt: v.number(),
-    createdBy: v.optional(v.id("users")),
-    lastUsedAt: v.optional(v.number()),
-    revokedAt: v.optional(v.number()),
-  }).index("by_tokenHash", ["tokenHash"]),
 
   // Where alert notifications go. The URL and signing secret are write-only: dashboard queries
   // return `urlHint`, never `url` or `signingSecret`. A Slack incoming-webhook URL is itself the

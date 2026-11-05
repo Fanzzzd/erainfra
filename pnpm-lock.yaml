@@ -197,6 +197,8 @@ importers:
         specifier: catalog:next-compat
         version: 5.9.3
 
+  apps/erainfra-cli: {}
+
   apps/hub:
     dependencies:
       '@fastify/static':

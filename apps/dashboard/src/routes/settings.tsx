@@ -6,6 +6,7 @@ import { BellRing, Check, Clipboard, KeyRound, Plus, Send, Trash2 } from "lucide
 import { toast } from "sonner";
 import { api } from "@erainfra/backend/api";
 import type { Id } from "@erainfra/backend/dataModel";
+import { ApiTokens } from "@/components/api-tokens";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { StatusDot, type Tone } from "@/components/status";
@@ -66,18 +67,22 @@ function SettingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Settings"
-        description="Alert rules and where they notify, and the bearer tokens Prometheus scrapes with."
+        description="Alert rules and where they notify, the Prometheus endpoint, and the API tokens the CLI and Prometheus authenticate with."
       />
       <Tabs defaultValue="alerts">
         <TabsList>
           <TabsTrigger value="alerts">Alerts</TabsTrigger>
           <TabsTrigger value="metrics">Metrics</TabsTrigger>
+          <TabsTrigger value="tokens">API tokens</TabsTrigger>
         </TabsList>
         <TabsContent value="alerts" className="mt-6 space-y-6">
           <AlertsSettings />
         </TabsContent>
         <TabsContent value="metrics" className="mt-6 space-y-6">
           <MetricsSettings />
+        </TabsContent>
+        <TabsContent value="tokens" className="mt-6 space-y-6">
+          <ApiTokens />
         </TabsContent>
       </Tabs>
     </div>
@@ -1017,19 +1022,16 @@ function scrapeConfig(endpoint: URL) {
 }
 
 function MetricsSettings() {
-  const tokens = useQuery(api.metrics.listTokens);
-  const mint = useMutation(api.metrics.mintToken);
-  const revoke = useMutation(api.metrics.revokeToken);
-  const now = useNow();
+  const create = useMutation(api.apiTokens.create);
   const [label, setLabel] = useState("prometheus");
   const [minted, setMinted] = useState<string>();
   const [error, setError] = useState<string>();
   const endpoint = new URL("/metrics", convexSiteUrl());
 
-  async function create() {
+  async function mint() {
     setError(undefined);
     try {
-      const result = await mint({ label });
+      const result = await create({ name: label, scope: "metrics" });
       setMinted(result.token);
     } catch (caught) {
       setError(errorMessage(caught, "Could not create a token"));
@@ -1037,125 +1039,56 @@ function MetricsSettings() {
   }
 
   return (
-    <>
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle>Prometheus endpoint</CardTitle>
-          <CardDescription>
-            Fleet state in Prometheus text format: Workers by readiness, slots, queue depth and age,
-            recent queue wait and run time, benchmark scores. The README lists every metric.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4 py-4 text-xs text-muted-foreground">
-          <code className="block rounded-md border border-border bg-sunken px-3 py-2 font-mono text-secondary-foreground">
-            GET {endpoint.toString()}
-          </code>
-          {minted === undefined ? (
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-              <div className="flex-1">
-                <Field label="Token label" id="metrics-label">
-                  <Input
-                    id="metrics-label"
-                    value={label}
-                    onChange={(event) => setLabel(event.target.value)}
-                  />
-                </Field>
-              </div>
-              <Button type="button" onClick={() => void create()}>
-                <KeyRound />
-                Create token
-              </Button>
+    <Card>
+      <CardHeader className="border-b">
+        <CardTitle>Prometheus endpoint</CardTitle>
+        <CardDescription>
+          Fleet state in Prometheus text format: Workers by readiness, slots, queue depth and age,
+          recent queue wait and run time, benchmark scores. The README lists every metric.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 py-4 text-xs text-muted-foreground">
+        <code className="block rounded-md border border-border bg-sunken px-3 py-2 font-mono text-secondary-foreground">
+          GET {endpoint.toString()}
+        </code>
+        {minted === undefined ? (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <Field label="Token name" id="metrics-label">
+                <Input
+                  id="metrics-label"
+                  value={label}
+                  onChange={(event) => setLabel(event.target.value)}
+                />
+              </Field>
             </div>
-          ) : (
-            <SecretOnce
-              title="Metrics token"
-              value={minted}
-              note="Shown once; only its SHA-256 is stored. Save it to the credentials file below. To rotate, create a new token, reload Prometheus, then revoke the old one."
-              onDismiss={() => setMinted(undefined)}
-            >
-              <pre className="overflow-x-auto rounded-md border border-border bg-sunken p-3 font-mono text-[11px] leading-5 text-secondary-foreground">
-                {scrapeConfig(endpoint)}
-              </pre>
-            </SecretOnce>
-          )}
-          {error !== undefined && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b">
-          <CardTitle>Tokens</CardTitle>
-          <CardDescription>A revoked token is refused on its next scrape.</CardDescription>
-        </CardHeader>
-        <Table className="min-w-[700px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[200px]">Label</TableHead>
-              <TableHead className="w-[180px]">Token</TableHead>
-              <TableHead className="w-[160px]">Created</TableHead>
-              <TableHead className="w-[160px]">Last scrape</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {tokens === undefined ? (
-              <TableRowsSkeleton columns={5} rows={1} />
-            ) : tokens.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={5} className="p-0">
-                  <EmptyState
-                    icon={KeyRound}
-                    title="No tokens"
-                    description="/metrics refuses every request until a token exists."
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              tokens.map((token) => (
-                <TableRow key={token._id}>
-                  <TableCell className="text-sm text-secondary-foreground">{token.label}</TableCell>
-                  <TableCell className="font-mono text-[11px] text-muted-foreground">
-                    {token.prefix}…
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatRelativeTime(token.createdAt, now)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {token.lastUsedAt === undefined
-                      ? "Never"
-                      : `${formatRelativeTime(token.lastUsedAt, now)} (5 min resolution)`}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {token.revokedAt !== undefined ? (
-                      <Badge variant="outline">
-                        revoked {formatRelativeTime(token.revokedAt, now)}
-                      </Badge>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          if (window.confirm(`Revoke "${token.label}"? Scrapes using it stop.`)) {
-                            void revoke({ id: token._id }).catch((caught: unknown) =>
-                              toast.error(errorMessage(caught, "Could not revoke the token")),
-                            );
-                          }
-                        }}
-                      >
-                        Revoke
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </Card>
-    </>
+            <Button type="button" onClick={() => void mint()}>
+              <KeyRound />
+              Create metrics token
+            </Button>
+          </div>
+        ) : (
+          <SecretOnce
+            title="Metrics token"
+            value={minted}
+            note="Shown once; only its SHA-256 is stored. Save it to the credentials file below. To rotate, create a new token, reload Prometheus, then revoke the old one under API tokens."
+            onDismiss={() => setMinted(undefined)}
+          >
+            <pre className="overflow-x-auto rounded-md border border-border bg-sunken p-3 font-mono text-[11px] leading-5 text-secondary-foreground">
+              {scrapeConfig(endpoint)}
+            </pre>
+          </SecretOnce>
+        )}
+        <p className="leading-5">
+          A metrics token can scrape and do nothing else. Read and admin tokens can scrape too.
+          Every token is listed, and revoked, under API tokens.
+        </p>
+        {error !== undefined && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+      </CardContent>
+    </Card>
   );
 }
