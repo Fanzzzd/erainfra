@@ -1240,8 +1240,9 @@ the artifacts, and publishes:
   as the Infra Agent;
 - `erainfra-mesh-<os>-<arch>` binaries and SHA-256 sidecars for the same five targets as the
   Infra Agent: the Node-to-Node sidecar on iroh that replaces dumbpipe (ADR 0016,
-  [apps/mesh/README.md](apps/mesh/README.md)). Linux builds are static musl binaries. The Infra
-  Agent does not use them yet, and `AGENT_RELEASE` does not pin them yet; both arrive together in
+  [apps/mesh/README.md](apps/mesh/README.md)). Linux builds are static musl binaries. Services
+  require both fleet membership and explicit per-exposure `allowed_peers` grants; omitted or
+  empty grants deny access. The Infra Agent does not use these binaries yet, and `AGENT_RELEASE` does not pin them yet; both arrive together in
   the change that retires dumbpipe.
 
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never

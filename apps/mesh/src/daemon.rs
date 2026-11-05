@@ -72,11 +72,29 @@ impl Config {
 }
 
 struct Exposure {
-    spec: ExposeSpec,
     target: SocketAddr,
+    max_connections: u32,
+    // Each authorization has its own cancellation generation. Streams clone the token under
+    // this lock, so replacing the list cannot miss a stream admitted concurrently. Retained
+    // peers keep their token; removed peers' tokens are cancelled before the update returns.
+    allowed_peers: RwLock<BTreeMap<EndpointId, CancellationToken>>,
     counters: Arc<Counters>,
     slots: Arc<Semaphore>,
     cancel: CancellationToken,
+}
+
+impl Exposure {
+    fn set_allowed_peers(&self, peers: BTreeMap<EndpointId, CancellationToken>) {
+        let mut current = self.allowed_peers.write().expect("exposure access lock");
+        let next = peers
+            .into_iter()
+            .map(|(id, token)| (id, current.remove(&id).unwrap_or(token)))
+            .collect();
+        for revoked in current.values() {
+            revoked.cancel();
+        }
+        *current = next;
+    }
 }
 
 struct LinkRuntime {
@@ -284,6 +302,7 @@ impl Daemon {
         .chain(saved.exposures.iter().map(|(name, e)| Request::Expose {
             name: name.clone(),
             target: e.target.clone(),
+            allowed_peers: e.allowed_peers.clone(),
             max_connections: Some(e.max_connections),
         }))
         .chain(saved.links.iter().map(|(name, l)| Request::Link {
@@ -331,8 +350,9 @@ impl Daemon {
             Request::Expose {
                 name,
                 target,
+                allowed_peers,
                 max_connections,
-            } => self.expose(&mut inner, name, target, max_connections),
+            } => self.expose(&mut inner, name, target, allowed_peers, max_connections),
             Request::Unexpose { name } => self.unexpose(&mut inner, &name),
             Request::Link {
                 name,
@@ -434,34 +454,58 @@ impl Daemon {
         inner: &mut Inner,
         name: String,
         target: String,
+        allowed_peers: Vec<String>,
         max_connections: Option<u32>,
     ) -> Result<Value, ApiError> {
         api::validate_name("service", &name)?;
         let target = api::parse_target(&target)?;
         let max = api::max_connections(max_connections)?;
+        // Validate the whole set before changing anything. These are explicit grants, not
+        // inferred from current fleet membership or from links configured on this Node.
+        let peers = allowed_peers
+            .iter()
+            .map(|id| api::parse_endpoint_id(id).map(|id| (id, CancellationToken::new())))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let spec = ExposeSpec {
             target: target.to_string(),
             max_connections: max,
+            allowed_peers: peers.keys().map(ToString::to_string).collect(),
         };
         if inner.desired.exposures.get(&name) == Some(&spec) {
             return Ok(json!({ "changed": false }));
         }
-        let exposure = Arc::new(Exposure {
-            spec: spec.clone(),
-            target,
-            counters: Arc::new(Counters::default()),
-            slots: Arc::new(Semaphore::new(max as usize)),
-            cancel: CancellationToken::new(),
-        });
-        let old = self
+        let existing = self
             .exposures
-            .write()
+            .read()
             .expect("exposures lock")
-            .insert(name.clone(), exposure);
-        if let Some(old) = old {
-            old.cancel.cancel();
+            .get(&name)
+            .cloned();
+        if let Some(existing) = existing
+            && existing.target == target
+            && existing.max_connections == max
+        {
+            // Authorization-only updates revoke removed peers' streams while retaining the
+            // other peers' streams and the exposure's counters.
+            existing.set_allowed_peers(peers);
+        } else {
+            let exposure = Arc::new(Exposure {
+                target,
+                max_connections: max,
+                allowed_peers: RwLock::new(peers),
+                counters: Arc::new(Counters::default()),
+                slots: Arc::new(Semaphore::new(max as usize)),
+                cancel: CancellationToken::new(),
+            });
+            let old = self
+                .exposures
+                .write()
+                .expect("exposures lock")
+                .insert(name.clone(), exposure);
+            if let Some(old) = old {
+                old.cancel.cancel();
+            }
         }
-        info!(service = %name, %target, max_connections = max, "exposed");
+        info!(service = %name, %target, max_connections = max, allowed_peers = spec.allowed_peers.len(), "exposed");
         inner.desired.exposures.insert(name, spec);
         Ok(json!({ "changed": true }))
     }
@@ -614,10 +658,18 @@ impl Daemon {
                 .iter()
                 .map(|name| {
                     let e = &map[name];
+                    let allowed_peers = e
+                        .allowed_peers
+                        .read()
+                        .expect("exposure access lock")
+                        .keys()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
                     let mut v = json!({
                         "name": name,
-                        "target": e.spec.target,
-                        "max_connections": e.spec.max_connections,
+                        "target": e.target.to_string(),
+                        "max_connections": e.max_connections,
+                        "allowed_peers": allowed_peers,
                     });
                     merge(&mut v, e.counters.json());
                     v
@@ -825,8 +877,9 @@ async fn accept_loop(daemon: Arc<Daemon>) {
                 match conn.accept_bi().await {
                     Ok((send, recv)) => {
                         let exposures = daemon.exposures.clone();
+                        let fleet = daemon.fleet.clone();
                         let idle = daemon.idle;
-                        tokio::spawn(serve_stream(peer, send, recv, exposures, idle));
+                        tokio::spawn(serve_stream(peer, send, recv, exposures, fleet, idle));
                     }
                     Err(e) => {
                         debug!(peer = %peer.fmt_short(), error = %e, "peer connection ended");
@@ -844,6 +897,7 @@ async fn serve_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     exposures: Arc<RwLock<HashMap<String, Arc<Exposure>>>>,
+    fleet: Arc<Fleet>,
     idle: Duration,
 ) {
     let service =
@@ -864,6 +918,39 @@ async fn serve_stream(
         refuse(&mut send, &mut recv, proxy::STATUS_UNKNOWN_SERVICE).await;
         return;
     };
+    let grant = exposure
+        .allowed_peers
+        .read()
+        .expect("exposure access lock")
+        .get(&peer)
+        .cloned();
+    let Some(grant) = grant.filter(|_| fleet.contains(&peer)) else {
+        exposure
+            .counters
+            .connections_refused
+            .fetch_add(1, Ordering::Relaxed);
+        warn!(peer = %peer.fmt_short(), %service, "peer is not authorized for this exposure");
+        refuse(&mut send, &mut recv, proxy::STATUS_FORBIDDEN).await;
+        return;
+    };
+    // The grant covers the entire lifetime, including target connection and the status byte.
+    // Checking before connecting prevents an unauthorized fleet peer from touching the target.
+    tokio::select! {
+        biased;
+        _ = grant.cancelled() => {}
+        _ = exposure.cancel.cancelled() => {}
+        _ = serve_authorized_stream(peer, &service, send, recv, &exposure, idle) => {}
+    }
+}
+
+async fn serve_authorized_stream(
+    peer: EndpointId,
+    service: &str,
+    mut send: SendStream,
+    mut recv: RecvStream,
+    exposure: &Exposure,
+    idle: Duration,
+) {
     let Ok(_permit) = exposure.slots.clone().try_acquire_owned() else {
         exposure
             .counters
@@ -905,13 +992,8 @@ async fn serve_stream(
     }
     let _active = ActiveGuard::new(exposure.counters.clone());
     let (tr, tw) = tcp.into_split();
-    tokio::select! {
-        r = proxy::splice(tr, tw, recv, send, &exposure.counters, idle) => {
-            if let Err(e) = r {
-                debug!(peer = %peer.fmt_short(), %service, error = %e, "stream ended");
-            }
-        }
-        _ = exposure.cancel.cancelled() => {}
+    if let Err(e) = proxy::splice(tr, tw, recv, send, &exposure.counters, idle).await {
+        debug!(peer = %peer.fmt_short(), %service, error = %e, "stream ended");
     }
 }
 

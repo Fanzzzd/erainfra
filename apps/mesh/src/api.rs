@@ -40,6 +40,10 @@ pub enum Request {
     Expose {
         name: String,
         target: String,
+        /// Explicit service grants. Fleet membership alone grants no exposure access.
+        /// Missing and empty lists both deny everyone.
+        #[serde(default)]
+        allowed_peers: Vec<String>,
         #[serde(default)]
         max_connections: Option<u32>,
     },
@@ -191,7 +195,7 @@ pub fn validate_name(kind: &str, name: &str) -> Result<(), ApiError> {
 
 /// Parses an exposure target. Only a literal loopback address with a non-zero port is accepted.
 ///
-/// An exposure hands any fleet peer a TCP connection to its target, so a non-loopback target would
+/// An exposure hands authorized fleet peers a TCP connection to its target, so a non-loopback target would
 /// turn the Node into a relay into whatever network it sits on. Host names are refused too: what
 /// `localhost` resolves to is configuration, not a guarantee.
 pub fn parse_target(target: &str) -> Result<SocketAddr, ApiError> {

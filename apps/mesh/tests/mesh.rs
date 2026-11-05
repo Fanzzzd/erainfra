@@ -15,6 +15,166 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+/// A refused or revoked stream closes without returning any service data.
+async fn assert_closed(stream: &mut TcpStream) {
+    let mut byte = [0u8; 1];
+    match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await {
+        Ok(Ok(0) | Err(_)) => {}
+        Ok(Ok(n)) => panic!("unauthorized stream returned {n} bytes: {byte:?}"),
+        Err(_) => {
+            panic!("authorization revocation must close the stream without waiting for reconnect")
+        }
+    }
+}
+
+#[tokio::test]
+async fn exposure_grants_are_default_deny() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::start(dir.path(), "a").await;
+    let mut b = Node::start(dir.path(), "b").await;
+    a.set_fleet(&[&b]).await;
+    b.set_fleet(&[&a]).await;
+    let echo = echo_server().await;
+    let listen = a.link("db", &b, "db").await;
+    for explicit_empty in [false, true] {
+        let mut expose = json!({"v":1,"op":"expose","name":"db","target":echo.to_string()});
+        if explicit_empty {
+            expose["allowed_peers"] = json!([]);
+        }
+        b.ok(expose).await;
+        let mut client = TcpStream::connect(listen).await.unwrap();
+        client.write_all(b"deny by default").await.unwrap();
+        assert_closed(&mut client).await;
+    }
+    let status = b.status().await;
+    assert_eq!(status["exposures"][0]["allowed_peers"], json!([]));
+    assert_eq!(status["exposures"][0]["connections_total"], 0);
+    assert_eq!(status["exposures"][0]["connections_refused"], 2);
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn exposure_authorization_is_scoped_and_revocation_closes_existing_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::start(dir.path(), "a").await;
+    let mut b = Node::start(dir.path(), "b").await;
+    let mut c = Node::start(dir.path(), "c").await;
+    a.set_fleet(&[&b, &c]).await;
+    b.set_fleet(&[&a, &c]).await;
+    c.set_fleet(&[&a, &b]).await;
+    let echo = echo_server().await;
+    let expose = |peers: serde_json::Value| json!({"v":1,"op":"expose","name":"db","target":echo.to_string(),"allowed_peers":peers});
+    b.ok(expose(json!([a.id()]))).await;
+    let a_listen = a.link("db", &b, "db").await;
+    let c_listen = c.link("db", &b, "db").await;
+    let mut a_live = TcpStream::connect(a_listen).await.unwrap();
+    a_live.write_all(b"a").await.unwrap();
+    let mut byte = [0u8; 1];
+    a_live.read_exact(&mut byte).await.unwrap();
+    assert_eq!(byte, *b"a");
+
+    // C is a fleet member with a valid handshake, but has no grant to this exposure.
+    let mut c_denied = TcpStream::connect(c_listen).await.unwrap();
+    c_denied.write_all(b"c").await.unwrap();
+    assert_closed(&mut c_denied).await;
+    let status = b.status().await;
+    assert_eq!(status["fleet_rejections"], 0, "C passes fleet admission");
+    assert_eq!(
+        status["exposures"][0]["connections_total"], 1,
+        "C never reaches the target"
+    );
+    assert_eq!(status["exposures"][0]["connections_refused"], 1);
+
+    // Granting C access must not interrupt A's existing stream or reset counters.
+    b.ok(expose(json!([a.id(), c.id()]))).await;
+    a_live.write_all(b"b").await.unwrap();
+    a_live.read_exact(&mut byte).await.unwrap();
+    assert_eq!(byte, *b"b");
+    let mut c_live = TcpStream::connect(c_listen).await.unwrap();
+    c_live.write_all(b"c").await.unwrap();
+    c_live.read_exact(&mut byte).await.unwrap();
+    assert_eq!(byte, *b"c");
+
+    // Canonical peer sets are idempotent regardless of ordering or duplicate entries.
+    assert_eq!(
+        b.ok(expose(json!([c.id(), a.id(), c.id()]))).await["changed"],
+        false
+    );
+    let invalid = b.call(expose(json!(["not-an-endpoint-id"]))).await;
+    assert_eq!(invalid["ok"], false);
+    assert_eq!(invalid["error"]["code"], "bad_request");
+
+    // Revoke only A. Its live stream closes without reconnecting; C's stream keeps serving.
+    b.ok(expose(json!([c.id()]))).await;
+    assert_closed(&mut a_live).await;
+    c_live.write_all(b"d").await.unwrap();
+    c_live.read_exact(&mut byte).await.unwrap();
+    assert_eq!(byte, *b"d");
+    let mut a_denied = TcpStream::connect(a_listen).await.unwrap();
+    a_denied.write_all(b"x").await.unwrap();
+    assert_closed(&mut a_denied).await;
+    let status = b.status().await;
+    assert_eq!(status["exposures"][0]["allowed_peers"], json!([c.id()]));
+    assert_eq!(status["exposures"][0]["connections_total"], 2);
+    assert!(
+        status["fleet"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == a.id()),
+        "revoking a service grant does not remove A from the fleet"
+    );
+    a.stop().await;
+    b.stop().await;
+    c.stop().await;
+}
+
+#[tokio::test]
+async fn legacy_saved_exposures_load_without_implicit_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::start(dir.path(), "a").await;
+    let mut b = Node::start_with(dir.path(), "b", true, None).await;
+    a.set_fleet(&[&b]).await;
+    b.set_fleet(&[&a]).await;
+    let echo = echo_server().await;
+    b.ok(
+        json!({"v":1,"op":"expose","name":"db","target":echo.to_string(),"allowed_peers":[a.id()]}),
+    )
+    .await;
+    let listen = a.link("db", &b, "db").await;
+    assert_eq!(round_trip(listen, b"authorized").await, b"authorized");
+    let state_path = b.state.as_ref().unwrap().join("state.json");
+    b.stop().await;
+
+    // Earlier, undeployed v1 state had no per-exposure authorization field. Read it, but
+    // never infer grants from the saved fleet, links or prior all-fleet behavior.
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    state["exposures"]["db"]
+        .as_object_mut()
+        .unwrap()
+        .remove("allowed_peers");
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let mut b = Node::start_with(dir.path(), "b", true, None).await;
+    a.set_fleet(&[&b]).await;
+    b.set_fleet(&[&a]).await;
+    assert_eq!(b.status().await["exposures"][0]["allowed_peers"], json!([]));
+    let mut denied = TcpStream::connect(listen).await.unwrap();
+    denied.write_all(b"no inherited access").await.unwrap();
+    assert_closed(&mut denied).await;
+    b.ok(
+        json!({"v":1,"op":"expose","name":"db","target":echo.to_string(),"allowed_peers":[a.id()]}),
+    )
+    .await;
+    assert_eq!(
+        round_trip(listen, b"explicit again").await,
+        b"explicit again"
+    );
+    a.stop().await;
+    b.stop().await;
+}
+
 #[tokio::test]
 async fn expose_and_link_carry_a_tcp_echo() {
     let dir = tempfile::tempdir().unwrap();
@@ -113,7 +273,7 @@ async fn a_peer_outside_the_fleet_is_rejected_before_any_data() {
     let a = Node::start(dir.path(), "a").await;
     let mut b = Node::start(dir.path(), "b").await;
     let echo = echo_server().await;
-    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string()}))
+    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string(),"allowed_peers":[a.id()]}))
         .await;
     b.set_fleet(&[&a]).await;
 
@@ -169,7 +329,7 @@ async fn a_member_that_the_peer_does_not_list_is_rejected() {
     let mut a = Node::start(dir.path(), "a").await;
     let mut b = Node::start(dir.path(), "b").await;
     let echo = echo_server().await;
-    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string()}))
+    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string(),"allowed_peers":[a.id()]}))
         .await;
     // A lists B, but B does not list A.
     a.set_fleet(&[&b]).await;
@@ -192,7 +352,7 @@ async fn a_node_refuses_to_dial_outside_its_fleet() {
     let mut a = Node::start(dir.path(), "a").await;
     let mut b = Node::start(dir.path(), "b").await;
     let echo = echo_server().await;
-    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string()}))
+    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string(),"allowed_peers":[a.id()]}))
         .await;
     b.set_fleet(&[&a]).await;
     // A links to B without listing it: nothing is dialed, the TCP client is closed.
@@ -262,7 +422,7 @@ async fn operations_are_idempotent_by_name() {
     let (mut a, mut b, listen) = linked_pair(dir.path()).await;
     let echo = b.status().await["exposures"][0]["target"].clone();
 
-    let expose = json!({"v":1,"op":"expose","name":"echo","target":echo});
+    let expose = json!({"v":1,"op":"expose","name":"echo","target":echo,"allowed_peers":[a.id()]});
     assert_eq!(b.ok(expose.clone()).await["changed"], false);
 
     let link = json!({"v":1,"op":"link","name":"echo","peer":b.id(),"service":"echo","listen":"127.0.0.1:0"});
@@ -290,7 +450,7 @@ async fn operations_are_idempotent_by_name() {
     );
     assert_eq!(a.ok(fixed).await["changed"], false);
     assert_eq!(round_trip(listen, b"still works").await, b"still works");
-    let bigger = json!({"v":1,"op":"expose","name":"echo","target":echo,"max_connections":10});
+    let bigger = json!({"v":1,"op":"expose","name":"echo","target":echo,"allowed_peers":[a.id()],"max_connections":10});
     assert_eq!(b.ok(bigger).await["changed"], true);
     assert_eq!(b.status().await["exposures"][0]["max_connections"], 10);
     assert_eq!(round_trip(listen, b"and again").await, b"and again");
@@ -317,7 +477,7 @@ async fn the_endpoint_id_and_configuration_survive_a_restart() {
     let mut a = Node::start_with(dir.path(), "a", true, None).await;
     let mut b = Node::start_with(dir.path(), "b", true, None).await;
     let echo = echo_server().await;
-    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string()}))
+    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string(),"allowed_peers":[a.id()]}))
         .await;
     a.set_fleet(&[&b]).await;
     b.set_fleet(&[&a]).await;
@@ -366,7 +526,7 @@ async fn an_idle_connection_is_closed() {
     let mut a = Node::start_with(dir.path(), "a", false, Some(Duration::from_millis(400))).await;
     let mut b = Node::start_with(dir.path(), "b", false, Some(Duration::from_millis(400))).await;
     let echo = echo_server().await;
-    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string()}))
+    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string(),"allowed_peers":[a.id()]}))
         .await;
     a.set_fleet(&[&b]).await;
     b.set_fleet(&[&a]).await;

@@ -42,6 +42,10 @@ impl std::fmt::Debug for RelaysSpec {
 pub struct ExposeSpec {
     pub target: String,
     pub max_connections: u32,
+    /// Earlier, undeployed v1 state has no grants. Loading it must deny everyone, not
+    /// recreate all-fleet access or infer authorization from saved links.
+    #[serde(default)]
+    pub allowed_peers: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

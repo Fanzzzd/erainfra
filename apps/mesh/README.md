@@ -57,29 +57,31 @@ What it protects:
 - **The endpoint key.** Whoever holds it is the Node. `init` writes it mode 0600 through a temporary
   file and a hard link, so it is never partly written and never overwritten. `daemon` refuses a key
   file that group or others can read or write, as ssh does.
-- **The services a Node exposes.** Only the targets named by `expose` can be reached, only on a
-  loopback address, and only by fleet peers.
+- **The services a Node exposes.** A peer must be in the current fleet and in that exposure's
+  explicit `allowed_peers` list. An omitted or empty list denies everyone. Admission is checked
+  against the authenticated connection's EndpointId before connecting to the loopback target.
 - **The relay token.** It is sent only to the configured relays, never to n0's, and only over
   https. No log line carries it, at any level (a test captures iroh's trace output to check), and
   `status` reports only `auth_token_set`. With `--state` it is saved in the owner-only state file.
 
 Who it defends against:
 
-| Adversary                                      | Defence                                                                                                                                                                                                                                                                                           |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Any iroh endpoint on the internet              | iroh's TLS 1.3 handshake authenticates the peer's EndpointId. The `after_handshake` hook then closes the connection with code 403 unless that id is in the fleet list, before either side can open a stream. `status.fleet_rejections` counts these.                                              |
-| A relay, ours or n0's                          | Relays forward packets they cannot decrypt. A relay can drop or delay traffic, and learns which EndpointIds talk to which.                                                                                                                                                                        |
-| A Node removed from the fleet                  | `set_fleet` closes its live connections at once, and the hook refuses its next handshake.                                                                                                                                                                                                         |
-| This Node dialing somewhere it should not      | The `before_connect` hook refuses to dial an EndpointId outside the fleet, and there is no discovery service: a peer is dialed only at the addresses `set_fleet` gave.                                                                                                                            |
-| A fleet peer asking for more than it was given | It can open streams only to services this Node exposes, by name. Unknown names are refused. Targets are loopback addresses, so a peer cannot pivot into the Node's network. Concurrency is capped per exposure and per link, and per peer connection at 1024 streams.                             |
-| Another local user                             | The control socket is mode 0660, so only the daemon's user and group can drive it. Run the daemon as its own user and put the Infra Agent in its group. On Windows the named pipe keeps Windows' default security, under which only the creating user, Administrators and SYSTEM may write to it. |
+| Adversary                                      | Defence                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Any iroh endpoint on the internet              | iroh's TLS 1.3 handshake authenticates the peer's EndpointId. The `after_handshake` hook then closes the connection with code 403 unless that id is in the fleet list, before either side can open a stream. `status.fleet_rejections` counts these.                                                                             |
+| A relay, ours or n0's                          | Relays forward packets they cannot decrypt. A relay can drop or delay traffic, and learns which EndpointIds talk to which.                                                                                                                                                                                                       |
+| A Node removed from the fleet                  | `set_fleet` closes its live connections at once, and the hook refuses its next handshake.                                                                                                                                                                                                                                        |
+| This Node dialing somewhere it should not      | The `before_connect` hook refuses to dial an EndpointId outside the fleet, and there is no discovery service: a peer is dialed only at the addresses `set_fleet` gave.                                                                                                                                                           |
+| A fleet peer asking for more than it was given | Fleet membership alone grants no service access. Each stream requires an explicit grant to its authenticated EndpointId in that exposure's `allowed_peers`; missing or empty grants deny everyone. Removing a grant closes that peer's streams without interrupting retained peers. Only the named loopback target is forwarded. |
+| Another local user                             | The control socket is mode 0660, so only the daemon's user and group can drive it. Run the daemon as its own user and put the Infra Agent in its group. On Windows the named pipe keeps Windows' default security, under which only the creating user, Administrators and SYSTEM may write to it.                                |
 
 What it does not defend against:
 
-- **A compromised fleet member.** Any fleet peer can reach every service this Node exposes. The
-  allowlist is per fleet, not per service.
-- **Anyone who can write to the control socket.** The control API can expose any loopback port of
-  this Node to the fleet and link to any fleet peer. Group membership is the whole access check.
+- **A compromised authorized consumer.** It can use the services explicitly granted to its
+  EndpointId. Services must still authenticate their own clients where needed; mesh authorization
+  controls which Node can reach a service, not which application user it represents.
+- **Anyone who can write to the control socket.** The control API can grant access to any loopback
+  port of this Node and link to any fleet peer. Group membership is the local access check.
 - **Linking to 0.0.0.0.** A link listening on `0.0.0.0` (needed so containers reach it through
   the Docker bridge) is reachable from the Node's LAN too. Use `127.0.0.1` or the bridge address
   where that matters.
@@ -101,9 +103,11 @@ echoed in the response. Unknown fields are an error rather than ignored.
 ```
 
 Every operation that changes state is idempotent by name. Repeating it returns
-`"changed": false` and does nothing. Sending a different value under the same name replaces the old
-one and returns `"changed": true`; the replaced link or exposure's open connections are closed and
-its counters start again from zero.
+`"changed": false` and does nothing. An exposure's `allowed_peers` is compared as a set, so order
+and duplicate ids make no difference. Sending a different value under the same name returns `"changed": true`.
+Replacing a link or changing an exposure's target or limit closes its connections and resets its
+counters. Changing only `allowed_peers` closes streams of removed peers, while retained peers'
+streams and the exposure's counters continue.
 
 ### status
 
@@ -140,6 +144,7 @@ its counters start again from zero.
     {
       "name": "pg",
       "target": "127.0.0.1:5432",
+      "allowed_peers": ["9f1c…"],
       "max_connections": 256,
       "bytes_sent": 0,
       "bytes_received": 0,
@@ -222,13 +227,25 @@ for `status` but does not rank relays. A token over plain `http` is refused.
 ### expose and unexpose
 
 ```json
-{"v":1,"op":"expose","name":"pg","target":"127.0.0.1:5432","max_connections":256}
+{"v":1,"op":"expose","name":"pg","target":"127.0.0.1:5432","allowed_peers":["9f1c…"],"max_connections":256}
 {"v":1,"op":"unexpose","name":"pg"}
 ```
 
 `target` must be a literal loopback address and a non-zero port: `127.0.0.0/8` or `[::1]`. Host
 names such as `localhost` are refused (`invalid_target`), as is every other address.
+`allowed_peers` is an explicit list of consumer EndpointIds. Both current fleet membership and
+membership in this list are required on every stream, before the target TCP connection opens.
+Omitting the field or sending `[]` denies everyone; there is no wildcard or all-fleet default.
+The future controller/Hub integration will derive grants from declared mesh links. This daemon
+never infers grants from its fleet list or local link configuration.
+
+Replacing the list closes removed peers' existing streams immediately. Retained peers' streams
+and counters continue. A malformed EndpointId rejects the whole request without changing grants.
 `max_connections` defaults to 256. `unexpose` closes the service's open streams.
+
+Saved state includes `allowed_peers`. Earlier, undeployed v1 state files without this field still
+load, but their exposures deny everyone until an explicit grant is sent. No fleet-wide access is
+preserved or inferred. This default-deny tightening remains API v1 because no version has deployed.
 
 ### link and unlink
 
@@ -240,8 +257,9 @@ names such as `localhost` are refused (`invalid_target`), as is every other addr
 `listen` is `PORT`, `:PORT` or `IP:PORT`. A bare port listens on `127.0.0.1`; any other address,
 `0.0.0.0` included, has to be written out. Port 0 picks a free port, and the result's `listen`
 gives the bound address. A link may name a peer that is not in the fleet yet; its connections are
-refused until it is (`peer_in_fleet` in `status`). `unlink` closes the listener and every
-connection it carries.
+refused until it is (`peer_in_fleet` in `status`). The exposing Node must also explicitly grant
+this Node's EndpointId access to `service`; creating a link grants nothing on the remote Node.
+`unlink` closes the listener and every connection it carries.
 
 ### Errors
 
@@ -261,8 +279,9 @@ Names (`name`, `service`) are 1 to 64 characters of `A-Z a-z 0-9 . _ -`. A reque
 
 Peers connect with ALPN `erainfra/tcp/1`. A link opens one QUIC bidirectional stream per TCP
 connection and writes the service name, a big-endian `u16` length followed by the name. The exposing
-Node answers with one status byte: `0` accepted, `1` no such service, `2` target unreachable, `3` at
-the connection limit. After `0`, both directions carry raw bytes, and a TCP half-close becomes a
+Node answers with one status byte: `0` accepted, `1` no such service, `2` target unreachable,
+`3` at the connection limit, `4` not authorized for this exposure. After `0`, both directions carry
+raw bytes, and a TCP half-close becomes a
 stream finish. The link sends its first bytes without waiting for the answer, which saves a round
 trip per connection.
 

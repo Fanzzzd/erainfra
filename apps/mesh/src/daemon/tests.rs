@@ -192,7 +192,7 @@ async fn links_connect_through_a_relay_when_no_direct_address_is_known() {
     });
     call(
         &b.daemon,
-        json!({"v":1,"op":"expose","name":"echo","target":echo_addr.to_string()}),
+        json!({"v":1,"op":"expose","name":"echo","target":echo_addr.to_string(),"allowed_peers":[a.endpoint_id().to_string()]}),
     )
     .await
     .unwrap();

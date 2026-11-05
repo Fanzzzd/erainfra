@@ -26,6 +26,7 @@ pub const STATUS_OK: u8 = 0;
 pub const STATUS_UNKNOWN_SERVICE: u8 = 1;
 pub const STATUS_TARGET_UNREACHABLE: u8 = 2;
 pub const STATUS_BUSY: u8 = 3;
+pub const STATUS_FORBIDDEN: u8 = 4;
 
 pub fn status_text(status: u8) -> &'static str {
     match status {
@@ -33,6 +34,7 @@ pub fn status_text(status: u8) -> &'static str {
         STATUS_UNKNOWN_SERVICE => "the peer exposes no such service",
         STATUS_TARGET_UNREACHABLE => "the peer could not reach the service's target",
         STATUS_BUSY => "the peer's exposure is at its connection limit",
+        STATUS_FORBIDDEN => "this endpoint is not authorized for the peer's service",
         _ => "unknown status",
     }
 }

@@ -160,7 +160,7 @@ pub async fn linked_pair(dir: &Path) -> (Node, Node, SocketAddr) {
     let a = Node::start(dir, "a").await;
     let b = Node::start(dir, "b").await;
     let echo = echo_server().await;
-    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string()}))
+    b.ok(json!({"v":1,"op":"expose","name":"echo","target":echo.to_string(),"allowed_peers":[a.id()]}))
         .await;
     a.set_fleet(&[&b]).await;
     b.set_fleet(&[&a]).await;
