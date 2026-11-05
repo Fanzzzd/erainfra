@@ -47,7 +47,7 @@ func TestRetireWithoutApplyOnlyReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !plan.Found || plan.ID != 7 || plan.Deleted || len(fake.deleted) != 0 {
+	if !plan.Found || !plan.StatisticsKnown || plan.ID != 7 || plan.Deleted || len(fake.deleted) != 0 {
 		t.Fatalf("dry run changed something: %+v, deleted %v", plan, fake.deleted)
 	}
 }
@@ -100,6 +100,39 @@ func TestRetireResolvesANamedRunnerGroup(t *testing.T) {
 	plan, err := Retire(t.Context(), fake, "rc-linux-js", "ci", true, false)
 	if err != nil || !plan.Deleted {
 		t.Fatalf("plan %+v err %v", plan, err)
+	}
+}
+
+func TestRetireRefusesUnknownStatisticsUnlessForced(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		apply      bool
+		force      bool
+		wantError  bool
+		wantDelete bool
+	}{
+		{name: "dry run"},
+		{name: "apply", apply: true, wantError: true},
+		{name: "force", apply: true, force: true, wantDelete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := idle(7)
+			set.Statistics = nil
+			fake := &retireFake{scaleSet: set}
+			plan, err := Retire(t.Context(), fake, "rc-linux-js", "", tc.apply, tc.force)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("plan %+v, err %v; wantError %v", plan, err, tc.wantError)
+			}
+			if tc.wantError && !strings.Contains(err.Error(), "--force") {
+				t.Fatalf("refusal must explain the explicit override: %v", err)
+			}
+			if plan.StatisticsKnown {
+				t.Fatal("missing statistics must remain unknown")
+			}
+			if plan.Deleted != tc.wantDelete || (len(fake.deleted) > 0) != tc.wantDelete {
+				t.Fatalf("unexpected deletion: plan %+v, calls %v", plan, fake.deleted)
+			}
+		})
 	}
 }
 

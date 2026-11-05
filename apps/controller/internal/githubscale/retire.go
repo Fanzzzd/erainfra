@@ -17,13 +17,14 @@ type RetireClient interface {
 
 // RetirePlan is what Retire found, and what it did when asked to act.
 type RetirePlan struct {
-	Name         string
-	Found        bool
-	ID           int
-	BusyRunners  int
-	AssignedJobs int
-	RunningJobs  int
-	Deleted      bool
+	Name            string
+	Found           bool
+	ID              int
+	StatisticsKnown bool
+	BusyRunners     int
+	AssignedJobs    int
+	RunningJobs     int
+	Deleted         bool
 }
 
 // Busy reports whether GitHub still counts work on the scale set.
@@ -36,10 +37,10 @@ func (p RetirePlan) Busy() bool {
 // Stopping a controller leaves its scale set registered: GitHub keeps routing
 // `runs-on: <name>` jobs to it, and with no listener they sit queued until
 // GitHub cancels them after 24 hours. Retiring is the explicit inverse of
-// EnsureScaleSet. It refuses while GitHub reports busy runners or assigned or
-// running jobs, because deleting the scale set under a running job orphans
-// that job's runner; force overrides that for a scale set whose controller is
-// already gone and whose counters will never drain.
+// EnsureScaleSet. It refuses when activity statistics are missing, or while
+// GitHub reports busy runners or assigned or running jobs, because deleting
+// the scale set under a running job orphans that job's runner. Force overrides
+// either check for a scale set whose controller is gone for good.
 func Retire(ctx context.Context, client RetireClient, name, runnerGroup string, apply, force bool) (RetirePlan, error) {
 	plan := RetirePlan{Name: strings.TrimSpace(name)}
 	if client == nil {
@@ -66,12 +67,16 @@ func Retire(ctx context.Context, client RetireClient, name, runnerGroup string, 
 	plan.Found = true
 	plan.ID = existing.ID
 	if stats := existing.Statistics; stats != nil {
+		plan.StatisticsKnown = true
 		plan.BusyRunners = stats.TotalBusyRunners
 		plan.AssignedJobs = stats.TotalAssignedJobs
 		plan.RunningJobs = stats.TotalRunningJobs
 	}
 	if !apply {
 		return plan, nil
+	}
+	if !plan.StatisticsKnown && !force {
+		return plan, fmt.Errorf("scale set %q has unknown activity statistics; refusing deletion without --force", plan.Name)
 	}
 	if plan.Busy() && !force {
 		return plan, fmt.Errorf(
