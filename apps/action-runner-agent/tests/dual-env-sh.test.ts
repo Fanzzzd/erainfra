@@ -67,8 +67,16 @@ describe("dual_env_resolve", () => {
     },
     { name: "neither", env: {}, want: "<unset>" },
     // `${RC_X:-default}` already treated empty as unset; so does the new name.
-    { name: "new empty, legacy set", env: { ERAINFRA_PROFILE: "", RC_PROFILE: "old" }, want: "old" },
-    { name: "legacy empty, new set", env: { ERAINFRA_PROFILE: "new", RC_PROFILE: "" }, want: "new" },
+    {
+      name: "new empty, legacy set",
+      env: { ERAINFRA_PROFILE: "", RC_PROFILE: "old" },
+      want: "old",
+    },
+    {
+      name: "legacy empty, new set",
+      env: { ERAINFRA_PROFILE: "new", RC_PROFILE: "" },
+      want: "new",
+    },
     { name: "both empty", env: { ERAINFRA_PROFILE: "", RC_PROFILE: "" }, want: "" },
   ];
   for (const shell of ["sh", "bash"]) {

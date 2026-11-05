@@ -35,14 +35,14 @@ export class DualEnvConflictError extends Error {
   readonly newName: string;
   readonly legacyName: string;
 
-  constructor(newName: string, legacyName: string) {
+  constructor(current: string, legacy: string) {
     super(
-      `${newName} and ${legacyName} are both set, to different values; ` +
+      `${current} and ${legacy} are both set, to different values; ` +
         "remove one, or give both the same value",
     );
     this.name = "DualEnvConflictError";
-    this.newName = newName;
-    this.legacyName = legacyName;
+    this.newName = current;
+    this.legacyName = legacy;
   }
 }
 
@@ -71,17 +71,20 @@ export function dualEnv(
  * than at the first Attempt that reads the variable.
  */
 export function assertNoDualEnvConflicts(env: NodeJS.ProcessEnv = process.env) {
-  const conflicts = Object.keys(env)
-    .filter((name) => name.startsWith(LEGACY_PREFIX) && name.length > LEGACY_PREFIX.length)
-    .sort()
-    .flatMap((legacy) => {
-      try {
-        dualEnv(legacy as LegacyName, env);
-        return [];
-      } catch (error) {
-        return error instanceof DualEnvConflictError ? [error.message] : [];
-      }
-    });
+  const legacyNames = Object.keys(env).filter(
+    (name) => name.startsWith(LEGACY_PREFIX) && name.length > LEGACY_PREFIX.length,
+  );
+  // False positive: filter() has already produced a fresh array, so sort()
+  // mutates nothing. toSorted() is ES2023 and this package targets ES2022.
+  // oxlint-disable-next-line unicorn/no-array-sort
+  const conflicts = legacyNames.sort().flatMap((legacy) => {
+    try {
+      dualEnv(legacy as LegacyName, env);
+      return [];
+    } catch (error) {
+      return error instanceof DualEnvConflictError ? [error.message] : [];
+    }
+  });
   if (conflicts.length > 0) {
     throw new Error(conflicts.join("\n"));
   }

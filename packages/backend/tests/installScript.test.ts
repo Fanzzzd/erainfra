@@ -1927,7 +1927,10 @@ exit 0
     expect(legacy).toContain(`RC_MACHINE_TOKEN_FILE=${MACHINE_TOKEN_PATH}\n`);
 
     for (const [label, env] of [
-      ["only the new name", legacy.replace("RC_MACHINE_TOKEN_FILE=", "ERAINFRA_MACHINE_TOKEN_FILE=")],
+      [
+        "only the new name",
+        legacy.replace("RC_MACHINE_TOKEN_FILE=", "ERAINFRA_MACHINE_TOKEN_FILE="),
+      ],
       [
         "both names, equal",
         legacy.replace(
@@ -1964,9 +1967,7 @@ exit 0
 
     const rerun = ctlRun(sandbox, ["--profile", PROFILE], AS_WORKER);
     expect(rerun.status).toBe(1);
-    expect(rerun.stderr).toContain(
-      "ERAINFRA_MACHINE_TOKEN_FILE and RC_MACHINE_TOKEN_FILE in",
-    );
+    expect(rerun.stderr).toContain("ERAINFRA_MACHINE_TOKEN_FILE and RC_MACHINE_TOKEN_FILE in");
     expect(rerun.stderr).toContain("are both set, to different values");
     expect(rerun.stderr).not.toContain("elsewhere");
     expect(readFileSync(token, "utf8")).toBe(before);

@@ -11,7 +11,9 @@ import { describe, it } from "node:test";
 import { PROVISION_WIN } from "./helpers/harness.ts";
 
 const SOURCE = readFileSync(PROVISION_WIN, "utf8");
-const HELPER = /^function Resolve-DualEnv\(\[string\] \$Name\) \{\n[\s\S]*?\n\}\n/m.exec(SOURCE)?.[0];
+const HELPER = /^function Resolve-DualEnv\(\[string\] \$Name\) \{\n[\s\S]*?\n\}\n/m.exec(
+  SOURCE,
+)?.[0];
 
 const located = spawnSync("sh", ["-c", "command -v pwsh"], { encoding: "utf8" });
 const PWSH = located.status === 0 ? located.stdout.trim() : undefined;
@@ -21,13 +23,15 @@ describe("provision-win.ps1 Resolve-DualEnv", () => {
     assert.ok(HELPER, "provision-win.ps1 has no Resolve-DualEnv");
     const resolved = /foreach \(\$dualName in @\(([^)]*)\)\)/.exec(SOURCE);
     assert.ok(resolved, "provision-win.ps1 never calls Resolve-DualEnv");
-    const names = [...resolved[1].matchAll(/'(RC_[A-Z0-9_]+)'/g)].map((match) => match[1]);
+    const names = new Set([...resolved[1].matchAll(/'(RC_[A-Z0-9_]+)'/g)].map((match) => match[1]));
     const read = [
-      ...SOURCE.matchAll(/Get-(?:EnvOrDefault|TimeoutEnv|PositiveIntEnv|RequiredEnv) '(RC_[A-Z0-9_]+)'/g),
+      ...SOURCE.matchAll(
+        /Get-(?:EnvOrDefault|TimeoutEnv|PositiveIntEnv|RequiredEnv) '(RC_[A-Z0-9_]+)'/g,
+      ),
     ].map((match) => match[1]);
     assert.ok(read.length >= 3, `found only ${read.length} RC_ reads`);
     for (const name of read) {
-      assert.ok(names.includes(name), `${name} is read but never passed to Resolve-DualEnv`);
+      assert.ok(names.has(name), `${name} is read but never passed to Resolve-DualEnv`);
       assert.ok(
         SOURCE.indexOf(resolved[0]) < SOURCE.indexOf(`'${name}'`, SOURCE.indexOf(resolved[0]) + 1),
         `${name} is resolved after it is read`,
@@ -37,25 +41,41 @@ describe("provision-win.ps1 Resolve-DualEnv", () => {
 
   const run = (env: Record<string, string>) => {
     const script = `$ErrorActionPreference = 'Stop'\n${HELPER}\nResolve-DualEnv 'RC_HOME'\n[Console]::Out.Write([Environment]::GetEnvironmentVariable('RC_HOME'))`;
-    const result = spawnSync(PWSH ?? "pwsh", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
-      encoding: "utf8",
-    });
+    const result = spawnSync(
+      PWSH ?? "pwsh",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
+        encoding: "utf8",
+      },
+    );
     return { code: result.status, stdout: result.stdout, stderr: result.stderr };
   };
 
   const cases: { name: string; env: Record<string, string>; want?: string; conflict?: true }[] = [
     { name: "only the legacy name", env: { RC_HOME: "C:\\old" }, want: "C:\\old" },
     { name: "only the new name", env: { ERAINFRA_HOME: "C:\\new" }, want: "C:\\new" },
-    { name: "both, equal", env: { ERAINFRA_HOME: "C:\\same", RC_HOME: "C:\\same" }, want: "C:\\same" },
+    {
+      name: "both, equal",
+      env: { ERAINFRA_HOME: "C:\\same", RC_HOME: "C:\\same" },
+      want: "C:\\same",
+    },
     {
       name: "both, different",
       env: { ERAINFRA_HOME: "C:\\value-under-new", RC_HOME: "C:\\value-under-old" },
       conflict: true,
     },
     // -ne would call these equal.
-    { name: "differ only in case", env: { ERAINFRA_HOME: "C:\\Work", RC_HOME: "C:\\work" }, conflict: true },
-    { name: "new blank, legacy set", env: { ERAINFRA_HOME: " ", RC_HOME: "C:\\old" }, want: "C:\\old" },
+    {
+      name: "differ only in case",
+      env: { ERAINFRA_HOME: "C:\\Work", RC_HOME: "C:\\work" },
+      conflict: true,
+    },
+    {
+      name: "new blank, legacy set",
+      env: { ERAINFRA_HOME: " ", RC_HOME: "C:\\old" },
+      want: "C:\\old",
+    },
     { name: "neither", env: {}, want: "" },
   ];
   for (const testCase of cases) {

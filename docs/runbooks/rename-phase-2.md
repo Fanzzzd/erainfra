@@ -40,6 +40,62 @@ the legacy systemd name as an alias, but start/restart logic must detect either 
 already active, and prove the other is inactive. Apply the same rule to the launchd label and to
 each Controller Profile.
 
+#### What the dual-name release implements
+
+The release after v0.2.0-rc.10 ships the environment and CLI half of this step. Nothing it does
+renames a unit, path or asset, so `rc update` installs it like any other release.
+
+**Environment.** Every `RC_<NAME>` read by the controller, the runtime, the Action Runner Agent,
+its provisioners, the Firecracker host provisioner and `/install --role controller` also accepts
+`ERAINFRA_<NAME>`. `_FILE` secret variants follow the same rule. The rules are the same everywhere:
+the `ERAINFRA_` name wins, an empty value is unset under either name (as an empty `RC_` value always
+was), and both set to different values stops the process at startup naming both variables and
+neither value. There is one helper per language, each with table tests for the old name only, the
+new name only, both equal, both different and the empty cases:
+
+| Language   | Helper                                                                      | Used by                                                                                                 |
+| ---------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Go         | `internal/dualenv` (`Check` at startup, then `Value`)                       | controller, runtime                                                                                     |
+| TypeScript | `apps/action-runner-agent/dual-env.ts`                                      | the Agent; it checks at import, before it registers                                                     |
+| sh         | `dual_env_resolve`, one identical copy per script                           | `provision-docker.sh`, `provision-linux.sh`, `provision-mac.sh`, `deploy/provision-firecracker-host.sh` |
+| PowerShell | `Resolve-DualEnv`                                                           | `provision-win.ps1`                                                                                     |
+| bash       | `ctl_env_file_value`, reading the kept env file rather than the environment | `/install --role controller` rerun (`MACHINE_TOKEN_FILE`)                                               |
+
+The writers are unchanged: the installers write `RC_` env files, `start-agent.sh` and
+`start-agent.ps1` export `RC_` names, and the Agent passes `RC_` names to the runtime and the
+provisioners. That keeps rollback to v0.2.0-rc.10 safe. When the Agent sets an `RC_` name for a
+child process, it drops any inherited `ERAINFRA_` twin, so a value in the Agent's own environment
+cannot override what the Agent decided for that Attempt. The Infra Agent's `PORTLESS_*` dual-read
+(`apps/infra-agent/internal/rename`) is the precedent; unlike it, this release does not warn when
+only the old name is set, because its own writers still set the old names on every Attempt. The
+cache service reads no `RC_` names. A job's own `RC_VCPUS` and `RC_MEMORY_MIB` stay as they are.
+
+**CLI.** `erainfra worker <command>` runs `~/.runner-center/bin/rc` (`rc.ps1` through PowerShell on
+Windows) with the same arguments, streams and exit code. ADR 0011 reserves `erainfra` for the
+operator CLI and `erainfra worker` for this, so the Worker tool is dispatched from that binary
+rather than installed as a second program under the `erainfra` name. `rc` is unchanged.
+
+**Not renamed by this release.** These keep their names until the step named beside each:
+
+| Identifier                                                                                                                                                                                                                                        | Migrated by                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `~/.runner-center` (`%USERPROFILE%\.runner-center`), `runner-center-agent.service`, `center.runner.agent`, the `rc` command and its `# runner-center` PATH line                                                                                   | section 2                                     |
+| `runner-center-controller@<profile>`, the `runner-center-controller` account and binary, `/etc/runner-center/profiles/` and `secrets/`                                                                                                            | section 3                                     |
+| `/usr/local/lib/runner-center`, `/etc/runner-center`, `/var/lib/runner-center`, `/opt/runner-center`, `thinpool.env` and its `RC_POOL_*` lines                                                                                                    | section 4                                     |
+| `runner-center-runtime.service`, the socket `/run/runner-center/runtime.sock`, the `runner-center` group, containerd namespace, CNI network and nftables table `inet runner-center`, `runner-center-containerd.service`, `runner-center-thinpool` | section 4                                     |
+| the `RUNNER_CENTER_RESULT` and `RUNNER_CENTER_WARM_READY` console markers and the guest's `runner-center` MMDS key                                                                                                                                | section 4, with a guest image that reads both |
+| the `runner-center.profile` Docker label                                                                                                                                                                                                          | section 2                                     |
+| `runner-center-runtime`, `runner-center-controller` and `runner-center-guest` binaries and release assets, and the `runner-center-ubuntu-24.04-js` GHCR image                                                                                     | a release that publishes both names           |
+| Convex tables, function modules and the routes in `convex/http.ts`                                                                                                                                                                                | never, as stated above                        |
+
+#### What the migrate and contract releases still have to do
+
+- Migrate: start writing `ERAINFRA_` names in the installers, `start-agent.*` and the Agent's child
+  environments, and add the warning for an `RC_` name found alone. Ship the service-alias logic,
+  the state-directory move and rollback above, and the Controller env swap in section 3.
+- Contract: after the observation window, remove the `RC_` readers, `rc`, and the legacy units and
+  paths in a separately announced release.
+
 ### 2. Upgrade Workers through `rc update`
 
 Use the command already present on every Worker:

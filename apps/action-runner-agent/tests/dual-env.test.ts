@@ -34,8 +34,16 @@ describe("dualEnv", () => {
     { name: "neither", env: {}, want: undefined },
     // `process.env.RC_X?.trim() || default` treated empty as unset, so both
     // names still do, and an empty name cannot conflict with a set one.
-    { name: "new empty, legacy set", env: { ERAINFRA_PROFILE: "", RC_PROFILE: "old" }, want: "old" },
-    { name: "legacy empty, new set", env: { ERAINFRA_PROFILE: "new", RC_PROFILE: "" }, want: "new" },
+    {
+      name: "new empty, legacy set",
+      env: { ERAINFRA_PROFILE: "", RC_PROFILE: "old" },
+      want: "old",
+    },
+    {
+      name: "legacy empty, new set",
+      env: { ERAINFRA_PROFILE: "new", RC_PROFILE: "" },
+      want: "new",
+    },
     { name: "both empty", env: { ERAINFRA_PROFILE: "", RC_PROFILE: "" }, want: undefined },
   ];
   for (const testCase of cases) {

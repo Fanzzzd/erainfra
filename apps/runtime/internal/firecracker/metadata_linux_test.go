@@ -21,14 +21,14 @@ func TestMetadataCarriesTheCacheEndpointToTheGuest(t *testing.T) {
 		CacheServiceV2: "false",
 	}
 	tree := metadataFor(spec)
-	runnerCenter := tree["latest"].(map[string]any)["meta-data"].(map[string]any)["runner-center"].(map[string]any)
-	if runnerCenter["cache_url"] != spec.CacheURL {
-		t.Fatalf("cache_url = %v, want %q", runnerCenter["cache_url"], spec.CacheURL)
+	guestMetadata := tree["latest"].(map[string]any)["meta-data"].(map[string]any)["runner-center"].(map[string]any)
+	if guestMetadata["cache_url"] != spec.CacheURL {
+		t.Fatalf("cache_url = %v, want %q", guestMetadata["cache_url"], spec.CacheURL)
 	}
-	if runnerCenter["cache_service_v2"] != spec.CacheServiceV2 {
-		t.Fatalf("cache_service_v2 = %v, want %q", runnerCenter["cache_service_v2"], spec.CacheServiceV2)
+	if guestMetadata["cache_service_v2"] != spec.CacheServiceV2 {
+		t.Fatalf("cache_service_v2 = %v, want %q", guestMetadata["cache_service_v2"], spec.CacheServiceV2)
 	}
-	if _, present := runnerCenter["actions_runtime_token"]; present {
+	if _, present := guestMetadata["actions_runtime_token"]; present {
 		t.Fatal("the artifact-service pair must never enter MMDS")
 	}
 }
@@ -41,9 +41,9 @@ func TestMetadataCarriesTheRunnerBearerToTheGuest(t *testing.T) {
 		CacheRunnerToken: "erainfra-cache-runner-v1.payload.signature",
 	}
 	tree := metadataFor(spec)
-	runnerCenter := tree["latest"].(map[string]any)["meta-data"].(map[string]any)["runner-center"].(map[string]any)
-	if runnerCenter["cache_runner_token"] != spec.CacheRunnerToken {
-		t.Fatalf("cache_runner_token = %v, want %q", runnerCenter["cache_runner_token"], spec.CacheRunnerToken)
+	guestMetadata := tree["latest"].(map[string]any)["meta-data"].(map[string]any)["runner-center"].(map[string]any)
+	if guestMetadata["cache_runner_token"] != spec.CacheRunnerToken {
+		t.Fatalf("cache_runner_token = %v, want %q", guestMetadata["cache_runner_token"], spec.CacheRunnerToken)
 	}
 }
 

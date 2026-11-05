@@ -117,17 +117,13 @@ export function startAttemptMetrics(options: AttemptMetricsOptions): AttemptMetr
 
   let child: SamplerProcess;
   try {
-    child = (options.spawnSampler ?? defaultSpawn)(
-      runtimeBinary(),
-      ["sample"],
-      {
-        env: childEnvironment({
-          RC_EXECUTOR: options.executor,
-          RC_ATTEMPT_ID: options.attemptId,
-          RC_RUNNER_NAME: options.runnerName,
-        }),
-      },
-    );
+    child = (options.spawnSampler ?? defaultSpawn)(runtimeBinary(), ["sample"], {
+      env: childEnvironment({
+        RC_EXECUTOR: options.executor,
+        RC_ATTEMPT_ID: options.attemptId,
+        RC_RUNNER_NAME: options.runnerName,
+      }),
+    });
   } catch (error) {
     log(`${label}: sampler did not start: ${String(error)}`);
     return noMetrics;
