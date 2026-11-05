@@ -101,6 +101,21 @@ export function infraAgentAssetName(target: string) {
   return `infra-agent-${target}${target.startsWith("windows-") ? ".exe" : ""}`;
 }
 
+/**
+ * The targets a release publishes an `erainfra-mesh` binary for (ADR 0016), the Node-to-Node
+ * sidecar that replaces dumbpipe. The same five as the Infra Agent, because every Node runs both.
+ *
+ * Published but not yet pinned: `AgentRelease` gains a `mesh` map keyed by these targets, and the
+ * tag gate the coverage and pin-match checks `infraAgent` has, in the change that switches the
+ * Infra Agent from dumbpipe to this binary.
+ */
+export const MESH_TARGETS = INFRA_AGENT_TARGETS;
+
+/** The published asset name for a mesh target. Windows is the only one that carries an extension. */
+export function meshAssetName(target: string) {
+  return `erainfra-mesh-${target}${target.startsWith("windows-") ? ".exe" : ""}`;
+}
+
 /** The targets a release publishes a cache-service binary for, and `cacheService` must cover. */
 export const CACHE_SERVICE_TARGETS = ["linux-x86_64"] as const;
 

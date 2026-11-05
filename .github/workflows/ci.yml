@@ -225,3 +225,72 @@ jobs:
       - name: Verify the agent lockfile matches its manifest
         working-directory: apps/action-runner-agent
         run: npm ci --omit=dev --no-audit --no-fund
+
+  # erainfra-mesh (ADR 0016) is the only Rust in the tree, so it gets its own job rather than
+  # lengthening `check`. The toolchain comes from apps/mesh/rust-toolchain.toml, so this job, the
+  # release and a contributor's machine compile with the same rustc.
+  mesh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mesh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      # Caches the registry and compiled dependencies only; the crate itself always rebuilds.
+      # Keyed by Cargo.lock and the toolchain, so a dependency or compiler change starts cold.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/mesh
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      # Advisories, licenses, banned crates and sources, against the committed lock file
+      # (apps/mesh/deny.toml). A prebuilt binary checked against its published digest rather
+      # than a `cargo install`, which would compile cargo-deny on every run.
+      - name: cargo deny check
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          name="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/deny.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$name.tar.gz"
+          echo "$DENY_SHA256  $RUNNER_TEMP/deny.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/deny.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/$name/cargo-deny" --locked check
+      # A release builds these with exactly this script, so a dependency that stops compiling for
+      # musl or aarch64 fails here on the pull request instead of on the tag.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.1
+      - name: Install cargo-zigbuild
+        env:
+          ZIGBUILD_VERSION: 0.24.1
+          ZIGBUILD_SHA256: f09b180a517af0e4dd4bffc921bb88e5ab705452a9dd948c61e489b3020c68c2
+        run: |
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/zigbuild.tar.xz" \
+            "https://github.com/rust-cross/cargo-zigbuild/releases/download/v$ZIGBUILD_VERSION/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
+          echo "$ZIGBUILD_SHA256  $RUNNER_TEMP/zigbuild.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zigbuild"
+          tar -xJf "$RUNNER_TEMP/zigbuild.tar.xz" -C "$RUNNER_TEMP/zigbuild" --strip-components=1
+          echo "$RUNNER_TEMP/zigbuild" >> "$GITHUB_PATH"
+      - name: Cross-compile the Linux release targets
+        working-directory: .
+        run: |
+          node --experimental-strip-types packages/release/bin/build-mesh-assets.ts \
+            --target linux-x86_64 --target linux-arm64 --out dist/mesh-ci
+          file dist/mesh-ci/erainfra-mesh-linux-x86_64 | grep -E 'x86-64.*(statically|static-pie) linked'
+          file dist/mesh-ci/erainfra-mesh-linux-arm64 | grep -E 'ARM aarch64.*(statically|static-pie) linked'
+          test "$(dist/mesh-ci/erainfra-mesh-linux-x86_64 version)" = \
+            "erainfra-mesh $(node -p "require('./package.json').version")"
+      # The control socket is a named pipe on Windows, so that code only compiles there. The
+      # release builds it with MSVC on a Windows runner; Zig's MinGW lets this job type-check and
+      # lint the same cfg(windows) code on every pull request without one.
+      - name: Lint the Windows build
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          cargo-zigbuild clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warnings

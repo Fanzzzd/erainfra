@@ -268,6 +268,19 @@ architectures, asserts that the Infra Agent still links exactly one dependency, 
 an identifier a customer's machine already holds, and verifies that the npm lockfile used by
 installed Workers is current.
 
+`apps/mesh` is a Rust crate with its own gate. rustup installs the compiler that
+`apps/mesh/rust-toolchain.toml` pins:
+
+```bash
+cd apps/mesh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo deny --locked check   # cargo-deny 0.20.2; policy in apps/mesh/deny.toml
+```
+
+CI runs the same four and cross-compiles both Linux release targets with cargo-zigbuild.
+
 ## Deploy the control plane
 
 Deploy the Convex backend and static dashboard:
@@ -1209,10 +1222,11 @@ pull requests on machines that hold persistent credentials.
 
 ## Releases
 
-EraInfra is one product version: root, Agent, Controller, and Runtime versions must match.
-Tagging `v<version>` runs the release workflow, revalidates the JavaScript and Go surfaces
-(including both Linux architectures), rebuilds the agent archive and the Infra Agent binaries
-twice byte-for-byte, checks the deployment pin, attests the artifacts, and publishes:
+EraInfra is one product version: root, Agent, Controller, Runtime and `apps/mesh/Cargo.toml`
+versions must match. Tagging `v<version>` runs the release workflow, revalidates the JavaScript and
+Go surfaces (including both Linux architectures), rebuilds the agent archive, the Infra Agent
+binaries and the `erainfra-mesh` binaries twice byte-for-byte, checks the deployment pin, attests
+the artifacts, and publishes:
 
 - `erainfra-agent-<version>.tar.gz` plus SHA-256;
 - Controller binaries and SHA-256 sidecars for Linux/macOS x64/ARM64;
@@ -1223,7 +1237,13 @@ twice byte-for-byte, checks the deployment pin, attests the artifacts, and publi
 - `erainfra-cache-service-linux-x86_64` and its SHA-256 sidecar — the cache service (ADR 0009),
   one Linux target because it is a server an operator deploys, not a binary every Node runs;
 - `erainfra-<os>-<arch>` binaries and SHA-256 sidecars, the operator CLI, for the same five targets
-  as the Infra Agent.
+  as the Infra Agent;
+- `erainfra-mesh-<os>-<arch>` binaries and SHA-256 sidecars for the same five targets as the
+  Infra Agent: the Node-to-Node sidecar on iroh that replaces dumbpipe (ADR 0016,
+  [apps/mesh/README.md](apps/mesh/README.md)). Linux builds are static musl binaries. Services
+  require both fleet membership and explicit per-exposure `allowed_peers` grants; omitted or
+  empty grants deny access. The Infra Agent does not use these binaries yet, and `AGENT_RELEASE` does not pin them yet; both arrive together in
+  the change that retires dumbpipe.
 
 A version containing a hyphen is published as a GitHub prerelease. Release assets are never
 overwritten; a correction is a new version.
@@ -1248,6 +1268,7 @@ apps/controller           official scale-set listener adapter
 apps/runtime              Firecracker host runtime, job network policy, and guest bootstrap
 apps/infra-agent          Node daemon: outbound WS to the Hub, App deploys, host operations
 apps/erainfra-cli         the `erainfra` operator CLI over the control plane's /api/v1
+apps/mesh                 erainfra-mesh (Rust): Node-to-Node TCP links over iroh, fleet allowlist
 apps/hub                  Hub: Fastify + tRPC control plane for Nodes and Apps
 apps/hub-web              the Hub's dashboard
 apps/dashboard            React dashboard for the Convex control plane

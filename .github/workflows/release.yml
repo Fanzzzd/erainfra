@@ -13,7 +13,83 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # erainfra-mesh (ADR 0016) is Rust, and two of its five targets need their own OS: Apple's SDK
+  # cannot be shipped to a Linux runner, and MSVC only runs on Windows. The Linux musl targets
+  # cross-compile with cargo-zigbuild (see packages/release/src/mesh-assets.ts for why). Each runner
+  # builds twice from empty target directories and compares, the property the Go assets are held
+  # to below, then hands its assets to the release job, which checks, attests and publishes them
+  # with everything else. Nothing here is cached, for the same reason the release job caches nothing.
+  mesh:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            targets: --target linux-x86_64 --target linux-arm64
+          - runner: macos-latest
+            targets: --target darwin-arm64 --target darwin-x86_64
+          - runner: windows-latest
+            targets: --target windows-x86_64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGETS: ${{ matrix.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: runner.os == 'Linux'
+        with:
+          version: 0.17.1
+          use-cache: false
+      - name: Install cargo-zigbuild
+        if: runner.os == 'Linux'
+        env:
+          ZIGBUILD_VERSION: 0.24.1
+          ZIGBUILD_SHA256: f09b180a517af0e4dd4bffc921bb88e5ab705452a9dd948c61e489b3020c68c2
+        run: |
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/zigbuild.tar.xz" \
+            "https://github.com/rust-cross/cargo-zigbuild/releases/download/v$ZIGBUILD_VERSION/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
+          echo "$ZIGBUILD_SHA256  $RUNNER_TEMP/zigbuild.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zigbuild"
+          tar -xJf "$RUNNER_TEMP/zigbuild.tar.xz" -C "$RUNNER_TEMP/zigbuild" --strip-components=1
+          echo "$RUNNER_TEMP/zigbuild" >> "$GITHUB_PATH"
+      - name: Install the pinned Rust toolchain
+        working-directory: apps/mesh
+        run: rustup toolchain install
+      - name: Build erainfra-mesh
+        run: |
+          # TARGETS is word-split on purpose: it is a list of `--target <name>` flags.
+          # shellcheck disable=SC2086
+          node --experimental-strip-types packages/release/bin/build-mesh-assets.ts $TARGETS
+      - name: Verify erainfra-mesh is reproducible
+        run: |
+          # shellcheck disable=SC2086
+          node --experimental-strip-types packages/release/bin/build-mesh-assets.ts $TARGETS \
+            --out dist/mesh-recheck
+          for sidecar in dist/release/erainfra-mesh-*.sha256; do
+            asset=${sidecar%.sha256}
+            cmp "$asset" "dist/mesh-recheck/${asset##*/}"
+            echo "identical  $(cat "$sidecar")"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mesh-${{ runner.os }}
+          path: dist/release/erainfra-mesh-*
+          if-no-files-found: error
+          retention-days: 1
+
   release:
+    needs: mesh
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and upload its assets
@@ -46,8 +122,10 @@ jobs:
           agent=$(node -p "require('./apps/action-runner-agent/package.json').version")
           controller=$(node -p "require('./apps/controller/package.json').version")
           runtime=$(node -p "require('./apps/runtime/package.json').version")
-          if [ "$root" != "$agent" ] || [ "$root" != "$controller" ] || [ "$root" != "$runtime" ]; then
-            echo "Version drift: root=$root agent=$agent controller=$controller runtime=$runtime" >&2
+          mesh=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/mesh/Cargo.toml | head -n 1)
+          if [ "$root" != "$agent" ] || [ "$root" != "$controller" ] || [ "$root" != "$runtime" ] ||
+            [ "$root" != "$mesh" ]; then
+            echo "Version drift: root=$root agent=$agent controller=$controller runtime=$runtime mesh=$mesh" >&2
             exit 1
           fi
           if [ "$GITHUB_REF" != "refs/tags/v$root" ]; then
@@ -198,7 +276,8 @@ jobs:
       - name: Every Go asset targets the platform its name claims
         run: |
           for asset in dist/release/*; do
-            case "$asset" in *.sha256 | *.tar.gz) continue ;; esac
+            # erainfra-mesh is Rust and has no Go build info; the step after next checks it.
+            case "$asset" in *.sha256 | *.tar.gz | */erainfra-mesh-*) continue ;; esac
             name=${asset##*/}
             stem=${name%.exe}
             cpu=${stem##*-}
@@ -222,6 +301,48 @@ jobs:
             fi
             printf 'platform  %s  %s\n' "$name" "$declared"
           done
+
+      # The mesh job's five binaries join the Go assets here, after every step that rebuilds or
+      # wipes dist/release, so the attestation and the published-count check below cover them.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mesh-*
+          path: dist/release
+          merge-multiple: true
+
+      # The same two questions the Go assets answer above, asked of a Rust binary: did the bytes
+      # survive the hop between jobs, and does each file target the platform its name claims. A
+      # Rust binary carries no `go version -m` record, so `file` reads the ELF, Mach-O or PE
+      # header; Linux must also be static, because a musl binary that links anything dynamically
+      # would fail on a distribution without that library.
+      - name: Every erainfra-mesh asset is intact and targets the platform its name claims
+        run: |
+          node --experimental-strip-types --input-type=module <<'NODE'
+          import { MESH_TARGETS, meshAssetName } from "./packages/backend/convex/agentRelease.ts";
+          import { existsSync } from "node:fs";
+          for (const target of MESH_TARGETS) {
+            const asset = `dist/release/${meshAssetName(target)}`;
+            if (!existsSync(asset) || !existsSync(`${asset}.sha256`)) {
+              throw new Error(`${asset} or its sidecar is missing`);
+            }
+          }
+          NODE
+          (cd dist/release && sha256sum -c erainfra-mesh-*.sha256)
+          expect() {
+            description=$(file -b "dist/release/$1")
+            echo "$1: $description"
+            echo "$description" | grep -Eq "$2" || {
+              echo "$1 is not $2" >&2
+              exit 1
+            }
+          }
+          expect erainfra-mesh-linux-x86_64 '^ELF 64-bit .*x86-64.*(statically|static-pie) linked'
+          expect erainfra-mesh-linux-arm64 '^ELF 64-bit .*ARM aarch64.*(statically|static-pie) linked'
+          expect erainfra-mesh-darwin-x86_64 '^Mach-O 64-bit .*x86_64'
+          expect erainfra-mesh-darwin-arm64 '^Mach-O 64-bit .*arm64'
+          expect erainfra-mesh-windows-x86_64.exe '^PE32\+ executable .*x86-64'
+          chmod +x dist/release/erainfra-mesh-linux-x86_64
+          dist/release/erainfra-mesh-linux-x86_64 version | grep -Fx "erainfra-mesh $VERSION"
 
       # Same rule as the archive: bytes that do not match what this deployment pins are not
       # published, because the installer will refuse them and a Node would have no way to onboard.
@@ -289,7 +410,9 @@ jobs:
       # and silently omitted the eleven `.sha256` sidecars that `gh release create` uploads beside
       # them. `dist/release` holds exactly the built set — build-go-assets wipes and refills it with
       # 17 binaries and their sidecars, then package-agent adds the archive and its sidecar — so a
-      # future asset is covered the day it is built rather than the day someone remembers.
+      # future asset is covered the day it is built rather than the day someone remembers. The five
+      # erainfra-mesh binaries and their sidecars arrive from the mesh job before this step, so the
+      # glob covers them too.
       #
       # The three `deploy/` files are listed because they are verbatim repo files rather than build
       # output, and a customer who downloads `provision-firecracker-host.sh` from the release page
@@ -322,6 +445,11 @@ jobs:
               printf '    %s\n' "$(cat "$sidecar")"
             done
             printf '\n'
+            printf 'SHA-256 of the erainfra-mesh binaries (ADR 0016; not yet pinned or installed):\n\n'
+            for sidecar in dist/release/erainfra-mesh-*.sha256; do
+              printf '    %s\n' "$(cat "$sidecar")"
+            done
+            printf '\n'
             printf 'The release commit already pins these bytes in `AGENT_RELEASE`.\n'
             printf 'Roll the fleet forward with `pnpm run deploy:control-plane` after this workflow succeeds.\n'
             printf 'After that deploy, a single machine can be moved with `rc update`.\n'
@@ -340,6 +468,7 @@ jobs:
             dist/release/erainfra-linux-* \
             dist/release/erainfra-darwin-* \
             dist/release/erainfra-windows-* \
+            dist/release/erainfra-mesh-* \
             deploy/systemd/runner-center-runtime.service \
             deploy/systemd/runner-center-controller@.service \
             deploy/provision-firecracker-host.sh

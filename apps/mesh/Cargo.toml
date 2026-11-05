@@ -1,0 +1,57 @@
+[package]
+name = "erainfra-mesh"
+# Kept equal to the product version in the workspace root package.json; the release workflow
+# refuses a tag where they differ, exactly as it does for the Go and npm packages.
+version = "0.2.0-rc.10"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+license = "MIT"
+description = "Node-to-Node data plane for EraInfra on iroh: persistent identity, fleet allowlist, TCP links"
+
+[dependencies]
+# Exact pin: iroh 1.x promises wire and API stability, but this binary is attested and pinned by
+# digest, so a dependency moves only in a reviewed commit. Default features are off and only what
+# is used is named: ring for TLS, and `portmapper`, because a UPnP/NAT-PMP mapping is what lets
+# two NAT'd Nodes connect directly instead of relaying. iroh's `metrics` counters are not exported
+# by this binary, so they are left out.
+iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring", "portmapper"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "io-util",
+  "time",
+  "sync",
+  "signal",
+] }
+tokio-util = { version = "0.7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "env-filter",
+  "fmt",
+  "json",
+  "ansi",
+] }
+
+[dev-dependencies]
+iroh = { version = "=1.4.1", default-features = false, features = [
+  "tls-ring",
+  "portmapper",
+  "test-utils",
+] }
+tempfile = "3"
+
+[profile.release]
+# Stripped of symbols and debug info, so no build path or build id reaches the binary (the release
+# script remaps the rest). Thin LTO rather than fat: on this crate fat LTO with one codegen unit
+# took four minutes per target for no difference a network daemon would notice, and rustc's
+# output is deterministic either way.
+opt-level = 3
+lto = "thin"
+strip = "symbols"
+debug = false
+incremental = false

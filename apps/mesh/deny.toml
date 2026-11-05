@@ -1,0 +1,59 @@
+# cargo-deny policy for erainfra-mesh. CI runs `cargo deny check` against the committed Cargo.lock.
+
+[graph]
+all-features = false
+# The five release targets. Without this, crates only a wasm build of iroh would pull in are
+# judged too, though they never reach a shipped binary.
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# Any RustSec advisory against a crate in the lock file fails the check, including "unmaintained"
+# notices. An exception goes in `ignore` with the advisory id and the reason, never silently.
+yanked = "deny"
+ignore = [
+  # `paste` is archived. It is a proc macro, so it runs at compile time and puts no code of its own
+  # in the binary; it arrives through netlink-packet-core (iroh's netwatch) and has no fix upstream.
+  { id = "RUSTSEC-2024-0436", reason = "compile-time proc macro via iroh's netwatch; no runtime code" },
+]
+
+[licenses]
+# Permissive licenses, plus MPL-2.0: the binary is shipped to customers' machines. MPL-2.0 is
+# file-level copyleft that obliges sharing changes to the MPL files themselves, which we do not
+# make; it arrives through attohttpc in iroh's port mapper.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+deny = [
+  # ADR 0016: the core endpoint only. These are not 1.0 and gossip's next release breaks its wire.
+  { crate = "iroh-gossip", reason = "not 1.0; ADR 0016 keeps erainfra-mesh on iroh's core" },
+  { crate = "iroh-docs", reason = "not 1.0; ADR 0016 keeps erainfra-mesh on iroh's core" },
+  { crate = "iroh-blobs", reason = "not 1.0; ADR 0016 keeps erainfra-mesh on iroh's core" },
+  # A static musl binary cannot link the system OpenSSL; TLS is rustls with ring.
+  { crate = "openssl-sys", reason = "the binary is static; TLS is rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
