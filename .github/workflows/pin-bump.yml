@@ -1,0 +1,111 @@
+name: Toolchain pin bump
+
+# Moves the pins no package manager owns: actions/runner (the image, every
+# provisioner and the Docker executor's image digest), Node.js, Go, the GitHub
+# CLI, and the Actions images/ubuntu-24.04-js pre-downloads. scripts/pinbump
+# does the work and verifies every checksum against upstream's own source; this
+# workflow only runs it and opens one pull request with the result.
+#
+# The runner pin has a deadline. GitHub stops queueing jobs to a self-hosted
+# runner that has not taken a new release within 30 days of it, and every
+# Runner here registers with auto-update disabled. A weekly run leaves at least
+# three weeks to review, merge and roll out.
+on:
+  schedule:
+    - cron: "23 5 * * 1" # Mondays 05:23 UTC, after Dependabot's 04:00 run
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pin-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Pushing the branch and opening the pull request when PIN_BUMP_TOKEN
+      # is absent and the job falls back to GITHUB_TOKEN.
+      contents: write
+      pull-requests: write
+    env:
+      BRANCH: automation/pin-bump
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Move every pin to upstream's newest release
+        id: bump
+        env:
+          # Read-only API calls; the token only lifts the rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+          HAS_PIN_BUMP_TOKEN: ${{ secrets.PIN_BUMP_TOKEN != '' }}
+        run: |
+          # GITHUB_TOKEN can never push a change under .github/workflows (that
+          # takes the `workflows` permission, which it cannot be granted), and
+          # moving a seeded Action edits the workflows. Without PIN_BUMP_TOKEN
+          # that group is left for a run that has one.
+          skip=""
+          if [ "$HAS_PIN_BUMP_TOKEN" != true ]; then
+            skip=actions
+          fi
+          set +e
+          go run ./scripts/pinbump -summary "$RUNNER_TEMP/pin-bump.md" ${skip:+-skip "$skip"}
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/pin-bump.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
+          HAS_PIN_BUMP_TOKEN: ${{ secrets.PIN_BUMP_TOKEN != '' }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if git diff --quiet; then
+            echo "Every pin is current; nothing to propose."
+            exit 0
+          fi
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Weekly move of the hand-pinned toolchain to upstream's newest releases, made by \`scripts/pinbump\` from \`.github/workflows/pin-bump.yml\`. Each checksum below was read from the upstream named beside it, not computed from a download, except the source archives of seeded Actions, for which GitHub publishes none."
+            echo
+            cat "$RUNNER_TEMP/pin-bump.md"
+            echo
+            echo "Merging changes the provisioners and the Image Release source. The image itself still has to be published by the runner images workflow and its digest repinned in each Profile; see the README section \"Publish an Image Release\"."
+            echo
+            echo "The next scheduled run force-pushes \`$BRANCH\`, so put review fixes in a commit on top only if you merge before then."
+            if [ "$HAS_PIN_BUMP_TOKEN" != true ]; then
+              echo
+              echo "**CI has not run on this pull request.** It was opened with \`GITHUB_TOKEN\`, and GitHub does not start workflows for events that token causes. Close and reopen the pull request to run CI. Adding a \`PIN_BUMP_TOKEN\` secret (README, \"How pins move\") removes this step and lets the bump move the seeded Actions too."
+            fi
+          } > "$body"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$BRANCH"
+          git commit --all --quiet --message "chore(pins): move the hand-pinned toolchain to upstream's newest releases"
+          git push --force --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+          number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --body-file "$body"
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" \
+              --title "chore(pins): move the hand-pinned toolchain to upstream's newest releases" \
+              --body-file "$body"
+          fi
+      # A pin that could not be checked (upstream down, checksums that
+      # disagree, a pin the tool no longer finds) was left as it was and is
+      # listed in the summary. The pull request above still carries the pins
+      # that did check out; failing here makes the rest visible.
+      - name: Fail if any pin could not be checked
+        if: steps.bump.outputs.status != '0'
+        env:
+          STATUS: ${{ steps.bump.outputs.status }}
+        run: |
+          echo "scripts/pinbump exited $STATUS; the run summary lists what it could not check." >&2
+          exit 1

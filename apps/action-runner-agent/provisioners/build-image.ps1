@@ -58,8 +58,8 @@ param(
     [int] $ProvisionTimeoutMin = 60,
     # Keep in step with the Linux provisioner's runner pin. Both values come
     # from the actions/runner release; update them together.
-    [string] $RunnerVersion = '2.336.0',
-    [string] $RunnerSha256 = 'd59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162',
+    [string] $RunnerVersion = '2.338.2',
+    [string] $RunnerSha256 = 'a1f17aa987fc8158bc7521d284912267a0d01b7c2c4684b33c86783b5e8221cc',
     # The tooling every checkout needs, pinned exactly the way the runner above
     # is: a version, a SHA-256 of the vendor's own artifact, and no resolution
     # of "whatever is newest" at build time. Bump a version and its digest in

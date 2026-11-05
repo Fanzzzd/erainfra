@@ -62,7 +62,7 @@ fetch() {
   done
 }
 # ~200 MiB, the runner's own release asset, served from objects.githubusercontent.com after a redirect.
-fetch github_release "https://github.com/actions/runner/releases/download/v2.336.0/actions-runner-linux-x64-2.336.0.tar.gz"
+fetch github_release "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz"
 # ~22 MiB from the npm registry CDN.
 fetch npm_tarball "https://registry.npmjs.org/typescript/-/typescript-5.9.2.tgz"
 # ~5 MiB from the codeload host actions/checkout talks to for tarballs.

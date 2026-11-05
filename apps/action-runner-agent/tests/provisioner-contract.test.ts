@@ -107,6 +107,12 @@ describe("provisioner scripts", () => {
   });
 });
 
+function runnerImageRef(file: string) {
+  return /ghcr\.io\/actions\/actions-runner:[0-9.]+@sha256:[0-9a-f]{64}/.exec(
+    readFileSync(file, "utf8"),
+  )?.[0];
+}
+
 describe("pinned actions/runner release", () => {
   it("is a well formed version and SHA-256", () => {
     const { version, sha256 } = macRunnerPin();
@@ -133,6 +139,23 @@ describe("pinned actions/runner release", () => {
       const version = /actions-runner:(\d+\.\d+\.\d+)/.exec(readFileSync(file, "utf8"))?.[1];
       assert.equal(version, pinned, `${name} has drifted from the macOS runner pin`);
     }
+  });
+
+  it("pulls the Docker executor's runner image by the same digest everywhere", (t) => {
+    const catalog = fileURLToPath(
+      new URL("../../../packages/backend/convex/catalog.ts", import.meta.url),
+    );
+    if (!existsSync(catalog)) {
+      t.skip("the backend catalog is not present in this checkout");
+      return;
+    }
+    const linux = runnerImageRef(PROVISION_LINUX);
+    assert.ok(linux, "provision-linux.sh does not pin the runner image by digest");
+    assert.equal(
+      runnerImageRef(catalog),
+      linux,
+      "the catalog and provision-linux.sh pin different images",
+    );
   });
 
   it("matches the checksum GitHub publishes for that release", async (t) => {

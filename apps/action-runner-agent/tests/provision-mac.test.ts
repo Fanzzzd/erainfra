@@ -14,6 +14,15 @@ const DEFAULT_IMAGE = (() => {
   return match[1] as string;
 })();
 
+// The runner release the script pins, read the same way, so a version bump
+// edits the script and not these fixtures.
+const RUNNER_VERSION = (() => {
+  const match = /^RC_RUNNER_VERSION_DEFAULT="([^"]+)"$/m.exec(readFileSync(PROVISION_MAC, "utf8"));
+  assert.ok(match, "provision-mac.sh no longer declares RC_RUNNER_VERSION_DEFAULT");
+  return match[1] as string;
+})();
+const RUNNER_TARBALL = `actions-runner-osx-arm64-${RUNNER_VERSION}.tar.gz`;
+
 const harnesses: Harness[] = [];
 function newHarness(options?: { tarballContent?: string }) {
   const harness = new Harness(options);
@@ -132,15 +141,15 @@ describe("provision-mac.sh pinned runner", () => {
     const result = await harness.run(PROVISION_MAC);
 
     assert.equal(result.code, 0);
-    assert.match(
-      harness.argv(),
-      /https:\/\/github\.com\/actions\/runner\/releases\/download\/v2\.336\.0\/actions-runner-osx-arm64-2\.336\.0\.tar\.gz/,
-    );
     assert.ok(
-      existsSync(
-        join(harness.home, ".runner-center", "cache", "actions-runner-osx-arm64-2.336.0.tar.gz"),
-      ),
+      harness
+        .argv()
+        .includes(
+          `https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_TARBALL}`,
+        ),
+      "the pinned osx-arm64 release was not downloaded",
     );
+    assert.ok(existsSync(join(harness.home, ".runner-center", "cache", RUNNER_TARBALL)));
   });
 
   it("refuses a tarball whose checksum does not match the pin", async () => {
@@ -159,16 +168,13 @@ describe("provision-mac.sh pinned runner", () => {
     const harness = newHarness();
     const cache = join(harness.home, ".runner-center", "cache");
     mkdirSync(cache, { recursive: true });
-    writeFileSync(join(cache, "actions-runner-osx-arm64-2.336.0.tar.gz"), "tampered");
+    writeFileSync(join(cache, RUNNER_TARBALL), "tampered");
 
     const result = await harness.run(PROVISION_MAC);
 
     assert.equal(result.code, 0);
     assert.match(result.stderr, /failed its checksum; re-downloading/);
-    assert.equal(
-      readFileSync(join(cache, "actions-runner-osx-arm64-2.336.0.tar.gz"), "utf8"),
-      harness.tarballContent,
-    );
+    assert.equal(readFileSync(join(cache, RUNNER_TARBALL), "utf8"), harness.tarballContent);
   });
 
   it("reuses a verified cache instead of downloading again", async () => {

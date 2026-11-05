@@ -1,0 +1,30 @@
+[
+  {
+    "version": "v25.3.0",
+    "lts": false
+  },
+  {
+    "version": "v24.99.1",
+    "lts": "Krypton"
+  },
+  {
+    "version": "v24.99.0",
+    "lts": "Krypton"
+  },
+  {
+    "version": "v23.11.1",
+    "lts": false
+  },
+  {
+    "version": "v22.99.0",
+    "lts": "Jod"
+  },
+  {
+    "version": "v22.23.2",
+    "lts": "Jod"
+  },
+  {
+    "version": "v22.0.0",
+    "lts": false
+  }
+]
