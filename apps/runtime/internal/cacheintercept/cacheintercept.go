@@ -238,6 +238,18 @@ func injectBearer(pr *httputil.ProxyRequest) {
 func (i *Interceptor) TLSConfig() *tls.Config { return i.tlsConfig.Clone() }
 
 func (i *Interceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Full duplex, so writing the reply never ends the request body under the
+	// forward. Without it, net/http's HTTP/1.1 server finishes and closes the
+	// request body when the handler writes its first response byte (the
+	// discard in chunkWriter.writeHeader). The forwarding transport makes one
+	// more read after a body's last byte to confirm it ended, and GitHub may
+	// answer before that read happens; the read then fails with "invalid Read
+	// on closed Body", the transport counts the request as failed and closes
+	// the upstream connection while the reply is still streaming, and the
+	// client gets a truncated reply. HTTP/2 is always full duplex and reports
+	// ErrNotSupported, which needs nothing; the HTTP/1.1 server's
+	// implementation cannot fail.
+	_ = http.NewResponseController(w).EnableFullDuplex()
 	// Prefix, not substring: GitHub serves CacheService at the root of the host,
 	// so only a path that starts with the marker is ours. A substring match would
 	// route a crafted /anything/twirp/…/CacheService/… request to the cache and
