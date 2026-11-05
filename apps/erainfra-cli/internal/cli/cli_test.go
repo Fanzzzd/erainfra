@@ -38,6 +38,8 @@ type fakeAPI struct {
 	mu       sync.Mutex
 	requests []*http.Request
 	routes   map[string]func(w http.ResponseWriter, r *http.Request)
+	// tokenless paths are served without a token, as Convex file storage serves an upload URL.
+	tokenless map[string]bool
 }
 
 func newFakeAPI() *fakeAPI {
@@ -60,10 +62,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wrong host", http.StatusBadGateway)
 		return
 	}
+	if f.tokenless[r.URL.Path] {
+		f.routes[r.Method+" "+r.URL.Path](w, r)
+		return
+	}
 	switch r.Header.Get("Authorization") {
 	case "Bearer " + goodToken:
 	case "Bearer " + readToken:
-		if r.Method == http.MethodPost {
+		if r.Method != http.MethodGet {
 			writeError(w, http.StatusForbidden, "forbidden", "This route needs an admin token")
 			return
 		}
@@ -93,6 +99,7 @@ type harness struct {
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
 	gh      func(args []string) ([]byte, error)
+	git     func(dir string, args []string) ([]byte, error)
 	ghCalls [][]string
 }
 
@@ -133,7 +140,7 @@ func (h *harness) run(args ...string) int {
 		HTTP:    &http.Client{Transport: handlerTransport{h.api}},
 		Now:     func() time.Time { return fixedNow },
 		LookPath: func(name string) (string, error) {
-			if h.gh == nil {
+			if (name == "git" && h.git == nil) || (name != "git" && h.gh == nil) {
 				return "", errors.New("not found")
 			}
 			return "/usr/bin/" + name, nil
@@ -141,6 +148,9 @@ func (h *harness) run(args ...string) int {
 		RunGH: func(_ context.Context, _ string, args []string, _ io.Writer) ([]byte, error) {
 			h.ghCalls = append(h.ghCalls, args)
 			return h.gh(args)
+		},
+		RunGit: func(_ context.Context, dir string, args []string) ([]byte, error) {
+			return h.git(dir, args)
 		},
 	}
 	return app.Run(context.Background(), args)
@@ -186,7 +196,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 	}
 	h.expect(ExitOK, "jobs", "--help")
 	h.expect(ExitOK, "attempts", "--help")
-	h.expect(ExitUsage, "deploy")
+	h.expect(ExitUsage, "rollout")
 	h.expect(ExitUsage, "jobs", "delete")
 	h.expect(ExitOK, "worker", "--help")
 	if !strings.Contains(h.stdout.String(), "the same program as rc") {

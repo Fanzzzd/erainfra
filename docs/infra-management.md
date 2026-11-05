@@ -191,7 +191,9 @@ secret values themselves need not change.
 4. Phase 3a (now): the deploy pipeline, push-to-deploy and failover run from Convex for Nodes in
    `connect-convex` mode.
 5. Phase 3b: gateway ingress serves public traffic from the `appRoutes` table.
-6. Phase 3c: the CLI and dashboard move to Convex, and the Hub is retired.
+6. Phase 3c (now): the `erainfra` CLI and the operator API manage Nodes, Apps, env, links and log
+   tails in Convex ([Operate from the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c)), and
+   the Hub is retired.
 
 Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
 inside the `portless-data` volume). Start with `--dry-run`, which reads everything and sends nothing:
@@ -244,17 +246,15 @@ still need the Hub (see [What still needs the Hub](#what-still-needs-the-hub)).
 Run these steps for each Node. Both ends of a link must run `connect-convex`: a Node in Hub mode
 never publishes an endpoint to Convex, so Convex never names it as a peer.
 
-1. **Enroll the Node.** An owner or admin calls `infra/nodes:enroll` with the Node's name. The CLI
-   runs a function as a signed-in person with `--identity`, whose `subject` is your `users` row id
-   (shown in the Convex dashboard's data view) followed by `|` and any session label:
+1. **Enroll the Node** with an admin API token, or as an owner or admin in the dashboard (Nodes):
 
    ```sh
-   npx convex run infra/nodes:enroll '{"name":"edge-1"}' \
-     --identity '{"subject":"<users _id>|cli"}'
+   erainfra nodes enroll edge-1 > edge-1.credential
    ```
 
-   The result holds the `nodeId` and an `erainfra_node_…` credential, shown once. Enrolling a name
-   again issues another credential for the same Node.
+   The command prints an `erainfra_node_…` credential once, on standard output. Enrolling a name
+   again issues another credential for the same Node. Without the CLI, an owner or admin can call
+   `npx convex run infra/nodes:enroll '{"name":"edge-1"}' --identity '{"subject":"<users _id>|cli"}'`.
 
 2. **Store the credential** on the Node in a 0600 file, for example
    `/etc/erainfra-node.credential`. It is for this one Node, not an operator or fleet token.
@@ -299,9 +299,10 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    `applied mesh snapshot <revision> (<n> peers, <n> exposures, <n> links)`. The applied snapshot,
    without any relay token, is also written to `desired.json` in the state directory.
 
-6. **Declare links.** Convex has no link command before phase 3. Declare the link on the Hub
-   (`portless link`, or `needs:` in an App) and re-run the Hub importer (above). Each Node picks
-   the change up on its next snapshot poll.
+6. **Declare links** with `erainfra links add <provider>:<port> <consumer>[:<local-port>]`, or
+   with `needs:` in an App deployed through Convex. Each Node picks the change up on its next
+   snapshot poll. `erainfra links list` shows `transport mesh` once both Nodes have a proven
+   endpoint.
 
 A Hub-mode agent and a `connect-convex` agent can never drive one sidecar at the same time. Each
 takes an exclusive lock on `controller.lock` in its control directory and another on the directory
@@ -335,15 +336,17 @@ connect-convex: ERROR: Convex refused mesh key <new>: this Node is registered as
 ```
 
 It does not retry. The Node's mesh links stay down until either the original key is restored or an
-owner/admin confirms the change with
-`npx convex run infra/nodes:resetEndpoint '{"nodeId":"<id>"}' --identity '…'`. The agent sees the
+owner/admin confirms the change with `erainfra nodes reset-endpoint <name>` (an admin token). The
+agent sees the
 reset in its next heartbeat and publishes the new key; peers pick it up on their next snapshot. A
 key already registered to another Node is refused with `endpoint_in_use`; give the Node its own key
 (a copied key file is the usual cause) and restart the agent.
 
 ### Revoke or re-enroll a Node
 
-`infra/nodes:revokeCredential` takes effect on the Node's next request. Revoking a Node's last
+`erainfra nodes revoke <name>` revokes every live credential of the Node; with
+`--credential <hint>` it revokes one. Either takes effect on the Node's next request. Revoking a
+Node's last
 live credential also clears its endpoint registration, so it drops out of every peer's snapshot at
 once and peers close its connections when they apply it. Enrolling the Node again issues a new
 credential, and the Node must prove a key again before any peer is granted to it. To rotate a
@@ -358,9 +361,11 @@ Deploys, push-to-deploy and failover for `connect-convex` Nodes run from Convex
 
 - ingress for Apps on Nodes in Hub mode. Apps on `connect-convex` Nodes with a sidecar can be
   served by [gateway Nodes](#gateway-ingress-phase-3b) instead;
-- declaring standalone links, and the `portless` CLI and dashboard, which talk to the Hub (phase
-  3c);
 - links to Nodes still in Hub mode, and legacy dumbpipe links.
+
+Standalone links, env, App removal and log tails for `connect-convex` Nodes go through
+[the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c). The `portless` CLI and the Hub
+dashboard still talk to the Hub only.
 
 ### Roll back to Hub mode
 
@@ -629,8 +634,8 @@ failover off.
 
 - Public traffic, unless gateway Nodes serve the zone ([phase 3b](#gateway-ingress-phase-3b)).
   Otherwise the Hub's tunnel and data plane serve `<app>.<zone>`.
-- The `portless` CLI, MCP server and the Hub dashboard (phase 3c). The Convex surface today is the
-  operator API above and the internal functions.
+- The `portless` CLI, MCP server and the Hub dashboard, which talk to the Hub only. The Convex
+  surface is the operator API and [the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c).
 - Links to a Node still in Hub mode, which never publishes an endpoint to Convex.
 
 ## Gateway ingress (phase 3b)
@@ -652,12 +657,13 @@ Hub's tunnel, follow [move-ingress-to-gateways.md](runbooks/move-ingress-to-gate
 
 ### What Convex sends
 
-An owner or admin marks a Node as a gateway with its placement roles:
+An owner or admin, or an admin API token, marks a Node as a gateway with its placement roles:
 
 ```sh
-npx convex run infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' \
-  --identity '{"subject":"<users _id>|cli"}'
+erainfra nodes set-roles edge-1 gateway
 ```
+
+Without the CLI: `npx convex run infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' --identity '{"subject":"<users _id>|cli"}'`.
 
 A Node cannot set its own roles: a gateway gets a mesh path to every routed App. An empty `roles`
 list removes the role, and the next snapshot revokes the gateway's links and grants. The Node's
@@ -839,6 +845,156 @@ then requests to that App get 502.
   routes have no upstream (503).
 - `gateway.sh` is for Linux with systemd. The proxy itself runs anywhere the Infra Agent does.
 - The proxy has no access control or rate limiting of its own; use Cloudflare's.
+
+## Operate from the erainfra CLI (phase 3c)
+
+`erainfra` (apps/erainfra-cli, [ADR 0011](adr/0011-one-erainfra-cli-over-an-operator-api.md)) is
+the operator CLI for Convex. It replaces `portless` for every Node in `connect-convex` mode.
+`portless` keeps working against a Hub until the Hub is retired, and its help says where to go
+next; its package name is frozen (CONTEXT.md rule 4), so it is not renamed or removed.
+
+Log in once with a dashboard API token (Settings, API tokens). A `read` token runs the list and
+view commands; everything that changes state, and log tails, needs an `admin` token.
+
+```sh
+erainfra auth login --url https://<deployment>.convex.site --token -
+
+erainfra nodes list                         # transport, liveness, mesh endpoint proof
+erainfra nodes enroll edge-1 > edge-1.credential
+erainfra nodes revoke edge-1                # every live credential; --credential <hint> for one
+erainfra nodes reset-endpoint edge-1        # after a Node lost its mesh key
+erainfra nodes set-roles edge-1 gateway     # placement roles; --clear removes them
+
+erainfra deploy ./my-app --port 3000        # pack, upload, deploy, follow each stage
+erainfra deploy --repo acme/web --branch main
+erainfra deployments list --app my-app
+erainfra deployments view <id> --follow
+
+erainfra apps list                          # status, Nodes, last deploy, URLs
+erainfra apps view my-app                   # services, links, env names, recent deploys
+erainfra apps remove my-app --yes
+
+erainfra env list my-app                    # names by scope, never values
+erainfra env set my-app MODE=prod
+printf %s "$TOKEN" | erainfra env set my-app API_TOKEN --service web
+erainfra env unset my-app MODE
+
+erainfra links add gpu-box:8080 web-box     # web-box reaches gpu-box's 8080 at 127.0.0.1:8080
+erainfra links list                         # transport and state
+erainfra links remove gpu-box-8080-web-box
+
+erainfra logs my-app --service web --lines 200
+erainfra logs --node edge-1 --unit erainfra-mesh.service
+```
+
+Every command takes `--format table|json`. `erainfra deploy` packs a git repository with
+`git archive HEAD`, so uncommitted changes are left out and it says so; any other directory is
+packed without `node_modules`, `.git`, `dist` and `.turbo`. It exits 0 when the run ends `done`
+and 1 when it fails.
+
+### Nodes
+
+A Node's transport is `convex` once its Infra Agent has heartbeated in `connect-convex` mode and
+`hub` before that. Its mesh endpoint is `proven` only after the Node signed a challenge with its
+erainfra-mesh key; only a proven Node with a live credential is ever granted a mesh peer.
+
+Enrolling, revoking and resetting a Node need the `node.admin` permission: an owner or admin
+account, or an admin API token. An admin token may enroll a Node because a Node credential cannot
+call `/api/v1`, so it cannot be used to mint another token; and an admin token can already run any
+image on any Node by deploying it.
+
+### Apps and removal
+
+An App's status is what Convex can see: `deploying` while a run is in flight, `running` when every
+Node it runs on heartbeats, `node-offline` when one stopped, and `hub` when a Node it runs on has
+never connected to Convex. A single-container App the Hub deployed without an App row is listed
+with kind `container`.
+
+`apps remove` works as the Hub's removal did. It queues `container.remove` for each service's
+container and `container.network.remove` for the App's network on every Node the App runs on, and
+forgets its routes, port allocations and App row in the same transaction. Each Node removes the
+containers when it next polls; one that is offline does it when it returns. The App's env and git
+bindings stay: unset or unbind them separately. Removal is refused while a deploy or failover of
+the App is queued or holds its lease, and when the App runs on a Node that has not connected to
+Convex. Remove that App on the Hub with `portless remove` until its Node switches.
+
+### Env
+
+`env set` without `--service` writes the App-wide scope every service receives; with `--service`
+only that service's scope. A bare `KEY` reads its value from standard input, which keeps a secret
+out of shell history. No route returns a value: `env list` shows names and a mask.
+
+### Links
+
+A standalone link joins two Nodes: the consumer reaches the provider's `127.0.0.1:<port>` at its own
+`127.0.0.1:<local-port>`. The default name is `<provider>-<port>-<consumer>`, the Hub's. Adding an
+existing name re-points it. Convex refuses a link it could not carry: the same Node at both ends, a
+name an App dependency link or the deploy pipeline already uses, a consumer port another link
+listens on, or more than 500 standalone links.
+
+`links list` shows standalone links and every App's dependency links:
+
+- `transport` is `mesh` when both Nodes have a proven endpoint and a live credential, so Convex
+  grants the link over erainfra-mesh. It is `legacy` otherwise: Convex grants nothing for it, and
+  only a Hub still driving one of the Nodes can carry it, over its own mesh or dumbpipe.
+- `state` is derived from endpoint proofs and heartbeats, not observed traffic: `active`,
+  `degraded` (a Node stopped heartbeating) or `pending` (a `legacy` link), with a `reason`.
+
+### Log tails
+
+The Node API stores no command output, because output can hold secrets. A log tail is the one
+exception, shaped so the output reaches only the person who asked:
+
+1. An admin token asks for the last N lines of an App's service or a Node's platform unit
+   (`portless-*` or `erainfra-*`). N is 1 to 1000, default 100. Convex writes a row bound to that
+   token and queues a `logs` command that runs the allowlisted `container.logs` or `service.logs`
+   operation, in one audited transaction. A Node that is not heartbeating to Convex is refused up
+   front.
+2. The Node runs it, keeps the newest 128 KiB of output, and uploads it with the command's result.
+   The command row keeps its outcome only.
+3. The requesting token reads it once: `GET /api/v1/logs/<id>` answers 202 while the Node has not
+   answered, then 200 once, and deletes the row in that read. Any other token, including another
+   admin token, gets 404. An unread tail is deleted five minutes after the request, and its command
+   is cancelled if it never ran.
+
+Logs can contain secrets: an App may print its environment, and a stack trace may include a
+connection string. That is why reading them needs an admin token, why the tail lives in one row for
+one reader, and why the audit log records who asked for which tail and when it was read, but never
+its text. A logs command waits behind other commands on its Node; behind a long build it can
+expire before it runs. An Infra Agent older than this change answers a logs command with a failure.
+
+### The operator API routes
+
+All on the Convex site origin, with `Authorization: Bearer <API token>`. Errors are
+`{"error":{"code","message"}}`: 400 for a refused request, 401 without a valid token, 403 for a
+token without the scope, 404 for a name that does not exist, 409 while a deploy holds the App.
+
+| Route                                                                                                | Scope      | Does                                                                |
+| ---------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------- |
+| `GET /api/v1/nodes`                                                                                  | read       | Nodes with transport, liveness, endpoint proof, credentials         |
+| `POST /api/v1/nodes` `{name}`                                                                        | admin      | enrolls; returns the credential once                                |
+| `POST /api/v1/nodes/<name>/revoke`                                                                   | admin      | `{credential?}`: one credential, or every live one                  |
+| `POST /api/v1/nodes/<name>/endpoint/reset`                                                           | admin      | forgets the Node's mesh key                                         |
+| `PUT /api/v1/nodes/<name>/roles`                                                                     | admin      | `{roles}`: replaces the placement roles                             |
+| `GET /api/v1/apps`, `GET /api/v1/apps/<app>`                                                         | read       | Apps with status; one App with env names and recent runs            |
+| `DELETE /api/v1/apps/<app>`                                                                          | admin      | removes the App (202: Nodes remove containers when they poll)       |
+| `GET /api/v1/apps/<app>/env`                                                                         | read       | variable names by scope, masked                                     |
+| `PUT /api/v1/apps/<app>/env`                                                                         | admin      | `{vars, service?}`                                                  |
+| `DELETE /api/v1/apps/<app>/env/<NAME>`                                                               | admin      | `?service=` for a service's scope                                   |
+| `GET`/`POST /api/v1/deployments`, `GET /api/v1/deployments/<id>`, `POST /api/v1/deployments/uploads` | read/admin | [Deploy through the operator API](#deploy-through-the-operator-api) |
+| `GET /api/v1/links`                                                                                  | read       | links with transport, state and reason                              |
+| `POST /api/v1/links`                                                                                 | admin      | `{provider, providerPort, consumer, localPort?, name?}`             |
+| `DELETE /api/v1/links/<name>`                                                                        | admin      | removes a standalone link                                           |
+| `POST /api/v1/logs`                                                                                  | admin      | `{app, service?, lines?}` or `{node, unit, lines?}`; 202            |
+| `GET /api/v1/logs/<id>`                                                                              | admin      | 202 pending, 200 once, then 404                                     |
+
+The Node API shares the `/api/v1/nodes/` prefix. Its routes are exact paths, which Convex matches
+first, and none of them is a route above. It takes Node credentials only, and these routes take API
+tokens only.
+
+Every change through these routes runs the same function body as the matching Convex mutation, writes an
+audit row with `token:<name>` as the actor in the same transaction, and audits a refused request
+as `deny` with the reason.
 
 ## Develop
 

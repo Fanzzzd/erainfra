@@ -4,7 +4,7 @@
 // ordinary `operator` API token any CLI user could also hold. Here an operator enrolls a Node by
 // name and gets a credential bound to that one Node; the Node later registers the iroh EndpointId
 // that phase 1 gives it, which ADR 0016 makes its identity.
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import {
   internalMutation,
@@ -66,57 +66,81 @@ async function issueCredential(
 /**
  * Enroll a Node, or issue another credential for one already enrolled. The credential is returned
  * once. An older credential stays live until revoked, so a Node can be moved to a new one without
- * a gap.
+ * a gap. The dashboard (`enroll`) and the operator API (infra/operator.ts) both run this.
  */
+export async function enrollNode(
+  ctx: MutationCtx,
+  input: { name: string; actor: string; createdBy?: Id<"users"> },
+) {
+  const name = input.name.trim();
+  if (!isValidName(name)) {
+    throw new ConvexError("Name the Node with letters, digits, dots, dashes or underscores");
+  }
+  const nodeId = await ensureNode(ctx, name, "enrolled");
+  const credential = await issueCredential(ctx, nodeId, input.createdBy);
+  await appendAudit(ctx, {
+    actor: input.actor,
+    action: "nodes.enroll",
+    target: name,
+    outcome: "success",
+  });
+  return { nodeId, credential };
+}
+
 export const enroll = mutation({
   args: { name: v.string() },
   returns: v.object({ nodeId: v.id("nodes"), credential: v.string() }),
   handler: async (ctx, args) => {
-    const { user, actor } = await requirePermission(ctx, "account.admin");
-    const name = args.name.trim();
-    if (!isValidName(name)) {
-      throw new ConvexError("Name the Node with letters, digits, dots, dashes or underscores");
-    }
-    const nodeId = await ensureNode(ctx, name, "enrolled");
-    const credential = await issueCredential(ctx, nodeId, user._id);
-    await appendAudit(ctx, { actor, action: "nodes.enroll", target: name, outcome: "success" });
-    return { nodeId, credential };
+    const { user, actor } = await requirePermission(ctx, "node.admin");
+    return await enrollNode(ctx, { name: args.name, actor, createdBy: user._id });
   },
 });
+
+/**
+ * Revoke one credential and return whether it was live. Revoking a Node's last live credential
+ * also clears its endpoint, so the Node leaves every peer's mesh snapshot at once.
+ */
+export async function revokeNodeCredential(
+  ctx: MutationCtx,
+  credentialId: Id<"nodeCredentials">,
+  actor: string,
+) {
+  const credential = await ctx.db.get(credentialId);
+  if (credential === null) throw new ConvexError("No such credential");
+  if (credential.revokedAt !== undefined) return false;
+  await ctx.db.patch(credential._id, { revokedAt: Date.now() });
+  await appendAudit(ctx, {
+    actor,
+    action: "nodes.revokeCredential",
+    target: credential.hint,
+    outcome: "success",
+  });
+  // Revoking the last live credential revokes the Node's mesh identity with it. Re-enrolling
+  // the Node issues a new credential, and the Node must then prove its endpoint key again
+  // before any peer is granted to it. Rotation (issue the new credential, then revoke the old
+  // one) never reaches this branch, so it keeps the endpoint.
+  const node = await ctx.db.get(credential.nodeId);
+  if (node !== null && !(await hasLiveCredential(ctx, node._id))) {
+    await clearEndpoint(ctx, node._id);
+    if (node.endpointId !== undefined) {
+      await appendAudit(ctx, {
+        actor,
+        action: "nodes.resetEndpoint",
+        target: node.name,
+        outcome: "success",
+        meta: { endpointId: node.endpointId, reason: "last credential revoked" },
+      });
+    }
+  }
+  return true;
+}
 
 export const revokeCredential = mutation({
   args: { credentialId: v.id("nodeCredentials") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { actor } = await requirePermission(ctx, "account.admin");
-    const credential = await ctx.db.get(args.credentialId);
-    if (credential === null) throw new ConvexError("No such credential");
-    if (credential.revokedAt === undefined) {
-      await ctx.db.patch(credential._id, { revokedAt: Date.now() });
-      await appendAudit(ctx, {
-        actor,
-        action: "nodes.revokeCredential",
-        target: credential.hint,
-        outcome: "success",
-      });
-      // Revoking the last live credential revokes the Node's mesh identity with it. Re-enrolling
-      // the Node issues a new credential, and the Node must then prove its endpoint key again
-      // before any peer is granted to it. Rotation (issue the new credential, then revoke the old
-      // one) never reaches this branch, so it keeps the endpoint.
-      const node = await ctx.db.get(credential.nodeId);
-      if (node !== null && !(await hasLiveCredential(ctx, node._id))) {
-        await clearEndpoint(ctx, node._id);
-        if (node.endpointId !== undefined) {
-          await appendAudit(ctx, {
-            actor,
-            action: "nodes.resetEndpoint",
-            target: node.name,
-            outcome: "success",
-            meta: { endpointId: node.endpointId, reason: "last credential revoked" },
-          });
-        }
-      }
-    }
+    const { actor } = await requirePermission(ctx, "node.admin");
+    await revokeNodeCredential(ctx, args.credentialId, actor);
     return null;
   },
 });
@@ -155,21 +179,25 @@ async function clearEndpoint(ctx: MutationCtx, nodeId: Id<"nodes">) {
  * key file: a Node cannot replace its own identity, or a stolen credential could take over another
  * Node's place in the mesh.
  */
+export async function resetNodeEndpoint(ctx: MutationCtx, nodeId: Id<"nodes">, actor: string) {
+  const node = await ctx.db.get(nodeId);
+  if (node === null) throw new ConvexError("No such Node");
+  await clearEndpoint(ctx, node._id);
+  await appendAudit(ctx, {
+    actor,
+    action: "nodes.resetEndpoint",
+    target: node.name,
+    outcome: "success",
+    ...(node.endpointId === undefined ? {} : { meta: { endpointId: node.endpointId } }),
+  });
+}
+
 export const resetEndpoint = mutation({
   args: { nodeId: v.id("nodes") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { actor } = await requirePermission(ctx, "account.admin");
-    const node = await ctx.db.get(args.nodeId);
-    if (node === null) throw new ConvexError("No such Node");
-    await clearEndpoint(ctx, node._id);
-    await appendAudit(ctx, {
-      actor,
-      action: "nodes.resetEndpoint",
-      target: node.name,
-      outcome: "success",
-      ...(node.endpointId === undefined ? {} : { meta: { endpointId: node.endpointId } }),
-    });
+    const { actor } = await requirePermission(ctx, "node.admin");
+    await resetNodeEndpoint(ctx, args.nodeId, actor);
     return null;
   },
 });
@@ -180,22 +208,30 @@ export const resetEndpoint = mutation({
  * App's ingress exposure (infra/ingress.ts). Removing the role revokes both on the next snapshot.
  * Only an owner or admin may do this; a Node cannot declare its own roles.
  */
+export async function setNodePlacementRoles(
+  ctx: MutationCtx,
+  input: { nodeId: Id<"nodes">; roles: Infer<typeof placementRoleValidator>[]; actor: string },
+) {
+  const node = await ctx.db.get(input.nodeId);
+  if (node === null) throw new ConvexError("No such Node");
+  const roles = [...new Set(input.roles)].toSorted();
+  await ctx.db.patch(node._id, { placementRoles: roles });
+  await appendAudit(ctx, {
+    actor: input.actor,
+    action: "nodes.setPlacementRoles",
+    target: node.name,
+    outcome: "success",
+    meta: { from: node.placementRoles ?? [], to: roles },
+  });
+  return roles;
+}
+
 export const setPlacementRoles = mutation({
   args: { nodeId: v.id("nodes"), roles: v.array(placementRoleValidator) },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { actor } = await requirePermission(ctx, "account.admin");
-    const node = await ctx.db.get(args.nodeId);
-    if (node === null) throw new ConvexError("No such Node");
-    const roles = [...new Set(args.roles)].toSorted();
-    await ctx.db.patch(node._id, { placementRoles: roles });
-    await appendAudit(ctx, {
-      actor,
-      action: "nodes.setPlacementRoles",
-      target: node.name,
-      outcome: "success",
-      meta: { from: node.placementRoles ?? [], to: roles },
-    });
+    const { actor } = await requirePermission(ctx, "node.admin");
+    await setNodePlacementRoles(ctx, { ...args, actor });
     return null;
   },
 });

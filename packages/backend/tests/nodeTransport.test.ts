@@ -336,7 +336,9 @@ describe("scoped Node HTTP API", () => {
           output: "web-private",
         })
       ).status,
-    ).toBe(400);
+      // `output` is a field of the result route now, for log tails only (infra/logs.ts); a deploy
+      // command that sends it is refused and nothing is stored.
+    ).toBe(409);
     vi.setSystemTime(T0 + COMMAND_TTL_MS + 1);
     expect((await request("commands/payload", a.credential, c)).status).toBe(409);
     const audit = JSON.stringify(await t.run((ctx) => ctx.db.query("auditEvents").collect()));

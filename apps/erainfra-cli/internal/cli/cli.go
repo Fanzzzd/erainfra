@@ -44,6 +44,10 @@ type App struct {
 	HomeDir  func() (string, error)
 	Stat     func(string) (fs.FileInfo, error)
 	RunLocal func(ctx context.Context, program string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+	// RunGit runs git in a directory and returns its standard output; `erainfra deploy` packs a
+	// repository with `git archive`. Sleep waits between status polls; nil waits not at all.
+	RunGit func(ctx context.Context, dir string, args []string) ([]byte, error)
+	Sleep  func(ctx context.Context, d time.Duration) error
 }
 
 // NewApp wires App to the real process.
@@ -66,7 +70,28 @@ func NewApp(version string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		HomeDir:  os.UserHomeDir,
 		Stat:     os.Stat,
 		RunLocal: runLocal,
+		RunGit: func(ctx context.Context, dir string, args []string) ([]byte, error) {
+			cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+			return cmd.Output()
+		},
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			timer := time.NewTimer(d)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		},
 	}
+}
+
+func (a *App) sleep(ctx context.Context, d time.Duration) error {
+	if a.Sleep == nil {
+		return ctx.Err()
+	}
+	return a.Sleep(ctx, d)
 }
 
 type invocation struct {
@@ -98,6 +123,24 @@ func init() {
 		jobsListCommand,
 		jobsViewCommand,
 		jobsLogsCommand,
+		nodesListCommand,
+		nodesEnrollCommand,
+		nodesRevokeCommand,
+		nodesResetEndpointCommand,
+		nodesSetRolesCommand,
+		appsListCommand,
+		appsViewCommand,
+		appsRemoveCommand,
+		deployCommand,
+		deploymentsListCommand,
+		deploymentsViewCommand,
+		envListCommand,
+		envSetCommand,
+		envUnsetCommand,
+		linksListCommand,
+		linksAddCommand,
+		linksRemoveCommand,
+		logsCommand,
 		versionCommand,
 	}
 }
@@ -107,7 +150,9 @@ func init() {
 // accepted for the domain term.
 var groupAliases = map[string]string{"attempts": "jobs"}
 
-const topHelp = `erainfra reads an EraInfra fleet through the control plane's operator API.
+const topHelp = `erainfra operates an EraInfra fleet through the control plane's operator API:
+CI Workers and jobs, and the Nodes, Apps, env, links and logs of infrastructure
+management.
 
 Usage:
   erainfra <command> <subcommand> [flags]

@@ -79,3 +79,21 @@ The Convex control plane exposed no authenticated read path other than the dashb
 - `jobs` is the CLI's noun because that is what an operator calls them and what Blacksmith and
   actuated call them. Each row is one Attempt; the API path says `attempts`, and the CLI accepts
   `attempts` as an alias.
+
+## Addendum, 2026-11-06: the Hub's commands join
+
+Decision 6 has happened. ADR 0016 moved the Hub's state into Convex, so `erainfra` gained the
+infrastructure command groups `nodes`, `apps`, `deploy`, `deployments`, `env`, `links` and `logs`
+over new `/api/v1` routes (docs/infra-management.md, "Operate from the erainfra CLI").
+
+- Decision 3 holds in the form that matters: each admin route runs the body of an existing Convex
+  mutation (`infra/nodes`, `infra/secrets`, `infra/operator`), the one a signed-in owner or admin
+  runs, and the token is checked against the same permission table (`infra/policy.ts`). An admin
+  token gained `node.admin`, so it can enroll and revoke Nodes. A Node credential cannot call
+  `/api/v1`, so this still mints nothing that could replace the token.
+- The first consequence above changes for Apps only. The control plane still stores no job or
+  Worker log. It now stores one kind of App output: a log tail an admin token asked for, readable by
+  that token once, deleted on that read or five minutes after the request, at most 1000 lines and
+  128 KiB.
+- `portless` stays, with its frozen package name, for Nodes the Hub still drives. Its help points
+  at `erainfra`.

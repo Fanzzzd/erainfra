@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -69,8 +70,19 @@ type SpecReader interface {
 	ReadSpec(context.Context, Payload) (string, error)
 }
 
+// LogReader is the log-tail step. Like SpecReader it returns data and has no effect on the Node,
+// so it is not journaled; a re-delivered logs command reads the logs again.
+type LogReader interface {
+	ReadLogs(context.Context, Payload) (output []byte, truncated bool, err error)
+}
+
+// MaxLogBytes is how much of a log tail's output is kept, from the end. It matches the control
+// plane's MAX_LOG_BYTES (packages/backend/convex/infra/logs.ts), which refuses anything larger.
+const MaxLogBytes = 128 * 1024
+
 // LocalExecutor reuses the existing Go allowlist and deployment implementation. Outputs are
-// deliberately discarded: logs/child errors may contain secrets and are not command results.
+// deliberately discarded: logs/child errors may contain secrets and are not command results. The
+// one exception is ReadLogs, whose output goes to a row only the requesting operator can read.
 type LocalExecutor struct {
 	Runner  agent.ShellRunner
 	Builder agent.ConvexBuilder
@@ -93,6 +105,19 @@ func (e LocalExecutor) ReadSpec(ctx context.Context, p Payload) (string, error) 
 		fmt.Fprintf(os.Stderr, "[erainfra] reading the spec failed: %v\n", err)
 	}
 	return spec, err
+}
+
+// ReadLogs runs the allowlisted `container.logs` or `service.logs` operation and keeps the last
+// MaxLogBytes of its output. No other operation can reach this path.
+func (e LocalExecutor) ReadLogs(ctx context.Context, p Payload) ([]byte, bool, error) {
+	if p.Kind != "logs" || (p.Operation.Name != "container.logs" && p.Operation.Name != "service.logs") {
+		return nil, false, errors.New("invalid logs payload")
+	}
+	cmd, err := agent.Resolve(p.Operation)
+	if err != nil {
+		return nil, false, err
+	}
+	return e.Runner.ExecuteTail(ctx, cmd, MaxLogBytes)
 }
 
 func (e LocalExecutor) Execute(ctx context.Context, p Payload) string {
@@ -359,6 +384,9 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 	if cmd.Kind == "spec" {
 		return c.executeSpec(ctx, cmd, claim)
 	}
+	if cmd.Kind == "logs" {
+		return c.executeLogs(ctx, cmd, claim)
+	}
 	// The journal is what makes a Node-side effect happen at most once per idempotency key. Convex
 	// leases fence only Convex writes; a command can be re-delivered after a lost result or a
 	// restart, and its deterministic key (deployment, step, Node for pipeline steps) finds the
@@ -403,6 +431,8 @@ func executionLimit(kind string) time.Duration {
 		return 15 * time.Minute
 	case "spec":
 		return 2 * time.Minute
+	case "logs":
+		return time.Minute
 	default:
 		return 10 * time.Minute
 	}
@@ -472,6 +502,42 @@ func (c *Client) executeSpec(ctx context.Context, cmd pendingCommand, claim comm
 		} else {
 			result["spec"] = spec
 		}
+	}
+	return c.request(ctx, "POST", "commands/result", result, nil)
+}
+
+// executeLogs reads a log tail an operator asked for and uploads it with the result. It is not
+// journaled: reading logs has no effect, and the journal never stores command data, so a
+// re-delivered logs command reads the logs again.
+func (c *Client) executeLogs(ctx context.Context, cmd pendingCommand, claim commandClaim) error {
+	var payload Payload
+	if err := c.request(ctx, "POST", "commands/payload", claim, &payload); err != nil {
+		return err
+	}
+	if payload.Kind != cmd.Kind {
+		return errors.New("command kind mismatch")
+	}
+	reader, ok := c.exec.(LogReader)
+	var output []byte
+	var truncated bool
+	outcome := "failure"
+	if ok {
+		outcome = c.withClaim(ctx, claim, executionLimit("logs"), func(execution context.Context) string {
+			out, cut, err := reader.ReadLogs(execution, payload)
+			if err != nil {
+				return "failure"
+			}
+			output, truncated = out, cut
+			return "success"
+		})
+	}
+	result := map[string]any{"commandId": claim.CommandID, "owner": claim.Owner, "epoch": claim.Epoch, "outcome": outcome}
+	if outcome == "success" {
+		if len(output) > MaxLogBytes {
+			output, truncated = output[len(output)-MaxLogBytes:], true
+		}
+		result["output"] = base64.StdEncoding.EncodeToString(output)
+		result["truncated"] = truncated
 	}
 	return c.request(ctx, "POST", "commands/result", result, nil)
 }

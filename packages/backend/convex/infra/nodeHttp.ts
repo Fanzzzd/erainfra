@@ -104,7 +104,15 @@ export function registerNodeRoutes(http: HttpRouter) {
             "commands/claim": ["commandId", "owner"],
             "commands/renew": ["commandId", "owner", "epoch"],
             "commands/payload": ["commandId", "owner", "epoch"],
-            "commands/result": ["commandId", "owner", "epoch", "outcome", "spec"],
+            "commands/result": [
+              "commandId",
+              "owner",
+              "epoch",
+              "outcome",
+              "spec",
+              "output",
+              "truncated",
+            ],
           };
           if (
             Object.keys(b).some((k) => !fields[path].includes(k)) ||
@@ -157,6 +165,8 @@ export function registerNodeRoutes(http: HttpRouter) {
                 ...claim,
                 outcome: b.outcome as "success" | "failure" | "unknown",
                 ...(b.spec === undefined ? {} : { spec: b.spec as string }),
+                ...(b.output === undefined ? {} : { output: b.output as string }),
+                ...(b.truncated === undefined ? {} : { truncated: b.truncated as boolean }),
               });
               break;
             case "endpoint/challenge":

@@ -1,5 +1,6 @@
 import type { HttpRouter } from "convex/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import {
   type ApiTokenScope,
@@ -286,7 +287,7 @@ export function attemptDetailJson(attempt: OperatorAttempt) {
 // ---------------------------------------------------------------------------
 // Routes
 
-type Caller = { name: string; scope: ApiTokenScope };
+export type Caller = { tokenId: Id<"apiTokens">; name: string; scope: ApiTokenScope };
 
 /**
  * Resolve a request's bearer token, for /api/v1 and /metrics alike.
@@ -314,41 +315,45 @@ export async function authenticateBearer(
   if (shouldTouchLastUsed(found.lastUsedAt, now)) {
     await ctx.runMutation(internal.apiTokens.recordUse, { tokenId: found.tokenId, at: now });
   }
-  return { ok: true, caller: { name: found.name, scope: found.scope } };
+  return { ok: true, caller: { tokenId: found.tokenId, name: found.name, scope: found.scope } };
 }
 
 /**
  * Wraps a handler in bearer authentication: 401 without a valid token, 403 for
  * a valid token without the scope the route needs.
  */
-function operatorRoute(
+export function operatorRoute(
   needed: ApiTokenScope,
   handler: (ctx: ActionCtx, request: Request, caller: Caller) => Promise<Response>,
 ) {
-  return httpAction(async (ctx, request) => {
-    const auth = await authenticateBearer(ctx, request, needed);
-    if (!auth.ok) {
-      switch (auth.reason) {
-        case "missing":
-          return apiError(
-            401,
-            "unauthorized",
-            "Send an API token as Authorization: Bearer <token>",
-          );
-        case "invalid":
-          return apiError(401, "unauthorized", "The API token is not valid or has been revoked");
-        case "forbidden":
-          return apiError(
-            403,
-            "forbidden",
-            needed === "admin"
-              ? "This route needs an admin token"
-              : "This route needs a read or admin token",
-          );
-      }
+  return httpAction(async (ctx, request) => await authorized(ctx, request, needed, handler));
+}
+
+/** operatorRoute's check, for a route that picks its scope after reading the path. */
+export async function authorized(
+  ctx: ActionCtx,
+  request: Request,
+  needed: ApiTokenScope,
+  handler: (ctx: ActionCtx, request: Request, caller: Caller) => Promise<Response>,
+) {
+  const auth = await authenticateBearer(ctx, request, needed);
+  if (!auth.ok) {
+    switch (auth.reason) {
+      case "missing":
+        return apiError(401, "unauthorized", "Send an API token as Authorization: Bearer <token>");
+      case "invalid":
+        return apiError(401, "unauthorized", "The API token is not valid or has been revoked");
+      case "forbidden":
+        return apiError(
+          403,
+          "forbidden",
+          needed === "admin"
+            ? "This route needs an admin token"
+            : "This route needs a read or admin token",
+        );
     }
-    return await handler(ctx, request, auth.caller);
-  });
+  }
+  return await handler(ctx, request, auth.caller);
 }
 
 export function registerOperatorRoutes(http: HttpRouter) {
@@ -459,7 +464,7 @@ export function registerOperatorRoutes(http: HttpRouter) {
 
   // Anything else under /api answers in JSON rather than falling through to the
   // dashboard's static files.
-  for (const method of ["GET", "POST"] as const) {
+  for (const method of ["GET", "POST", "PUT", "DELETE"] as const) {
     http.route({
       pathPrefix: "/api/",
       method,

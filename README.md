@@ -951,7 +951,9 @@ the start.
 
 `erainfra` is the operator CLI. It reads Profiles, Workers and jobs through the control plane's
 operator API, the way the Blacksmith CLI and actuated-cli read theirs, and prints a table or stable
-JSON. It is a single static binary with no dependencies. `rc` on a Worker remains the tool for that
+JSON. It also runs infrastructure management against Convex: Nodes, Apps, deploys, env, mesh links
+and log tails (`erainfra nodes|apps|deploy|deployments|env|links|logs`; see
+[docs/infra-management.md](docs/infra-management.md#operate-from-the-erainfra-cli-phase-3c)). It is a single static binary with no dependencies. `rc` on a Worker remains the tool for that
 one machine (`rc status`, `rc logs -f`, `rc update`), and `erainfra worker <command>` runs it from
 this CLI on the Worker; [ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)
 explains the split.
@@ -970,14 +972,16 @@ go install github.com/Fanzzzd/erainfra/apps/erainfra-cli/cmd/erainfra@latest
 Create a token in the dashboard under **Settings → API tokens**. The same list holds every token
 the control plane accepts, told apart by scope:
 
-| Scope     | `/api/v1` reads | `/api/v1` admin route | `/metrics` |
-| --------- | --------------- | --------------------- | ---------- |
-| `read`    | yes             | no                    | yes        |
-| `admin`   | yes             | yes                   | yes        |
-| `metrics` | no              | no                    | yes        |
+| Scope     | `/api/v1` reads | `/api/v1` admin routes | `/metrics` |
+| --------- | --------------- | ---------------------- | ---------- |
+| `read`    | yes             | no                     | yes        |
+| `admin`   | yes             | yes                    | yes        |
+| `metrics` | no              | no                     | yes        |
 
-The admin route mints Worker registration tokens (`erainfra workers add`), the one dashboard action
-the API offers. The dashboard shows a new token once, stores only its SHA-256, records when each
+The fleet's admin route mints Worker registration tokens (`erainfra workers add`). The
+infrastructure routes add enrolling and revoking Nodes, deploying, removing Apps, setting env,
+declaring links and reading log tails; each is in the audit
+log with the token's name. The dashboard shows a new token once, stores only its SHA-256, records when each
 token was last used (to five minutes), and revokes a token on its next request. No route mints
 tokens, so a leaked admin token cannot create its own replacement.
 
@@ -1014,6 +1018,9 @@ The API under `/api/v1` takes the token as `Authorization: Bearer <token>`:
 | `GET /api/v1/attempts`                     | read  | Attempts newest first; `profile`, `state`, `repo`, `since` (`24h`, `7d` or RFC 3339), `limit` (1–100), `cursor` |
 | `GET /api/v1/attempts/<id>`                | read  | one Attempt with its timeline, queue wait, duration and run URL                                                 |
 | `POST /api/v1/workers/registration-tokens` | admin | a single-use Worker registration token and the install commands                                                 |
+
+The infrastructure routes (`/api/v1/nodes`, `/apps`, `/deployments`, `/links`, `/logs`) are listed
+in [docs/infra-management.md](docs/infra-management.md#the-operator-api-routes).
 
 Absent values are `null`, timestamps are RFC 3339 in UTC, durations are milliseconds, and an error
 is `{"error": {"code", "message"}}` with 400, 401, 403 or 404. The control plane does not record a
