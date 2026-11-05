@@ -408,42 +408,30 @@ describe("provision-mac.sh VM lifecycle", () => {
   // only SIGKILL ends them. Each case hung before the fix; see the PR body.
   it("SIGKILLs a job that ignores SIGTERM rather than waiting it out", async () => {
     const harness = newHarness();
-    const started = Date.now();
     const result = await harness.run(PROVISION_MAC, {
-      // 30 stands in for "the rest of the job". Before the fix kill_job_group
-      // sent one TERM and then sat in `wait "$JOB_PID"` until the fake finished
-      // on its own, so the timeout the watchdog had just fired for bought
-      // nothing -- and on a real Worker the VM is deleted after that wait.
+      // 30 stands in for "the rest of the job". A fake that finishes its sleep
+      // writes runner-natural-exit, so waiting for it instead of escalating is
+      // observable without counting provisioning overhead against teardown.
       env: { RC_FAKE_RUNNER_SLEEP: "30", RC_FAKE_RUNNER_IGNORE_TERM: "1", RC_JOB_TIMEOUT_S: "2" },
     });
-    const elapsed = Date.now() - started;
 
     assert.equal(result.code, 124);
     assert.match(result.stderr, /exceeded RC_JOB_TIMEOUT_S/);
     assert.match(harness.argv(), /\tdelete\trc-test-runner/);
-    assert.ok(
-      elapsed < 15_000,
-      `teardown took ${elapsed}ms, so it outlived the job it was killing instead of escalating`,
-    );
+    assert.doesNotMatch(harness.argv(), /^runner-natural-exit$/m);
   });
 
   it("deletes the VM even when the tart client ignores SIGTERM", async () => {
     const harness = newHarness();
-    const started = Date.now();
     const result = await harness.run(PROVISION_MAC, {
       env: { RC_FAKE_TART_IGNORE_TERM: "1" },
     });
-    const elapsed = Date.now() - started;
 
-    // The runner exited cleanly; only the `tart run` client refuses to. Before
-    // the fix `wait "$VM_PID"` never returned and the delete below it never
-    // ran, which is the leaked microVM and the leaked Profile slot.
+    // The fake tart client loops forever and ignores TERM, so reaching delete
+    // and exiting cleanly proves teardown did not wait for it. The harness's
+    // outer deadline still catches a hang, without a startup-inclusive timer.
     assert.equal(result.code, 0);
     assert.match(harness.argv(), /\tdelete\trc-test-runner/);
-    assert.ok(
-      elapsed < 15_000,
-      `teardown took ${elapsed}ms; deleting the VM must not wait on a process that will not die`,
-    );
   });
 
   it("stops the VM before deleting it", async () => {
