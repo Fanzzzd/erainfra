@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `cmd | grep -q` under pipefail is a race: grep -q exits at its first match,
+# and a cmd that is still writing then dies of SIGPIPE and fails the pipeline
+# (exit 141) although the match succeeded. Capture the output first.
+out_matches() { local pattern_flags=$1 pattern=$2; shift 2; local out; out=$("$@" 2>&1) || return 1; printf '%s\n' "$out" | grep $pattern_flags -- "$pattern" >/dev/null; }
+
 test -x /opt/runner/run.sh
 test -x /usr/local/bin/runner-center-guest
 # The guest kernel execs /sbin/init directly; a container that only has systemd
 # under /usr/lib panics on boot before anything else in this file matters.
 test -x /sbin/init
 # The guest kernel has no nf_tables, so dockerd must speak legacy xtables.
-update-alternatives --query iptables | grep -Fxq 'Value: /usr/sbin/iptables-legacy'
+out_matches -Fx 'Value: /usr/sbin/iptables-legacy' update-alternatives --query iptables
 test -r /opt/action-cache/actions_checkout/3d3c42e5aac5ba805825da76410c181273ba90b1.tar.gz
 test -r /opt/action-cache/pnpm_action-setup/0977fd99725f1db4007ccb2928dbb4e90d06cc86.tar.gz
 test -r /opt/action-cache/actions_setup-node/e51e5fe84fc33b4c73ebe40526b2694712b5b858.tar.gz
@@ -46,19 +51,19 @@ pip3 --version >/dev/null
 zstd --version >/dev/null
 rsync --version >/dev/null
 ldconfig -p | grep -F 'libatomic.so.1' >/dev/null
-node --version | grep -Fxq 'v22.23.2'
+out_matches -Fx 'v22.23.2' node --version
 # The second Node is in the tool cache for setup-node, not on PATH: the default
 # above must stay 22, and setup-node only takes 24 without a download if the
 # .complete marker is beside it.
 ls /opt/hostedtoolcache/node/24.22.1/*.complete >/dev/null
 for node24 in /opt/hostedtoolcache/node/24.22.1/*/bin/node; do
-  "$node24" --version | grep -Fxq 'v24.22.1'
+  out_matches -Fx 'v24.22.1' "$node24" --version
 done
-pnpm --version | grep -Fxq '11.21.0'
+out_matches -Fx '11.21.0' pnpm --version
 # A tool answering is not the pinned tool shipping. go and gh are pinned in the
 # Dockerfile, so assert the pin rather than that something by that name exists.
-go version | grep -Eq '^go version go1\.27\.3 '
-gh --version | grep -Eq '^gh version 2\.97\.0( |$)'
+out_matches -E '^go version go1\.27\.3 ' go version
+out_matches -E '^gh version 2\.97\.0( |$)' gh --version
 # actions/setup-go only skips its download if the marker beside the version
 # directory is there, which is the whole reason Go lives in the tool cache.
 ls /opt/hostedtoolcache/go/1.27.3/*.complete >/dev/null
@@ -82,9 +87,9 @@ grep -Fxq 'LimitSTACK=16777216:infinity' /etc/systemd/system/runner-center-guest
 # ubuntu-latest leaves LC_ALL unset; setting it here would be a new difference,
 # not a fix for this one.
 test -z "${LC_ALL:-}"
-locale charmap | grep -Fxq 'UTF-8'
+out_matches -Fx 'UTF-8' locale charmap
 # The same test the conformance job's locale_has_en_us_utf8 key runs.
-locale -a | grep -qiE '^en_US\.(utf-?8)$'
+out_matches -iE '^en_US\.(utf-?8)$' locale -a
 grep -Fxq 'Etc/UTC' /etc/timezone
 test "$(readlink /etc/localtime)" = '/usr/share/zoneinfo/Etc/UTC'
 # The point of tzdata is that a NAMED zone resolves rather than falling back to
@@ -96,4 +101,5 @@ store_dir=$(sudo -u runner HOME=/home/runner pnpm config get store-dir)
 case "$store_dir" in '' | undefined | /home/runner/*) ;; *) echo "pnpm store-dir is overridden: $store_dir" >&2; exit 1 ;; esac
 test ! -e /runner-cache
 test "$(stat -c '%a' /etc/sudoers.d/runner)" = 440
-! getent shadow root | cut -d: -f2 | grep -Eq '^([^!*]|$)'
+root_password=$(getent shadow root | cut -d: -f2)
+case "$root_password" in '!'* | '*'*) ;; *) echo 'root has a usable password' >&2; exit 1 ;; esac
