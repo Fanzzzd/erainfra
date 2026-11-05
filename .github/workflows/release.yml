@@ -5,6 +5,8 @@ name: EraInfra release
 on:
   push:
     tags: ["v*"]
+  # Build-only dispatch supplies all five mesh digests before a release commit/tag.
+  workflow_dispatch:
 
 permissions: {}
 
@@ -89,6 +91,7 @@ jobs:
           retention-days: 1
 
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: mesh
     runs-on: ubuntu-latest
     permissions:
@@ -141,6 +144,7 @@ jobs:
             INFRA_AGENT_TARGETS,
             CACHE_SERVICE_TARGETS,
             CONTROLLER_TARGETS,
+            MESH_TARGETS,
           } from "./packages/backend/convex/agentRelease.ts";
 
           const version = process.env.GITHUB_REF_NAME?.replace(/^v/, "");
@@ -199,6 +203,13 @@ jobs:
             if (!/^[a-f0-9]{64}$/.test(digest)) {
               throw new Error(`Controller pin for ${target} is not a lowercase SHA-256 checksum`);
             }
+          }
+          const meshPinned = Object.keys(AGENT_RELEASE.mesh).sort();
+          if (meshPinned.join(",") !== [...MESH_TARGETS].sort().join(",")) {
+            throw new Error("Mesh pin must cover all five published targets before tagging; generate it from verified build sidecars");
+          }
+          for (const [target,digest] of Object.entries(AGENT_RELEASE.mesh)) {
+            if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error(`Invalid mesh pin for ${target}`);
           }
           appendFileSync(process.env.GITHUB_ENV, `PINNED_SHA256=${AGENT_RELEASE.sha256}\n`);
           NODE
@@ -318,13 +329,15 @@ jobs:
       - name: Every erainfra-mesh asset is intact and targets the platform its name claims
         run: |
           node --experimental-strip-types --input-type=module <<'NODE'
-          import { MESH_TARGETS, meshAssetName } from "./packages/backend/convex/agentRelease.ts";
-          import { existsSync } from "node:fs";
+          import { AGENT_RELEASE, MESH_TARGETS, meshAssetName } from "./packages/backend/convex/agentRelease.ts";
+          import { existsSync, readFileSync } from "node:fs";
           for (const target of MESH_TARGETS) {
             const asset = `dist/release/${meshAssetName(target)}`;
             if (!existsSync(asset) || !existsSync(`${asset}.sha256`)) {
               throw new Error(`${asset} or its sidecar is missing`);
             }
+            const built = readFileSync(`${asset}.sha256`, "utf8").split(" ")[0];
+            if (built !== AGENT_RELEASE.mesh[target]) throw new Error(`${asset} does not match the deployment mesh pin`);
           }
           NODE
           (cd dist/release && sha256sum -c erainfra-mesh-*.sha256)
@@ -447,7 +460,7 @@ jobs:
               printf '    %s\n' "$(cat "$sidecar")"
             done
             printf '\n'
-            printf 'SHA-256 of the erainfra-mesh binaries (ADR 0016; not yet pinned or installed):\n\n'
+            printf 'SHA-256 of the erainfra-mesh binaries (ADR 0016; opt-in Node sidecar):\n\n'
             for sidecar in dist/release/erainfra-mesh-*.sha256; do
               printf '    %s\n' "$(cat "$sidecar")"
             done

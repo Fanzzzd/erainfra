@@ -1,182 +1,168 @@
 package agent
 
 import (
-	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sync"
-	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient"
 )
 
-// MeshManager runs dumbpipe (iroh) sidecars ON THIS NODE to wire it to another NAT'd node with no
-// public IP: the box that HAS a service `Share`s it (dumbpipe listen-tcp → a crypto ticket); the box
-// that WANTS it `Connect`s that ticket (dumbpipe connect-tcp → a local port). Data flows P2P between
-// the two nodes (hole-punched, or via the iroh relay) — NOT through the hub. The hub only brokers the
-// ticket.
+// MeshManager drives this Node's one erainfra-mesh endpoint. It holds the controller lock for the
+// process lifetime, so the Hub connection and the Convex transport can never both reconcile the
+// same sidecar. Status and Apply carry the authenticated mesh: the control plane sends a complete
+// desired view and the Reconciler converges the sidecar to it, so a removed link or grant is
+// revoked by omission.
 //
-// This used to say it mirrored a hub-side MeshManager. It does not, and has not for some time: the
-// hub-side one was removed when the mesh moved off the Hub entirely. The Hub keeps the LinkStore and
-// the healer and sends meshShare/meshConnect/meshDrop (agents.linkService); this is the only thing
-// that runs a sidecar. The stale line was read once as evidence that this file was dead code —
-// see issue #62 — so it is corrected rather than deleted.
+// During the expand release it also serves legacy dumbpipe links (Share, Connect, Drop) for links
+// whose other end has no sidecar yet. A name the Hub has put on the mesh is refused there, so a
+// link never runs on both transports and never moves back to dumbpipe.
 type MeshManager struct {
-	mu    sync.Mutex
-	links map[string]*meshLink
+	client    *meshclient.Client
+	reconcile *meshclient.Reconciler
+	lock      *meshclient.Lock
+	child     *meshclient.Supervisor
+	legacy    legacyPipes
+
+	namesMu sync.Mutex
+	onMesh  map[string]bool // the exposure and link names of the last applied desired view
+}
+type MeshOptions struct {
+	Socket string
+	Binary string
+	Dir    string
 }
 
-type meshLink struct {
-	cmd    *exec.Cmd
-	role   string // "share" | "connect"
-	port   int
-	ticket string
+func NewMeshManager() *MeshManager {
+	return &MeshManager{legacy: legacyPipes{links: map[string]*meshLink{}}, onMesh: map[string]bool{}}
 }
-
-func NewMeshManager() *MeshManager { return &MeshManager{links: map[string]*meshLink{}} }
-
-// dumbpipeBin resolves the dumbpipe binary: $PORTLESS_PREFIX/bin (where agent.sh installs it),
-// ~/.portless/bin, then PATH. Under systemd the PATH is minimal, so the explicit locations matter.
-//
-// A search list is the one shape where accepting the renamed location costs nothing to get wrong:
-// a path that is not there is skipped, so the new names go in front of the old ones and the Node in
-// the field falls through to exactly the entry it uses today (ADR 0004 stage 1).
-func dumbpipeBin() string {
-	candidates := []string{}
-	if p := rename.Env("ERAINFRA_PREFIX", "PORTLESS_PREFIX"); p != "" {
-		candidates = append(candidates, filepath.Join(p, "bin", "dumbpipe"))
+func OpenMesh(ctx context.Context, opts MeshOptions) (*MeshManager, error) {
+	if opts.Socket == "" && opts.Binary == "" {
+		return NewMeshManager(), nil
 	}
-	if h, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(h, ".erainfra", "bin", "dumbpipe"),
-			filepath.Join(h, ".portless", "bin", "dumbpipe"))
+	if opts.Dir == "" || opts.Socket == "" {
+		return nil, fmt.Errorf("mesh socket and private control directory are required")
 	}
-	for _, c := range candidates {
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c
+	lock, err := meshclient.Acquire(filepath.Join(opts.Dir, "controller.lock"))
+	if err != nil {
+		return nil, err
+	}
+	m := NewMeshManager()
+	m.lock, m.client = lock, meshclient.New(opts.Socket)
+	if opts.Binary != "" {
+		m.child, err = meshclient.Start(ctx, meshclient.SupervisorConfig{Binary: opts.Binary, Dir: filepath.Join(opts.Dir, "sidecar"), Socket: opts.Socket})
+		if err != nil {
+			_ = lock.Close()
+			return nil, err
 		}
+		m.client = m.child.Client
 	}
-	return "dumbpipe"
+	if _, err := m.client.Status(ctx); err != nil {
+		_ = m.Close()
+		return nil, err
+	}
+	m.reconcile = &meshclient.Reconciler{Client: m.client}
+	return m, nil
 }
-
-// dumbpipe prints a ready-to-run `dumbpipe connect-tcp <ticket>` line; take that token, else the first
-// long base32 run. Matches parseTicket in mesh.ts.
-var afterConnectRe = regexp.MustCompile(`(?i)connect(?:-tcp)?\s+([a-z2-7]{48,})`)
-var bareTicketRe = regexp.MustCompile(`(?i)\b([a-z2-7]{64,})\b`)
-
-func parseTicket(s string) string {
-	if m := afterConnectRe.FindStringSubmatch(s); m != nil {
-		return m[1]
+func (m *MeshManager) Enabled() bool { return m != nil && m.client != nil }
+func (m *MeshManager) Close() error {
+	if m == nil {
+		return nil
 	}
-	if m := bareTicketRe.FindStringSubmatch(s); m != nil {
-		return m[1]
+	if m.child != nil {
+		_ = m.child.Close()
 	}
-	return ""
+	if m.lock != nil {
+		return m.lock.Close()
+	}
+	return nil
 }
-
-// Share exposes local 127.0.0.1:<port> on the mesh and returns the ticket to hand to the other node.
-func (m *MeshManager) Share(name string, port int) (string, error) {
-	_ = m.Drop(name) // replace any prior link with this name
-	//nolint:noctx // the sidecar outlives the command that starts it; Drop ends it
-	cmd := exec.Command(dumbpipeBin(), "listen-tcp", "--host", fmt.Sprintf("127.0.0.1:%d", port))
-	stdout, err := cmd.StdoutPipe()
+func (m *MeshManager) Status(ctx context.Context) (string, error) {
+	if !m.Enabled() {
+		return "", meshclient.ErrUnsupported
+	}
+	s, err := m.client.Status(ctx)
 	if err != nil {
 		return "", err
 	}
-	stderr, err := cmd.StderrPipe()
+	b, err := json.Marshal(s)
+	return string(b), err
+}
+func (m *MeshManager) Apply(ctx context.Context, d meshclient.Desired, stage string) (string, error) {
+	if !m.Enabled() {
+		return "", meshclient.ErrUnsupported
+	}
+	// Record the names before applying: from here on this Node refuses dumbpipe for them, even if
+	// the apply below fails halfway. The view is complete, so it replaces the previous set: a link
+	// the Hub deleted and later re-created with a legacy end is not refused forever.
+	names := map[string]bool{}
+	for _, e := range d.Exposures {
+		names[e.Name] = true
+	}
+	for _, l := range d.Links {
+		names[l.Name] = true
+	}
+	m.namesMu.Lock()
+	m.onMesh = names
+	m.namesMu.Unlock()
+	s, err := m.reconcile.Apply(ctx, d, stage)
 	if err != nil {
 		return "", err
 	}
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("dumbpipe start: %w", err)
-	}
-	tch := make(chan string, 1)
-	// Keep draining after the ticket so dumbpipe never blocks on a full stdout pipe.
-	scan := func(r io.Reader) {
-		sc := bufio.NewScanner(r)
-		sent := false
-		for sc.Scan() {
-			if !sent {
-				if t := parseTicket(sc.Text()); t != "" {
-					select {
-					case tch <- t:
-					default:
-					}
-					sent = true
-				}
-			}
-		}
-	}
-	go scan(stdout)
-	go scan(stderr)
-	select {
-	case t := <-tch:
-		m.add(name, &meshLink{cmd: cmd, role: "share", port: port, ticket: t})
-		go func() { _ = cmd.Wait(); m.removeIf(name, cmd) }()
-		return t, nil
-	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		return "", fmt.Errorf("timed out waiting for the mesh ticket")
-	}
+	b, err := json.Marshal(s)
+	return string(b), err
 }
 
-// Connect dials a remote ticket and surfaces it on local 0.0.0.0:<localPort> — bound on all node
-// interfaces (not just loopback) so the app's CONTAINERS can reach it via host.docker.internal. Safe
-// because the node is NAT'd (no inbound from the internet); this only exposes it on the node's LAN +
-// docker bridge. dumbpipe binds the listener at startup, so if it's still alive after a short settle
-// it's ready; a bad ticket exits fast.
-func (m *MeshManager) Connect(name, ticket string, localPort int) (string, error) {
-	_ = m.Drop(name)
-	//nolint:noctx // the sidecar outlives the command that starts it; Drop ends it
-	cmd := exec.Command(dumbpipeBin(), "connect-tcp", "--addr", fmt.Sprintf("0.0.0.0:%d", localPort), ticket)
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("dumbpipe start: %w", err)
-	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	select {
-	case err := <-exited:
-		return "", fmt.Errorf("dumbpipe exited before the listener was ready: %v", err)
-	case <-time.After(1500 * time.Millisecond):
-	}
-	m.add(name, &meshLink{cmd: cmd, role: "connect", port: localPort})
-	go func() {
-		<-exited //nolint:errcheck // how dumbpipe exited changes nothing: the link is gone either way
-		m.removeIf(name, cmd)
-	}()
-	return fmt.Sprintf("127.0.0.1:%d", localPort), nil
-}
+// ErrOnMesh refuses a dumbpipe command for a link the Hub has moved to the mesh.
+var ErrOnMesh = errors.New("link is on the authenticated mesh; dumbpipe is refused for it")
 
-// Drop kills and forgets a link by name. Returns whether one existed.
-func (m *MeshManager) Drop(name string) bool {
-	m.mu.Lock()
-	l := m.links[name]
-	delete(m.links, name)
-	m.mu.Unlock()
-	if l == nil {
+// onMeshName reports whether name belongs to the mesh: named in a desired view this agent applied,
+// or present in the sidecar right now (which also covers names restored from the sidecar's state
+// after an agent restart).
+func (m *MeshManager) onMeshName(ctx context.Context, name string) bool {
+	if !m.Enabled() {
 		return false
 	}
-	if l.cmd.Process != nil {
-		_ = l.cmd.Process.Kill()
+	m.namesMu.Lock()
+	known := m.onMesh[name]
+	m.namesMu.Unlock()
+	if known {
+		return true
 	}
-	return true
+	s, err := m.client.Status(ctx)
+	if err != nil {
+		return false
+	}
+	for _, e := range s.Exposures {
+		if e.Name == name {
+			return true
+		}
+	}
+	for _, l := range s.Links {
+		if l.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
-func (m *MeshManager) add(name string, l *meshLink) {
-	m.mu.Lock()
-	m.links[name] = l
-	m.mu.Unlock()
+// Share, Connect and Drop serve legacy dumbpipe links during the expand release (see legacyPipes).
+func (m *MeshManager) Share(ctx context.Context, name string, port int) (string, error) {
+	if m.onMeshName(ctx, name) {
+		return "", ErrOnMesh
+	}
+	return m.legacy.Share(name, port)
+}
+func (m *MeshManager) Connect(ctx context.Context, name, ticket string, localPort int) (string, error) {
+	if m.onMeshName(ctx, name) {
+		return "", ErrOnMesh
+	}
+	return m.legacy.Connect(name, ticket, localPort)
 }
 
-// removeIf forgets a link only if it's still the same process (not already replaced by a re-link).
-func (m *MeshManager) removeIf(name string, cmd *exec.Cmd) {
-	m.mu.Lock()
-	if m.links[name] != nil && m.links[name].cmd == cmd {
-		delete(m.links, name)
-	}
-	m.mu.Unlock()
-}
+// Drop is always allowed: ending a dumbpipe process never weakens a link, and the Hub drops the
+// dumbpipe half of a link while migrating it onto the mesh.
+func (m *MeshManager) Drop(name string) bool { return m.legacy.Drop(name) }

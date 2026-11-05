@@ -44,8 +44,7 @@ curl -fsSL https://<hub>/registry.sh | sh -s -- up 5000
 ```bash
 # enrolled node: the mesh link above already surfaced the store at 127.0.0.1:5000. Just ship:
 curl -fsSL https://<hub>/image.sh     | sh -s -- ship ./myapp myapp:v1
-# (un-enrolled box? run dumbpipe by hand: `dumbpipe listen-tcp --host 127.0.0.1:5000` on the store,
-#  `dumbpipe connect-tcp --addr 127.0.0.1:5000 <ticket>` here.)
+# Enroll both boxes and link them from the Hub (`portless link`); there is no hand-run ticket path.
 ```
 
 `ship` **auto-detects** how to build, then pushes:
@@ -60,7 +59,7 @@ Dockerfile). Building is the heavy step that's fine on a capable box.
 ## 3. Pull + run (on the weak deploy box)
 
 ```bash
-curl -fsSL https://<hub>/mesh-node.sh | sh -s -- connect <registry-ticket> 5000
+# Link the registry from the Hub (`portless link <registry-node>:5000 <this-node>`).
 curl -fsSL https://<hub>/image.sh     | sh -s -- run myapp:v1 -d --name myapp -p 8080:8080
 ```
 

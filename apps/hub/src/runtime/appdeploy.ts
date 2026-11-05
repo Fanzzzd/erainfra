@@ -6,13 +6,21 @@
 // reports through the DeploymentStore, which the CLI/dashboard poll.
 import { agentGateway, type AgentGateway } from "./agents.ts";
 import { appStore, type AppLink, type ServiceDeploy } from "./apps.ts";
-import { linkStore, type MeshLink } from "./links.ts";
+import { linkStore, linkTransports, type MeshLink } from "./links.ts";
 import { routeStore } from "./routes.ts";
 import { secretStore } from "./secrets.ts";
 import { portAllocator } from "./ports.ts";
 import { deployments } from "./deployments.ts";
 import { parseSpec, implicitSpec, envName, type AppSpec } from "./spec.ts";
 import { renamedEnv } from "../env.ts";
+import {
+  forgetLegacyLinks,
+  reconcileMesh,
+  type LinkOutcome,
+  type MeshDesired,
+  type MeshOptions,
+  type MeshReport,
+} from "./meshControl.ts";
 
 export interface DeploySource {
   repoUrl?: string; // git: clone url (may embed a short-lived token)
@@ -114,44 +122,83 @@ export function planDeploy(
   return { placed, links };
 }
 
-// Establish ONE mesh link: share on the provider (→ ticket, hub-internal), connect on the consumer.
-// Idempotent — the agent replaces same-name links. Throws with a reason on failure. The ticket is a
-// capability to reach the service; it never leaves the hub.
-export async function establishLink(l: MeshLink, gw: Gw = agentGateway): Promise<void> {
-  const connected = new Set(gw.list().map((a) => a.id));
-  if (!connected.has(l.provider) || !connected.has(l.consumer)) throw new Error("node offline");
-  const share = await gw.send(
-    l.provider,
-    { cmd: "meshShare", name: l.name, port: l.providerPort },
-    60_000,
-  );
-  if (!share.ok || !share.output) throw new Error(share.error ?? "no ticket");
-  const conn = await gw.send(
-    l.consumer,
-    { cmd: "meshConnect", name: l.name, ticket: share.output.trim(), port: l.localPort },
-    60_000,
-  );
-  if (!conn.ok) throw new Error(conn.error ?? "connect failed");
+// A complete desired view preserves all other services' grants when one link changes. The
+// source is evaluated inside the serial reconciliation queue, not captured by a stale sweep.
+export function desiredMeshLinks(overrides: readonly MeshLink[] = []): MeshLink[] {
+  const result = [
+    ...linkStore.list().filter((l) => !overrides.some((o) => o.name === l.name)),
+    ...appStore.list().flatMap((a) => a.links ?? []),
+    ...overrides,
+  ];
+  return [
+    ...new Map(result.map((l) => [JSON.stringify([l.provider, l.name, l.consumer]), l])).values(),
+  ];
+}
+function relayPolicy(): MeshDesired["relays"] {
+  let relays: unknown = [];
+  try {
+    relays = JSON.parse(process.env.ERAINFRA_MESH_RELAYS ?? "[]");
+  } catch {
+    throw new Error("ERAINFRA_MESH_RELAYS must be a JSON URL array");
+  }
+  if (!Array.isArray(relays) || !relays.every((r) => typeof r === "string"))
+    throw new Error("ERAINFRA_MESH_RELAYS must be a JSON URL array");
+  const fallback = process.env.ERAINFRA_MESH_N0_FALLBACK ?? "false";
+  if (fallback !== "true" && fallback !== "false")
+    throw new Error("ERAINFRA_MESH_N0_FALLBACK must be true or false");
+  return {
+    relays,
+    auth_token: process.env.ERAINFRA_MESH_RELAY_TOKEN || undefined,
+    n0_fallback: fallback === "true",
+  };
+}
+// ERAINFRA_MESH_REQUIRE=true refuses legacy dumbpipe links outright, for an operator who has
+// moved every Node onto erainfra-mesh. Default false in this (expand) release; the contract release,
+// which deletes dumbpipe, makes refusal the only behaviour.
+export function meshRequired(): boolean {
+  const v = process.env.ERAINFRA_MESH_REQUIRE ?? "false";
+  if (v !== "true" && v !== "false") throw new Error("ERAINFRA_MESH_REQUIRE must be true or false");
+  return v === "true";
+}
+export function meshOptions(): MeshOptions {
+  return { transports: linkTransports, relays: relayPolicy(), require: meshRequired() };
+}
+export async function reconcileStoredMesh(gw: Gw = agentGateway): Promise<MeshReport> {
+  return reconcileMesh(gw, () => desiredMeshLinks(), meshOptions());
+}
+// Bring one link up on whichever transport it qualifies for and return that transport, or throw
+// with the reason it is not up.
+export async function establishLink(l: MeshLink, gw: Gw = agentGateway): Promise<LinkOutcome> {
+  const report = await reconcileMesh(gw, () => desiredMeshLinks([l]), meshOptions());
+  const outcome = report.links.get(l.name);
+  if (!outcome?.ok)
+    throw new Error(outcome?.error ?? (report.errors.join("; ") || "link not established"));
+  return outcome;
 }
 
 // (Re-)establish an app's mesh links. Used after deploy, after failover, and by the boot-time
-// re-establish sweep (agent restarts lose their dumbpipe sidecars).
+// re-establish sweep. One reconciliation covers every link of the app: each pass already sends
+// every Node its whole desired view, so a pass per link would only repeat the same work.
 export async function ensureAppLinks(
   app: string,
   gw: Gw = agentGateway,
-): Promise<Array<{ name: string; ok: boolean; error?: string }>> {
+): Promise<Array<{ name: string; ok: boolean; transport?: string; error?: string }>> {
   const dep = appStore.get(app);
   if (!dep?.links?.length) return [];
-  const results: Array<{ name: string; ok: boolean; error?: string }> = [];
-  for (const l of dep.links) {
-    try {
-      await establishLink(l, gw);
-      results.push({ name: l.name, ok: true });
-    } catch (e) {
-      results.push({ name: l.name, ok: false, error: (e as Error).message });
-    }
+  let report: MeshReport | undefined;
+  let failure: string | undefined;
+  try {
+    report = await reconcileMesh(gw, () => desiredMeshLinks(), meshOptions());
+  } catch (e) {
+    failure = (e as Error).message;
   }
-  return results;
+  return dep.links.map((l) => {
+    const o = report?.links.get(l.name);
+    if (!o) return { name: l.name, ok: false, error: failure ?? "link not reconciled" };
+    return o.ok
+      ? { name: l.name, ok: true, transport: o.transport }
+      : { name: l.name, ok: false, transport: o.transport, error: o.error };
+  });
 }
 
 // The registry lives on ONE box (the hub host, PORTLESS_REGISTRY_NODE names its agent). Every other
@@ -394,12 +441,17 @@ export async function removeApp(
         /* node offline — still forget the state below */
       }
     }
-    for (const l of group.links ?? []) {
-      await gw.send(l.provider, { cmd: "meshDrop", name: l.name }, 30_000).catch(() => {});
-      await gw.send(l.consumer, { cmd: "meshDrop", name: l.name }, 30_000).catch(() => {});
-    }
+    // As before the mesh: end any dumbpipe half of the app's legacy links on both ends, best effort.
+    for (const l of group.links ?? [])
+      if (linkTransports.get(l.name) !== "mesh")
+        for (const node of [l.consumer, l.provider])
+          await gw.send(node, { cmd: "meshDrop", name: l.name }, 30_000).catch(() => {});
     for (const s of group.services) if (s.route) routeStore.delete(s.route);
     appStore.delete(app);
+    // The app's links left the desired view with it. A Node that cannot be reached now keeps its
+    // grant until the healer's next pass or its own reconnect, both of which re-run this; the
+    // removal itself must not fail because one Node is offline.
+    await reconcileStoredMesh(gw).catch(() => {});
   } else {
     // Legacy single-container app (routeStore only), or a bare route label of a group.
     const owner = appStore.list().find((g) => g.services.some((s) => s.route === app));
@@ -437,14 +489,16 @@ export function installServeRehydrator(gw: GwConnect = agentGateway): void {
 }
 
 export function installLinkHealer(gw: Gw = agentGateway, everyMs = 60_000): void {
-  const sweep = async () => {
-    for (const { app, links } of appStore.list()) {
-      if (links?.length) await ensureAppLinks(app, gw).catch(() => {});
-    }
-    // Standalone links (portless link / registry auto-links) heal the same way. Offline nodes are
-    // skipped (establishLink throws 'node offline'), retried next sweep.
-    for (const l of linkStore.list()) await establishLink(l, gw).catch(() => {});
-  };
-  setTimeout(sweep, 10_000).unref(); // first pass shortly after boot, once agents have re-dialed
+  const sweep = () => reconcileStoredMesh(gw).catch(() => {});
+  // Capability/status discovery runs over the authenticated control connection on every hello,
+  // so endpoint changes, restarted sidecars and a Node that just gained erainfra-mesh (which
+  // migrates its links) do not wait for a manual re-link. A reconnecting agent may have restarted
+  // and lost its dumbpipe processes, so its legacy links are set up again.
+  if ("onConnect" in gw && typeof gw.onConnect === "function")
+    gw.onConnect((agentId: string) => {
+      forgetLegacyLinks(gw, agentId);
+      void sweep();
+    });
+  setTimeout(sweep, 10_000).unref();
   setInterval(sweep, everyMs).unref();
 }

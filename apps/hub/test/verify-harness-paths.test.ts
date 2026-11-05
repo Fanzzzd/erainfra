@@ -18,8 +18,8 @@ const VERIFY_DIR = join(import.meta.dirname, "../scripts/verify");
 
 // verify-mesh.ts was deleted, not repaired, because its subject was gone: it drove a MeshManager
 // that ran dumbpipe/iroh sidecars inside the Hub, and the mesh moved OUT of the Hub onto the Node.
-// The Hub brokers links now (agents.linkService → the agent's meshShare/meshConnect, healed by
-// appdeploy.ts) and verify-meshlink.ts covers that path end to end.
+// The Hub brokers links now (agents.linkService → meshControl.ts, which sends each agent meshStatus
+// and meshApply, healed by appdeploy.ts) and verify-meshlink.ts covers that path end to end.
 //
 // The assertion below is the two-sided half of that decision, and it is why this constant outlives
 // the file it names: the delete was justified by src/runtime/mesh.ts being gone, so if that module

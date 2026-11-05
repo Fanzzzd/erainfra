@@ -26,6 +26,7 @@
     "print-infra-agent-pin": "node --experimental-strip-types scripts/print-infra-agent-pin.ts",
     "print-cache-service-pin": "node --experimental-strip-types scripts/print-cache-service-pin.ts",
     "print-controller-pin": "node --experimental-strip-types scripts/print-controller-pin.ts",
+    "print-mesh-pin": "node --experimental-strip-types scripts/print-mesh-pin.ts",
     "embed-firecracker-provisioner": "node --experimental-strip-types scripts/embed-firecracker-provisioner.ts",
     "embed-controller-unit": "node --experimental-strip-types scripts/embed-controller-unit.ts",
     "import-hub-state": "node --experimental-strip-types scripts/import-hub-state.ts"

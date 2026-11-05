@@ -4,6 +4,7 @@
 // re-establish them across hub/agent restarts.
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "../db.ts";
+import type { LinkTransport, TransportStore } from "./meshControl.ts";
 
 export interface MeshLink {
   name: string; // link id (same on both nodes; re-share replaces)
@@ -50,3 +51,45 @@ export class LinkStore {
 }
 
 export const linkStore = new LinkStore();
+
+// The transport each link (standalone or app-declared, keyed by link name) is on. Persisted so a
+// link the Hub has moved onto the mesh stays there across Hub restarts and is never set up on
+// dumbpipe again (ADR 0016 phase 1b, expand release).
+export class LinkTransportStore implements TransportStore {
+  private d: DatabaseSync;
+
+  constructor(d: DatabaseSync = db) {
+    this.d = d;
+  }
+
+  get(name: string): LinkTransport | undefined {
+    const r = this.d.prepare("SELECT transport FROM link_transports WHERE name = ?").get(name) as
+      | { transport: string }
+      | undefined;
+    return r?.transport === "mesh" || r?.transport === "legacy-dumbpipe" ? r.transport : undefined;
+  }
+
+  set(name: string, transport: LinkTransport): void {
+    // "mesh" is final: a write of anything else over it is ignored, which is the no-downgrade rule
+    // enforced at the one place every caller goes through.
+    this.d
+      .prepare(
+        "INSERT INTO link_transports (name, transport, updated_at) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET transport = excluded.transport, updated_at = excluded.updated_at WHERE link_transports.transport <> 'mesh'",
+      )
+      .run(name, transport, new Date().toISOString());
+  }
+
+  delete(name: string): void {
+    this.d.prepare("DELETE FROM link_transports WHERE name = ?").run(name);
+  }
+
+  names(): string[] {
+    return (
+      this.d.prepare("SELECT name FROM link_transports ORDER BY name").all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name);
+  }
+}
+
+export const linkTransports = new LinkTransportStore();

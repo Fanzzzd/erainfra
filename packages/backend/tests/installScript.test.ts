@@ -358,6 +358,7 @@ const CURRENT: AgentRelease = {
   version: "1.4.2",
   sha256: "",
   infraAgent: {},
+  mesh: {},
   cacheService: {},
   controller: {},
 };
@@ -366,6 +367,7 @@ const OLDER: AgentRelease = {
   version: "1.3.0",
   sha256: "",
   infraAgent: {},
+  mesh: {},
   cacheService: {},
   controller: {},
 };
@@ -603,6 +605,29 @@ describe("rendered script", () => {
     expect(check.status, check.stderr).toBe(0);
   });
 
+  // A systemd host cannot run in this sandbox, so the --mesh service is checked as rendered text:
+  // the sidecar runs as its own user with a private key directory, and the agent can only reach
+  // it through the group-owned runtime directory.
+  it("runs the mesh sidecar as its own unprivileged user with private state", () => {
+    const unit = script.slice(
+      script.indexOf("[Unit]\nDescription=EraInfra authenticated Node mesh"),
+    );
+    expect(unit).toMatch(/^User=erainfra-mesh$/m);
+    expect(unit).toMatch(/^Group=erainfra-mesh$/m);
+    expect(unit).toMatch(/^UMask=0077$/m);
+    expect(unit).toMatch(/^StateDirectoryMode=0700$/m);
+    expect(unit).toMatch(/^RuntimeDirectoryMode=0750$/m);
+    expect(unit).toMatch(/^NoNewPrivileges=yes$/m);
+    expect(unit).toMatch(/^CapabilityBoundingSet=$/m);
+    expect(unit).toMatch(/^MemoryMax=/m);
+    expect(unit).toMatch(/--key \/var\/lib\/erainfra-mesh\/endpoint\.key/);
+    expect(script).toMatch(
+      /install -d -m 700 -o erainfra-mesh -g erainfra-mesh \/var\/lib\/erainfra-mesh/,
+    );
+    expect(script).toMatch(/SupplementaryGroups=erainfra-mesh/);
+    expect(script).not.toMatch(/dumbpipe-\$|n0-computer\/dumbpipe/);
+  });
+
   it("never downloads a mutable branch tarball", () => {
     expect(script).not.toMatch(/archive\/refs\/heads/);
     expect(script).toMatch(/releases\/download\/v\$VERSION/);
@@ -835,6 +860,58 @@ sleep 5
     expect(result.stderr).toMatch(new RegExp(`pins no Infra Agent build for ${HOST_TARGET}`));
     expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent/);
     expect(existsSync(installedAgent(sandbox))).toBe(false);
+  });
+
+  function publishMesh(
+    sandbox: Sandbox,
+    release: AgentRelease,
+    body = "#!/usr/bin/env bash\nexit 0\n",
+  ) {
+    const asset = `erainfra-mesh-${HOST_TARGET}`;
+    const binaryPath = path.join(sandbox.fixtures, asset);
+    writeExecutable(binaryPath, body);
+    const sha256 = createHash("sha256").update(readFileSync(binaryPath)).digest("hex");
+    const sidecar = `${binaryPath}.sha256`;
+    writeFileSync(sidecar, `${sha256}  ${asset}\n`);
+    const url = `https://github.com/${release.repo}/releases/download/v${release.version}/${asset}`;
+    route(sandbox, url, binaryPath);
+    route(sandbox, `${url}.sha256`, sidecar);
+    return { sha256, binaryPath, sidecar };
+  }
+
+  it("refuses --mesh without a deployment pin before downloading or replacing the agent", () => {
+    const sandbox = createSandbox(CURRENT);
+    const agent = publishInfraAgent(sandbox, CURRENT);
+    publishMesh(sandbox, CURRENT);
+    repin(sandbox, pinned(CURRENT, agent.sha256));
+    const result = run(sandbox, nodeArgs(["--mesh"]));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(new RegExp(`pins no erainfra-mesh build for ${HOST_TARGET}`));
+    expect(result.stderr).toMatch(/dumbpipe is not installed/);
+    expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent|erainfra-mesh|dumbpipe/);
+    expect(existsSync(installedAgent(sandbox))).toBe(false);
+  });
+
+  it("requires both mesh deployment and release checksums and installs no dumbpipe", () => {
+    const sandbox = createSandbox(CURRENT);
+    const agent = publishInfraAgent(sandbox, CURRENT);
+    const mesh = publishMesh(sandbox, CURRENT);
+    const release = { ...pinned(CURRENT, agent.sha256), mesh: { [HOST_TARGET]: mesh.sha256 } };
+    repin(sandbox, release);
+    writeFileSync(mesh.sidecar, `${"0".repeat(64)}  erainfra-mesh-${HOST_TARGET}\n`);
+    const result = run(sandbox, nodeArgs(["--mesh"]));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Mesh checksum verification failed/);
+    expect(result.stderr).toMatch(/Nothing was installed/);
+    expect(readLog(sandbox.curlLog)).not.toMatch(/dumbpipe/);
+    expect(existsSync(installedAgent(sandbox))).toBe(false);
+
+    writeFileSync(mesh.sidecar, `${mesh.sha256}  erainfra-mesh-${HOST_TARGET}\n`);
+    const ok = run(sandbox, nodeArgs(["--mesh"]));
+    expect(ok.status, `${ok.stdout}\n${ok.stderr}`).toBe(0);
+    expect(ok.stdout).toMatch(/against both release and deployment checksums/);
+    expect(existsSync(path.join(sandbox.home, ".portless", "bin", "erainfra-mesh"))).toBe(true);
+    expect(readLog(sandbox.curlLog)).not.toMatch(/dumbpipe/);
   });
 
   it("refuses without the Hub the Node reports to", () => {

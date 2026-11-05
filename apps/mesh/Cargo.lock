@@ -832,6 +832,7 @@ name = "erainfra-mesh"
 version = "0.2.0-rc.10"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "iroh",
  "serde",
  "serde_json",
@@ -840,6 +841,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

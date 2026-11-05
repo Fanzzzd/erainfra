@@ -42,8 +42,10 @@ func (f fakeRunner) DeployApp(ctx context.Context, app string, services []Servic
 	f.saw(ctx)
 	return f.appOut, f.appErr
 }
-func (f fakeRunner) MeshShare(name string, port int) (string, error) { return f.meshOut, f.meshErr }
-func (f fakeRunner) MeshConnect(name, ticket string, localPort int) (string, error) {
+func (f fakeRunner) MeshShare(ctx context.Context, name string, port int) (string, error) {
+	return f.meshOut, f.meshErr
+}
+func (f fakeRunner) MeshConnect(ctx context.Context, name, ticket string, localPort int) (string, error) {
 	return f.meshOut, f.meshErr
 }
 func (f fakeRunner) MeshDrop(name string) (string, error)       { return f.meshOut, f.meshErr }

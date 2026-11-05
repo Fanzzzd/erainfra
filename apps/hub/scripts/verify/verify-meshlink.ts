@@ -1,12 +1,15 @@
-// Proof: cross-node service-to-service over OUR mesh (dumbpipe/iroh), not the public domain. Two agents
-// connect to one hub; a "db" (registry:2.8.2, internal — no route) is deployed on nodeB and published
-// only to nodeB's loopback. agents.linkService then brokers a P2P mesh link: nodeB shares the db port
-// → ticket → nodeA connects it → a local port on nodeA. We then reach the db FROM nodeA through that
+// Proof: cross-node service-to-service over OUR mesh (erainfra-mesh on iroh), not the public domain.
+// Two agents connect to one hub; a "db" (registry:2.8.2, internal — no route) is deployed on nodeB and
+// published only to nodeB's loopback. agents.linkService then has the Hub read both Nodes' mesh
+// identities, grant nodeA's EndpointId on nodeB's exposure, and open a listener on nodeA that dials
+// nodeB by EndpointId. We then reach the db FROM nodeA through that
 // link — both as a host TCP check and from a CONTAINER on nodeA via host.docker.internal (the real
 // backend→db path). The db is never on a domain; data flows node-to-node, not through the hub.
 //   node --experimental-strip-types apps/hub/scripts/verify/verify-meshlink.ts
-// Needs `dumbpipe` on PATH (the agents spawn it). Both agents share this machine's docker daemon, so
-// the two dumbpipe sidecars tunnel over iroh between themselves — proving the mesh carries the TCP.
+// Needs a built sidecar: `cargo build --manifest-path apps/mesh/Cargo.toml`, or set MESH_BIN. Each
+// agent supervises its own erainfra-mesh under its own scratch directory (ERAINFRA_MESH_BIN), so the
+// two sidecars have different keys and tunnel over iroh between themselves — proving the mesh
+// carries the TCP. Run it as an ordinary user: the agent refuses to supervise a root sidecar.
 import os from "node:os";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
@@ -33,6 +36,9 @@ const PORT = 8790,
   IMAGE = "registry:2.8.2";
 const AGENT_BIN = new URL("../../deploy/infra/bin/portless-agent-darwin-arm64", import.meta.url)
   .pathname;
+const MESH_BIN =
+  process.env.MESH_BIN ??
+  new URL("../../../mesh/target/debug/erainfra-mesh", import.meta.url).pathname;
 const owner: Principal = { id: "u-owner", name: "Owner", roles: ["owner"] };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -60,7 +66,14 @@ const spawnAgent = (name: string) =>
       "--name",
       name,
     ],
-    { stdio: ["ignore", "inherit", "inherit"] },
+    {
+      stdio: ["ignore", "inherit", "inherit"],
+      env: {
+        ...process.env,
+        ERAINFRA_MESH_BIN: MESH_BIN,
+        ERAINFRA_MESH_CONTROL_DIR: join(scratch, name, "mesh-control"),
+      },
+    },
   );
 
 const app = createApiServer();
@@ -95,8 +108,8 @@ try {
   if (!d.ok) throw new Error(`db deploy failed: ${JSON.stringify(d.results)}`);
   console.log("✅ db up on nodeB (internal-only)");
 
-  // broker the mesh link: nodeB shares db → ticket → nodeA connects it locally
-  console.log("linking db across the mesh: nodeB shares → nodeA connects…");
+  // broker the mesh link: nodeB exposes db to nodeA's EndpointId → nodeA links to nodeB locally
+  console.log("linking db across the mesh: nodeB grants nodeA → nodeA links…");
   const link = await caller.agents.linkService({
     name: "dblink",
     provider: "nodeB",
@@ -110,7 +123,7 @@ try {
     `✅ mesh link up — db reachable on nodeA at ${link.localAddress} (containers: ${link.address})`,
   );
 
-  // 1) host-side: reach the remote db THROUGH the mesh (this port is only served by dumbpipe-connect)
+  // 1) host-side: reach the remote db THROUGH the mesh (this port is only served by nodeA's erainfra-mesh link)
   let res;
   for (let i = 0; i < 20; i++) {
     try {
@@ -139,9 +152,6 @@ try {
 } catch {}
 try {
   execSync(`docker network rm ${APP}-net`, { stdio: "ignore" });
-} catch {}
-try {
-  execSync(`pkill -f 'dumbpipe (listen|connect)-tcp'`, { stdio: "ignore" });
 } catch {}
 agentA.kill();
 agentB.kill();

@@ -11,6 +11,11 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use crate::api::{self, ApiError, MAX_REQUEST_BYTES, Response};
 use crate::daemon::Daemon;
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::create_pipe;
+
 /// Serves one client: one JSON request per line, one JSON response per line, in order.
 pub async fn serve_client<S>(stream: S, daemon: Arc<Daemon>)
 where
@@ -119,13 +124,7 @@ pub async fn run_pipe(
     shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    let name = path.as_os_str();
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .reject_remote_clients(true)
-        .create(name)
+    let mut server = create_pipe(path, true)
         .with_context(|| format!("cannot create the control pipe {}", path.display()))?;
     loop {
         tokio::select! {
@@ -133,9 +132,7 @@ pub async fn run_pipe(
             connected = server.connect() => {
                 connected.context("control pipe connect failed")?;
                 let client = server;
-                server = ServerOptions::new()
-                    .reject_remote_clients(true)
-                    .create(name)
+                server = create_pipe(path, false)
                     .with_context(|| format!("cannot create the control pipe {}", path.display()))?;
                 tokio::spawn(serve_client(client, daemon.clone()));
             }

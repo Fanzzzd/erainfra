@@ -80,6 +80,7 @@ const c = {
   cyan: (s) => (isTTY ? `\x1b[36m${s}\x1b[0m` : s),
 };
 const ok = (msg) => console.log(`${c.green("✓")} ${msg}`);
+const warn = (msg) => console.error(c.yellow(`! ${msg}`));
 const die = (msg) => {
   console.error(`${c.red("✗")} ${msg}`);
   process.exit(1);
@@ -921,6 +922,7 @@ const commands = {
     ok(
       `${c.bold(consumer)} can now reach ${c.bold(src)} at ${c.cyan(r.address)} (containers: ${r.containerAddress}) — link "${r.name}", auto-healed`,
     );
+    if (r.warning) warn(`link "${r.name}" is on legacy-dumbpipe (${r.warning})`);
   },
 
   async links({ flags }) {
@@ -929,16 +931,28 @@ const commands = {
     if (flags.json) return console.log(JSON.stringify(list, null, 2));
     if (!list.length)
       return console.log("no mesh links — create one: portless link <node>:<port> <node>");
+    // TRANSPORT tells a migrating operator which links still ride the unauthenticated dumbpipe
+    // transport (ADR 0016 phase 1b): those need erainfra-mesh on the Node the warning names.
+    const transport = (l) =>
+      l.transport === "mesh"
+        ? l.state === "secure"
+          ? c.green("mesh")
+          : c.yellow(`mesh (${l.state})`)
+        : l.transport === "legacy-dumbpipe"
+          ? c.red("legacy-dumbpipe (unauthenticated)")
+          : c.yellow(l.state ?? "-");
     table(
       list.map((l) => [
         l.name,
         `${l.provider}:${l.providerPort}`,
         `${l.consumer} @127.0.0.1:${l.localPort}`,
         l.online ? c.green("online") : c.red("node offline"),
-        c.dim(l.createdBy ?? "-"),
+        transport(l),
+        c.dim(l.app ? `app:${l.app}` : (l.createdBy ?? "-")),
       ]),
-      ["LINK", "FROM", "SURFACED ON", "STATUS", "BY"],
+      ["LINK", "FROM", "SURFACED ON", "STATUS", "TRANSPORT", "BY"],
     );
+    for (const l of list) if (l.warning || l.error) warn(`${l.name}: ${l.warning ?? l.error}`);
   },
 
   async unlink({ flags, pos }) {
@@ -981,7 +995,7 @@ ${c.bold("mesh")}
   link <node>:<port> <node>[:<port>]
                                   surface a port from one node on another (P2P, no tunnel),
                                   e.g. portless link gpu-box:8080 web-box — auto-healed forever
-  links                           every mesh link + status
+  links                           every mesh link, its status and transport
   unlink <name> [-y]              tear a link down on both ends
 
 ${c.bold("operate")}

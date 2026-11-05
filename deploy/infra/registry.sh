@@ -6,8 +6,8 @@
 #   curl -fsSL <hub>/registry.sh | sh -s -- up [port]   # install zot + run it (default 127.0.0.1:5000)
 #   ... | sh -s -- status | down
 #
-# It binds 127.0.0.1 by default so it has no public exposure — put it on the mesh with:
-#   curl -fsSL <hub>/mesh-node.sh | sh -s -- share <port>     # → a ticket; deploy boxes connect it
+# It binds 127.0.0.1 by default so it has no public exposure. Reach it through a Hub mesh link
+# (`portless link`); it is authenticated when both Nodes run the pinned erainfra-mesh sidecar.
 # Or expose it on a VPS interface with PORTLESS_REGISTRY_BIND=0.0.0.0 (then add TLS yourself).
 #
 # S3 backing store (when you wire S3): set PORTLESS_REGISTRY_S3_BUCKET (+ _REGION, optional
