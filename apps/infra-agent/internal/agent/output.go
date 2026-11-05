@@ -24,6 +24,7 @@ func (b *capBuffer) Write(p []byte) (int, error) {
 	}
 	return n, nil
 }
+
 // tailBuffer consumes all output and keeps only the last `limit` bytes. A log tail wants the end
 // of the output, the newest lines, where capBuffer keeps the start.
 type tailBuffer struct {
