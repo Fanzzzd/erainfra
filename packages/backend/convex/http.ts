@@ -380,7 +380,9 @@ http.route({
       return jsonResponse({ error: "Invalid Profile" }, 400);
     }
     const found = await ctx.runMutation(internal.controllerApi.pauseProfile, { name });
-    return found ? new Response(null, { status: 204 }) : jsonResponse({ error: "Unknown Profile" }, 404);
+    return found
+      ? new Response(null, { status: 204 })
+      : jsonResponse({ error: "Unknown Profile" }, 404);
   }),
 });
 

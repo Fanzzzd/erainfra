@@ -282,7 +282,6 @@ describe("retiring a Profile", () => {
   });
 });
 
-
 describe("POST /controller/profiles/pause", () => {
   const token = "controller-token-for-pause";
 
