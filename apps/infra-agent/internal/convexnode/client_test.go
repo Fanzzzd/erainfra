@@ -54,6 +54,10 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		send(map[string]any{"revision": "rev1", "unchanged": false, "desired": map[string]any{"v": 1, "exposures": []any{}}})
 	case "/api/v1/nodes/commands":
+		if f.huge {
+			send(strings.Repeat("x", maxWireBytes+1))
+			return
+		}
 		if f.result != "" {
 			send(map[string]any{"cursor": nil, "commands": []any{}})
 			return

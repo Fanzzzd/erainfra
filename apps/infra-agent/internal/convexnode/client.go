@@ -11,10 +11,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/agent"
@@ -96,15 +96,40 @@ func (e LocalExecutor) Execute(ctx context.Context, p Payload) string {
 }
 
 type Client struct {
-	cfg                      Config
-	http                     *http.Client
-	journal                  *Journal
-	exec                     Executor
-	owner                    string
-	revision, cursor, nodeID string
-	lastHeartbeat            time.Time
+	cfg            Config
+	http           *http.Client
+	journal        *Journal
+	exec           Executor
+	owner          string
+	cursor, nodeID string
+	lastHeartbeat  time.Time
 	// RenewInterval is shorter in in-memory server tests. Production uses 10 seconds.
 	RenewInterval time.Duration
+	// Mesh, when set before Run, publishes this Node's endpoint and applies Convex's mesh snapshot
+	// to the local sidecar in a loop of its own, so a mesh failure never delays a command.
+	Mesh *MeshOptions
+
+	now        func() time.Time // the mesh loop and heartbeat bookkeeping share one clock
+	regMu      sync.Mutex
+	registered registration
+}
+
+// registration is the Node's EndpointId as the last heartbeat reported it.
+type registration struct {
+	known bool
+	id    string // "" when no key is registered
+	at    time.Time
+}
+
+func (c *Client) setRegistered(id string) {
+	c.regMu.Lock()
+	defer c.regMu.Unlock()
+	c.registered = registration{known: true, id: id, at: c.now()}
+}
+func (c *Client) registration() registration {
+	c.regMu.Lock()
+	defer c.regMu.Unlock()
+	return c.registered
 }
 
 func New(cfg Config, executor Executor) (*Client, error) {
@@ -132,7 +157,7 @@ func New(cfg Config, executor Executor) (*Client, error) {
 		return nil, err
 	}
 	cfg.URL = u.Scheme + "://" + u.Host
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, journal: j, exec: executor, owner: hex.EncodeToString(nonce), RenewInterval: 10 * time.Second}, nil
+	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, journal: j, exec: executor, owner: hex.EncodeToString(nonce), RenewInterval: 10 * time.Second, now: time.Now}, nil
 }
 func (c *Client) Close() error { return c.journal.Close() }
 func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
@@ -166,7 +191,14 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		return errors.New("node API response limit exceeded")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return apiStatusError{status:resp.StatusCode}
+		// Only a short fixed code is kept from an error body, never free text.
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(b, &refusal) != nil || !errorCodePattern.MatchString(refusal.Error) {
+			refusal.Error = ""
+		}
+		return apiStatusError{status: resp.StatusCode, code: refusal.Error}
 	}
 	if output == nil {
 		return nil
@@ -177,8 +209,19 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	return nil
 }
 
-type apiStatusError struct {status int}
-func (e apiStatusError) Error() string {return fmt.Sprintf("node API status %d",e.status)}
+var errorCodePattern = regexp.MustCompile(`^[a-z_]{1,40}$`)
+
+type apiStatusError struct {
+	status int
+	code   string
+}
+
+func (e apiStatusError) Error() string {
+	if e.code != "" {
+		return fmt.Sprintf("node API status %d (%s)", e.status, e.code)
+	}
+	return fmt.Sprintf("node API status %d", e.status)
+}
 
 type pendingCommand struct {
 	ID   string `json:"id"`
@@ -197,7 +240,8 @@ type commandClaim struct {
 func (c *Client) Step(ctx context.Context) (bool, error) {
 	if c.nodeID == "" || time.Since(c.lastHeartbeat) >= 15*time.Second {
 		var hb struct {
-			NodeID string `json:"nodeId"`
+			NodeID     string  `json:"nodeId"`
+			EndpointID *string `json:"endpointId"`
 		}
 		if err := c.request(ctx, "POST", "heartbeat", map[string]string{"version": c.cfg.Version}, &hb); err != nil {
 			return false, err
@@ -215,30 +259,14 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 		}
 		c.nodeID = hb.NodeID
 		c.lastHeartbeat = time.Now()
-	}
-	var state struct {
-		Revision  string          `json:"revision"`
-		Unchanged bool            `json:"unchanged"`
-		Desired   json.RawMessage `json:"desired"`
-	}
-	if err := c.request(ctx, "GET", "state?revision="+url.QueryEscape(c.revision), nil, &state); err != nil {
-		return false, err
-	}
-	if !state.Unchanged {
-		if !json.Valid(state.Desired) || len(state.Desired) > 200*1024 {
-			return false, errors.New("invalid mesh desired state")
+		registered := ""
+		if hb.EndpointID != nil {
+			registered = *hb.EndpointID
 		}
-		var desired DesiredMesh
-		if json.Unmarshal(state.Desired, &desired) != nil || desired.V != 1 {
-			return false, errors.New("unsupported mesh desired state")
-		}
-		// Persist only desired mesh configuration, never command payloads/secrets. No sidecar calls in
-		// this phase. A future reconciler must remove absent exposure/link names before granting new ones.
-		if err := os.WriteFile(filepath.Join(c.cfg.StateDir, "desired.json"), state.Desired, 0600); err != nil {
-			return false, err
-		}
-		c.revision = state.Revision
+		c.setRegistered(registered)
 	}
+	// The mesh snapshot is not fetched here: a bad link or an unavailable mesh state must not
+	// stop this Node from running its commands (see RunMesh).
 	var page struct {
 		Cursor   *string          `json:"cursor"`
 		Commands []pendingCommand `json:"commands"`
@@ -253,16 +281,18 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 	if page.Cursor != nil {
 		c.cursor = *page.Cursor
 	}
-    progressed:=false
+	progressed := false
 	for _, cmd := range page.Commands {
 		if err := c.execute(ctx, cmd); err != nil {
-            var status apiStatusError
-            // A stale App lease, competing claim or cancellation must not starve the other Apps
-            // on this Node. Keep these queued for operator/coordinator disposition; do not spin.
-            if errors.As(err,&status) && status.status==http.StatusConflict {continue}
+			var status apiStatusError
+			// A stale App lease, competing claim or cancellation must not starve the other Apps
+			// on this Node. Keep these queued for operator/coordinator disposition; do not spin.
+			if errors.As(err, &status) && status.status == http.StatusConflict {
+				continue
+			}
 			return false, err
 		}
-        progressed=true
+		progressed = true
 	}
 	return progressed || c.cursor != "", nil
 }
@@ -344,6 +374,11 @@ func idleDelay(previous time.Duration, busy bool) time.Duration {
 	return next
 }
 func (c *Client) Run(ctx context.Context) error {
+	if c.Mesh != nil {
+		mesh := make(chan struct{})
+		go func() { defer close(mesh); c.RunMesh(ctx, *c.Mesh) }()
+		defer func() { <-mesh }()
+	}
 	var delay time.Duration
 	for {
 		busy, err := c.Step(ctx)

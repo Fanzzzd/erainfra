@@ -1,9 +1,9 @@
 package convexnode
 
-// DesiredMesh is a complete replacement snapshot, not an imperative command queue. The phase-1b
-// meshclient adapter can map Fleet/Relays to set_fleet/set_relays and each exposure/link to the
-// identically named NDJSON v1 operation, removing names absent from the new snapshot. The
-// connect-convex transport only persists this snapshot in phase 2b; it does not drive a sidecar.
+// DesiredMesh is a complete replacement snapshot, not an imperative command queue. RunMesh
+// converts it into meshclient.Desired (decodeSnapshot) and hands it to the same Reconciler Hub
+// mode uses, which removes names absent from the new snapshot. Relays is replaced by the Node's
+// own relay policy before applying (MeshOptions.Relays).
 type DesiredMesh struct {
 	V         int            `json:"v"`
 	Fleet     []MeshPeer     `json:"fleet"`

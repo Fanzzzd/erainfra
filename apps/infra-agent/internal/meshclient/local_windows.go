@@ -60,7 +60,18 @@ func Acquire(path string) (*Lock, error) {
 	}
 	return l, nil
 }
-func (l *Lock) Close() error        { return l.f.Close() }
+
+// AcquireSocket has no Windows equivalent yet: a named pipe has no directory inode to lock, so
+// Windows relies on the control-directory lock alone. connect-convex refuses to drive a sidecar on
+// Windows for this reason, which leaves Hub mode as the only controller there.
+func AcquireSocket(string) (*Lock, error) { return &Lock{}, nil }
+
+func (l *Lock) Close() error {
+	if l.f == nil {
+		return nil
+	}
+	return l.f.Close()
+}
 func privileged() bool              { return windows.GetCurrentProcessToken().IsElevated() }
 func terminate(p *os.Process) error { return p.Kill() }
 func privateKey(path string) error {
