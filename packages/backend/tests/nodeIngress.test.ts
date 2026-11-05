@@ -72,10 +72,32 @@ async function fixture() {
   const gw = await enroll("gw-1");
   const app = await enroll("app-1");
   const other = await enroll("other-1");
+  // A deployed single-service App `name` routed at `name`: its App row, its port allocation and
+  // its route row agree, as the deploy pipeline writes them.
   const route = (name: string, nodeId: Id<"nodes">, port: number) =>
-    t.run((ctx) =>
-      ctx.db.insert("appRoutes", { name, nodeId, image: `reg/${name}:1`, port, updatedAt: T0 }),
-    );
+    t.run(async (ctx) => {
+      await ctx.db.insert("apps", {
+        name,
+        nodeId,
+        services: [{ name: "web", image: `reg/${name}:1`, args: [], port, route: name, nodeId }],
+        links: [],
+        updatedAt: T0,
+      });
+      await ctx.db.insert("portAllocations", {
+        nodeId,
+        key: `${name}/web`,
+        port,
+        app: name,
+        allocatedAt: T0,
+      });
+      await ctx.db.insert("appRoutes", {
+        name,
+        nodeId,
+        image: `reg/${name}:1`,
+        port,
+        updatedAt: T0,
+      });
+    });
   const snapshot = async (credential: string) => {
     const s = await t.query(internal.infra.nodeState.state, { credential });
     if (s.unchanged) throw new Error("expected a full snapshot");
@@ -187,39 +209,70 @@ describe("gateway ingress in the Node snapshot", () => {
     expect((await snapshot(app.credential)).desired.exposures).toEqual([]);
   });
 
-  it("moves the link and the grant when failover moves the route", async () => {
+  it("refuses a route whose port belongs to another App on its Node", async () => {
+    const { t, gw, app, other, route, snapshot, setRoles } = await fixture();
+    await route("web", app.nodeId, 62001);
+    // On `other`, port 62001 is "api"'s.
+    await route("api", other.nodeId, 62001);
+    await setRoles(gw.nodeId, ["gateway"]);
+    const before = await snapshot(gw.credential);
+    expect(before.desired.links.map((l) => l.name)).toEqual(["ingress.api", "ingress.web"]);
+
+    // A stale write moves web's route row to `other` and keeps its port number.
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("appRoutes")
+        .withIndex("by_name", (q) => q.eq("name", "web"))
+        .unique();
+      await ctx.db.patch(row!._id, { nodeId: other.nodeId });
+    });
+    const after = await snapshot(gw.credential);
+    expect(after.desired.ingress?.routes).toContainEqual({ host: "web", upstream: null });
+    expect(after.desired.links.map((l) => l.name)).toEqual(["ingress.api"]);
+    // Nothing on `other` points web's name at api's port.
+    const exposures = (await snapshot(other.credential)).desired.exposures;
+    expect(exposures.map((e) => [e.name, e.target])).toEqual([["ingress.api", "127.0.0.1:62001"]]);
+    expect((await snapshot(app.credential)).desired.exposures).toEqual([]);
+  });
+
+  it("refuses a route whose port is not allocated to it, or whose App runs elsewhere", async () => {
     const { t, gw, app, other, route, snapshot, setRoles } = await fixture();
     await route("web", app.nodeId, 62001);
     await setRoles(gw.nodeId, ["gateway"]);
-    const before = await snapshot(gw.credential);
-    const unchanged = await t.query(internal.infra.nodeState.state, {
-      credential: gw.credential,
-      revision: before.revision,
-    });
-    expect(unchanged.unchanged).toBe(true);
+    const served = async () =>
+      (await snapshot(gw.credential)).desired.ingress?.routes.find((r) => r.host === "web")
+        ?.upstream ?? null;
+    expect(await served()).not.toBeNull();
 
-    const lease = await t.mutation(internal.infra.deployments.beginFailover, {
-      app: "web",
-      lostNodeId: app.nodeId,
-    });
-    if (!lease.granted) throw new Error("lease refused");
-    await t.mutation(internal.infra.deployments.completeFailover, {
-      app: "web",
-      epoch: lease.epoch,
-      fromNodeId: app.nodeId,
-      toNodeId: other.nodeId,
-    });
-
-    const after = await snapshot(gw.credential);
-    expect(after.revision).not.toBe(before.revision);
-    // Same loopback port, new peer: the proxy's upstream does not change, the link's peer does.
-    expect(after.desired.ingress).toEqual(before.desired.ingress);
-    expect(after.desired.links[0].peer).toBe(other.key.id);
-    expect(after.desired.fleet.map((p) => p.id)).toEqual([other.key.id]);
+    // The allocation is released (the App was removed from that Node).
+    const allocation = await t.run((ctx) =>
+      ctx.db
+        .query("portAllocations")
+        .withIndex("by_node_key", (q) => q.eq("nodeId", app.nodeId).eq("key", "web/web"))
+        .unique(),
+    );
+    await t.run((ctx) => ctx.db.delete(allocation!._id));
+    expect(await served()).toBeNull();
     expect((await snapshot(app.credential)).desired.exposures).toEqual([]);
-    expect((await snapshot(other.credential)).desired.exposures[0].allowed_peers).toEqual([
-      gw.key.id,
-    ]);
+
+    // Allocated again, but the App row now places the service on another Node.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("portAllocations", {
+        nodeId: app.nodeId,
+        key: "web/web",
+        port: 62001,
+        app: "web",
+        allocatedAt: T0,
+      });
+      const row = await ctx.db
+        .query("apps")
+        .withIndex("by_name", (q) => q.eq("name", "web"))
+        .unique();
+      await ctx.db.patch(row!._id, {
+        services: row!.services.map((s) => ({ ...s, nodeId: other.nodeId })),
+      });
+    });
+    expect(await served()).toBeNull();
   });
 
   it("revokes routes and grants when the gateway role is removed or the gateway is revoked", async () => {
@@ -281,6 +334,37 @@ describe("gateway ingress in the Node snapshot", () => {
       t.query(internal.infra.nodeState.state, { credential: gw.credential }),
     ).rejects.toThrow(/ingress name/);
   });
+
+  it("degrades only the routes past a Node's mesh budget, and refuses no snapshot", async () => {
+    const { t, gw, app, other, route, snapshot, setRoles } = await fixture();
+    await setRoles(gw.nodeId, ["gateway"]);
+    // One declared link already uses one of the gateway's 128 link slots.
+    await t.run((ctx) =>
+      ctx.db.insert("meshLinks", {
+        name: "db",
+        providerNodeId: other.nodeId,
+        consumerNodeId: gw.nodeId,
+        providerPort: 5432,
+        localPort: 62999,
+        updatedAt: T0,
+      }),
+    );
+    for (let i = 0; i < 130; i++) {
+      vi.setSystemTime(T0 + i);
+      await route(`app${String(i).padStart(3, "0")}`, app.nodeId, 62000 + i);
+    }
+    const gateway = await snapshot(gw.credential);
+    expect(gateway.desired.links).toHaveLength(128);
+    expect(gateway.desired.ingress?.overflow).toBe(3);
+    const unserved = gateway.desired.ingress!.routes.filter((r) => r.upstream === null);
+    // The newest routes are the ones left out; every older one keeps its link.
+    expect(unserved.map((r) => r.host)).toEqual(["app127", "app128", "app129"]);
+    // The App Node exposes what fits its own budget; other Nodes are untouched.
+    expect((await snapshot(app.credential)).desired.exposures).toHaveLength(128);
+    const unrelated = await snapshot(other.credential);
+    expect(unrelated.desired.exposures.map((e) => e.name)).toEqual(["db"]);
+    expect(unrelated.desired).not.toHaveProperty("ingress");
+  });
 });
 
 describe("ingress ports and names", () => {
@@ -295,6 +379,14 @@ describe("ingress ports and names", () => {
       expect(p).toBeGreaterThanOrEqual(INGRESS_PORT_START);
       expect(p).toBeLessThanOrEqual(INGRESS_PORT_END);
     }
+  });
+
+  it("gives a port to at most as many routes as the range holds", () => {
+    const routes = Array.from({ length: 1000 }, (_, i) => ({ name: `r${i}`, createdAt: i }));
+    const ports = ingressPorts(routes);
+    expect(ports.size).toBe(INGRESS_PORT_END - INGRESS_PORT_START + 1);
+    expect(ports.has("r0")).toBe(true);
+    expect(ports.has("r999")).toBe(false);
   });
 
   it("fits every DNS label into a mesh name", () => {

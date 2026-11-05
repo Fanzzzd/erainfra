@@ -18,10 +18,17 @@
 export const INGRESS_PORT_START = 61100;
 export const INGRESS_PORT_END = 61999;
 /**
- * Routes a gateway may carry. The Infra Agent refuses a snapshot with more than 128 links or 128
- * exposures (meshclient.Desired.Validate), and ingress shares that budget with declared links.
+ * The Infra Agent refuses a snapshot with more than 128 links or 128 exposures
+ * (meshclient.Desired.Validate in every released agent). Ingress takes what a Node's declared
+ * links and exposures leave of that budget, and never more: a route that does not fit is left out
+ * of that one Node's snapshot (a gateway counts it in `ingress.overflow` and serves it 503), so a
+ * large route table degrades the routes that do not fit instead of refusing every Node's
+ * snapshot. Raising this needs an agent release that raises the validator first.
  */
-export const INGRESS_ROUTE_LIMIT = 100;
+export const MESH_LINK_LIMIT = 128;
+export const MESH_EXPOSURE_LIMIT = 128;
+/** Route rows a gateway reads per snapshot; rows beyond it are counted as overflow. */
+export const INGRESS_ROUTE_READ_LIMIT = 1000;
 /** Per ingress link and exposure. Browsers open several connections and WebSockets stay open. */
 export const INGRESS_MAX_CONNECTIONS = 1024;
 
@@ -66,6 +73,8 @@ export function ingressPorts(routes: readonly { name: string; createdAt: number 
   );
   for (const route of ordered) {
     if (ports.has(route.name)) continue;
+    // Every slot taken: later routes get no port (the gateway counts them as overflow).
+    if (taken.size >= size) break;
     let slot = fnv1a(route.name) % size;
     while (taken.has(slot)) slot = (slot + 1) % size;
     taken.add(slot);

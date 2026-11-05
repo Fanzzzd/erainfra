@@ -161,6 +161,26 @@ func TestGatewayWithoutRoutesFileWarns(t *testing.T) {
 	}
 }
 
+// Routes past the gateway's mesh budget are an operator problem: logged as an error per revision.
+func TestGatewayLogsRoutesPastItsBudget(t *testing.T) {
+	f := newFakeConvex(t)
+	g := newMeshNode(t, f, "gw")
+	g.loop.o.RoutesFile = filepath.Join(t.TempDir(), "routes.json")
+	app, _ := provenPeer(f, "app")
+	f.route("web", app, 62001, 61234)
+	f.gateway(g.credential, true)
+	f.mu.Lock()
+	f.overflow = 3
+	f.mu.Unlock()
+	g.heartbeat()
+	g.advance(0)
+	g.advance(3 * time.Second)
+	g.advance(10 * time.Second)
+	if n := g.logged("ERROR: 3 routes do not fit"); n != 1 {
+		t.Fatalf("logged %d times", n)
+	}
+}
+
 // A snapshot whose route table would point the proxy off loopback is refused whole, and the
 // last applied snapshot and table stay.
 func TestSnapshotWithANonLoopbackUpstreamIsRefused(t *testing.T) {

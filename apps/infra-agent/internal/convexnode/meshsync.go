@@ -328,6 +328,9 @@ func (m *meshLoop) syncState(ctx context.Context) {
 		_ = os.WriteFile(filepath.Join(m.c.cfg.StateDir, "desired.json"), b, 0600)
 	}
 	m.o.Logf("connect-convex: applied mesh snapshot %s (%d peers, %d exposures, %d links)", shortRevision(state.Revision), len(d.Fleet), len(d.Exposures), len(d.Links))
+	if ingress != nil && ingress.Overflow > 0 {
+		m.o.Logf("connect-convex: ERROR: %d routes do not fit this gateway's mesh link budget and answer 503 here; see the ingress limits in docs/infra-management.md", ingress.Overflow)
+	}
 }
 
 func shortRevision(r string) string {

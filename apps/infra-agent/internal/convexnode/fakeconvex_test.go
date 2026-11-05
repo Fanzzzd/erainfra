@@ -32,6 +32,7 @@ type fakeConvex struct {
 	links      []fakeLink
 	routes     []fakeRoute
 	gateways   map[string]bool // by credential
+	overflow   int             // ingress.overflow sent to gateways
 	challenges map[string]fakeChallenge
 	next       int
 
@@ -338,7 +339,7 @@ func (f *fakeConvex) desired(credential string) DesiredMesh {
 		}
 	}
 	if f.gateways[credential] {
-		d.Ingress = &MeshIngress{Routes: []IngressRoute{}}
+		d.Ingress = &MeshIngress{Routes: []IngressRoute{}, Overflow: f.overflow}
 		for _, r := range f.routes {
 			var upstream *string
 			switch app := f.nodes[r.provider]; {

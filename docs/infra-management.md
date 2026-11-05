@@ -675,12 +675,30 @@ as everything else:
   `127.0.0.1:<route port>`. Its `allowed_peers` are exactly the gateway Nodes with a proven
   endpoint and a live credential, and nothing else. Ingress links and exposures allow 1024
   concurrent connections each (the sidecar's default is 256).
-- **Every other Node** gets no `ingress` field and no ingress grant.
+- **Every other Node** gets no `ingress` field and no ingress grant. An App Node reads only the
+  routes on itself, so the size of the route table never affects a Node that is not a gateway.
 
-Limits: at most 100 routes while any gateway exists (a larger table is refused, like the other
-snapshot limits). A route is served only if its name is a lowercase first-level DNS label, because
-Cloudflare's free certificate covers one wildcard level (see `deploy/infra/hub.sh`). Mesh names
-starting with `ingress.` are reserved; a declared link with such a name makes the snapshot fail.
+A route is served only while its row names the placement the App runs. The App row must place the
+route's service on the route's Node at the route's port, and that port must be allocated on that
+Node to that service (key `<app>/<service>` in `portAllocations`). A route that fails the check is
+refused, not guessed: no exposure on its Node and `upstream: null` at the gateways (503). This
+keeps a stale row from pointing an exposure at a port another App now holds on that Node. A route
+with no App row (a single-container Hub route never deployed through an App) is refused the same
+way.
+
+Route count never refuses a snapshot. Every released Infra Agent refuses a snapshot with more than
+128 links or 128 exposures, so each Node's ingress gets what its declared links and exposures
+leave of those 128. On a gateway, routes are taken in creation order; the ones that do not fit
+answer 503 there, are counted in `ingress.overflow`, and the agent logs
+`ERROR: <n> routes do not fit this gateway's mesh link budget` once per revision. An App Node
+exposes, in the same order, as many of its routes as fit its own budget. A gateway reads at most
+1000 route rows; more are counted as overflow too. Raising the 128 needs an agent release that
+raises the validator first. Each gateway's links to one App Node also share that peer
+connection's 1024-stream ceiling in the sidecar.
+
+A route is served only if its name is a lowercase first-level DNS label, because Cloudflare's free
+certificate covers one wildcard level (see `deploy/infra/hub.sh`). Mesh names starting with
+`ingress.` are reserved; a declared link with such a name makes that Node's snapshot fail.
 
 ### Where the proxy runs
 
@@ -814,8 +832,6 @@ Detecting the lost Node and redeploying happen before this and are not included.
 
 - Apps on Nodes in Hub mode cannot be served by a gateway: they have no proven endpoint, so their
   routes have no upstream (503).
-- Failover keeps the route's port. If the App's new Node serves it on a different port, the
-  exposure points at the wrong port until the route row is updated.
 - `gateway.sh` is for Linux with systemd. The proxy itself runs anywhere the Infra Agent does.
 - The proxy has no access control or rate limiting of its own; use Cloudflare's.
 

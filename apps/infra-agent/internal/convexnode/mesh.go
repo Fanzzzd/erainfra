@@ -20,6 +20,9 @@ type DesiredMesh struct {
 // MeshIngress is a gateway Node's route table.
 type MeshIngress struct {
 	Routes []IngressRoute `json:"routes"`
+	// Overflow counts routes that did not fit this gateway's mesh link budget. They are in Routes
+	// with no upstream (503), and the agent logs an error for every revision that has any.
+	Overflow int `json:"overflow,omitempty"`
 }
 
 // IngressRoute maps a first-level label to the loopback address of this Node's ingress link (or
