@@ -407,13 +407,27 @@ HTTP request body. They never appear in argv or a host environment variable.
 - the small MMDSv2 guest bootstrap;
 - a locked root password and no SSH server.
 
-Run the **EraInfra runner images** workflow. It builds both Linux architectures, publishes to GHCR,
-emits SBOM/provenance attestations, and reports the immutable manifest digest. Use that full
-`ghcr.io/...@sha256:...` reference in the controller. The workflow deliberately does not upload a
-BuildKit cache to GitHub Actions storage. It also runs every Monday on `main` without a source
-change, so the Ubuntu packages `apt-get` installs pick up the archive's security updates; that
-build is tagged `weekly-<YYYYMMDD>` and `edge`. A rebuild publishes a new digest and changes
-nothing a Profile runs: a Profile moves only when you repin it.
+The guest's dockerd runs without the iptables `raw` rules Docker Engine 28 and later add for every
+container. Each rule drops packets that reach a container's address through any interface but the
+container's own bridge. The pinned guest kernel has no raw table (`CONFIG_IP_NF_RAW` and
+`CONFIG_NF_TABLES` are both off), and without one `docker start` fails for every container, so
+`docker-raw-table.sh` checks for the table at boot and, when it is missing, starts dockerd with
+Docker's `DOCKER_INSECURE_NO_IPTABLES_RAW=1`. The rule protects against other hosts on the same
+network segment. The guest's only neighbour is its Worker, which already controls the VM, and the
+job network policy drops traffic from other guests. A guest kernel with a raw table gets the rules
+back without an image change.
+
+Run the **EraInfra runner images** workflow. It builds both Linux architectures, boots the amd64
+build in Firecracker on the guest kernel `deploy/provision-firecracker-host.sh` pins, publishes to
+GHCR, emits SBOM/provenance attestations, and reports the immutable manifest digest. The boot test
+(`images/ubuntu-24.04-js/boot-test.sh`) starts containers on a user-defined network inside the
+guest, the way the runner does for `container:` and `services:` jobs; if it fails, nothing is
+published. The boot test also runs on every pull request that touches the image, the runtime or
+those pins. Use the full `ghcr.io/...@sha256:...` reference in the controller. The workflow
+deliberately does not upload a BuildKit cache to GitHub Actions storage. It also runs every Monday
+on `main` without a source change, so the Ubuntu packages `apt-get` installs pick up the archive's
+security updates; that build is tagged `weekly-<YYYYMMDD>` and `edge`. A rebuild publishes a new
+digest and changes nothing a Profile runs: a Profile moves only when you repin it.
 
 This Profile promises its explicit smoke-tested tools, not complete GitHub-hosted image parity.
 See [the image research](docs/research/blacksmith-runner-images.md) for why GitHub's minimal runner
