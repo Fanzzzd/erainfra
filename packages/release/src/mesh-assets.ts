@@ -67,6 +67,14 @@ export function meshRustflags(
     `--remap-path-prefix=${path.join(paths.cargoHome, "git")}=/cargo/git`,
     `--remap-path-prefix=${paths.targetDir}=/target`,
   ];
+  // Apple's linker records the path of every object file it links (the N_OSO debug map) and
+  // derives LC_UUID from the output before `strip` removes that map. The objects live in the
+  // target directory, so two builds in directories of different names got different UUIDs (and,
+  // on arm64, different code signatures over them) from identical code. `-oso_prefix` makes the
+  // recorded paths relative to the target directory.
+  if (build.triple.endsWith("-apple-darwin")) {
+    flags.push(`-Clink-arg=-Wl,-oso_prefix,${paths.targetDir}`);
+  }
   if (build.triple.endsWith("-windows-msvc")) {
     flags.push("-Ctarget-feature=+crt-static", "-Clink-arg=/Brepro");
   }
