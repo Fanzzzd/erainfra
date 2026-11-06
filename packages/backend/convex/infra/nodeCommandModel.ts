@@ -52,7 +52,7 @@ export const meshAddress = v.object({
  */
 export const COMMANDS_BLOCKED_REASONS = {
   journal_full:
-    "its execution journal is full of outcomes nobody has checked, so new builds, deploys and operations are refused",
+    "its execution journal is full of commands Convex has not finished or does not know, so new builds, deploys and operations are refused",
   journal_error: "its execution journal cannot be written",
   command_api: "the Node API refuses or fails its command requests",
   command_error: "running its commands fails",

@@ -263,7 +263,10 @@ func TestInterruptedAcceptanceBecomesUnknownWithoutReexecution(t *testing.T) {
 		t.Fatal(api.result)
 	}
 }
-func TestJournalExclusiveLockAndCorruptTailFailClosed(t *testing.T) {
+
+// The journal admits one process, and a record damaged before the end fails closed. (A torn last
+// record is recovered: journal_recovery_test.go.)
+func TestJournalExclusiveLockAndCorruptRecordFailClosed(t *testing.T) {
 	dir := privateDir(t)
 	j, err := OpenJournal(dir)
 	if err != nil {
@@ -276,7 +279,7 @@ func TestJournalExclusiveLockAndCorruptTailFailClosed(t *testing.T) {
 	if err = j.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(dir, "execution.jsonl"), []byte(`{"key":"interrupted"`), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, "execution.jsonl"), []byte(`{"key":"interrupted"`+"\n"+`{"key":"node-a:x","id":"x","outcome":"success"}`+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if j, err = OpenJournal(dir); err == nil {

@@ -139,8 +139,12 @@ reads without the lock, so the Infra Agent may keep running.
 
 release forgets the named keys after you have checked them. Stop the Infra Agent first: release
 takes the journal's lock. A released key no longer protects its command from running again, so
-release only keys whose command Convex shows finished or cancelled, and for an unknown outcome
-only after you have checked the workload on this Node.`
+release only keys whose command Convex shows finished or cancelled, or does not have at all, and
+for an unknown outcome only after you have checked the workload on this Node. The agent forgets
+keys of finished commands by itself; release is for a control plane that cannot answer for them.
+
+Both read past a torn last record that power loss during an append left, as the agent does; see
+docs/infra-management.md, "When the journal is damaged".`
 
 // journalUsageError prints the usage text as the error, so a mistyped command shows it.
 type journalUsageError struct{}

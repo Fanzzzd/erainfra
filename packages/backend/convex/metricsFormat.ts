@@ -300,7 +300,7 @@ export function buildMetricFamilies(
   );
   const nodeJournalKeys = family(
     "erainfra_node_journal_keys",
-    "Keys in the Node's execution journal: commands Convex may still deliver, and outcomes an operator has not checked. New builds, deploys and operations stop at erainfra_node_journal_key_limit. Absent until the Infra Agent reports it.",
+    "Keys in the Node's execution journal: commands Convex may still deliver or does not know. Keys of finished commands are forgotten. New builds, deploys and operations stop at erainfra_node_journal_key_limit. Absent until the Infra Agent reports it.",
   );
   const nodeJournalLimit = family(
     "erainfra_node_journal_key_limit",

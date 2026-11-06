@@ -1171,7 +1171,7 @@ workflow, Runner or job id.
 | `erainfra_machine_benchmark_timestamp_seconds`      | `machine`                              | When the benchmark ran. Older than seven days, the scheduler ignores it.                                                   |
 | `erainfra_controller_up`                            | `profile`                              | 1 when a controller reported in the last 90 seconds and holds the GitHub session. Absent until the first heartbeat.        |
 | `erainfra_controller_last_heartbeat_age_seconds`    | `profile`                              | Seconds since any of the Profile's controllers reported. Absent until the first heartbeat.                                 |
-| `erainfra_node_online`                              | `node`                                 | 1 when the infrastructure Node's Infra Agent heartbeated in `connect-convex` mode recently. Absent for Hub-only Nodes.     |
+| `erainfra_node_online`                              | `node`                                 | 1 when the Node's Infra Agent heartbeated in `connect-convex` mode in the last two minutes. Absent for Hub-only Nodes.     |
 | `erainfra_node_commands_blocked`                    | `node`, `reason`                       | 1 while the Node reports it cannot run commands (`journal_full`, `journal_error`, `command_api`, `command_error`), else 0. |
 | `erainfra_node_commands_blocked_seconds`            | `node`, `reason`                       | Seconds since the Node first reported the block. Absent while it can run commands.                                         |
 | `erainfra_node_journal_keys` / `_key_limit`         | `node`                                 | Keys in the Node's execution journal, and the limit at which it refuses new builds, deploys and operations.                |
@@ -1197,6 +1197,9 @@ groups:
       - alert: ErainfraControllerDown
         expr: erainfra_controller_up == 0 and on (profile) erainfra_profile_info{state="active"} == 1
         for: 3m
+      - alert: ErainfraNodeOffline
+        expr: erainfra_node_online == 0
+        for: 3m
       - alert: ErainfraNodeCommandsBlocked
         expr: erainfra_node_commands_blocked_seconds > 600 and on (node) erainfra_node_online == 1
       - alert: ErainfraNodeJournalNearlyFull
@@ -1218,7 +1221,8 @@ minute against the same fleet state `/metrics` reads.
 | Consecutive failed Attempts         | Profile        | The newest N finished Attempts (in the last 24 hours, cancellations skipped) all failed.                                           |
 | Attempt running too long            | Profile        | An Attempt has been running for N minutes.                                                                                         |
 | No controller listening             | Profile        | No controller has held an active Profile's GitHub session for N minutes (2 or more; 3 by default). See below.                      |
-| Node unable to run commands         | Node           | An online `connect-convex` Node has reported for N minutes that it cannot run commands. A Profile scope does not narrow this rule. |
+| Node unable to run commands         | Node           | A `connect-convex` Node has reported for N minutes that it cannot run commands. See below.                                         |
+| Node offline                        | Node           | A `connect-convex` Node has sent no heartbeat for N minutes (2 or more; 5 by default). See below.                                  |
 
 A dead controller creates no Attempts, so without its own signal it looks like an idle Profile.
 Every controller reports a heartbeat to the control plane every 30 seconds and whenever its session
@@ -1228,6 +1232,15 @@ before the heartbeat send none, so the first heartbeat ever received for a Profi
 tracking it. After that, a controller that stops reporting, stops cleanly, or keeps reporting
 while GitHub refuses it the session counts as silent. A paused (retired) Profile is not alerted
 on.
+
+The two Node rules cover infrastructure Nodes on the Convex transport, which belong to no Profile,
+so a Profile scope does not narrow them. **Node offline** watches a Node that has heartbeated at
+least once; its floor of two minutes is the silence after which deploys and failover treat the
+Node as gone. A Node whose credentials are all revoked (`erainfra nodes revoke`) is retired: it is
+left out of both rules and of the `erainfra_node_*` metrics. A Node that stops heartbeating while
+**Node unable to run commands** fires stays in breach, judged by how long it was blocked when its
+heartbeats stopped, so the incident does not resolve because the Node died. It resolves when the
+Node reports again without the block, or is retired.
 
 A rule can be limited to one Profile. Each rule and subject has at most one open incident, so a
 condition that keeps holding notifies once. The lifecycle:

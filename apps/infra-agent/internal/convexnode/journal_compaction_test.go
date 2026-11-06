@@ -147,20 +147,19 @@ func TestAcknowledgedReportsAreSettledAndTheFileStaysBounded(t *testing.T) {
 	}
 }
 
-// Compaction only forgets a key once Convex has the same terminal outcome. Anything Convex can
-// still deliver, anything unknown, and anything Convex ended some other way stays.
-func TestSweepNeverDropsAKeyConvexHasNotAcknowledged(t *testing.T) {
+// Compaction forgets a key exactly when Convex holds its command terminal, whatever the outcome,
+// because Convex never delivers a terminal command again. Anything Convex can still deliver, or
+// does not know, stays. An outcome Convex recorded differently is logged before the key goes.
+func TestSweepNeverDropsAKeyConvexCanStillDeliver(t *testing.T) {
 	dir := privateDir(t)
 	keep := map[string]string{ // key -> why it must stay
-		"node-a:pending":   "Convex will deliver it again",
-		"node-a:running":   "Convex will deliver it again once the lease lapses",
-		"node-a:reported":  "the report never reached Convex",
-		"node-a:cancelled": "cancelled while it ran: Convex never took the outcome",
-		"node-a:differs":   "Convex recorded another outcome",
-		"node-a:missing":   "Convex does not know the command",
-		"node-a:unknown":   "an unknown outcome needs an operator",
-		"node-a:accepted":  "interrupted: unknown after a restart",
+		"node-a:pending":  "Convex will deliver it again",
+		"node-a:running":  "Convex will deliver it again once the lease lapses",
+		"node-a:reported": "Convex did not answer for it",
+		"node-a:missing":  "Convex does not know the command",
+		"node-a:newer":    "a status this agent does not know may not be terminal",
 	}
+	gone := []string{"node-a:done-ok", "node-a:done-failed", "node-a:cancelled", "node-a:differs", "node-a:unknown", "node-a:accepted"}
 	fillJournal(t, dir,
 		record{"node-a:done-ok", "c-done-ok", outcomeSuccess},
 		record{"node-a:done-failed", "c-done-failed", outcomeFailure},
@@ -170,25 +169,26 @@ func TestSweepNeverDropsAKeyConvexHasNotAcknowledged(t *testing.T) {
 		record{"node-a:cancelled", "c-cancelled", outcomeSuccess},
 		record{"node-a:differs", "c-differs", outcomeSuccess},
 		record{"node-a:missing", "c-missing", outcomeFailure},
+		record{"node-a:newer", "c-newer", outcomeFailure},
 		record{"node-a:unknown", "c-unknown", outcomeUnknown},
 		record{"node-a:accepted", "c-accepted", outcomeAccepted},
 	)
 	api := &fakeAPI{result: "done", statusOf: map[string]string{
 		"c-done-ok": "success", "c-done-failed": "failure", "c-pending": "pending", "c-running": "running",
 		"c-cancelled": "cancelled", "c-differs": "failure", "c-unknown": "unknown", "c-accepted": "unknown",
-		// c-reported is left out of the answer, c-missing answered as missing.
-		"c-missing": "missing",
+		// c-reported is answered with no status, c-missing as missing.
+		"c-reported": "", "c-missing": "missing", "c-newer": "paused",
 	}}
-	delete(api.statusOf, "c-reported")
-	api.statusOf["c-reported"] = ""
+	logs := &capturedLog{}
 	c, _ := clientFor(t, api, dir, &fakeExecutor{})
 	defer func() { _ = c.Close() }()
+	c.Logf = logs.logf
 	if err := c.sweepJournal(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"node-a:done-ok", "node-a:done-failed"} {
-		if _, ok := c.journal.records[gone]; ok {
-			t.Fatalf("%s is acknowledged and terminal but was kept", gone)
+	for _, key := range gone {
+		if _, ok := c.journal.records[key]; ok {
+			t.Fatalf("%s is terminal in Convex but was kept", key)
 		}
 	}
 	for key, why := range keep {
@@ -196,12 +196,11 @@ func TestSweepNeverDropsAKeyConvexHasNotAcknowledged(t *testing.T) {
 			t.Fatalf("%s was dropped although %s", key, why)
 		}
 	}
-	for _, ids := range api.statusAsked {
-		for _, id := range ids {
-			if id == "c-unknown" || id == "c-accepted" {
-				t.Fatalf("an unknown outcome was offered for compaction: %s", id)
-			}
-		}
+	// What Convex cannot know is left in the log: the Node finished a command Convex cancelled.
+	if logs.matching("node-a:cancelled (command c-cancelled) ended in Convex as cancelled, but this Node recorded success") != 1 ||
+		logs.matching("node-a:differs (command c-differs) ended in Convex as failure, but this Node recorded success") != 1 ||
+		logs.matching("node-a:done-ok") != 0 {
+		t.Fatalf("differing outcomes not logged: %q", logs.lines)
 	}
 	// The same holds on disk: a restart sees exactly what memory holds.
 	_ = c.Close()
@@ -213,9 +212,125 @@ func TestSweepNeverDropsAKeyConvexHasNotAcknowledged(t *testing.T) {
 	if len(reopened.records) != len(keep) {
 		t.Fatalf("reopened journal holds %d records, want %d: %v", len(reopened.records), len(keep), reopened.records)
 	}
-	// Keys Convex ended without our outcome are not asked about on every sweep.
-	if !c.journal.review["node-a:cancelled"] || !c.journal.review["node-a:differs"] || !c.journal.review["node-a:missing"] || c.journal.review["node-a:pending"] {
+	// A key Convex does not know is not asked about on every sweep.
+	if !c.journal.review["node-a:missing"] || c.journal.review["node-a:pending"] || c.journal.review["node-a:newer"] {
 		t.Fatalf("review marks: %v", c.journal.review)
+	}
+}
+
+// Commands cancelled while they ran (by an operator, or by a deploy run that ended), commands the
+// agent was restarted in the middle of, and outcomes Convex recorded as unknown all leave keys
+// behind. Each is settled once Convex holds its command terminal, so they never pile up to the
+// key limit and stop the Node.
+func TestCancelledAndInterruptedKeysDoNotPileUp(t *testing.T) {
+	// An agent restart in the middle of a command: reported unknown, and forgotten once Convex
+	// has that.
+	dir := privateDir(t)
+	fillJournal(t, dir, record{"node-a:restart-1", "cmd-1", outcomeAccepted})
+	api := &fakeAPI{}
+	exec := &fakeExecutor{}
+	logs := &capturedLog{}
+	c, url := clientFor(t, api, dir, exec)
+	c.Logf = logs.logf
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if exec.calls != 0 || api.result != "unknown" || c.journal.keys() != 0 || logs.matching("ended with an unknown outcome") != 1 {
+		t.Fatalf("executions=%d result=%q keys=%d logs=%q", exec.calls, api.result, c.journal.keys(), logs.lines)
+	}
+	_ = c.Close()
+
+	// A journal filled to the limit with keys of cancelled commands and unknown outcomes frees
+	// itself on the next forced sweep, and new work runs.
+	withKeyLimit(t, 4)
+	fillJournal(t, dir,
+		record{"binding", url + "|node-a", outcomeSuccess},
+		record{"node-a:c1", "c1", outcomeSuccess},
+		record{"node-a:c2", "c2", outcomeUnknown},
+		record{"node-a:c3", "c3", outcomeAccepted},
+	)
+	api.mu.Lock()
+	api.result = ""
+	api.statusOf = map[string]string{"c1": "cancelled", "c2": "unknown", "c3": "cancelled", "cmd-1": "pending"}
+	api.mu.Unlock()
+	next, err := New(Config{URL: url, Credential: c.cfg.Credential, StateDir: dir, AllowHTTPForTests: true}, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = next.Close() }()
+	if _, err := next.Step(context.Background()); err != nil {
+		t.Fatalf("a journal of finished commands still refused work: %v", err)
+	}
+	if exec.calls != 1 || next.journal.keys() != 0 {
+		t.Fatalf("executions=%d keys=%d", exec.calls, next.journal.keys())
+	}
+}
+
+// A full journal is reported as blocked for as long as it stays full, not only while a refused
+// command is queued: the refused command can leave the queue (its deploy run times out and cancels
+// it) without freeing a single key. The block clears only once a sweep really frees keys.
+func TestBlockedStaysUntilTheJournalReallyFrees(t *testing.T) {
+	withKeyLimit(t, 3)
+	dir := privateDir(t)
+	api := &fakeAPI{}
+	exec := &fakeExecutor{}
+	first, url := clientFor(t, api, dir, exec)
+	_ = first.Close()
+	fillJournal(t, dir,
+		record{"binding", url + "|node-a", outcomeSuccess},
+		record{"node-a:u1", "u1", outcomeUnknown},
+		record{"node-a:u2", "u2", outcomeUnknown},
+	)
+	// Convex may still deliver both commands: their keys must stay.
+	api.statusOf = map[string]string{"u1": "running", "u2": "pending", "cmd-1": "pending"}
+	c, err := New(Config{URL: url, Credential: first.cfg.Credential, StateDir: dir, AllowHTTPForTests: true}, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	clock := time.Unix(1_800_000_000, 0)
+	c.now = func() time.Time { return clock }
+	lastHeartbeat := func() map[string]any {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return api.heartbeats[len(api.heartbeats)-1]
+	}
+	// Full at startup: the very first heartbeat says so.
+	if _, err := c.Step(context.Background()); !errors.Is(err, ErrJournalFull) {
+		t.Fatal(err)
+	}
+	if lastHeartbeat()["commandsBlocked"] != blockedJournalFull {
+		t.Fatalf("first heartbeat of a full journal: %v", lastHeartbeat())
+	}
+	// The refused command leaves the queue: the pipeline timed its step out and cancelled it.
+	api.mu.Lock()
+	api.result = "cancelled"
+	api.mu.Unlock()
+	clock = clock.Add(10 * time.Minute)
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(3 * time.Second)
+	_, _ = c.Step(context.Background())
+	if !c.journal.full() || lastHeartbeat()["commandsBlocked"] != blockedJournalFull {
+		t.Fatalf("journal full=%v, but the heartbeat says %v", c.journal.full(), lastHeartbeat())
+	}
+	// Convex finishes one of the commands; the next forced sweep frees its key and the block
+	// clears with no command waiting.
+	api.mu.Lock()
+	api.statusOf["u1"] = "cancelled"
+	api.mu.Unlock()
+	clock = clock.Add(forcedSweepInterval)
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(3 * time.Second)
+	_, _ = c.Step(context.Background())
+	if c.journal.full() {
+		t.Fatal("the forced sweep did not free the finished command's key")
+	}
+	if _, blocked := lastHeartbeat()["commandsBlocked"]; blocked {
+		t.Fatalf("the journal has room but the heartbeat still says blocked: %v", lastHeartbeat())
 	}
 }
 
@@ -303,6 +418,8 @@ func TestFullJournalIsLoggedReportedAndRecoverable(t *testing.T) {
 		record{"node-a:u2", "u2", outcomeAccepted},
 		record{"node-a:u3", "u3", outcomeUnknown},
 	)
+	// Convex has not finished any of them, so no sweep can free a key.
+	api.statusOf = map[string]string{"u1": "running", "u2": "missing", "u3": "pending", "cmd-1": "pending"}
 	c, err := New(Config{URL: url, Credential: first.cfg.Credential, StateDir: dir, AllowHTTPForTests: true}, exec)
 	if err != nil {
 		t.Fatal(err)

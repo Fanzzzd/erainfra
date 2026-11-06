@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
-import { conditionError, evaluateCondition, type AlertCondition } from "../convex/alertRules";
+import {
+  ALERT_CONDITION_KINDS,
+  conditionError,
+  evaluateCondition,
+  type AlertCondition,
+} from "../convex/alertRules";
 import {
   classifyResponse,
   deliveryBackoffMs,
@@ -393,11 +398,12 @@ describe("evaluateCondition", () => {
         }),
         node("edge-2", { commandsBlocked: "command_api", commandsBlockedSince: NOW - 2 * MINUTE }),
         node("edge-3"),
-        // Offline: its last report is stale, and failover handles a silent Node.
+        // Went silent 5 minutes into its block: a stale report does not grow into a breach.
         node("edge-4", {
           online: false,
+          lastSeenAt: NOW - 30 * MINUTE,
           commandsBlocked: "journal_full",
-          commandsBlockedSince: NOW - 60 * MINUTE,
+          commandsBlockedSince: NOW - 35 * MINUTE,
         }),
       ],
     );
@@ -407,12 +413,105 @@ describe("evaluateCondition", () => {
     expect(subjects(condition, observation, "a")).toEqual(["edge-1"]);
     const [breach] = evaluateCondition(condition, undefined, observation);
     expect(breach?.summary).toBe(
-      "Node edge-1 has not been able to run commands for 20m: its execution journal is full of outcomes nobody has checked, so new builds, deploys and operations are refused (journal_full). Its journal holds 10000 of 10000 keys.",
+      "Node edge-1 has not been able to run commands for 20m: its execution journal is full of commands Convex has not finished or does not know, so new builds, deploys and operations are refused (journal_full). Its journal holds 10000 of 10000 keys.",
     );
     expect(subjects({ kind: "node-commands-blocked", minutes: 1 }, observation)).toEqual([
       "edge-1",
       "edge-2",
+      "edge-4",
     ]);
+  });
+
+  it("node-commands-blocked: a blocked Node that goes silent stays blocked", () => {
+    const blocked = {
+      commandsBlocked: "journal_full",
+      commandsBlockedSince: NOW - 60 * MINUTE,
+      journalKeys: 9_999,
+      journalKeyLimit: 10_000,
+    };
+    const condition: AlertCondition = { kind: "node-commands-blocked", minutes: 10 };
+    // Firing while online...
+    expect(subjects(condition, fleet([], [], [node("edge-1", blocked)]))).toEqual(["edge-1"]);
+    // ...and still breaching once its heartbeats stop, so the open incident does not resolve.
+    const silent = fleet(
+      [],
+      [],
+      [node("edge-1", { ...blocked, online: false, lastSeenAt: NOW - 30 * MINUTE })],
+    );
+    const [breach] = evaluateCondition(condition, undefined, silent);
+    expect(breach?.summary).toBe(
+      "Node edge-1 could not run commands for 30m before its heartbeats stopped 30m ago: its execution journal is full of commands Convex has not finished or does not know, so new builds, deploys and operations are refused (journal_full). Its journal holds 9999 of 10000 keys.",
+    );
+    // It resolves when the Node comes back and says it can run commands again.
+    expect(subjects(condition, fleet([], [], [node("edge-1")]))).toEqual([]);
+  });
+
+  it("node-offline: a Node silent past the threshold fires, with what its last heartbeat said", () => {
+    const observation = fleet(
+      [profile("a")],
+      [],
+      [
+        node("edge-1", { online: false, lastSeenAt: NOW - 30 * MINUTE }),
+        node("edge-2", { online: false, lastSeenAt: NOW - 3 * MINUTE }),
+        node("edge-3"),
+        node("edge-4", {
+          online: false,
+          lastSeenAt: NOW - 30 * MINUTE,
+          commandsBlocked: "journal_full",
+          commandsBlockedSince: NOW - 60 * MINUTE,
+        }),
+      ],
+    );
+    const condition: AlertCondition = { kind: "node-offline", minutes: 5 };
+    expect(subjects(condition, observation)).toEqual(["edge-1", "edge-4"]);
+    // A Profile scope does not hide a Node, which belongs to no Profile.
+    expect(subjects(condition, observation, "a")).toEqual(["edge-1", "edge-4"]);
+    expect(subjects({ kind: "node-offline", minutes: 2 }, observation)).toEqual([
+      "edge-1",
+      "edge-2",
+      "edge-4",
+    ]);
+    const breaches = evaluateCondition(condition, undefined, observation);
+    expect(breaches.map((b) => b.summary)).toEqual([
+      "Node edge-1 has not sent a heartbeat for 30m; its Infra Agent or host is down, or it cannot reach Convex.",
+      "Node edge-4 has not sent a heartbeat for 30m; its Infra Agent or host is down, or it cannot reach Convex. Its last heartbeat said it could not run commands: its execution journal is full of commands Convex has not finished or does not know, so new builds, deploys and operations are refused (journal_full).",
+    ]);
+  });
+
+  // Every rule kind against a connect-convex Node that was blocked and then stopped heartbeating
+  // (its agent crashed, or its host went down): the outage must not go unreported.
+  it("a blocked Node that stops heartbeating is still alerted on", () => {
+    const observation = fleet(
+      [],
+      [],
+      [
+        node("edge-1", {
+          online: false,
+          lastSeenAt: NOW - 30 * MINUTE,
+          commandsBlocked: "journal_full",
+          commandsBlockedSince: NOW - 60 * MINUTE,
+          journalKeys: 9_999,
+          journalKeyLimit: 10_000,
+        }),
+      ],
+    );
+    const conditions: AlertCondition[] = [
+      { kind: "worker-offline", minutes: 5 },
+      { kind: "profile-no-ready-worker" },
+      { kind: "profile-readiness-degraded" },
+      { kind: "queue-backlog", minutes: 5 },
+      { kind: "failure-rate", percent: 50, windowMinutes: 60, minAttempts: 1 },
+      { kind: "consecutive-failures", count: 1 },
+      { kind: "attempt-duration", minutes: 5 },
+      { kind: "controller-silent", minutes: 3 },
+      { kind: "node-commands-blocked", minutes: 10 },
+      { kind: "node-offline", minutes: 5 },
+    ];
+    expect(conditions.map((c) => c.kind).toSorted()).toEqual([...ALERT_CONDITION_KINDS].toSorted());
+    const fired = conditions.flatMap((c) =>
+      evaluateCondition(c, undefined, observation).map((b) => `${c.kind}:${b.subject}`),
+    );
+    expect(fired).toEqual(["node-commands-blocked:edge-1", "node-offline:edge-1"]);
   });
 
   it("node-commands-blocked: an unrecognised reason is reported as sent", () => {
@@ -450,6 +549,9 @@ describe("conditionError", () => {
     expect(conditionError({ kind: "controller-silent", minutes: 3 })).toBeUndefined();
     expect(conditionError({ kind: "node-commands-blocked", minutes: 0 })).toBeDefined();
     expect(conditionError({ kind: "node-commands-blocked", minutes: 5 })).toBeUndefined();
+    // Below the two-minute missed-heartbeat window one late heartbeat would page.
+    expect(conditionError({ kind: "node-offline", minutes: 1 })).toMatch(/2 to 10080/);
+    expect(conditionError({ kind: "node-offline", minutes: 2 })).toBeUndefined();
   });
 });
 

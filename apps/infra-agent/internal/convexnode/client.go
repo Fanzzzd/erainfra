@@ -245,7 +245,11 @@ func New(cfg Config, executor Executor) (*Client, error) {
 		return nil, err
 	}
 	cfg.URL = u.Scheme + "://" + u.Host
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, journal: j, exec: executor, owner: hex.EncodeToString(nonce), RenewInterval: 10 * time.Second, now: time.Now}, nil
+	c := &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, journal: j, exec: executor, owner: hex.EncodeToString(nonce), RenewInterval: 10 * time.Second, now: time.Now}
+	// A journal that is full at startup is reported by the first heartbeat, before any command
+	// has had to be refused.
+	c.blocked = c.commandsBlocked(nil)
+	return c, nil
 }
 func (c *Client) Close() error { return c.journal.Close() }
 func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
@@ -340,9 +344,24 @@ func (c *Client) Step(ctx context.Context) (bool, error) {
 	var hb heartbeatError
 	// A failed heartbeat says nothing about commands; Convex sees that Node go silent instead.
 	if ctx.Err() == nil && !errors.As(err, &hb) {
-		c.blocked = blockedReason(err)
+		c.blocked = c.commandsBlocked(err)
 	}
 	return busy, err
+}
+
+// commandsBlocked is the reason the heartbeat gives after a step that ended with err. A step that
+// refused nothing can still leave the journal full: the refused command left the queue (its run
+// timed out, or someone cancelled it), but the next journaled command will be refused the same
+// way. The step has already run the forced sweep in that case, so a journal still full is
+// reported until keys are really freed.
+func (c *Client) commandsBlocked(err error) string {
+	if reason := blockedReason(err); reason != "" {
+		return reason
+	}
+	if c.journal.full() {
+		return blockedJournalFull
+	}
+	return ""
 }
 
 // Reasons a heartbeat gives for commandsBlocked. Convex accepts any short code
@@ -443,7 +462,9 @@ func (c *Client) step(ctx context.Context) (bool, error) {
 			return false, heartbeatError{err}
 		}
 	}
-	if err := c.sweepJournal(ctx, false); err != nil {
+	// A full journal is swept at the forced pace even with no command waiting, so its keys are
+	// freed, and the blocked state cleared, as soon as Convex finishes their commands.
+	if err := c.sweepJournal(ctx, c.journal.full()); err != nil {
 		c.logf("connect-convex: journal status sweep failed: %v", err)
 	}
 	// The mesh snapshot is not fetched here: a bad link or an unavailable mesh state must not
@@ -488,8 +509,9 @@ func (c *Client) step(ctx context.Context) (bool, error) {
 }
 
 // Journal sweep pacing. A healthy Node settles each key when its report is acknowledged, so the
-// sweep only finds keys whose acknowledgement was lost to a crash, or that a cancellation left
-// behind; it runs when enough of those collect, or at once when the journal is full.
+// sweep only finds keys whose acknowledgement was lost to a crash, or whose command was cancelled
+// while it ran (by an operator, or by a deploy run that ended); it runs when enough of those
+// collect, or every forcedSweepInterval while the journal is full.
 const (
 	sweepBatch          = 200 // matches MAX_STATUS_IDS in packages/backend/convex/infra/nodeCommands.ts
 	sweepThreshold      = 500
@@ -497,11 +519,17 @@ const (
 	forcedSweepInterval = 30 * time.Second
 )
 
+// terminalStatus is every nodeCommands status Convex never moves on from, so a command in one is
+// never delivered again (commandStatus in packages/backend/convex/infra/nodeCommandModel.ts).
+var terminalStatus = map[string]bool{"success": true, "failure": true, "unknown": true, "cancelled": true}
+
 // sweepJournal asks Convex for the status of journaled commands and settles every key whose
-// command is terminal with the outcome recorded here: Convex will never deliver it again and has
-// already accepted its result. A command still pending or running keeps its key, so its
-// re-delivery replays the outcome. One that ended any other way (cancelled while it ran, or a
-// different outcome) keeps its key for an operator and is not asked about again.
+// command is terminal: Convex will never deliver it again, so the key has nothing left to replay.
+// A command still pending or running keeps its key, so its re-delivery replays the outcome. When
+// Convex ended the command another way than the outcome recorded here (cancelled while it ran,
+// say, after the Node had finished it), the difference is logged before the key goes, because
+// Convex cannot know it. A command Convex does not know keeps its key for an operator and is not
+// asked about again.
 func (c *Client) sweepJournal(ctx context.Context, forced bool) error {
 	candidates := c.journal.sweepCandidates()
 	if len(candidates) == 0 {
@@ -539,13 +567,19 @@ func (c *Client) sweepJournal(ctx context.Context, forced bool) error {
 		}
 		var done []string
 		for _, r := range batch {
-			switch s := status[r.ID]; s {
-			case "", "pending", "running":
-				// Deliverable again, or not answered: the key must stay.
-			case r.Outcome:
+			s := status[r.ID]
+			switch {
+			case terminalStatus[s]:
+				if s != r.Outcome {
+					c.logf("connect-convex: journal key %s (command %s) ended in Convex as %s, but this Node recorded %s; forgetting it, since Convex will not deliver it again. Check that the Node's state matches what that run expected", r.Key, r.ID, s, r.Outcome)
+				}
 				done = append(done, r.Key)
-			default:
+			case s == "missing":
+				// Nothing confirms it cannot be delivered again.
 				c.journal.review[r.Key] = true
+			default:
+				// Pending, running, not answered, or a status this agent does not know: the
+				// command may be delivered again, so the key stays.
 			}
 		}
 		if err := c.journal.settleMany(done); err != nil {
@@ -554,7 +588,7 @@ func (c *Client) sweepJournal(ctx context.Context, forced bool) error {
 		settled += len(done)
 	}
 	if settled > 0 {
-		c.logf("connect-convex: journal sweep settled %d keys Convex has acknowledged; %d keys remain", settled, c.journal.keys())
+		c.logf("connect-convex: journal sweep settled %d keys whose commands Convex has finished; %d keys remain", settled, c.journal.keys())
 	}
 	return nil
 }
@@ -623,8 +657,12 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 		return err
 	}
 	// The report committed: the command is terminal with this outcome, and Convex refuses to
-	// claim a terminal command, so it is never delivered again. A success or failure has nothing
-	// left to replay. An unknown outcome stays for an operator to check.
+	// claim a terminal command, so it is never delivered again and its key has nothing left to
+	// replay. An unknown outcome is settled too: Convex now shows it on the command and fails the
+	// deploy run with "inspect the Node", which is where an operator acts on it.
+	if outcome == outcomeUnknown {
+		c.logf("connect-convex: command %s (key %s) ended with an unknown outcome: it was interrupted, so its effect may or may not have happened; Convex records it as unknown and it will not run again", cmd.ID, key)
+	}
 	_, err = c.journal.settle(key, cmd.ID)
 	return err
 }
