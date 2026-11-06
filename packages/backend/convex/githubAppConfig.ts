@@ -128,8 +128,8 @@ export function summarizeLegacyCredentials(
  * step 5, not step 1.
  */
 export const LEGACY_REMOVAL_COMMANDS = [
-  "pnpm convex env remove GITHUB_PAT",
-  "pnpm convex env remove GITHUB_WEBHOOK_SECRET",
+  "pnpm convex env remove --prod GITHUB_PAT",
+  "pnpm convex env remove --prod GITHUB_WEBHOOK_SECRET",
 ] as const;
 
 /**
@@ -197,14 +197,15 @@ export function resolveAppCredentials(
   if (!isNonEmpty(appId) || !/^[1-9]\d*$/.test(appId) || !Number.isSafeInteger(Number(appId))) {
     return {
       ok: false,
-      error: "GITHUB_APP_ID must be a positive integer. Set it with `npx convex env set`.",
+      error:
+        "GITHUB_APP_ID must be a positive integer. Set it with `npx convex env set --prod GITHUB_APP_ID <id>`.",
     };
   }
   if (!isNonEmpty(privateKey)) {
     return {
       ok: false,
       error:
-        "GITHUB_APP_PRIVATE_KEY is not configured. Set it to the App's PEM with `npx convex env set`.",
+        "GITHUB_APP_PRIVATE_KEY is not configured. Set it to the App's PEM with `npx convex env set --prod GITHUB_APP_PRIVATE_KEY --from-file <pem file>`.",
     };
   }
   return {

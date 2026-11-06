@@ -17,18 +17,42 @@ Two facts decide the order:
   lease-aware controller cannot talk to a backend from before it. So the controller update runs in
   the same window as the deploy, and a rollback moves both back together.
 
-Every `npx convex` command below reads the deployment from `packages/backend/.env.local`. Git
-ignores `*.local`, so a new worktree does not have it: copy it in after every `git worktree add`,
-as each block below does. Without it, `npx convex deploy` stops with "No CONVEX_DEPLOYMENT set".
-Exporting `CONVEX_DEPLOY_KEY` (the production deploy key) in the shell works too. Relative paths
-below start from the checkout you deploy from today (`$main`), beside which both worktrees go.
+## Check which deployment the CLI reaches
+
+Every `npx convex` command below finds the Convex project through `packages/backend/.env.local`.
+On the owner's machine that file names a dev deployment (`CONVEX_DEPLOYMENT=dev:…`), not
+production. `npx convex deploy` targets the project's production deployment anyway. Every other
+command (`env`, `run`, `data`) acts on the dev deployment unless it passes `--prod`, so every one
+below does. Add `--prod` to any `npx convex` command you type yourself.
+
+Git ignores `*.local`, so a new worktree does not have the file: copy it in after every
+`git worktree add`, as each block below does. Without it, `npx convex deploy` stops with "No
+CONVEX_DEPLOYMENT set". Exporting `CONVEX_DEPLOY_KEY` (the production deploy key) in the shell
+works too. Relative paths below start from the checkout you deploy from today (`$main`), beside
+which both worktrees go.
+
+Before anything else, from `packages/backend` in the checkout you deploy from today, confirm what
+`--prod` reaches:
+
+```bash
+grep '^CONVEX_DEPLOYMENT=' .env.local      # dev:<name> is expected; --prod picks the same project's production
+npx convex dashboard --prod --no-open      # https://dashboard.convex.dev/d/<production name>
+npx convex env list --prod --names-only    # production's variables: CONTROLLER_TOKEN, SITE_URL, …
+```
+
+The name after `/d/` is the production deployment. Its URLs are `https://<name>.convex.cloud` and
+`https://<name>.convex.site`, and `<deployment>` in every URL below is that name. It must be the
+deployment the fleet talks to: on `oracle-singapore-1`,
+`sudo grep -h CONVEX /etc/runner-center/profiles/*.env` shows `https://<name>.convex.site`
+for every Profile. If the name differs, or `env list --prod` shows no `CONTROLLER_TOKEN`, stop:
+`.env.local` belongs to another project.
 
 ## 1. Before
 
 Pick the release and check it out in a clean worktree, from the checkout you deploy from today:
 
 ```bash
-main=$PWD                                              # this checkout; its .env.local names production
+main=$PWD                                              # this checkout, whose packages/backend/.env.local finds the project
 git fetch --tags origin
 git worktree add ../erainfra-release v0.2.0-rc.11      # the tag you are deploying
 cd ../erainfra-release
@@ -164,14 +188,29 @@ itself.
 ### Stage the controller
 
 Stage the new controller binary on every controller host, so the window does not wait on a
-download. Take it from the GitHub Release of the tag and check it against the pin on the release
-commit:
+download. The release names each binary by its target, and on ARM `uname -m` does not print the
+target: an `aarch64` host takes `linux-arm64`, an `x86_64` host `linux-x86_64`.
+`oracle-singapore-1` is aarch64, so it takes `runner-center-controller-linux-arm64`. Take the
+binary from the GitHub Release of the tag and check it against the pin on the release commit:
 
 ```bash
 v=0.2.0-rc.11
-curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/v$v/runner-center-controller-linux-x86_64"
-sha256sum runner-center-controller-linux-x86_64   # must equal controller["linux-x86_64"] in agentRelease.ts
+case "$(uname -m)" in
+  x86_64) target=linux-x86_64 ;;
+  aarch64) target=linux-arm64 ;;
+  *) target=none ;;
+esac
+asset=runner-center-controller-$target; echo "$asset"   # oracle-singapore-1: runner-center-controller-linux-arm64
+mkdir -p ~/erainfra-controller-v$v && cd ~/erainfra-controller-v$v
+curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/v$v/$asset"
+pin=$(curl -fsSL "https://raw.githubusercontent.com/Fanzzzd/erainfra/v$v/packages/backend/convex/agentRelease.ts" |
+  awk '/^  controller: \{/,/^  \},/' | grep -F "\"$target\"" | cut -d '"' -f 4)
+echo "$pin  $asset" | sha256sum -c -                    # runner-center-controller-linux-arm64: OK
 ```
+
+`sha256sum -c` must print `OK`. It fails when the bytes differ from the pin and when the tag pins
+nothing for this target. The update below passes the directory, not the file, to `--source`, and
+the installer adds the asset name for the host's own CPU, so the command is the same on every host.
 
 `--update` keeps each controller host's old binary and unit as `.bak-<old version>` files, so those
 need no note.
@@ -201,11 +240,15 @@ repeats the checks from [Before](#prove---update-will-find-the-controllers) with
 installer:
 
 ```bash
+v=0.2.0-rc.11
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
-  --source "file://$PWD/runner-center-controller-linux-x86_64" --dry-run
+  --source "file://$HOME/erainfra-controller-v$v/" --dry-run
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
-  --source "file://$PWD/runner-center-controller-linux-x86_64"
+  --source "file://$HOME/erainfra-controller-v$v/"
 ```
+
+The trailing `/` matters: with it, the installer reads `runner-center-controller-linux-arm64` on
+`oracle-singapore-1` and `runner-center-controller-linux-x86_64` on an x86_64 host.
 
 `--source` changes where the bytes come from, never which digest is accepted. `--update` restarts
 exactly the instances that were running and rolls itself back if one fails its health check

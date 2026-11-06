@@ -143,8 +143,8 @@ describe("legacy removal guidance", () => {
   // The dashboard renders these verbatim; they have to stay the documented ones.
   it("names both legacy secrets, PAT first", () => {
     expect([...LEGACY_REMOVAL_COMMANDS]).toEqual([
-      "pnpm convex env remove GITHUB_PAT",
-      "pnpm convex env remove GITHUB_WEBHOOK_SECRET",
+      "pnpm convex env remove --prod GITHUB_PAT",
+      "pnpm convex env remove --prod GITHUB_WEBHOOK_SECRET",
     ]);
   });
 });
