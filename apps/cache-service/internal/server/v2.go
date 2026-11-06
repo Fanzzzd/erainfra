@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
 )
@@ -159,7 +160,7 @@ func (s *Server) v2Create(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.deadline(w, r, s.config.ReserveTimeout)
 	defer cancel()
 
-	exists, err := s.index.Exists(ctx, claims.Repository, claims.WriteScope(), request.Key, request.Version)
+	exists, err := s.index.Exists(ctx, claims, request.Key, request.Version)
 	if err != nil {
 		// Refusing the reservation costs the job a save and a warning. It does
 		// not cost it retries, which is why this is 200 {"ok": false} rather
@@ -187,7 +188,7 @@ func (s *Server) v2Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, v2CreateResponse{})
 		return
 	}
-	held.repository, held.ref = claims.Repository, claims.WriteScope()
+	held.repository, held.repositoryID, held.ref = claims.Repository, claims.RepositoryID, claims.WriteScope()
 	held.key, held.version = request.Key, request.Version
 
 	s.mu.Lock()
@@ -218,7 +219,7 @@ func (s *Server) v2Finalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	held := s.sessionForEntry(claims.Repository, claims.WriteScope(), request.Key, request.Version)
+	held := s.sessionForEntry(claims, request.Key, request.Version)
 	if held == nil {
 		s.logger.Warn("v2 finalize named an upload this service does not hold",
 			"repository", claims.Repository, "key", request.Key)
@@ -246,7 +247,7 @@ func (s *Server) v2Finalize(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := s.index.Commit(ctx, cacheindex.Entry{
-		Key: held.key, Version: held.version, Repository: held.repository,
+		Key: held.key, Version: held.version, Repository: held.repository, RepositoryID: held.repositoryID,
 		Ref: held.ref, Blob: blob, Size: size,
 	}); err != nil {
 		s.logger.Error("v2 finalize could not publish the entry", "error", err)
@@ -291,12 +292,14 @@ func containsString(values []string, want string) bool {
 // answer {"ok":false} for an upload that had already put every byte in the
 // store. Prefer the one that is committed; otherwise the newest, which is the
 // one the client most recently reserved.
-func (s *Server) sessionForEntry(repository, ref, key, version string) *session {
+func (s *Server) sessionForEntry(claims cachetoken.Claims, key, version string) *session {
+	repository, ref := claims.Repository, claims.WriteScope()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var newest *session
 	for _, held := range s.sessions {
 		if !strings.EqualFold(held.repository, repository) || held.ref != ref ||
+			!sameRepositoryID(held.repositoryID, claims.RepositoryID) ||
 			held.key != key || held.version != version {
 			continue
 		}

@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,9 +44,13 @@ type Entry struct {
 	Key        string `json:"key"`
 	Version    string `json:"version"`
 	Repository string `json:"repository"`
-	Ref        string `json:"ref"`
-	Blob       string `json:"blob"`
-	Size       int64  `json:"size"`
+	// RepositoryID is GitHub's ID for the repository that saved the entry,
+	// from the job's facts. Zero for an entry saved before it was recorded or
+	// by a job whose facts carried none; ownership.go says whose those are.
+	RepositoryID int64  `json:"repositoryId,omitempty"`
+	Ref          string `json:"ref"`
+	Blob         string `json:"blob"`
+	Size         int64  `json:"size"`
 	// CreatedAt is unix milliseconds. It is also encoded into the metadata
 	// object's own name, inverted, so a listing sorts newest-first without a
 	// read per candidate.
@@ -74,6 +79,7 @@ type Index struct {
 
 	access accessLog
 	memo   metadataMemo
+	names  nameMemo
 
 	dirtyMu sync.Mutex
 	dirty   map[string]struct{}
@@ -138,7 +144,7 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 		// a dot, and hex never contains a dot, so this prefix cannot reach a
 		// longer key by accident.
 		for _, ref := range scopes {
-			entry, err := i.newest(ctx, claims.Repository, ref, versionSegment, encoded+".", version)
+			entry, err := i.newest(ctx, claims, ref, versionSegment, encoded+".", version)
 			if err != nil {
 				return nil, err
 			}
@@ -151,7 +157,7 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 		// length is exactly a prefix of the decoded key — which is what makes
 		// the store's own prefix listing the whole of the prefix match.
 		for _, ref := range scopes {
-			entry, err := i.newest(ctx, claims.Repository, ref, versionSegment, encoded, version)
+			entry, err := i.newest(ctx, claims, ref, versionSegment, encoded, version)
 			if err != nil {
 				return nil, err
 			}
@@ -176,7 +182,7 @@ func (i *Index) LookupExact(ctx context.Context, claims cachetoken.Claims, key, 
 	versionSegment := versionSegment(version)
 	encoded := hex.EncodeToString([]byte(key)) + "."
 	for _, ref := range claims.ReadScopes() {
-		entry, err := i.newest(ctx, claims.Repository, ref, versionSegment, encoded, version)
+		entry, err := i.newest(ctx, claims, ref, versionSegment, encoded, version)
 		if err != nil {
 			return nil, err
 		}
@@ -188,8 +194,12 @@ func (i *Index) LookupExact(ctx context.Context, claims cachetoken.Claims, key, 
 	return nil, nil
 }
 
-// newest lists one scope and returns the most recently created match.
-func (i *Index) newest(ctx context.Context, repository, ref, versionSegment, encodedKey, version string) (*Entry, error) {
+// newest lists one scope and returns the most recently created match that the
+// token's repository saved. Another repository's entry under the same name is
+// read past, as if it were not there: a token whose facts carry GitHub's
+// repository ID never restores an entry saved under a different one.
+func (i *Index) newest(ctx context.Context, claims cachetoken.Claims, ref, versionSegment, encodedKey, version string) (*Entry, error) {
+	repository := claims.Repository
 	prefix := scopePrefix(repository, ref, versionSegment) + encodedKey
 	objects, truncated, err := i.store.List(ctx, prefix, i.maxCandidates())
 	if err != nil {
@@ -199,39 +209,64 @@ func (i *Index) newest(ctx context.Context, repository, ref, versionSegment, enc
 		i.logger.Warn("cache key prefix has more entries than one listing page",
 			"repository", repository, "ref", ref, "candidates", len(objects))
 	}
-	if len(objects) == 0 {
-		return nil, nil
-	}
 
-	best := ""
-	bestStamp := ""
+	// The stamp is the creation time subtracted from the largest int64 and
+	// printed at a fixed width, so the smallest stamp is the newest entry and a
+	// plain string comparison orders them.
+	candidates := make([]string, 0, len(objects))
 	for _, object := range objects {
-		stamp := recencyStamp(object.Key)
-		if stamp == "" {
-			continue
-		}
-		// The stamp is the creation time subtracted from the largest int64 and
-		// printed at a fixed width, so the smallest stamp is the newest entry
-		// and a plain string comparison decides it.
-		if best == "" || stamp < bestStamp {
-			best, bestStamp = object.Key, stamp
+		if recencyStamp(object.Key) != "" {
+			candidates = append(candidates, object.Key)
 		}
 	}
-	if best == "" {
-		return nil, nil
-	}
+	sort.Slice(candidates, func(a, b int) bool {
+		return recencyStamp(candidates[a]) < recencyStamp(candidates[b])
+	})
 
-	body, err := i.store.GetBytes(ctx, best, maxEntryMetadataBytes)
+	passed := 0
+	for _, object := range candidates {
+		entry, err := i.candidate(ctx, object, repository, ref, version)
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			owned, err := i.ownedBy(ctx, claims, entry)
+			if err != nil {
+				return nil, err
+			}
+			if owned {
+				return i.servable(ctx, entry, repository)
+			}
+			i.logger.Info("cache lookup read past an entry another repository saved under this name",
+				"repository", repository, "repositoryId", claims.RepositoryID,
+				"savedBy", entry.RepositoryID, "ref", ref, "key", entry.Key)
+		}
+		// The newest candidate is the answer almost every time. A lookup reads
+		// past it only for one that raced an eviction, one that does not parse,
+		// or one another repository saved before the name changed hands, and
+		// the first save under the new ID removes those.
+		passed++
+		if passed >= maxPassedCandidates {
+			break
+		}
+	}
+	return nil, nil
+}
+
+// candidate reads one listed entry document. One that has gone or cannot be
+// trusted is nil with no error.
+func (i *Index) candidate(ctx context.Context, object, repository, ref, version string) (*Entry, error) {
+	body, err := i.store.GetBytes(ctx, object, maxEntryMetadataBytes)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
-			// Raced with an eviction. A miss is the right answer.
+			// Raced with an eviction.
 			return nil, nil
 		}
 		return nil, err
 	}
 	var entry Entry
 	if err := json.Unmarshal(body, &entry); err != nil {
-		i.logger.Warn("cache entry metadata does not parse", "object", best, "error", err)
+		i.logger.Warn("cache entry metadata does not parse", "object", object, "error", err)
 		return nil, nil
 	}
 	// Defence in depth: the listing already narrowed by repository, ref and
@@ -239,20 +274,26 @@ func (i *Index) newest(ctx context.Context, repository, ref, versionSegment, enc
 	// have drifted apart. Refuse it rather than serve another scope's bytes.
 	if !strings.EqualFold(entry.Repository, repository) || entry.Ref != ref || entry.Version != version {
 		i.logger.Error("cache entry metadata contradicts its own location",
-			"object", best, "repository", entry.Repository, "ref", entry.Ref)
+			"object", object, "repository", entry.Repository, "ref", entry.Ref)
 		return nil, nil
 	}
-	// A hit must name bytes that are there. Eviction deletes the metadata
-	// before the blob and keeps the blob readable for a grace period, so this
-	// service never produces a dangling entry; but the bucket's lifecycle rule,
-	// an operator with the store's own tools, or a store that lost an object
-	// can. Answering such an entry would hand the job a URL that 404s, which
-	// some clients survive as a warning and BuildKit does not. One HEAD per hit
-	// turns every one of those into a miss.
+	entry.Object = object
+	return &entry, nil
+}
+
+// servable answers an entry as a hit only if its bytes are there.
+//
+// Eviction deletes the metadata before the blob and keeps the blob readable for
+// a grace period, so this service never produces a dangling entry; but the
+// bucket's lifecycle rule, an operator with the store's own tools, or a store
+// that lost an object can. Answering such an entry would hand the job a URL that
+// 404s, which some clients survive as a warning and BuildKit does not. One HEAD
+// per hit turns every one of those into a miss.
+func (i *Index) servable(ctx context.Context, entry *Entry, repository string) (*Entry, error) {
 	if _, err := i.store.Stat(ctx, entry.Blob); err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			i.logger.Warn("cache entry names a blob that is gone; answering a miss",
-				"object", best, "blob", entry.Blob)
+				"object", entry.Object, "blob", entry.Blob)
 			// The next quota tick sweeps this repository, which removes the
 			// entry so the key can be saved again.
 			i.markDirty(repository)
@@ -260,22 +301,31 @@ func (i *Index) newest(ctx context.Context, repository, ref, versionSegment, enc
 		}
 		return nil, err
 	}
-	entry.Object = best
-	return &entry, nil
+	return entry, nil
 }
 
 // Exists reports whether the given key and version already have an entry in
-// this ref's scope. GitHub's cache entries are immutable, and so are these: a
-// second save of the same key is refused rather than allowed to replace bytes
-// an earlier job already restored.
+// the token's write scope. GitHub's cache entries are immutable, and so are
+// these: a second save of the same key is refused rather than allowed to
+// replace bytes an earlier job already restored.
+//
+// Every save starts here, so this is also where a repository name changes
+// hands: before it answers, the entries another repository saved under the name
+// are removed (see claimName). Otherwise a key the earlier repository saved
+// would refuse the new repository's save of it for as long as the old entry
+// lived.
 //
 // It is a check, not a lock. Two jobs reserving the same key at the same
 // instant both pass it and both publish, and the newer one wins every later
 // restore. That is a wasted upload rather than a security property: what stops
 // an untrusted job from writing at all is the permission in its token, which is
 // decided before this is ever called.
-func (i *Index) Exists(ctx context.Context, repository, ref, key, version string) (bool, error) {
-	prefix := scopePrefix(repository, ref, versionSegment(version)) + hex.EncodeToString([]byte(key)) + "."
+func (i *Index) Exists(ctx context.Context, claims cachetoken.Claims, key, version string) (bool, error) {
+	if err := i.claimName(ctx, claims.Repository, claims.RepositoryID); err != nil {
+		return false, err
+	}
+	prefix := scopePrefix(claims.Repository, claims.WriteScope(), versionSegment(version)) +
+		hex.EncodeToString([]byte(key)) + "."
 	objects, _, err := i.store.List(ctx, prefix, 1)
 	if err != nil {
 		return false, err
@@ -302,13 +352,24 @@ func (i *Index) NewBlob(ctx context.Context, repository string) (string, objects
 }
 
 // Commit publishes an entry. Everything it needs is already in the bucket; this
-// is the write that makes it findable.
+// is the write that makes it findable. The entry carries the saving
+// repository's ID when the job's facts had one, and from then on only a token
+// for that ID, or one with no ID at all, restores it.
 func (i *Index) Commit(ctx context.Context, entry Entry) error {
 	if err := cachetoken.ValidateRepository(entry.Repository); err != nil {
 		return err
 	}
 	if entry.Ref == "" {
 		return errors.New("a cache entry needs a ref to be scoped by")
+	}
+	if entry.RepositoryID < 0 {
+		return errors.New("a repository ID is positive, or zero when unknown")
+	}
+	// A save that did not start at Exists (the git seed's) takes the name
+	// here. For one that did, the name is already this ID's and this is a
+	// memo read.
+	if err := i.claimName(ctx, entry.Repository, entry.RepositoryID); err != nil {
+		return err
 	}
 	entry.CreatedAt = i.now().UnixMilli()
 	body, err := json.Marshal(entry)

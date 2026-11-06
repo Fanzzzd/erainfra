@@ -336,7 +336,7 @@ func TestAnEntryWhoseBlobIsGoneIsAMiss(t *testing.T) {
 	if report.EvictedDangling != 1 {
 		t.Fatalf("report = %+v, want the dangling entry evicted", report)
 	}
-	exists, err := f.index.Exists(context.Background(), repo, main, "k", "v1")
+	exists, err := f.index.Exists(context.Background(), cachetoken.Claims{Repository: repo, Ref: main}, "k", "v1")
 	if err != nil || exists {
 		t.Fatalf("Exists after the dangling entry went = %v, %v; want the key free to save", exists, err)
 	}

@@ -188,7 +188,7 @@ func (s *Server) saveBuildEntry(w http.ResponseWriter, r *http.Request, claims c
 	ctx, cancel := s.deadline(w, r, s.config.TransferTimeout)
 	defer cancel()
 
-	exists, err := s.index.Exists(ctx, claims.Repository, claims.WriteScope(), key, version)
+	exists, err := s.index.Exists(ctx, claims, key, version)
 	if err != nil {
 		s.logger.Error("build cache save could not read the index", "error", err)
 		return saveUnavailable
@@ -242,8 +242,8 @@ func (s *Server) saveBuildEntry(w http.ResponseWriter, r *http.Request, claims c
 		return saveUnavailable
 	}
 	if err := s.index.Commit(ctx, cacheindex.Entry{
-		Key: key, Version: version, Repository: claims.Repository, Ref: claims.WriteScope(),
-		Blob: blob, Size: size, Attributes: attributes,
+		Key: key, Version: version, Repository: claims.Repository, RepositoryID: claims.RepositoryID,
+		Ref: claims.WriteScope(), Blob: blob, Size: size, Attributes: attributes,
 	}); err != nil {
 		s.logger.Error("build cache save could not publish the entry", "error", err)
 		_ = upload.Abort(ctx)

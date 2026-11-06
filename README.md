@@ -160,7 +160,8 @@ service, and forwards artifact calls and everything else to GitHub
 [ADR 0012](docs/adr/0012-pin-the-cache-host-by-name-and-reach-containers-by-verified-trust.md)).
 The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
 
-- **Scope.** Entries are stored per repository and ref. The guest's token names only the runner.
+- **Scope.** Entries are stored per repository and ref, where a repository is GitHub's repository
+  ID as well as its name (next item). The guest's token names only the runner.
   At `JobStarted` the controller reads the job's workflow run from GitHub, works out which refs the
   job may read and the one it may write, and pushes those facts to the cache service, which applies
   them to every request. The rules follow GitHub's own cache restrictions: a branch or tag job reads
@@ -169,6 +170,19 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   writes nothing; a sibling branch is never readable. A lookup that fails or takes over 3 s gives
   the job a cold cache, never a wider one. The exact table is in
   [the runbook](docs/runbooks/operate-the-job-cache.md#one-key-three-holders).
+- **One repository, not one name.** Entries live under the repository's name, and each one also
+  records GitHub's repository ID from the job facts. A job reads only entries saved under its own
+  ID. A repository deleted or renamed away and then created again under the same name is a new
+  repository with a new ID: it restores none of the old one's entries, and its first save removes
+  them. This covers `actions/cache`, BuildKit, Turborepo, the Go build cache and the git seed.
+  Two cases still match by name alone. A job from a controller that pushes no ID reads every
+  entry under the name, for as long as such a controller runs. An entry saved before the cache
+  service recorded IDs has none: it belongs to the first ID that saves under its name after the
+  upgrade, and another ID that later takes the name gets none of it. So for each name the
+  by-name window ends at the first save from an upgraded controller. If the name changed hands
+  before that save, the new repository adopts the old one's entries, because nothing stored can
+  tell the two apart. `erainfra-cache-service admin list` shows each entry's ID and the ID that holds the
+  name, and `--repository-id` narrows a list, delete or clear to one ID.
 - **Failure.** A cache service or store that cannot answer in time turns into a cache miss or a
   request forwarded to GitHub. A guest whose redirect does not come up talks to GitHub directly. A
   cache failure makes the cache step warn; it does not fail the job.
@@ -227,7 +241,10 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   GitHub before every fetch it answers and forwards everything else unchanged. On this repository a
   depth-1 checkout drops from 2.4 MB to 34 KB with a seed one commit old. A checkout still contacts
   GitHub every time, so it does not avoid ubuntu0's SYN stalls (#149). Any failure sends the fetch
-  to GitHub. Details, measurements and limits are in
+  to GitHub. A seed over the entry size limit is refused, and the next jobs skip building one
+  until a backoff passes. A refusal on the default branch holds for the whole repository. A
+  refusal on any other ref holds for that ref only, because the job there chose the length it
+  declared and must not stop the default branch's seed. Details, measurements and limits are in
   [the runbook](docs/runbooks/operate-the-job-cache.md#11-git-checkout-mirror).
 - **Activation.** The cache is off until an operator deploys the service and its bucket and turns
   the interception on, following

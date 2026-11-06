@@ -99,18 +99,31 @@ func (s *Server) adminList(ctx context.Context, w http.ResponseWriter, repositor
 		return
 	}
 
+	repositoryID, ok := repositoryIDParam(get("repository_id"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "repository_id must be a positive integer"})
+		return
+	}
+
 	records, err := s.index.Entries(ctx, repository, cacheindex.Match{
 		Prefix: get("prefix"), Search: get("search"), Ref: get("ref"), Version: get("version"),
+		RepositoryID: repositoryID,
 	})
 	if err != nil {
 		s.logger.Error("cache admin list could not read the index", "repository", repository, "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
 		return
 	}
+	holder, err := s.index.NameOwner(ctx, repository)
+	if err != nil {
+		s.logger.Error("cache admin list could not read the name record", "repository", repository, "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
+		return
+	}
 	sortRecords(records, sortBy, direction == "desc")
 
 	response := adminapi.ListResponse{
-		Repository: repository, TotalCount: len(records), Page: page, PerPage: perPage,
+		Repository: repository, RepositoryID: holder, TotalCount: len(records), Page: page, PerPage: perPage,
 		Entries: []adminapi.Entry{},
 	}
 	for _, record := range records {
@@ -136,8 +149,14 @@ func (s *Server) adminDelete(ctx context.Context, w http.ResponseWriter, reposit
 		}
 		return ""
 	}
+	repositoryID, ok := repositoryIDParam(get("repository_id"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "repository_id must be a positive integer"})
+		return
+	}
 	match := cacheindex.Match{
 		Key: get("key"), Prefix: get("prefix"), Version: get("version"), Ref: get("ref"),
+		RepositoryID: repositoryID,
 	}
 	switch get("all") {
 	case "":
@@ -160,6 +179,8 @@ func (s *Server) adminDelete(ctx context.Context, w http.ResponseWriter, reposit
 			"message": "a delete names exactly one of key, prefix, or all=true"})
 		return
 	}
+	// all=true may still be narrowed to one repository ID: that is how the
+	// entries an earlier repository left under the name are cleared.
 	if match.All && (match.Version != "" || match.Ref != "") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"message": "all=true clears the whole repository and takes no version or ref"})
@@ -175,7 +196,8 @@ func (s *Server) adminDelete(ctx context.Context, w http.ResponseWriter, reposit
 	}
 	s.logger.Info("cache entries deleted by an operator", "repository", repository,
 		"key", match.Key, "prefix", match.Prefix, "all", match.All, "version", match.Version,
-		"ref", match.Ref, "deleted", response.DeletedCount, "bytes", response.DeletedBytes)
+		"ref", match.Ref, "repositoryId", match.RepositoryID,
+		"deleted", response.DeletedCount, "bytes", response.DeletedBytes)
 	if err != nil {
 		s.logger.Error("cache admin delete stopped early", "repository", repository,
 			"deleted", response.DeletedCount, "error", err)
@@ -191,7 +213,21 @@ func wireEntry(record cacheindex.Record) adminapi.Entry {
 	return adminapi.Entry{
 		Key: record.Key, Version: record.Version, Ref: record.Ref, SizeInBytes: record.Size,
 		CreatedAt: record.Created(), LastAccessedAt: record.LastAccess.UTC(),
+		RepositoryID: record.RepositoryID,
 	}
+}
+
+// repositoryIDParam reads the optional repository_id filter. Absent is zero,
+// which matches every entry.
+func repositoryIDParam(raw string) (int64, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 func positive(raw string, fallback int) (int, bool) {

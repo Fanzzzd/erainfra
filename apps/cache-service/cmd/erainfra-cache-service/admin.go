@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -26,10 +27,14 @@ const adminUsage = `usage: erainfra-cache-service admin <command> [flags]
 
 commands:
   list    --repo owner/name [--prefix p] [--search s] [--ref r] [--version v]
-          [--sort-by last_used_at|created_at|size|key|version|ref]
+          [--repository-id n] [--sort-by last_used_at|created_at|size|key|version|ref]
           [--sort-direction desc|asc] [--page n] [--per-page n] [--format json|table]
-  delete  --repo owner/name (--key k | --prefix p) [--version v] [--ref r] [--yes] [--format json|table]
-  clear   --repo owner/name [--yes] [--format json|table]
+  delete  --repo owner/name (--key k | --prefix p) [--version v] [--ref r] [--repository-id n]
+          [--yes] [--format json|table]
+  clear   --repo owner/name [--repository-id n] [--yes] [--format json|table]
+
+--repository-id narrows to entries saved by one GitHub repository ID. A name
+deleted or renamed away and created again is a new repository with a new ID.
 
 every command:
   --url       the cache service (default $ERAINFRA_CACHE_ADMIN_URL, else http://127.0.0.1 on
@@ -181,6 +186,7 @@ func adminList(ctx context.Context, args []string, env adminEnv) error {
 	set.StringVar(&query.Ref, "ref", "", "only entries saved under this ref, such as refs/heads/main")
 	set.StringVar(&query.Ref, "scope", "", "the same as --ref")
 	set.StringVar(&query.Version, "version", "", "only entries with this version")
+	set.Int64Var(&query.RepositoryID, "repository-id", 0, "only entries saved by this GitHub repository ID")
 	set.StringVar(&query.SortBy, "sort-by", "last_used_at", "sort column")
 	set.StringVar(&query.SortDirection, "sort-direction", "desc", "desc or asc")
 	set.IntVar(&query.Page, "page", 1, "page, from 1")
@@ -207,17 +213,21 @@ func adminList(ctx context.Context, args []string, env adminEnv) error {
 		return writeJSONOut(env.stdout, response)
 	}
 	table := tabwriter.NewWriter(env.stdout, 0, 4, 2, ' ', 0)
-	say(table, "KEY\tVERSION\tREF\tSIZE\tLAST USED\tCREATED\n")
+	say(table, "KEY\tVERSION\tREF\tSIZE\tLAST USED\tCREATED\tREPOSITORY ID\n")
 	for _, entry := range response.Entries {
-		say(table, "%s\t%s\t%s\t%s\t%s\t%s\n", entry.Key, shortVersion(entry.Version), entry.Ref,
+		say(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", entry.Key, shortVersion(entry.Version), entry.Ref,
 			humanBytes(entry.SizeInBytes), entry.LastAccessedAt.Format(time.RFC3339),
-			entry.CreatedAt.Format(time.RFC3339))
+			entry.CreatedAt.Format(time.RFC3339), repositoryIDCell(entry.RepositoryID))
 	}
 	if err := table.Flush(); err != nil {
 		return err
 	}
 	say(env.stdout, "\n%d of %d entries (page %d), %s in total\n",
 		len(response.Entries), response.TotalCount, response.Page, humanBytes(response.TotalBytes))
+	if response.RepositoryID != 0 {
+		say(env.stdout, "%s is held by repository ID %d; entries without an ID belong to it\n",
+			response.Repository, response.RepositoryID)
+	}
 	return nil
 }
 
@@ -231,6 +241,7 @@ func adminDelete(ctx context.Context, args []string, env adminEnv, clear bool) e
 	}
 	set := newFlagSet(name, env, &common)
 	set.BoolVar(&yes, "yes", false, "do not ask before deleting")
+	set.Int64Var(&query.RepositoryID, "repository-id", 0, "only entries saved by this GitHub repository ID")
 	if !clear {
 		set.StringVar(&query.Key, "key", "", "exact cache key to delete")
 		set.StringVar(&query.Prefix, "prefix", "", "delete every key that starts with this")
@@ -266,6 +277,9 @@ func adminDelete(ctx context.Context, args []string, env adminEnv, clear bool) e
 	}
 	if query.Ref != "" {
 		what += ", ref " + query.Ref
+	}
+	if query.RepositoryID != 0 {
+		what += fmt.Sprintf(", saved by repository ID %d", query.RepositoryID)
 	}
 	if !yes {
 		if !env.interactive {
@@ -326,6 +340,15 @@ func writeJSONOut(w io.Writer, value any) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
+}
+
+// repositoryIDCell is an entry's repository ID in a table: "-" for one saved
+// without an ID.
+func repositoryIDCell(id int64) string {
+	if id == 0 {
+		return "-"
+	}
+	return strconv.FormatInt(id, 10)
 }
 
 // shortVersion keeps a table readable: versions are 64-character hashes.
