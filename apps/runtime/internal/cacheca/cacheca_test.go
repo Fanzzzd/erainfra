@@ -287,3 +287,36 @@ func assertRejected(t *testing.T, leaf, ca *x509.Certificate, now time.Time, dns
 		t.Fatalf("rejected for %q, want a CANotAuthorizedForThisName name-constraint failure", err)
 	}
 }
+
+// The git checkout mirror's authority answers for github.com and for nothing
+// else: not the cache host, and not a subdomain of github.com.
+func TestMintForConstrainsTheAuthorityToItsOwnHost(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	auth, err := MintFor("github.com", now, testLifetime)
+	if err != nil {
+		t.Fatalf("MintFor: %v", err)
+	}
+	roots := rootPool(t, auth.TrustAnchorPEM)
+	leaf := parseLeaf(t, auth.LeafCertPEM)
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "github.com", CurrentTime: now}); err != nil {
+		t.Fatalf("leaf for github.com did not verify: %v", err)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: CacheHost, CurrentTime: now}); err == nil {
+		t.Fatal("the github.com leaf verified for the cache host")
+	}
+
+	ca, caKey, err := newCAFor("github.com", now, testLifetime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{CacheHost, "api.github.com"} {
+		forged := forgeLeaf(t, ca, caKey, now, &x509.Certificate{
+			Subject: pkix.Name{CommonName: host}, DNSNames: []string{host},
+		})
+		assertRejected(t, forged, ca, now, host)
+	}
+
+	if _, err := MintFor("10.0.0.1", now, testLifetime); err == nil {
+		t.Fatal("MintFor accepted an IP address")
+	}
+}

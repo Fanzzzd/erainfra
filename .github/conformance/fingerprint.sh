@@ -760,6 +760,14 @@ if grep -q '# erainfra-cache-interceptor$' /etc/hosts 2>/dev/null; then
 else
   emit cache_host_pinned no
 fi
+# What a guest with the git checkout mirror hands every job: git's traffic to
+# https://github.com/ goes through a proxy on loopback. Reduced to set/unset
+# because the port is the guest's to choose.
+if [ -n "$(git config --get http.https://github.com/.proxy 2>/dev/null || true)" ]; then
+  emit git_github_proxy set
+else
+  emit git_github_proxy unset
+fi
 
 # What a guest with the build cache proxy up hands every job: turbo's three
 # remote cache variables and the address the opt-in Go helper reads, and the

@@ -55,6 +55,11 @@ type Config struct {
 	// claim. It needs no key: a mirror serves public images, the same bytes
 	// to every job, which is also why it must never hold credentials.
 	RegistryMirrorURL string
+	// GitMirror turns on the git checkout mirror in every guest
+	// (RC_GIT_MIRROR). A guest's checkout of its own repository then fetches
+	// from GitHub only what the repository's seed in the cache service lacks.
+	// It needs the cache service, which holds the seeds.
+	GitMirror bool
 }
 
 func DefaultConfig() Config {
@@ -136,6 +141,9 @@ func (c Config) Validate() error {
 		if err := registrymirror.Validate(c.RegistryMirrorURL); err != nil {
 			return fmt.Errorf("RC_REGISTRY_MIRROR_URL: %w", err)
 		}
+	}
+	if c.GitMirror && c.CacheServiceURL == "" {
+		return errors.New("RC_GIT_MIRROR needs RC_CACHE_SERVICE_URL: the cache service holds the seeds the mirror starts from")
 	}
 	return nil
 }

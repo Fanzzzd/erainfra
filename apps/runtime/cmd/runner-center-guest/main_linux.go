@@ -13,6 +13,7 @@ import (
 	"os/user"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
@@ -318,6 +319,10 @@ func run(ctx context.Context) error {
 		}
 	}
 	configureGuestDocker(ctx, metadata.RegistryMirrorURL, cacheTrustAnchorPath, runnerUser.HomeDir, int(uid), int(gid))
+	// Point the job's git at the checkout mirror when the host turned it on.
+	// Best-effort like the cache: without it, git fetches from GitHub.
+	stopGitMirror := sync.OnceFunc(startGitMirrorIfEnabled(ctx, metadata))
+	defer stopGitMirror()
 
 	var command *exec.Cmd
 	if metadata.Kind == "experiment" {
@@ -340,6 +345,9 @@ func run(ctx context.Context) error {
 	// written to disk, argv, a host environment, or logs.
 	metadata.JITConfig = ""
 	err = command.Wait()
+	// Before the reset below: a seed save started during the job gets its
+	// grace period to finish, and the VM is not torn down under it.
+	stopGitMirror()
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
 		return ctx.Err()
 	}

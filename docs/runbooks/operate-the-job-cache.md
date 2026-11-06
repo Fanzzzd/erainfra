@@ -9,8 +9,9 @@ can add a cache without touching ADR 0002's isolation contract.
 **What this runbook covers:** choosing and provisioning the store, running the service, eviction and
 the lifecycle rule behind it (§4), the Docker-path variables that offer the endpoint to jobs and the
 measurement that showed they cannot reach a cache client (§7), turning on the Firecracker
-interceptor, which is how jobs actually reach the service (§8), and listing or deleting a
-repository's entries (§9).
+interceptor, which is how jobs actually reach the service (§8), listing or deleting a
+repository's entries (§9), the Turborepo and Go build caches the same service serves (§10), and
+the git checkout mirror, which keeps its seeds in it too (§11).
 
 ---
 
@@ -942,3 +943,178 @@ hits and few or no misses. `cache list --repo owner/name --prefix turbo/` (§9) 
 Bazel's and Buck2's remote caches (REAPI over gRPC, or Bazel's HTTP cache) are not implemented.
 Blacksmith serves them; here a Bazel build uses its local disk cache or a remote cache it reaches
 over allowed egress.
+
+---
+
+## 11. Git checkout mirror
+
+With `RC_GIT_MIRROR=on` on a Worker, a Firecracker job's checkout of its own repository fetches from
+GitHub only the objects the repository's seed lacks. The seed is a git bundle of the repository's
+branches and tags that an earlier job saved in this cache service. Workflows keep a stock
+`actions/checkout@v4`; nothing in them changes. This is the equivalent of Blacksmith's
+`useblacksmith/checkout` and its colocated git proxy, built so that nothing survives on the Worker
+(ADR 0002) and the seed is scoped exactly like a cache entry (ADR 0007).
+
+### What it saves
+
+Measured with real git against a local stand-in for GitHub (`apps/runtime/internal/gitmirror`), on a
+copy of this repository whose depth-1 checkout is a 2.4 MB pack:
+
+| seed age           | bytes GitHub sends | without the mirror |
+| ------------------ | ------------------ | ------------------ |
+| 1 commit behind    | 34 KB              | 2.4 MB             |
+| 5 commits behind   | 112 KB             | 2.4 MB             |
+| 30 commits behind  | 812 KB             | 2.4 MB             |
+| 100 commits behind | 1.6 MB             | 2.4 MB             |
+
+What GitHub sends is the objects of the checked-out tree that the seed does not have, so the saving
+depends on how much of the tree changed since the seed, not on the repository's size. A large
+repository with small changes saves the most. Seeds are refreshed once a day per ref (below), so an
+active default branch stays within a day's changes.
+
+The mirror costs local work: restoring the seed (about 0.2 s for this repository's 3.7 MB bundle,
+done while the runner sets the job up), one extra request to GitHub to check the job's credential,
+and a local `git upload-pack`. On loopback, where the transfer from GitHub costs nothing, a mirrored
+checkout took 0.7 to 0.9 s against 0.4 to 0.6 s without it. It pays off when the transfer from
+GitHub takes longer than that difference, which it does for large repositories or a slow uplink.
+
+It does not stop the SYN stalls on ubuntu0's uplink to github.com (#149). Every checkout still
+contacts GitHub, because the commit being checked out may be newer than any seed. The guest does
+share one connection to github.com across all of git's requests that pass through the proxy, kept
+open for up to 90 seconds between them, so a job that runs several git commands opens fewer new
+connections. That is a side effect, not a fix.
+
+### How it works
+
+1. At claim, the guest starts a proxy on loopback and includes `/etc/erainfra/git-mirror.gitconfig`
+   from `/etc/gitconfig`. That file sets `http.https://github.com/.proxy` and
+   `http.https://github.com/.sslCAInfo`, so git, and only git, sends its `https://github.com/`
+   traffic through the proxy. The proxy terminates TLS for github.com with a CA minted for this boot
+   and name-constrained to `github.com` alone. It is a second CA, separate from the cache
+   interceptor's. The CA file git is pointed at holds the system roots too, so a git that bypasses
+   the proxy still verifies the real github.com.
+2. While the runner sets the job up, the guest asks this service for its seed with the runner-auth
+   bearer, `GET /_erainfra-git-seed/v1`. The answer names the job's repository, taken from the job
+   facts the controller pushed, and carries the newest seed the job may read. The guest imports it
+   into a bare mirror on its own disk.
+3. When the job's git fetches its own repository, the proxy checks the job's credential with GitHub
+   (a ref advertisement request, or the one the client made a moment earlier), then has the mirror
+   fetch the wanted commit from GitHub at the client's depth. GitHub sends only what the mirror lacks.
+   The mirror then answers the client's fetch with `git upload-pack`, so the client receives the
+   same objects and shallow boundary GitHub would have sent. The workspace has no alternates, no
+   extra refs and no borrowed objects; `git fsck` passes and `.git` can be copied into a container.
+4. Everything else goes to GitHub unchanged: ref listings, pushes, other repositories, LFS, protocol
+   v0 clients, and any fetch the mirror cannot answer in full.
+5. After the job's first fetch of its repository, if the job may write the cache and its seed is
+   missing or older than a day, the guest fetches the repository's branches and tags into the mirror
+   with the credential that fetch presented, bundles them and saves the bundle with
+   `PUT /_erainfra-git-seed/v1`. After the runner exits, the guest waits up to two minutes for a save
+   already under way before the VM resets. The job's result is already reported by then.
+
+### Isolation and credentials
+
+- **One repository's seed per job.** The repository comes from the runner's job facts, never from
+  the request, so a job can read only its own repository's seed, private repositories included. The
+  ref rules are the cache's: a pull request reads its base branch's and the default branch's seeds,
+  never a sibling branch's, and a fork's pull request cannot save one.
+- **GitHub decides who reads.** The mirror answers a fetch only after GitHub has accepted the
+  client's credential for that repository within the last minute. A client GitHub refuses gets
+  GitHub's refusal, even when the mirror holds every object it asked for.
+  `TestMirrorNeverServesAClientGitHubWouldRefuse` and `TestMirrorChecksTheCredentialOnEveryFetch`
+  pin this.
+- **Only the job's own credential.** The mirror fetches with whatever credential the job's git
+  presented: for `actions/checkout`, the job's `GITHUB_TOKEN`, which GitHub scopes to this
+  repository and this job. No other GitHub credential enters the guest. The runner-auth bearer goes
+  only to this service, never to git or GitHub.
+- **A seed cannot plant objects.** Importing a bundle runs `index-pack`, which names every object by
+  its content, and checks that every ref's history is complete. A truncated or hostile seed fails to
+  import, and the job fetches from GitHub alone. The client receives objects only by the names it
+  asked for, so it gets exactly what GitHub would have sent.
+- **Other repositories pass through.** A job that clones a second repository, or a submodule from
+  another repository, reaches GitHub directly through the proxy. No seed is applied to it or built
+  from it.
+- **No hole in the host policy.** The guest reaches this service the way the cache interceptor
+  does, as an allowed destination (§8, step 3), and GitHub the way the job always did.
+
+### Turn it on
+
+The Worker must already run the Firecracker interceptor cache (§8): the runtime has
+`RC_CACHE_SERVICE_URL` and the signing key, and the controller pushes job facts. Then:
+
+1. Deploy a cache service with the seed endpoint (this release or later). An older service answers
+   the seed path with a 404 that names no repository, and the guest then leaves every fetch to
+   GitHub.
+2. Repin the Profile to an Image Release whose guest carries the mirror, as in §8 step 2.
+3. On each Worker, add the switch to `runner-center-runtime.service`'s environment and restart the
+   runtime:
+
+   ```bash
+   RC_GIT_MIRROR=on      # also read as ERAINFRA_GIT_MIRROR; on/off, 1/0, true/false
+   ```
+
+   The runtime refuses to start with `RC_GIT_MIRROR=on` and no `RC_CACHE_SERVICE_URL`. Warm
+   microVMs booted before the change pick it up when they are claimed.
+
+A Profile on `allowlist` egress needs `github.com` allowed, which its checkout needed anyway.
+
+### Verify
+
+In a job on the Profile:
+
+```bash
+git config --show-origin --get http.https://github.com/.proxy
+# file:/etc/erainfra/git-mirror.gitconfig  http://127.0.0.1:<port>
+```
+
+The guest journal (`journalctl -u runner-center-guest`) logs `git mirror: restored <repo>'s seed`
+when a seed was found and `git mirror: saved a <n>-byte seed of <repo>` when the job saved one. The
+first job of a repository finds no seed and saves one; the second checks out through the mirror.
+On this host, the seed shows up as an entry:
+
+```bash
+cache list --repo owner/name --prefix erainfra-git-seed/ --format table
+```
+
+### What it does not cover
+
+- `container:` jobs and Docker builds that run git inside a container. The container has its own
+  git configuration and goes to GitHub directly.
+- Checkouts over SSH (`actions/checkout` with `ssh-key`). Only `https://github.com/` is proxied.
+- Docker, Tart and Hyper-V Profiles. The mirror is part of the Firecracker guest.
+- GitHub Enterprise Server hosts. Only `github.com` is proxied.
+
+### Costs and limits
+
+A seed is the size of the repository's branches and tags packed, and it counts against the
+repository's quota (§4) like any entry. Each ref scope keeps one seed: a new one replaces the older
+ones in its scope. A job saves into its own ref's scope, so a pull request whose base branch has no
+seed, or only one older than a day, saves one under `refs/pull/<n>/merge` that only that pull
+request reads; a daily push to the default branch keeps that from happening. A seed larger than `ERAINFRA_CACHE_MAX_ENTRY_BYTES` is refused and the job keeps
+checking out from GitHub. A job that finds no seed fetches the repository's full branches and tags
+in the background once, which competes with the job for the uplink; on a large repository the first
+job pays that cost so later ones do not.
+
+### Opt out, roll back
+
+A job that wants its git to go straight to GitHub for the rest of the job runs
+`sudo rm -f /etc/erainfra/git-mirror.gitconfig`; git ignores an include whose file is gone. On the
+Worker, unset `RC_GIT_MIRROR` and restart the runtime: guests claimed afterwards write no git
+configuration. Delete a repository's seeds with
+`cache delete --repo owner/name --prefix erainfra-git-seed/`. A job that finds none checks out from
+GitHub and saves a fresh one.
+
+### Designs considered
+
+- **Alternates (`git clone --reference`), as `useblacksmith/checkout` does.** A workspace that
+  borrows objects from a mirror breaks when `.git` is copied somewhere the mirror is not, such as a
+  Docker build context, which is why Blacksmith offers `dissociate: true`. It also needs the action
+  swapped.
+- **`fetch.bundleURI`.** Git's own pre-seeding, scoped to the job's repository with
+  `includeIf "hasconfig:remote.*.url:..."`. It leaves `refs/bundles/*` and the repository's whole
+  history in every workspace, so a depth-1 checkout is no longer depth 1, and it offers no way to
+  refresh the seed without a credential the guest does not have.
+- **A mirror service on ubuntu0 or another host.** It would have to fetch private repositories
+  with a credential of its own, an installation token the controller mints per repository, and keep
+  writable state outside the job. Seeding from the job's own fetch needs neither.
+- **`url.<mirror>.insteadOf`.** It changes what `git remote get-url origin` prints, which tools such
+  as semantic-release and goreleaser parse.

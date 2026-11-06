@@ -34,7 +34,11 @@ type Metadata struct {
 	// that the guest writes into dockerd's registry-mirrors and BuildKit's
 	// default configuration. Empty means no mirror; pulls go to Docker Hub.
 	RegistryMirrorURL string `json:"registry_mirror_url,omitempty"`
-	ShutdownOnExit    bool   `json:"shutdown_on_exit"`
+	// GitMirror turns on the git checkout mirror, which keeps its seeds in the
+	// cache service at CacheServiceURL. False leaves the job's git exactly as
+	// it is on a guest without one.
+	GitMirror      bool `json:"git_mirror,omitempty"`
+	ShutdownOnExit bool `json:"shutdown_on_exit"`
 }
 
 func (m Metadata) Validate() error {

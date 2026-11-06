@@ -54,6 +54,11 @@ type Spec struct {
 	// host fills in at claim, and empty composes exactly the guest a fleet
 	// without a mirror boots.
 	RegistryMirrorURL string
+	// GitMirror turns on the in-guest git checkout mirror, which keeps its
+	// seeds in the cache service at CacheServiceURL. Fleet-wide operator
+	// configuration the host fills in at claim; false boots the guest a fleet
+	// without it boots.
+	GitMirror bool
 	// Egress is the Profile's published egress policy. The zero value is
 	// public egress, which is what a Profile without one means.
 	Egress netpolicy.ProfileEgress

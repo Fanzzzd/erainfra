@@ -48,21 +48,32 @@ const clockSkew = 5 * time.Minute
 type Authority struct {
 	// TrustAnchorPEM is the CA certificate the guest installs as a trusted root.
 	TrustAnchorPEM []byte
-	// LeafCertPEM is the certificate the interceptor presents for CacheHost.
+	// LeafCertPEM is the certificate the interceptor presents for its one host.
 	LeafCertPEM []byte
 	// LeafKeyPEM is the interceptor's private key. It never enters the guest.
 	LeafKeyPEM []byte
 }
 
-// Mint creates a fresh Authority valid for [now-clockSkew, now+lifetime]. The
-// lifetime should track the guest's, not exceed it: the whole point is that the
-// material dies with the VM.
+// Mint creates a fresh Authority for CacheHost valid for
+// [now-clockSkew, now+lifetime]. The lifetime should track the guest's, not
+// exceed it: the whole point is that the material dies with the VM.
 func Mint(now time.Time, lifetime time.Duration) (*Authority, error) {
+	return MintFor(CacheHost, now, lifetime)
+}
+
+// MintFor is Mint for one other host. The git checkout mirror uses it for
+// github.com. That is a second, separate authority, constrained to its one
+// name exactly as the cache interceptor's is to CacheHost, so neither can vouch
+// for the other's host.
+func MintFor(host string, now time.Time, lifetime time.Duration) (*Authority, error) {
 	if lifetime <= 0 {
 		return nil, errors.New("cacheca: certificate lifetime must be positive")
 	}
+	if host == "" || net.ParseIP(host) != nil {
+		return nil, errors.New("cacheca: the authority's host must be a DNS name")
+	}
 
-	caCert, caKey, err := newCA(now, lifetime)
+	caCert, caKey, err := newCAFor(host, now, lifetime)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +82,7 @@ func Mint(now time.Time, lifetime time.Duration) (*Authority, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cacheca: generate leaf key: %w", err)
 	}
-	leafCert, err := signLeaf(caCert, caKey, &leafKey.PublicKey, now, lifetime, CacheHost)
+	leafCert, err := signLeaf(caCert, caKey, &leafKey.PublicKey, now, lifetime, host)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +99,16 @@ func Mint(now time.Time, lifetime time.Duration) (*Authority, error) {
 	}, nil
 }
 
-// newCA builds the name-constrained CA. It permits exactly one DNS name and
-// excludes every IP, email and URI, so a leaf for anything but CacheHost fails
-// on a validator that enforces name constraints. MaxPathLenZero forbids it from
-// signing another CA, so the constraints cannot be widened by an intermediate.
+// newCA builds the name-constrained CA for CacheHost.
 func newCA(now time.Time, lifetime time.Duration) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	return newCAFor(CacheHost, now, lifetime)
+}
+
+// newCAFor builds a name-constrained CA. It permits exactly one DNS name and
+// excludes every IP, email and URI, so a leaf for anything but host fails on a
+// validator that enforces name constraints. MaxPathLenZero forbids it from
+// signing another CA, so the constraints cannot be widened by an intermediate.
+func newCAFor(host string, now time.Time, lifetime time.Duration) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cacheca: generate CA key: %w", err)
@@ -103,7 +119,7 @@ func newCA(now time.Time, lifetime time.Duration) (*x509.Certificate, *ecdsa.Pri
 	}
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "EraInfra cache interceptor (ephemeral)"},
+		Subject:               pkix.Name{CommonName: "EraInfra in-guest interceptor for " + host + " (ephemeral)"},
 		NotBefore:             now.Add(-clockSkew),
 		NotAfter:              now.Add(lifetime),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
@@ -111,12 +127,12 @@ func newCA(now time.Time, lifetime time.Duration) (*x509.Certificate, *ecdsa.Pri
 		IsCA:                  true,
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
-		PermittedDNSDomains:   []string{CacheHost},
+		PermittedDNSDomains:   []string{host},
 		// A permitted DNS domain without a leading dot matches the host AND its
 		// subdomains, so the permit above would also let a leaf for
 		// `child.<host>` through. The leading-dot exclusion matches subdomains
 		// but not the bare host, so the two together mean "exactly this host".
-		ExcludedDNSDomains: []string{"." + CacheHost},
+		ExcludedDNSDomains: []string{"." + host},
 		// Everything below forbids a leaf from carrying that name type at all: the
 		// leaf Mint signs never does, and a leaked CA cannot add one on a
 		// conforming validator. An excluded range that covers the whole space is
