@@ -1059,7 +1059,7 @@ connections. That is a side effect, not a fix.
    `sideband-all`, `wait-for-done`, `server-option`, an object format other than SHA-1, a
    depth-limited fetch that follows tags (`git clone --depth`), and any line git adds later. The
    guest journal names each kind once: `git mirror: fetches of <repo> that send "<line>" go to
-   GitHub directly`.
+GitHub directly`.
 5. After the job's first fetch of its repository, if the job may write the cache and its seed is
    missing or older than a day, the guest fetches the repository's branches and tags into the mirror
    with the credential that fetch presented, bundles them and saves the bundle with
