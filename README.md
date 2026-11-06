@@ -997,11 +997,21 @@ It changes `runs-on` written as a string, a one-item list, or the `labels` of a 
 mapping. In a reusable workflow whose `runs-on` is an input, it changes that input's default and
 the `with:` value of each call in the repository. In a [router job](#fall-back-to-github-hosted-runners),
 it renames the Profile the router asks about (a `PROFILE` variable or a `profile=` query) and
-leaves the router's own `runs-on`, which has to stay GitHub-hosted. It leaves the rest unchanged
-and prints a note for each one, on stderr, or under `notes` with `--json`: matrix and other
-expressions (the note lists what each matrix value would become), lists of several labels, which
-no scale set matches, a runner group with no labels, YAML aliases, Intel macOS and larger-runner
-labels, and labels it does not know.
+leaves the router's own `runs-on`, which has to stay GitHub-hosted. A router job is one that
+declares `outputs:` and has a step calling the `/runs-on` endpoint with `profile=` or `labels=`;
+a script that only mentions a path such as `.github/runs-on.yml` is an ordinary job. It leaves the
+rest unchanged and prints a note for each one, on stderr, or under `notes` with `--json`: matrix
+and other expressions (the note lists what each matrix value would become), lists of several
+labels, which no scale set matches, a runner group with no labels, YAML aliases, Intel macOS and
+larger-runner labels, and labels it does not know. A `runs-on` label that carries a YAML anchor
+is rewritten when only other jobs' `runs-on` alias it, and those jobs move with it. When an `env:`
+value or anything else also reads the anchor, the label is left unchanged with a note, because
+rewriting it would change that value too.
+
+Before it prints or writes a file, the command parses the rewritten file again and compares it
+with the original, node by node with aliases expanded. Every value must be the same except the
+labels it reported as changed. If anything else differs, it changes nothing in that file and
+prints a `verify` note. It skips UTF-16 files and files that are not valid YAML, with a note.
 
 ### Fall back to GitHub-hosted runners
 
