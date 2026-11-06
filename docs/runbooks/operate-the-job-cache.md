@@ -462,12 +462,12 @@ journalctl -u erainfra-cache-service -f
 
 ### Metrics and the alert worth having
 
-| series                                                | means                                                                                                           |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `erainfra_cache_requests_refused_total{reason}`       | requests answered `401`; `reason` is one of the five below                                                      |
-| `erainfra_cache_job_facts_loaded_total`               | facts read back from the bucket, which is what a restart costs                                                  |
-| `erainfra_cache_job_facts_persist_failures_total`     | pushes answered `503` because the bucket refused the write                                                      |
-| `erainfra_cache_build_requests_total{system,outcome}` | Turborepo and Go build cache requests (§10); `system` is `turbo` or `go`, `outcome` is `hit`, `miss` or `saved` |
+| series                                                | means                                                                                                                                                                    |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `erainfra_cache_requests_refused_total{reason}`       | requests answered `401`; `reason` is one of the five below                                                                                                               |
+| `erainfra_cache_job_facts_loaded_total`               | facts read back from the bucket, which is what a restart costs                                                                                                           |
+| `erainfra_cache_job_facts_persist_failures_total`     | pushes answered `503` because the bucket refused the write                                                                                                               |
+| `erainfra_cache_build_requests_total{system,outcome}` | Turborepo and Go build cache requests (§10); `system` is `turbo` or `go`, `outcome` is `hit`, `miss`, `saved` or `error` (the store failed a lookup, download or upload) |
 
 `reason` is `no_token`, `bad_token` (forged, expired, or a signing key mismatch), `unknown_facts`
 (the controller's push for the runner never landed, or the facts expired), `facts_unreadable` (the
@@ -483,6 +483,18 @@ are skipped without a red step. Alert on it:
 
 `unknown_facts` is the reason to look at first. Check the controller log for the runner:
 `could not publish cache facts` names the error it gave up on.
+
+A store that fails build cache requests reads as a cold cache to the job: its lookups miss and its
+uploads print a turbo warning per task. `outcome="error"` separates that from real misses:
+
+```yaml
+- alert: ErainfraBuildCacheStoreErrors
+  expr: sum by (system) (increase(erainfra_cache_build_requests_total{outcome="error"}[15m])) > 0
+  for: 15m
+```
+
+The service log names the step that failed: `build cache lookup degraded to a miss`,
+`build cache download degraded to a miss` or `build cache save could not ...`.
 
 ---
 
@@ -907,24 +919,45 @@ its byte count. The quota is in bytes, and listing pages through all of them.
 | cache service unreachable                        | one `Remote caching unavailable` warning, tasks run                    | one `building with the local cache only` line, packages compile |
 | the controller's facts for the runner not in yet | the same warning; reads miss, uploads are dropped                      | the same line, naming the `401`                                 |
 | store slow or down                               | a miss for that artifact (the service answers `404` within its budget) | a miss for that package                                         |
+| the store fails an upload                        | one `failed to contact remote cache ... 503` warning for that task     | one `building with the local cache only` line, naming the `503` |
 | a fork pull request uploads                      | nothing printed; the upload is dropped in the guest                    | one `may read the build cache but not write to it` line         |
 | a download that does not match its hash          | turbo's own check, if `remoteCache.signature` is on                    | one `discarded` line, and a miss                                |
 
 The proxy writes one line to the guest journal per state change (`journalctl -u runner-center-guest`):
 `build cache proxy: the cache service is unreachable ...`, `... answers again`, `... answered 401`,
-and `... may read the cache but not write to it`. After an unreachable service it answers locally
-for 30 seconds before it tries again, so a dead service costs each job one connection timeout, not
-one per task.
+`... may read the cache but not write to it`, `... could not store a turbo upload`,
+`... turbo presented a TURBO_TOKEN the workflow set ...`, and `... refused a request for host ...`
+or `... refused a request from a browser`. After an unreachable service it answers locally for 30
+seconds before it tries again, so a dead service costs each job one connection timeout, not one per
+task.
+
+The proxy answers only requests whose `Host` is `127.0.0.1:7457`, the address in `TURBO_API` and
+`ERAINFRA_BUILD_CACHE_URL`, and that carry no `Origin` or `Sec-Fetch-Site` header; anything else
+gets a `403`. turbo and the Go helper send neither header. A browser the job runs, such as an
+end-to-end test's Chromium, does, so a page that rebinds its DNS name to `127.0.0.1` cannot read
+or write the repository's cache through the proxy. A workflow that writes `localhost:7457` into
+`TURBO_API` by hand is refused too; use the address the guest sets.
 
 ### When it is not used
 
 - **A workflow sets its own `TURBO_API`.** A step's `env` overrides the runner's, so turbo talks to
   that server and the proxy sees nothing.
-- **A workflow sets its own `TURBO_TOKEN` but not `TURBO_API`.** It meant Vercel, turbo's default.
-  The proxy forwards those requests to `https://vercel.com/api` untouched and never sends that token
-  to the cache service. A Profile on allowlist egress needs `vercel.com` on its list for this.
-- **A repository points turbo at its own server in `.turbo/config.json`.** The guest's `TURBO_API`
-  takes precedence over that file. Set `TURBO_API` in the workflow to the same server.
+- **A workflow sets its own `TURBO_TOKEN` but not `TURBO_API`.** turbo still sends to the guest's
+  `TURBO_API`, and the request does not say where the workflow meant it to go. The proxy forwards
+  that token nowhere, to the cache service or anyone else. turbo's status check gets a `401`, so the
+  job log has one `Remote caching unavailable (Authentication failed — check TURBO_TOKEN ...)`
+  warning, and the build runs uncached. The guest journal says
+  `build cache proxy: turbo presented a TURBO_TOKEN the workflow set ...`. The fix is in the
+  workflow's `env`: `TURBO_API: https://vercel.com/api` for Vercel, or the repository's own server.
+  Set `TURBO_TEAM` there too, or turbo sends the guest's `erainfra` team. A Profile on allowlist
+  egress needs that host on its list.
+- **A repository names its own server in `turbo.json` (`remoteCache.apiUrl`) or
+  `.turbo/config.json`.** Measured with `turbo config` on turbo 2.10.9, turbo resolves the remote
+  cache settings in this order, first wins: the `--api` flag, `TURBO_API` (the step's `env`, else
+  the runner's), `.turbo/config.json`, turbo's global config file, then `turbo.json`. The guest's
+  `TURBO_API` therefore shadows both files. The guest cannot read them when it sets the runner's
+  environment, because the job has not checked anything out yet. Set `TURBO_API` in the workflow
+  to the same server; until then the case above applies.
 - **`container:` jobs and `docker build`.** A Docker bridge does not reach guest loopback, so turbo
   inside a container prints `Remote caching disabled` and runs its tasks.
 - **Opting one workflow out.** `TURBO_CACHE: local:rw` in the `env` turns turbo's remote cache off;

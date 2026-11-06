@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -612,9 +613,85 @@ func TestBuildCacheMetricsCountHitsMissesAndSaves(t *testing.T) {
 		`erainfra_cache_build_requests_total{system="turbo",outcome="miss"} 1`,
 		`erainfra_cache_build_requests_total{system="go",outcome="miss"} 1`,
 		`erainfra_cache_build_requests_total{system="go",outcome="saved"} 0`,
+		`erainfra_cache_build_requests_total{system="turbo",outcome="error"} 0`,
+		`erainfra_cache_build_requests_total{system="go",outcome="error"} 0`,
 	} {
 		if !strings.Contains(scrape, line+"\n") {
 			t.Errorf("metrics lack %q", line)
+		}
+	}
+}
+
+// A store that fails an upload or a lookup is an error outcome, apart from a
+// miss, so an outage does not read as a cold cache. The upload is answered 503
+// (the guest proxy passes it on to turbo, which warns), and a lookup is still a
+// 404 the build carries on from. A fork's refused upload stays outside the
+// count: it is not a fault.
+func TestBuildCacheCountsStoreFailuresAsErrors(t *testing.T) {
+	h := newHarness(t, nil)
+	main := h.pushToken("acme/web", "refs/heads/main")
+	fork := h.token(cachetoken.JobFacts{
+		Repository: "acme/web", HeadRepository: "stranger/web", Event: "pull_request",
+		Ref: "refs/pull/9/merge", BaseRef: "refs/heads/main", DefaultBranch: "refs/heads/main",
+	})
+	series := func(system, outcome string) string {
+		return fmt.Sprintf("erainfra_cache_build_requests_total{system=%q,outcome=%q} ", system, outcome)
+	}
+	count := func(name string) int {
+		text := scrape(t, h)
+		start := strings.Index(text, name)
+		if start < 0 {
+			t.Fatalf("metrics lack %q", name)
+		}
+		value, _, _ := strings.Cut(text[start+len(name):], "\n")
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Every write to the store fails.
+	h.store.SetFail(func(method, _ string, _ map[string][]string) int {
+		if method == http.MethodPut || method == http.MethodPost {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	})
+	failed := h.turboPut(main, "0e0e", []byte("outputs"), nil)
+	_ = readAll(t, failed)
+	if failed.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("turbo upload with the store down = %d, want 503", failed.StatusCode)
+	}
+	if status := h.goPut(main, goID("down"), []byte("object"), nil); status != http.StatusServiceUnavailable {
+		t.Fatalf("go put with the store down = %d, want 503", status)
+	}
+	refused := h.turboPut(fork, "0f0f", []byte("poison"), nil)
+	_ = readAll(t, refused)
+	if refused.StatusCode != http.StatusForbidden {
+		t.Fatalf("fork upload = %d, want 403", refused.StatusCode)
+	}
+
+	// Every read from the store fails.
+	h.store.SetFail(func(method, _ string, _ map[string][]string) int {
+		if method == http.MethodGet || method == http.MethodHead {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	})
+	if status, _, _ := h.turboGet(main, "0e0e", nil); status != http.StatusNotFound {
+		t.Fatalf("turbo read with the store down = %d, want a 404 miss", status)
+	}
+	h.store.SetFail(nil)
+
+	for name, want := range map[string]int{
+		series("turbo", "error"): 2,
+		series("go", "error"):    1,
+		series("turbo", "miss"):  0,
+		series("turbo", "saved"): 0,
+	} {
+		if got := count(name); got != want {
+			t.Errorf("%s= %d, want %d", name, got, want)
 		}
 	}
 }

@@ -3,12 +3,16 @@ package guestcache
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetest"
@@ -191,5 +195,147 @@ func TestRealTurboUsesTheCacheWithNoWorkflowConfig(t *testing.T) {
 	cached, warnings, output = turboJob(t, turbo, writeWorkspace(t, false), proxy.Env())
 	if cached != "0/5" || len(warnings) != 1 || !strings.Contains(warnings[0], "Remote caching unavailable") {
 		t.Fatalf("job with the cache down: cached %s, warnings %q\n%s", cached, warnings, output)
+	}
+}
+
+// remoteCacheRecorder is a repository's own Turborepo remote cache: it records
+// every request and the token it carried, and answers enabled but empty.
+type remoteCacheRecorder struct {
+	*httptest.Server
+	mu   sync.Mutex
+	seen []string
+}
+
+func startRemoteCacheRecorder(t *testing.T) *remoteCacheRecorder {
+	t.Helper()
+	recorder := &remoteCacheRecorder{}
+	recorder.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder.mu.Lock()
+		recorder.seen = append(recorder.seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+		recorder.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v8/artifacts/status":
+			_, _ = io.WriteString(w, `{"status":"enabled"}`)
+		case r.Method == http.MethodPut:
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"urls":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"code":"not_found","message":"artifact not found"}`)
+		}
+	}))
+	t.Cleanup(recorder.Close)
+	return recorder
+}
+
+func (r *remoteCacheRecorder) requests() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seen...)
+}
+
+// withOwnRemoteCache writes a workspace whose turbo.json names the
+// repository's own remote cache, as a repository that runs one does.
+func withOwnRemoteCache(t *testing.T, apiURL string) string {
+	t.Helper()
+	workspace := writeWorkspace(t, false)
+	turboJSON := `{"remoteCache":{"apiUrl":"` + apiURL + `","teamId":"team_own"},"tasks":{"build":{"outputs":["dist/**"]}}}`
+	if err := os.WriteFile(filepath.Join(workspace, "turbo.json"), []byte(turboJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return workspace
+}
+
+// A repository names its own remote cache in turbo.json and passes its token
+// in the workflow env. turbo ranks the guest's TURBO_API above turbo.json, so
+// the token arrives at the proxy, which used to forward it to Vercel, a host
+// the workflow never named. Now it leaves the guest for nowhere: the job log
+// has one warning pointing at TURBO_TOKEN, the guest journal one line saying
+// to set TURBO_API, and the build runs uncached.
+func TestRealTurboNeverSendsAWorkflowsOwnTokenAnywhere(t *testing.T) {
+	turbo := findTurbo(t)
+	service := cachetest.Start(t, cachetest.Options{})
+	own := startRemoteCacheRecorder(t)
+
+	var mu sync.Mutex
+	var outbound []string
+	recording := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		outbound = append(outbound, r.Method+" "+r.URL.String()+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	log := &lines{}
+	proxy, err := StartBuildProxy(BuildProxyConfig{
+		CacheServiceURL: service.URL, RunnerToken: service.PushJob("acme/web", "refs/heads/main"),
+		Transport: recording, Logf: log.logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+
+	// The runner's environment first, then the step's, which wins.
+	env := append(proxy.Env(), "TURBO_TOKEN=own-secret-token", "TURBO_TEAM=own")
+	cached, warnings, output := turboJob(t, turbo, withOwnRemoteCache(t, own.URL), env)
+	if cached != "0/5" || len(warnings) != 1 || !strings.Contains(warnings[0], "check TURBO_TOKEN") {
+		t.Fatalf("cached %s, warnings %q, want 0/5 and one warning about TURBO_TOKEN\n%s", cached, warnings, output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outbound) != 0 {
+		t.Fatalf("the proxy sent requests on with the workflow's token: %q", outbound)
+	}
+	if got := log.snapshot(); len(got) != 1 || !strings.Contains(got[0], "set TURBO_API") {
+		t.Fatalf("guest log = %q, want one line saying to set TURBO_API", got)
+	}
+	// turbo.json's apiUrl is shadowed. If a turbo release ranks turbo.json
+	// above TURBO_API, this fails, and the precedence the README and the
+	// runbook describe has to be measured again.
+	if got := own.requests(); len(got) != 0 {
+		t.Fatalf("turbo.json's own remote cache was used despite the guest's TURBO_API: %q", got)
+	}
+}
+
+// The remedy the proxy's log line names: with TURBO_API in the workflow's env,
+// turbo talks to the repository's own cache with its own token, and the proxy
+// sees nothing.
+func TestRealTurboUsesAWorkflowsOwnCacheWhenItSetsTURBO_API(t *testing.T) {
+	turbo := findTurbo(t)
+	service := cachetest.Start(t, cachetest.Options{})
+	own := startRemoteCacheRecorder(t)
+	cache := &countingTransport{next: http.DefaultTransport}
+	log := &lines{}
+	proxy, err := StartBuildProxy(BuildProxyConfig{
+		CacheServiceURL: service.URL, RunnerToken: service.PushJob("acme/web", "refs/heads/main"),
+		Transport: cache, Logf: log.logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+
+	env := append(proxy.Env(), "TURBO_API="+own.URL, "TURBO_TOKEN=own-secret-token", "TURBO_TEAM=own")
+	cached, warnings, output := turboJob(t, turbo, withOwnRemoteCache(t, own.URL), env)
+	if cached != "0/5" || len(warnings) != 0 {
+		t.Fatalf("cached %s, warnings %q\n%s", cached, warnings, output)
+	}
+	got := own.requests()
+	uploads := 0
+	for _, request := range got {
+		if !strings.HasSuffix(request, " Bearer own-secret-token") {
+			t.Fatalf("the repository's cache got a request without its token: %q", request)
+		}
+		if strings.HasPrefix(request, "PUT ") {
+			uploads++
+		}
+	}
+	if uploads != 5 {
+		t.Fatalf("the repository's cache got %d uploads, want 5: %q", uploads, got)
+	}
+	if cache.count.Load() != 0 || len(log.snapshot()) != 0 {
+		t.Fatalf("the proxy was involved: %d requests to the cache service, log %q", cache.count.Load(), log.snapshot())
 	}
 }

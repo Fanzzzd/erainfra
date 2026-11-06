@@ -98,9 +98,9 @@ func (s *Server) turboArtifact(w http.ResponseWriter, r *http.Request, hash, ver
 		if !ok {
 			return
 		}
-		entry := s.findBuildEntry(w, r, claims, key, version)
+		entry, err := s.findBuildEntry(w, r, claims, key, version)
 		if entry == nil {
-			s.metrics.build(buildTurbo, buildMiss)
+			s.metrics.build(buildTurbo, missOrError(err))
 			turboError(w, http.StatusNotFound, "not_found", "artifact not found")
 			return
 		}
@@ -115,8 +115,8 @@ func (s *Server) turboArtifact(w http.ResponseWriter, r *http.Request, hash, ver
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if !s.streamBuildEntry(w, r, entry) {
-			s.metrics.build(buildTurbo, buildMiss)
+		if sent, err := s.streamBuildEntry(w, r, entry); !sent {
+			s.metrics.build(buildTurbo, missOrError(err))
 			for _, attribute := range turboAttributes {
 				w.Header().Del(attribute.header)
 			}
@@ -159,6 +159,9 @@ func (s *Server) turboArtifact(w http.ResponseWriter, r *http.Request, hash, ver
 		case saveShortBody:
 			turboError(w, http.StatusBadRequest, "bad_request", "the body is shorter than its Content-Length")
 		default:
+			// The guest proxy passes this 503 on, so turbo warns for the
+			// task instead of taking the artifact as cached.
+			s.metrics.build(buildTurbo, buildError)
 			turboError(w, http.StatusServiceUnavailable, "unavailable", "cache store unavailable")
 		}
 	default:
@@ -196,7 +199,7 @@ func (s *Server) turboQuery(w http.ResponseWriter, r *http.Request, version stri
 			response[hash] = map[string]any{"error": map[string]string{"message": "an artifact hash is hex"}}
 			continue
 		}
-		entry := s.findBuildEntry(w, r, claims, buildKey(buildTurbo, strings.ToLower(hash)), version)
+		entry, _ := s.findBuildEntry(w, r, claims, buildKey(buildTurbo, strings.ToLower(hash)), version)
 		if entry == nil {
 			response[hash] = nil
 			continue
