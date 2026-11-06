@@ -9,6 +9,7 @@ import { ConvexError, v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import { internalMutation, query, type MutationCtx } from "../_generated/server";
 import { requirePermission } from "./access";
+import { convexWrite, provenanceFor, type HubOrigin, type Provenance } from "./hubProvenance";
 import { appOfPortKey, firstFreePort, PORT_RANGE_END, PORT_RANGE_START } from "./policy";
 
 async function byNodeKey(ctx: MutationCtx, nodeId: Id<"nodes">, key: string) {
@@ -36,7 +37,14 @@ export async function allocatePort(ctx: MutationCtx, nodeId: Id<"nodes">, key: s
       `No free ports on this Node (${PORT_RANGE_START}-${PORT_RANGE_END} all allocated)`,
     );
   }
-  await insertAllocation(ctx, { nodeId, key, port, allocatedAt: Date.now() });
+  const now = Date.now();
+  await insertAllocation(ctx, {
+    nodeId,
+    key,
+    port,
+    allocatedAt: now,
+    provenance: convexWrite(now),
+  });
   return port;
 }
 
@@ -47,6 +55,7 @@ export async function allocatePort(ctx: MutationCtx, nodeId: Id<"nodes">, key: s
 export async function claimPort(
   ctx: MutationCtx,
   input: { nodeId: Id<"nodes">; key: string; port: number; allocatedAt: number },
+  hub: HubOrigin,
 ) {
   const existing = await byNodeKey(ctx, input.nodeId, input.key);
   if (existing !== null) {
@@ -57,13 +66,19 @@ export async function claimPort(
     }
     return existing.port;
   }
-  await insertAllocation(ctx, input);
+  await insertAllocation(ctx, { ...input, provenance: provenanceFor(input.allocatedAt, hub) });
   return input.port;
 }
 
 async function insertAllocation(
   ctx: MutationCtx,
-  input: { nodeId: Id<"nodes">; key: string; port: number; allocatedAt: number },
+  input: {
+    nodeId: Id<"nodes">;
+    key: string;
+    port: number;
+    allocatedAt: number;
+    provenance: Provenance;
+  },
 ) {
   if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535) {
     throw new ConvexError(`Not a port: ${input.port}`);

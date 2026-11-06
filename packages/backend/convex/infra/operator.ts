@@ -32,6 +32,7 @@ import {
 /** CONTEXT.md, "Placement role". Mirrors tables.ts placementRoleValidator. */
 export const PLACEMENT_ROLES = ["gateway", "compute", "database", "relay"] as const;
 import { isNodeLive, isTerminalStage } from "./policy";
+import { recordTombstone } from "./hubProvenance";
 import { releaseAppPorts } from "./ports";
 import { maskedSecrets, setSecrets, unsetSecret } from "./secrets";
 
@@ -471,6 +472,7 @@ export async function removeLink(ctx: MutationCtx, input: { name: string; actor:
     .unique();
   if (row === null) throw new ConvexError(`No standalone link named ${input.name}`);
   await ctx.db.delete(row._id);
+  await recordTombstone(ctx, "link", input.name);
   await appendAudit(ctx, {
     actor: input.actor,
     action: "mesh.unlink",
@@ -609,6 +611,8 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
   }
   if (app !== null) await ctx.db.delete(app._id);
   const ports = await releaseAppPorts(ctx, name);
+  // A later Hub import must not bring the App, its routes or its ports back.
+  await recordTombstone(ctx, "app", name);
   await appendAudit(ctx, {
     actor: input.actor,
     action: "apps.remove",

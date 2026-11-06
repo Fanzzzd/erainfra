@@ -15,6 +15,7 @@ import {
 } from "../_generated/server";
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
+import { provenanceFor, recordTombstone, secretKey, type HubOrigin } from "./hubProvenance";
 import { isTerminalStage, isValidName, isValidSecretName, leaseAdmits } from "./policy";
 import {
   decryptValue,
@@ -65,12 +66,16 @@ async function writableDataKey(ctx: MutationCtx, master: MasterKey, scope: Secre
   return created.key;
 }
 
-/** Encrypt and store values for one scope. Every name is checked before anything is written. */
+/**
+ * Encrypt and store values for one scope. Every name is checked before anything is written. Each
+ * row written is Convex's unless the Hub importer passes the origin of the Hub's values.
+ */
 export async function putSecrets(
   ctx: MutationCtx,
   master: MasterKey,
   target: SecretScope,
   values: Record<string, string>,
+  hub?: HubOrigin,
 ) {
   const scope = secretScope(target.app, target.service);
   for (const name of Object.keys(values)) {
@@ -87,12 +92,33 @@ export async function putSecrets(
         q.eq("app", scope.app).eq("service", scope.service).eq("name", name),
       )
       .unique();
+    const provenance = provenanceFor(now, hub);
     if (existing === null) {
-      await ctx.db.insert("appSecrets", { ...scope, name, ...sealed, updatedAt: now });
+      await ctx.db.insert("appSecrets", { ...scope, name, ...sealed, provenance, updatedAt: now });
     } else {
-      await ctx.db.patch(existing._id, { ...sealed, updatedAt: now });
+      await ctx.db.patch(existing._id, { ...sealed, provenance, updatedAt: now });
     }
   }
+}
+
+/** One stored variable with its plaintext, for the Hub importer to compare with the Hub's value. */
+export async function storedSecret(
+  ctx: QueryCtx,
+  master: MasterKey,
+  scope: SecretScope,
+  name: string,
+) {
+  const row = await ctx.db
+    .query("appSecrets")
+    .withIndex("by_app_service_name", (q) =>
+      q.eq("app", scope.app).eq("service", scope.service).eq("name", name),
+    )
+    .unique();
+  if (row === null) return null;
+  const keyRow = await dataKeyRow(ctx, scope);
+  if (keyRow === null) throw new Error(`Secrets for ${describeScope(scope)} have no data key`);
+  const value = await decryptValue(await unwrapDataKey(master, scope, keyRow), scope, name, row);
+  return { row, value };
 }
 
 /** Decrypted values for one scope. Not exported through any public function. */
@@ -154,6 +180,7 @@ export async function unsetSecret(
     .unique();
   if (row === null) return false;
   await ctx.db.delete(row._id);
+  await recordTombstone(ctx, "secret", secretKey(scope, input.name));
   await appendAudit(ctx, {
     actor: input.actor,
     action: "env.unset",

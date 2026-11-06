@@ -119,6 +119,30 @@ export const deployPlanValidator = v.object({
   urls: v.array(v.string()),
 });
 
+/**
+ * Who last wrote a row the Hub importer also writes (infra/hubImport.ts). While the Hub and Convex
+ * both hold state, each such row records its writer: `hub` with the SHA-256 of the Hub row the
+ * importer copied, or `convex` once anything in Convex writes it. A `convex` row is Convex's for
+ * good: the importer skips it. A row without the field was written before provenance was recorded
+ * and counts as the Hub's, except an App with a stored spec, which only a Convex deploy writes.
+ * `at` equals the row's `updatedAt` where the row has one, so a later writer that did not claim the
+ * row still shows up. An env variable carries no hash: a hash of a secret value would let anyone
+ * holding a database export test guesses against it, so the importer decrypts and compares instead.
+ */
+export const provenanceValidator = v.union(
+  v.object({ by: v.literal("hub"), hash: v.optional(v.string()), at: v.number() }),
+  v.object({ by: v.literal("convex"), at: v.number() }),
+);
+
+/** What a Convex delete leaves behind so the importer does not bring the row back. */
+export const hubTombstoneKindValidator = v.union(
+  v.literal("app"),
+  v.literal("link"),
+  v.literal("secret"),
+  v.literal("gitBinding"),
+  v.literal("user"),
+);
+
 export const infraTables = {
   // A machine that runs deployed Apps (CONTEXT.md). `name` is the agent id the Hub knew it by;
   // `endpointId` is the iroh key phase 1 gives it, which becomes its identity once registered.
@@ -183,6 +207,7 @@ export const infraTables = {
     // The spec the last pipeline run deployed. Failover re-plans from it; an App without one (copied
     // from the Hub) must go through the pipeline once before Convex can fail it over.
     spec: v.optional(appSpecValidator),
+    provenance: v.optional(provenanceValidator),
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
@@ -200,6 +225,7 @@ export const infraTables = {
     port: v.number(),
     app: v.optional(v.string()),
     service: v.optional(v.string()),
+    provenance: v.optional(provenanceValidator),
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
@@ -213,6 +239,7 @@ export const infraTables = {
     consumerNodeId: v.id("nodes"),
     localPort: v.number(),
     createdBy: v.optional(v.union(v.literal("user"), v.literal("deploy"))),
+    provenance: v.optional(provenanceValidator),
     updatedAt: v.number(),
   }).index("by_name", ["name"]),
 
@@ -225,6 +252,7 @@ export const infraTables = {
     // The `<app>` prefix of `key`, so removing an App frees its ports on every Node.
     app: v.optional(v.string()),
     allocatedAt: v.number(),
+    provenance: v.optional(provenanceValidator),
   })
     .index("by_node_key", ["nodeId", "key"])
     .index("by_node_port", ["nodeId", "port"])
@@ -253,6 +281,7 @@ export const infraTables = {
     name: v.string(),
     ciphertext: v.string(),
     iv: v.string(),
+    provenance: v.optional(provenanceValidator),
     updatedAt: v.number(),
   }).index("by_app_service_name", ["app", "service", "name"]),
 
@@ -276,6 +305,7 @@ export const infraTables = {
     ),
     createdAt: v.number(),
     legacyId: v.optional(v.string()),
+    provenance: v.optional(provenanceValidator),
   })
     .index("by_repoKey_branch", ["repoKey", "branch"])
     .index("by_legacyId", ["legacyId"]),
@@ -386,7 +416,17 @@ export const infraTables = {
     expiresAt: v.number(),
   }).index("by_command", ["commandId"]),
 
-  // Named counters: `auditSeq` (last audit sequence issued), `deployments` (rows retained in
+  // Rows Convex deleted that the Hub still has: a removed App, link or Hub account, an unset env
+  // variable, an unbound branch. The importer reads these and does not bring the row back. `key`
+  // is the importer's key for the row (hubProvenance.ts). Written only by deletes, so the table
+  // holds at most what operators removed.
+  hubImportTombstones: defineTable({
+    kind: hubTombstoneKindValidator,
+    key: v.string(),
+    at: v.number(),
+  }).index("by_kind_key", ["kind", "key"]),
+
+  // Named counters:`auditSeq` (last audit sequence issued), `deployments` (rows retained in
   // appDeployments) and `hubAuditImportedThrough` (highest Hub audit seq imported). One row each,
   // so an audit append and a deploy never contend on the same document.
   infraCounters: defineTable({

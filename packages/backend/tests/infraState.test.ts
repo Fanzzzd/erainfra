@@ -191,12 +191,11 @@ describe("port allocation", () => {
     await expect(
       t.run(async (ctx) => {
         const { claimPort } = await import("../convex/infra/ports");
-        await claimPort(ctx, {
-          nodeId: node,
-          key: "b/web",
-          port: PORT_RANGE_START,
-          allocatedAt: T0,
-        });
+        await claimPort(
+          ctx,
+          { nodeId: node, key: "b/web", port: PORT_RANGE_START, allocatedAt: T0 },
+          { hash: "hub-row" },
+        );
       }),
     ).rejects.toThrow(/already held by a\/web/);
   });

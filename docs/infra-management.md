@@ -198,7 +198,8 @@ secret values themselves need not change.
    Convex does not.
 
 Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
-inside the `portless-data` volume). Start with `--dry-run`, which reads everything and sends nothing:
+inside the `portless-data` volume). Start with `--dry-run`, which reads everything, asks the
+deployment what the import would do, and writes nothing:
 
 ```sh
 CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
@@ -207,11 +208,29 @@ CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
 ```
 
 Drop `--dry-run` to import. A run is safe to repeat: rows are keyed on the Hub's keys, so each run
-makes Convex match the Hub, and re-run it right before each later phase switches a reader over. It
-keeps port numbers, audit order and timestamps, Hub ids (`legacyId`, `legacyHubId`, `hubSeq`),
-creation times, password hashes and secret values (re-encrypted). It refuses, without writing that
-batch, a port another key already holds on the same Node or a binding that would duplicate one. It
-does not copy:
+copies what changed on the Hub since the last one, and re-run it right before each later phase
+switches a reader over. It keeps port numbers, audit order and timestamps, Hub ids (`legacyId`,
+`legacyHubId`, `hubSeq`), creation times, password hashes and secret values (re-encrypted).
+
+The Hub is the truth only for rows Convex has not touched. Each row the importer writes records that
+it came from the Hub; once Convex writes or deletes a row, Convex owns it and every later import
+skips it with `skipped … owned by Convex: <why>`. Per table:
+
+| Hub table              | Convex takes the row when                                                     | A later import                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `apps`                 | Convex deploys, fails over or removes the App                                 | skips the App                                                                   |
+| `routes`, `ports`      | Convex takes the App the route or port key (`<app>/…`) belongs to, as above   | skips them, so a moved or removed App keeps the placement and ports Convex gave |
+| `links`                | `erainfra links add` writes that name, or `links remove` deletes it           | skips the link, and does not restore a removed one                              |
+| `secrets`              | `erainfra env set` or `env unset` touches that variable                       | skips that variable; the App's other variables still follow the Hub             |
+| `git_bindings`         | Convex binds or unbinds that branch, or a Convex run records its result on it | skips the binding, and does not bind an unbound branch again                    |
+| `users`                | the first import creates the account                                          | never changes it, and does not bring back an account removed in Convex          |
+| Nodes                  | the first import or `erainfra nodes enroll` creates the Node                  | never changes it                                                                |
+| `deployments`, `audit` | never: Convex does not write a Hub run or a Hub audit row                     | copies a Hub run's progress, appends new audit rows                             |
+
+The importer prints a result for every row that is not unchanged. A row Convex refuses (a port
+another key holds on that Node, a branch bound by another Hub binding, an audit row out of order) is
+listed as `refused`; the rows and batches after it still apply, and the command exits non-zero.
+It does not copy:
 
 - sessions: people sign in to the dashboard again;
 - Hub API tokens (`plt_…`): the importer lists each one. Replace CLI tokens with dashboard API
