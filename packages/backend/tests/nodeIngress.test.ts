@@ -305,6 +305,53 @@ describe("gateway ingress in the Node snapshot", () => {
     ]);
   });
 
+  it("does not serve a single-container route whose port a host service or mesh link holds", async () => {
+    const { t, gw, app, other, snapshot, setRoles } = await fixture();
+    await setRoles(gw.nodeId, ["gateway"]);
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+    // Rows that outlived their containers: the Hub could not have published these ports while the
+    // registry, the Hub, the gateway proxy or a link listener held them.
+    const rows = [
+      { name: "reg", port: 61050 },
+      { name: "hub", port: 61080 },
+      { name: "proxy", port: 61090 },
+      { name: "ingress", port: 61500 },
+      { name: "linked", port: 9000 },
+      { name: "solo", port: 8080 },
+    ];
+    await t.run(async (ctx) => {
+      for (const r of rows)
+        await ctx.db.insert("appRoutes", {
+          name: r.name,
+          nodeId: app.nodeId,
+          image: `reg/${r.name}:1`,
+          port: r.port,
+          updatedAt: T0,
+        });
+      // A standalone link that listens on app-1's loopback port 9000.
+      await ctx.db.insert("meshLinks", {
+        name: "minio-app-1",
+        providerNodeId: other.nodeId,
+        providerPort: 9000,
+        consumerNodeId: app.nodeId,
+        localPort: 9000,
+        createdBy: "user",
+        updatedAt: T0,
+      });
+    });
+    try {
+      const routes = (await snapshot(gw.credential)).desired.ingress?.routes ?? [];
+      const served = routes.filter((r) => r.upstream !== null).map((r) => r.host);
+      expect(served).toEqual(["solo"]);
+      const exposures = (await snapshot(app.credential)).desired.exposures
+        .map((e) => e.name)
+        .filter((n) => n.startsWith("ingress."));
+      expect(exposures).toEqual(["ingress.solo"]);
+    } finally {
+      delete process.env.ERAINFRA_REGISTRY;
+    }
+  });
+
   it("does not serve a bare route row named after an App that routes elsewhere", async () => {
     const { t, gw, app, snapshot, setRoles } = await fixture();
     await setRoles(gw.nodeId, ["gateway"]);
@@ -448,5 +495,56 @@ describe("ingress ports and names", () => {
     expect(ingressServiceName(long).length).toBeLessThanOrEqual(64);
     expect(ingressServiceName(long)).not.toBe(ingressServiceName(other));
     expect(ingressServiceName("web")).toBe("ingress.web");
+  });
+});
+
+// The Hub fails an App over by its primary Node: it moves the App's node and its routes to the
+// survivor but keeps services[].node at the Node it left (apps/hub/src/runtime/failover.ts). The
+// importer places each routed service on its route's Node, so the gateway serves it there.
+describe("an imported App the Hub had failed over", () => {
+  it("is served at the gateway once its Node runs connect-convex", async () => {
+    const { t, gw, snapshot, setRoles } = await fixture();
+    await setRoles(gw.nodeId, ["gateway"]);
+    const batches = [
+      {
+        kind: "routes" as const,
+        rows: [
+          {
+            name: "shop",
+            node: "app-1",
+            image: "reg/shop:1",
+            port: 62001,
+            app: "shop",
+            service: "web",
+          },
+        ],
+      },
+      {
+        kind: "apps" as const,
+        rows: [
+          {
+            name: "shop",
+            node: "app-1", // failover moved the App ...
+            // ... but left the service's node where it was (other-1, the lost Node)
+            services: [
+              {
+                name: "web",
+                image: "reg/shop:1",
+                args: [],
+                port: 62001,
+                route: "shop",
+                node: "other-1",
+              },
+            ],
+            links: [],
+          },
+        ],
+      },
+      { kind: "ports" as const, rows: [{ node: "app-1", key: "shop/web", port: 62001 }] },
+    ];
+    process.env.ERAINFRA_SECRETS_MASTER_KEY = "44".repeat(32);
+    await t.action(internal.infra.hubImport.run, { batches });
+    const routes = (await snapshot(gw.credential)).desired.ingress?.routes;
+    expect(routes?.find((r) => r.host === "shop")?.upstream ?? null).not.toBeNull();
   });
 });

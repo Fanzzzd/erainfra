@@ -5,6 +5,11 @@
 #
 #   ERAINFRA_ZONE=example.com sh deploy/infra/gateway.sh
 #
+# It needs no checkout: fetch this one file from the release tag the Node's agent came from. The
+# proxy is the Infra Agent's own `gateway` command, found where `/install --convex` puts the agent
+# (/usr/local/lib/erainfra/erainfra-node) unless ERAINFRA_AGENT_BIN names another binary. Every
+# read of that binary goes through sudo, so it may sit in a directory only root can enter.
+#
 # What it sets up, and why:
 #
 #   erainfra-gateway (system user)   runs the proxy and cloudflared; not root, no Docker socket,
@@ -34,7 +39,14 @@ ZONE="${ERAINFRA_ZONE:-}"
 PORT="${ERAINFRA_GATEWAY_PORT:-61090}"
 TUNNEL="${ERAINFRA_GATEWAY_TUNNEL:-erainfra-gateway}"
 CERT="${TUNNEL_ORIGIN_CERT:-$HOME/.cloudflared/cert.pem}"
-AGENT_BIN="${ERAINFRA_AGENT_BIN:-$(command -v infra-agent || command -v portless-agent || true)}"
+CONVEX_AGENT=/usr/local/lib/erainfra/erainfra-node # where /install --role node --convex puts it
+if [ -n "${ERAINFRA_AGENT_BIN:-}" ]; then
+  AGENT_BIN=$ERAINFRA_AGENT_BIN
+elif [ -x "$CONVEX_AGENT" ]; then
+  AGENT_BIN=$CONVEX_AGENT
+else
+  AGENT_BIN=$(command -v infra-agent || command -v portless-agent || true)
+fi
 AGENT_USER="${ERAINFRA_AGENT_USER:-root}" # the user the connect-convex Infra Agent runs as
 GW_USER=erainfra-gateway
 STATE=/var/lib/erainfra-gateway
@@ -42,10 +54,12 @@ ETC=/etc/erainfra-gateway
 
 command -v systemctl >/dev/null || die "systemd is required"
 command -v cloudflared >/dev/null || die "cloudflared is required"
-[ -n "$AGENT_BIN" ] && [ -x "$AGENT_BIN" ] || die "set ERAINFRA_AGENT_BIN to the Infra Agent binary"
+# Through sudo: the connect-convex agent may live under /root (0700), which this user cannot enter.
+[ -n "$AGENT_BIN" ] && sudo test -x "$AGENT_BIN" ||
+  die "no Infra Agent at ${AGENT_BIN:-$CONVEX_AGENT}; install it with /install --role node --convex, or set ERAINFRA_AGENT_BIN"
 [ -f "$CERT" ] || die "origin cert not found: $CERT (run cloudflared login)"
 case "$PORT" in *[!0-9]*|'') die "ERAINFRA_GATEWAY_PORT must be a port number" ;; esac
-"$AGENT_BIN" gateway --help 2>&1 | grep -q -- '-routes-file' ||
+sudo "$AGENT_BIN" gateway --help 2>&1 | grep -q -- '-routes-file' ||
   die "$AGENT_BIN has no gateway command; install an Infra Agent release that includes it"
 export TUNNEL_ORIGIN_CERT="$CERT"
 
@@ -92,6 +106,14 @@ ingress:
 EOF
 sudo chown root:"$GW_USER" "$ETC/cloudflared.yml"
 sudo chmod 0640 "$ETC/cloudflared.yml"
+# The same file where this user can read it, for DNS commands. `cloudflared tunnel route dns`
+# without --config reads a default config (~/.cloudflared/config.yml, /etc/cloudflared/config.yml)
+# and routes to the tunnel that one names, so every route command passes this one, as hub.sh does.
+ROUTE_CONFIG="$(dirname "$CERT")/config-$TUNNEL.yml"
+mkdir -p "$(dirname "$ROUTE_CONFIG")"
+# shellcheck disable=SC2024 # root reads the file, this user owns the copy
+sudo cat "$ETC/cloudflared.yml" > "$ROUTE_CONFIG"
+log "DNS commands: cloudflared tunnel --config $ROUTE_CONFIG route dns --overwrite-dns $TUNNEL <hostname>"
 
 # --- units ----------------------------------------------------------------------------------------
 # Shared sandbox: no privileges, read-only system, loopback-only IP for the proxy.
@@ -166,7 +188,7 @@ sudo systemctl enable --now erainfra-gateway erainfra-gateway-tunnel
 sudo systemctl restart erainfra-gateway erainfra-gateway-tunnel
 
 if [ "${ERAINFRA_GATEWAY_ROUTE_DNS:-0}" = 1 ]; then
-  cloudflared tunnel route dns --overwrite-dns "$ID" "*.$ZONE"
+  cloudflared tunnel --config "$ROUTE_CONFIG" route dns --overwrite-dns "$ID" "*.$ZONE"
   log "*.$ZONE now points at tunnel $TUNNEL"
 fi
 
