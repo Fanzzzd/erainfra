@@ -387,8 +387,10 @@ Two things that rule is doing:
 
 - **`Expiration`** is the backstop. Below the configured prefix the layout is
   `<prefix>entries/<owner>/<repo>/<ref>/<version>/<key>` for entry documents,
-  `<prefix>blobs/<owner>/<repo>/<id>` for bytes, and the `access/` and `tombstones/` trees above, so
-  an age rule on the prefix reaches all of them. Whatever it removes is safe to remove at any moment:
+  `<prefix>blobs/<owner>/<repo>/<id>` for bytes, `<prefix>names/<owner>/<repo>` for the GitHub
+  repository ID that last saved under each name (§9), and the `access/` and `tombstones/` trees
+  above, so an age rule on the prefix reaches all of them. A `names/` record the rule removes is
+  written again by the repository's next save. Whatever it removes is safe to remove at any moment:
   an entry whose bytes are gone answers a miss, bytes whose entry is gone are never served, and an
   entry that loses its markers is adopted again by the next sweep, which restarts its idle clock.
 - **`AbortIncompleteMultipartUpload`** is not a backstop; it is the only cleanup there is for its
@@ -830,6 +832,21 @@ repositories. `delete` takes exactly one of `--key` and `--prefix`; everything i
 Exit codes: `0` done, `1` the service refused or could not be reached (its message is printed), `2`
 the command line was wrong and nothing was sent.
 
+Entries record the GitHub repository ID that saved them, and every listed entry shows it as
+`repository_id`. A name can belong to two repositories over time: one deleted or renamed away, and
+a new one created under the same name. When the entry and the job both carry an ID, a restore never returns an entry another ID saved, and the
+new repository's first save removes the earlier ID's entries. `--repository-id n` narrows `list`,
+`delete` and `clear` to one ID, for example to see what is left of the old repository before that
+first save:
+
+```bash
+cache list --repo Fanzzzd/erainfra --repository-id 1001 --format table
+```
+
+Entries saved before the service recorded IDs, and saves from a controller too old to send one,
+carry no ID. They belong to the first ID that saves under the name after the upgrade, and a job from
+a controller that sends no ID still reads by name alone.
+
 A deleted entry is a miss on the very next restore. Its bytes leave the bucket on the first sweep
 after the 40-minute grace period in §4, so `deleted_bytes` is what the repository's quota stops
 counting at once, and the bucket's usage drops within the grace period plus one sweep interval.
@@ -1163,9 +1180,11 @@ seed fetches the repository's full branches and tags in the background once, whi
 the job for the uplink; on a large repository the first job pays that cost so later ones do not.
 
 A seed larger than `ERAINFRA_CACHE_MAX_ENTRY_BYTES` is refused, and the job keeps checking out from
-GitHub. The service remembers the refusal (one small object per repository under
-`gitseed-refusals/` in the bucket) and answers that repository's seed lookups as not writable for a
-day, then two, four and at most seven days after each further refusal, so the full background
+GitHub. The service remembers the refusal under `gitseed-refusals/` in the bucket: one record for
+the repository when the refused save came from the default branch, and one per ref otherwise, so a
+pull request job that sends an oversized seed holds back only its own ref and never the default
+branch. Each record carries the repository ID, so a new repository of the same name starts with
+none. The service answers seed lookups covered by a record as not writable for a day, then two, four and at most seven days after each further refusal, so the full background
 fetch is not repeated by every job. The guest journal says
 `git mirror: the cache service refused <repo>'s last seed as too large; no job builds another
 before <time>`, and the service logs `git seed refused` with the size and the limit. Raising
