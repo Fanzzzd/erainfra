@@ -1,14 +1,93 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { attemptMetricSummaryFields, attemptMetricsFields } from "./attemptMetricsModel";
 import {
   benchmarkSummaryValidator,
   fitPolicyValidator,
   storedBenchmarkValidator,
 } from "./benchmark";
+import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
+import { infraTables, permissionRoleValidator } from "./infra/tables";
+import {
+  flakyTestFields,
+  testCaseFields,
+  testReportFields,
+  testReportHashFields,
+} from "./testReportsModel";
+
+import { nodeTransportTables } from "./infra/nodeCommandModel";
+
+// The rollback functions have no alertRules module (its evaluation needs v0.2.0-rc.11's
+// fleetObservation), so the validator its table stores is copied here verbatim.
+const alertConditionValidator = v.union(
+  // A Worker that has heartbeated before and has been silent for `minutes`.
+  v.object({ kind: v.literal("worker-offline"), minutes: v.number() }),
+  // An active Profile with no Worker the scheduler would place work on.
+  v.object({ kind: v.literal("profile-no-ready-worker") }),
+  // A Worker reporting degraded or failed readiness for an active Profile.
+  v.object({ kind: v.literal("profile-readiness-degraded") }),
+  // An active Profile whose scale set and another active Profile's can take each other's jobs
+  // (scaleSetLabels.ts). The control plane refuses a registration that adds such a conflict, so
+  // this fires for one that predates that check, until an operator relabels one side.
+  v.object({ kind: v.literal("profile-label-conflict") }),
+  // The oldest unassigned Attempt on a Profile has waited `minutes`.
+  v.object({ kind: v.literal("queue-backlog"), minutes: v.number() }),
+  // At least `percent` of the Attempts that finished in the window failed, once `minAttempts`
+  // have finished. Cancelled Attempts and ones without a result count toward neither side.
+  v.object({
+    kind: v.literal("failure-rate"),
+    percent: v.number(),
+    windowMinutes: v.number(),
+    minAttempts: v.number(),
+  }),
+  // The newest `count` finished Attempts on a Profile all failed. Cancellations are skipped.
+  v.object({ kind: v.literal("consecutive-failures"), count: v.number() }),
+  // An Attempt on the Profile has been running for `minutes`.
+  v.object({ kind: v.literal("attempt-duration"), minutes: v.number() }),
+  // No controller has held an active Profile's GitHub message session for `minutes`: it stopped
+  // reporting, or reports but cannot get the session. A Profile no controller has ever reported
+  // for is not tracked (controllerLiveness.ts), so controllers older than the heartbeat never fire.
+  v.object({ kind: v.literal("controller-silent"), minutes: v.number() }),
+  // An online infrastructure Node has reported for `minutes` that it cannot run commands: its
+  // execution journal is full or unwritable, or its command requests fail. Such a Node keeps
+  // heartbeating, so worker-offline and failover never see it. Nodes belong to no Profile, so a
+  // Profile scope does not narrow this rule.
+  // A Node stays blocked while it is silent: its last heartbeat said so and nothing since says
+  // otherwise, so an open incident does not resolve because the Node died.
+  v.object({ kind: v.literal("node-commands-blocked"), minutes: v.number() }),
+  // An infrastructure Node that has heartbeated over the Node API (connect-convex) and has been
+  // silent for `minutes`. A Node whose credentials are all revoked has been retired by an
+  // operator and is not tracked. Nodes belong to no Profile, so a Profile scope does not narrow it.
+  v.object({ kind: v.literal("node-offline"), minutes: v.number() }),
+);
 
 export default defineSchema({
   ...authTables,
+
+  // Convex Auth's users table, extended with the permission role the Hub's accounts carried
+  // (infra/policy.ts). A row written before roles existed has no `role` and reads as `owner`,
+  // which is what every such account could do. `createdAt` and `legacyHubId` are set for
+  // accounts the Hub importer created, whose Hub creation time and id are kept.
+  users: defineTable({
+    name: v.optional(v.string()),
+    image: v.optional(v.string()),
+    email: v.optional(v.string()),
+    emailVerificationTime: v.optional(v.number()),
+    phone: v.optional(v.string()),
+    phoneVerificationTime: v.optional(v.number()),
+    isAnonymous: v.optional(v.boolean()),
+    role: v.optional(permissionRoleValidator),
+    createdAt: v.optional(v.number()),
+    legacyHubId: v.optional(v.string()),
+  })
+    .index("email", ["email"])
+    .index("phone", ["phone"])
+    .index("by_legacyHubId", ["legacyHubId"])
+    .index("by_role", ["role"]),
+
+  ...infraTables,
+  ...nodeTransportTables,
 
   // Single-use permission to create exactly one dashboard account. Sign-up is
   // closed unless the caller presents a live grant: `bootstrap` grants are
@@ -24,6 +103,29 @@ export default defineSchema({
     // Which admin issued an invite. Absent for bootstrap grants, which by
     // definition predate every account.
     invitedBy: v.optional(v.id("users")),
+    // The permission role the invited account gets. Absent on bootstrap grants
+    // (the first account is always the owner) and on invites issued before
+    // roles existed, which created accounts with every permission.
+    role: v.optional(permissionRoleValidator),
+  }).index("by_tokenHash", ["tokenHash"]),
+
+  // Bearer credentials for the operator API (/api/v1/*) and `GET /metrics`,
+  // minted by a signed-in operator in the dashboard. `scope` decides which
+  // (apiTokenPolicy.ts). Only the SHA-256 of a token is stored, like
+  // signupGrants, so a database export holds nothing a client could present;
+  // `hint` is its first characters so the dashboard can tell tokens apart.
+  // Several may be live at once, so a token is rotated without a gap. A revoked
+  // row is kept, not deleted, so the dashboard still shows what was revoked and
+  // when.
+  apiTokens: defineTable({
+    name: v.string(),
+    scope: v.union(v.literal("read"), v.literal("admin"), v.literal("metrics")),
+    tokenHash: v.string(),
+    hint: v.string(),
+    createdBy: v.optional(v.id("users")),
+    createdAt: v.number(),
+    lastUsedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
   }).index("by_tokenHash", ["tokenHash"]),
 
   // Failed-bootstrap throttle. At most one row: bootstrap is a single
@@ -80,11 +182,92 @@ export default defineSchema({
     fitPolicy: v.optional(fitPolicyValidator),
     minRunners: v.number(),
     maxRunners: v.number(),
+    // What this Profile's guests may reach. Absent means public egress, which
+    // is what every Profile registered before the field existed means, so no
+    // migration backfills it. Stored normalized; see egress.ts.
+    egress: v.optional(profileEgressValidator),
+    // Where the scale set is registered and how: the GitHub repository, organization or enterprise
+    // URL, the runner group and the labels. A controller started with the Profile's settings
+    // publishes them; a standby controller on a Worker has no settings of its own and reads them
+    // here (ADR 0014). Absent on Profiles registered before the lease, which a standby therefore
+    // cannot serve until a controller with the settings registers the Profile once more.
+    githubConfigUrl: v.optional(v.string()),
+    githubCacheFacts: v.optional(v.boolean()),
+    runnerGroup: v.optional(v.string()),
+    labels: v.optional(v.array(v.string())),
+    // Host labels a Worker must carry, every one, to serve this Profile (ADR 0017). Absent or
+    // empty means any compatible Worker, which is what every Profile registered before the field
+    // meant. Stored normalized (hostLabels.ts).
+    workerLabels: v.optional(v.array(v.string())),
     state: v.union(v.literal("active"), v.literal("paused")),
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
     .index("by_state", ["state"]),
+
+  // One row per Profile: which controller may serve it (ADR 0014). The holder is a credential (the
+  // shared controller token, or one Worker's machine token) plus a random instance id the
+  // controller process picks when it starts, so a restarted process is a new holder. `epoch`
+  // increases on every change of holder; every controller write carries the epoch it holds, and a
+  // write with any other epoch is refused. `expiresAt` is this deployment's clock. A row with no
+  // holder is free, and its `expiresAt` says since when, which the network head start counts from.
+  controllerLeases: defineTable({
+    profile: v.string(),
+    epoch: v.number(),
+    holder: v.optional(
+      v.object({
+        credential: v.union(v.literal("controllerToken"), v.literal("machine")),
+        machineId: v.optional(v.id("machines")),
+        hostname: v.string(),
+        instance: v.string(),
+      }),
+    ),
+    acquiredAt: v.optional(v.number()),
+    renewedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+  }).index("by_profile", ["profile"]),
+
+  // One row per controller process: a Profile and the host it runs on. Kept out of `profiles` on
+  // purpose: a write every 30 s per controller would otherwise invalidate every query that reads
+  // Profiles, including the scheduler's. A Profile with no row has never been served by a
+  // controller that reports, so its liveness is unknown rather than down (fleetObservation.ts).
+  controllerHeartbeats: defineTable({
+    profile: v.string(),
+    // Credential-derived row identity. A Worker cannot overwrite another controller's report by
+    // choosing its hostname. Absent on the pre-lease rows, which their next report upgrades.
+    reporter: v.optional(v.string()),
+    hostname: v.string(),
+    version: v.string(),
+    scaleSetId: v.optional(v.number()),
+    sessionState: v.union(
+      v.literal("starting"),
+      v.literal("standby"),
+      v.literal("listening"),
+      v.literal("conflict"),
+      v.literal("stopped"),
+    ),
+    // The lease as this controller saw it when it reported: held, under which epoch, or waited
+    // for. Absent from controllers built before the lease.
+    leaseRole: v.optional(v.union(v.literal("holder"), v.literal("standby"))),
+    leaseEpoch: v.optional(v.number()),
+    // Controller clock: when GitHub last answered the long poll, and when the process started.
+    lastMessageAt: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+    assignedJobs: v.number(),
+    runningJobs: v.number(),
+    lastError: v.optional(v.string()),
+    // Which credential authenticated the newest report: one of the two configured controller
+    // tokens, so a token rotation can see every controller move to the new one before the old one
+    // is withdrawn, or the machine token of the Worker the controller runs on.
+    tokenSlot: v.union(v.literal("current"), v.literal("next"), v.literal("machine")),
+    // Control-plane clock, which is what staleness is judged by.
+    firstSeenAt: v.number(),
+    receivedAt: v.number(),
+    // The newest report in which this controller held the session.
+    lastListeningAt: v.optional(v.number()),
+  })
+    .index("by_profile_hostname", ["profile", "hostname"])
+    .index("by_profile_reporter", ["profile", "reporter"]),
 
   registrationTokens: defineTable({
     token: v.string(),
@@ -147,6 +330,18 @@ export default defineSchema({
         labels: v.array(v.string()),
         runnerName: v.optional(v.string()),
         conclusion: v.optional(v.string()),
+      }),
+    ),
+    // A push delivery for push-to-deploy (infra/git.ts). Recorded here rather
+    // than in a table of its own so one X-GitHub-Delivery id is seen once
+    // whichever surface it is for, and reconcile's retention covers both.
+    push: v.optional(
+      v.object({
+        repo: v.string(),
+        branch: v.string(),
+        sha: v.string(),
+        outcome: v.union(v.literal("queued"), v.literal("no-binding")),
+        deploymentId: v.optional(v.id("appDeployments")),
       }),
     ),
     attempts: v.number(),
@@ -312,6 +507,13 @@ export default defineSchema({
     owner: v.optional(v.string()),
     jobId: v.optional(v.string()),
     workflowRef: v.optional(v.string()),
+    /**
+     * The workflow run's head_branch, which the controller reads from GitHub's REST API after
+     * JobStarted: the branch or tag the run is for, as `owner:branch` when the run's code comes from
+     * another repository. Unlike workflowRef it is never a called workflow's ref. Absent when the
+     * controller predates it or could not read the run.
+     */
+    headBranch: v.optional(v.string()),
     displayName: v.optional(v.string()),
     workflowRunId: v.optional(v.number()),
     eventName: v.optional(v.string()),
@@ -322,9 +524,21 @@ export default defineSchema({
     lastError: v.optional(v.string()),
     cancelReason: v.optional(v.string()),
     // Set when EraInfra settles an Attempt without a GitHub JobCompleted
-    // event. Its owning controller retries idempotent runner deletion, then
-    // acknowledges this tombstone.
+    // event, or retires one whose Runner may be online (`retirement`). Its
+    // owning controller retries idempotent runner deletion, then acknowledges
+    // it with completeRunnerCleanup.
     runnerCleanupPending: v.optional(v.boolean()),
+    // An Attempt EraInfra is ending while its Runner may be online
+    // (attemptRetirement.ts). It keeps its state and executor until GitHub
+    // confirms the Runner is deleted; a JobStarted first clears it. Absent on
+    // every Attempt written before it existed, which read as not retiring.
+    retirement: v.optional(
+      v.object({
+        outcome: v.union(v.literal("cancelled"), v.literal("failed")),
+        reason: v.string(),
+        requestedAt: v.number(),
+      }),
+    ),
   })
     .index("by_runnerName", ["runnerName"])
     .index("by_profile", ["profile"])
@@ -335,7 +549,53 @@ export default defineSchema({
     // The finishedAt column exists for the Worker poll: it bounds the
     // completed range to the executor-drain window instead of the machine's
     // whole history. Live-state lookups use the (machineId, state) prefix.
-    .index("by_machine_state_finishedAt", ["machineId", "state", "finishedAt"]),
+    .index("by_machine_state_finishedAt", ["machineId", "state", "finishedAt"])
+    // Right-sizing for one repository (rightsize.ts) reads its finished Attempts by name instead
+    // of scanning every measured one. Not staged: settled Attempts are deleted 30 days after they
+    // finish (reconcile.ts), so the backfill is one table of a month's jobs and fits inside the
+    // push, where a staged index would leave the query unusable until a second deploy.
+    .index("by_repo_finishedAt", ["repo", "finishedAt"]),
+
+  // One bounded resource series per Attempt (at most 360 points per column), replaced whole by
+  // every upload from the Worker that ran it. Read only by the Attempt page.
+  attemptMetrics: defineTable(attemptMetricsFields).index("by_attempt", ["attemptId"]),
+
+  // The series' summary and upload bookkeeping, small enough for the Runs page to read one per
+  // listed Attempt. by_updatedAt drives the 14-day retention purge.
+  attemptMetricSummaries: defineTable(attemptMetricSummaryFields)
+    .index("by_attempt", ["attemptId"])
+    .index("by_updatedAt", ["updatedAt"]),
+
+  // One row per Attempt that reported JUnit results (testReportsModel.ts): totals and the revision
+  // that joins it to other runs of the same code, about 1 kB, so the Tests page can read hundreds.
+  // Kept 30 days; by_recordedAt drives the purge. The failing indexes serve the failing-runs list
+  // without reading the passing runs between its rows.
+  testReports: defineTable(testReportFields)
+    .index("by_attempt", ["attemptId"])
+    .index("by_recordedAt", ["recordedAt"])
+    .index("by_repository_recordedAt", ["repository", "recordedAt"])
+    .index("by_repository_revision", ["repository", "revision"])
+    .index("by_failing_recordedAt", ["failing", "recordedAt"])
+    .index("by_repository_failing_recordedAt", ["repository", "failing", "recordedAt"]),
+
+  // A report's test-id hashes (up to 246 kB), read only by a later upload of the same revision.
+  testReportHashes: defineTable(testReportHashFields).index("by_report", ["reportId"]),
+
+  // The cases a report listed: failures, errors, flaky cases and its slowest passes (at most 500).
+  // by_report_status reads one report's failures without its passes; by_report_testHash finds the
+  // case behind an earlier run's failing hash.
+  testCases: defineTable(testCaseFields)
+    .index("by_report", ["reportId"])
+    .index("by_report_status", ["reportId", "status"])
+    .index("by_report_testHash", ["reportId", "testHash"])
+    .index("by_status_recordedAt", ["status", "recordedAt"])
+    .index("by_repository_status_recordedAt", ["repository", "status", "recordedAt"]),
+
+  // One row per repository and test seen both failing and passing, written when a report arrives.
+  flakyTests: defineTable(flakyTestFields)
+    .index("by_repository_test", ["repository", "testId"])
+    .index("by_repository_lastSeen", ["repository", "lastSeenAt"])
+    .index("by_lastSeen", ["lastSeenAt"]),
 
   // Credentials are deliberately absent from every scheduler/reconcile scan.
   // A Worker point-reads this row exactly once while claiming its Attempt.
@@ -514,14 +774,102 @@ export default defineSchema({
         policyHash: v.optional(v.string()),
         subnet: v.optional(v.string()),
         egressMode: v.optional(v.string()),
+        // Absent on evidence from a runtime that predates Profile egress;
+        // that evidence still proves a public Profile, and nothing else.
+        egress: v.optional(egressEvidenceValidator),
       }),
     ),
   }).index("by_machine_profile", ["machineId", "profile"]),
+
+  // What one Attempt's guest talked to, as the Worker's host measured it, for
+  // audit and allowlist Profiles. Kept out of the attempts row so the hot
+  // scheduler and Worker reads never carry it; deleted with its Attempt.
+  attemptEgress: defineTable({
+    attemptId: v.id("attempts"),
+    machineId: v.id("machines"),
+    profile: v.string(),
+    recordedAt: v.number(),
+    record: egressRecordValidator,
+  }).index("by_attempt", ["attemptId"]),
 
   benchmarkEvidence: defineTable({
     machineId: v.id("machines"),
     benchmark: storedBenchmarkValidator,
   }).index("by_machine", ["machineId"]),
+
+  // Where alert notifications go. The URL and signing secret are write-only: dashboard queries
+  // return `urlHint`, never `url` or `signingSecret`. A Slack incoming-webhook URL is itself the
+  // credential, which is why the URL is treated as a secret for every destination kind.
+  alertDestinations: defineTable({
+    name: v.string(),
+    kind: v.union(v.literal("webhook"), v.literal("slack")),
+    url: v.string(),
+    urlHint: v.string(),
+    // HMAC-SHA256 key for generic webhooks, generated here and shown once. Stored raw because
+    // signing needs it; only the delivery action reads it.
+    signingSecret: v.optional(v.string()),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }),
+
+  // Operator-authored alert rules, evaluated every minute by the alert cron.
+  alertRules: defineTable({
+    name: v.string(),
+    condition: alertConditionValidator,
+    // Limit the rule to one Profile. Absent means every Profile (and every Worker, for
+    // worker-offline).
+    profile: v.optional(v.string()),
+    // How long the condition must hold before the incident fires, like Prometheus `for:`.
+    forMinutes: v.number(),
+    // Minimum gap between firing notifications for the same rule and subject.
+    cooldownMinutes: v.number(),
+    mutedUntil: v.optional(v.number()),
+    destinationIds: v.array(v.id("alertDestinations")),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_enabled", ["enabled"]),
+
+  // One row per time a rule's condition held for a subject (a Worker, a Profile, or a
+  // Profile/Worker pair). At most one pending or firing row exists per rule and subject; that is
+  // the dedup key. Resolved rows are kept for 30 days so cooldown and history can read them.
+  alertIncidents: defineTable({
+    ruleId: v.id("alertRules"),
+    subject: v.string(),
+    status: v.union(v.literal("pending"), v.literal("firing"), v.literal("resolved")),
+    summary: v.string(),
+    // When the condition was first observed for this incident.
+    since: v.number(),
+    firedAt: v.optional(v.number()),
+    resolvedAt: v.optional(v.number()),
+    // Set when a firing notification was enqueued. Absent while muted or cooling down; a resolve
+    // is only announced for an incident whose firing was.
+    firingNotifiedAt: v.optional(v.number()),
+    lastEvaluatedAt: v.number(),
+  })
+    .index("by_rule_status", ["ruleId", "status"])
+    .index("by_rule_subject", ["ruleId", "subject"])
+    .index("by_status_resolvedAt", ["status", "resolvedAt"]),
+
+  // Outbound notifications. The evaluator only inserts a row and schedules the delivery action,
+  // so a slow or failing receiver never holds up a mutation. `body` is built once, so every retry
+  // sends the same bytes; the signature is computed per attempt because it covers a timestamp.
+  alertDeliveries: defineTable({
+    destinationId: v.id("alertDestinations"),
+    incidentId: v.optional(v.id("alertIncidents")),
+    event: v.union(v.literal("firing"), v.literal("resolved"), v.literal("test")),
+    body: v.string(),
+    status: v.union(v.literal("pending"), v.literal("delivered"), v.literal("failed")),
+    attempts: v.number(),
+    createdAt: v.number(),
+    nextAttemptAt: v.optional(v.number()),
+    deliveredAt: v.optional(v.number()),
+    lastStatusCode: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_destination", ["destinationId"])
+    .index("by_status_createdAt", ["status", "createdAt"]),
 
   // Work queue for deleting JIT runner registrations that were created on
   // GitHub but never consumed. Mutations cannot call GitHub, so they enqueue
