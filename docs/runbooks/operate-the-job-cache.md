@@ -455,14 +455,18 @@ journalctl -u erainfra-cache-service -f
 | `job facts could not be loaded from the store`                    | the bucket did not answer the facts read; the request was refused, the next retries |
 | `job facts not written to the store; ...`                         | a push was answered `503` and the controller retries it; **investigate the store**  |
 | `expired job facts deleted from the store`                        | the eviction sweep removed facts whose job window closed                            |
+| `build cache lookup degraded to a miss`                           | a Turborepo or Go lookup did not get an answer from the store in budget (§10)       |
+| `build cache save could not ...`                                  | a Turborepo or Go upload failed at the store; the build carries on (§10)            |
+| `refused a build cache write to a read-only token`                | rule 2 for build caches: a fork pull request's turbo or Go upload (§10)             |
 
 ### Metrics and the alert worth having
 
-| series                                            | means                                                          |
-| ------------------------------------------------- | -------------------------------------------------------------- |
-| `erainfra_cache_requests_refused_total{reason}`   | requests answered `401`; `reason` is one of the five below     |
-| `erainfra_cache_job_facts_loaded_total`           | facts read back from the bucket, which is what a restart costs |
-| `erainfra_cache_job_facts_persist_failures_total` | pushes answered `503` because the bucket refused the write     |
+| series                                                | means                                                                                                           |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `erainfra_cache_requests_refused_total{reason}`       | requests answered `401`; `reason` is one of the five below                                                      |
+| `erainfra_cache_job_facts_loaded_total`               | facts read back from the bucket, which is what a restart costs                                                  |
+| `erainfra_cache_job_facts_persist_failures_total`     | pushes answered `503` because the bucket refused the write                                                      |
+| `erainfra_cache_build_requests_total{system,outcome}` | Turborepo and Go build cache requests (§10); `system` is `turbo` or `go`, `outcome` is `hit`, `miss` or `saved` |
 
 `reason` is `no_token`, `bad_token` (forged, expired, or a signing key mismatch), `unknown_facts`
 (the controller's push for the runner never landed, or the facts expired), `facts_unreadable` (the
@@ -834,3 +838,107 @@ remembered per process; behind a balancer with several replicas, one request cou
 per other replica within the five minutes, and only as the same operation. The exact signing steps
 are in `apps/cache-service/internal/adminapi`. A rejected request answers `401` and logs
 `cache admin request rejected` with the reason.
+
+---
+
+## 10. Build-system caches: Turborepo and Go
+
+The cache service also serves Turborepo's remote cache and Go's build cache
+([ADR 0018](../adr/0018-serve-build-system-caches-through-a-guest-proxy.md)). Nothing extra is
+deployed: on a Firecracker Profile where §8 is done, every guest runs a build cache proxy on
+`127.0.0.1:7457` and the image carries `erainfra-gocacheprog`.
+
+| build tool | workflow change                                  | what the runner's environment carries                                      |
+| ---------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `turbo`    | none                                             | `TURBO_API=http://127.0.0.1:7457`, `TURBO_TOKEN`, `TURBO_TEAM`             |
+| `go`       | `GOCACHEPROG: erainfra-gocacheprog` in the `env` | `ERAINFRA_BUILD_CACHE_URL=http://127.0.0.1:7457` (read only by the helper) |
+
+`TURBO_TOKEN` is a placeholder, not a credential. The proxy presents the runner bearer itself, the
+same one the interceptor presents, so a job can do through it exactly what it can through
+`actions/cache`.
+
+The Go helper needs Go 1.24 or later; older toolchains ignore `GOCACHEPROG`. It keeps Go's cache on
+local disk under `$GOCACHE/erainfra-gocacheprog`, consults that first, and fetches a miss from the
+cache service. It checks every download against its output ID, which cmd/go defines as the SHA-256
+of the bytes, so a corrupted entry is a miss and never reaches the compiler. Uploads run behind the
+build and finish before the go command exits. Go caches test results through the same protocol, so
+with the helper on, a test that passed in an earlier job of the repository with the same inputs is
+not run again. Add `-count=1` to a test that depends on a database, the network or the clock.
+`setup-go`'s own cache of `GOCACHE` already behaves this way. `ERAINFRA_GOCACHEPROG_VERBOSE=1` prints
+one line of hit, miss and upload counts per go command.
+
+```yaml
+jobs:
+  build:
+    runs-on: erainfra-4vcpu-ubuntu-2404
+    env:
+      GOCACHEPROG: erainfra-gocacheprog
+    steps:
+      - uses: actions/checkout@<commit-sha>
+      - uses: actions/setup-go@<commit-sha>
+        with:
+          go-version: "1.27"
+          cache: false # the helper replaces it
+      - run: go test ./...
+```
+
+### Scope, quota and eviction
+
+A turbo artifact is an entry with key `turbo/<hash>`, a Go output one with key `go/<action ID>`.
+Each version names the build system and the guest's CPU architecture, so an arm64 job never restores
+an amd64 job's outputs. Everything else is the same as for `actions/cache` entries:
+
+- the scope rules in "One key, three holders" (§8): a branch reads its own ref, its pull request's
+  base and the default branch; a sibling branch is never readable; a fork pull request reads and
+  writes nothing;
+- the per-repository quota and the idle and LRU eviction in §4, counted together with the
+  repository's `actions/cache` entries;
+- `admin list` and `admin delete` in §9. `cache delete --repo owner/name --prefix turbo/` clears
+  one repository's Turborepo artifacts, `--prefix go/` its Go outputs.
+
+A Go build saves one entry per compiled package, so a repository's entry count grows faster than
+its byte count. The quota is in bytes, and listing pages through all of them.
+
+### What jobs see when it breaks
+
+| what broke                                       | `turbo`                                                                | the Go helper                                                   |
+| ------------------------------------------------ | ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| cache service unreachable                        | one `Remote caching unavailable` warning, tasks run                    | one `building with the local cache only` line, packages compile |
+| the controller's facts for the runner not in yet | the same warning; reads miss, uploads are dropped                      | the same line, naming the `401`                                 |
+| store slow or down                               | a miss for that artifact (the service answers `404` within its budget) | a miss for that package                                         |
+| a fork pull request uploads                      | nothing printed; the upload is dropped in the guest                    | one `may read the build cache but not write to it` line         |
+| a download that does not match its hash          | turbo's own check, if `remoteCache.signature` is on                    | one `discarded` line, and a miss                                |
+
+The proxy writes one line to the guest journal per state change (`journalctl -u runner-center-guest`):
+`build cache proxy: the cache service is unreachable ...`, `... answers again`, `... answered 401`,
+and `... may read the cache but not write to it`. After an unreachable service it answers locally
+for 30 seconds before it tries again, so a dead service costs each job one connection timeout, not
+one per task.
+
+### When it is not used
+
+- **A workflow sets its own `TURBO_API`.** A step's `env` overrides the runner's, so turbo talks to
+  that server and the proxy sees nothing.
+- **A workflow sets its own `TURBO_TOKEN` but not `TURBO_API`.** It meant Vercel, turbo's default.
+  The proxy forwards those requests to `https://vercel.com/api` untouched and never sends that token
+  to the cache service. A Profile on allowlist egress needs `vercel.com` on its list for this.
+- **A repository points turbo at its own server in `.turbo/config.json`.** The guest's `TURBO_API`
+  takes precedence over that file. Set `TURBO_API` in the workflow to the same server.
+- **`container:` jobs and `docker build`.** A Docker bridge does not reach guest loopback, so turbo
+  inside a container prints `Remote caching disabled` and runs its tasks.
+- **Opting one workflow out.** `TURBO_CACHE: local:rw` in the `env` turns turbo's remote cache off;
+  leaving `GOCACHEPROG` unset leaves Go on its own cache.
+
+### Verify
+
+Run a turbo build twice on the Profile, the second time after any change that does not touch the
+packages. The second run's summary says `Cached: N cached, N total`, the service log shows no
+`build cache ...` errors, and `erainfra_cache_build_requests_total{system="turbo",outcome="hit"}`
+rises. For Go, set `ERAINFRA_GOCACHEPROG_VERBOSE=1` once: the second job's summary line shows remote
+hits and few or no misses. `cache list --repo owner/name --prefix turbo/` (§9) shows the artifacts.
+
+### Not served
+
+Bazel's and Buck2's remote caches (REAPI over gRPC, or Bazel's HTTP cache) are not implemented.
+Blacksmith serves them; here a Bazel build uses its local disk cache or a remote cache it reaches
+over allowed egress.

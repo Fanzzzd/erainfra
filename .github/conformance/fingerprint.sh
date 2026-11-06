@@ -761,6 +761,25 @@ else
   emit cache_host_pinned no
 fi
 
+# What a guest with the build cache proxy up hands every job: turbo's three
+# remote cache variables and the address the opt-in Go helper reads, and the
+# helper itself on PATH. Reduced to set/unset and present/absent for the same
+# reason as above. The helper is not in the tool list below because it has no
+# --version: run with no cmd/go on its stdin, it would wait for a request.
+for build_var in TURBO_API TURBO_TOKEN TURBO_TEAM ERAINFRA_BUILD_CACHE_URL; do
+  build_key=env_$(printf '%s' "$build_var" | tr '[:upper:]' '[:lower:]')
+  if [ -n "$(printenv "$build_var" 2>/dev/null || true)" ]; then
+    emit "$build_key" set
+  else
+    emit "$build_key" unset
+  fi
+done
+if have erainfra-gocacheprog; then
+  emit tool_erainfra_gocacheprog_present yes
+else
+  emit tool_erainfra_gocacheprog_present no
+fi
+
 # ---------------------------------------------------------------------------
 # Tooling a workflow may reasonably assume
 # ---------------------------------------------------------------------------

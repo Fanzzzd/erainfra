@@ -200,7 +200,7 @@ func reportWarmReady() error {
 // also why an Environment= line on runner-center-guest.service can never reach
 // a job (#110 measured exactly that: LANG unset, glibc answering
 // ANSI_X3.4-1968 while the image's /etc/default/locale said C.UTF-8).
-func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string) []string {
+func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string, buildCacheEnv []string) []string {
 	env := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=" + home,
@@ -235,6 +235,10 @@ func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath str
 	if cacheTrustAnchorPath != "" {
 		env = append(env, guestcache.TrustEnv(cacheTrustAnchorPath)...)
 	}
+	// When the build cache proxy is up: TURBO_API, TURBO_TOKEN and TURBO_TEAM,
+	// so turbo uses the cache with no workflow change, and the address the
+	// opt-in Go helper reads. No credential among them (BuildProxy.Env).
+	env = append(env, buildCacheEnv...)
 	return env
 }
 
@@ -299,6 +303,20 @@ func run(ctx context.Context) error {
 			cacheTrustAnchorPath = caPath
 		}
 	}
+	// The build cache proxy needs only the cache service and the bearer, not
+	// the redirect, so it comes up even when the redirect did not. Best-effort
+	// the same way: without it, turbo and Go build exactly as they would on a
+	// guest with no cache.
+	var buildCacheEnv []string
+	if metadata.CacheServiceURL != "" && metadata.CacheRunnerToken != "" {
+		proxy, proxyErr := startBuildCacheProxy(metadata)
+		if proxyErr != nil {
+			fmt.Fprintf(os.Stderr, "build cache proxy disabled: %v\n", proxyErr)
+		} else {
+			defer closeBuildCacheProxy(proxy)
+			buildCacheEnv = proxy.Env()
+		}
+	}
 	configureGuestDocker(ctx, metadata.RegistryMirrorURL, cacheTrustAnchorPath, runnerUser.HomeDir, int(uid), int(gid))
 
 	var command *exec.Cmd
@@ -314,7 +332,7 @@ func run(ctx context.Context) error {
 	command.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups},
 	}
-	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username, cacheTrustAnchorPath)
+	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username, cacheTrustAnchorPath, buildCacheEnv)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start GitHub runner: %w", err)
 	}

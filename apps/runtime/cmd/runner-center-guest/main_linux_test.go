@@ -64,7 +64,7 @@ func TestResolverConfigRejectsAnEmptyPublication(t *testing.T) {
 
 func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
-	env := runnerEnv(metadata, "/home/runner", "runner", "")
+	env := runnerEnv(metadata, "/home/runner", "runner", "", nil)
 
 	want := map[string]string{
 		"LANG":                           "C.UTF-8",
@@ -84,7 +84,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 			t.Fatalf("runner env %s = %q, want %q", name, got[name], value)
 		}
 	}
-	for _, absent := range []string{"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"} {
+	for _, absent := range []string{"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RESULTS_URL", "ACTIONS_RUNTIME_TOKEN", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "TURBO_API", "TURBO_TOKEN", "TURBO_TEAM", "ERAINFRA_BUILD_CACHE_URL", "GOCACHEPROG"} {
 		if _, present := got[absent]; present {
 			t.Fatalf("runner env carries %s with no cache endpoint configured", absent)
 		}
@@ -92,7 +92,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 
 	metadata.CacheURL = "https://cache.internal:8080"
 	metadata.CacheServiceV2 = "false"
-	env = runnerEnv(metadata, "/home/runner", "runner", "")
+	env = runnerEnv(metadata, "/home/runner", "runner", "", nil)
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "ACTIONS_CACHE_URL=https://cache.internal:8080") ||
 		!strings.Contains(joined, "ACTIONS_CACHE_SERVICE_V2=false") {
@@ -110,7 +110,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 func TestRunnerEnvCarriesTheCacheTrustAnchorWhenRedirected(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
 
-	env := runnerEnv(metadata, "/home/runner", "runner", "/usr/local/share/ca-certificates/erainfra-cache.crt")
+	env := runnerEnv(metadata, "/home/runner", "runner", "/usr/local/share/ca-certificates/erainfra-cache.crt", nil)
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
 		"NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/erainfra-cache.crt",
@@ -122,5 +122,31 @@ func TestRunnerEnvCarriesTheCacheTrustAnchorWhenRedirected(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("redirected runner env missing %s: %q", want, joined)
 		}
+	}
+}
+
+// A guest whose build cache proxy came up hands the runner the proxy's
+// environment: turbo's three variables and the Go helper's address.
+// GOCACHEPROG itself is never set here; the Go helper is a workflow's
+// one-line opt-in.
+func TestRunnerEnvCarriesTheBuildCacheProxy(t *testing.T) {
+	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
+	build := []string{
+		"TURBO_API=http://" + buildCacheAddr,
+		"TURBO_TOKEN=erainfra-build-cache",
+		"TURBO_TEAM=erainfra",
+		"ERAINFRA_BUILD_CACHE_URL=http://" + buildCacheAddr,
+	}
+	joined := strings.Join(runnerEnv(metadata, "/home/runner", "runner", "", build), "\n")
+	for _, want := range build {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("runner env missing %s: %q", want, joined)
+		}
+	}
+	if strings.Contains(joined, "GOCACHEPROG") {
+		t.Fatalf("the guest set GOCACHEPROG, which is the workflow's to opt into: %q", joined)
+	}
+	if !strings.HasPrefix(buildCacheAddr, "127.0.0.1:") {
+		t.Fatalf("the build cache proxy listens on %s, want guest loopback only", buildCacheAddr)
 	}
 }

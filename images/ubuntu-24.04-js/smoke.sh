@@ -8,6 +8,7 @@ out_matches() { local pattern_flags=$1 pattern=$2; shift 2; local out; out=$("$@
 
 test -x /opt/runner/run.sh
 test -x /usr/local/bin/runner-center-guest
+test -x /usr/local/bin/erainfra-gocacheprog
 # The guest kernel execs /sbin/init directly; a container that only has systemd
 # under /usr/lib panics on boot before anything else in this file matters.
 test -x /sbin/init

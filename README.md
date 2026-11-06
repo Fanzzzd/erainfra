@@ -201,6 +201,17 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   Any job can instead send its own cache and artifact traffic straight to GitHub for the rest of
   the job: `sudo sed -i '/# erainfra-cache-interceptor$/d' /etc/hosts`.
 
+- **Build-system caches.** The same service backs Turborepo's remote cache and Go's build cache
+  ([ADR 0018](docs/adr/0018-serve-build-system-caches-through-a-guest-proxy.md)). The guest runs a
+  proxy on `127.0.0.1:7457` that presents the runner's bearer, and hands the runner `TURBO_API`,
+  `TURBO_TEAM` and a placeholder `TURBO_TOKEN`, so `turbo run` caches remotely with no workflow
+  change. Go opts in with one line, `GOCACHEPROG: erainfra-gocacheprog`, which the image ships.
+  Turborepo artifacts and Go outputs are ordinary entries: the same scope rules, quota, eviction
+  and admin commands apply, and a fork pull request reads them without writing. A workflow that
+  sets its own `TURBO_API` or `TURBO_TOKEN` keeps its own remote cache. If the cache service is
+  down, turbo prints one warning and the Go helper one line, and both build uncached.
+  `container:` jobs and `docker build` do not reach the proxy. Details are in
+  [the runbook](docs/runbooks/operate-the-job-cache.md#10-build-system-caches-turborepo-and-go).
 - **Registry mirror.** Workers can also give guests a Docker Hub pull-through mirror
   ([runbook](docs/runbooks/operate-the-registry-mirror.md)). dockerd and buildx builders use it
   with no workflow change, and fall back to Docker Hub when it is down.
@@ -208,6 +219,19 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   the interception on, following
   [docs/runbooks/operate-the-job-cache.md](docs/runbooks/operate-the-job-cache.md). Until every
   step there is done, jobs use GitHub's cache exactly as before.
+
+Blacksmith's cache paths, and what serves each one here on a Firecracker Profile with the cache on:
+
+| Blacksmith                                         | EraInfra                                                                                                                                           | workflow change               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| Actions cache (`actions/cache`, `setup-*` caching) | cache service through the in-guest interceptor                                                                                                     | none                          |
+| Docker layer cache (`setup-docker-builder`)        | BuildKit `type=gha` against the same service                                                                                                       | one buildx `driver-opts` line |
+| Container image caching                            | Docker Hub pull-through registry mirror                                                                                                            | none                          |
+| Turborepo build cache                              | Turborepo Remote Cache API through the guest's build proxy                                                                                         | none                          |
+| Go build cache (`GOCACHEPROG`)                     | `erainfra-gocacheprog`, local disk first, then the service                                                                                         | one `env` line                |
+| Bazel and Buck2 remote cache                       | not served                                                                                                                                         | —                             |
+| Git checkout cache (`useblacksmith/checkout`)      | not served                                                                                                                                         | —                             |
+| Sticky disks (`useblacksmith/stickydisk`)          | not served: a writable disk that outlives the job breaks the per-Attempt boundary ([ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md)) | —                             |
 
 ### Egress policy
 
@@ -902,8 +926,11 @@ jobs:
 Node is already in the Image Release's toolcache, so `setup-node` validates/selects it without a
 network download. `actions/cache` and the `cache:` input of the setup actions work unchanged: on a
 Firecracker Worker with [the job cache](#the-job-cache) turned on, EraInfra's cache service answers
-them, and everywhere else GitHub's cache does, counted against the repository's Actions storage. A
-remote build cache such as Turborepo's works over allowed egress. Any cache can still be slower than
+them, and everywhere else GitHub's cache does, counted against the repository's Actions storage.
+With the job cache on, `turbo run` also caches in EraInfra's cache service with no change, and Go
+does with `GOCACHEPROG: erainfra-gocacheprog`
+([build-system caches](docs/runbooks/operate-the-job-cache.md#10-build-system-caches-turborepo-and-go)).
+Another remote build cache works over allowed egress. Any cache can still be slower than
 a warm immutable image, so prefer prewarming the Image Release for anything that changes rarely.
 A Profile on allowlist egress needs every cache endpoint a job uses on its list:
 `RC_EGRESS_PRESETS=github` covers `actions/cache`, and EraInfra's own cache service is allowed
