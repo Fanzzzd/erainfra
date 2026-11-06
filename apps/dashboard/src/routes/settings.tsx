@@ -366,6 +366,7 @@ const CONDITION_LABEL: Record<ConditionKind, string> = {
   "attempt-duration": "Attempt running too long",
   "controller-silent": "No controller listening",
   "node-commands-blocked": "Node unable to run commands",
+  "node-offline": "Node offline",
 };
 
 const CONDITION_ORDER = Object.keys(CONDITION_LABEL) as ConditionKind[];
@@ -384,6 +385,7 @@ const DEFAULT_MINUTES: Partial<Record<ConditionKind, string>> = {
   "attempt-duration": "60",
   "controller-silent": "3",
   "node-commands-blocked": "10",
+  "node-offline": "5",
 };
 
 function conditionForm(condition: Condition | undefined): ConditionForm {
@@ -403,6 +405,7 @@ function buildCondition(kind: ConditionKind, form: ConditionForm): Condition {
     case "attempt-duration":
     case "controller-silent":
     case "node-commands-blocked":
+    case "node-offline":
       return { kind, minutes: Number(form.minutes) };
     case "failure-rate":
       return {
@@ -542,6 +545,7 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
             {kind === "controller-silent" &&
               number("minutes", "No listening controller for (minutes)")}
             {kind === "node-commands-blocked" && number("minutes", "Blocked for (minutes)")}
+            {kind === "node-offline" && number("minutes", "No heartbeat for (minutes)")}
             {kind === "consecutive-failures" && number("count", "Failed Attempts in a row")}
             {kind === "failure-rate" && (
               <>

@@ -1,6 +1,7 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api";
+import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
 import { attemptOutcome } from "../convex/fleetObservation";
 import { formatSampleValue, quantile, renderExposition } from "../convex/metricsFormat";
@@ -375,22 +376,43 @@ describe("GET /metrics exposition", () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
       const base = { createdAt: NOW - 60 * MINUTE, source: "enrolled" as const };
-      await ctx.db.insert("nodes", {
-        ...base,
-        name: "edge-1",
-        lastSeenAt: NOW - 5_000,
-        commandsBlocked: "journal_full",
-        commandsBlockedSince: NOW - 90_000,
-        journalKeys: 10_000,
-        journalKeyLimit: 10_000,
-      });
-      await ctx.db.insert("nodes", {
-        ...base,
-        name: "edge-2",
-        lastSeenAt: NOW - 5_000,
-        journalKeys: 3,
-        journalKeyLimit: 10_000,
-      });
+      const credential = async (nodeId: Id<"nodes">, revokedAt?: number) =>
+        await ctx.db.insert("nodeCredentials", {
+          nodeId,
+          tokenHash: `hash-${nodeId}`,
+          hint: "erainfra_node_abcd",
+          createdAt: NOW - 60 * MINUTE,
+          ...(revokedAt === undefined ? {} : { revokedAt }),
+        });
+      await credential(
+        await ctx.db.insert("nodes", {
+          ...base,
+          name: "edge-1",
+          lastSeenAt: NOW - 5_000,
+          commandsBlocked: "journal_full",
+          commandsBlockedSince: NOW - 90_000,
+          journalKeys: 10_000,
+          journalKeyLimit: 10_000,
+        }),
+      );
+      await credential(
+        await ctx.db.insert("nodes", {
+          ...base,
+          name: "edge-2",
+          lastSeenAt: NOW - 5_000,
+          journalKeys: 3,
+          journalKeyLimit: 10_000,
+        }),
+      );
+      // Silent, with a live credential: offline.
+      await credential(
+        await ctx.db.insert("nodes", { ...base, name: "edge-3", lastSeenAt: NOW - 10 * MINUTE }),
+      );
+      // Retired: an operator revoked every credential, so it is no longer tracked.
+      await credential(
+        await ctx.db.insert("nodes", { ...base, name: "old-edge", lastSeenAt: NOW - 10 * MINUTE }),
+        NOW - 9 * MINUTE,
+      );
       // Only the Hub drives this one: no Node API heartbeat, so no series.
       await ctx.db.insert("nodes", { ...base, name: "hub-box" });
     });
@@ -411,6 +433,8 @@ describe("GET /metrics exposition", () => {
     expect(valueOf(parsed, "erainfra_node_journal_keys", { node: "edge-2" })).toBe(3);
     expect(valueOf(parsed, "erainfra_node_journal_key_limit", { node: "edge-2" })).toBe(10_000);
     expect(parsed.series.some((s) => s.labels.node === "hub-box")).toBe(false);
+    expect(valueOf(parsed, "erainfra_node_online", { node: "edge-3" })).toBe(0);
+    expect(parsed.series.some((s) => s.labels.node === "old-edge")).toBe(false);
   });
 
   it("counts open firing incidents per enabled rule, with zero for a quiet rule", async () => {

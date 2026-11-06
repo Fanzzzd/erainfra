@@ -4,6 +4,7 @@ import { isSchedulableReadiness } from "./attemptScheduler";
 import { queueWaitMs } from "./attempts";
 import { controllerLiveness, type ControllerLiveness } from "./controllerLiveness";
 import { profileEgressOf, type ProfileEgress } from "./egress";
+import { hasLiveCredential } from "./infra/nodes";
 import { isNodeLive } from "./infra/policy";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
@@ -132,7 +133,8 @@ export type ObservedMachine = {
 /**
  * An infrastructure Node that has heartbeated over the Node API (connect-convex), with the command
  * health its Infra Agent reports. A Node the Hub still drives sends no such heartbeat and is left
- * out.
+ * out, and so is a Node whose credentials are all revoked: an operator retired it, and it can no
+ * longer heartbeat, so it is neither offline nor blocked.
  */
 export type ObservedNode = {
   name: string;
@@ -357,26 +359,32 @@ export async function loadFleetObservation(
 
   const nodeRows = await ctx.db.query("nodes").take(OBSERVATION_DIMENSION_LIMIT);
   if (nodeRows.length === OBSERVATION_DIMENSION_LIMIT) dimensionsTruncated = true;
-  const nodes = nodeRows
-    .flatMap((node): ObservedNode[] => {
-      const lastSeenAt = node.lastSeenAt;
-      if (lastSeenAt === undefined) return [];
-      return [
-        {
-          name: node.name,
-          online: isNodeLive(lastSeenAt, now),
-          lastSeenAt,
-          ...(node.commandsBlocked === undefined
-            ? {}
-            : {
-                commandsBlocked: node.commandsBlocked,
-                commandsBlockedSince: node.commandsBlockedSince ?? lastSeenAt,
-              }),
-          ...(node.journalKeys === undefined ? {} : { journalKeys: node.journalKeys }),
-          ...(node.journalKeyLimit === undefined ? {} : { journalKeyLimit: node.journalKeyLimit }),
-        },
-      ];
-    })
+  const nodes = (
+    await Promise.all(
+      nodeRows.map(async (node): Promise<ObservedNode[]> => {
+        const lastSeenAt = node.lastSeenAt;
+        if (lastSeenAt === undefined || !(await hasLiveCredential(ctx, node._id))) return [];
+        return [
+          {
+            name: node.name,
+            online: isNodeLive(lastSeenAt, now),
+            lastSeenAt,
+            ...(node.commandsBlocked === undefined
+              ? {}
+              : {
+                  commandsBlocked: node.commandsBlocked,
+                  commandsBlockedSince: node.commandsBlockedSince ?? lastSeenAt,
+                }),
+            ...(node.journalKeys === undefined ? {} : { journalKeys: node.journalKeys }),
+            ...(node.journalKeyLimit === undefined
+              ? {}
+              : { journalKeyLimit: node.journalKeyLimit }),
+          },
+        ];
+      }),
+    )
+  )
+    .flat()
     .toSorted((left, right) => left.name.localeCompare(right.name));
 
   return {

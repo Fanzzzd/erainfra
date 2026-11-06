@@ -6,6 +6,7 @@ import { v, type Infer } from "convex/values";
 import { CONTROLLER_OFFLINE_AFTER_MS, controllerSilentForMs } from "./controllerLiveness";
 import type { FleetObservation, ObservedProfile } from "./fleetObservation";
 import { COMMANDS_BLOCKED_REASONS } from "./infra/nodeCommandModel";
+import { NODE_SILENCE_MS } from "./infra/policy";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 export const alertConditionValidator = v.union(
@@ -37,7 +38,13 @@ export const alertConditionValidator = v.union(
   // execution journal is full or unwritable, or its command requests fail. Such a Node keeps
   // heartbeating, so worker-offline and failover never see it. Nodes belong to no Profile, so a
   // Profile scope does not narrow this rule.
+  // A Node stays blocked while it is silent: its last heartbeat said so and nothing since says
+  // otherwise, so an open incident does not resolve because the Node died.
   v.object({ kind: v.literal("node-commands-blocked"), minutes: v.number() }),
+  // An infrastructure Node that has heartbeated over the Node API (connect-convex) and has been
+  // silent for `minutes`. A Node whose credentials are all revoked has been retired by an
+  // operator and is not tracked. Nodes belong to no Profile, so a Profile scope does not narrow it.
+  v.object({ kind: v.literal("node-offline"), minutes: v.number() }),
 );
 
 export type AlertCondition = Infer<typeof alertConditionValidator>;
@@ -59,6 +66,7 @@ export const ALERT_CONDITION_KINDS = [
   "attempt-duration",
   "controller-silent",
   "node-commands-blocked",
+  "node-offline",
 ] as const satisfies readonly AlertConditionKind[];
 
 /** The threshold a new controller-silent rule starts from. */
@@ -83,6 +91,14 @@ export function conditionError(condition: AlertCondition): string | undefined {
       return integerIn(condition.minutes, floor, 7 * 24 * 60)
         ? undefined
         : `Silent minutes must be a whole number from ${floor} to 10080`;
+    }
+    case "node-offline": {
+      // Below the missed-heartbeat window that deploys and failover use, one late heartbeat
+      // would page.
+      const floor = Math.ceil(NODE_SILENCE_MS / 60_000);
+      return integerIn(condition.minutes, floor, 7 * 24 * 60)
+        ? undefined
+        : `Offline minutes must be a whole number from ${floor} to 10080`;
     }
     case "queue-backlog":
     case "attempt-duration":
@@ -252,23 +268,43 @@ export function evaluateCondition(
     case "node-commands-blocked": {
       const thresholdMs = condition.minutes * 60_000;
       return observation.nodes.flatMap((node) => {
+        const reason = node.commandsBlocked;
         const since = node.commandsBlockedSince;
-        // An offline Node's last report is stale; failover and the Nodes page cover it.
-        if (!node.online || node.commandsBlocked === undefined || since === undefined) return [];
-        if (now - since < thresholdMs) return [];
+        if (reason === undefined || since === undefined) return [];
+        // A silent Node is judged by what it last said: blocked for as long as it was when its
+        // heartbeats stopped. That keeps an open incident open (the Node never said it recovered)
+        // without a stale report starting a new one; node-offline pages for the silence itself.
+        const blockedFor = (node.online ? now : node.lastSeenAt) - since;
+        if (blockedFor < thresholdMs) return [];
         const keys =
           node.journalKeys === undefined
             ? ""
             : ` Its journal holds ${node.journalKeys}${
                 node.journalKeyLimit === undefined ? "" : ` of ${node.journalKeyLimit}`
               } keys.`;
+        const why = describeBlocked(reason);
         return [
           {
             subject: node.name,
-            summary: `Node ${node.name} has not been able to run commands for ${formatAge(now - since)}: ${describeBlocked(node.commandsBlocked)}.${keys}`,
+            summary: node.online
+              ? `Node ${node.name} has not been able to run commands for ${formatAge(blockedFor)}: ${why}.${keys}`
+              : `Node ${node.name} could not run commands for ${formatAge(blockedFor)} before its heartbeats stopped ${formatAge(now - node.lastSeenAt)} ago: ${why}.${keys}`,
           },
         ];
       });
+    }
+    case "node-offline": {
+      const thresholdMs = condition.minutes * 60_000;
+      return observation.nodes
+        .filter((node) => !node.online && now - node.lastSeenAt >= thresholdMs)
+        .map((node) => ({
+          subject: node.name,
+          summary: `Node ${node.name} has not sent a heartbeat for ${formatAge(now - node.lastSeenAt)}; its Infra Agent or host is down, or it cannot reach Convex.${
+            node.commandsBlocked === undefined
+              ? ""
+              : ` Its last heartbeat said it could not run commands: ${describeBlocked(node.commandsBlocked)}.`
+          }`,
+        }));
     }
     case "attempt-duration": {
       const thresholdMs = condition.minutes * 60_000;
@@ -335,6 +371,8 @@ export function describeCondition(condition: AlertCondition) {
       return `No controller listening for ${condition.minutes}m`;
     case "node-commands-blocked":
       return `Node unable to run commands for ${condition.minutes}m`;
+    case "node-offline":
+      return `Node offline for ${condition.minutes}m`;
   }
 }
 

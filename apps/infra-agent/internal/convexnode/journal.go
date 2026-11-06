@@ -3,20 +3,23 @@ package convexnode
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 )
 
 const maxJournalBytes = 16 * 1024 * 1024
 
-// maxJournalKeys bounds the keys the journal holds at once. Compaction keeps a healthy Node far
-// below it: only commands Convex can still re-deliver, and outcomes an operator has to check,
-// stay. Reaching it takes that many unchecked outcomes (see ErrJournalFull).
+// maxJournalKeys bounds the keys the journal holds at once. Compaction keeps a Node far below it:
+// only commands Convex can still re-deliver, and commands Convex does not know, stay. Reaching it
+// takes that many commands Convex has not confirmed finished (see ErrJournalFull).
 var maxJournalKeys = 10000
 
 // maxJournalGarbage is how many superseded and settled lines the file may carry before it is
@@ -35,8 +38,8 @@ const (
 	outcomeSuccess  = "success"
 	outcomeFailure  = "failure"
 	outcomeUnknown  = "unknown"
-	// outcomeSettled removes a key. It is written once Convex has acknowledged the key's outcome
-	// on a terminal command, or when an operator releases the key after checking it.
+	// outcomeSettled removes a key. It is written once Convex holds the key's command terminal,
+	// so it can never be delivered again, or when an operator releases the key after checking it.
 	outcomeSettled = "settled"
 )
 
@@ -49,14 +52,14 @@ type record struct {
 }
 
 // ErrJournalFull is returned for a new journaled command when the journal holds maxJournalKeys
-// keys after compaction. Every key left is either a command Convex can still deliver or an
-// outcome nobody has confirmed, so the Node refuses new work rather than forget one of them.
+// keys after compaction. Every key left is a command Convex can still deliver, does not know, or
+// has not answered for, so the Node refuses new work rather than forget one of them.
 var ErrJournalFull = errors.New("journal key limit reached")
 
 type journalFullError struct{ keys, unknown int }
 
 func (e journalFullError) Error() string {
-	return fmt.Sprintf("%v: %d keys are held, %d of them unknown outcomes; new builds, deploys and operations are refused until an operator checks them (stop the Infra Agent, run `infra-agent journal list`, then `infra-agent journal release`; see docs/infra-management.md, \"When the journal is full\")", ErrJournalFull, e.keys, e.unknown)
+	return fmt.Sprintf("%v: %d keys are held, %d of them unknown outcomes, and Convex has not finished their commands; new builds, deploys and operations are refused until it does or an operator checks them (stop the Infra Agent, run `infra-agent journal list`, then `infra-agent journal release`; see docs/infra-management.md, \"When the journal is full\")", ErrJournalFull, e.keys, e.unknown)
 }
 func (e journalFullError) Is(target error) bool { return target == ErrJournalFull }
 
@@ -73,23 +76,33 @@ func (e journalError) Unwrap() error { return e.err }
 // is ever stored.
 //
 // A key exists so that a re-delivered command replays its recorded outcome instead of repeating
-// its effect. Convex never re-delivers a terminal command (nodeCommands.claim refuses one, and no
-// path moves a terminal row back to pending or deletes it), so a key is settled, and forgotten,
-// exactly when Convex has accepted its success or failure: either the report returned 200, or a
-// status sweep finds the command terminal with that same outcome. An unknown outcome is never
-// settled automatically, nor is a key whose command ended without Convex accepting its outcome
-// (cancelled while it ran, for one); those wait for an operator.
+// its effect, and for nothing else. Convex never re-delivers a terminal command
+// (nodeCommands.claim refuses one, no path moves a terminal row back to pending or deletes it,
+// and an idempotency key names one row per Node forever), so a key is settled, and forgotten,
+// exactly when Convex holds its command terminal: the report returned 200, or a status sweep
+// finds the command success, failure, unknown or cancelled. That includes an unknown outcome and
+// a command cancelled while it ran. Convex shows those to the operator where they act on them
+// (the command row, and the deploy run that failed with "inspect the Node"), and a key kept here
+// would only fill the journal until the Node refused all new work; the sweep logs any outcome
+// that differs from what Convex recorded before it forgets the key.
 type Journal struct {
 	dir     string
 	lock    *os.File
 	file    *os.File
 	records map[string]record
-	// review holds keys a sweep found terminal in Convex without the outcome recorded here. They
-	// are never re-delivered and never settled automatically, so later sweeps skip them.
+	// review holds keys a sweep found missing from Convex. Nothing confirms they cannot be
+	// delivered again, so they are kept for an operator, and later sweeps skip them.
 	review map[string]bool
 	bytes  int64
 	lines  int
+	// broken is set when a failed write left the file in a state this process cannot vouch for.
+	// Appends are refused until the agent restarts and Open reads back what the disk holds.
+	broken error
 }
+
+// journalLogf receives the journal's warnings: a torn record recovered at open. The Infra Agent
+// logs to stderr, which systemd keeps.
+var journalLogf = log.Printf
 
 // JournalEntry is one key as `infra-agent journal list` prints it.
 type JournalEntry struct {
@@ -153,11 +166,11 @@ func OpenJournal(dir string) (*Journal, error) {
 	if stat.Size() > maxJournalBytes {
 		return fail(errors.New("journal size limit reached"))
 	}
-	records, lines, err := parseJournal(j.file, false)
+	scan, err := scanJournal(j.file)
 	if err != nil {
 		return fail(err)
 	}
-	j.records, j.lines, j.bytes = records, lines, stat.Size()
+	j.records, j.lines, j.bytes = scan.records, scan.lines, stat.Size()
 	if len(j.records) > maxJournalKeys {
 		return fail(journalFullError{keys: len(j.records), unknown: j.unknownCount()})
 	}
@@ -165,8 +178,12 @@ func OpenJournal(dir string) (*Journal, error) {
 	if err := syncJournalDirectory(dir); err != nil {
 		return fail(err)
 	}
-	if j.lines-len(j.records) > 0 {
-		// Start from a file holding only live records.
+	if scan.recovered != "" {
+		journalLogf("connect-convex: WARNING: journal %s: %s", filepath.Join(dir, journalFile), scan.recovered)
+	}
+	if scan.recovered != "" || j.lines-len(j.records) > 0 {
+		// Start from a file holding only live records. After a recovery this is also what takes
+		// the torn record off the disk, atomically, before anything is appended after it.
 		if err := j.rewrite(); err != nil {
 			return fail(err)
 		}
@@ -193,45 +210,128 @@ func (j *Journal) openFile() error {
 	return nil
 }
 
-// parseJournal reads every record. With tolerateTail, an incomplete last line (a write in
-// progress, seen by a reader that does not hold the lock) is ignored instead of refused.
-func parseJournal(f io.Reader, tolerateTail bool) (map[string]record, int, error) {
-	records := make(map[string]record)
-	lines := 0
-	reader := bufio.NewReader(io.LimitReader(f, maxJournalBytes+1))
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err == io.EOF && len(line) == 0 {
+// journalScan is what scanJournal read: the live records, how many complete lines held them, and,
+// when the last record was torn, what was done about it.
+type journalScan struct {
+	records   map[string]record
+	lines     int
+	recovered string
+}
+
+// recordStart reads the key and command id from a damaged record. json.Marshal writes a record's
+// fields in declaration order, so an intact start of the line holds both.
+var recordStart = regexp.MustCompile(`"key":("(?:[^"\\\x00-\x1f]|\\.)*"),"id":("(?:[^"\\\x00-\x1f]|\\.)*")`)
+
+// scanJournal reads every record. A damaged record anywhere but the end is refused: that is not
+// an interrupted append but a damaged file, and nothing says what the record held.
+//
+// A damaged last record is what power loss during an append leaves, and it is recovered here, the
+// way a write-ahead log drops a torn final record (etcd's WAL repair). Whether dropping it is safe
+// depends on what the record was. The agent acts on a record only once its write and fsync have
+// returned, and every record after a key's first one only moves the key towards a state Convex
+// holds (an outcome after `accepted`, `settled` after a reported outcome):
+//
+//   - The line has no newline. Its write never completed, so its fsync never returned and the
+//     agent never acted on it; it is dropped whatever it was. A dropped `accepted` is a command
+//     that never started, so running it if Convex delivers it again is correct. A dropped outcome
+//     leaves the key's `accepted`, which reads back as unknown: the command is reported unknown
+//     and never runs again. A dropped `settled` brings its key back until the next report or
+//     sweep settles it again. A dropped binding record is written again by the next heartbeat.
+//   - The line ends in a newline but does not parse. The file's size reached the disk ahead of
+//     some of its data, or the record was damaged after it was written, so the agent may have
+//     acted on it. If its key and command id can still be read, a key the journal already holds
+//     keeps its earlier state (the lost record could only have moved it towards what Convex
+//     holds), and a key it did not hold, which could be an `accepted` whose effect started, is
+//     kept as unknown, so its command never runs again. A record whose key cannot be read is
+//     refused: nothing says which command must not run again.
+//
+// ListJournal reads without the lock while the agent may be appending, so there an unterminated
+// last line is usually a write in progress; it is skipped the same way.
+func scanJournal(f io.Reader) (journalScan, error) {
+	data, err := io.ReadAll(io.LimitReader(f, maxJournalBytes+1))
+	if err != nil {
+		return journalScan{}, err
+	}
+	if len(data) > maxJournalBytes {
+		return journalScan{}, errors.New("journal size limit reached")
+	}
+	scan := journalScan{records: make(map[string]record)}
+	for offset := 0; offset < len(data); {
+		end := bytes.IndexByte(data[offset:], '\n')
+		if end < 0 {
+			scan.recovered = fmt.Sprintf("dropped the torn record at line %d, which an interrupted append left without its newline: %s. Its write never finished, so the agent never acted on it and the key keeps its earlier state", scan.lines+1, quoteRecord(data[offset:]))
 			break
 		}
-		if err != nil {
-			if tolerateTail && err == io.EOF {
-				break
+		line := data[offset : offset+end+1]
+		offset += len(line)
+		r, err := parseRecord(line)
+		if err == nil {
+			if err = scan.apply(r); err != nil {
+				return journalScan{}, err
 			}
-			return nil, 0, errors.New("incomplete journal record: outcome is unknown; manual recovery required")
+			scan.lines++
+			continue
 		}
-		lines++
-		var r record
-		if len(line) > 1024 || json.Unmarshal(line, &r) != nil || r.Key == "" || r.ID == "" {
-			return nil, 0, errors.New("invalid journal record")
+		if offset < len(data) {
+			return journalScan{}, fmt.Errorf("journal record at line %d is damaged (%v) and is not the last one, so it is not an interrupted append; the Infra Agent will not guess what it held (see docs/infra-management.md, \"When the journal is damaged\")", scan.lines+1, err)
 		}
-		if r.Outcome == outcomeAccepted {
-			r.Outcome = outcomeUnknown
+		match := recordStart.FindSubmatch(line)
+		var key, id string
+		if match == nil || json.Unmarshal(match[1], &key) != nil || json.Unmarshal(match[2], &id) != nil || key == "" || id == "" {
+			return journalScan{}, fmt.Errorf("the last journal record, line %d, is damaged and its key cannot be read: %s. The command it belonged to may have started, so the Infra Agent will not guess (see docs/infra-management.md, \"When the journal is damaged\")", scan.lines+1, quoteRecord(line))
 		}
-		old, exists := records[r.Key]
-		if exists && old.ID != r.ID {
-			return nil, 0, errors.New("journal idempotency collision")
-		}
-		switch r.Outcome {
-		case outcomeSuccess, outcomeFailure, outcomeUnknown:
-			records[r.Key] = r
-		case outcomeSettled:
-			delete(records, r.Key)
+		old, held := scan.records[key]
+		switch {
+		case held && old.ID != id:
+			return journalScan{}, errors.New("journal idempotency collision")
+		case held, key == bindingKey:
+			scan.recovered = fmt.Sprintf("dropped the damaged last record at line %d, for key %q: %s. The key keeps its earlier state", scan.lines+1, key, quoteRecord(line))
 		default:
-			return nil, 0, errors.New("invalid journal outcome")
+			scan.records[key] = record{Key: key, ID: id, Outcome: outcomeUnknown}
+			scan.recovered = fmt.Sprintf("the damaged last record at line %d is the first for key %q, command %s: %s. Its command may have started, so the key is kept as unknown and the command will not run again", scan.lines+1, key, id, quoteRecord(line))
 		}
 	}
-	return records, lines, nil
+	return scan, nil
+}
+
+func parseRecord(line []byte) (record, error) {
+	var r record
+	if len(line) > 1024 {
+		return r, errors.New("record too long")
+	}
+	if json.Unmarshal(line, &r) != nil || r.Key == "" || r.ID == "" {
+		return r, errors.New("invalid journal record")
+	}
+	switch r.Outcome {
+	case outcomeAccepted, outcomeSuccess, outcomeFailure, outcomeUnknown, outcomeSettled:
+		return r, nil
+	default:
+		return r, errors.New("invalid journal outcome")
+	}
+}
+
+func (s *journalScan) apply(r record) error {
+	if r.Outcome == outcomeAccepted {
+		r.Outcome = outcomeUnknown
+	}
+	if old, exists := s.records[r.Key]; exists && old.ID != r.ID {
+		return errors.New("journal idempotency collision")
+	}
+	if r.Outcome == outcomeSettled {
+		delete(s.records, r.Key)
+	} else {
+		s.records[r.Key] = r
+	}
+	return nil
+}
+
+// quoteRecord shows damaged record bytes in a log line. Records hold only keys, command ids and
+// outcomes, never payloads or secrets.
+func quoteRecord(b []byte) string {
+	if len(b) > 256 {
+		return fmt.Sprintf("%q... (%d bytes)", b[:256], len(b))
+	}
+	return fmt.Sprintf("%q", b)
 }
 
 // Close leaves a file of live records only, so an older Infra Agent, which does not know the
@@ -298,6 +398,9 @@ func (j *Journal) append(key, id, outcome string) error {
 			return j.fullError()
 		}
 	}
+	if j.broken != nil {
+		return journalError{fmt.Errorf("an earlier write could not be undone (%v); restart the Infra Agent so it reads back what the disk holds", j.broken)}
+	}
 	if j.file == nil {
 		return journalError{errors.New("journal is closed")}
 	}
@@ -311,13 +414,21 @@ func (j *Journal) append(key, id, outcome string) error {
 		return journalError{errors.New("journal size limit reached")}
 	}
 	n, err := j.file.Write(b)
+	if err == nil && n != len(b) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = j.file.Sync()
+	}
 	if err != nil {
-		return journalError{err}
-	}
-	if n != len(b) {
-		return journalError{fmt.Errorf("journal short write")}
-	}
-	if err = j.file.Sync(); err != nil {
+		// A partial line left behind would sit in the middle of the file once the next record
+		// lands after it, which Open refuses; and after a failed fsync the kernel may have dropped
+		// the line's pages without saying so again. Either way the agent did not act on this
+		// record, so the file is rewritten from memory, which holds exactly what it acted on. If
+		// even that fails, nothing more is appended until a restart.
+		if rewriteErr := j.rewrite(); rewriteErr != nil {
+			j.broken = err
+		}
 		return journalError{err}
 	}
 	j.bytes += int64(n)
@@ -334,12 +445,11 @@ func (j *Journal) append(key, id, outcome string) error {
 	return nil
 }
 
-// settle forgets a key whose outcome Convex has accepted on a terminal command. Only a success
-// or failure is settled: an unknown outcome stays for an operator, whatever Convex recorded.
-// It reports whether the key was settled.
+// settle forgets a key once Convex has accepted its outcome, which makes the command terminal:
+// success, failure and unknown alike. It reports whether the key was settled.
 func (j *Journal) settle(key, id string) (bool, error) {
 	r, ok := j.records[key]
-	if !ok || r.ID != id || key == bindingKey || (r.Outcome != outcomeSuccess && r.Outcome != outcomeFailure) {
+	if !ok || r.ID != id || !settleable(key, r) {
 		return false, nil
 	}
 	if err := j.append(key, id, outcomeSettled); err != nil {
@@ -355,7 +465,7 @@ func (j *Journal) settleMany(keys []string) error {
 	removed := 0
 	for _, key := range keys {
 		r, ok := j.records[key]
-		if !ok || key == bindingKey || (r.Outcome != outcomeSuccess && r.Outcome != outcomeFailure) {
+		if !ok || !settleable(key, r) {
 			continue
 		}
 		delete(j.records, key)
@@ -368,12 +478,19 @@ func (j *Journal) settleMany(keys []string) error {
 	return j.rewrite()
 }
 
-// sweepCandidates are the keys a status sweep can settle: a success or failure not yet found
-// to be terminal under another outcome. Unknown outcomes are never candidates.
+// settleable is whether a key may be forgotten once Convex holds its command terminal. The
+// binding is never a command. An `accepted` record in memory is the command this process is
+// running now (a restart reads it back as unknown), so it waits for its own outcome.
+func settleable(key string, r record) bool {
+	return key != bindingKey && r.Outcome != outcomeAccepted
+}
+
+// sweepCandidates are the keys a status sweep asks Convex about: every command key not already
+// found missing from Convex.
 func (j *Journal) sweepCandidates() []record {
 	var out []record
 	for key, r := range j.records {
-		if key == bindingKey || j.review[key] || (r.Outcome != outcomeSuccess && r.Outcome != outcomeFailure) {
+		if !settleable(key, r) || j.review[key] {
 			continue
 		}
 		out = append(out, r)
@@ -458,12 +575,12 @@ func ListJournal(dir string) ([]JournalEntry, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	records, _, err := parseJournal(f, true)
+	scan, err := scanJournal(f)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]JournalEntry, 0, len(records))
-	for key, r := range records {
+	out := make([]JournalEntry, 0, len(scan.records))
+	for key, r := range scan.records {
 		if key == bindingKey {
 			continue
 		}
@@ -474,8 +591,10 @@ func ListJournal(dir string) ([]JournalEntry, error) {
 }
 
 // ReleaseJournalKeys forgets keys an operator has checked by hand. It takes the journal's lock,
-// so the Infra Agent must be stopped. After this, a re-delivery of one of these commands would
-// run it again; release a key only once Convex shows its command finished or cancelled.
+// so the Infra Agent must be stopped. Like the agent, it recovers a torn last record first (see
+// scanJournal), so power loss during an append never leaves the operator without this way out.
+// After this, a re-delivery of one of these commands would run it again; release a key only once
+// Convex shows its command finished or cancelled.
 func ReleaseJournalKeys(dir string, keys []string) error {
 	if err := privateStateDir(dir, false); err != nil {
 		return err
