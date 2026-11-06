@@ -1,5 +1,7 @@
 // What happens to work already placed when a Worker loses a host label or a Profile gains a pin,
 // and to label conflicts stored before the control plane refused them (ADR 0017).
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api";
@@ -7,7 +9,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import { evaluateCondition } from "../convex/alertRules";
 import { loadFleetObservation } from "../convex/fleetObservation";
 import schema from "../convex/schema";
-import { parseRows, report } from "../scripts/profile-label-conflicts";
+import { exitCode, parseRows, report } from "../scripts/profile-label-conflicts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 type Harness = TestConvex<typeof schema>;
@@ -408,11 +410,62 @@ describe("a scale-set label conflict stored before the control plane refused the
         .map((row) => JSON.stringify(row))
         .join("\n"),
     );
-    const { conflicts, lines } = report(rows);
-    expect(conflicts.map((c) => `${c.profile}/${c.other}`)).toEqual(["gpu/plain"]);
-    expect(lines[0]).toBe("1 conflicting pair(s) among 2 active Profiles:");
-    expect(report(parseRows("[]")).lines).toEqual(["No conflicts among 0 active Profiles."]);
+    const result = report(rows);
+    expect(result.conflicts.map((c) => `${c.profile}/${c.other}`)).toEqual(["gpu/plain"]);
+    expect(result.lines[0]).toBe("1 conflicting pair(s) among 2 active Profiles:");
+    expect(exitCode(result)).toBe(1);
     expect(() => parseRows('{"name":"x"}')).toThrow("row 1 is not a Profile");
+  });
+
+  // `npx convex data … | script` with no pipefail hands the script nothing when the export fails.
+  it.each(["", "\n", "[]"])(
+    "refuses an export with no rows (%j) rather than passing it",
+    (text) => {
+      expect(() => parseRows(text)).toThrow("read no Profile rows");
+    },
+  );
+
+  it("names the Profiles whose labels the export does not show, and does not call them safe", () => {
+    // What a backend that never stored labels exports: their controllers' RC_LABELS are unknown.
+    const result = report(
+      parseRows(
+        [
+          { name: "rc-linux-js", scaleSetName: "rc-linux-js", state: "active" },
+          { name: "rc-e2e", scaleSetName: "rc-e2e", labels: [], state: "active" },
+          { name: "labelled", scaleSetName: "labelled", labels: ["labelled"], state: "active" },
+          { name: "gone", scaleSetName: "gone", state: "paused" },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n"),
+      ),
+    );
+    expect(result.conflicts).toEqual([]);
+    expect(result.unlabeled).toEqual(["rc-e2e", "rc-linux-js"]);
+    expect(result.warnings[0]).toBe(
+      "2 active Profile(s) carry no labels in this export: rc-e2e, rc-linux-js.",
+    );
+    expect(exitCode(result)).toBe(3);
+    const labelled = report(
+      parseRows('[{"name":"a","scaleSetName":"a","labels":["a"],"state":"active"}]'),
+    );
+    expect(labelled.warnings).toEqual([]);
+    expect(exitCode(labelled)).toBe(0);
+  });
+
+  it("exits 2 on an empty pipe and 3 on unlabelled rows when run as the runbook runs it", () => {
+    const script = fileURLToPath(new URL("../scripts/profile-label-conflicts.ts", import.meta.url));
+    const run = (input: string) =>
+      spawnSync(process.execPath, ["--experimental-strip-types", script], {
+        input,
+        encoding: "utf8",
+      });
+    const empty = run("");
+    expect(empty.status, empty.stderr).toBe(2);
+    expect(empty.stderr).toContain("read no Profile rows");
+    const unlabeled = run('{"name":"rc-e2e","scaleSetName":"rc-e2e","state":"active"}\n');
+    expect(unlabeled.status, unlabeled.stderr).toBe(3);
+    expect(unlabeled.stdout).toContain("No conflicts among 1 active Profiles.");
+    expect(unlabeled.stderr).toContain("carry no labels in this export: rc-e2e.");
   });
 });
 

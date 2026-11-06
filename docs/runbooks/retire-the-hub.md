@@ -76,8 +76,10 @@ instead.
 
    Do not set `ERAINFRA_REGISTRY_NODE` yet. It names the Node whose registry every other Node
    reaches over the mesh, and `work-remote` joins the mesh only in step 5, which sets it then.
-   Until then nothing is built through Convex: the canary in step 4 is image-only, and a build
-   would fail at planning with a message naming the variable
+   Until then nothing is built through Convex: the canary in step 4 is image-only. A deploy that
+   builds, or pulls an image from `127.0.0.1:61050`, fails at planning, before anything is built,
+   with a message naming `ERAINFRA_REGISTRY_NODE`: the address is loopback, so each Node would
+   reach its own loopback, where no registry runs
    ([Image registry](../infra-management.md#image-registry-and-cross-node-links)).
 
 3. **Set the App domain** so deploys report the URLs the gateways serve:
@@ -97,38 +99,79 @@ instead.
    ([firecracker-cutover.md](firecracker-cutover.md#2-provision-the-worker-host)). Nothing in this
    runbook touches the Worker, the controllers, the job cache or the registry container.
 
+6. **Know when the control plane can be rolled back.** From step 2 on, Nodes run
+   `connect-convex`, which needs the Node API that v0.2.0-rc.11 added. A control-plane rollback to
+   v0.2.0-rc.10 leaves them without a control plane, so it waits until those Nodes are back in Hub
+   mode ([deploy-control-plane.md, When a rollback is safe](deploy-control-plane.md#when-a-rollback-to-v020-rc10-is-safe)).
+
+7. **Turn the Hub's own failover off.** The Hub moves the Apps of a Hub-mode Node that has been
+   disconnected for 20 seconds to another Hub-mode Node, with empty volumes
+   (`apps/hub/src/runtime/failover.ts`). From step 2 on, the installer stops Hub-mode agents on
+   purpose: `work-remote`'s in step 5, while any Node you hold back in step 2 is still in Hub mode
+   and would receive every App. On `work-remote`, add the setting to the Hub's env file:
+
+   ```sh
+   ENVFILE=$(ls ~/erainfra-env/hub.env ~/portless-env/hub.env 2>/dev/null | head -1); echo "$ENVFILE"
+   grep -n FAILOVER "$ENVFILE"    # expect nothing; if a line is there, set it to 0 instead
+   printf 'PORTLESS_FAILOVER=0\n' >> "$ENVFILE"
+   ```
+
+   Docker reads the env file only when it creates a container, so recreate the Hub's as
+   [Recreate the Hub container](#recreate-the-hub-container) shows. Its last command prints `0`.
+   Every App answers errors for the few seconds the Hub restarts, and the Hub-mode agents
+   reconnect on their own. The rollback turns failover back on as its last step.
+
 ## 1. Copy the Hub into Convex
 
-On the Hub's host, set the secrets master key once:
+Set the secrets master key once, from `packages/backend` with the deployment's `.env.local`.
+Every App secret Convex stores is encrypted under it, and a second key makes the first one's
+secrets unreadable, so the command generates one only while none is set, and saves it to a file
+only you can read before it sets it:
 
 ```sh
-npx convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"   # first time only
+if current=$(npx convex env get ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
+  (umask 077 && openssl rand -hex 32 | tr -d '\n' > ~/erainfra-secrets-master-key)
+  npx convex env set ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
+else
+  echo 'Not generated: the key is already set, or Convex could not be read. Keep the saved key.'
+fi
+unset current
 ```
+
+`npx convex env get` prints nothing for an unset variable and fails when it cannot reach the
+deployment, so a repeat of this step never replaces a key. Move `~/erainfra-secrets-master-key`
+into your password manager or another safe place, and delete it here.
 
 The Hub keeps its database in SQLite WAL mode (`apps/hub/src/db.ts`): recent writes sit in a
 `-wal` file beside the `.db` file until a checkpoint. A copy of the `.db` file alone misses them.
 While the Hub runs, take a consistent snapshot with `VACUUM INTO` through the Hub's own Node.js,
-then copy it and the secrets key out:
+then copy it and the secrets key out. The snapshot holds every account's password hash and every
+secret, so each copy is created mode 0600, in a directory only you can enter:
 
 ```sh
+mkdir -p -m 700 ~/hub-import && cd ~/hub-import
 DB=$(docker exec portless-hub sh -c \
   'ls /data/erainfra-runtime/erainfra.db /data/portless-runtime/portless.db 2>/dev/null | head -1')
 docker exec portless-hub sh -c 'rm -f /data/hub-import.db'
 docker exec portless-hub node -e '
+  process.umask(0o077);
   const { DatabaseSync } = require("node:sqlite");
   new DatabaseSync(process.argv[1]).exec("VACUUM INTO \x27/data/hub-import.db\x27");' "$DB"
-docker run --rm -v portless-data:/data -v "$PWD":/out alpine \
-  sh -c 'cp /data/hub-import.db "$1" /out/ && rm /data/hub-import.db' _ "$(dirname "$DB")/secret.key"
-sudo chown "$(id -u):$(id -g)" hub-import.db secret.key   # Docker wrote them as root, mode 0600
+docker run --rm -v portless-data:/data -v "$PWD":/out alpine sh -c \
+  'umask 077 && cp /data/hub-import.db "$1" /out/ && chmod 600 /out/hub-import.db /out/secret.key &&
+   rm /data/hub-import.db' _ "$(dirname "$DB")/secret.key"
+sudo chown "$(id -u):$(id -g)" hub-import.db secret.key   # Docker wrote them as root
+ls -l hub-import.db secret.key                            # -rw------- you, for both
 ```
 
-Run the importer ([State in Convex](../infra-management.md#state-in-convex)). Start with
-`--dry-run`; it writes nothing and lists every row the import would create, update, skip or refuse:
+Run the importer from the release checkout ([State in Convex](../infra-management.md#state-in-convex)).
+Start with `--dry-run`; it writes nothing and lists every row the import would create, update, skip
+or refuse:
 
 ```sh
 CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
   pnpm --filter @erainfra/backend import-hub-state \
-    --db "$PWD/hub-import.db" --secret-key "$PWD/secret.key" --dry-run
+    --db ~/hub-import/hub-import.db --secret-key ~/hub-import/secret.key --dry-run
 ```
 
 Drop `--dry-run` when it reports nothing refused. A row Convex refuses is reported, the rows around
@@ -154,8 +197,8 @@ writes or deletes a row, that row is Convex's and every later import skips it, p
 - An account is copied once; Convex owns it from then on.
 
 So a change made on the Hub to something Convex already owns is never imported. The
-[ownership table](../infra-management.md#state-in-convex) lists every table. Delete
-`hub-import.db` and `secret.key` afterwards; they hold every secret.
+[ownership table](../infra-management.md#state-in-convex) lists every table. Delete the copies
+afterwards (`rm -r ~/hub-import`); they hold every secret.
 
 The Hub fails an App over by its primary Node and keeps each service's old Node in its App row,
 while the App's node and its routes move. The importer places each routed service on its route's
@@ -314,9 +357,14 @@ Get everything ready first, so the window holds only the commands that must be i
 
 1. Stop changing anything through the Hub: no `portless deploy`, `env`, `link`, `bind` or account
    changes. Make every change with `erainfra` or the dashboard from now on.
-2. Repeat step 1 (snapshot, copy, import), so Convex holds the Hub's last routes, ports and Apps.
-3. Enroll `work-remote` and put its credential on it, as in step 2.1.
-4. On a gateway Node, have this command typed and ready:
+2. Pause push-to-deploy. In the deploy GitHub App's settings, under Webhook, clear **Active** and
+   save. A push the Hub deployed now would change what item 3 imports, and from the window on the
+   Hub cannot reach `work-remote` at all, so its deploy would fail and the push would be lost.
+   While the webhook is inactive GitHub sends nothing. Step 6 turns it on again at Convex and then
+   deploys every bound branch from its head, so no push is missed.
+3. Repeat step 1 (snapshot, copy, import), so Convex holds the Hub's last routes, ports and Apps.
+4. Enroll `work-remote` and put its credential on it, as in step 2.1.
+5. On a gateway Node, have this command typed and ready:
    `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns --overwrite-dns erainfra-gateway '*.<zone>'`.
 
 The window starts at the next command. On `work-remote`:
@@ -372,14 +420,21 @@ gateway (step 3).
 From this step on, Convex is the authority. Run each check with the `erainfra` CLI, never
 `portless`. Each check writes through Convex, and what it writes is Convex's from then on.
 
-- **Set the deploy GitHub App's credentials first.** A deploy from a private repository clones
-  with a token Convex mints from them, so the deploys below fail without them. Set
-  `ERAINFRA_GH_APP_ID`, `ERAINFRA_GH_APP_KEY` and `ERAINFRA_GH_WEBHOOK_SECRET` as
-  [Push-to-deploy](../infra-management.md#push-to-deploy) shows. The webhook still points at the
-  Hub; it moves below.
-- **Deploy every real App once through Convex.** Apps copied from the Hub have no stored spec, so
-  `erainfra apps view <app>` says Convex cannot fail them over until they are deployed through it
-  once. Name the Nodes every time, so no deploy lands anywhere else:
+Do the first three in this order.
+
+- **Set the deploy GitHub App's credentials.** A deploy from a private repository clones with a
+  token Convex mints from them, so the deploys below fail without them. Set `ERAINFRA_GH_APP_ID`,
+  `ERAINFRA_GH_APP_KEY` and `ERAINFRA_GH_WEBHOOK_SECRET` as
+  [Push-to-deploy](../infra-management.md#push-to-deploy) shows.
+- **Turn push-to-deploy back on, at Convex.** In the deploy GitHub App's settings, change the
+  webhook URL from `https://<hub>/webhook/github` to
+  `https://<deployment>.convex.site/github/webhook`, set **Active** again, and save. From then on
+  pushes deploy from Convex, not the Hub. A binding copied from the Hub that names no deploy Node
+  deploys where the App runs.
+- **Deploy every real App once through Convex**, each bound one from its branch. That deploys the
+  branch head, which includes every push made while the webhook was paused. Apps copied from the
+  Hub have no stored spec, so `erainfra apps view <app>` says Convex cannot fail them over until
+  they are deployed through it once. Name the Nodes every time, so no deploy lands anywhere else:
 
   ```sh
   # An App the Hub deployed from a bound branch (erainfra git bindings shows it):
@@ -402,12 +457,8 @@ From this step on, Convex is the authority. Run each check with the `erainfra` C
 - **Links.** `erainfra links list` shows every link `mesh` and `active`, and each consumer reaches
   its provider on the surfaced port.
 - **Env.** `erainfra env list <app>` shows the names the Hub had.
-- **Push-to-deploy.** With the credentials set above, change the deploy GitHub App's webhook URL
-  from `https://<hub>/webhook/github` to `https://<deployment>.convex.site/github/webhook`. From
-  then on pushes deploy from Convex, not the Hub. A binding copied from the Hub that names no deploy Node
-  deploys where the App runs. Push a commit to a bound branch;
-  `erainfra deployments list --app <app>` shows a `git` run ending `done`. Bind any further branch
-  with an admin token:
+- **Push-to-deploy.** Push a commit to a bound branch; `erainfra deployments list --app <app>`
+  shows a `git` run ending `done`. Bind any further branch with an admin token:
 
   ```sh
   erainfra git bind acme/web main --app web --build-node work-remote --deploy-node work-remote
@@ -434,7 +485,7 @@ docker stop portless-hub
 docker update --restart=no portless-hub
 sudo systemctl disable --now portless-tunnel
 
-mkdir hub-final
+mkdir -m 700 hub-final            # the copy holds every password hash
 docker run --rm -v portless-data:/data:ro -v "$PWD/hub-final":/out alpine \
   sh -c 'cp -a /data/*-runtime/*.db* /out/'
 sudo chown -R "$(id -u):$(id -g)" hub-final
@@ -450,8 +501,8 @@ Hub is stopped and costs nothing.
 From now on:
 
 - `portless` commands fail to reach the Hub. Use `erainfra` (`portless help` says so).
-- Never run `deploy/infra/hub.sh` on this box again unless you are rolling back: it restarts the
-  Hub with the old state.
+- Never run `deploy/infra/hub.sh` on this box again: it rebuilds the Hub from the checkout and
+  restarts it with the old state. The rollback below starts the stopped container instead.
 - Never `docker volume rm portless-data`. If disk space matters, archive the volume first and keep
   the archive with the Convex master key.
 
@@ -467,20 +518,36 @@ Node goes back before DNS moves back. Between the two commands its Apps are down
    `npx convex env set ERAINFRA_FAILOVER 0`. With it on, a Node you roll back looks lost: Convex
    moves its spec'd Apps to another Node and queues `docker rm -f` of their containers for when it
    reports again.
-2. Start the Hub if it is stopped, or re-run `deploy/infra/hub.sh`, which reuses the volume, the
-   env file and the tunnel:
+2. Start the Hub if it is stopped, and give it back the restart policy `hub.sh` gave it. Step 7 set
+   it to `no`, and a Hub left that way stays down after the next reboot:
 
    ```sh
-   docker start portless-hub && sudo systemctl enable --now portless-tunnel
+   docker start portless-hub
+   docker update --restart unless-stopped portless-hub
+   sudo systemctl enable --now portless-tunnel
+   docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' portless-hub   # unless-stopped
+   docker exec portless-hub printenv PORTLESS_FAILOVER                    # 0 until the last step
    ```
+
+   Do not re-run `deploy/infra/hub.sh` for this. It rebuilds the Hub from whatever revision the
+   checkout on this box is at now, not the one the Hub ran.
 
 3. Put the App Node back in Hub mode, then immediately point the wildcard back at the Hub's tunnel.
    On `work-remote`:
 
    ```sh
    sudo systemctl disable --now erainfra-node
+   { systemctl cat portless-agent; sudo cat /etc/portless/agent.env /etc/erainfra/agent.env 2>/dev/null; } |
+     grep -E 'ERAINFRA_MESH_(SOCKET|BIN)'      # prints nothing: the Hub-mode agent runs links with dumbpipe
+   sudo systemctl disable --now erainfra-mesh  # only if the grep printed nothing
    sudo systemctl enable --now portless-agent
    ```
+
+   The `erainfra-mesh` sidecar keeps running when `erainfra-node` stops. It keeps every link
+   Convex gave it, restores them from its state file when it restarts, and keeps listening on their
+   local ports. A Hub-mode agent that runs its links with dumbpipe cannot bind those ports while it
+   does, so stop the sidecar. If the grep printed a line, the Hub-mode agent drives the same
+   sidecar: leave it running, and its next pass replaces Convex's links with the Hub's.
 
    `portless-agent.service` runs the binary it ran before step 5: `--convex` installed its own
    agent elsewhere. Then, on `work-remote` as the user that ran `hub.sh`, with the config it wrote:
@@ -492,10 +559,56 @@ Node goes back before DNS moves back. Between the two commands its Apps are down
 
    Remove any per-App records that point at `erainfra-gateway` as well.
 
-4. Switch the gateway Nodes back to Hub mode too if you want the Hub to drive them
-   ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)). Revoke a Node's Convex
-   credential (`erainfra nodes revoke <name>`) if it should leave the Convex mesh.
+4. Switch the gateway Nodes back to Hub mode
+   ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)), with the same sidecar
+   check as item 3. Until they are back, the Hub's links to them stay down: on
+   `oracle-singapore-1` that is `registry-oracle-singapore-1` (port 61050) and the link on port 60030. A control-plane rollback also waits for this item, since a Node on `connect-convex`
+   needs the release that has the Node API. Revoke a Node's Convex credential
+   (`erainfra nodes revoke <name>`) if it should leave the Convex mesh.
 5. Redeploy through the Hub (`portless deploy` or `portless redeploy`) any App that changed in
    Convex after the cutover, and set again any env changed in Convex. Check `portless apps`.
-6. Point the deploy GitHub App's webhook back at `https://<hub>/webhook/github`, and bind on the Hub
-   (`portless bind`) any branch bound in Convex after the cutover.
+6. Point the deploy GitHub App's webhook back at `https://<hub>/webhook/github`, with **Active**
+   set, and bind on the Hub (`portless bind`) any branch bound in Convex after the cutover.
+7. Turn the Hub's own failover back on, once `portless nodes` shows every Node connected. Delete
+   the `PORTLESS_FAILOVER=0` line that [Before you start](#before-you-start) added to the Hub's env
+   file, then recreate the container as below. Its last command then prints nothing.
+8. Only now, if you need to, roll the control plane back
+   ([deploy-control-plane.md](deploy-control-plane.md#when-a-rollback-to-v020-rc10-is-safe)).
+
+## Recreate the Hub container
+
+Docker reads `--env-file` only when it creates a container, so a change to the Hub's env file
+takes effect only in a new container. This recreates `portless-hub` with the same image ID, mounts,
+port, working directory and command it runs with now, and the env file as it is now. Run it on the
+Hub's host, at a quiet moment: every App served through the Hub answers errors for the few seconds
+it takes.
+
+```sh
+ENVFILE=$(ls ~/erainfra-env/hub.env ~/portless-env/hub.env 2>/dev/null | head -1)
+docker inspect portless-hub > ~/portless-hub.inspect.json      # the container as it ran, for reference
+IMAGE=$(docker inspect -f '{{.Image}}' portless-hub)
+WORKDIR=$(docker inspect -f '{{.Config.WorkingDir}}' portless-hub)
+PORT=$(docker inspect -f '{{with index .HostConfig.PortBindings "8787/tcp"}}{{(index . 0).HostIp}}:{{(index . 0).HostPort}}{{end}}' portless-hub)
+MOUNTS=$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}-v {{.Name}}:{{.Destination}} {{else}}-v {{.Source}}:{{.Destination}}{{if not .RW}}:ro{{end}} {{end}}{{end}}' portless-hub)
+CMD=$(docker inspect -f '{{join .Config.Cmd " "}}' portless-hub)
+printf '%s\n' "$ENVFILE" "$IMAGE" "$WORKDIR" "$PORT" "$MOUNTS" "$CMD"
+```
+
+Read the six lines before going on. With a Hub that `hub.sh` started they are the env file, an
+image ID (`sha256:…`), `/srv/portless`, `127.0.0.1:61080`, three mounts (the bundle at
+`/srv/portless:ro`, `/srv/agent-bin:ro` and `portless-data:/data`), and
+`node --experimental-strip-types apps/hub/src/server.ts`. If any is empty, stop: this Hub was
+started differently, and the command below would not reproduce it. Then:
+
+```sh
+docker rm -f portless-hub
+docker run -d --name portless-hub --restart unless-stopped -p "$PORT:8787" $MOUNTS \
+  -w "$WORKDIR" --env-file "$ENVFILE" "$IMAGE" $CMD
+sleep 3
+curl -fsS "http://$PORT/health" && echo
+docker exec portless-hub printenv PORTLESS_FAILOVER
+```
+
+`$MOUNTS` and `$CMD` are unquoted on purpose, so the shell splits them into separate arguments.
+The Hub-mode agents reconnect within seconds. If `/health` does not answer, `docker logs
+portless-hub` says why; `~/portless-hub.inspect.json` holds the old container's settings.

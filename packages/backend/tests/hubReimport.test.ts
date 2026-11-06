@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   process.env.ERAINFRA_SECRETS_MASTER_KEY = "44".repeat(32);
   process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
-  process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
+  process.env.ERAINFRA_REGISTRY = "registry.test:5000";
 });
 afterEach(() => {
   vi.useRealTimers();

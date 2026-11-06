@@ -154,14 +154,22 @@ service names may contain `-`, so the Hub's `<app>-<service>` string `web-api` n
 Each scope's values are encrypted with a random data key for that scope, and the data keys are
 encrypted with a master key you hold in the Convex environment. The associated data of every
 encryption is a JSON array of the App, the service and the variable name, so a row moved to
-another scope or name fails to decrypt. Generate a master key and set it before importing:
+another scope or name fails to decrypt. Generate a master key and set it before importing. Run this
+from `packages/backend`: it generates a key only while none is set, and saves it to a file only you
+can read before it sets it, so running it twice never replaces a key:
 
 ```sh
-pnpm convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"
+if current=$(npx convex env get ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
+  (umask 077 && openssl rand -hex 32 | tr -d '\n' > ~/erainfra-secrets-master-key)
+  npx convex env set ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
+else
+  echo 'Not generated: the key is already set, or Convex could not be read. Keep the saved key.'
+fi
+unset current
 ```
 
-Keep a copy somewhere safe. Without it the stored secrets cannot be decrypted, and Convex fails
-closed rather than generating a new one. A value leaves Convex only through the internal
+Move the saved key somewhere safe and delete the file. Without the key the stored secrets cannot
+be decrypted, and Convex fails closed rather than generating a new one. A value leaves Convex only through the internal
 `infra/secrets:forNodeDeploy`, for a deploy that targets the asking Node and still holds its App's
 lease. Each targeted Node that hosts at least one service receives the App-wide scope, which is
 common environment injected into every service. It receives a service's private scope only when
@@ -439,6 +447,18 @@ once the Apps are where you want them.
 
 1. Stop `connect-convex`: `systemctl disable --now erainfra-node` for the installed unit. Its
    sidecar keeps running if it is the systemd service; a supervised one stops with the agent.
+   A running sidecar keeps every link Convex gave it, restores them from its state file when it
+   restarts, and keeps listening on their local ports. A Hub-mode agent that runs its links with
+   dumbpipe cannot bind those ports while it does: on `oracle-singapore-1` today, 60030 and 61050. If the Hub-mode agent names no sidecar, stop that one too:
+
+   ```sh
+   { systemctl cat portless-agent; sudo cat /etc/portless/agent.env /etc/erainfra/agent.env 2>/dev/null; } |
+     grep -E 'ERAINFRA_MESH_(SOCKET|BIN)'      # prints nothing: the Hub-mode agent runs links with dumbpipe
+   sudo systemctl disable --now erainfra-mesh  # only if the grep printed nothing
+   ```
+
+   If the grep prints a line, leave the sidecar running: Hub mode drives it (below).
+
 2. If `--replace-hub-agent` stopped the Hub-mode unit, start it again with
    `systemctl enable --now portless-agent`: its unit file, `agent.env` and binary are where they
    were, so it runs the release it ran before.
@@ -962,7 +982,10 @@ A run that would build fails at planning, before anything is built, when:
 - `ERAINFRA_REGISTRY_NODE` is set but names no Node, or the port cannot be read from
   `ERAINFRA_REGISTRY`;
 - a Node other than the registry Node needs the registry and the registry Node is not connected to
-  Convex with a proven mesh endpoint. A registry Node still in Hub mode cannot serve the others.
+  Convex with a proven mesh endpoint. A registry Node still in Hub mode cannot serve the others;
+- `ERAINFRA_REGISTRY_NODE` is unset, `ERAINFRA_REGISTRY` is a loopback address (`127.x.x.x` or
+  `localhost`), and more than one Node is enrolled. Each Node would push to and pull from its own
+  loopback. With a single Node, that Node's own registry is the right one.
 
 A Node needs the registry when it builds (it pushes) or starts a service whose image is in
 `ERAINFRA_REGISTRY` (it pulls): a built image, or an `image:` that begins with the registry
@@ -974,7 +997,9 @@ During planning, before any build, the pipeline records a standalone link `regis
 the registry Node to each of those Nodes, other than the registry Node itself. Each Node's mesh
 snapshot carries it: the registry Node exposes the registry port to that one peer, and the other
 Node listens on the same `127.0.0.1` port. The links stay after the run, so a later failover can
-pull too. A run fails instead of overwriting a link of that name that someone declared. Leave
+pull too. A link of that name that already carries exactly this registry (same Nodes, same port),
+such as the Hub's own `registry-<node>` link brought over by the importer, is used as it is. A run
+fails instead of overwriting a different link of that name that someone declared. Leave
 `ERAINFRA_REGISTRY_NODE` unset to use a registry every Node reaches by itself, such as one with TLS
 at `registry.example.com` (`docker login` on each Node when it is private); nothing is linked then.
 

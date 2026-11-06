@@ -34,7 +34,9 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   process.env.ERAINFRA_SECRETS_MASTER_KEY = "22".repeat(32);
   process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
-  process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
+  // A registry every Node reaches by itself. A loopback one needs ERAINFRA_REGISTRY_NODE as soon
+  // as there is a second Node; the tests that set one say so.
+  process.env.ERAINFRA_REGISTRY = "registry.test:5000";
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -270,7 +272,7 @@ describe("deploy pipeline", () => {
         service: "web",
         source: { kind: "upload", url: spec[0].payload.source.url },
         dir: "",
-        image: `127.0.0.1:5000/shop-web:${id.slice(0, 12)}`,
+        image: `registry.test:5000/shop-web:${id.slice(0, 12)}`,
       },
     ]);
     expect((await s.deployment(id)).stage).toBe("deploying");
@@ -517,7 +519,7 @@ async function sign(secret: string, body: string) {
 const SOLO = `
 services:
   web:
-    image: 127.0.0.1:5000/postgres:16
+    image: registry.test:5000/postgres:16
     port: 5432
     route: true
     volumes: [pgdata:/var/lib/postgresql/data]
@@ -623,7 +625,7 @@ describe("a deploy that names no Node", () => {
       await ctx.db.insert("appRoutes", {
         name: "solo",
         nodeId: s.nodes["work-remote"].nodeId,
-        image: "127.0.0.1:5000/solo:old",
+        image: "registry.test:5000/solo:old",
         port: 8080,
         updatedAt: T0,
       });
@@ -920,6 +922,7 @@ describe("mesh links from the pipeline", () => {
   });
 
   it("refuses to take over a registry link name that someone declared", async () => {
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
     process.env.ERAINFRA_REGISTRY_NODE = "node-c";
     const s = await setup();
     await s.beat();
@@ -942,6 +945,40 @@ describe("mesh links from the pipeline", () => {
       error: "the mesh link name registry-node-a is taken by a link someone declared",
     });
   });
+
+  // The Hub's registry-<node> links arrive through the importer as they were in the Hub. One that
+  // already carries exactly this registry is used, whatever its createdBy says.
+  it.each([undefined, "user" as const])(
+    "uses an imported registry link of the same shape (createdBy %s)",
+    async (createdBy) => {
+      process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+      process.env.ERAINFRA_REGISTRY_NODE = "node-c";
+      const s = await setup();
+      await s.beat();
+      await s.t.run((ctx) => ctx.db.patch(s.nodes["node-c"].nodeId, { endpointProvenAt: T0 }));
+      const linkId = await s.t.run((ctx) =>
+        ctx.db.insert("meshLinks", {
+          name: "registry-node-a",
+          providerNodeId: s.nodes["node-c"].nodeId,
+          providerPort: 61050,
+          consumerNodeId: s.nodes["node-a"].nodeId,
+          localPort: 61050,
+          ...(createdBy === undefined ? {} : { createdBy }),
+          updatedAt: T0,
+        }),
+      );
+      const spec = "services:\n  web:\n    build: .\n    port: 80\n    route: true\n";
+      const id = await s.startUpload("built", await s.upload());
+      await s.agent("node-a", () => ({ outcome: "success", spec }));
+      const run = await s.deployment(id);
+      expect(run.error).toBeUndefined();
+      expect(run.stage).toBe("building");
+      // Left exactly as it was: still the Hub's row, so a later import may keep updating it.
+      const link = await s.t.run((ctx) => ctx.db.get(linkId));
+      expect(link?.createdBy).toBe(createdBy);
+      expect(link?.updatedAt).toBe(T0);
+    },
+  );
 
   it("fails a build before it starts while the registry is unset, malformed or out of reach", async () => {
     const s = await setup();
@@ -967,6 +1004,30 @@ describe("mesh links from the pipeline", () => {
     process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
     process.env.ERAINFRA_REGISTRY_NODE = "node-c";
     expect(await attempt()).toContain("the registry Node node-c (ERAINFRA_REGISTRY_NODE)");
+
+    // A loopback registry with no registry Node: each Node would push to and pull from its own
+    // loopback. retire-the-hub.md runs between its steps 2 and 5 in exactly this state.
+    delete process.env.ERAINFRA_REGISTRY_NODE;
+    expect(await attempt()).toContain(
+      'ERAINFRA_REGISTRY="127.0.0.1:61050" is a loopback address and ERAINFRA_REGISTRY_NODE is unset',
+    );
+    process.env.ERAINFRA_REGISTRY = "localhost:5000";
+    expect(await attempt()).toContain("is a loopback address and ERAINFRA_REGISTRY_NODE is unset");
+  });
+
+  it("builds against a loopback registry with no registry Node while there is one Node", async () => {
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+    const s = await setup(["solo"]);
+    await s.beat();
+    const spec = "services:\n  web:\n    build: .\n    port: 80\n    route: true\n";
+    const id = await s.startUpload("solo-app", await s.upload(), {
+      buildNode: "solo",
+      node: "solo",
+    });
+    await s.agent("solo", () => ({ outcome: "success", spec }));
+    const run = await s.deployment(id);
+    expect(run.error).toBeUndefined();
+    expect(run.stage).toBe("building");
   });
 
   it("deploys an App that builds nothing without a registry", async () => {
@@ -1043,7 +1104,7 @@ describe("failover", () => {
       "db",
     ]);
     // No rebuild: the image already built is redeployed.
-    expect(onB[0].payload.services[0].image).toMatch(/^127\.0\.0\.1:5000\/shop-web:/);
+    expect(onB[0].payload.services[0].image).toMatch(/^registry\.test:5000\/shop-web:/);
     expect(onB[0].payload.services[0].env).toMatchObject({ DB_HOST: "db", DB_PORT: "5432" });
 
     expect((await s.deployment(runId)).stage).toBe("done");

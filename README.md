@@ -362,8 +362,14 @@ CI runs the same four and cross-compiles both Linux release targets with cargo-z
 Deploy the Convex backend and static dashboard:
 
 ```bash
-pnpm run deploy:control-plane
+cd packages/backend
+npx convex deploy -y
+pnpm run deploy --skip-convex
 ```
+
+`pnpm run deploy:control-plane` at the root runs both halves, but `convex deploy` inside it asks
+for confirmation on a dev deployment and fails in a shell that cannot prompt. For production, follow
+[Runbook: deploy the control plane](docs/runbooks/deploy-control-plane.md).
 
 Set these deployment variables before production use:
 
@@ -535,7 +541,8 @@ account, copies the secret files to `/etc/runner-center/secrets/<profile>/`, wri
 `/etc/runner-center/profiles/<profile>.env` (mode 0600, secrets only as `*_FILE` paths), and starts
 `runner-center-controller@<profile>`. It leaves a Worker install on the same host alone.
 `--role controller --update` moves every running controller on the host to the pinned release and
-keeps the previous binary as `runner-center-controller.bak-<version>`. The controller pin is first
+keeps the previous binary as `runner-center-controller.bak-<version>`; with `--dry-run` it changes
+nothing and lists the instances it would restart and anything that would stop it. The controller pin is first
 filled at the release after v0.2.0-rc.10; until a deployment pins it, the installer refuses and the
 manual steps below apply. Updating, adding and retiring Profiles, rotating secrets, monitoring, back
 up and rebuild are in
@@ -628,11 +635,14 @@ an operator removes the other Profile's name from one side's labels. To list the
 deployment, including one running an older backend:
 
 ```bash
-npx convex data profiles --prod --limit 10000 --format jsonl \
-  | pnpm --filter @erainfra/backend --silent profile-label-conflicts
+cd packages/backend
+npx convex data profiles --prod --limit 10000 --format jsonl > profiles.jsonl &&
+  pnpm --silent profile-label-conflicts "$PWD/profiles.jsonl"
 ```
 
-It exits 1 when there is a conflicting pair. The pinned Profile also does not keep an unpinned one
+It exits 1 when there is a conflicting pair, 2 when the export is empty or unreadable, and 3 when
+some active Profiles carry no labels in the export (a backend before v0.2.0-rc.11 stores none),
+which it names so you can read their `RC_LABELS` on the controller hosts. The pinned Profile also does not keep an unpinned one
 off the labelled Workers: they share their slots. To reserve the Workers, pin the other Profile to
 a label only the other Workers carry.
 

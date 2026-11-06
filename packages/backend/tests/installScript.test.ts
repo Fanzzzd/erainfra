@@ -2494,6 +2494,107 @@ fi
     expect(serviceLog(sandbox).filter((line) => line.startsWith("is-active "))).toHaveLength(4);
   });
 
+  /**
+   * The host a dry run reads: the controller account exists, `systemctl show` answers from
+   * `unit-files` (one `<unit> <FragmentPath> [<drop-in>]` per line), and each listed Profile has
+   * its env file.
+   */
+  function dryRunHost(sandbox: Sandbox, units: string[], envFor: string[]) {
+    writeExecutable(
+      path.join(sandbox.root, "bin", "getent"),
+      '#!/usr/bin/env bash\n[ "$2" = runner-center-controller ] && { echo "runner-center-controller:x:998:998::/nonexistent:/usr/sbin/nologin"; exit 0; }\nexit 2\n',
+    );
+    writeFileSync(path.join(sandbox.root, "unit-files"), units.map((u) => `${u}\n`).join(""));
+    const show = `  show)
+    unit=""; prop=""
+    for arg in "$@"; do case "$arg" in FragmentPath|DropInPaths) prop=$arg ;; runner-center-controller@*) unit=$arg ;; esac; done
+    while read -r name fragment dropin; do
+      [ "$name" = "$unit" ] || continue
+      if [ "$prop" = FragmentPath ]; then printf '%s\\n' "$fragment"; else printf '%s\\n' "$dropin"; fi
+    done < "$RC_TEST_UNIT_FILES"
+    ;;
+`;
+    writeExecutable(
+      path.join(sandbox.root, "bin", "systemctl"),
+      CONTROLLER_SYSTEMCTL_STUB.replace('case "$1" in\n', `case "$1" in\n${show}`),
+    );
+    for (const profile of envFor) {
+      const env = under(sandbox, `/etc/runner-center/profiles/${profile}.env`);
+      mkdirSync(path.dirname(env), { recursive: true });
+      writeFileSync(env, `RC_PROFILE=${profile}\n`);
+    }
+  }
+  const TEMPLATE = "/etc/systemd/system/runner-center-controller@.service";
+  const dryRun = (sandbox: Sandbox) =>
+    ctlRun(sandbox, ["--update", "--dry-run"], {
+      RC_TEST_UNIT_FILES: path.join(sandbox.root, "unit-files"),
+    });
+  function expectUntouched(sandbox: Sandbox) {
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
+    expect(existsSync(`${binaryPath(sandbox)}.bak-1.3.0`)).toBe(false);
+    expect(readFileSync(under(sandbox, TEMPLATE), "utf8")).toBe(OLD_UNIT);
+    expect(
+      serviceLog(sandbox).filter((line) =>
+        /^(start|restart|enable|stop|daemon-reload)\b/.test(line),
+      ),
+    ).toEqual([]);
+  }
+
+  it("--update --dry-run names the instances --update would restart and changes nothing", () => {
+    const sandbox = installedForUpdate();
+    dryRunHost(
+      sandbox,
+      ACTIVE_UNITS.map((unit) => `${unit} ${TEMPLATE}`),
+      ["rc-linux-js", "rc-e2e"],
+    );
+    const result = dryRun(sandbox);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    for (const unit of ACTIVE_UNITS)
+      expect(result.stdout).toContain(`--update would restart ${unit}.`);
+    expect(result.stdout).toContain("Dry run passed.");
+    expectUntouched(sandbox);
+  });
+
+  it("--update --dry-run fails on an instance --update would not reach or could not start", () => {
+    const sandbox = installedForUpdate();
+    dryRunHost(
+      sandbox,
+      [
+        // A hand-written unit file for one Profile shadows the template --update replaces.
+        `${ACTIVE_UNITS[0]} /etc/systemd/system/${ACTIVE_UNITS[0]}`,
+        `${ACTIVE_UNITS[1]} ${TEMPLATE}`,
+      ],
+      [], // and no env file where the release unit reads it
+    );
+    const result = dryRun(sandbox);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      `${ACTIVE_UNITS[0]} runs from /etc/systemd/system/${ACTIVE_UNITS[0]}, not ${TEMPLATE}`,
+    );
+    expect(result.stderr).toContain(
+      `${ACTIVE_UNITS[1]} has no /etc/runner-center/profiles/rc-e2e.env`,
+    );
+    expect(result.stderr).toContain("Dry run found 2 problem(s)");
+    expectUntouched(sandbox);
+  });
+
+  it("--update --dry-run fails when no controller instance is running", () => {
+    const sandbox = installedForUpdate();
+    dryRunHost(sandbox, [], []);
+    rmSync(path.join(sandbox.root, "active-units"));
+    const result = dryRun(sandbox);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("so --update would restart nothing");
+    expectUntouched(sandbox);
+  });
+
+  it("refuses --dry-run without --update", () => {
+    const { sandbox } = readyToInstall();
+    const result = ctlRun(sandbox, ["--profile", PROFILE, "--dry-run"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--dry-run goes with --update");
+  });
+
   it.each([
     ["reload", "rollback daemon-reload failed (exit 14)"],
     ["restart", `rollback restart ${ACTIVE_UNITS[0]} failed (exit 17)`],

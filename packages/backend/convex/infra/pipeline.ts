@@ -85,6 +85,15 @@ export function pullsFrom(image: string, registry: string) {
   return image.startsWith(`${registry}/`);
 }
 
+/** Whether `registry`'s host is this machine's loopback, which every Node resolves to itself. */
+export function isLoopbackRegistry(registry: string) {
+  const host = registry
+    .split("/")[0]
+    .replace(/:\d{1,5}$/, "")
+    .toLowerCase();
+  return host === "localhost" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
 /** Why the configured registry cannot be used, or null. */
 function registryRefusal(registry: string | null) {
   if (registry === null) return REGISTRY_UNSET;
@@ -602,7 +611,20 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
  */
 async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
   const registryNode = process.env.ERAINFRA_REGISTRY_NODE;
-  if (!registryNode || nodeIds.length === 0) return null;
+  if (nodeIds.length === 0) return null;
+  if (!registryNode) {
+    // A loopback registry is reached by every Node at its own loopback, so with no registry Node
+    // to link from, a push lands on the build Node and a pull on any other Node finds nothing.
+    // That fails at the push, after a full build, or at a later failover's pull. With one Node
+    // there is no other to be wrong about.
+    const registry = registryAddress();
+    if (registry !== null && isLoopbackRegistry(registry)) {
+      const nodes = await ctx.db.query("nodes").take(2);
+      if (nodes.length > 1)
+        return `ERAINFRA_REGISTRY="${registry}" is a loopback address and ERAINFRA_REGISTRY_NODE is unset, so each Node would push to and pull from its own loopback; set ERAINFRA_REGISTRY_NODE to the Node that runs the registry once it is connected to Convex with a proven mesh endpoint (docs/infra-management.md, Image registry and cross-Node links)`;
+    }
+    return null;
+  }
   const provider = await ctx.db
     .query("nodes")
     .withIndex("by_name", (q) => q.eq("name", registryNode))
@@ -632,8 +654,10 @@ async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
       .query("meshLinks")
       .withIndex("by_name", (q) => q.eq("name", name))
       .unique();
-    if (existing !== null && existing.createdBy !== "deploy")
-      return `the mesh link name ${name} is taken by a link someone declared`;
+    // A link that already carries exactly this registry is used as it is, whoever made it: the
+    // Hub's own registry-<node> rows arrive through the importer, and a row from a Hub that
+    // never recorded createdBy is still the link this would write. Only a different link under
+    // the name is refused, rather than overwritten.
     if (
       existing !== null &&
       existing.providerNodeId === provider._id &&
@@ -642,6 +666,8 @@ async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
       existing.localPort === port
     )
       continue;
+    if (existing !== null && existing.createdBy !== "deploy")
+      return `the mesh link name ${name} is taken by a link someone declared`;
     await upsertMeshLink(ctx, {
       name,
       providerNodeId: provider._id,
