@@ -59,15 +59,32 @@ operator's override and apply to every guest on that Worker. The stricter layer 
 Changing `runtime.env` needs the provisioner re-run (it re-renders the nftables table) and a runtime
 restart.
 
+Drain the Worker before either. Never load the table by hand with `nft -f` on a host with running
+guests. The table file starts with `delete table`, so loading it empties every per-guest set while
+the guests keep running: their links accept IPv6 and borrowed source addresses again, and an
+allowlist guest is no longer restricted. The runtime notices within 10 seconds, and at every
+readiness check, and writes the elements back, logging `restored a running guest's link binding`.
+Readiness fails if it cannot. Until then the guest is unprotected. The provisioner refuses to run
+while any Firecracker VM is running and prints the drain steps:
+
+1. Wait until the dashboard's Attempts page shows nothing running on the Worker. For a Profile's
+   only Worker, follow [take the only Worker out of service](take-the-only-worker-away.md).
+2. `sudo systemctl stop runner-center-runtime`, which ends the idle warm VMs.
+3. `pgrep -x firecracker` must print nothing. Then re-run the provisioner.
+
+`--force-network-reload` makes the provisioner go ahead anyway. Every running job then ends when it
+restarts the runtime.
+
 ## What a broken Worker looks like
 
-| Symptom on the dashboard                                               | Cause and fix                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `egress-policy` failed: "needs the host resolver"                      | The runtime could not bind the resolver on the guest gateway, port 10053. `journalctl -u runner-center-runtime` names the error; free the port and restart the runtime. Public Profiles keep running meanwhile. |
-| `egress-policy` failed: "still hold egress state whose removal failed" | A guest's set elements could not be removed at teardown. Restart `runner-center-runtime`; its unit reloads the table, which empties every per-guest set.                                                        |
-| `egress-policy` failed: "cannot be enforced on this Worker"            | The Profile lists a CIDR inside this Worker's guest subnet. Change the list or the Worker's `--network-subnet`.                                                                                                 |
-| `job-network-policy` failed after an upgrade                           | The table is from an older runtime. Re-run the host provisioner.                                                                                                                                                |
-| Worker shows degraded with "network.egress does not match"             | The Profile's egress changed after the Worker last reported. It clears on the next readiness refresh.                                                                                                           |
+| Symptom on the dashboard                                                     | Cause and fix                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `egress-policy` failed: "needs the host resolver"                            | The runtime could not bind the resolver on the guest gateway, port 10053. `journalctl -u runner-center-runtime` names the error; free the port and restart the runtime. Public Profiles keep running meanwhile.                                                |
+| `egress-policy` failed: "still hold egress state whose removal failed"       | A guest's set elements could not be removed at teardown. Wait for the Worker to be idle, then restart `runner-center-runtime`. Its unit reloads the table, which empties every per-guest set.                                                                  |
+| `job-network-policy` failed: "missing its link binding or egress membership" | Someone reloaded or edited the table under a running guest, and the runtime could not write the guest's elements back. `journalctl -u runner-center-runtime` names the nft error. Cancel that job's workflow run, or drain the Worker and restart the runtime. |
+| `egress-policy` failed: "cannot be enforced on this Worker"                  | The Profile lists a CIDR inside this Worker's guest subnet. Change the list or the Worker's `--network-subnet`.                                                                                                                                                |
+| `job-network-policy` failed after an upgrade                                 | The table is from an older runtime. Re-run the host provisioner.                                                                                                                                                                                               |
+| Worker shows degraded with "network.egress does not match"                   | The Profile's egress changed after the Worker last reported. It clears on the next readiness refresh.                                                                                                                                                          |
 
 Readiness checks the live rule matches, operators, set references, verdicts and DNS redirect
 port, plus chain priorities and policies and set definitions. Keeping a rule's comment while

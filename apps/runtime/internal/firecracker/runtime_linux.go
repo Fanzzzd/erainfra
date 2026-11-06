@@ -189,6 +189,44 @@ func (r *Runtime) ServeEgress(ctx context.Context) error {
 	return nil
 }
 
+// guestElementsInterval is how often the runtime checks that every running
+// guest is still in the per-guest sets. Readiness checks too, but only when the
+// Worker asks for it; this bounds how long a guest runs unbound after someone
+// reloads the table by hand.
+const guestElementsInterval = 10 * time.Second
+
+// KeepGuestElements restores, until ctx ends, the per-guest elements of every
+// running guest that a reload or edit of the table removed.
+func (r *Runtime) KeepGuestElements(ctx context.Context) {
+	ticker := time.NewTicker(guestElementsInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		restored, _, _, err := restoreGuestElements(ctx, r.config.Network, r.readLiveTable(ctx), r.egress)
+		logRestoredGuests(restored)
+		if err != nil && ctx.Err() == nil {
+			logrus.WithError(err).Warn("could not check the per-guest elements of running guests")
+		}
+	}
+}
+
+func (r *Runtime) readLiveTable(ctx context.Context) func() ([]byte, error) {
+	return func() ([]byte, error) { return netpolicy.ReadLiveTable(ctx, r.config.NftBinary) }
+}
+
+func logRestoredGuests(restored []netpolicy.GuestEgressState) {
+	for _, state := range restored {
+		logrus.WithFields(logrus.Fields{"guest": state.Guest, "link": state.Link}).Warn(
+			"restored a running guest's link binding and egress membership, which the nftables table had lost; " +
+				"reload the table only with no Firecracker VMs running",
+		)
+	}
+}
+
 func (r *Runtime) effectiveEgress(profile netpolicy.ProfileEgress) (netpolicy.EffectiveEgress, error) {
 	return netpolicy.Effective(r.config.Network, profile, r.config.CacheServiceURL, r.config.RegistryMirrorURL)
 }
@@ -318,7 +356,9 @@ func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.Profile
 		}
 	}
 
-	if detail, err := VerifyLiveNetwork(ctx, r.config.Network, r.config.NftBinary); err != nil {
+	detail, restored, err := verifyAndRestoreNetwork(ctx, r.config.Network, r.readLiveTable(ctx), r.egress, procSysNet)
+	logRestoredGuests(restored)
+	if err != nil {
 		report.Fail(executor.CheckNetPolicy, err)
 	} else {
 		report.Pass(executor.CheckNetPolicy, detail)

@@ -17,7 +17,7 @@ package egress
 
 import (
 	"context"
-
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -174,6 +174,92 @@ func (g *Guard) Register(
 	}
 	g.mu.Unlock()
 	return nil
+}
+
+// Registered reads the live table with read and returns it with the state of
+// every guest whose elements were in the kernel for the whole read: guests
+// registered before it began and not yet torn down when it ended.
+//
+// A guest registering or unregistering while the table is read can be on either
+// side of the read, so the guard is asked before and after and only guests
+// both answers name are returned. Register publishes a guest after its batch
+// commits, and Unregister unpublishes it before its removal starts, so any
+// element such a guest lacks in the listing was removed by something else.
+func (g *Guard) Registered(read func() ([]byte, error)) ([]netpolicy.GuestEgressState, []byte, error) {
+	before := g.registered()
+	live, err := read()
+	if err != nil {
+		return nil, nil, err
+	}
+	after := g.registered()
+	var both []netpolicy.GuestEgressState
+	for registered, state := range before {
+		if _, still := after[registered]; still {
+			both = append(both, state)
+		}
+	}
+	slices.SortFunc(both, func(left, right netpolicy.GuestEgressState) int {
+		return left.Guest.Compare(right.Guest)
+	})
+	return both, live, nil
+}
+
+// registered names every published guest by its record, so a guest torn down
+// and another registered at the same address are two different entries.
+func (g *Guard) registered() map[*guest]netpolicy.GuestEgressState {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	states := make(map[*guest]netpolicy.GuestEgressState, len(g.guests))
+	for _, registered := range g.guests {
+		states[registered] = registered.state
+	}
+	return states
+}
+
+// Restore writes back the link binding, allowed CIDRs and membership of every
+// guest in missing that is still registered with the same state. missing comes
+// from netpolicy.MissingGuestElements over a listing Registered returned.
+//
+// The runtime is the only writer of these elements, so when the kernel lost
+// them while the guest kept running, putting them back is the runtime's job:
+// until then the guest's link carries IPv6 and any source address, and an
+// allowlist guest is not restricted at all. It returns the guests it restored.
+func (g *Guard) Restore(ctx context.Context, missing []netpolicy.GuestEgressState) ([]netpolicy.GuestEgressState, error) {
+	var (
+		restored []netpolicy.GuestEgressState
+		failures []error
+	)
+	for _, state := range missing {
+		done, err := g.restore(ctx, state)
+		if err != nil {
+			failures = append(failures, err)
+		}
+		if done {
+			restored = append(restored, state)
+		}
+	}
+	return restored, errors.Join(failures...)
+}
+
+func (g *Guard) restore(ctx context.Context, state netpolicy.GuestEgressState) (bool, error) {
+	unlock := g.lockAddress(state.Guest)
+	defer unlock()
+	registered := g.lookup(state.Guest)
+	if registered == nil {
+		return false, nil
+	}
+	// Holding the address barrier keeps Register and Unregister out; closed and
+	// the link say whether this is still the guest the listing was read for.
+	registered.mu.Lock()
+	current, closed := registered.state, registered.closed
+	registered.mu.Unlock()
+	if closed || current.Link != state.Link {
+		return false, nil
+	}
+	if err := g.applier.Apply(ctx, netpolicy.RestoreBatch(current)); err != nil {
+		return false, fmt.Errorf("restore the link binding and membership of guest %s on %s: %w", state.Guest, state.Link, err)
+	}
+	return true, nil
 }
 
 // purge removes state whose flows are no longer known in full, listing them

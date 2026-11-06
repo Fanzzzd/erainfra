@@ -91,6 +91,7 @@ NETWORK_SUBNET=''
 MIN_POOL_FREE_MIB=''
 BASE_IMAGE_SIZE='24GB'
 RUNTIME_UNIT_FILE=''
+FORCE_NETWORK_RELOAD=0
 UNINSTALL=0
 TMP_DIR=''
 
@@ -128,6 +129,7 @@ Usage:
                                 [--min-pool-free-mib N]
                                 [--base-image-size SIZE]
                                 [--runtime-unit PATH]
+                                [--force-network-reload]
   provision-firecracker-host.sh --uninstall
 
   --runtime-binary     runner-center-runtime for this host's architecture,
@@ -146,6 +148,12 @@ Usage:
   --worker-user        Unprivileged account running the EraInfra Worker.
                        It is added to the runner-center group so it can reach
                        the runtime socket. Log out and back in afterwards.
+  --force-network-reload
+                       Provision even though Firecracker VMs are running.
+                       Reloading the job network policy empties every running
+                       guest's per-guest nftables sets, and restarting the
+                       runtime ends every guest, so by default the script
+                       refuses and says how to drain the Worker first.
 USAGE
 }
 
@@ -164,6 +172,7 @@ while [ "$#" -gt 0 ]; do
     --min-pool-free-mib) [ "$#" -ge 2 ] || fail "$1 requires a value"; MIN_POOL_FREE_MIB=$2; shift 2 ;;
     --base-image-size) [ "$#" -ge 2 ] || fail "$1 requires a value"; BASE_IMAGE_SIZE=$2; shift 2 ;;
     --runtime-unit) [ "$#" -ge 2 ] || fail "$1 requires a value"; RUNTIME_UNIT_FILE=$2; shift 2 ;;
+    --force-network-reload) FORCE_NETWORK_RELOAD=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "unknown option: $1" ;;
@@ -190,6 +199,37 @@ download_verified() {
   actual=$(sha256_of "$destination")
   [ "$actual" = "$expected" ] ||
     fail "checksum mismatch for $url: expected $expected but got $actual"
+}
+
+# Loading nftables.rc.conf starts with `delete table`, which empties every
+# per-guest set. A guest that is still running loses its link binding, so its
+# link accepts IPv6 and borrowed source addresses again, and its Profile egress
+# membership, so an allowlist guest is no longer restricted. The runtime puts
+# them back within seconds, but this script then restarts the runtime, which
+# ends every guest anyway. So it refuses while any Firecracker VM runs, before
+# it changes anything, and says how to drain the Worker first.
+refuse_reload_under_running_guests() {
+  # pgrep exits 1 when nothing matches, which pipefail would turn into an exit.
+  running=$({ pgrep -x firecracker 2>/dev/null || true; } | wc -l | tr -d ' ')
+  [ "$running" -gt 0 ] || return 0
+  if [ "$FORCE_NETWORK_RELOAD" -eq 1 ]; then
+    note "--force-network-reload: provisioning with $running Firecracker VMs running."
+    note 'Their jobs end when the runtime restarts.'
+    return 0
+  fi
+  fail "$running Firecracker VMs are running on this host.
+Provisioning reloads the job network policy, which strips their per-guest
+nftables sets, and restarts runner-center-runtime, which ends them. Drain the
+Worker first:
+  1. Wait until the dashboard's Attempts page shows nothing running on this
+     Worker. For a Profile's only Worker, follow
+     docs/runbooks/take-the-only-worker-away.md.
+  2. sudo systemctl stop $RUNTIME_UNIT
+     This ends the idle warm VMs the runtime keeps ready.
+  3. pgrep -x firecracker
+     It must print nothing.
+Then rerun this script. --force-network-reload provisions anyway and ends every
+running job."
 }
 
 uninstall() {
@@ -302,7 +342,7 @@ else
 fi
 
 step 'Checking host prerequisites'
-for tool in curl tar sha256sum dmsetup nft systemctl blockdev; do
+for tool in curl tar sha256sum dmsetup nft systemctl blockdev pgrep; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool is required; install it first"
 done
 CONTAINERD_BIN=$(command -v containerd || true)
@@ -312,6 +352,7 @@ CONTAINERD_BIN=$(command -v containerd || true)
   fail '/dev/kvm is missing. This host cannot provide guest-kernel isolation; use a bare-metal or nested-virtualization-capable machine.'
 note "containerd: $($CONTAINERD_BIN --version)"
 note "kvm: $(ls -l /dev/kvm)"
+refuse_reload_under_running_guests
 
 GO_BIN=$(command -v go || true)
 if [ -z "$GO_BIN" ] && [ -x /usr/local/go/bin/go ]; then
@@ -584,11 +625,16 @@ install -o root -g root -m 0644 "$TMP_DIR/conflist" \
 "$RC_LIB_DIR/runner-center-runtime" render-nftables > "$TMP_DIR/nftables" ||
   fail 'the runtime could not render the nftables ruleset'
 install -o root -g root -m 0644 "$TMP_DIR/nftables" "$RC_ETC_DIR/nftables.rc.conf"
+# This empties every per-guest set. refuse_reload_under_running_guests made sure
+# no guest is running, unless --force-network-reload said to go ahead anyway.
 nft -f "$RC_ETC_DIR/nftables.rc.conf" || fail 'could not load the nftables ruleset'
 note "loaded table inet runner-center and $RC_CNI_CONFIG_DIR/10-$network_name.conflist"
 
 # The table lives in the kernel, so it has to be reloaded on boot. A drop-in on
 # the runtime unit keeps the policy and the service that depends on it together.
+# The reload empties the per-guest sets, which is safe here and only here: the
+# unit's KillMode=control-group means systemd has ended every guest of the
+# previous runtime before it starts the next one.
 install -d -m 0755 "/etc/systemd/system/$RUNTIME_UNIT.d"
 cat > "/etc/systemd/system/$RUNTIME_UNIT.d/10-network-policy.conf" <<UNIT
 [Service]
