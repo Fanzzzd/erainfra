@@ -14,7 +14,7 @@ export type AgentRelease = {
    * scalar, for the same reason.
    */
   infraAgent: Record<string, string>;
-  /** SHA-256 of erainfra-mesh-<target>[.exe]. Empty until an authorized release supplies all five. */
+  /** SHA-256 of erainfra-mesh-<target>[.exe], one per target; v0.2.0-rc.11 was the first release to publish them. */
   mesh: Record<string, string>;
   /**
    * SHA-256 of `erainfra-cache-service-<target>` — the cache service (ADR 0009), keyed by target:
@@ -66,30 +66,37 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.10",
-  // No published release contains the phase 1b API/install contract yet. Never synthesize pins
-  // from local development builds: --mesh refuses until the owner cuts and pins that release.
-  mesh: {},
-  sha256: "4453d0cd2e43ae14069cbc21350b284875e24c4cd445ec975a7e5c7cc514a888",
+  version: "0.2.0-rc.11",
+  // Filled at v0.2.0-rc.11, the first release to publish erainfra-mesh, from the sidecars the
+  // release workflow's mesh jobs wrote after building each target twice and comparing.
+  mesh: {
+    "linux-x86_64": "cb2a0c4060ff3c98ea596d5546f144e72d9738e03058ec4002955a3f5b6c75ec",
+    "linux-arm64": "07c46a640f9d6484a21cb95a47369d4dae6703c9e1588b84c4a0730ac4a3e6d1",
+    "darwin-x86_64": "1277af72804975b627eeccc0bf3ee45471895b6e37dde10bba5123c3287d684f",
+    "darwin-arm64": "ec97625a7b76bcd08ab9be4422aa1b3294281ac81cc64f4318e925c3c9280411",
+    "windows-x86_64": "6eb5107ca4559b6c9057eb155b4e5f04830a71635b38e42ca4fe03f74552a493",
+  },
+  sha256: "51f0474929c175e91ddc4fb4be183907e11824a619f30a24ceea615579f5f6ee",
   infraAgent: {
-    "linux-x86_64": "630ef2a8dcd2d5154d1307eed98644e1f019e74a04266688be747818beb20f04",
-    "linux-arm64": "ad5a77a2b69583c986ead79f82ba9572a3ae74a2f7d1a43de01bd32a9c09273c",
-    "darwin-x86_64": "72dd37884112e2640f98884ef047c1d2cad26066c7cc3a93677c2da9e1bced5f",
-    "darwin-arm64": "ea37cf06c802e6bb27361f9b2876be344639b859f73f135a66969a11af503ec2",
-    "windows-x86_64": "cd20b3181ee288d68794083d7e1a8797adc19c59e5cc0cca7e4c1a27b8a58516",
+    "linux-x86_64": "6d5812038cb5eb20fc0a7760319a60bc6ae48e6492205b543f56d7808ca7cef5",
+    "linux-arm64": "ab4d965286dd153dd83054f9984d214f7163995b5030602ce200cb95c063aeff",
+    "darwin-x86_64": "cb4d45b1b4e3c569689a96e869a8a38fcf20b293c85697e1c0479ca5be407edf",
+    "darwin-arm64": "ed6ff8aea2a451c27c8dc063eec572d3721a4de1eb9e584aa9e09aeb96e192f0",
+    "windows-x86_64": "92ac694e16c2c6b4dbd62c0a991950586f23e549ead32b8c296a05e182fa9ba8",
   },
   // Populated at v0.2.0-rc.9, the first release to publish the cache-service binary (ADR 0009),
   // exactly as `infraAgent` was filled at v0.2.0-rc.6. Version-only, so the digest is a pure
   // function of source and version, not the release commit it is written into.
   cacheService: {
-    "linux-x86_64": "743a47bf00fdb2ca4b82020f9980e6c7bb097b6c91d93be98c76ef5ca77f20e3",
+    "linux-x86_64": "f60b310be4631897d2023f56fc4e3b3e1b744e2cd9791c82e87537ab59443054",
   },
-  // Empty until the next release cut, which is the first to build the controller version-only
-  // (rc.10 and earlier stamped -X main.commitSHA, so no digest of theirs can be pinned). Filled
-  // exactly as `infraAgent` was at rc.6 and `cacheService` at rc.9: the release workflow's coverage
-  // and pin-match gates run only on a tag, so an empty map is safe on main and refused the moment a
-  // release is cut without it. Until then `--role controller` refuses, naming the missing target.
-  controller: {},
+  // Filled at v0.2.0-rc.11, the first release to build the controller version-only (rc.10 and
+  // earlier stamped -X main.commitSHA, so no digest of theirs can be pinned), exactly as
+  // `infraAgent` was at rc.6 and `cacheService` at rc.9.
+  controller: {
+    "linux-x86_64": "3a228410f696805ddbbc8550ccf42474e4208ceb5194eb9cdc3638a919742ba5",
+    "linux-arm64": "af2c4db6decfdbfa0dd00ed8f632c6ba84d05a39facf93e40289563d95310f46",
+  },
 };
 
 /** The targets a release publishes an Infra Agent binary for, and `infraAgent` must cover. */
@@ -110,8 +117,8 @@ export function infraAgentAssetName(target: string) {
  * The targets a release publishes an `erainfra-mesh` binary for (ADR 0016), the Node-to-Node
  * sidecar that replaces dumbpipe. The same five as the Infra Agent, because every Node runs both.
  *
- * `AgentRelease.mesh` covers these targets. It stays empty on main until the next authorized
- * release; --mesh installation and tag publication reject a missing or incomplete pin.
+ * `AgentRelease.mesh` covers these targets; --mesh installation and tag publication reject a
+ * missing or incomplete pin.
  */
 export const MESH_TARGETS = INFRA_AGENT_TARGETS;
 
