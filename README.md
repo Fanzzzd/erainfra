@@ -872,6 +872,40 @@ A Profile on allowlist egress needs every cache endpoint a job uses on its list:
 `RC_EGRESS_PRESETS=github` covers `actions/cache`, and EraInfra's own cache service is allowed
 automatically.
 
+### Move a repository's workflows onto Profiles
+
+`erainfra migrate runs-on` does the label change for a whole repository, the way Blacksmith's
+Migration Wizard does it for theirs. Run it in the repository:
+
+```bash
+erainfra migrate runs-on                       # print a unified diff, change nothing
+erainfra migrate runs-on --write               # apply it
+erainfra migrate runs-on --repo ../web --map ubuntu-latest=erainfra-8vcpu-ubuntu-2404 --json
+```
+
+It reads `.github/workflows/*.yml` and `*.yaml` and replaces only the text of each label, so
+comments, quoting and layout stay as they were and the diff applies with `git apply`. Each
+GitHub-hosted label (`ubuntu-latest`, `ubuntu-24.04-arm`, `windows-2025`, `macos-15`, ...) goes to
+the active Profile with the same OS, version and architecture: the smallest with at least 4 vCPU,
+which is GitHub's standard runner, and the newest version for a `-latest` label. A Blacksmith or
+BuildJet label keeps its size (`blacksmith-8vcpu-ubuntu-2404` becomes
+`erainfra-8vcpu-ubuntu-2404`), and `rc-linux-js` and `rc-e2e` move to their
+[ADR 0010](docs/adr/0010-name-profiles-the-way-runner-vendors-name-labels.md) names once those
+are registered. When the CLI is logged in, it proposes only Profiles registered in the control
+plane. Logged out, or with `--offline`, it builds names from ADR 0010's scheme without checking
+them. If it is logged in and the control plane cannot be read, it stops rather than guess. `--map
+<label>=<profile>`, repeatable, wins over every default.
+
+It changes `runs-on` written as a string, a one-item list, or the `labels` of a `group`/`labels`
+mapping. In a reusable workflow whose `runs-on` is an input, it changes that input's default and
+the `with:` value of each call in the repository. In a [router job](#fall-back-to-github-hosted-runners),
+it renames the Profile the router asks about (a `PROFILE` variable or a `profile=` query) and
+leaves the router's own `runs-on`, which has to stay GitHub-hosted. It leaves the rest unchanged
+and prints a note for each one, on stderr, or under `notes` with `--json`: matrix and other
+expressions (the note lists what each matrix value would become), lists of several labels, which
+no scale set matches, a runner group with no labels, YAML aliases, Intel macOS and larger-runner
+labels, and labels it does not know.
+
 ### Fall back to GitHub-hosted runners
 
 GitHub has no runner fallback of its own: a job queued on a Profile label waits for that Profile,
@@ -1007,6 +1041,7 @@ erainfra rightsize --repo acme/web --since 7d
 erainfra rightsize --map > runs-on-map.json
 erainfra tests list --repo acme/web --failed --since 24h
 erainfra tests flaky --repo acme/web --json | jq '.flakyTests[] | {name, occurrences, evidence}'
+erainfra migrate runs-on --repo ../web   # see "Move a repository's workflows onto Profiles"
 ```
 
 The login is stored in `$XDG_CONFIG_HOME/erainfra/config.json` (default

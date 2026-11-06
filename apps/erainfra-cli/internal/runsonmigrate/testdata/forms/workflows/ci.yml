@@ -1,0 +1,137 @@
+# Every shape runs-on takes, with comments and quoting that must survive.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  RUNNER: ubuntu-latest # not a runs-on; must stay
+
+jobs:
+  plain:
+    runs-on: ubuntu-latest # trailing comment stays
+    steps:
+      - run: 'echo "runs-on: ubuntu-latest stays in a script"'
+
+  single-quoted:
+    runs-on: 'ubuntu-24.04'
+    steps: [{ run: "true" }]
+
+  double-quoted:
+    runs-on: "ubuntu-24.04-arm"   # aligned comment
+    steps: [{ run: "true" }]
+
+  upper-case:
+    runs-on: Ubuntu-Latest
+    steps: [{ run: "true" }]
+
+  flow-list:
+    runs-on: [ubuntu-22.04]
+    steps: [{ run: "true" }]
+
+  block-list:
+    runs-on:
+      # a comment inside the list
+      - windows-latest
+    steps: [{ run: "true" }]
+
+  several-labels:
+    runs-on: [self-hosted, linux, x64]
+    steps: [{ run: "true" }]
+
+  hosted-in-a-list:
+    runs-on: [ubuntu-latest, gpu]
+    steps: [{ run: "true" }]
+
+  group-and-labels:
+    runs-on:
+      group: ubuntu-runners
+      labels: ubuntu-24.04
+    steps: [{ run: "true" }]
+
+  group-and-label-list:
+    runs-on: { group: larger, labels: [ "macos-15" ] }
+    steps: [{ run: "true" }]
+
+  group-only:
+    runs-on:
+      group: ubuntu-runners
+    steps: [{ run: "true" }]
+
+  anchored:
+    runs-on: &default-runner ubuntu-latest
+    steps: [{ run: "true" }]
+
+  aliased:
+    runs-on: *default-runner
+    steps: [{ run: "true" }]
+
+  tagged:
+    runs-on: !!str windows-2022
+    steps: [{ run: "true" }]
+
+  unicode-before: { name: "构建 — 测试", runs-on: ubuntu-latest, steps: [{ run: "true" }] }
+
+  matrix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-11-arm]
+        include:
+          - os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps: [{ run: "true" }]
+
+  expression:
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    steps: [{ run: "true" }]
+
+  intel-mac:
+    runs-on: macos-13
+    steps: [{ run: "true" }]
+
+  larger-runner:
+    runs-on: ubuntu-24.04-16core
+    steps: [{ run: "true" }]
+
+  slim:
+    runs-on: ubuntu-slim
+    steps: [{ run: "true" }]
+
+  already-a-profile:
+    runs-on: erainfra-4vcpu-ubuntu-2404
+    steps: [{ run: "true" }]
+
+  old-profile:
+    runs-on: rc-linux-js
+    steps: [{ run: "true" }]
+
+  blacksmith:
+    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
+    steps: [{ run: "true" }]
+
+  vendor-unknown:
+    runs-on: depot-ubuntu-24.04-4
+    steps: [{ run: "true" }]
+
+  value-on-the-next-line:
+    runs-on:
+      ubuntu-latest
+    steps: [{ run: "true" }]
+
+  escaped:
+    runs-on: "ubuntu\u002Dlatest"
+    steps: [{ run: "true" }]
+
+  folded:
+    runs-on: >-
+      ubuntu-latest
+    steps: [{ run: "true" }]
+
+  # A job named like a key elsewhere, with runs-on after its steps.
+  runs-on:
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+        with:
+          runs-on: ubuntu-latest
+    runs-on: windows-2025

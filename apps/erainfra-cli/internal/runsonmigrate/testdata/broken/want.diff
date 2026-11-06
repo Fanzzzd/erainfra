@@ -1,0 +1,8 @@
+--- a/.github/workflows/fine.yaml
++++ b/.github/workflows/fine.yaml
+@@ -1,4 +1,4 @@
+ on: push
+ jobs:
+   a:
+-    runs-on: ubuntu-latest
++    runs-on: erainfra-4vcpu-ubuntu-2404

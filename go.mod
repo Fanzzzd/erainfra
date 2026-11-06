@@ -20,6 +20,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/sys v0.49.0
 )
 

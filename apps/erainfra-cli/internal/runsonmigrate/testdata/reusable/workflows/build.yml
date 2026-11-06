@@ -1,0 +1,16 @@
+# A reusable workflow that takes its runner as an input.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Which runner to build on
+        type: string
+        default: "ubuntu-latest"
+      other:
+        type: string
+        default: ubuntu-latest # not a runner: stays
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - run: echo "${{ inputs.other }}"

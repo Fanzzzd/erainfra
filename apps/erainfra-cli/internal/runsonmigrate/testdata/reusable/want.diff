@@ -1,0 +1,22 @@
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -5,7 +5,7 @@
+       runner:
+         description: Which runner to build on
+         type: string
+-        default: "ubuntu-latest"
++        default: "erainfra-4vcpu-ubuntu-2404"
+       other:
+         type: string
+         default: ubuntu-latest # not a runner: stays
+--- a/.github/workflows/caller.yml
++++ b/.github/workflows/caller.yml
+@@ -3,7 +3,7 @@
+   local:
+     uses: ./.github/workflows/build.yml
+     with:
+-      runner: ubuntu-22.04 # the input build.yml runs on
++      runner: erainfra-4vcpu-ubuntu-2204 # the input build.yml runs on
+       other: ubuntu-22.04
+   local-expression:
+     uses: ./.github/workflows/build.yml

@@ -1,0 +1,12 @@
+# The Profiles the control plane answers with: name, state.
+erainfra-4vcpu-ubuntu-2404 active
+erainfra-8vcpu-ubuntu-2404 active
+erainfra-4vcpu-ubuntu-2604 active
+erainfra-2vcpu-ubuntu-2404-arm active
+erainfra-16vcpu-ubuntu-2404-arm active
+erainfra-canary-4vcpu-ubuntu-2404 active
+erainfra-4vcpu-ubuntu-2404-8gb active
+erainfra-4vcpu-ubuntu-2404-js active
+erainfra-4vcpu-windows-2025 paused
+erainfra-6vcpu-macos-15 active
+rc-linux-js active

@@ -1,0 +1,33 @@
+--- a/.github/workflows/routed.yml
++++ b/.github/workflows/routed.yml
+@@ -12,7 +12,7 @@
+       - id: route
+         env:
+           CONTROL_PLANE: https://fleet.example.convex.site
+-          PROFILE: rc-linux-js
++          PROFILE: erainfra-4vcpu-ubuntu-2404
+           FALLBACK: ubuntu-24.04
+         run: |
+           label=$(curl --fail --silent --get \
+@@ -20,11 +20,11 @@
+             "$CONTROL_PLANE/runs-on" | jq -er '."runs-on" | strings') || label=$FALLBACK
+           echo "runs-on=$label" >> "$GITHUB_OUTPUT"
+       - id: canary
+-        run: curl -fsS "https://fleet.example.convex.site/runs-on?profile=rc-e2e&fallback=ubuntu-latest"
++        run: curl -fsS "https://fleet.example.convex.site/runs-on?profile=erainfra-canary-4vcpu-ubuntu-2404&fallback=ubuntu-latest"
+       - id: literal-query
+         run: >-
+           curl -fsS --max-time 10
+-          "https://fleet.example.convex.site/runs-on?profile=rc-linux-js&fallback=ubuntu-24.04"
++          "https://fleet.example.convex.site/runs-on?profile=erainfra-4vcpu-ubuntu-2404&fallback=ubuntu-24.04"
+           # profile=$NOT_A_NAME and profile=unknown-profile stay
+       - id: legacy-labels
+         run: curl -fsS "https://fleet.example.convex.site/runs-on?labels=rc-linux"
+@@ -34,6 +34,6 @@
+     steps:
+       - run: pnpm test
+   lint:
+-    runs-on: ubuntu-latest
++    runs-on: erainfra-4vcpu-ubuntu-2404
+     steps:
+       - run: pnpm lint

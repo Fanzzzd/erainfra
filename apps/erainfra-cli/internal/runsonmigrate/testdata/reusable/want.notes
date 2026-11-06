@@ -1,0 +1,5 @@
+.github/workflows/build.yml:8:18 change  on.workflow_call.inputs.runner.default: ubuntu-latest -> erainfra-4vcpu-ubuntu-2404 [built-in] GitHub-hosted ubuntu-latest: ubuntu 24.04 x64
+.github/workflows/build.yml:14 note build input: runs-on is ${{ inputs.runner }}, an input of this reusable workflow; its default and the calls in this repository are rewritten instead
+.github/workflows/caller.yml:6:15 change local with.runner: ubuntu-22.04 -> erainfra-4vcpu-ubuntu-2204 [built-in] GitHub-hosted ubuntu-22.04: ubuntu 22.04 x64
+.github/workflows/caller.yml:11 note local-expression expression: with.runner, the runs-on of ./.github/workflows/build.yml, is the expression ${{ github.event_name == 'push' && 'ubuntu-latest' || 'ubuntu-24.04' }}; left unchanged
+.github/workflows/caller.yml:13 note remote remote-call: calls octo-org/shared/.github/workflows/test.yml@0123456789abcdef0123456789abcdef01234567; that workflow's runs-on lives in its own repository, so run this command there

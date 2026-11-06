@@ -1,0 +1,133 @@
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -10,30 +10,30 @@
+ 
+ jobs:
+   plain:
+-    runs-on: ubuntu-latest # trailing comment stays
++    runs-on: erainfra-4vcpu-ubuntu-2404 # trailing comment stays
+     steps:
+       - run: 'echo "runs-on: ubuntu-latest stays in a script"'
+ 
+   single-quoted:
+-    runs-on: 'ubuntu-24.04'
++    runs-on: 'erainfra-4vcpu-ubuntu-2404'
+     steps: [{ run: "true" }]
+ 
+   double-quoted:
+-    runs-on: "ubuntu-24.04-arm"   # aligned comment
++    runs-on: "erainfra-4vcpu-ubuntu-2404-arm"   # aligned comment
+     steps: [{ run: "true" }]
+ 
+   upper-case:
+-    runs-on: Ubuntu-Latest
++    runs-on: erainfra-4vcpu-ubuntu-2404
+     steps: [{ run: "true" }]
+ 
+   flow-list:
+-    runs-on: [ubuntu-22.04]
++    runs-on: [erainfra-4vcpu-ubuntu-2204]
+     steps: [{ run: "true" }]
+ 
+   block-list:
+     runs-on:
+       # a comment inside the list
+-      - windows-latest
++      - erainfra-4vcpu-windows-2025
+     steps: [{ run: "true" }]
+ 
+   several-labels:
+@@ -47,11 +47,11 @@
+   group-and-labels:
+     runs-on:
+       group: ubuntu-runners
+-      labels: ubuntu-24.04
++      labels: erainfra-4vcpu-ubuntu-2404
+     steps: [{ run: "true" }]
+ 
+   group-and-label-list:
+-    runs-on: { group: larger, labels: [ "macos-15" ] }
++    runs-on: { group: larger, labels: [ "erainfra-4vcpu-macos-15" ] }
+     steps: [{ run: "true" }]
+ 
+   group-only:
+@@ -60,7 +60,7 @@
+     steps: [{ run: "true" }]
+ 
+   anchored:
+-    runs-on: &default-runner ubuntu-latest
++    runs-on: &default-runner erainfra-4vcpu-ubuntu-2404
+     steps: [{ run: "true" }]
+ 
+   aliased:
+@@ -68,10 +68,10 @@
+     steps: [{ run: "true" }]
+ 
+   tagged:
+-    runs-on: !!str windows-2022
++    runs-on: !!str erainfra-4vcpu-windows-2022
+     steps: [{ run: "true" }]
+ 
+-  unicode-before: { name: "构建 — 测试", runs-on: ubuntu-latest, steps: [{ run: "true" }] }
++  unicode-before: { name: "构建 — 测试", runs-on: erainfra-4vcpu-ubuntu-2404, steps: [{ run: "true" }] }
+ 
+   matrix:
+     strategy:
+@@ -95,7 +95,7 @@
+     steps: [{ run: "true" }]
+ 
+   slim:
+-    runs-on: ubuntu-slim
++    runs-on: erainfra-4vcpu-ubuntu-2404
+     steps: [{ run: "true" }]
+ 
+   already-a-profile:
+@@ -103,11 +103,11 @@
+     steps: [{ run: "true" }]
+ 
+   old-profile:
+-    runs-on: rc-linux-js
++    runs-on: erainfra-4vcpu-ubuntu-2404
+     steps: [{ run: "true" }]
+ 
+   blacksmith:
+-    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
++    runs-on: erainfra-8vcpu-ubuntu-2404-arm
+     steps: [{ run: "true" }]
+ 
+   vendor-unknown:
+@@ -116,7 +116,7 @@
+ 
+   value-on-the-next-line:
+     runs-on:
+-      ubuntu-latest
++      erainfra-4vcpu-ubuntu-2404
+     steps: [{ run: "true" }]
+ 
+   escaped:
+@@ -134,4 +134,4 @@
+       - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+         with:
+           runs-on: ubuntu-latest
+-    runs-on: windows-2025
++    runs-on: erainfra-4vcpu-windows-2025
+--- a/.github/workflows/crlf.yaml
++++ b/.github/workflows/crlf.yaml
+@@ -2,6 +2,6 @@
+ on: push
+ jobs:
+   build:
+-    runs-on: ubuntu-latest
++    runs-on: erainfra-4vcpu-ubuntu-2404
+     steps:
+       - run: echo crlf
+--- a/.github/workflows/no-final-newline.yml
++++ b/.github/workflows/no-final-newline.yml
+@@ -2,4 +2,4 @@
+ jobs:
+   last:
+     steps: [{ run: "true" }]
+-    runs-on: macos-latest
+\ No newline at end of file
++    runs-on: erainfra-4vcpu-macos-15
+\ No newline at end of file
