@@ -461,15 +461,18 @@ journalctl -u erainfra-cache-service -f
 | `build cache lookup degraded to a miss`                           | a Turborepo or Go lookup did not get an answer from the store in budget (§10)       |
 | `build cache save could not ...`                                  | a Turborepo or Go upload failed at the store; the build carries on (§10)            |
 | `refused a build cache write to a read-only token`                | rule 2 for build caches: a fork pull request's turbo or Go upload (§10)             |
+| `refused a save from a repository that gave this name up; ...`    | a job of a renamed-away repository saved after a newer one took the name (§9)       |
+| `left a newer repository's git seed in place; ...`                | the same, for the git seed's removal of older seeds in its scope (§9)               |
 
 ### Metrics and the alert worth having
 
-| series                                                | means                                                                                                                                                                    |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `erainfra_cache_requests_refused_total{reason}`       | requests answered `401`; `reason` is one of the five below                                                                                                               |
-| `erainfra_cache_job_facts_loaded_total`               | facts read back from the bucket, which is what a restart costs                                                                                                           |
-| `erainfra_cache_job_facts_persist_failures_total`     | pushes answered `503` because the bucket refused the write                                                                                                               |
-| `erainfra_cache_build_requests_total{system,outcome}` | Turborepo and Go build cache requests (§10); `system` is `turbo` or `go`, `outcome` is `hit`, `miss`, `saved` or `error` (the store failed a lookup, download or upload) |
+| series                                                       | means                                                                                                                                                                            |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `erainfra_cache_requests_refused_total{reason}`              | requests answered `401`; `reason` is one of the five below                                                                                                                       |
+| `erainfra_cache_job_facts_loaded_total`                      | facts read back from the bucket, which is what a restart costs                                                                                                                   |
+| `erainfra_cache_job_facts_persist_failures_total`            | pushes answered `503` because the bucket refused the write                                                                                                                       |
+| `erainfra_cache_build_requests_total{system,outcome}`        | Turborepo and Go build cache requests (§10); `system` is `turbo` or `go`, `outcome` is `hit`, `miss`, `saved` or `error` (the store failed a lookup, download or upload)         |
+| `erainfra_cache_stale_repository_writes_refused_total{kind}` | writes from a job of a repository that gave its name up, refused so the newer holder keeps its entries (§9); `kind` is `save` or `purge` (the git seed's removal of older seeds) |
 
 `reason` is `no_token`, `bad_token` (forged, expired, or a signing key mismatch), `unknown_facts`
 (the controller's push for the runner never landed, or the facts expired), `facts_unreadable` (the
@@ -846,6 +849,17 @@ cache list --repo Fanzzzd/erainfra --repository-id 1001 --format table
 Entries saved before the service recorded IDs, and saves from a controller too old to send one,
 carry no ID. They belong to the first ID that saves under the name after the upgrade, and a job from
 a controller that sends no ID still reads by name alone.
+
+A job of the old repository that was already running when the name moved still has facts naming
+it, for up to six hours. Its saves do not take the name back. GitHub assigns repository IDs in
+increasing order, so for six hours after an ID takes the name, the service refuses saves from a
+smaller ID. It also refuses a smaller ID's removal of the holder's git seed. The job sees a skipped
+save (`actions/cache` warns, a build tool's upload is answered as already stored), and the log says
+`refused a save from a repository that gave this name up`, with both IDs. Each refusal also counts
+in `erainfra_cache_stale_repository_writes_refused_total`. After those six hours, a smaller ID can
+only be an older repository renamed into the name, and its first save takes the name and removes
+the earlier entries as usual. An older repository renamed into a name within six hours of a newer
+one taking it cannot save until that window ends.
 
 A deleted entry is a miss on the very next restore. Its bytes leave the bucket on the first sweep
 after the 40-minute grace period in §4, so `deleted_bytes` is what the repository's quota stops

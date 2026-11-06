@@ -69,14 +69,28 @@ func isGitSeedVersion(version string) bool {
 	return version == gitSeedVersion || strings.HasPrefix(version, gitSeedVersion+gitSeedRepositoryIDTag)
 }
 
-// removeGitSeeds removes every seed in one scope, of any version.
-func (s *Server) removeGitSeeds(ctx context.Context, repository, scope string) error {
+// removeGitSeeds removes the seeds in the claimant's write scope, of any
+// version, before its new one is committed. The claimant has already claimed
+// the name (Index.ClaimName), which removed every seed another repository ID
+// saved, except one a newer repository saved after this process last read the
+// name. That one is left: a repository that gave the name up never removes
+// the entries of the one holding it now. A claimant without an ID (an older
+// controller) removes by name, as before.
+func (s *Server) removeGitSeeds(ctx context.Context, claims cachetoken.Claims, scope string) error {
+	repository := claims.Repository
 	records, err := s.index.Entries(ctx, repository, cacheindex.Match{Prefix: gitSeedKeyPrefix, Ref: scope})
 	if err != nil {
 		return err
 	}
 	for _, record := range records {
 		if !isGitSeedVersion(record.Version) {
+			continue
+		}
+		if claims.RepositoryID != 0 && record.RepositoryID > claims.RepositoryID {
+			s.metrics.stalePurgesRefused.Add(1)
+			s.logger.Warn("left a newer repository's git seed in place; the saving job's repository gave this name up",
+				"repository", repository, "ref", scope, "repositoryId", claims.RepositoryID,
+				"seedRepositoryId", record.RepositoryID, "key", record.Key)
 			continue
 		}
 		if _, err := s.index.Remove(ctx, repository, cacheindex.Match{
@@ -122,6 +136,13 @@ func (s *Server) gitSeedRead(w http.ResponseWriter, r *http.Request) {
 		if until := s.gitSeedBackoff(lookup, claims); !until.IsZero() {
 			writable = false
 			w.Header().Set(headerGitSeedRefusedUntil, strconv.FormatInt(until.Unix(), 10))
+		}
+	}
+	if writable {
+		// A job of a repository that gave the name up would build a seed the
+		// PUT refuses. An unreadable name record leaves the answer to the PUT.
+		if superseded, err := s.index.Superseded(lookup, claims.Repository, claims.RepositoryID); err == nil && superseded {
+			writable = false
 		}
 	}
 	w.Header().Set(headerGitSeedWritable, strconv.FormatBool(writable))
@@ -189,6 +210,19 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.deadline(w, r, s.config.TransferTimeout)
 	defer cancel()
 
+	// The name is claimed before any byte is read and before the older seeds
+	// in the scope are removed: a job of a repository that gave the name up
+	// must not remove the seed of the one that holds it now.
+	if err := s.index.ClaimName(ctx, claims.Repository, claims.RepositoryID); err != nil {
+		if errors.Is(err, cacheindex.ErrNameHeldByNewerRepository) {
+			writeJSON(w, http.StatusConflict, map[string]string{"message": err.Error()})
+			return
+		}
+		s.logger.Error("git seed save could not read the repository name", "repository", claims.Repository, "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
+		return
+	}
+
 	blob, upload, err := s.index.NewBlob(ctx, claims.Repository)
 	if err != nil {
 		s.logger.Error("git seed upload could not start", "repository", claims.Repository, "error", err)
@@ -219,7 +253,7 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 	// earlier repository of the same name, or before seeds were keyed by
 	// repository ID, is never read again.
 	scope := claims.WriteScope()
-	if err := s.removeGitSeeds(ctx, claims.Repository, scope); err != nil {
+	if err := s.removeGitSeeds(ctx, claims, scope); err != nil {
 		s.logger.Warn("older git seeds could not be removed; idle eviction will",
 			"repository", claims.Repository, "ref", scope, "error", err)
 	}

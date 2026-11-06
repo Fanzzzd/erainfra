@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/adminapi"
+	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
 )
 
@@ -299,5 +301,87 @@ func TestGitSeedRefusalWithoutARefDoesNotHoldTheDefaultBranch(t *testing.T) {
 	})
 	if got := h.seedWritable(feature); got != "false" {
 		t.Fatalf("another ref ignores the earlier refusal: writable = %q, want false", got)
+	}
+}
+
+// A job of the repository renamed away was already running when the new one
+// took the name; its facts still name it. Every save path it has skips the
+// save and leaves the new holder's entries and git seed where they are, so the
+// two do not remove each other's entries for the rest of that job.
+func TestAJobOfARenamedAwayRepositoryDoesNotEvictTheNewHolder(t *testing.T) {
+	h := newHarness(t, nil)
+	holder, stale := sameNameJob(h, 2002), sameNameJob(h, 1001)
+	fresh := payload(2 << 10)
+	h.saveV1(holder, "deps", sameNameVersion, fresh, wholeBody(fresh))
+	if put := h.turboPut(holder, "abc123", fresh, nil); put.StatusCode != http.StatusAccepted {
+		t.Fatalf("holder's turbo PUT = %d", put.StatusCode)
+	}
+	if put := h.putSeed(holder, fresh); put.StatusCode != http.StatusCreated {
+		t.Fatalf("holder's seed PUT = %d", put.StatusCode)
+	}
+
+	reserve := h.postJSON(v1Path("caches"), stale,
+		jsonBody(map[string]any{"key": "deps-stale", "version": sameNameVersion, "cacheSize": 16}))
+	if reserve.StatusCode != http.StatusConflict {
+		t.Fatalf("stale v1 reserve = %d, want 409 as for an existing key", reserve.StatusCode)
+	}
+	_ = reserve.Body.Close()
+	if put := h.turboPut(stale, "def456", payload(16), nil); put.StatusCode != http.StatusAccepted {
+		t.Fatalf("stale turbo PUT = %d, want it answered as already stored", put.StatusCode)
+	}
+	if got := h.seedWritable(stale); got != "false" {
+		t.Fatalf("stale seed lookup writable = %q, want false so the guest builds no seed", got)
+	}
+	if put := h.putSeed(stale, payload(16)); put.StatusCode != http.StatusConflict {
+		t.Fatalf("stale seed PUT = %d, want 409", put.StatusCode)
+	}
+
+	listed, err := h.adminClient().List(context.Background(), adminapi.ListQuery{Repository: "acme/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed.RepositoryID != 2002 || listed.TotalCount != 3 {
+		t.Fatalf("list = %+v, want the holder's three entries under a name it still holds", listed)
+	}
+	for _, entry := range listed.Entries {
+		if entry.RepositoryID != 2002 {
+			t.Fatalf("the stale job's save was stored: %+v", entry)
+		}
+	}
+	if got := h.restoreV1(holder, "deps", sameNameVersion); !bytes.Equal(got, fresh) {
+		t.Fatal("the holder lost its entry")
+	}
+	if response, body := h.getSeed(holder); response.StatusCode != http.StatusOK || !bytes.Equal(body, fresh) {
+		t.Fatalf("the holder's seed GET = %d, want its seed", response.StatusCode)
+	}
+
+	scrape := string(readAll(t, h.do(http.MethodGet, metricsPath, "", nil, nil)))
+	if !strings.Contains(scrape, `erainfra_cache_stale_repository_writes_refused_total{kind="save"} 3`) {
+		t.Fatalf("metrics do not count the three refused saves (v1, turbo, seed):\n%s", scrape)
+	}
+}
+
+// The git seed's removal of the older seeds in its scope never removes a seed
+// a newer repository saved, even when this process has not yet seen that
+// repository take the name.
+func TestGitSeedSaveLeavesANewerRepositorysSeed(t *testing.T) {
+	h := newHarness(t, nil)
+	if put := h.putSeed(sameNameJob(h, 2002), payload(64)); put.StatusCode != http.StatusCreated {
+		t.Fatalf("holder's seed PUT = %d", put.StatusCode)
+	}
+	claims := cachetoken.Claims{Repository: "acme/app", RepositoryID: 1001, Ref: "refs/heads/main"}
+	if err := h.server.removeGitSeeds(t.Context(), claims, "refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+	records, err := h.server.index.Entries(t.Context(), "acme/app", cacheindex.Match{Prefix: gitSeedKeyPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].RepositoryID != 2002 {
+		t.Fatalf("seeds left = %+v, want the newer repository's", records)
+	}
+	scrape := string(readAll(t, h.do(http.MethodGet, metricsPath, "", nil, nil)))
+	if !strings.Contains(scrape, `erainfra_cache_stale_repository_writes_refused_total{kind="purge"} 1`) {
+		t.Fatalf("metrics do not count the purge left undone:\n%s", scrape)
 	}
 }

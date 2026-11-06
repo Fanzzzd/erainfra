@@ -32,6 +32,9 @@ type metrics struct {
 	factsPersistFailures atomic.Int64
 	// builds counts build-system cache outcomes, by system and outcome.
 	builds [len(buildSystems)][len(buildOutcomes)]atomic.Int64
+	// stalePurgesRefused counts newer repositories' git seeds a save left in
+	// place (removeGitSeeds). The saves refused are counted by the index.
+	stalePurgesRefused atomic.Int64
 }
 
 // Build-system cache outcomes. A write refused to a read-only token is not one
@@ -108,6 +111,10 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 				system, outcome, s.metrics.builds[i][j].Load())
 		}
 	}
+	out.WriteString("# HELP erainfra_cache_stale_repository_writes_refused_total Writes refused because the repository name now belongs to a newer repository: a save (kind=save), or a removal of the newer repository's git seed (kind=purge). The writer is a job of the repository that gave the name up.\n")
+	out.WriteString("# TYPE erainfra_cache_stale_repository_writes_refused_total counter\n")
+	fmt.Fprintf(&out, "erainfra_cache_stale_repository_writes_refused_total{kind=\"save\"} %d\n", s.index.StaleSavesRefused())
+	fmt.Fprintf(&out, "erainfra_cache_stale_repository_writes_refused_total{kind=\"purge\"} %d\n", s.metrics.stalePurgesRefused.Load())
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write([]byte(out.String()))
