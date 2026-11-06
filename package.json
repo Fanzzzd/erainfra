@@ -22,9 +22,9 @@
     "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
-    "oxfmt": "0.62.0",
-    "oxlint": "1.77.0",
-    "turbo": "2.10.9",
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0",
+    "turbo": "2.11.10",
     "typescript": "catalog:"
   },
   "engines": {
