@@ -30,6 +30,9 @@ type Config struct {
 	FitPolicy       string
 	ScaleSetName    string
 	Labels          []string
+	// WorkerLabels pins the Profile to Workers carrying every one of these host labels
+	// (RC_WORKER_LABELS, ADR 0017). Empty means any compatible Worker.
+	WorkerLabels    []string
 	RunnerGroup     string
 	MinRunners      int
 	MaxRunners      int
@@ -101,6 +104,7 @@ func Load() (Config, error) {
 	if len(config.Labels) == 0 && config.Profile != "" {
 		config.Labels = []string{config.Profile}
 	}
+	config.WorkerLabels = parseHostLabels(dualenv.Value("RC_WORKER_LABELS"))
 
 	var err error
 	config.ControllerToken, err = readSecret("RC_CONTROLLER_TOKEN", "RC_CONTROLLER_TOKEN_FILE")
@@ -247,6 +251,9 @@ func (c Config) Validate() error {
 			"a GitHub App cannot register enterprise runners; set RC_GITHUB_TOKEN to a personal access token (classic) with the manage_runners:enterprise scope",
 		)
 	}
+	if err := validateHostLabels(c.WorkerLabels); err != nil {
+		return fmt.Errorf("RC_WORKER_LABELS: %w", err)
+	}
 	if c.MinRunners < 0 || c.MaxRunners < 1 || c.MinRunners > c.MaxRunners {
 		return errors.New("runner bounds require 0 <= RC_MIN_RUNNERS <= RC_MAX_RUNNERS and RC_MAX_RUNNERS >= 1")
 	}
@@ -302,6 +309,7 @@ func (c Config) ProfileSpec() fleet.ProfileSpec {
 		GitHubCacheFacts: c.CacheFactsURL != "",
 		RunnerGroup:      c.RunnerGroup,
 		Labels:           c.Labels,
+		WorkerLabels:     c.WorkerLabels,
 	}
 	if c.Egress.Published() {
 		spec.Egress = &fleet.ProfileEgress{
@@ -312,6 +320,39 @@ func (c Config) ProfileSpec() fleet.ProfileSpec {
 		}
 	}
 	return spec
+}
+
+// hostLabel is the control plane's rule for a host label (convex/hostLabels.ts). Lowercase
+// because labels match case-insensitively.
+var hostLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+
+const maxHostLabels = 16
+
+// parseHostLabels splits a comma-separated list, trimmed, lowercased and without duplicates.
+func parseHostLabels(raw string) []string {
+	var labels []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		label := strings.ToLower(strings.TrimSpace(part))
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func validateHostLabels(labels []string) error {
+	if len(labels) > maxHostLabels {
+		return fmt.Errorf("at most %d host labels", maxHostLabels)
+	}
+	for _, label := range labels {
+		if !hostLabel.MatchString(label) {
+			return fmt.Errorf("%q is not a host label: lowercase letters, digits, '.', '_' and '-', starting with a letter or digit, at most 63 characters", label)
+		}
+	}
+	return nil
 }
 
 // parseEgress splits RC_EGRESS_ALLOW by what each entry is: an IPv4 address or

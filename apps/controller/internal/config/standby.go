@@ -35,6 +35,7 @@ func (c Config) WithProfile(spec *fleet.ProfileSpec) (Config, error) {
 	if len(c.Labels) == 0 {
 		c.Labels = []string{c.Profile}
 	}
+	c.WorkerLabels = spec.WorkerLabels
 	c.Executor, c.ImageRelease = spec.Executor, spec.ImageRelease
 	c.VCPUs, c.MemoryMiB = spec.VCPUs, spec.MemoryMiB
 	c.WarmPool, c.FitPolicy = spec.WarmPool, spec.FitPolicy

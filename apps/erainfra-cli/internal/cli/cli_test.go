@@ -343,10 +343,11 @@ func TestProfilesListRendersTableAndPassesJSONThrough(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	h.api.on("GET /api/v1/profiles", 200, profilesBody)
 
+	// A control plane that predates workerLabels sends none: the Profile is not pinned.
 	h.expect(ExitOK, "profiles", "list")
 	want := "" +
-		"NAME                        STATE   EXECUTOR     SIZE             READY  SLOTS  NOT READY\n" +
-		"erainfra-4vcpu-ubuntu-2404  active  firecracker  4 vCPU / 16 GiB  1      2/3    preparing 1\n"
+		"NAME                        STATE   EXECUTOR     SIZE             READY  SLOTS  NOT READY    PINNED TO\n" +
+		"erainfra-4vcpu-ubuntu-2404  active  firecracker  4 vCPU / 16 GiB  1      2/3    preparing 1  -\n"
 	if h.stdout.String() != want {
 		t.Errorf("table:\n%s\nwant:\n%s", h.stdout.String(), want)
 	}
@@ -367,13 +368,13 @@ func TestProfilesListRendersTableAndPassesJSONThrough(t *testing.T) {
 func TestWorkersListTable(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	h.api.on("GET /api/v1/workers", 200, `{"workers":[
-		{"id":"m1","name":"ubuntu0","os":"linux","arch":"x64","online":true,"lastHeartbeatAt":"2026-11-05T11:59:30.000Z","slots":{"max":3,"used":1,"policy":"auto","recommended":3},"readiness":[{"profile":"rc-linux-js","state":"ready"},{"profile":"erainfra-4vcpu-ubuntu-2404","state":"preparing"}],"activeAttempts":[]},
+		{"id":"m1","name":"ubuntu0","os":"linux","arch":"x64","labels":["gpu","nvme"],"online":true,"lastHeartbeatAt":"2026-11-05T11:59:30.000Z","slots":{"max":3,"used":1,"policy":"auto","recommended":3},"readiness":[{"profile":"rc-linux-js","state":"ready"},{"profile":"erainfra-4vcpu-ubuntu-2404","state":"preparing"}],"activeAttempts":[]},
 		{"id":"m2","name":"mac1","os":"mac","arch":null,"online":false,"lastHeartbeatAt":null,"slots":{"max":1,"used":0,"policy":"fixed","recommended":null},"readiness":[],"activeAttempts":[]}]}`)
 	h.expect(ExitOK, "workers", "list")
 	want := "" +
-		"NAME     STATUS   HEARTBEAT  PLATFORM   SLOTS  PROFILES\n" +
-		"ubuntu0  online   30s ago    linux/x64  1/3    erainfra-4vcpu-ubuntu-2404=preparing, rc-linux-js=ready\n" +
-		"mac1     offline  -          mac        0/1    -\n"
+		"NAME     STATUS   HEARTBEAT  PLATFORM   SLOTS  LABELS    PROFILES\n" +
+		"ubuntu0  online   30s ago    linux/x64  1/3    gpu,nvme  erainfra-4vcpu-ubuntu-2404=preparing, rc-linux-js=ready\n" +
+		"mac1     offline  -          mac        0/1    -         -\n"
 	if h.stdout.String() != want {
 		t.Errorf("table:\n%s\nwant:\n%s", h.stdout.String(), want)
 	}
@@ -590,4 +591,57 @@ func TestConfigPathFollowsXDG(t *testing.T) {
 	if got, _ := configPath(getenv); got != filepath.Join(env["XDG_CONFIG_HOME"], "erainfra", "config.json") {
 		t.Errorf("XDG path = %q", got)
 	}
+}
+
+func TestProfilesListShowsThePin(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	h.api.on("GET /api/v1/profiles", 200, `{"profiles":[{"name":"erainfra-4vcpu-ubuntu-2404-gpu","state":"active","executor":"firecracker","vcpus":4,"memoryMiB":16384,"readyWorkers":0,"readySlots":0,"freeSlots":0,"readiness":{},"workerLabels":["gpu","hk"]}]}`)
+	h.expect(ExitOK, "profiles", "list")
+	if !strings.Contains(h.stdout.String(), "PINNED TO") || !strings.HasSuffix(strings.TrimSpace(h.stdout.String()), "gpu,hk") {
+		t.Errorf("table:\n%s", h.stdout.String())
+	}
+}
+
+func TestWorkersSetLabelsReplacesTheLabels(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	var sent struct {
+		Labels []string `json:"labels"`
+	}
+	var path string
+	h.api.routes["PUT /api/v1/workers/hk-worker01/labels"] = func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&sent)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"worker": map[string]any{"name": "hk-worker01", "labels": sent.Labels}})
+	}
+	h.expect(ExitOK, "workers", "set-labels", "hk-worker01", "GPU", "nvme")
+	if path != "/api/v1/workers/hk-worker01/labels" || strings.Join(sent.Labels, ",") != "gpu,nvme" {
+		t.Errorf("sent %v to %s", sent.Labels, path)
+	}
+	if h.stdout.String() != "hk-worker01 host labels: gpu, nvme\n" {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+
+	h.expect(ExitOK, "workers", "set-labels", "hk-worker01", "--clear")
+	if sent.Labels == nil || len(sent.Labels) != 0 || h.stdout.String() != "hk-worker01 host labels: none\n" {
+		t.Errorf("--clear sent %v, printed %q", sent.Labels, h.stdout.String())
+	}
+
+	requests := len(h.api.requests)
+	for _, args := range [][]string{
+		{"workers", "set-labels", "hk-worker01"},
+		{"workers", "set-labels", "hk-worker01", "gpu", "--clear"},
+		{"workers", "set-labels", "hk-worker01", "has space"},
+		{"workers", "set-labels", "hk-worker01", "-leading"},
+		{"workers", "set-labels", "../etc", "gpu"},
+	} {
+		h.expect(ExitUsage, args...)
+	}
+	if len(h.api.requests) != requests {
+		t.Errorf("usage errors sent %d requests", len(h.api.requests)-requests)
+	}
+
+	// A read token is refused by the server; the CLI says so with exit 4.
+	h.env["ERAINFRA_URL"], h.env["ERAINFRA_TOKEN"] = deployment, readToken
+	h.expect(ExitAuth, "workers", "set-labels", "hk-worker01", "gpu")
 }

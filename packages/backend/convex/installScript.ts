@@ -608,7 +608,7 @@ __CONTROLLER_DIGESTS__
     printf '%s\n' '          --github-app-private-key-file PATH | --github-token-file PATH)'
     printf '%s\n' '         [--vcpus N] [--memory-mib N] [--warm-pool N] [--fit-policy balanced|cpu|network|io]'
     printf '%s\n' '         [--min-runners N] [--max-runners N] [--scale-set-name NAME] [--labels A,B]'
-    printf '%s\n' '         [--runner-group NAME] [--cache-facts-url URL --cache-signing-key-file PATH]'
+    printf '%s\n' '         [--runner-group NAME] [--worker-labels A,B] [--cache-facts-url URL --cache-signing-key-file PATH]'
     printf '%s\n' '         [--source <url|file:///path>] [--reconfigure] [--no-prompt]'
     printf '%s\n' '       curl -fsSL <site>/install | sudo bash -s -- --role controller --update [--source ...]'
     printf '%s\n' ''
@@ -638,6 +638,7 @@ __CONTROLLER_DIGESTS__
   CTL_MAX_RUNNERS=''
   CTL_SCALE_SET_NAME=''
   CTL_LABELS=''
+  CTL_WORKER_LABELS=''
   CTL_RUNNER_GROUP=''
   CTL_APP_CLIENT_ID=''
   CTL_APP_INSTALLATION_ID=''
@@ -655,7 +656,7 @@ __CONTROLLER_DIGESTS__
   CTL_SHAPE_GIVEN=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --github-config-url|--executor|--image-release|--vcpus|--memory-mib|--warm-pool|--fit-policy|--min-runners|--max-runners|--scale-set-name|--labels|--runner-group|--github-app-*|--github-token-file)
+      --github-config-url|--executor|--image-release|--vcpus|--memory-mib|--warm-pool|--fit-policy|--min-runners|--max-runners|--scale-set-name|--labels|--worker-labels|--runner-group|--github-app-*|--github-token-file)
         CTL_SHAPE_GIVEN="$CTL_SHAPE_GIVEN $1" ;;
     esac
     case "$1" in
@@ -671,6 +672,7 @@ __CONTROLLER_DIGESTS__
       --max-runners) ctl_take "$1" "$#"; CTL_MAX_RUNNERS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --scale-set-name) ctl_take "$1" "$#"; CTL_SCALE_SET_NAME=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --labels) ctl_take "$1" "$#"; CTL_LABELS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
+      --worker-labels) ctl_take "$1" "$#"; CTL_WORKER_LABELS=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --runner-group) ctl_take "$1" "$#"; CTL_RUNNER_GROUP=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --github-app-client-id) ctl_take "$1" "$#"; CTL_APP_CLIENT_ID=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
       --github-app-installation-id) ctl_take "$1" "$#"; CTL_APP_INSTALLATION_ID=$2; CTL_CONFIG_GIVEN=1; shift 2 ;;
@@ -750,6 +752,7 @@ __CONTROLLER_DIGESTS__
     ctl_plain --image-release "$CTL_IMAGE_RELEASE"
     ctl_plain --scale-set-name "$CTL_SCALE_SET_NAME"
     ctl_plain --labels "$CTL_LABELS"
+    ctl_plain --worker-labels "$CTL_WORKER_LABELS"
     ctl_plain --runner-group "$CTL_RUNNER_GROUP"
     ctl_plain --github-app-client-id "$CTL_APP_CLIENT_ID"
     ctl_plain --cache-facts-url "$CTL_CACHE_FACTS_URL"
@@ -1205,6 +1208,7 @@ CTL_UNIT_B64
       ctl_line RC_PROFILE "$CTL_PROFILE"
       ctl_line RC_SCALE_SET_NAME "$CTL_SCALE_SET_NAME"
       ctl_line RC_LABELS "$CTL_LABELS"
+      ctl_line RC_WORKER_LABELS "$CTL_WORKER_LABELS"
       ctl_line RC_RUNNER_GROUP "$CTL_RUNNER_GROUP"
       ctl_line RC_EXECUTOR "$CTL_EXECUTOR"
       ctl_line RC_IMAGE_RELEASE "$CTL_IMAGE_RELEASE"

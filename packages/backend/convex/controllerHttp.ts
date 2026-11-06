@@ -1,4 +1,5 @@
 import { parseProfileEgress } from "./egress";
+import { normalizeHostLabels } from "./hostLabels";
 
 /** Which configured token a request presented. */
 export type ControllerTokenSlot = "current" | "next";
@@ -280,8 +281,16 @@ export function parseRegisterProfile(payload: unknown) {
   // still registers; a standby cannot serve such a Profile until one that sends them does.
   const registration = parseRegistration(payload);
   if (registration === null) return null;
+  let workerLabels: string[] | undefined;
+  if (payload.workerLabels !== undefined) {
+    if (!Array.isArray(payload.workerLabels)) return null;
+    const normalized = normalizeHostLabels(payload.workerLabels);
+    if (!normalized.ok) return null;
+    workerLabels = normalized.labels;
+  }
   return {
     ...registration,
+    ...(workerLabels === undefined ? {} : { workerLabels }),
     egress: egress.egress,
     name: payload.name.trim(),
     scaleSetName: payload.scaleSetName.trim(),

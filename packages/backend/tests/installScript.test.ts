@@ -1483,6 +1483,7 @@ exit 0
       [["--profile", "two--hyphens"], /single hyphens/],
       [["--image-release", "ghcr.io/owner/image:latest"], /must be immutable/],
       [["--labels", "a b"], /no spaces, quotes/],
+      [["--worker-labels", "gpu nvme"], /no spaces, quotes/],
       [["--scale-set-name", "it's"], /no spaces, quotes/],
       [["--runner-group", "$HOME"], /no spaces, quotes/],
       [["--max-runners", "four"], /--max-runners must be a whole number/],
@@ -1508,6 +1509,8 @@ exit 0
         "https://cache.example/facts",
         "--cache-signing-key-file",
         path.join(secrets, "cache-key"),
+        "--worker-labels",
+        "gpu,nvme",
       ]),
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -1529,6 +1532,7 @@ exit 0
     expect(env).toMatch(/^RC_EXECUTOR=firecracker$/m);
     expect(env).toMatch(/^RC_MAX_RUNNERS=4$/m);
     expect(env).toMatch(/^RC_GITHUB_APP_INSTALLATION_ID=42$/m);
+    expect(env).toMatch(/^RC_WORKER_LABELS=gpu,nvme$/m);
     expect(env).toContain(`RC_CONTROLLER_TOKEN_FILE=${SECRETS_DIR}/controller-token\n`);
     expect(env).toContain(`RC_GITHUB_APP_PRIVATE_KEY_FILE=${SECRETS_DIR}/github-app.pem\n`);
     expect(env).toContain(`RC_CACHE_SIGNING_KEY_FILE=${SECRETS_DIR}/cache-signing-key\n`);
@@ -1828,6 +1832,7 @@ exit 0
       "--max-runners",
       "--scale-set-name",
       "--labels",
+      "--worker-labels",
       "--runner-group",
       "--github-app-client-id",
       "--github-app-installation-id",

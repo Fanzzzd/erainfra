@@ -518,6 +518,43 @@ such as `ubuntu-latest` — and warns about a legal name outside the scheme. `rc
 predate it and keep working; a Profile is renamed by registering the new name beside the old one,
 never in place, because GitHub holds the scale-set name.
 
+### Pin a Profile to some Workers
+
+To send jobs only to the Workers with a GPU, an NVMe pool or a particular site, put a host label on
+those Workers and register a Profile pinned to it
+([ADR 0017](docs/adr/0017-pin-a-profile-to-workers-by-host-label.md)):
+
+```bash
+# On each such Worker: at install, or later with an admin token.
+curl -fsSL https://<deployment>.convex.site/install | bash -s -- --token <registration-token> --labels gpu
+erainfra workers set-labels hk-worker01 gpu nvme
+
+# A controller for the pinned Profile: the same flags as any dedicated controller, plus the pin.
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
+  --profile erainfra-4vcpu-ubuntu-2404-gpu --worker-labels gpu ...
+```
+
+```yaml
+runs-on: erainfra-4vcpu-ubuntu-2404-gpu
+```
+
+Only a Worker carrying every label in `ERAINFRA_WORKER_LABELS` (or `RC_WORKER_LABELS`; the
+installer's `--worker-labels`) sees the Profile, prepares its image, reports readiness for it and
+is scheduled onto for it. The `/runs-on` router, the Profile list, `/metrics` and the alerts count
+the same Workers. Removing a label stops new jobs of the pinned Profile from going to that Worker;
+running ones finish. `erainfra profiles list` shows the pin under `PINNED TO` and `erainfra workers
+list` shows each Worker's `LABELS`. A Worker names its labels once, at registration. After that only
+an admin token changes them, because a label decides which jobs a machine may run. Labels are
+lowercase letters, digits, `.`, `_` and `-`, up to 16 of them.
+
+actuated's form, `runs-on: [actuated-2cpu-8gb, r2]`, has no equivalent here. GitHub hands a job to
+any idle Runner of the scale set it matched, and a Runner is created before the job it will run is
+known, so a label cannot choose a Worker inside one Profile. A second scale set that also answers
+to `erainfra-4vcpu-ubuntu-2404` would take plain jobs as well, so the control plane refuses a
+Profile whose `ERAINFRA_LABELS` include another Profile's name. The pinned Profile also does not
+keep an unpinned one off the labelled Workers: they share their slots. To reserve the Workers, pin
+the other Profile to a label only the other Workers carry.
+
 A dedicated controller publishes its env contract when it first acquires the lease after startup.
 Worker standbys never overwrite it. Existing deployments can keep the dedicated host while adding
 standbys, then stop its units once Worker takeover is verified. Enterprise runner registrations
@@ -1021,7 +1058,8 @@ the control plane accepts, told apart by scope:
 | `admin`   | yes             | yes                    | yes        |
 | `metrics` | no              | no                     | yes        |
 
-The fleet's admin route mints Worker registration tokens (`erainfra workers add`). The
+The fleet's admin routes mint Worker registration tokens (`erainfra workers add`) and replace a
+Worker's host labels (`erainfra workers set-labels`). The
 infrastructure routes add enrolling and revoking Nodes, deploying, removing Apps, setting env,
 declaring links and reading log tails; each is in the audit
 log with the token's name. The dashboard shows a new token once, stores only its SHA-256, records when each
@@ -1033,6 +1071,7 @@ erainfra auth login --url https://<deployment>.convex.site --token -   # reads t
 erainfra auth status
 erainfra profiles list
 erainfra workers list
+erainfra workers set-labels hk-worker01 gpu   # admin token; see "Pin a Profile to some Workers"
 erainfra jobs list --profile erainfra-4vcpu-ubuntu-2404 --state failed --since 24h
 erainfra jobs list --repo acme/web --all --json | jq '.attempts[] | {id, queueWaitMs, durationMs}'
 erainfra jobs view <id>
@@ -1061,14 +1100,15 @@ The API under `/api/v1` takes the token as `Authorization: Bearer <token>`:
 | Route                                      | Scope | Returns                                                                                                         |
 | ------------------------------------------ | ----- | --------------------------------------------------------------------------------------------------------------- |
 | `GET /api/v1/token`                        | read  | the calling token's name and scope                                                                              |
-| `GET /api/v1/profiles`                     | read  | Profiles with ready Workers, free/ready slots, and Workers per readiness state                                  |
-| `GET /api/v1/workers`                      | read  | Workers with slots, readiness per Profile, last heartbeat and active Attempts                                   |
+| `GET /api/v1/profiles`                     | read  | Profiles with ready Workers, free/ready slots, Workers per readiness state, and the host labels pinned to       |
+| `GET /api/v1/workers`                      | read  | Workers with host labels, slots, readiness per Profile, last heartbeat and active Attempts                      |
 | `GET /api/v1/attempts`                     | read  | Attempts newest first; `profile`, `state`, `repo`, `since` (`24h`, `7d` or RFC 3339), `limit` (1–100), `cursor` |
 | `GET /api/v1/attempts/<id>`                | read  | one Attempt with its timeline, queue wait, duration and run URL                                                 |
 | `GET /api/v1/rightsize`                    | read  | a Profile recommendation per repository and job, and the `runs-on` map; `repo`, `since` (at most 14 days back)  |
 | `POST /api/v1/workers/registration-tokens` | admin | a single-use Worker registration token and the install commands                                                 |
 | `GET /api/v1/tests`                        | read  | runs with JUnit results and their failures, newest first; `repo`, `since`, `limit`, `failed`                    |
 | `GET /api/v1/tests/flaky`                  | read  | tests seen both failing and passing, latest first; `repo`, `since`, `limit`                                     |
+| `PUT /api/v1/workers/<name>/labels`        | admin | replaces the Worker's host labels with `{"labels": [...]}`; `[]` clears them                                    |
 
 The infrastructure routes (`/api/v1/nodes`, `/apps`, `/deployments`, `/links`, `/logs`) are listed
 in [docs/infra-management.md](docs/infra-management.md#the-operator-api-routes).

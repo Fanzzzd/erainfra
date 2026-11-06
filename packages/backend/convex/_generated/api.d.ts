@@ -41,6 +41,7 @@ import type * as fleetObservation from "../fleetObservation.js";
 import type * as github from "../github.js";
 import type * as githubApp from "../githubApp.js";
 import type * as githubAppConfig from "../githubAppConfig.js";
+import type * as hostLabels from "../hostLabels.js";
 import type * as http from "../http.js";
 import type * as infra_access from "../infra/access.js";
 import type * as infra_apps from "../infra/apps.js";
@@ -145,6 +146,7 @@ declare const fullApi: ApiFromModules<{
   github: typeof github;
   githubApp: typeof githubApp;
   githubAppConfig: typeof githubAppConfig;
+  hostLabels: typeof hostLabels;
   http: typeof http;
   "infra/access": typeof infra_access;
   "infra/apps": typeof infra_apps;

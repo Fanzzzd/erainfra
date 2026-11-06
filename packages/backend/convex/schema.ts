@@ -147,6 +147,10 @@ export default defineSchema({
     githubCacheFacts: v.optional(v.boolean()),
     runnerGroup: v.optional(v.string()),
     labels: v.optional(v.array(v.string())),
+    // Host labels a Worker must carry, every one, to serve this Profile (ADR 0017). Absent or
+    // empty means any compatible Worker, which is what every Profile registered before the field
+    // meant. Stored normalized (hostLabels.ts).
+    workerLabels: v.optional(v.array(v.string())),
     state: v.union(v.literal("active"), v.literal("paused")),
     updatedAt: v.number(),
   })

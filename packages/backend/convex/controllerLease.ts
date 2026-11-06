@@ -202,6 +202,7 @@ const profileSettingsValidator = v.object({
   egress: v.optional(profileEgressValidator),
   runnerGroup: v.optional(v.string()),
   labels: v.optional(v.array(v.string())),
+  workerLabels: v.optional(v.array(v.string())),
 });
 
 function profileSettings(profile: Doc<"profiles">) {
@@ -224,6 +225,7 @@ function profileSettings(profile: Doc<"profiles">) {
     ...(profile.egress === undefined ? {} : { egress: profile.egress }),
     ...(profile.runnerGroup === undefined ? {} : { runnerGroup: profile.runnerGroup }),
     ...(profile.labels === undefined ? {} : { labels: profile.labels }),
+    ...(profile.workerLabels === undefined ? {} : { workerLabels: profile.workerLabels }),
   };
 }
 

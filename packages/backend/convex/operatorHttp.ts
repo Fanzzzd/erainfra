@@ -211,6 +211,8 @@ export function profileJson(profile: Profile) {
     fitPolicy: profile.fitPolicy,
     minRunners: profile.minRunners,
     maxRunners: profile.maxRunners,
+    // Host labels a Worker must carry to serve the Profile (ADR 0017); [] when it is not pinned.
+    workerLabels: profile.workerLabels,
     // Workers that can take a job now: ready, admitted, online, Profile active.
     readyWorkers: profile.readyWorkers,
     readySlots: profile.readySlots,
@@ -237,6 +239,8 @@ export function workerJson(machine: Machine, now: number) {
     arch: machine.arch ?? null,
     cpus: machine.cpus ?? null,
     memoryMiB: machine.memoryMiB ?? null,
+    // Host labels, which pinned Profiles match against (ADR 0017).
+    labels: machine.labels,
     online: machine.lastSeen > 0 && now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
     lastHeartbeatAt: machine.lastSeen > 0 ? iso(machine.lastSeen) : null,
     registeredAt: iso(machine._creationTime),
@@ -561,6 +565,39 @@ export function registerOperatorRoutes(http: HttpRouter) {
         },
         201,
       );
+    }),
+  });
+
+  // Replace a Worker's host labels. The body is {"labels": [...]}; an empty list clears them.
+  http.route({
+    pathPrefix: `${API_PREFIX}/workers/`,
+    method: "PUT",
+    handler: operatorRoute("admin", async (ctx, request) => {
+      const rest = new URL(request.url).pathname.slice(`${API_PREFIX}/workers/`.length);
+      const match = /^([^/]+)\/labels$/.exec(rest);
+      if (match === null) return apiError(404, "not_found", "No such API route");
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return apiError(400, "invalid_request", "The body must be JSON");
+      }
+      const labels = (body as { labels?: unknown } | null)?.labels;
+      if (!Array.isArray(labels)) {
+        return apiError(400, "invalid_request", 'The body must be {"labels": [...]}');
+      }
+      const result = await ctx.runMutation(internal.machines.setLabels, {
+        name: decodeURIComponent(match[1]),
+        labels: labels.map((label) => (typeof label === "string" ? label : String(label))),
+      });
+      if (!result.ok) {
+        return apiError(
+          result.status,
+          result.status === 404 ? "not_found" : "invalid_request",
+          result.error,
+        );
+      }
+      return apiJson({ worker: { name: result.name, labels: result.labels } }, 200);
     }),
   });
 

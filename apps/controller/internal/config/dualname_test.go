@@ -38,6 +38,7 @@ func dedicatedControllerSettings(t *testing.T) map[string]string {
 		"PROFILE":               "linux-js",
 		"SCALE_SET_NAME":        "linux-js-set",
 		"LABELS":                "linux-js,firecracker",
+		"WORKER_LABELS":         "gpu,NVMe",
 		"EXECUTOR":              "firecracker",
 		"IMAGE_RELEASE":         validConfig().ImageRelease,
 		"VCPUS":                 "4",
