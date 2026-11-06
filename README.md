@@ -1360,14 +1360,22 @@ What counts as what:
 - **Flaky** has two kinds of evidence. Within one run, the test runner retried a test into a pass:
   Surefire's `<flakyFailure>`, or a test listed as failed and then passed, which is how gotestsum
   `--rerun-fails` writes it. Across runs, the test failed in one Attempt and passed in another of the
-  same code. Attempts of one workflow run are always the same code: GitHub reruns a run at its
-  original commit and ref. Attempts of different runs count as the same code only when both were a
-  `push`, `schedule`, `workflow_dispatch` or `merge_group` run on the same branch and their
-  workspaces' `.git` named the same commit. The branch and the event come from GitHub's job
-  message to the controller. The commit is the job's own claim, so it never joins runs on its own:
-  a pull request, or any other job, that writes main's commit into its `.git` is compared only with
-  its own workflow run and cannot make main's tests look flaky. Flaky tests are found when a report
-  arrives, against at most 20 earlier reports of the same code, and one report marks at most 500.
+  same job on the same code. The job is GitHub's job name, which includes the matrix values
+  (`test (ubuntu, 18)`), so a test that always fails on one matrix leg and passes on another is
+  a real difference between the legs, not a flaky test. Attempts of one workflow run are always the
+  same code: GitHub reruns a run at its original commit and ref. Attempts of different runs count
+  as the same code only when both were a `push`, `schedule`, `workflow_dispatch` or `merge_group`
+  run on the same branch and their workspaces' `.git` named the same commit. The event comes from
+  GitHub's job message to the controller. The branch is the workflow run's `head_branch`, which the
+  controller reads from GitHub's REST API with the same lookup it makes for the
+  [job cache](#the-job-cache) scope. The job message's workflow ref cannot stand in for it, because
+  for a job of a called workflow it names the called file's ref. A controller that does not read
+  workflow runs (no `RC_CACHE_FACTS_URL`, or a version before this one) records no branch, and its
+  Attempts are compared only within their own workflow run. The commit is the job's own claim, so
+  it never joins runs on its own: a pull request, or any other job, that writes main's commit into
+  its `.git` is compared only with its own workflow run and cannot make main's tests look flaky.
+  Flaky tests are found when a report arrives, against at most 20 earlier reports of the same code,
+  and one report marks at most 500.
 - **Slowest** is built from the 50 slowest passing tests each run keeps, grouped by test and ordered
   by mean duration.
 

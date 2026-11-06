@@ -376,6 +376,7 @@ export function parseJobStarted(payload: unknown) {
     !optionalString(payload.owner) ||
     !optionalString(payload.jobId) ||
     !optionalString(payload.workflowRef) ||
+    !optionalString(payload.headBranch) ||
     !optionalString(payload.displayName) ||
     !optionalPositiveInteger(payload.workflowRunId) ||
     !optionalString(payload.eventName) ||
@@ -393,6 +394,7 @@ export function parseJobStarted(payload: unknown) {
     owner: payload.owner?.trim() || undefined,
     jobId: payload.jobId?.trim() || undefined,
     workflowRef: payload.workflowRef?.trim() || undefined,
+    headBranch: payload.headBranch?.trim() || undefined,
     displayName: payload.displayName?.trim() || undefined,
     workflowRunId: payload.workflowRunId,
     eventName: payload.eventName?.trim() || undefined,

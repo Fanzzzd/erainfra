@@ -153,6 +153,7 @@ func (s *Store) MarkJobStarted(ctx context.Context, event fleet.JobStarted) erro
 		Owner            string `json:"owner,omitempty"`
 		JobID            string `json:"jobId,omitempty"`
 		WorkflowRef      string `json:"workflowRef,omitempty"`
+		HeadBranch       string `json:"headBranch,omitempty"`
 		DisplayName      string `json:"displayName,omitempty"`
 		WorkflowRunID    int64  `json:"workflowRunId,omitempty"`
 		EventName        string `json:"eventName,omitempty"`
@@ -167,6 +168,7 @@ func (s *Store) MarkJobStarted(ctx context.Context, event fleet.JobStarted) erro
 		Owner:            event.Owner,
 		JobID:            event.JobID,
 		WorkflowRef:      event.WorkflowRef,
+		HeadBranch:       event.HeadBranch,
 		DisplayName:      event.DisplayName,
 		WorkflowRunID:    event.WorkflowRunID,
 		EventName:        event.EventName,

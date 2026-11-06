@@ -96,6 +96,7 @@ async function attempt(
     owner: string;
     workflowRunId: number;
     workflowRef: string;
+    headBranch: string | undefined;
     eventName: string;
     finishedAt: number;
     displayName: string;
@@ -118,6 +119,7 @@ async function attempt(
       owner: "acme",
       workflowRunId: 100,
       workflowRef: "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      headBranch: "main",
       eventName: "push",
       displayName: "test",
       ...fields,
@@ -158,7 +160,7 @@ describe("test report ingestion", () => {
       branch: "main",
       jobName: "test",
       commitSha: COMMIT_A,
-      revision: `commit:${COMMIT_A}@main`,
+      revision: `commit:${JSON.stringify([COMMIT_A, "main", "test"])}`,
       // The hashes live beside the report, so the views reading many reports never carry them.
       passed: "",
       failing: true,
@@ -329,34 +331,76 @@ describe("flaky detection", () => {
   // The commit is the job's own claim, so a job that names main's commit must not be compared
   // with main's runs unless GitHub, through the controller, says it ran main's push-like event.
   it.each([
-    ["a pull request", "pull_request", "acme/app/.github/workflows/ci.yml@refs/pull/7/merge"],
+    [
+      "a pull request",
+      "pull_request",
+      "acme/app/.github/workflows/ci.yml@refs/pull/7/merge",
+      "fix",
+    ],
     // A reusable workflow's job carries the callee's ref, so this one names main.
     [
       "a pull request calling a workflow at main",
       "pull_request",
       "acme/app/.github/workflows/reusable.yml@refs/heads/main",
+      "fix",
     ],
     [
       "pull_request_target",
       "pull_request_target",
       "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      "fix",
     ],
     [
       "a comment command on main",
       "issue_comment",
       "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      "main",
     ],
-    ["a push to another branch", "push", "acme/app/.github/workflows/ci.yml@refs/heads/feature"],
-    ["an Attempt with no event", undefined, "acme/app/.github/workflows/ci.yml@refs/heads/main"],
+    [
+      "a push to another branch",
+      "push",
+      "acme/app/.github/workflows/ci.yml@refs/heads/feature",
+      "feature",
+    ],
+    [
+      "a push to another branch calling a workflow of its own repository at main",
+      "push",
+      "acme/app/.github/workflows/reusable.yml@refs/heads/main",
+      "feature",
+    ],
+    [
+      "a push calling another repository's workflow at main",
+      "push",
+      "mallory/tools/.github/workflows/test.yml@refs/heads/main",
+      "feature",
+    ],
+    // A controller that does not send the run's head branch: the workflow ref may be a callee's.
+    [
+      "a push whose controller sent no head branch",
+      "push",
+      "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      undefined,
+    ],
+    [
+      "an Attempt with no event",
+      undefined,
+      "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      "main",
+    ],
   ])(
     "never lets %s that claims main's commit mark main's tests flaky",
-    async (_, eventName, workflowRef) => {
+    async (_, eventName, workflowRef, headBranch) => {
       const t = convexTest(schema, modules);
       const machineId = await setup(t);
       const tests = ["pkg::TestA", "pkg::TestB"];
       const main = await attempt(t, machineId, { workflowRunId: 100 });
       await send(t, main, await report([], tests, { commitSha: COMMIT_A }));
-      const other = await attempt(t, machineId, { workflowRunId: 200, workflowRef, eventName });
+      const other = await attempt(t, machineId, {
+        workflowRunId: 200,
+        workflowRef,
+        eventName,
+        headBranch,
+      });
       // Every test fails, and the report names main's commit.
       await send(
         t,
@@ -378,6 +422,7 @@ describe("flaky detection", () => {
       workflowRunId: 300,
       eventName: "pull_request",
       workflowRef: "acme/app/.github/workflows/ci.yml@refs/pull/7/merge",
+      headBranch: "fix",
     };
     const first = await attempt(t, machineId, fields);
     const rerun = await attempt(t, machineId, fields);
@@ -388,9 +433,88 @@ describe("flaky detection", () => {
     expect((await tables(t)).flaky).toHaveLength(0);
     await send(t, rerun, await report([], ["pkg::TestZ"], { commitSha: COMMIT_B }));
     const { flaky } = await tables(t);
-    expect(flaky.map((row) => [row.testId, row.lastBranch])).toEqual([
-      ["pkg::TestZ", "pull/7/merge"],
-    ]);
+    expect(flaky.map((row) => [row.testId, row.lastBranch])).toEqual([["pkg::TestZ", "fix"]]);
+  });
+
+  it("does not call a deterministic failure on one matrix leg flaky", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await setup(t);
+    // One push run, two legs: the test always fails on one and passes on the other.
+    const linux = await attempt(t, machineId, { workflowRunId: 500, displayName: "test (linux)" });
+    const node18 = await attempt(t, machineId, {
+      workflowRunId: 500,
+      displayName: "test (node 18)",
+    });
+    await send(t, linux, await report([], ["pkg::TestPath"], { commitSha: COMMIT_A }));
+    await send(t, node18, await report([failed("pkg::TestPath")], [], { commitSha: COMMIT_A }));
+    // The same goes for two runs of the commit, and for a leg with no commit.
+    const nextRun = await attempt(t, machineId, {
+      workflowRunId: 501,
+      displayName: "test (linux)",
+    });
+    await send(t, nextRun, await report([], ["pkg::TestPath"], { commitSha: COMMIT_A }));
+    const noCommit = await attempt(t, machineId, {
+      workflowRunId: 500,
+      displayName: "test (linux)",
+    });
+    await send(t, noCommit, await report([], ["pkg::TestPath"]));
+    expect((await tables(t)).flaky).toHaveLength(0);
+    // A rerun of the failing leg that passes is the flaky evidence.
+    const rerun = await attempt(t, machineId, {
+      workflowRunId: 502,
+      displayName: "test (node 18)",
+    });
+    await send(t, rerun, await report([], ["pkg::TestPath"], { commitSha: COMMIT_A }));
+    const { flaky } = await tables(t);
+    expect(flaky.map((row) => [row.testId, row.attemptIds])).toEqual([["pkg::TestPath", [rerun]]]);
+  });
+
+  it.each([
+    [
+      "the run's head branch",
+      "acme/shared/.github/workflows/test.yml@refs/heads/main",
+      "feature",
+      "feature",
+    ],
+    [
+      "a head branch over its own workflow ref",
+      "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      "feature",
+      "feature",
+    ],
+    [
+      "a fork's branch as GitHub's owner:branch",
+      "acme/app/.github/workflows/ci.yml@refs/pull/7/merge",
+      "mallory:main",
+      "mallory:main",
+    ],
+    // Without a head branch from the controller, only a workflow file of the run's own repository.
+    [
+      "its own workflow ref",
+      "acme/app/.github/workflows/ci.yml@refs/heads/feature",
+      undefined,
+      "feature",
+    ],
+    [
+      "its own workflow ref in another case",
+      "Acme/App/.github/workflows/ci.yml@refs/heads/feature",
+      undefined,
+      "feature",
+    ],
+    [
+      "no branch for another repository's workflow",
+      "acme/shared/.github/workflows/test.yml@refs/heads/main",
+      undefined,
+      undefined,
+    ],
+  ])("labels a report with %s", async (_, workflowRef, headBranch, branch) => {
+    const t = convexTest(schema, modules);
+    const machineId = await setup(t);
+    const attemptId = await attempt(t, machineId, { workflowRunId: 200, workflowRef, headBranch });
+    await send(t, attemptId, await report([failed("pkg::TestA")], [], { commitSha: COMMIT_B }));
+    const { reports, cases } = await tables(t);
+    expect(reports[0]!.branch).toBe(branch);
+    expect(cases[0]!.branch).toBe(branch);
   });
 
   it("compares a scheduled run with a push of the same commit on the same branch", async () => {

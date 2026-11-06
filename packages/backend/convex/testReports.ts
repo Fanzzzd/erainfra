@@ -11,7 +11,6 @@ import {
 import { requireDashboardAuth } from "./dashboardAuth";
 import {
   assertValidReport,
-  branchFromWorkflowRef,
   failingHashes,
   findFlaky,
   isFailing,
@@ -21,6 +20,7 @@ import {
   passedHash,
   repositoryName,
   revisionKey,
+  runBranch,
   slowestTests,
   TEST_RETENTION_MS,
   TESTS_LATE_REPORT_MS,
@@ -80,7 +80,7 @@ export async function recordAttemptTests(
   if (existing !== null) return true;
 
   const repository = repositoryName(attempt);
-  const branch = branchFromWorkflowRef(attempt.workflowRef);
+  const branch = runBranch(attempt);
   const revision = repository === undefined ? undefined : revisionKey(attempt, report.commitSha);
   const cases = report.cases ?? [];
   const reportId = await ctx.db.insert("testReports", {

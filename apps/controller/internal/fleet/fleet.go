@@ -84,13 +84,17 @@ type NewAttempt struct {
 
 // JobStarted is the scale-set lifecycle data worth retaining for an Attempt.
 type JobStarted struct {
-	Profile          string    `json:"profile"`
-	RunnerName       string    `json:"runnerName"`
-	RunnerRequestID  int64     `json:"runnerRequestId"`
-	Repository       string    `json:"repository"`
-	Owner            string    `json:"owner"`
-	JobID            string    `json:"jobId"`
-	WorkflowRef      string    `json:"workflowRef"`
+	Profile         string `json:"profile"`
+	RunnerName      string `json:"runnerName"`
+	RunnerRequestID int64  `json:"runnerRequestId"`
+	Repository      string `json:"repository"`
+	Owner           string `json:"owner"`
+	JobID           string `json:"jobId"`
+	WorkflowRef     string `json:"workflowRef"`
+	// HeadBranch is the workflow run's head_branch, read from GitHub after the
+	// message arrived; empty on the first MarkJobStarted. See
+	// Scaler.learnFromWorkflowRun.
+	HeadBranch       string    `json:"headBranch,omitempty"`
 	DisplayName      string    `json:"displayName"`
 	WorkflowRunID    int64     `json:"workflowRunId"`
 	EventName        string    `json:"eventName"`

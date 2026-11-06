@@ -461,6 +461,12 @@ export const cancelAttempt = internalMutation({
   },
 });
 
+/**
+ * Records GitHub's JobStarted message on its Attempt. A controller sends it once as the message
+ * arrives and, from this version on, once more with `headBranch` after it has read the workflow
+ * run from GitHub. The two carry the same fields otherwise and either may land first: a field left
+ * out is never cleared, so their order does not matter.
+ */
 export const markJobStarted = internalMutation({
   args: {
     profile: v.string(),
@@ -470,6 +476,7 @@ export const markJobStarted = internalMutation({
     owner: v.optional(v.string()),
     jobId: v.optional(v.string()),
     workflowRef: v.optional(v.string()),
+    headBranch: v.optional(v.string()),
     displayName: v.optional(v.string()),
     workflowRunId: v.optional(v.number()),
     eventName: v.optional(v.string()),
@@ -489,6 +496,15 @@ export const markJobStarted = internalMutation({
       throw new ConvexError("Job started for an unknown Attempt");
     }
     if (terminalStates.has(attempt.state)) {
+      // A job that ran and settled before the controller's GitHub lookup came back may still
+      // upload its test report, which reads the branch.
+      if (
+        args.headBranch !== undefined &&
+        attempt.startedAt !== undefined &&
+        attempt.headBranch === undefined
+      ) {
+        await ctx.db.patch(attempt._id, { headBranch: args.headBranch });
+      }
       return null;
     }
     await ctx.db.patch(attempt._id, {
@@ -499,6 +515,7 @@ export const markJobStarted = internalMutation({
       ...(args.owner === undefined ? {} : { owner: args.owner }),
       ...(args.jobId === undefined ? {} : { jobId: args.jobId }),
       ...(args.workflowRef === undefined ? {} : { workflowRef: args.workflowRef }),
+      ...(args.headBranch === undefined ? {} : { headBranch: args.headBranch }),
       ...(args.displayName === undefined ? {} : { displayName: args.displayName }),
       ...(args.workflowRunId === undefined ? {} : { workflowRunId: args.workflowRunId }),
       ...(args.eventName === undefined ? {} : { eventName: args.eventName }),

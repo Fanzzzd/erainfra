@@ -41,6 +41,9 @@ func (f *fakeCache) facts() []cachefacts.Facts {
 }
 
 type fakeStore struct {
+	// mu guards started, which the Scaler also appends to from the goroutine
+	// that sends the run's head branch.
+	mu           sync.Mutex
 	active       []fleet.Attempt
 	cleanups     []fleet.RunnerCleanup
 	cleaned      []fleet.RunnerCleanup
@@ -95,8 +98,25 @@ func (f *fakeStore) CancelAttempt(_ context.Context, _, runnerName, _ string) er
 }
 
 func (f *fakeStore) MarkJobStarted(_ context.Context, event fleet.JobStarted) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.started = append(f.started, event)
 	return f.startedError
+}
+
+// startedEvents returns the MarkJobStarted calls so far: the first send of each
+// job, which carries no head branch, when first is true, and the head-branch
+// sends otherwise.
+func (f *fakeStore) startedEvents(first bool) []fleet.JobStarted {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []fleet.JobStarted
+	for _, event := range f.started {
+		if (event.HeadBranch == "") == first {
+			out = append(out, event)
+		}
+	}
+	return out
 }
 
 func (f *fakeStore) MarkJobCompleted(_ context.Context, event fleet.JobCompleted) error {
@@ -311,8 +331,8 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(store.started) != 1 || store.started[0].Repository != "EraInfra" {
-		t.Fatalf("started events = %#v", store.started)
+	if started := store.startedEvents(true); len(started) != 1 || started[0].Repository != "EraInfra" {
+		t.Fatalf("started events = %#v", started)
 	}
 	if len(store.completed) != 1 || store.completed[0].FinishedAt != finishedAt {
 		t.Fatalf("completed events = %#v", store.completed)
@@ -392,8 +412,8 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 		t.Fatalf("a cache publish failure failed the job: %v", err)
 	}
 	scaler.publishing.Wait()
-	if len(store.started) != 1 {
-		t.Fatalf("job start was not recorded despite cache failure: %#v", store.started)
+	if started := store.startedEvents(true); len(started) != 1 {
+		t.Fatalf("job start was not recorded despite cache failure: %#v", started)
 	}
 }
 
