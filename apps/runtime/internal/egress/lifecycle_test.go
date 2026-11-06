@@ -32,7 +32,7 @@ func TestAddressReusePurgesPreviousDNS(t *testing.T) {
 		t.Fatal("fixture DNS failed")
 	}
 	kernel.reset()
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", npmPolicy(t)); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", npmPolicy(t)); err != nil {
 		t.Fatal(err)
 	}
 	batches := kernel.all()
@@ -90,7 +90,7 @@ func TestTeardownCannotDeleteReusedAddressMembership(t *testing.T) {
 			<-blocking.entered
 			effective := npmPolicy(t)
 			replacement := make(chan error, 1)
-			go func() { replacement <- guard.Register(context.Background(), guestAddress, "vm-2", effective) }()
+			go func() { replacement <- guard.Register(context.Background(), guestAddress, guestLink, "vm-2", effective) }()
 			select {
 			case err := <-replacement:
 				unblock()
@@ -101,7 +101,7 @@ func TestTeardownCannotDeleteReusedAddressMembership(t *testing.T) {
 			// Another address must not wait behind external calls for this address.
 			unrelated := make(chan error, 1)
 			go func() {
-				unrelated <- guard.Register(context.Background(), netip.MustParseAddr("10.241.0.8"), "other", effective)
+				unrelated <- guard.Register(context.Background(), netip.MustParseAddr("10.241.0.8"), "veth00000008", "other", effective)
 			}()
 			select {
 			case err := <-unrelated:
@@ -145,7 +145,7 @@ func TestFailedReplacementPurgeBlocksEveryProfileUntilRetrySucceeds(t *testing.T
 	guard, kernel, _ := setup(t, githubAllowlist)
 	ask(guard, guestAddress, "github.com.")
 	kernel.failNext = errors.New("purge failed")
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", npmPolicy(t)); err == nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", npmPolicy(t)); err == nil {
 		t.Fatal("failed purge must refuse replacement")
 	}
 	if response := ask(guard, guestAddress, "github.com."); response.Rcode != dns.RcodeRefused {
@@ -156,11 +156,11 @@ func TestFailedReplacementPurgeBlocksEveryProfileUntilRetrySucceeds(t *testing.T
 		t.Fatal(err)
 	}
 	kernel.failNext = errors.New("purge still failing")
-	if err := guard.Register(context.Background(), guestAddress, "public", public); err == nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "public", public); err == nil {
 		t.Fatal("public replacement must also be fenced by stale permissions")
 	}
 	kernel.reset()
-	if err := guard.Register(context.Background(), guestAddress, "vm-3", npmPolicy(t)); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-3", npmPolicy(t)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(kernel.all(), "delete element inet runner-center rc_allow_dns { 10.241.0.7 . 140.82.112.3 }") {
@@ -180,7 +180,7 @@ func TestDNSReplyRacingAddressReplacementCannotAdmitOldPermission(t *testing.T) 
 	done := make(chan *dns.Msg, 1)
 	go func() { done <- ask(guard, guestAddress, "github.com.") }()
 	<-entered
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", npmPolicy(t)); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", npmPolicy(t)); err != nil {
 		close(release)
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestReplacementDrainsInFlightDNSInsertion(t *testing.T) {
 	<-blocking.entered
 	effective := npmPolicy(t)
 	replacement := make(chan error, 1)
-	go func() { replacement <- guard.Register(context.Background(), guestAddress, "vm-2", effective) }()
+	go func() { replacement <- guard.Register(context.Background(), guestAddress, guestLink, "vm-2", effective) }()
 	select {
 	case err := <-replacement:
 		t.Fatalf("replacement overtook DNS insertion: %v", err)
@@ -256,7 +256,7 @@ func TestFailedDNSAcknowledgementIsStillPurged(t *testing.T) {
 		t.Fatal("uncertain admission must fail DNS")
 	}
 	kernel.reset()
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", npmPolicy(t)); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", npmPolicy(t)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(kernel.all(), "delete element inet runner-center rc_allow_dns { 10.241.0.7 . 140.82.112.3 }") {
@@ -274,14 +274,14 @@ func TestFailedRegistrationIsPurgedBeforePublicAddressReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := guard.Register(context.Background(), guestAddress, "vm-1", effective); err == nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-1", effective); err == nil {
 		t.Fatal("uncertain registration must fail boot")
 	}
 	public, err := netpolicy.Effective(host, netpolicy.ProfileEgress{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", public); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", public); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(kernel.all(), "delete element inet runner-center rc_allow_cidr { 10.241.0.7 . 128.0.0.0/1 }") {
@@ -301,11 +301,11 @@ func TestFailedFlowListingKeepsAddressFencedUntilRetrySucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", public); err == nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", public); err == nil {
 		t.Fatal("unknown leftover flow state must fence address reuse")
 	}
 	kernel.failList = nil
-	if err := guard.Register(context.Background(), guestAddress, "vm-3", public); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-3", public); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,7 +25,11 @@ import (
 // GuestEgressState is everything the runtime put into the per-guest sets for
 // one guest, which is exactly what has to come out again.
 type GuestEgressState struct {
-	Guest      netip.Addr
+	Guest netip.Addr
+	// Link is the host side of the guest's link, written to rc_guest_links
+	// and, bound to Guest, to rc_guest_sources. Every guest has one, public or
+	// not: it is what makes the host drop IPv6 and borrowed sources from it.
+	Link       string
 	Observed   bool
 	Restricted bool
 	// CIDRs are the collapsed allow prefixes written to rc_allow_cidr.
@@ -48,13 +53,30 @@ func (f Flow) element() string {
 	return fmt.Sprintf("%s . %s . %s . %d", f.Guest, f.Destination, f.Protocol, f.Port)
 }
 
-// RegistrationBatch puts a guest into the sets its effective egress needs. It
-// returns the state it wrote and an empty batch for a guest that needs no
-// per-guest state at all, which is every public guest on a public host.
-func RegistrationBatch(guest netip.Addr, effective EffectiveEgress) (string, GuestEgressState, error) {
-	state := GuestEgressState{Guest: guest, Observed: effective.Observed, Restricted: effective.Restricted}
+// linkNamePattern is the interface names a guest link may have. The kernel
+// allows more, but ptp names host links veth<hex>, and anything outside this
+// pattern could not be written safely into an nft batch or a /proc path.
+var linkNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`)
+
+// ValidateLinkName refuses an interface name that is not a plain kernel
+// interface name of at most 15 characters.
+func ValidateLinkName(link string) error {
+	if !linkNamePattern.MatchString(link) {
+		return fmt.Errorf("guest link %q is not an interface name this runtime manages", link)
+	}
+	return nil
+}
+
+// RegistrationBatch binds a guest to its link and puts it into the sets its
+// effective egress needs. It returns the state it wrote. Every guest gets the
+// link binding, so the batch is never empty.
+func RegistrationBatch(guest netip.Addr, link string, effective EffectiveEgress) (string, GuestEgressState, error) {
+	state := GuestEgressState{Guest: guest, Link: link, Observed: effective.Observed, Restricted: effective.Restricted}
 	if !guest.Is4() {
 		return "", state, fmt.Errorf("guest address %s must be IPv4", guest)
+	}
+	if err := ValidateLinkName(link); err != nil {
+		return "", state, err
 	}
 	if effective.Restricted {
 		prefixes := make([]netip.Prefix, 0, len(effective.CIDRs))
@@ -68,6 +90,10 @@ func RegistrationBatch(guest netip.Addr, effective EffectiveEgress) (string, Gue
 		state.CIDRs = CollapsePrefixes(prefixes)
 	}
 	var batch strings.Builder
+	// The link first: what the link may carry, then that it is a guest's. In
+	// one transaction a packet sees both or neither.
+	writeElements(&batch, "add", GuestSourceSetName, []string{state.sourceElement()})
+	writeElements(&batch, "add", GuestLinkSetName, []string{state.linkElement()})
 	if len(state.CIDRs) > 0 {
 		elements := make([]string, 0, len(state.CIDRs))
 		for _, prefix := range state.CIDRs {
@@ -149,7 +175,59 @@ func RemovalBatch(state GuestEgressState) string {
 		blocked = append(blocked, flow.element())
 	}
 	remove(BlockedSetName, blocked)
+	// The link binding goes last. The whole batch is one transaction, so the
+	// order is for the reader: the guest stops being anyone's before its link
+	// stops being a guest link.
+	if state.Link != "" {
+		remove(GuestLinkSetName, []string{state.linkElement()})
+		remove(GuestSourceSetName, []string{state.sourceElement()})
+	}
 	return batch.String()
+}
+
+// linkElement and sourceElement quote the interface name: nft reads an
+// unquoted name as a symbol, which an interface name is not.
+func (s GuestEgressState) linkElement() string {
+	return strconv.Quote(s.Link)
+}
+
+func (s GuestEgressState) sourceElement() string {
+	return fmt.Sprintf("%s . %s", strconv.Quote(s.Link), s.Guest)
+}
+
+// GuestLinks reads the interfaces in rc_guest_links out of
+// `nft --json list table inet runner-center`: the host side of every guest link
+// the runtime has registered and not yet torn down.
+func GuestLinks(listOutput []byte) ([]string, error) {
+	var document struct {
+		Nftables []struct {
+			Set *struct {
+				Family string `json:"family"`
+				Table  string `json:"table"`
+				Name   string `json:"name"`
+				Elem   []any  `json:"elem"`
+			} `json:"set,omitempty"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(listOutput, &document); err != nil {
+		return nil, fmt.Errorf("decode nftables state: %w", err)
+	}
+	var links []string
+	for _, entry := range document.Nftables {
+		set := entry.Set
+		if set == nil || set.Name != GuestLinkSetName || set.Family != "inet" || set.Table != TableName {
+			continue
+		}
+		for _, element := range set.Elem {
+			link, ok := element.(string)
+			if !ok {
+				return nil, fmt.Errorf("nftables set %s holds an element that is not an interface name", GuestLinkSetName)
+			}
+			links = append(links, link)
+		}
+	}
+	slices.Sort(links)
+	return links, nil
 }
 
 // FlowRecordBatch removes recorded flows without touching membership. A warm

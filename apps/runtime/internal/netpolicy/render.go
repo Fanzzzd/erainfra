@@ -62,6 +62,13 @@ func (p Policy) Conflist() ([]byte, error) {
 // host that also runs Docker. Isolation therefore comes from explicit drop
 // verdicts scoped to the guest subnet, which are final wherever they match.
 //
+// Those verdicts match `ip saddr @rc_guests`, which only means "this guest"
+// for a packet that is IPv4 and carries the address the guest was given. The
+// guest_links chain makes that true before any of them run: on a guest's own
+// link it drops IPv6 and every IPv4 source but the guest's. It matches guest
+// links by name, one element per live guest, rather than by a veth* wildcard,
+// because Docker names its container links veth* too.
+//
 // The Profile egress rules are rendered on every host, whatever its own mode.
 // They match only guests the runtime puts in the per-guest sets, so a Worker
 // whose Profiles are all public carries them inert, and one table serves every
@@ -88,6 +95,8 @@ func (p Policy) Nftables() (string, error) {
 		write("\t\telements = { %s }\n", joinCIDRs(allowed))
 	}
 	write("\t}\n\n")
+	write("\tset %s {\n\t\ttype ifname\n\t}\n\n", GuestLinkSetName)
+	write("\tset %s {\n\t\ttype ifname . ipv4_addr\n\t}\n\n", GuestSourceSetName)
 	write("\tset %s {\n\t\ttype ipv4_addr\n\t}\n\n", ObservedSetName)
 	write("\tset %s {\n\t\ttype ipv4_addr\n\t}\n\n", RestrictedSetName)
 	write("\tset %s {\n\t\ttype ipv4_addr . ipv4_addr\n\t\tflags interval\n\t}\n\n", AllowCIDRSetName)
@@ -98,6 +107,23 @@ func (p Policy) Nftables() (string, error) {
 		write("\tset %s {\n\t\ttype ipv4_addr . ipv4_addr . inet_proto . inet_service\n"+
 			"\t\tflags dynamic,timeout\n\t\ttimeout 7h\n\t\tsize %d\n\t}\n\n", name, FlowRecordCapacity)
 	}
+
+	// Every packet a guest sends arrives on its own link, so this chain sees
+	// all of them before anything else in the table does. IPv6 is dropped
+	// because no rule below can match it: ipv6.disable=1 removes the guest's
+	// IPv6 stack, not root's ability to write an IPv6 frame, and the host
+	// side of the link has a link-local address whenever host IPv6 is on.
+	// Neighbour discovery is IPv6 too, so it goes with it. An IPv4 source
+	// other than the guest's own is dropped because every rule below decides
+	// whose packet this is by its source address: a borrowed one would put a
+	// restricted guest under a public neighbour's policy, and an address
+	// outside the guest subnet under none.
+	write("\tchain %s {\n", GuestLinkChain)
+	write("\t\ttype filter hook prerouting priority raw; policy accept;\n")
+	write("\t\tiifname @%s meta nfproto ipv6 drop comment \"%s\"\n", GuestLinkSetName, RuleDenyGuestIPv6)
+	write("\t\tiifname @%s iifname . ip saddr != @%s drop comment \"%s\"\n",
+		GuestLinkSetName, GuestSourceSetName, RuleDenyGuestSpoofing)
+	write("\t}\n\n")
 
 	write("\tchain forward {\n")
 	write("\t\ttype filter hook forward priority filter - 10; policy accept;\n")
@@ -158,14 +184,22 @@ func (p Policy) Nftables() (string, error) {
 	return builder.String(), nil
 }
 
-// ChainSpec is what Verify requires of one chain: its type and hook, both
-// empty for a regular chain reached only by a jump, and the exact ordered rule
-// comments it holds.
+// ChainSpec is what Verify requires of one chain: its type, hook and priority,
+// all empty for a regular chain reached only by a jump, and the exact ordered
+// rule comments it holds.
 type ChainSpec struct {
-	Type  string
-	Hook  string
-	Rules []string
+	Type     string
+	Hook     string
+	Priority int
+	Rules    []string
 }
+
+// filterPriority is "filter - 10": just ahead of every other table's filter
+// chains, so a drop here lands before another table could accept.
+const filterPriority = -10
+
+// dstnatPriority is nftables' dstnat priority, where the DNS redirect runs.
+const dstnatPriority = -100
 
 // ExpectedChains is every chain the table must contain. Verify compares it
 // against the live table, so a removed rule, an inserted one, a missing chain
@@ -178,13 +212,20 @@ func (p Policy) ExpectedChains() map[string]ChainSpec {
 		forward = append(forward, RuleDenyDefault)
 	}
 	return map[string]ChainSpec{
-		"forward": {Type: "filter", Hook: "forward", Rules: forward},
+		GuestLinkChain: {
+			Type: "filter", Hook: "prerouting", Priority: GuestLinkPriority,
+			Rules: []string{RuleDenyGuestIPv6, RuleDenyGuestSpoofing},
+		},
+		"forward": {Type: "filter", Hook: "forward", Priority: filterPriority, Rules: forward},
 		RestrictedChain: {Rules: []string{
 			RuleRestrictedEstablished, RuleRestrictedAllowCIDR, RuleRestrictedAllowDNS,
 			RuleRecordBlocked, RuleRestrictedDeny,
 		}},
-		"prerouting": {Type: "nat", Hook: "prerouting", Rules: []string{RuleRedirectDNS}},
-		"input":      {Type: "filter", Hook: "input", Rules: []string{RuleAllowResolver, RuleDenyHostInput}},
+		"prerouting": {Type: "nat", Hook: "prerouting", Priority: dstnatPriority, Rules: []string{RuleRedirectDNS}},
+		"input": {
+			Type: "filter", Hook: "input", Priority: filterPriority,
+			Rules: []string{RuleAllowResolver, RuleDenyHostInput},
+		},
 	}
 }
 
@@ -201,6 +242,7 @@ func (p Policy) ExpectedRules() map[string][]string {
 // definitions but never inspects their elements, which are live guest state.
 func RuntimeSets() []string {
 	return []string{
+		GuestLinkSetName, GuestSourceSetName,
 		ObservedSetName, RestrictedSetName, AllowCIDRSetName, AllowDNSSetName, FlowSetName, BlockedSetName,
 	}
 }

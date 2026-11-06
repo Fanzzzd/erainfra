@@ -84,7 +84,14 @@ To check by hand on a Worker (root), while an allowlist job runs:
 nft list set inet runner-center rc_restricted    # the guest's address
 nft list set inet runner-center rc_allow_dns     # guest . address, each with its TTL timeout
 nft list set inet runner-center rc_blocked       # what the allowlist dropped
+nft list set inet runner-center rc_guest_sources # every live guest's veth . address
 ```
+
+Every rule here identifies a guest by its source address, so the address has to be the guest's
+own. Each guest, public or not, is bound to the host side of its link in `rc_guest_links` and
+`rc_guest_sources` before it boots. A packet arriving on that link with any other IPv4 source, or
+any IPv6 at all, is dropped before the DNS redirect or the allowlist sees it, so a job cannot take a
+neighbour's address to get that neighbour's egress.
 
 ## Limits worth knowing
 

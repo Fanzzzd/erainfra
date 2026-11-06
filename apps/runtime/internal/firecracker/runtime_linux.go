@@ -318,20 +318,10 @@ func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.Profile
 		}
 	}
 
-	live, err := netpolicy.ReadLiveTable(ctx, r.config.NftBinary)
-	switch {
-	case err != nil:
+	if detail, err := VerifyLiveNetwork(ctx, r.config.Network, r.config.NftBinary); err != nil {
 		report.Fail(executor.CheckNetPolicy, err)
-	default:
-		if verifyErr := r.config.Network.VerifyNftables(live); verifyErr != nil {
-			report.Fail(executor.CheckNetPolicy, verifyErr)
-		} else {
-			report.Pass(executor.CheckNetPolicy, fmt.Sprintf(
-				"host, RFC1918 and east-west traffic denied for %s with %s egress",
-				r.config.Network.Subnet,
-				r.config.Network.EgressMode,
-			))
-		}
+	} else {
+		report.Pass(executor.CheckNetPolicy, detail)
 	}
 	if egressCheck.Passed {
 		report.Pass(egressCheck.Name, egressCheck.Detail)
@@ -715,6 +705,10 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 	// written never starts. The SDK may already have released a previous VM's
 	// CNI reservation before its lease cleanup runs. Register fences that address
 	// through old kernel cleanup and retries, even for a public replacement.
+	//
+	// The guest's link is closed to IPv6 here too, in the kernel and in the
+	// table, for the same reason: before the guest can put a frame on it. A
+	// guest whose link cannot be closed never starts.
 	var guestAddress netip.Addr
 	machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fc.Handler{
 		Name: "erainfra.RegisterGuestEgress",
@@ -723,7 +717,14 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 			if err != nil {
 				return err
 			}
-			if err := r.egress.Register(handlerContext, address, definition.id, definition.egress); err != nil {
+			link, err := hostLinkOf(address)
+			if err != nil {
+				return err
+			}
+			if err := disableLinkIPv6(procSysNet, link); err != nil {
+				return err
+			}
+			if err := r.egress.Register(handlerContext, address, link, definition.id, definition.egress); err != nil {
 				return err
 			}
 			guestAddress = address

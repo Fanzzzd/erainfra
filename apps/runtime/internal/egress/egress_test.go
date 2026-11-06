@@ -97,6 +97,9 @@ func rr(t *testing.T, text string) dns.RR {
 
 var guestAddress = netip.MustParseAddr("10.241.0.7")
 
+// guestLink is the host side of guestAddress's link, named the way ptp names it.
+const guestLink = "veth1a2b3c4d"
+
 func setup(t *testing.T, profile netpolicy.ProfileEgress) (*Guard, *fakeKernel, *upstream) {
 	t.Helper()
 	host := netpolicy.DefaultPolicy("runner-center")
@@ -116,7 +119,7 @@ func setup(t *testing.T, profile netpolicy.ProfileEgress) (*Guard, *fakeKernel, 
 	if err != nil {
 		t.Fatalf("effective: %v", err)
 	}
-	if err := guard.Register(context.Background(), guestAddress, "vm-1", effective); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-1", effective); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	return guard, kernel, answers
@@ -145,7 +148,7 @@ func TestRegisterFailsClosedWhenTheKernelRefuses(t *testing.T) {
 	kernel := &fakeKernel{failNext: errors.New("Could not process rule: No such file or directory")}
 	guard := NewGuard(host, kernel)
 	effective, _ := netpolicy.Effective(host, githubAllowlist, "")
-	if err := guard.Register(context.Background(), guestAddress, "vm-1", effective); err == nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-1", effective); err == nil {
 		t.Fatal("a guest whose allowlist cannot be installed must not boot")
 	}
 	if guard.lookup(guestAddress) != nil {
@@ -153,14 +156,90 @@ func TestRegisterFailsClosedWhenTheKernelRefuses(t *testing.T) {
 	}
 }
 
-func TestPublicGuestsNeedNoPerGuestState(t *testing.T) {
+// A public guest needs no egress state, but it is still bound to its link: it
+// can write IPv6 frames and borrowed source addresses as well as any other.
+func TestPublicGuestsAreBoundToTheirLinkAndNothingElse(t *testing.T) {
 	guard, kernel, _ := setup(t, netpolicy.ProfileEgress{})
-	if kernel.all() != "" {
-		t.Fatalf("a public guest on a public host must write nothing, wrote %q", kernel.all())
+	want := "add element inet runner-center rc_guest_sources { \"veth1a2b3c4d\" . 10.241.0.7 }\n" +
+		"add element inet runner-center rc_guest_links { \"veth1a2b3c4d\" }\n"
+	if kernel.all() != want {
+		t.Fatalf("a public guest on a public host must write only its link binding, wrote %q", kernel.all())
 	}
+	if response := ask(guard, guestAddress, "github.com."); response.Rcode != dns.RcodeRefused {
+		t.Fatal("the resolver must not answer a guest whose DNS is not redirected to it")
+	}
+	kernel.reset()
 	record, err := guard.Unregister(context.Background(), guestAddress, "vm-1")
 	if record != nil || err != nil {
 		t.Fatalf("a public guest has no record, got %+v %v", record, err)
+	}
+	removal := kernel.all()
+	for _, gone := range []string{
+		"delete element inet runner-center rc_guest_links { \"veth1a2b3c4d\" }",
+		"delete element inet runner-center rc_guest_sources { \"veth1a2b3c4d\" . 10.241.0.7 }",
+	} {
+		if !strings.Contains(removal, gone) {
+			t.Fatalf("teardown must take the link binding away, missing %q in\n%s", gone, removal)
+		}
+	}
+	if strings.Contains(removal, netpolicy.ObservedSetName) || strings.Contains(removal, netpolicy.FlowSetName) {
+		t.Fatalf("a public guest's teardown touches only what it registered:\n%s", removal)
+	}
+}
+
+func TestLinkBindingIsRemovedWithEveryOtherSet(t *testing.T) {
+	guard, kernel, _ := setup(t, githubAllowlist)
+	if !strings.Contains(kernel.all(), "rc_guest_links { \"veth1a2b3c4d\" }") {
+		t.Fatalf("an allowlist guest must be bound to its link too:\n%s", kernel.all())
+	}
+	kernel.reset()
+	if _, err := guard.Unregister(context.Background(), guestAddress, "vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	removal := kernel.all()
+	links := strings.Index(removal, "delete element inet runner-center rc_guest_links { \"veth1a2b3c4d\" }")
+	restricted := strings.Index(removal, "delete element inet runner-center rc_restricted { 10.241.0.7 }")
+	if links < 0 || restricted < 0 || links < restricted {
+		t.Fatalf("the link binding must go, after membership:\n%s", removal)
+	}
+}
+
+func TestAFailedLinkUnbindingFencesTheAddress(t *testing.T) {
+	guard, kernel, _ := setup(t, netpolicy.ProfileEgress{})
+	kernel.mu.Lock()
+	kernel.failNext = errors.New("transaction aborted")
+	kernel.mu.Unlock()
+	if _, err := guard.Unregister(context.Background(), guestAddress, "vm-1"); err == nil {
+		t.Fatal("a failed unbinding must be reported")
+	}
+	if guard.Health() == nil {
+		t.Fatal("a Worker that could not unbind a dead guest's link must not be healthy")
+	}
+	kernel.reset()
+	public, _ := netpolicy.Effective(netpolicy.DefaultPolicy("runner-center"), netpolicy.ProfileEgress{})
+	if err := guard.Register(context.Background(), guestAddress, "veth99999999", "vm-2", public); err != nil {
+		t.Fatal(err)
+	}
+	batches := kernel.all()
+	purge := strings.Index(batches, "delete element inet runner-center rc_guest_sources { \"veth1a2b3c4d\" . 10.241.0.7 }")
+	bind := strings.Index(batches, "add element inet runner-center rc_guest_sources { \"veth99999999\" . 10.241.0.7 }")
+	if purge < 0 || bind < purge {
+		t.Fatalf("the old link binding must be purged before the address is bound to a new link:\n%s", batches)
+	}
+}
+
+func TestRegisterRefusesALinkNameItCannotWriteSafely(t *testing.T) {
+	host := netpolicy.DefaultPolicy("runner-center")
+	kernel := &fakeKernel{}
+	guard := NewGuard(host, kernel)
+	public, _ := netpolicy.Effective(host, netpolicy.ProfileEgress{})
+	for _, link := range []string{"", "veth } ; flush", "../../etc", "a-name-longer-than-15"} {
+		if err := guard.Register(context.Background(), guestAddress, link, "vm-1", public); err == nil {
+			t.Fatalf("link %q must be refused", link)
+		}
+	}
+	if kernel.all() != "" {
+		t.Fatalf("a refused link must write nothing, wrote %q", kernel.all())
 	}
 }
 
@@ -337,7 +416,7 @@ func TestAFailedRemovalIsPurgedBeforeTheAddressIsReused(t *testing.T) {
 	kernel.reset()
 	host := netpolicy.DefaultPolicy("runner-center")
 	public, _ := netpolicy.Effective(host, netpolicy.ProfileEgress{Mode: netpolicy.EgressAudit}, "")
-	if err := guard.Register(context.Background(), guestAddress, "vm-2", public); err != nil {
+	if err := guard.Register(context.Background(), guestAddress, guestLink, "vm-2", public); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	batches := kernel.all()
@@ -439,7 +518,7 @@ func TestResolverServesRealSockets(t *testing.T) {
 	}}).exchange
 	loopback := netip.MustParseAddr("127.0.0.1")
 	effective, _ := netpolicy.Effective(host, githubAllowlist, "")
-	if err := guard.Register(context.Background(), loopback, "vm-1", effective); err != nil {
+	if err := guard.Register(context.Background(), loopback, "veth00000001", "vm-1", effective); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if guard.Health() == nil {

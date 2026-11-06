@@ -228,11 +228,7 @@ func (p Policy) VerifyNftables(listOutput []byte) error {
 				return fmt.Errorf("regular nftables chain %q has base-chain configuration", chain)
 			}
 		} else {
-			priority := -10
-			if expected.Hook == "prerouting" {
-				priority = -100
-			}
-			if live.priority == nil || *live.priority != priority || live.policy != "accept" {
+			if live.priority == nil || *live.priority != expected.Priority || live.policy != "accept" {
 				return fmt.Errorf("nftables chain %q has an unexpected priority or policy", chain)
 			}
 		}

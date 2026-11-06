@@ -3,14 +3,14 @@
     {
       "metainfo": { "version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1 }
     },
-    { "table": { "family": "inet", "name": "runner-center", "handle": 5 } },
+    { "table": { "family": "inet", "name": "runner-center", "handle": 14 } },
     {
       "set": {
         "family": "inet",
         "name": "rc_guests",
         "table": "runner-center",
         "type": "ipv4_addr",
-        "handle": 5,
+        "handle": 6,
         "flags": ["interval"],
         "elem": [{ "prefix": { "addr": "10.241.0.0", "len": 16 } }]
       }
@@ -21,8 +21,26 @@
         "name": "rc_egress_allow",
         "table": "runner-center",
         "type": "ipv4_addr",
-        "handle": 6,
+        "handle": 7,
         "flags": ["interval"]
+      }
+    },
+    {
+      "set": {
+        "family": "inet",
+        "name": "rc_guest_links",
+        "table": "runner-center",
+        "type": "ifname",
+        "handle": 8
+      }
+    },
+    {
+      "set": {
+        "family": "inet",
+        "name": "rc_guest_sources",
+        "table": "runner-center",
+        "type": ["ifname", "ipv4_addr"],
+        "handle": 9
       }
     },
     {
@@ -31,7 +49,7 @@
         "name": "rc_observed",
         "table": "runner-center",
         "type": "ipv4_addr",
-        "handle": 7
+        "handle": 10
       }
     },
     {
@@ -40,7 +58,7 @@
         "name": "rc_restricted",
         "table": "runner-center",
         "type": "ipv4_addr",
-        "handle": 8
+        "handle": 11
       }
     },
     {
@@ -49,7 +67,7 @@
         "name": "rc_allow_cidr",
         "table": "runner-center",
         "type": ["ipv4_addr", "ipv4_addr"],
-        "handle": 9,
+        "handle": 12,
         "flags": ["interval"]
       }
     },
@@ -59,7 +77,7 @@
         "name": "rc_allow_dns",
         "table": "runner-center",
         "type": ["ipv4_addr", "ipv4_addr"],
-        "handle": 10,
+        "handle": 13,
         "flags": ["timeout"]
       }
     },
@@ -69,7 +87,7 @@
         "name": "rc_flows",
         "table": "runner-center",
         "type": ["ipv4_addr", "ipv4_addr", "inet_proto", "inet_service"],
-        "handle": 11,
+        "handle": 14,
         "size": 65536,
         "flags": ["timeout", "dynamic"],
         "timeout": 25200
@@ -81,7 +99,7 @@
         "name": "rc_blocked",
         "table": "runner-center",
         "type": ["ipv4_addr", "ipv4_addr", "inet_proto", "inet_service"],
-        "handle": 12,
+        "handle": 15,
         "size": 65536,
         "flags": ["timeout", "dynamic"],
         "timeout": 25200
@@ -91,21 +109,33 @@
       "chain": {
         "family": "inet",
         "table": "runner-center",
-        "name": "forward",
+        "name": "guest_links",
         "handle": 1,
+        "type": "filter",
+        "hook": "prerouting",
+        "prio": -300,
+        "policy": "accept"
+      }
+    },
+    {
+      "chain": {
+        "family": "inet",
+        "table": "runner-center",
+        "name": "forward",
+        "handle": 2,
         "type": "filter",
         "hook": "forward",
         "prio": -10,
         "policy": "accept"
       }
     },
-    { "chain": { "family": "inet", "table": "runner-center", "name": "restricted", "handle": 2 } },
+    { "chain": { "family": "inet", "table": "runner-center", "name": "restricted", "handle": 3 } },
     {
       "chain": {
         "family": "inet",
         "table": "runner-center",
         "name": "prerouting",
-        "handle": 3,
+        "handle": 4,
         "type": "nat",
         "hook": "prerouting",
         "prio": -100,
@@ -117,7 +147,7 @@
         "family": "inet",
         "table": "runner-center",
         "name": "input",
-        "handle": 4,
+        "handle": 5,
         "type": "filter",
         "hook": "input",
         "prio": -10,
@@ -128,8 +158,59 @@
       "rule": {
         "family": "inet",
         "table": "runner-center",
+        "chain": "guest_links",
+        "handle": 16,
+        "comment": "rc:deny-guest-ipv6",
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": { "meta": { "key": "iifname" } },
+              "right": "@rc_guest_links"
+            }
+          },
+          { "match": { "op": "==", "left": { "meta": { "key": "nfproto" } }, "right": "ipv6" } },
+          { "drop": null }
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "runner-center",
+        "chain": "guest_links",
+        "handle": 17,
+        "comment": "rc:deny-guest-spoofing",
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": { "meta": { "key": "iifname" } },
+              "right": "@rc_guest_links"
+            }
+          },
+          {
+            "match": {
+              "op": "!=",
+              "left": {
+                "concat": [
+                  { "meta": { "key": "iifname" } },
+                  { "payload": { "protocol": "ip", "field": "saddr" } }
+                ]
+              },
+              "right": "@rc_guest_sources"
+            }
+          },
+          { "drop": null }
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "runner-center",
         "chain": "forward",
-        "handle": 13,
+        "handle": 18,
         "comment": "rc:deny-east-west",
         "expr": [
           {
@@ -155,7 +236,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "forward",
-        "handle": 15,
+        "handle": 20,
         "comment": "rc:record-flows",
         "expr": [
           {
@@ -195,7 +276,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "forward",
-        "handle": 16,
+        "handle": 21,
         "comment": "rc:restrict-profile",
         "expr": [
           {
@@ -214,7 +295,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "forward",
-        "handle": 17,
+        "handle": 22,
         "comment": "rc:allow-destinations",
         "expr": [
           {
@@ -240,7 +321,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "forward",
-        "handle": 19,
+        "handle": 24,
         "comment": "rc:deny-private",
         "expr": [
           {
@@ -282,7 +363,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "restricted",
-        "handle": 20,
+        "handle": 25,
         "comment": "rc:restricted-established",
         "expr": [
           {
@@ -301,7 +382,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "restricted",
-        "handle": 22,
+        "handle": 27,
         "comment": "rc:restricted-allow-cidr",
         "expr": [
           {
@@ -332,7 +413,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "restricted",
-        "handle": 24,
+        "handle": 29,
         "comment": "rc:restricted-allow-dns",
         "expr": [
           {
@@ -363,7 +444,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "restricted",
-        "handle": 26,
+        "handle": 31,
         "comment": "rc:record-blocked",
         "expr": [
           {
@@ -395,7 +476,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "restricted",
-        "handle": 27,
+        "handle": 32,
         "comment": "rc:restricted-deny",
         "expr": [{ "drop": null }]
       }
@@ -405,7 +486,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "prerouting",
-        "handle": 29,
+        "handle": 34,
         "comment": "rc:redirect-dns",
         "expr": [
           {
@@ -438,7 +519,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "input",
-        "handle": 31,
+        "handle": 36,
         "comment": "rc:allow-resolver",
         "expr": [
           {
@@ -471,7 +552,7 @@
         "family": "inet",
         "table": "runner-center",
         "chain": "input",
-        "handle": 32,
+        "handle": 37,
         "comment": "rc:deny-host-input",
         "expr": [
           {

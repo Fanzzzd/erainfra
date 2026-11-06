@@ -116,7 +116,9 @@ func (r *Resolver) ServeDNS(writer dns.ResponseWriter, query *dns.Msg) {
 // answer is ServeDNS without the socket, so the policy is testable directly.
 func (r *Resolver) answer(ctx context.Context, source netip.Addr, query *dns.Msg, network string) *dns.Msg {
 	registered := r.guard.lookup(source)
-	if registered == nil {
+	// Every guest is registered for its link binding; only an observed one
+	// has its DNS redirected here and a view to answer from.
+	if registered == nil || !registered.effective.Observed {
 		return failure(query, dns.RcodeRefused)
 	}
 	if len(query.Question) != 1 {

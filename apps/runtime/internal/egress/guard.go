@@ -3,7 +3,8 @@
 //
 // The nftables rules that do the enforcing are static and verified by
 // netpolicy. What changes per guest is set membership, and this package owns
-// it: Register puts a guest into the sets its Profile needs when it boots,
+// it: Register binds every guest to the host side of its own link and puts it
+// into the sets its Profile needs when it boots,
 // the resolver admits the addresses of allowed names into the guest's allow
 // set as it answers them, and Unregister collects what the guest talked to and
 // takes every element out again at teardown.
@@ -109,12 +110,16 @@ func NewGuard(host netpolicy.Policy, applier Applier) *Guard {
 // Resolver is the DNS server observed guests are redirected to.
 func (g *Guard) Resolver() *Resolver { return g.resolver }
 
-// Register puts a guest into the sets its effective egress needs, before the
-// guest runs any code. owner identifies the VM, so a late teardown of a
-// previous guest at the same address cannot remove this one's state.
+// Register binds a guest to its link and puts it into the sets its effective
+// egress needs, before the guest runs any code. link is the host side of the
+// guest's link; every guest is registered, public or not, because the binding
+// is what makes the host drop IPv6 and borrowed source addresses from it.
+// owner identifies the VM, so a late teardown of a previous guest at the same
+// address cannot remove this one's state.
 func (g *Guard) Register(
 	ctx context.Context,
 	address netip.Addr,
+	link string,
 	owner string,
 	effective netpolicy.EffectiveEgress,
 ) error {
@@ -145,12 +150,9 @@ func (g *Guard) Register(
 		delete(g.stale, address)
 		g.mu.Unlock()
 	}
-	batch, state, err := netpolicy.RegistrationBatch(address, effective)
+	batch, state, err := netpolicy.RegistrationBatch(address, link, effective)
 	if err != nil {
 		return err
-	}
-	if batch == "" {
-		return nil
 	}
 	if err := g.applier.Apply(ctx, batch); err != nil {
 		// An error may be a lost acknowledgement after an atomic commit.
@@ -158,7 +160,7 @@ func (g *Guard) Register(
 		g.mu.Lock()
 		g.stale[address] = state
 		g.mu.Unlock()
-		return fmt.Errorf("install %s egress for guest %s: %w", effective.Mode, address, err)
+		return fmt.Errorf("bind guest %s to link %s with %s egress: %w", address, link, effective.Mode, err)
 	}
 	g.mu.Lock()
 	g.guests[address] = &guest{
@@ -219,13 +221,16 @@ func (g *Guard) Claim(ctx context.Context, address netip.Addr, previousOwner, ow
 	if registered.owner != previousOwner || registered.closed {
 		return fmt.Errorf("guest %s is not the parked guest %s", address, previousOwner)
 	}
-	flows, blocked, err := g.listFlows(ctx, address)
-	if err != nil {
-		return fmt.Errorf("read the parked guest's flow record: %w", err)
-	}
-	if len(flows)+len(blocked) > 0 {
-		if err := g.applier.Apply(ctx, netpolicy.FlowRecordBatch(flows, blocked)); err != nil {
-			return fmt.Errorf("clear the parked guest's flow record: %w", err)
+	// Only an observed guest's flows are recorded.
+	if registered.state.Observed {
+		flows, blocked, err := g.listFlows(ctx, address)
+		if err != nil {
+			return fmt.Errorf("read the parked guest's flow record: %w", err)
+		}
+		if len(flows)+len(blocked) > 0 {
+			if err := g.applier.Apply(ctx, netpolicy.FlowRecordBatch(flows, blocked)); err != nil {
+				return fmt.Errorf("clear the parked guest's flow record: %w", err)
+			}
 		}
 	}
 	registered.owner = owner
@@ -235,9 +240,10 @@ func (g *Guard) Claim(ctx context.Context, address netip.Addr, previousOwner, ow
 }
 
 // Unregister collects what the guest talked to and removes every element it
-// holds. It returns nil for a guest that needed no per-guest state. A removal
-// that fails is returned as an error and remembered, and the address is purged
-// before it is registered again.
+// holds, its link binding included. The record is nil for a guest whose egress
+// is not observed, since nothing about it was recorded. A removal that fails
+// is returned as an error and remembered, and the address is purged before it
+// is registered again.
 func (g *Guard) Unregister(ctx context.Context, address netip.Addr, owner string) (*executor.EgressRecord, error) {
 	unlock := g.lockAddress(address)
 	defer unlock()
@@ -257,6 +263,15 @@ func (g *Guard) Unregister(ctx context.Context, address netip.Addr, owner string
 	delete(g.guests, address)
 	g.mu.Unlock()
 
+	if !state.Observed {
+		if err := g.applier.Apply(ctx, netpolicy.RemovalBatch(state)); err != nil {
+			g.mu.Lock()
+			g.stale[address] = state
+			g.mu.Unlock()
+			return nil, fmt.Errorf("remove the link binding of guest %s: %w", address, err)
+		}
+		return nil, nil
+	}
 	flows, blocked, listErr := g.listFlows(ctx, address)
 	if listErr != nil {
 		record.Error = "flow record unavailable: " + listErr.Error()
