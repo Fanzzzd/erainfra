@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="6" failures="2" errors="0" time="2.513000">
+	<testsuite tests="6" failures="2" time="2.500000" name="github.com/example/app/store" timestamp="2026-11-06T01:02:03Z">
+		<properties>
+			<property name="go.version" value="go1.27.3 linux/amd64"></property>
+		</properties>
+		<testcase classname="github.com/example/app/store" name="TestOpen" time="0.010000"></testcase>
+		<testcase classname="github.com/example/app/store" name="TestRace" time="1.200000">
+			<failure message="Failed" type="">=== RUN   TestRace&#xA;    store_test.go:41: lost update: got 9, want 10&#xA;--- FAIL: TestRace (1.20s)&#xA;</failure>
+		</testcase>
+		<testcase classname="github.com/example/app/store" name="TestBroken" time="0.300000">
+			<failure message="Failed" type="">=== RUN   TestBroken&#xA;    store_test.go:60: always broken&#xA;--- FAIL: TestBroken (0.30s)&#xA;</failure>
+		</testcase>
+		<testcase classname="github.com/example/app/store" name="TestRace" time="0.900000"></testcase>
+		<testcase classname="github.com/example/app/store" name="TestSkip" time="0.000000">
+			<skipped message="=== RUN   TestSkip&#xA;    store_test.go:70: needs docker&#xA;--- SKIP: TestSkip (0.00s)&#xA;"></skipped>
+		</testcase>
+		<testcase classname="github.com/example/app/store" name="TestBroken/sub_case" time="0.100000"></testcase>
+	</testsuite>
+</testsuites>

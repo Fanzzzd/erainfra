@@ -20,6 +20,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,6 +41,7 @@ type resultResponse struct {
 	ExitCode int                    `json:"exitCode"`
 	Error    string                 `json:"error,omitempty"`
 	Egress   *executor.EgressRecord `json:"egress,omitempty"`
+	Tests    *testreport.Report     `json:"tests,omitempty"`
 }
 
 // preflightRequest names the Profile egress the report is for. An empty body,
@@ -165,7 +167,16 @@ func (c *Client) Execute(
 	if err != nil {
 		return executor.Result{}, err
 	}
-	return executor.Result{ExitCode: result.ExitCode, Egress: result.Egress}, nil
+	// The service validated the report before sending it; the client is the
+	// other side of a privilege boundary, so it checks again rather than pass
+	// on something it did not check.
+	if result.Tests != nil {
+		if err := result.Tests.Validate(); err != nil {
+			fmt.Fprintf(os.Stderr, "dropped the runtime's test report: %v\n", err)
+			result.Tests = nil
+		}
+	}
+	return executor.Result{ExitCode: result.ExitCode, Egress: result.Egress, Tests: result.Tests}, nil
 }
 
 func (c *Client) do(ctx context.Context, path string, input any, output any) error {
@@ -432,7 +443,7 @@ func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handl
 		// makes as soon as this request returns, finds the final Snapshot.
 		finishMetrics()
 		if waitError == nil {
-			writeJSON(response, http.StatusOK, resultResponse{ExitCode: result.ExitCode, Egress: result.Egress})
+			writeJSON(response, http.StatusOK, resultResponse{ExitCode: result.ExitCode, Egress: result.Egress, Tests: result.Tests})
 			return
 		}
 		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)

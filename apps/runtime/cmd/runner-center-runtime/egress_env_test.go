@@ -9,6 +9,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
 
 func TestProfileEgressEnvDefaultsToPublicOnlyWhenUnset(t *testing.T) {
@@ -40,6 +41,33 @@ func TestProfileEgressEnvDefaultsToPublicOnlyWhenUnset(t *testing.T) {
 		if _, err := profileEgressEnv(); err == nil {
 			t.Fatalf("%s must be rejected", broken)
 		}
+	}
+}
+
+func TestWriteTestReportWritesAnOwnerOnlyFileWhenThereIsAReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tests.json")
+	t.Setenv(testReportVariable, path)
+	if err := writeTestReport(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("no report means no file, so the Worker reports nothing")
+	}
+	report := &testreport.Report{Version: testreport.Version, Files: 1, Totals: testreport.Totals{Tests: 1, Passed: 1}, Cases: []testreport.Case{}, Passed: testreport.PassedHash("a")}
+	if err := writeTestReport(report); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("stat = %v, %v", info, err)
+	}
+	var decoded testreport.Report
+	contents, _ := os.ReadFile(path)
+	if err := json.Unmarshal(contents, &decoded); err != nil || decoded.Validate() != nil || decoded.Totals.Passed != 1 {
+		t.Fatalf("decoded = %+v, %v", decoded, err)
+	}
+	if err := writeTestReport(report); err == nil {
+		t.Fatal("an existing file must not be overwritten")
 	}
 }
 

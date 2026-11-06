@@ -10,6 +10,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 	"github.com/Fanzzzd/erainfra/internal/dualenv"
 )
 
@@ -54,24 +55,48 @@ func profileEgressEnv() (netpolicy.ProfileEgress, error) {
 // does nothing when it is unset or there is no record. The file is created
 // fresh and owner-only: it names what a job connected to.
 func writeEgressRecord(record *executor.EgressRecord) error {
-	path := strings.TrimSpace(dualenv.Value(egressRecordVariable))
-	if path == "" || record == nil {
+	if record == nil {
+		return nil
+	}
+	return writeRecordFile(egressRecordVariable, "egress record", record)
+}
+
+// writeRecordFile writes value as JSON to the absolute path the variable
+// names, creating the file fresh and owner-only, or does nothing when the
+// variable is unset.
+func writeRecordFile(variable, what string, value any) error {
+	path := strings.TrimSpace(dualenv.Value(variable))
+	if path == "" {
 		return nil
 	}
 	if !filepath.IsAbs(path) {
-		return errors.New(egressRecordVariable + " must be an absolute path")
+		return errors.New(variable + " must be an absolute path")
 	}
-	encoded, err := json.Marshal(record)
+	encoded, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("encode egress record: %w", err)
+		return fmt.Errorf("encode %s: %w", what, err)
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("write egress record: %w", err)
+		return fmt.Errorf("write %s: %w", what, err)
 	}
 	if _, err := file.Write(encoded); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("write egress record: %w", err)
+		return fmt.Errorf("write %s: %w", what, err)
 	}
 	return file.Close()
+}
+
+// testReportVariable names the file `run` writes the Attempt's JUnit results
+// to, for the Worker to report to the control plane.
+const testReportVariable = "RC_TEST_REPORT_FILE"
+
+// writeTestReport writes the Attempt's test results where
+// RC_TEST_REPORT_FILE says, or does nothing when it is unset or the guest
+// reported none.
+func writeTestReport(report *testreport.Report) error {
+	if report == nil {
+		return nil
+	}
+	return writeRecordFile(testReportVariable, "test report", report)
 }

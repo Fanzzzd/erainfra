@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="1" skipped="1" tests="5" time="0.105" timestamp="2026-11-06T01:02:03.000000+00:00" hostname="runner"><testcase classname="tests.test_api.TestClient" name="test_get" time="0.010" /><testcase classname="tests.test_api.TestClient" name="test_post[json]" time="0.021"><failure message="AssertionError: assert 500 == 201">self = &lt;tests.test_api.TestClient object at 0x7f&gt;
+
+    def test_post(self):
+&gt;       assert response.status_code == 201
+E       AssertionError: assert 500 == 201
+
+tests/test_api.py:14: AssertionError</failure></testcase><testcase classname="tests.test_api" name="test_db" time="0.001"><error message="failed on setup with &quot;ConnectionRefusedError: [Errno 111] Connection refused&quot;">ConnectionRefusedError: [Errno 111] Connection refused</error></testcase><testcase classname="tests.test_api" name="test_windows_only" time="0.000"><skipped type="pytest.skip" message="requires Windows">tests/test_api.py:30: requires Windows</skipped></testcase><testcase classname="tests.test_api" name="test_slow" time="0.073" /></testsuite></testsuites>

@@ -35,6 +35,7 @@ import { renderInstallScript } from "./installScript";
 import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { renderWindowsInstallScript } from "./installScriptPowerShell";
 import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
+import { registerTestRoutes } from "./operatorTestsHttp";
 
 import { registerDeployRoutes } from "./infra/deployHttp";
 import { parsePush, webhookSecretsFor } from "./infra/githubDeploy";
@@ -48,6 +49,8 @@ registerStaticRoutes(http, components.staticHosting);
 // deployment routes (infra/deployHttp.ts) and infrastructure-management routes (Nodes, Apps, env,
 // links, log tails: infra/operatorRoutes.ts).
 registerOperatorRoutes(http);
+// JUnit results: GET /api/v1/tests and /api/v1/tests/flaky (operatorTestsHttp.ts).
+registerTestRoutes(http);
 registerDeployRoutes(http);
 registerInfraRoutes(http);
 registerNodeRoutes(http);

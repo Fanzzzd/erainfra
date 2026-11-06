@@ -20,6 +20,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as NodesRouteImport } from './routes/nodes'
 import { Route as RightsizeRouteImport } from './routes/rightsize'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as TestsRouteImport } from './routes/tests'
 import { Route as AttemptsAttemptIdRouteImport } from './routes/attempts_.$attemptId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -77,6 +78,11 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TestsRoute = TestsRouteImport.update({
+  id: '/tests',
+  path: '/tests',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AttemptsAttemptIdRoute = AttemptsAttemptIdRouteImport.update({
   id: '/attempts_/$attemptId',
   path: '/attempts/$attemptId',
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/nodes': typeof NodesRoute
   '/rightsize': typeof RightsizeRoute
   '/settings': typeof SettingsRoute
+  '/tests': typeof TestsRoute
   '/attempts/$attemptId': typeof AttemptsAttemptIdRoute
 }
 export interface FileRoutesByTo {
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/nodes': typeof NodesRoute
   '/rightsize': typeof RightsizeRoute
   '/settings': typeof SettingsRoute
+  '/tests': typeof TestsRoute
   '/attempts/$attemptId': typeof AttemptsAttemptIdRoute
 }
 export interface FileRoutesById {
@@ -124,6 +132,7 @@ export interface FileRoutesById {
   '/nodes': typeof NodesRoute
   '/rightsize': typeof RightsizeRoute
   '/settings': typeof SettingsRoute
+  '/tests': typeof TestsRoute
   '/attempts_/$attemptId': typeof AttemptsAttemptIdRoute
 }
 export interface FileRouteTypes {
@@ -140,6 +149,7 @@ export interface FileRouteTypes {
     | '/nodes'
     | '/rightsize'
     | '/settings'
+    | '/tests'
     | '/attempts/$attemptId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -154,6 +164,7 @@ export interface FileRouteTypes {
     | '/nodes'
     | '/rightsize'
     | '/settings'
+    | '/tests'
     | '/attempts/$attemptId'
   id:
     | '__root__'
@@ -168,6 +179,7 @@ export interface FileRouteTypes {
     | '/nodes'
     | '/rightsize'
     | '/settings'
+    | '/tests'
     | '/attempts_/$attemptId'
   fileRoutesById: FileRoutesById
 }
@@ -183,6 +195,7 @@ export interface RootRouteChildren {
   NodesRoute: typeof NodesRoute
   RightsizeRoute: typeof RightsizeRoute
   SettingsRoute: typeof SettingsRoute
+  TestsRoute: typeof TestsRoute
   AttemptsAttemptIdRoute: typeof AttemptsAttemptIdRoute
 }
 
@@ -265,6 +278,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/tests': {
+      id: '/tests'
+      path: '/tests'
+      fullPath: '/tests'
+      preLoaderRoute: typeof TestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/attempts_/$attemptId': {
       id: '/attempts_/$attemptId'
       path: '/attempts/$attemptId'
@@ -287,6 +307,7 @@ const rootRouteChildren: RootRouteChildren = {
   NodesRoute: NodesRoute,
   RightsizeRoute: RightsizeRoute,
   SettingsRoute: SettingsRoute,
+  TestsRoute: TestsRoute,
   AttemptsAttemptIdRoute: AttemptsAttemptIdRoute,
 }
 export const routeTree = rootRouteImport

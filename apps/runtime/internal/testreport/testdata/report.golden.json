@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "commitSha": "0123456789abcdef0123456789abcdef01234567",
+  "files": 2,
+  "truncated": false,
+  "totals": {
+    "tests": 9,
+    "passed": 3,
+    "failed": 2,
+    "errored": 1,
+    "skipped": 1,
+    "flaky": 2,
+    "durationMs": 1202157
+  },
+  "cases": [
+    {
+      "id": "com.example.CalculatorTest::divides",
+      "suite": "com.example.CalculatorTest",
+      "name": "divides",
+      "status": "failed",
+      "durationMs": 34,
+      "message": "expected: \u003c2\u003e but was: \u003c3\u003e"
+    },
+    {
+      "id": "github.com/example/app/store::TestBroken",
+      "suite": "github.com/example/app/store",
+      "name": "TestBroken",
+      "status": "failed",
+      "durationMs": 300,
+      "message": "=== RUN   TestBroken\n    store_test.go:60: always broken\n--- FAIL: TestBroken (0.30s)"
+    },
+    {
+      "id": "com.example.CalculatorTest::boots",
+      "suite": "com.example.CalculatorTest",
+      "name": "boots",
+      "status": "errored",
+      "durationMs": 1,
+      "message": "java.lang.IllegalStateException: no context"
+    },
+    {
+      "id": "com.example.CalculatorTest::connects",
+      "suite": "com.example.CalculatorTest",
+      "name": "connects",
+      "status": "flaky",
+      "durationMs": 1200500,
+      "message": "Connection reset",
+      "retries": 1
+    },
+    {
+      "id": "github.com/example/app/store::TestRace",
+      "suite": "github.com/example/app/store",
+      "name": "TestRace",
+      "status": "flaky",
+      "durationMs": 1200,
+      "message": "=== RUN   TestRace\n    store_test.go:41: lost update: got 9, want 10\n--- FAIL: TestRace (1.20s)",
+      "retries": 1
+    },
+    {
+      "id": "github.com/example/app/store::TestBroken/sub_case",
+      "suite": "github.com/example/app/store",
+      "name": "TestBroken/sub_case",
+      "status": "passed",
+      "durationMs": 100
+    },
+    {
+      "id": "com.example.CalculatorTest::adds",
+      "suite": "com.example.CalculatorTest",
+      "name": "adds",
+      "status": "passed",
+      "durationMs": 12
+    },
+    {
+      "id": "github.com/example/app/store::TestOpen",
+      "suite": "github.com/example/app/store",
+      "name": "TestOpen",
+      "status": "passed",
+      "durationMs": 10
+    }
+  ],
+  "passed": "21c8f0913ea1580663f986dda8dc383281ef"
+}

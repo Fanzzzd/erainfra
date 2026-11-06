@@ -17,6 +17,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
 
 type fakeExecutor struct {
@@ -185,6 +186,43 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	}
 	if got := strings.Join(runtime.recoveredIDs, ","); got != "attempt-live,experiment-live" {
 		t.Fatalf("runtime received the wrong live set: %q", got)
+	}
+}
+
+func TestExecuteCarriesTheTestReportAndTheClientRevalidatesIt(t *testing.T) {
+	valid := &testreport.Report{
+		Version: testreport.Version,
+		Files:   1,
+		Totals:  testreport.Totals{Tests: 2, Passed: 1, Failed: 1, DurationMs: 30},
+		Cases: []testreport.Case{{
+			ID: "pkg::TestA", Suite: "pkg", Name: "TestA", Status: testreport.StatusFailed, DurationMs: 20, Message: "boom",
+		}},
+		Passed: testreport.PassedHash("pkg::TestB"),
+	}
+	for name, test := range map[string]struct {
+		sent *testreport.Report
+		want *testreport.Report
+	}{
+		"valid":   {sent: valid, want: valid},
+		"invalid": {sent: &testreport.Report{Version: 99}, want: nil},
+		"none":    {sent: nil, want: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lease := &fakeLease{
+				wait: func(context.Context) (executor.Result, error) {
+					return executor.Result{ExitCode: 1, Tests: test.sent}, nil
+				},
+				cancelled: make(chan struct{}),
+			}
+			client := unixClient(t, &fakeExecutor{lease: lease})
+			result, err := client.Execute(context.Background(), testSpec(), time.Second, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.ExitCode != 1 || !reflect.DeepEqual(result.Tests, test.want) {
+				t.Fatalf("result = %+v, tests = %+v, want %+v", result, result.Tests, test.want)
+			}
+		})
 	}
 }
 

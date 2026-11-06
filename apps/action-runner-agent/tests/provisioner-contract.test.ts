@@ -14,6 +14,7 @@ import {
   provisionerPath,
   provisionInvocation,
   readEgressRecord,
+  readTestReport,
 } from "../provision.ts";
 import { parseCpuset } from "../cpuset.ts";
 import { PIDS_LIMIT, probeInvocation } from "../readiness.ts";
@@ -416,6 +417,55 @@ describe("scale-set Attempt invocation", () => {
       else process.env.RC_PROFILE_EGRESS = saved[0];
       if (saved[1] === undefined) delete process.env.RC_EGRESS_RECORD_FILE;
       else process.env.RC_EGRESS_RECORD_FILE = saved[1];
+    }
+  });
+
+  it("hands the runtime a test report path only when the Agent made one", () => {
+    const base = {
+      attemptId: "attempt-1",
+      runnerName: "runner-a",
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      executor: "firecracker" as const,
+      imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+      vcpus: 4,
+      memoryMiB: 16384,
+    };
+    const withReport = attemptInvocation({
+      ...base,
+      testReportFile: "/tmp/rc-egress-abc/tests.json",
+    });
+    assert.equal(withReport.env.RC_TEST_REPORT_FILE, "/tmp/rc-egress-abc/tests.json");
+    assert.equal("RC_TEST_REPORT_FILE" in attemptInvocation(base).env, false);
+
+    const saved = [process.env.RC_TEST_REPORT_FILE, process.env.ERAINFRA_TEST_REPORT_FILE];
+    process.env.RC_TEST_REPORT_FILE = "/tmp/stale-tests.json";
+    process.env.ERAINFRA_TEST_REPORT_FILE = "/tmp/stale-tests.json";
+    try {
+      const inherited = attemptEnvironment({});
+      assert.equal("RC_TEST_REPORT_FILE" in inherited, false);
+      assert.equal("ERAINFRA_TEST_REPORT_FILE" in inherited, false);
+    } finally {
+      if (saved[0] === undefined) delete process.env.RC_TEST_REPORT_FILE;
+      else process.env.RC_TEST_REPORT_FILE = saved[0];
+      if (saved[1] === undefined) delete process.env.ERAINFRA_TEST_REPORT_FILE;
+      else process.env.ERAINFRA_TEST_REPORT_FILE = saved[1];
+    }
+  });
+
+  it("reads the runtime's test report and ignores anything that is not one", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rc-tests-test-"));
+    try {
+      const path = join(directory, "tests.json");
+      assert.equal(await readTestReport(undefined), undefined);
+      assert.equal(await readTestReport(path), undefined);
+      await writeFile(path, JSON.stringify({ version: 1, totals: { tests: 0 } }));
+      assert.deepEqual(await readTestReport(path), { version: 1, totals: { tests: 0 } });
+      await writeFile(path, "null");
+      assert.equal(await readTestReport(path), undefined);
+      await writeFile(path, " ".repeat(2 * 1024 * 1024 + 1));
+      assert.equal(await readTestReport(path), undefined);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

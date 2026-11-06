@@ -267,6 +267,9 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 	if recordErr := writeEgressRecord(result.Egress); recordErr != nil {
 		fmt.Fprintln(os.Stderr, recordErr)
 	}
+	if reportErr := writeTestReport(result.Tests); reportErr != nil {
+		fmt.Fprintln(os.Stderr, reportErr)
+	}
 	return result.ExitCode, nil
 }
 
