@@ -5,111 +5,156 @@ and the Hub proxies each request over the App Node's `/data` socket. After this 
 the `erainfra-gateway` tunnel, whose replicas run on gateway Nodes and reach Apps over
 `erainfra-mesh` ([Gateway ingress](../infra-management.md#gateway-ingress-phase-3b)). The Hub's own
 host (`portless.<zone>`) has its own DNS record and stays on the Hub's tunnel.
+[retire-the-hub.md](retire-the-hub.md) runs this runbook as its steps 2 to 5.
 
-Rollback is one DNS command as long as the Hub keeps running, so keep it running until you are
-done with this zone.
+## Where traffic breaks
+
+The two paths never serve the same App at once:
+
+- The Hub reaches an App only while the App's Node runs in Hub mode, because only the Hub-mode
+  agent opens the `/data` socket the Hub proxies over (`apps/hub/src/server.ts`).
+- A gateway reaches an App only once the App's Node runs `connect-convex` with a proven mesh
+  endpoint.
+
+So switching an App Node takes its Apps off the Hub, and they come back only when their DNS points
+at the gateways. Do the switch and the DNS move together, in one window, and expect every App on
+that Node to answer errors for its length: about a minute when the commands run back to back.
+Gateway Nodes themselves run no Apps, so setting them up costs no traffic.
 
 ## Before you start
 
-1. **Every routed App must run on a `connect-convex` Node with a sidecar.** A gateway reaches only
-   Nodes with a proven endpoint. List the routes and their Nodes:
-
-   ```sh
-   erainfra apps list      # each routed App's Nodes
-   erainfra nodes list     # MESH must say proven for each of them
-   ```
-
-   (Or `npx convex run infra/apps:routes` and `infra/nodes:list` with `--identity`.) Each route's
-   Node needs a proven endpoint. A route that fails this check gets
-   503 from the gateways after the cutover. Move its Node first, or leave the zone on the Hub.
-
-2. **Convex must hold the Hub's current routes.** Re-run the Hub importer
-   ([State in Convex](../infra-management.md#state-in-convex)) right before the cutover, and do not
-   deploy through the Hub between the import and the cutover: a deploy changes the Hub's `routes`,
-   not Convex's.
-3. You need a Cloudflare origin cert for the zone (`~/.cloudflared/cert.pem`) on the machine where
-   you run the DNS commands below.
+1. **Gateway Nodes run no Apps.** Two Nodes in different places give the tunnel two replicas, so
+   one can fail. They run `connect-convex` with a sidecar
+   ([Set up a Node](../infra-management.md#set-up-a-node)).
+2. **Convex holds the Hub's current routes.** Re-run the Hub importer
+   ([State in Convex](../infra-management.md#state-in-convex)) right before the window, and do not
+   deploy through the Hub after it: a Hub deploy changes the Hub's `routes`, not Convex's.
+3. **You have a Cloudflare origin cert for the zone** (`~/.cloudflared/cert.pem`) on each gateway
+   Node and on the machine where you run the DNS commands below.
 
 ## 1. Set up two or more gateway Nodes
 
 On each gateway Node, run `deploy/infra/gateway.sh` with the same `ERAINFRA_ZONE` and tunnel name,
 set `ERAINFRA_GATEWAY_ROUTES_FILE` for its Infra Agent, and mark it a gateway
-([Set up a gateway Node](../infra-management.md#set-up-a-gateway-node)). Two Nodes in different
-places give the tunnel two replicas, so one can fail.
-
-Then, on each gateway Node, request every route through the proxy without involving DNS:
+([Set up a gateway Node](../infra-management.md#set-up-a-gateway-node)):
 
 ```sh
-curl -s -H 'Host: localhost' http://127.0.0.1:61090/healthz
-for app in web api; do   # every route label
-  curl -s -o /dev/null -w "$app %{http_code}\n" -H "Host: $app.<zone>" http://127.0.0.1:61090/
-done
-cloudflared tunnel info erainfra-gateway   # one connector per gateway Node
+AGENT_BIN=$(systemctl cat erainfra-node | sed -n 's/^ExecStart=\([^ ]*\).*/\1/p')
+ERAINFRA_ZONE=<zone> ERAINFRA_AGENT_BIN="$AGENT_BIN" sh deploy/infra/gateway.sh
+sudo systemctl edit erainfra-node
+#   [Service]
+#   Environment=ERAINFRA_GATEWAY_ROUTES_FILE=/var/lib/erainfra-gateway/routes.json
+sudo systemctl restart erainfra-node
+erainfra nodes set-roles <name> gateway
 ```
 
-Expect the same status codes the Hub returns for the same paths. A 503 means the route's Node is
-not reachable over the mesh (see "Before you start", step 1).
-
-## 2. Canary one App
-
-An explicit DNS record beats the wildcard (hub.sh relies on the same rule), so you can move one App
-first:
+Then check each one:
 
 ```sh
-cloudflared tunnel route dns erainfra-gateway web.<zone>
+curl -s -H 'Host: localhost' http://127.0.0.1:61090/healthz   # {"ok":true,…}
+cloudflared tunnel info erainfra-gateway                         # one connector per gateway Node
 ```
 
-Check `https://web.<zone>` from outside: pages, a large upload or download if the App has one,
-and a WebSocket if it uses them (the Hub could not serve those). The gateway's journal
-(`journalctl -u erainfra-gateway`) logs upstream failures.
+Routes whose Node is still in Hub mode are in the table with no upstream and answer 503 here.
+Nothing public has moved yet.
 
-To undo the canary, point that name back at the Hub's tunnel with
-`cloudflared tunnel route dns --overwrite-dns portless web.<zone>`, or delete the record in the
-Cloudflare dashboard so the wildcard applies again.
+## 2. Canary a test App
 
-## 3. Cut over the wildcard
+Deploy a test App through Convex on a gateway Node, with an image-only spec so nothing is built,
+and give it its own DNS record. An explicit record beats the wildcard (hub.sh relies on the same
+rule), so only this name moves:
 
 ```sh
-cloudflared tunnel route dns --overwrite-dns erainfra-gateway '*.<zone>'
+erainfra deploy ./hello-retire --app hello-retire \
+  --node <gateway node> --build-node <gateway node>
+cloudflared tunnel route dns erainfra-gateway hello-retire.<zone>
 ```
+
+[retire-the-hub.md, step 4](retire-the-hub.md#4-canary-through-a-gateway) has the spec. Check
+`https://hello-retire.<zone>` from outside: pages, a large upload or download, and a WebSocket (the
+Hub could not serve those). On the other gateway Node,
+`curl -H 'Host: hello-retire.<zone>' http://127.0.0.1:61090/` reaches it over the mesh. The
+gateway's journal (`journalctl -u erainfra-gateway`) logs upstream failures.
+
+## 3. Switch the App Nodes and move the wildcard
+
+Prepare first: re-run the importer, enroll each App Node and put its credential on it, and have the
+DNS command typed on the machine with the origin cert. Then, in one window:
+
+1. On each App Node, switch to `connect-convex`:
+
+   ```sh
+   curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- \
+     --role node --convex --credential-file ./<node>.credential --replace-hub-agent
+   ```
+
+   From the moment it stops `portless-agent.service`, the Hub can no longer serve this Node's Apps.
+
+2. `erainfra nodes list` shows the Node `convex`, `online`, `MESH proven`. On a gateway Node, each
+   of its Apps answers through the proxy:
+
+   ```sh
+   for app in <every route label>; do
+     curl -s -o /dev/null -w "$app %{http_code}\n" -H "Host: $app.<zone>" http://127.0.0.1:61090/
+   done
+   ```
+
+3. Move the wildcard:
+
+   ```sh
+   cloudflared tunnel route dns --overwrite-dns erainfra-gateway '*.<zone>'
+   ```
 
 This rewrites the proxied `*` CNAME to the gateway tunnel. Cloudflare answers visitors with its own
-addresses either way, so no client DNS cache has to expire. Requests already in flight through the
-Hub finish there.
+addresses either way, so no client DNS cache has to expire.
 
-Then delete the canary's explicit record from step 2 in the Cloudflare dashboard, so that the
-rollback below moves every App at once.
+With several App Nodes you can move one Node at a time instead: switch it, then give each of its
+App labels an explicit record to `erainfra-gateway`, as for the canary. Move the wildcard after the
+last Node, then delete the explicit records.
 
-Check a few Apps from outside, and watch the gateway journals and `/healthz` on every gateway Node
-for the next hour. The Hub keeps serving its own host and stays ready for a rollback.
+Then delete the canary's record in the Cloudflare dashboard, so that the rollback below moves every
+App at once. Check a few Apps from outside, and watch the gateway journals and `/healthz` on every
+gateway Node for the next hour.
 
 The gateways learn routes only from Convex. Deploy these Apps through Convex
 ([phase 3a](../infra-management.md#deploy-and-failover-from-convex-phase-3a)), whose pipeline and
-failover write the route rows the gateways read. A deploy or failover on the Hub changes only the
-Hub's database: re-run the Hub importer after any Hub deploy that adds or moves a route, or the
-gateways keep sending that App's traffic to where Convex last saw it. A route row whose port is not
-the one allocated to that App on that Node is refused (503) rather than sent to whatever holds
-that port.
+failover write the route rows the gateways read. A route row whose port is not the one allocated to
+that App on that Node is refused (503) rather than sent to whatever holds that port. A
+single-container App the Hub deployed has no allocation and is served as long as nothing else holds
+its port.
 
 ## Roll back
 
-On the Hub box (or anywhere with the origin cert), point the wildcard back at the Hub's tunnel:
+The Hub serves an App only once its Node is back in Hub mode, so the App Node goes back first and
+DNS second. Its Apps are down between the two commands.
 
-```sh
-cloudflared tunnel route dns --overwrite-dns portless '*.<zone>'
-```
+1. Turn automatic failover off before any Node stops talking to Convex:
+   `npx convex env set ERAINFRA_FAILOVER 0`. Otherwise Convex treats the rolled-back Node as lost,
+   moves its spec'd Apps elsewhere and queues `docker rm -f` of their containers there.
+2. On each App Node:
 
-The Hub still has its `*.<zone>` ingress rule from hub.sh and still proxies over `/data`, so
-nothing else changes. Remove any per-App records that point at `erainfra-gateway` as well. Routes
-changed in Convex after the cutover (failover, for example) are not in the Hub's database; check
-`portless apps` after a rollback.
+   ```sh
+   sudo systemctl disable --now erainfra-node
+   sudo systemctl enable --now portless-agent
+   ```
+
+3. Where the origin cert is, point the wildcard back at the Hub's tunnel:
+
+   ```sh
+   cloudflared tunnel route dns --overwrite-dns portless '*.<zone>'
+   ```
+
+The Hub still has its `*.<zone>` ingress rule from hub.sh and proxies over `/data` again once the
+Hub-mode agent reconnects. Remove any per-App records that point at `erainfra-gateway` as well.
+Routes changed in Convex after the cutover (a deploy or failover, for example) are not in the Hub's
+database; check `portless apps` after a rollback.
 
 ## Retire the Hub's ingress
 
 When the zone has run on the gateways long enough to trust them, the Hub's tunnel needs only its own
 host. Leave the `*.<zone>` rule in `~/.cloudflared/config-portless.yml` alone until the Hub itself is
 retired: it is harmless while no DNS record points the wildcard at that tunnel, and it is what makes
-the rollback above a single command.
+the rollback above a single DNS command.
 
 ## Remove a gateway Node
 

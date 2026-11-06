@@ -325,7 +325,8 @@ async function grantable(ctx: QueryCtx, node: Doc<"nodes"> | null): Promise<Mesh
  * allocated on the route's Node to the service whose `route` it is (key `<app>/<service>`), and
  * the App row must place that service on that Node at that port. Otherwise the route is refused:
  * no exposure on the App's Node and no upstream at the gateways (503). A stale row would otherwise
- * point the exposure at a port that another App may now hold on that Node.
+ * point the exposure at a port that another App may now hold on that Node. The exception is a
+ * single-container App the Hub deployed (`servesSingleContainer`), which has no App row.
  *
  * An App Node reads only the routes on itself (index `by_node`) and exposes each accepted one to
  * exactly the grantable gateways. A gateway reads the whole table and links to each accepted
@@ -353,7 +354,8 @@ async function ingressFor(
   if (gatewayNodes.length === 0)
     return { peers: [], exposures, links, routes: isGateway ? [] : null, overflow: 0 };
   const owners = routeOwners(input.apps);
-  const accepted = (route: Doc<"appRoutes">) => servesPlacement(ctx, route, owners);
+  const appNames = new Set(input.apps.map((a) => a.name));
+  const accepted = (route: Doc<"appRoutes">) => servesPlacement(ctx, route, owners, appNames);
 
   // Provider side: this Node runs routed Apps, and the gateways (other than itself) reach them.
   const hosted = (
@@ -476,6 +478,7 @@ async function servesPlacement(
   ctx: QueryCtx,
   route: Doc<"appRoutes">,
   owners: ReturnType<typeof routeOwners>,
+  appNames: ReadonlySet<string>,
 ) {
   if (!Number.isInteger(route.port) || route.port < 1 || route.port > 65535) return false;
   const owner = owners.get(route.name);
@@ -483,8 +486,8 @@ async function servesPlacement(
     console.warn(`route ${route.name}: claimed by more than one App; serving it 503`);
     return false;
   }
-  if (owner === undefined || owner.nodeId !== route.nodeId || owner.port !== route.port)
-    return false;
+  if (owner === undefined) return await servesSingleContainer(ctx, route, appNames);
+  if (owner.nodeId !== route.nodeId || owner.port !== route.port) return false;
   // A row that names its owner must name this one.
   if (
     route.app !== undefined &&
@@ -498,6 +501,28 @@ async function servesPlacement(
     .withIndex("by_node_port", (q) => q.eq("nodeId", route.nodeId).eq("port", route.port))
     .first();
   return allocation !== null && allocation.key === `${owner.app}/${owner.service}`;
+}
+
+/**
+ * A single-container App the Hub deployed has a route row and no App row: its container is named
+ * after the label and publishes the route's port on the Node's loopback itself, so no port was
+ * ever allocated for it. Served while no App row claims the label or the name and no allocation on
+ * that Node hands the port to anyone else. Refusing it would answer 503 for every such App from
+ * the moment its Node leaves Hub mode until it is redeployed through Convex.
+ */
+async function servesSingleContainer(
+  ctx: QueryCtx,
+  route: Doc<"appRoutes">,
+  appNames: ReadonlySet<string>,
+) {
+  if (route.service !== undefined || (route.app !== undefined && route.app !== route.name))
+    return false;
+  if (appNames.has(route.name)) return false;
+  const allocation = await ctx.db
+    .query("portAllocations")
+    .withIndex("by_node_port", (q) => q.eq("nodeId", route.nodeId).eq("port", route.port))
+    .first();
+  return allocation === null;
 }
 
 type IngressExposure = {

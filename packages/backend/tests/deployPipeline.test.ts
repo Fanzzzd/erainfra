@@ -34,6 +34,7 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   process.env.ERAINFRA_SECRETS_MASTER_KEY = "22".repeat(32);
   process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
+  process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -513,6 +514,154 @@ async function sign(secret: string, body: string) {
   return `sha256=${Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+const SOLO = `
+services:
+  web:
+    image: 127.0.0.1:5000/postgres:16
+    port: 5432
+    route: true
+    volumes: [pgdata:/var/lib/postgresql/data]
+`;
+
+/** Let every Node's simulated agent settle what it is sent, answering a spec step with `spec`. */
+async function drive(s: Awaited<ReturnType<typeof setup>>, spec: string) {
+  for (let i = 0; i < 6; i++)
+    for (const name of Object.keys(s.nodes))
+      await s.agent(name, (_p, c) =>
+        c.kind === "spec" ? { outcome: "success", spec } : { outcome: "success" },
+      );
+}
+
+/** Deploy `app` with a spec, on whatever Node the request picks, and drive it to the end. */
+async function deployWith(
+  s: Awaited<ReturnType<typeof setup>>,
+  app: string,
+  spec: string,
+  request: object = {},
+) {
+  const res = await s.operator("deployments", s.admin, {
+    app,
+    upload: await s.upload(),
+    ...request,
+  });
+  expect(res.status).toBe(202);
+  const id = ((await res.json()) as { deployment: { id: string } }).deployment.id;
+  await s.settle();
+  await drive(s, spec);
+  return id;
+}
+
+describe("a deploy that names no Node", () => {
+  it("keeps an existing App on the Node it runs on, not the first live Node by name", async () => {
+    const s = await setup(["aliyun", "work-remote"]);
+    await s.beat();
+    await deployWith(s, "solo", SOLO, { node: "work-remote", buildNode: "work-remote" });
+
+    // A redeploy with no --node, as the Hub-retirement runbook's "deploy every App" step does.
+    const again = await s.operator("deployments", s.admin, {
+      app: "solo",
+      upload: await s.upload(),
+    });
+    expect(again.status).toBe(202);
+    const id = ((await again.json()) as { deployment: { id: string } }).deployment.id;
+    await s.settle();
+    const run = await s.deployment(id);
+    expect(run.defaultNodeId).toBe(s.nodes["work-remote"].nodeId);
+    expect(run.buildNodeId).toBe(s.nodes["work-remote"].nodeId);
+    expect(await s.pending("aliyun")).toEqual([]);
+    await drive(s, SOLO);
+    expect((await s.deployment(id)).stage).toBe("done");
+    const routes = await s.t.run((ctx) => ctx.db.query("appRoutes").collect());
+    expect(routes.map((r) => r.nodeId)).toEqual([s.nodes["work-remote"].nodeId]);
+  });
+
+  it("refuses when the App's Node is not live, instead of moving it to another Node", async () => {
+    const s = await setup(["aliyun", "work-remote"]);
+    await s.beat();
+    await deployWith(s, "solo", SOLO, { node: "work-remote", buildNode: "work-remote" });
+    vi.setSystemTime(T0 + NODE_SILENCE_MS + 10_000);
+    await s.beat("aliyun");
+
+    const res = await s.operator("deployments", s.admin, {
+      app: "solo",
+      upload: await s.upload(),
+    });
+    const id = ((await res.json()) as { deployment: { id: string } }).deployment.id;
+    await s.settle();
+    const run = await s.deployment(id);
+    expect(run.stage).toBe("failed");
+    expect(run.error).toContain('App "solo" runs on work-remote, which is not connected to Convex');
+    expect(run.error).toContain("--node");
+    expect(await s.pending("aliyun")).toEqual([]);
+  });
+
+  it("keeps each service on its own Node when they differ", async () => {
+    const s = await setup(["aliyun", "node-a", "node-b"]);
+    await s.beat();
+    await deployWith(s, "shop", SHOP_SPEC, { node: "node-a", buildNode: "node-a" });
+    // The spec no longer pins db; it still runs on node-b with its volume.
+    const unpinned = SHOP_SPEC.replace("    node: node-b\n", "");
+    expect(unpinned).not.toContain("node-b");
+    await deployWith(s, "shop", unpinned);
+    const app = await s.t.run(async (ctx) =>
+      ctx.db
+        .query("apps")
+        .withIndex("by_name", (q) => q.eq("name", "shop"))
+        .unique(),
+    );
+    expect(app?.nodeId).toBe(s.nodes["node-a"].nodeId);
+    const where = Object.fromEntries(app!.services.map((x) => [x.name, x.nodeId ?? app!.nodeId]));
+    expect(where).toEqual({ web: s.nodes["node-a"].nodeId, db: s.nodes["node-b"].nodeId });
+    const runs = await s.t.run((ctx) => ctx.db.query("appDeployments").collect());
+    expect(runs.map((r) => r.stage)).toEqual(["done", "done"]);
+  });
+
+  it("keeps a single-container App the Hub deployed on its route's Node, on a push too", async () => {
+    const s = await setup(["aliyun", "work-remote"]);
+    await s.beat();
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("appRoutes", {
+        name: "solo",
+        nodeId: s.nodes["work-remote"].nodeId,
+        image: "127.0.0.1:5000/solo:old",
+        port: 8080,
+        updatedAt: T0,
+      });
+      // An imported Hub binding names no deploy Node.
+      await ctx.db.insert("gitBindings", {
+        repo: "acme/solo",
+        repoKey: "acme/solo",
+        branch: "main",
+        app: "solo",
+        createdAt: T0,
+      });
+    });
+    const pushed = await s.t.mutation(internal.infra.git.acceptPush, {
+      deliveryId: "guid-solo",
+      repo: "acme/solo",
+      branch: "main",
+      sha: "a".repeat(40),
+    });
+    expect(pushed.outcome).toBe("queued");
+    await s.settle();
+    const run = await s.deployment((pushed as { deploymentId: string }).deploymentId);
+    expect(run.defaultNodeId).toBe(s.nodes["work-remote"].nodeId);
+    expect(await s.pending("aliyun")).toEqual([]);
+  });
+
+  it("still places a new App on the first live Node", async () => {
+    const s = await setup(["aliyun", "work-remote"]);
+    await s.beat();
+    const res = await s.operator("deployments", s.admin, {
+      app: "fresh",
+      upload: await s.upload(),
+    });
+    const id = ((await res.json()) as { deployment: { id: string } }).deployment.id;
+    await s.settle();
+    expect((await s.deployment(id)).defaultNodeId).toBe(s.nodes["aliyun"].nodeId);
+  });
+});
+
 describe("push-to-deploy", () => {
   it("deploys once per delivery and lends the build Node a read-only token for one repository", async () => {
     const s = await setup();
@@ -774,6 +923,7 @@ describe("mesh links from the pipeline", () => {
     process.env.ERAINFRA_REGISTRY_NODE = "node-c";
     const s = await setup();
     await s.beat();
+    await s.t.run((ctx) => ctx.db.patch(s.nodes["node-c"].nodeId, { endpointProvenAt: T0 }));
     await s.t.run((ctx) =>
       ctx.db.insert("meshLinks", {
         name: "registry-node-a",
@@ -791,6 +941,43 @@ describe("mesh links from the pipeline", () => {
       stage: "failed",
       error: "the mesh link name registry-node-a is taken by a link someone declared",
     });
+  });
+
+  it("fails a build before it starts while the registry is unset, malformed or out of reach", async () => {
+    const s = await setup();
+    await s.beat();
+    const attempt = async () => {
+      const id = await s.startUpload("shop", await s.upload());
+      await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+      const run = await s.deployment(id);
+      expect(run.stage).toBe("failed");
+      expect(run.detail).toBe("planning");
+      expect((await s.pending("node-a")).map((c) => c.kind)).toEqual([]);
+      return run.error;
+    };
+
+    delete process.env.ERAINFRA_REGISTRY;
+    expect(await attempt()).toContain("ERAINFRA_REGISTRY is not set in the Convex environment");
+
+    process.env.ERAINFRA_REGISTRY = "http://127.0.0.1:61050";
+    expect(await attempt()).toContain("is not a registry address");
+
+    // The registry Node has never proven a mesh endpoint (it is still in Hub mode), so no other
+    // Node can reach the registry it runs.
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+    process.env.ERAINFRA_REGISTRY_NODE = "node-c";
+    expect(await attempt()).toContain("the registry Node node-c (ERAINFRA_REGISTRY_NODE)");
+  });
+
+  it("deploys an App that builds nothing without a registry", async () => {
+    delete process.env.ERAINFRA_REGISTRY;
+    const s = await setup();
+    await s.beat();
+    const spec = "services:\n  web:\n    image: nginx:1\n    port: 80\n    route: true\n";
+    const id = await s.startUpload("plain", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec }));
+    await s.agent("node-a");
+    expect((await s.deployment(id)).stage).toBe("done");
   });
 });
 

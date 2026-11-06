@@ -1,38 +1,60 @@
 # Runbook: deploy the control plane without losing capability
 
-The production Convex deployment schedules live CI. Deploying it is one command, but it swaps
-the scheduler, the worker API and the dashboard under running Workers, so treat it like a
-cutover, not a push. This runbook exists because `main` currently carries several deployments'
-worth of undeployed change (#27, #28, #30, #32) and each has a specific thing worth checking.
+The production Convex deployment schedules live CI and serves `/install`. Deploying it is one
+command, but it swaps the scheduler, the worker and controller APIs, the install script and the
+dashboard under running Workers and controllers. Treat it as a cutover.
 
-## Why this deploy is safe by construction
+Two facts decide the order:
 
-- **Old rows validate against the new schema.** Every field #32 moved to evidence tables is
-  still `v.optional` in the hot validators, with a comment marking the one-cycle window, so
-  Convex's deploy-time document validation passes on existing data.
-- **Legacy data paths are tested, not assumed.** convex-test covers claiming a legacy inline
-  `jitConfig` (and erasing it), reading a legacy inline benchmark, and machines with no slot
-  policy. The scheduler's decisions are pinned byte-identical by a pre-refactor fixture.
-- **Workers need no lockstep upgrade.** Agents on rc.3 keep reporting the legacy readiness
-  shape; the control plane accepts it and converges each row to the new shape on the Worker's
-  next report (≤6 h healthy, 5 min unhealthy).
+- **The deployment pins the release.** `packages/backend/convex/agentRelease.ts` names the release
+  version and the SHA-256 of every binary `/install` hands out: Worker archive, Infra Agent,
+  `erainfra-mesh`, cache service and controller. The pins match one tagged release, so deploy from
+  that release's commit, never from the tip of `main`. A commit after the tag can carry pins for a
+  release that does not exist yet.
+- **The backend and the controllers move together.** The backend refuses every controller write
+  that does not carry the Profile's lease epoch (`controllerLease.ts`), with no legacy bypass. A
+  controller from before the lease code stops working the moment the new backend is live, and a
+  lease-aware controller cannot talk to a backend from before it. So the controller update runs in
+  the same window as the deploy, and a rollback moves both back together.
 
 ## 1. Before
 
+Pick the release and check it out in a clean worktree:
+
 ```bash
-git log --oneline origin/main -3   # know exactly what you are deploying; note the commit
-pnpm check                          # green on the commit you deploy
+git fetch --tags origin
+git worktree add ../erainfra-release v0.2.0-rc.11      # the tag you are deploying
+cd ../erainfra-release
+grep -n 'version:' packages/backend/convex/agentRelease.ts
+pnpm install --frozen-lockfile
+pnpm check                                             # green on the commit you deploy
+```
+
+The `version` must be the tag's. `mesh` and `controller` in `AGENT_RELEASE` must not be empty if
+you will install Nodes with `--convex` or update controllers; an empty map makes `/install` refuse
+that role.
+
+Note the commit production runs now, for the rollback. `--update` keeps each controller host's old
+binary and unit as `.bak-<old version>` files, so those need no note.
+
+Stage the new controller binary on every controller host, so the window does not wait on a
+download. Take it from the GitHub Release of the tag and check it against the pin on the release
+commit:
+
+```bash
+v=0.2.0-rc.11
+curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/v$v/runner-center-controller-linux-x86_64"
+sha256sum runner-center-controller-linux-x86_64   # must equal controller["linux-x86_64"] in agentRelease.ts
 ```
 
 Confirm the EraInfra `smoke` workflow is green; it runs daily against the live fleet and on demand
-via workflow dispatch. A green run within 24 h means the current deployment created, claimed, and
-ran a job that passed the in-job executor probes. It does not observe post-job teardown or satisfy
-issue #17's Firecracker production gate.
+via workflow dispatch. Pick a quiet window: running Attempts are not interrupted by a deploy, but
+scheduling decisions made mid-deploy land on whichever code version answers, and GitHub queues new
+jobs while the controllers restart.
 
-Pick a quiet window: running Attempts are not interrupted by a deploy, but scheduling
-decisions made mid-deploy land on whichever code version answers.
+## 2. Deploy, and update the controllers in the same window
 
-## 2. Deploy
+From the release worktree:
 
 ```bash
 pnpm run deploy:control-plane
@@ -44,42 +66,78 @@ The script calls the backend's `deploy` script through `pnpm run`, because pnpm 
 run the two halves yourself from `packages/backend`: `npx convex deploy -y`, then
 `pnpm run deploy --skip-convex` to build and upload the dashboard.
 
+Then at once, on each controller host, update every running controller to the pin the new
+deployment serves, from the staged file:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
+  --source "file://$PWD/runner-center-controller-linux-x86_64"
+```
+
+`--source` changes where the bytes come from, never which digest is accepted. `--update` restarts
+exactly the instances that were running and rolls itself back if one fails its health check
+([operate-the-controller-host.md](operate-the-controller-host.md#dedicated-host-install-and-update)).
+A controller that was not installed by `/install --role controller` has nothing for `--update` to
+update; install it with the dedicated host command in that runbook instead.
+
 ## 3. Verify, in this order
 
-1. **Dashboard loads and shows every Profile** with its isolation badge, worker readiness and
-   checks (proves #27 against production data).
-2. **Workers stay ready.** Within one readiness cycle each Worker's row converges to the new
-   compact shape. `rc logs -f` on a Worker shows `readiness: ready`, not schema errors.
-3. **Run the canary now** — trigger EraInfra's `smoke` workflow (workflow dispatch) and wait for
-   green. This exercises attempt creation → `attemptSecrets` → claim → in-job executor probes on
-   the new code with real GitHub traffic; post-job teardown remains a separate check.
-4. **Bandwidth actually drops.** In the Convex dashboard's usage page, `tryAssign`,
-   `pendingAttempts` and `reconcile.run` should fall from GB-scale to MB-scale within a day.
-   If they do not, the range reads are not being hit — investigate before assuming success.
-5. After ~24 h, spot-check a `workerReadiness` row: the legacy fat fields should be gone from
-   hot rows (the one-cycle window closed). That green-lights the follow-up PR that tightens
-   the validators.
+1. **Each controller holds its lease.** `journalctl -u runner-center-controller@<profile> -n 50`
+   shows `acquired controller lease`, then `runner scale-set controller started`. The dashboard's
+   Profiles table shows each Profile listening.
+2. **The dashboard loads and shows every Profile** with its isolation badge, Worker readiness and
+   checks.
+3. **Workers stay ready.** `rc logs -f` on a Worker shows `readiness: ready`, not schema errors.
+4. **Run the canary.** Trigger EraInfra's `smoke` workflow (workflow dispatch) and wait for green.
+   It exercises Attempt creation, `attemptSecrets`, claim and the in-job executor probes on the new
+   code with real GitHub traffic. Post-job teardown remains a separate check.
+5. **`/install` serves the new release.** The usage it prints lists this release's options:
+
+   ```bash
+   curl -fsSL https://<deployment>.convex.site/install | bash -s -- --role node --help
+   ```
 
 ## 4. Roll back
 
-Convex deploys are code swaps; data written in between stays. The new code only _adds_
-optional fields and one table, so the previous code reads post-deploy data correctly — with
-one exception: Attempts created by the new code keep credentials in `attemptSecrets`, which
-old code cannot claim.
+Convex deploys are code swaps; data written in between stays. Roll back the backend and the
+controllers together, in one window:
 
-```bash
-git checkout <previous-commit> && pnpm run deploy:control-plane
-```
+1. On each controller host, put back the binary and unit `--update` kept, and restart the
+   instances that should run:
 
-Then cancel and retry any Attempt created during the window (retry creates a new Attempt, and
-the old code writes the inline shape it can read). Attempts already claimed or running are
-unaffected either way.
+   ```bash
+   sudo install -m 0755 /usr/local/lib/runner-center/runner-center-controller.bak-<old version> \
+     /usr/local/lib/runner-center/runner-center-controller
+   sudo cp -p /etc/systemd/system/runner-center-controller@.service.bak-<old version> \
+     /etc/systemd/system/runner-center-controller@.service
+   sudo systemctl daemon-reload
+   sudo systemctl restart 'runner-center-controller@<profile>'
+   ```
 
-## 5. Agent pin
+2. Deploy the previous commit from its own worktree:
 
-This deploy also moves the served agent pin to rc.4 (`agentRelease.ts`). Installed agents do
-not self-update: run `rc update` on each Worker. The installer fetches the release this
-deployment pins, verifies the archive against the pinned sha256, and swaps atomically; a
-failed verification leaves the current install untouched. Until a Worker is updated, its
-jobs run with the previous agent's provisioning behaviour — the canary makes that drift
-visible instead of letting it pass.
+   ```bash
+   git worktree add ../erainfra-previous <previous commit>
+   cd ../erainfra-previous && pnpm install --frozen-lockfile && pnpm run deploy:control-plane
+   ```
+
+Then cancel and retry any Attempt created during the window. Attempts already claimed or running
+are unaffected. If the previous backend predates the controller lease, the previous controller
+binary is the only one that works with it, and the reverse holds too; never leave one side rolled
+back alone.
+
+## 5. Agent pins
+
+Installed Worker agents and Infra Agents do not update themselves. After the deploy, `/install`
+serves the new pins:
+
+- Workers: `rc update` on each Worker fetches the release this deployment pins, verifies it and
+  swaps atomically. Re-running `/install --role worker-host` to update the Firecracker runtime
+  refuses while any Firecracker VM runs, including the idle warm VMs the runtime keeps parked:
+  drain the Worker first, as the refusal and
+  [firecracker-cutover.md](firecracker-cutover.md#2-provision-the-worker-host) say.
+- Nodes: re-run the `/install --role node …` command the Node was installed with. A `--convex`
+  Node can pass `--credential-file /etc/erainfra-node.credential`, the copy the installer keeps.
+
+Until a machine is updated it runs the previous release's behaviour; the canary makes that drift
+visible.

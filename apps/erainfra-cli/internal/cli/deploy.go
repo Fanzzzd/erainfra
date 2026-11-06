@@ -162,8 +162,8 @@ deployment and returns at once; follow it with ` + "`erainfra deployments view <
 	flags: []flagSpec{
 		{name: "app", metavar: "NAME", usage: "App name (default: the directory's name)"},
 		{name: "port", metavar: "PORT", usage: "container port, for a source with no spec file"},
-		{name: "node", metavar: "NAME", usage: "Node that services without node: land on"},
-		{name: "build-node", metavar: "NAME", usage: "Node that builds the images"},
+		{name: "node", metavar: "NAME", usage: "Node that services without node: land on (default: where the App runs now; the first live Node for a new App)"},
+		{name: "build-node", metavar: "NAME", usage: "Node that builds the images (default: the --node default)"},
 		{name: "repo", metavar: "OWNER/NAME", usage: "deploy this repository instead of a directory"},
 		{name: "branch", metavar: "BRANCH", usage: "branch with --repo (default main)"},
 		{name: "sha", metavar: "SHA", usage: "exact 40-character commit with --repo"},

@@ -13,8 +13,8 @@ with `AGENT_RELEASE.mesh` populated on the release commit from the release workf
 The steps are in the README's release section; they use `print-mesh-pin`, never a hand-typed
 digest.
 
-Until then, `/install --role node --mesh` refuses before downloading or replacing an agent. Do not
-create a pin from a local or unpublished build.
+Until then, `/install --role node --mesh` and `--convex` refuse before downloading or replacing an
+agent. Do not create a pin from a local or unpublished build.
 
 ## Install or migrate a Node
 
@@ -38,6 +38,15 @@ both the deployment pin and the release's `.sha256`. On Linux systemd it creates
 directory holding the controller lock). The agent unit requires `erainfra-mesh.service`, and the
 agent exits at startup if the sidecar does not answer `status`, so systemd retries it instead of
 running a Node that silently lacks the mesh.
+
+The same installer sets up a Node in Convex mode (`connect-convex`) with
+`--role node --convex --credential-file <path>` in place of `--token` and `--hub`. It needs Linux
+with systemd. It installs `erainfra-mesh.service` exactly as above, then runs the agent as
+`erainfra-node.service` with the same two variables instead of `portless-agent.service`. It refuses
+while `portless-agent.service` or `erainfra-agent.service` is running or enabled, unless
+`--replace-hub-agent` is given to stop and disable it. The Hub-mode installer refuses while
+`erainfra-node.service` is running or enabled. See
+[Set up a Node](../infra-management.md#set-up-a-node).
 
 A non-systemd install must run as an ordinary user. It sets `ERAINFRA_MESH_BIN`, and the Infra Agent
 then supervises one sidecar under `$PORTLESS_PREFIX/run/mesh-control/sidecar` (key, state and

@@ -35,10 +35,11 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   process.env.ERAINFRA_SECRETS_MASTER_KEY = "22".repeat(32);
   process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
+  process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
 });
 afterEach(() => {
   vi.useRealTimers();
-  for (const name of ["ERAINFRA_SECRETS_MASTER_KEY", "ERAINFRA_APP_DOMAIN"])
+  for (const name of ["ERAINFRA_SECRETS_MASTER_KEY", "ERAINFRA_APP_DOMAIN", "ERAINFRA_REGISTRY"])
     delete process.env[name];
 });
 

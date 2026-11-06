@@ -25,7 +25,13 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, type MutationCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";
-import { upsertApp, upsertMeshLink, upsertRoute } from "./apps";
+import {
+  isSingleContainerRoute,
+  loadRouteOwner,
+  upsertApp,
+  upsertMeshLink,
+  upsertRoute,
+} from "./apps";
 import { createDeployment } from "./deployments";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
 import { namespaceRefusal } from "./namespace";
@@ -53,9 +59,29 @@ export const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 const ACTIVE_STAGES = ["reading-spec", "planning", "building", "deploying", "linking"] as const;
 
-/** Where builds push and Nodes pull. See docs/infra-management.md, "Image registry". */
-export function registryAddress() {
-  return process.env.ERAINFRA_REGISTRY || "127.0.0.1:5000";
+/**
+ * Where builds push and Nodes pull, from ERAINFRA_REGISTRY; null while it is not set. There is no
+ * default: a guessed address that does not match the registry the fleet runs fails only at the
+ * push, after a full build (docs/infra-management.md, "Image registry and cross-Node links").
+ */
+export function registryAddress(): string | null {
+  const value = process.env.ERAINFRA_REGISTRY?.trim();
+  return value ? value : null;
+}
+/** `host[:port]` with an optional path prefix, the part of an image reference before the name. */
+const REGISTRY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?(\/[a-z0-9][a-z0-9._-]*)*$/;
+const REGISTRY_UNSET =
+  "ERAINFRA_REGISTRY is not set in the Convex environment, so there is nowhere to push a build. " +
+  "Set it to the registry every Node pushes to and pulls from, e.g. 127.0.0.1:61050 for the one " +
+  "deploy/infra/hub.sh runs, with ERAINFRA_REGISTRY_NODE naming the Node that runs it " +
+  "(docs/infra-management.md, Image registry and cross-Node links)";
+
+/** Why the configured registry cannot be used, or null. */
+function registryRefusal(registry: string | null) {
+  if (registry === null) return REGISTRY_UNSET;
+  if (!REGISTRY_PATTERN.test(registry))
+    return `ERAINFRA_REGISTRY="${registry}" is not a registry address; give host[:port], with no scheme`;
+  return null;
 }
 function appDomain() {
   return process.env.ERAINFRA_APP_DOMAIN || undefined;
@@ -109,6 +135,43 @@ async function liveNodes(ctx: MutationCtx, now: number) {
 }
 
 /**
+ * Where an existing App runs now: its primary Node and each service's Node. An App the Hub deployed
+ * as a single container has no App row, only a route row named after it, and runs on that route's
+ * Node. Null for an App Convex has never seen, the only case a deploy may pick a Node for it.
+ */
+async function currentPlacement(
+  ctx: MutationCtx,
+  app: string,
+): Promise<{ nodeId: Id<"nodes">; services: Map<string, Id<"nodes">> } | null> {
+  const row = await ctx.db
+    .query("apps")
+    .withIndex("by_name", (q) => q.eq("name", app))
+    .unique();
+  if (row !== null)
+    return {
+      nodeId: row.nodeId,
+      services: new Map(row.services.map((s) => [s.name, s.nodeId ?? row.nodeId])),
+    };
+  const route = await ctx.db
+    .query("appRoutes")
+    .withIndex("by_name", (q) => q.eq("name", app))
+    .unique();
+  if (route === null || !isSingleContainerRoute(route, await loadRouteOwner(ctx, route)))
+    return null;
+  return { nodeId: route.nodeId, services: new Map() };
+}
+
+/** Why an existing App cannot be deployed where it runs, because that Node is not live. */
+function notLiveRefusal(app: string, node: string) {
+  return (
+    `App "${app}" runs on ${node}, which is not connected to Convex (it is down, or still in Hub ` +
+    `mode). A deploy that names no Node keeps the App where its volumes are. Bring ${node} back, ` +
+    `or name another Node with --node to move the App there with empty volumes; failover is what ` +
+    `moves Apps off a lost Node.`
+  );
+}
+
+/**
  * Take the App's lease and leave `queued`. Refused while another run (or a failover) holds it: the
  * run stays queued and is started when that one finishes (`kickApp`) or at a later pulse.
  */
@@ -138,8 +201,32 @@ async function begin(ctx: MutationCtx, run: Run) {
   const patch: Partial<Run> = { leaseEpoch: lease.epoch, stageStartedAt: now };
   if (run.operation === "deploy") {
     const live = await liveNodes(ctx, now);
-    const buildNodeId = run.buildNodeId ?? live[0]?._id;
-    const defaultNodeId = run.defaultNodeId ?? live[0]?._id;
+    // A deploy that names no Node keeps an existing App where it runs: moving it would start its
+    // services on another Node with empty volumes while the old containers keep running. Only an
+    // App Convex has never seen lands on the first live Node.
+    let defaultNodeId = run.defaultNodeId;
+    let keepsPlacement = false;
+    if (defaultNodeId === undefined) {
+      const current = await currentPlacement(ctx, run.app);
+      if (current !== null) {
+        const node = await ctx.db.get(current.nodeId);
+        if (!isNodeLive(node?.lastSeenAt, now)) {
+          await ctx.db.patch(run._id, patch);
+          await finish(ctx, { ...run, ...patch }, "failed", {
+            detail: "reading-spec",
+            error: notLiveRefusal(run.app, node?.name ?? current.nodeId),
+          });
+          return;
+        }
+        defaultNodeId = current.nodeId;
+        keepsPlacement = true;
+      } else {
+        defaultNodeId = live[0]?._id;
+      }
+    }
+    // Build where the App lands unless told otherwise, so a build never lands on a Node the
+    // operator did not involve.
+    const buildNodeId = run.buildNodeId ?? defaultNodeId;
     if (buildNodeId === undefined || defaultNodeId === undefined) {
       await ctx.db.patch(run._id, patch);
       await finish(ctx, { ...run, ...patch }, "failed", {
@@ -151,6 +238,7 @@ async function begin(ctx: MutationCtx, run: Run) {
     Object.assign(patch, {
       buildNodeId,
       defaultNodeId,
+      ...(keepsPlacement ? { keepsPlacement: true } : {}),
       stage: "reading-spec" as const,
       detail: "reading the spec file",
     });
@@ -390,6 +478,15 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   } else {
     spec = run.spec!;
     defaultNodeId = run.defaultNodeId!;
+    if (run.keepsPlacement === true) {
+      // Each service the App already runs stays on its Node unless the spec now names one.
+      const current = await currentPlacement(ctx, run.app);
+      for (const s of spec.services) {
+        const node = current?.services.get(s.name);
+        if (s.node !== undefined || node === undefined) continue;
+        (placement ??= {})[s.name] = node;
+      }
+    }
   }
   const nodeIds = new Map<string, Id<"nodes">>();
   for (const s of spec.services) {
@@ -402,6 +499,13 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   }
   const revision =
     run.source?.kind === "git" && run.source.sha ? run.source.sha : (run._id as string);
+  // Checked before any build: an unset or malformed registry would fail only at the push.
+  const registry = registryAddress();
+  const builds = spec.services.some((s) => s.image === undefined && images?.[s.name] === undefined);
+  if (builds) {
+    const refusal = registryRefusal(registry);
+    if (refusal !== null) return await fail(ctx, run, { error: refusal });
+  }
   let planned;
   try {
     planned = await planDeploy({
@@ -410,7 +514,8 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       nodeIdOf: (name) => nodeIds.get(name) ?? null,
       placement,
       images,
-      registry: registryAddress(),
+      // Read only for a service it builds, which the check above admitted.
+      registry: registry ?? "",
       revision,
       allocate: (nodeId, key) => allocatePort(ctx, nodeId, key),
     });
@@ -432,7 +537,11 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   for (const nodeId of deployNodeIds) {
     if (!liveIds.has(nodeId)) {
       const node = await ctx.db.get(nodeId);
-      return await fail(ctx, run, { error: `${node?.name ?? nodeId} is not connected to Convex` });
+      const name = node?.name ?? nodeId;
+      const kept = run.keepsPlacement === true && Object.values(placement ?? {}).includes(nodeId);
+      return await fail(ctx, run, {
+        error: kept ? notLiveRefusal(run.app, name) : `${name} is not connected to Convex`,
+      });
     }
   }
   const domain = appDomain();
@@ -482,9 +591,21 @@ async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
     .withIndex("by_name", (q) => q.eq("name", registryNode))
     .unique();
   if (provider === null) return `ERAINFRA_REGISTRY_NODE names no Node "${registryNode}"`;
-  const port = Number(registryAddress().split(":").pop());
+  const registry = registryAddress();
+  const refusal = registryRefusal(registry);
+  if (refusal !== null) return refusal;
+  const port = Number(registry!.split("/")[0].split(":")[1]);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
-    return `cannot read a port from ERAINFRA_REGISTRY="${registryAddress()}"`;
+    return `cannot read a port from ERAINFRA_REGISTRY="${registry}"; with ERAINFRA_REGISTRY_NODE it must be 127.0.0.1:<port>`;
+  // Every other Node reaches the registry over a mesh link from the registry Node, which only a
+  // Node in connect-convex mode with a proven endpoint can provide. A registry Node still in Hub
+  // mode would fail every push and pull here, after a full build.
+  const remote = [...new Set(nodeIds)].some((id) => id !== provider._id);
+  if (
+    remote &&
+    (!isNodeLive(provider.lastSeenAt, Date.now()) || provider.endpointProvenAt === undefined)
+  )
+    return `the registry Node ${registryNode} (ERAINFRA_REGISTRY_NODE) is not connected to Convex with a proven mesh endpoint, so no other Node can reach its registry; switch it to connect-convex first`;
   for (const nodeId of new Set(nodeIds)) {
     if (nodeId === provider._id) continue;
     const node = await ctx.db.get(nodeId);
