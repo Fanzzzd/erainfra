@@ -141,10 +141,12 @@ var testsFlakyCommand = command{
 	path:    "tests flaky",
 	summary: "List tests seen both failing and passing",
 	long: `
-A test is flaky when it failed and passed for the same commit, across a rerun
-of the workflow or another job, or when its test runner retried it into a
-pass inside one run (Surefire's rerunFailingTestsCount, gotestsum
---rerun-fails). EVIDENCE says which. SEEN counts the runs that showed it.`,
+A test is flaky when it failed and passed in two runs of the same code, or
+when its test runner retried it into a pass inside one run (Surefire's
+rerunFailingTestsCount, gotestsum --rerun-fails). Two runs are the same code
+when they are Attempts of one workflow run, or push, schedule, dispatch or
+merge-queue runs of one branch at one commit. EVIDENCE says which. SEEN counts
+the runs that showed it.`,
 	flags: testFilterFlags,
 	run: func(ctx context.Context, a *App, in invocation) error {
 		query, err := testQuery(in)

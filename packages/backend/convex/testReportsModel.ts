@@ -32,6 +32,13 @@ export const PASSED_HASH_LENGTH = 12;
 export const MAX_REVISION_PEERS = 20;
 /** How many recent Attempts a flaky row remembers. */
 export const MAX_FLAKY_ATTEMPTS = 10;
+/**
+ * How many tests one upload may mark flaky: its own cases first, then earlier runs' failures it
+ * passed. Each costs a read and a write of a flaky row, and the second kind a read of the earlier
+ * run's case, so the cap is what keeps the upload's transaction inside Convex's limits whatever its
+ * peers hold. A run that turns more than this many tests flaky at once is not reporting flakiness.
+ */
+export const MAX_FLAKY_FINDINGS = MAX_CASES;
 
 export const testStatusValidator = v.union(
   v.literal("passed"),
@@ -87,17 +94,32 @@ export const testReportFields = {
   jobName: v.optional(v.string()),
   workflowRunId: v.optional(v.number()),
   commitSha: v.optional(v.string()),
-  /**
-   * What two Attempts must share to be runs of the same code: the commit, or failing that the
-   * workflow run (a rerun keeps its run id and its commit), or failing that nothing.
-   */
+  /** What two Attempts must share to be runs of the same code; see revisionKey. */
   revision: v.optional(v.string()),
   recordedAt: v.number(),
   files: v.number(),
   truncated: v.boolean(),
   totals: testTotalsValidator,
-  /** The report's passed-id hashes, concatenated and sorted; see passedHash. */
+  /**
+   * Empty. The passed-id hashes are up to 240 kB a report and live in testReportHashes, so the
+   * views that read many report rows never carry them. The field stays because the schema only
+   * grows.
+   */
   passed: v.string(),
+  /** Whether the report failed or errored any test: what the failing-runs list is indexed on. */
+  failing: v.optional(v.boolean()),
+};
+
+/**
+ * One row per report, beside it: the hashes flaky detection compares a later run of the same
+ * revision against. Only an upload reads them, and only for its at most MAX_REVISION_PEERS peers.
+ */
+export const testReportHashFields = {
+  reportId: v.id("testReports"),
+  /** Every passing test's id hash, sorted and concatenated; see passedHash. At most 240 kB. */
+  passed: v.string(),
+  /** The failed and errored cases' id hashes, the same way. At most 6 kB. */
+  failing: v.string(),
 };
 
 /** One row per case a report listed: its failures, errors, flaky cases and slowest passes. */
@@ -108,6 +130,8 @@ export const testCaseFields = {
   branch: v.optional(v.string()),
   recordedAt: v.number(),
   testId: v.string(),
+  /** passedHash(testId), so an earlier run's failure found by hash is one indexed read. */
+  testHash: v.optional(v.string()),
   suite: v.optional(v.string()),
   name: v.string(),
   file: v.optional(v.string()),
@@ -279,10 +303,45 @@ export function branchFromWorkflowRef(workflowRef: string | undefined) {
   return ref || undefined;
 }
 
-/** See testReportFields.revision. */
-export function revisionKey(commitSha: string | undefined, workflowRunId: number | undefined) {
-  if (commitSha !== undefined) return `commit:${commitSha}`;
-  if (workflowRunId !== undefined) return `run:${workflowRunId}`;
+/**
+ * Events whose runs test the code at their own branch's head, so that two runs on one branch
+ * naming one commit ran the same code: a push, a schedule and a manual dispatch run the branch's
+ * workflow at its commit, and a merge queue gives every group its own branch. Every other event
+ * is left out. A pull request runs a merge commit its head SHA does not name, and may come from a
+ * fork; `pull_request_target`, `issue_comment`, `workflow_run` and `repository_dispatch` run on
+ * the default branch while often checking out someone else's code.
+ */
+const COMMIT_JOINED_EVENTS = new Set(["push", "schedule", "workflow_dispatch", "merge_group"]);
+
+/**
+ * What two Attempts must share to be runs of the same code, in one repository.
+ *
+ * The commit id comes from the job's own `.git`, which the job can write, so a commit alone would
+ * let any job join any other's runs: a pull request claiming main's commit could fail main's
+ * tests and so mark them flaky. A commit therefore joins runs only together with the branch, and
+ * only for an event in COMMIT_JOINED_EVENTS. The branch and the event are what the controller
+ * recorded from GitHub's JobStarted message, not anything the job wrote. Inside that key a job can
+ * only claim another commit of its own branch's runs.
+ *
+ * Every other Attempt is joined by its workflow run alone. GitHub reruns a run at the commit and
+ * ref it started with (docs.github.com, "Re-running workflows and jobs": a rerun "uses the same
+ * GITHUB_SHA (commit SHA) and GITHUB_REF (Git ref) of the original event"), and the run id is the
+ * controller's, so a rerun of a pull request still finds its flaky tests and never another run's.
+ */
+export function revisionKey(
+  attempt: { eventName?: string; workflowRef?: string; workflowRunId?: number },
+  commitSha: string | undefined,
+) {
+  const branch = branchFromWorkflowRef(attempt.workflowRef);
+  if (
+    commitSha !== undefined &&
+    branch !== undefined &&
+    attempt.eventName !== undefined &&
+    COMMIT_JOINED_EVENTS.has(attempt.eventName)
+  ) {
+    return `commit:${commitSha}@${branch}`;
+  }
+  if (attempt.workflowRunId !== undefined) return `run:${attempt.workflowRunId}`;
   return undefined;
 }
 
@@ -291,49 +350,70 @@ export type FlakyFinding = {
   evidence: FlakyEvidence;
 };
 
-export type RevisionPeer = {
-  /** The peer report's passed hashes. */
+export type RevisionPeer<Ref> = {
+  /** Names the peer to the caller, which reads its cases. */
+  ref: Ref;
+  /** The peer's passed hashes. */
   passed: string;
-  /** The peer report's failed and errored cases. */
-  failing: Pick<TestCase, "id" | "suite" | "name" | "file" | "message">[];
+  /** The peer's failed and errored case hashes. */
+  failing: string;
 };
 
-const isFailing = (status: TestStatus) => status === "failed" || status === "errored";
+/** A test an earlier run failed and this upload passed. Only its hash is known here. */
+export type PeerFailure<Ref> = { ref: Ref; hash: string };
+
+export const isFailing = (status: TestStatus) => status === "failed" || status === "errored";
+
+/** The sorted, concatenated, unique hashes of a report's failed and errored cases. */
+export async function failingHashes(cases: TestCase[]) {
+  const failing = cases.filter((testCase) => isFailing(testCase.status));
+  const hashes = await Promise.all(failing.map((testCase) => passedHash(testCase.id)));
+  return [...new Set(hashes)].toSorted().join("");
+}
 
 /**
  * The tests one upload shows to be flaky. A case the runner itself retried into a pass is flaky
  * on its own evidence. Otherwise a test is flaky when, for the same revision, it failed in one
  * Attempt and passed in another: either this upload failed it and an earlier one passed it, or
- * the reverse. A pass is known from the passed hashes, which hold every passing test, so neither
- * side needs the other's full case list. Each test is reported once.
+ * the reverse. Both sides are known from hashes, so no peer's case list is read: `findings` are
+ * this upload's own cases, and `peerFailures` are earlier failures this upload passed, by hash,
+ * for the caller to read one by one. Each test is reported once, and at most `limit` in all.
  */
-export async function findFlaky(
+export async function findFlaky<Ref>(
   cases: TestCase[],
   passed: string,
-  peers: RevisionPeer[],
-): Promise<FlakyFinding[]> {
+  peers: RevisionPeer<Ref>[],
+  limit = MAX_FLAKY_FINDINGS,
+): Promise<{ findings: FlakyFinding[]; peerFailures: PeerFailure<Ref>[] }> {
   const findings = new Map<string, FlakyFinding>();
   for (const testCase of cases) {
+    if (findings.size >= limit) break;
     if (testCase.status === "flaky") {
       findings.set(testCase.id, { testCase, evidence: "retried" });
     }
   }
   const failing = cases.filter((testCase) => isFailing(testCase.status));
   const hashes = await Promise.all(failing.map((testCase) => passedHash(testCase.id)));
+  failing.forEach((testCase, index) => {
+    if (findings.size >= limit || findings.has(testCase.id)) return;
+    if (peers.some((peer) => hasPassed(peer.passed, hashes[index]!))) {
+      findings.set(testCase.id, { testCase, evidence: "rerun" });
+    }
+  });
+  // A test this upload listed is settled by its own case above.
+  const seen = new Set(await Promise.all(cases.map((testCase) => passedHash(testCase.id))));
+  const peerFailures: PeerFailure<Ref>[] = [];
   for (const peer of peers) {
-    failing.forEach((testCase, index) => {
-      if (!findings.has(testCase.id) && hasPassed(peer.passed, hashes[index]!)) {
-        findings.set(testCase.id, { testCase, evidence: "rerun" });
-      }
-    });
-    for (const testCase of peer.failing) {
-      if (findings.has(testCase.id)) continue;
-      if (hasPassed(passed, await passedHash(testCase.id))) {
-        findings.set(testCase.id, { testCase, evidence: "rerun" });
-      }
+    const count = peer.failing.length / PASSED_HASH_LENGTH;
+    for (let index = 0; index < count; index++) {
+      if (findings.size + peerFailures.length >= limit) break;
+      const hash = passedAt(peer.failing, index);
+      if (seen.has(hash) || !hasPassed(passed, hash)) continue;
+      seen.add(hash);
+      peerFailures.push({ ref: peer.ref, hash });
     }
   }
-  return [...findings.values()];
+  return { findings: [...findings.values()], peerFailures };
 }
 
 export type SlowTest = {

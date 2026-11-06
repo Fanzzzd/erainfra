@@ -12,10 +12,13 @@ import { requireDashboardAuth } from "./dashboardAuth";
 import {
   assertValidReport,
   branchFromWorkflowRef,
+  failingHashes,
   findFlaky,
+  isFailing,
   MAX_CASES,
   MAX_FLAKY_ATTEMPTS,
   MAX_REVISION_PEERS,
+  passedHash,
   repositoryName,
   revisionKey,
   slowestTests,
@@ -26,15 +29,28 @@ import {
   type TestReport,
 } from "./testReportsModel";
 
-/** Stores, serves and expires per-Attempt JUnit results; see testReportsModel.ts. */
+/**
+ * Stores, serves and expires per-Attempt JUnit results; see testReportsModel.ts.
+ *
+ * Every function here stays inside one Convex transaction's limits (16 MiB read, 16 MiB written,
+ * 32,000 documents read, 4,096 queries) at the bounds a report may reach: 500 cases of about
+ * 2.6 kB each, 20,000 passed hashes (240 kB), and 30 days of reports. That is why the hashes live
+ * in their own table, why every read is an index range with a take, and why the purge deletes a
+ * budget of cases per transaction. testReportLimits.test.ts runs them at those sizes.
+ */
 
+/** Cases one purge transaction deletes, at most 2.6 MB, with at most PURGE_REPORTS reports. */
+const PURGE_CASES = 1000;
 const PURGE_REPORTS = 10;
 const PURGE_FLAKY = 200;
-/** Read bounds for the views: a page of runs, and the passing cases the slowest list is built from. */
+/**
+ * Read bounds for the views: a page of runs (each with its first failures), the passing cases
+ * the slowest list is built from (2,000 cases is at most 5.2 MB), and the repository picker.
+ */
 const MAX_RUNS = 100;
 const MAX_SLOW_ROWS = 2000;
 const MAX_FAILURES_PER_RUN = 20;
-const MAX_REPOSITORY_SCAN = 300;
+const MAX_REPOSITORIES = 200;
 
 /**
  * Stores one Attempt's report. Returns false when the Attempt is not this Worker's to write or no
@@ -65,8 +81,7 @@ export async function recordAttemptTests(
 
   const repository = repositoryName(attempt);
   const branch = branchFromWorkflowRef(attempt.workflowRef);
-  const revision =
-    repository === undefined ? undefined : revisionKey(report.commitSha, attempt.workflowRunId);
+  const revision = repository === undefined ? undefined : revisionKey(attempt, report.commitSha);
   const cases = report.cases ?? [];
   const reportId = await ctx.db.insert("testReports", {
     attemptId: attempt._id,
@@ -81,9 +96,16 @@ export async function recordAttemptTests(
     files: report.files,
     truncated: report.truncated,
     totals: report.totals,
-    passed: report.passed,
+    passed: "",
+    failing: report.totals.failed + report.totals.errored > 0,
   });
-  for (const testCase of cases) {
+  await ctx.db.insert("testReportHashes", {
+    reportId,
+    passed: report.passed,
+    failing: await failingHashes(cases),
+  });
+  const caseHashes = await Promise.all(cases.map((testCase) => passedHash(testCase.id)));
+  for (const [index, testCase] of cases.entries()) {
     await ctx.db.insert("testCases", {
       reportId,
       attemptId: attempt._id,
@@ -91,6 +113,7 @@ export async function recordAttemptTests(
       branch,
       recordedAt: now,
       testId: testCase.id,
+      testHash: caseHashes[index],
       suite: testCase.suite,
       name: testCase.name,
       file: testCase.file,
@@ -102,7 +125,9 @@ export async function recordAttemptTests(
   }
   if (repository === undefined) return true;
 
-  const peers: RevisionPeer[] = [];
+  // At most MAX_REVISION_PEERS hash rows (about 5 MB), then at most MAX_FLAKY_FINDINGS single
+  // cases: no peer's case list is ever read whole.
+  const peers: RevisionPeer<Id<"testReports">>[] = [];
   if (revision !== undefined) {
     const peerReports = await ctx.db
       .query("testReports")
@@ -113,25 +138,39 @@ export async function recordAttemptTests(
       .take(MAX_REVISION_PEERS + 1);
     for (const peer of peerReports) {
       if (peer._id === reportId) continue;
-      const failing = await ctx.db
-        .query("testCases")
+      const hashes = await ctx.db
+        .query("testReportHashes")
         .withIndex("by_report", (q) => q.eq("reportId", peer._id))
-        .filter((q) => q.or(q.eq(q.field("status"), "failed"), q.eq(q.field("status"), "errored")))
-        .take(MAX_CASES);
+        .first();
+      // A report stored before the hashes had their own table kept its passes inline and no
+      // failing hashes; it can still show this upload's failures to be flaky.
       peers.push({
-        passed: peer.passed,
-        failing: failing.map((row) => ({
-          id: row.testId,
-          suite: row.suite,
-          name: row.name,
-          file: row.file,
-          message: row.message,
-        })),
+        ref: peer._id,
+        passed: hashes?.passed ?? peer.passed,
+        failing: hashes?.failing ?? "",
       });
     }
   }
-  const findings = await findFlaky(cases, report.passed, peers);
-  for (const finding of findings) {
+  const { findings, peerFailures } = await findFlaky(cases, report.passed, peers);
+  const flaky = new Map(findings.map((finding) => [finding.testCase.id, finding]));
+  for (const { ref, hash } of peerFailures) {
+    const row = await ctx.db
+      .query("testCases")
+      .withIndex("by_report_testHash", (q) => q.eq("reportId", ref).eq("testHash", hash))
+      .first();
+    if (row === null || !isFailing(row.status) || flaky.has(row.testId)) continue;
+    flaky.set(row.testId, {
+      testCase: {
+        id: row.testId,
+        suite: row.suite,
+        name: row.name,
+        file: row.file,
+        message: row.message,
+      },
+      evidence: "rerun",
+    });
+  }
+  for (const finding of flaky.values()) {
     await recordFlaky(ctx, repository, attempt, branch, report.commitSha, finding, now);
   }
   return true;
@@ -193,32 +232,55 @@ export type RunsFilter = {
   limit: number;
 };
 
-async function readRuns(ctx: QueryCtx, filter: RunsFilter) {
+function reportsSince(ctx: QueryCtx, filter: RunsFilter) {
   const since = filter.since ?? 0;
   const { repository } = filter;
-  const ranged =
-    repository === undefined
-      ? ctx.db.query("testReports").withIndex("by_recordedAt", (q) => q.gte("recordedAt", since))
+  if (filter.failedOnly) {
+    return repository === undefined
+      ? ctx.db
+          .query("testReports")
+          .withIndex("by_failing_recordedAt", (q) => q.eq("failing", true).gte("recordedAt", since))
       : ctx.db
           .query("testReports")
-          .withIndex("by_repository_recordedAt", (q) =>
-            q.eq("repository", repository).gte("recordedAt", since),
+          .withIndex("by_repository_failing_recordedAt", (q) =>
+            q.eq("repository", repository).eq("failing", true).gte("recordedAt", since),
           );
-  const filtered = filter.failedOnly
-    ? ranged.filter((q) =>
-        q.or(q.gt(q.field("totals.failed"), 0), q.gt(q.field("totals.errored"), 0)),
-      )
-    : ranged;
-  const reports = await filtered.order("desc").take(Math.min(filter.limit, MAX_RUNS));
+  }
+  return repository === undefined
+    ? ctx.db.query("testReports").withIndex("by_recordedAt", (q) => q.gte("recordedAt", since))
+    : ctx.db
+        .query("testReports")
+        .withIndex("by_repository_recordedAt", (q) =>
+          q.eq("repository", repository).gte("recordedAt", since),
+        );
+}
+
+/**
+ * A report's first listed cases other than passes. Statuses sort errored, failed, flaky, passed,
+ * skipped, so the cases below "passed" come first and the skipped ones fill what is left.
+ */
+async function reportFailures(ctx: QueryCtx, reportId: Id<"testReports">) {
+  const failing = await ctx.db
+    .query("testCases")
+    .withIndex("by_report_status", (q) => q.eq("reportId", reportId).lt("status", "passed"))
+    .take(MAX_FAILURES_PER_RUN);
+  if (failing.length >= MAX_FAILURES_PER_RUN) return failing;
+  const skipped = await ctx.db
+    .query("testCases")
+    .withIndex("by_report_status", (q) => q.eq("reportId", reportId).gt("status", "passed"))
+    .take(MAX_FAILURES_PER_RUN - failing.length);
+  return [...failing, ...skipped];
+}
+
+async function readRuns(ctx: QueryCtx, filter: RunsFilter) {
+  const reports = await reportsSince(ctx, filter)
+    .order("desc")
+    .take(Math.min(filter.limit, MAX_RUNS));
   return await Promise.all(
     reports.map(async (report) => {
       const [attempt, failures] = await Promise.all([
         ctx.db.get(report.attemptId),
-        ctx.db
-          .query("testCases")
-          .withIndex("by_report", (q) => q.eq("reportId", report._id))
-          .filter((q) => q.neq(q.field("status"), "passed"))
-          .take(MAX_FAILURES_PER_RUN),
+        reportFailures(ctx, report._id),
       ]);
       return {
         reportId: report._id,
@@ -304,15 +366,24 @@ async function readSlowest(ctx: QueryCtx, filter: ListFilter) {
   return slowestTests(recent, Math.min(filter.limit, MAX_RUNS));
 }
 
+/**
+ * Every repository with a report in the retention window, in name order: one indexed read per
+ * repository, each starting past the last name found, so the cost is the number of repositories
+ * and not the number of reports. A report with no repository sorts before every name.
+ */
 async function readRepositories(ctx: QueryCtx) {
-  const recent = await ctx.db
-    .query("testReports")
-    .withIndex("by_recordedAt")
-    .order("desc")
-    .take(MAX_REPOSITORY_SCAN);
-  return [
-    ...new Set(recent.flatMap((row) => (row.repository === undefined ? [] : [row.repository]))),
-  ].toSorted();
+  const names: string[] = [];
+  let after = "";
+  while (names.length < MAX_REPOSITORIES) {
+    const next = await ctx.db
+      .query("testReports")
+      .withIndex("by_repository_recordedAt", (q) => q.gt("repository", after))
+      .first();
+    if (next?.repository === undefined) break;
+    names.push(next.repository);
+    after = next.repository;
+  }
+  return names;
 }
 
 async function readAttempt(ctx: QueryCtx, attemptId: Id<"attempts">) {
@@ -405,8 +476,12 @@ export const operatorFlaky = internalQuery({
 });
 
 /**
- * Deletes reports recorded before the retention window with their cases, and flaky rows not seen
- * within it, a bounded batch per transaction; schedules itself again while a batch was full.
+ * Deletes reports recorded before the retention window with their hashes and cases, and flaky
+ * rows not seen within it. One transaction deletes at most PURGE_CASES cases across at most
+ * PURGE_REPORTS reports: a report whose cases do not fit is left for the next transaction, which
+ * finishes its cases before deleting it, so no report is ever too big to purge and one large
+ * repository cannot stall retention for the rest. The purge schedules itself again while it left
+ * work behind. Returns how many rows it deleted.
  */
 export const purgeExpired = internalMutation({
   args: {},
@@ -417,22 +492,46 @@ export const purgeExpired = internalMutation({
       .query("testReports")
       .withIndex("by_recordedAt", (q) => q.lt("recordedAt", cutoff))
       .take(PURGE_REPORTS);
+    let deleted = 0;
+    let budget = PURGE_CASES;
+    let more = reports.length === PURGE_REPORTS;
     for (const report of reports) {
+      if (budget === 0) {
+        more = true;
+        break;
+      }
       const cases = await ctx.db
         .query("testCases")
         .withIndex("by_report", (q) => q.eq("reportId", report._id))
-        .take(MAX_CASES);
+        .take(budget);
       for (const row of cases) await ctx.db.delete(row._id);
+      deleted += cases.length;
+      if (cases.length === budget) {
+        // Possibly more cases left; the report goes once they are gone.
+        more = true;
+        break;
+      }
+      budget -= cases.length;
+      const hashes = await ctx.db
+        .query("testReportHashes")
+        .withIndex("by_report", (q) => q.eq("reportId", report._id))
+        .first();
+      if (hashes !== null) {
+        await ctx.db.delete(hashes._id);
+        deleted++;
+      }
       await ctx.db.delete(report._id);
+      deleted++;
     }
     const flakyRows = await ctx.db
       .query("flakyTests")
       .withIndex("by_lastSeen", (q) => q.lt("lastSeenAt", cutoff))
       .take(PURGE_FLAKY);
     for (const row of flakyRows) await ctx.db.delete(row._id);
-    if (reports.length === PURGE_REPORTS || flakyRows.length === PURGE_FLAKY) {
+    deleted += flakyRows.length;
+    if (more || flakyRows.length === PURGE_FLAKY) {
       await ctx.scheduler.runAfter(0, internal.testReports.purgeExpired, {});
     }
-    return reports.length + flakyRows.length;
+    return deleted;
   },
 });

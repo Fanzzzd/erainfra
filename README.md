@@ -1251,7 +1251,10 @@ The policy leaves a job alone unless the evidence is clear:
   still bounds a move down from above.
 
 Nothing is stored. The report reads at most the newest 2,000 metric summaries in the window and
-says so (`truncated`) when there were more. The dashboard reads it on opening and on **Refresh**
+says so (`truncated`) when there were more. With `--repo` (or `repo=`) it reads only that
+repository's finished Attempts, by an index on the repository name, so a busy repository never
+crowds a quiet one out of the 2,000. Write the repository as GitHub spells it or in lower case,
+with or without the owner. The dashboard reads it on opening and on **Refresh**
 rather than live, because live Attempts rewrite their summaries every 30 seconds.
 
 `erainfra rightsize --map` prints only the recommendations that name a registered Profile, as the
@@ -1307,9 +1310,14 @@ What counts as what:
 - **Flaky** has two kinds of evidence. Within one run, the test runner retried a test into a pass:
   Surefire's `<flakyFailure>`, or a test listed as failed and then passed, which is how gotestsum
   `--rerun-fails` writes it. Across runs, the test failed in one Attempt and passed in another of the
-  same commit, such as a workflow rerun or a second job. The commit comes from the workspace's
-  `.git`; without one, Attempts of the same workflow run are compared. Flaky tests are found when a
-  report arrives, against at most 20 earlier reports of that commit.
+  same code. Attempts of one workflow run are always the same code: GitHub reruns a run at its
+  original commit and ref. Attempts of different runs count as the same code only when both were a
+  `push`, `schedule`, `workflow_dispatch` or `merge_group` run on the same branch and their
+  workspaces' `.git` named the same commit. The branch and the event come from GitHub's job
+  message to the controller. The commit is the job's own claim, so it never joins runs on its own:
+  a pull request, or any other job, that writes main's commit into its `.git` is compared only with
+  its own workflow run and cannot make main's tests look flaky. Flaky tests are found when a report
+  arrives, against at most 20 earlier reports of the same code, and one report marks at most 500.
 - **Slowest** is built from the 50 slowest passing tests each run keeps, grouped by test and ordered
   by mean duration.
 
@@ -1318,7 +1326,9 @@ Where it runs, and what bounds it:
 1. After the runner exits, `runner-center-guest` (root, inside the microVM) walks the workspaces and
    parses the files. The job sees no extra step and cannot skip it. The walk stops at 200,000
    entries, 200 files, 16 MiB per file, 128 MiB in total and 20 seconds, and never follows a symbolic
-   link or opens anything that is not a regular file. The report counts every test and lists up to
+   link or opens anything that is not a regular file. Matching a path against a glob takes time
+   proportional to the pattern's segments times the path's depth, however many `**` the pattern
+   has, and it stops when the 20 seconds are up. The report counts every test and lists up to
    500 cases (every failed, errored and flaky one first, then the 50 slowest passes, with messages
    cut to 1 KiB). It also carries a 12-character SHA-256 prefix of every passing test's id, up to
    20,000, which is what lets a later run of the same commit say "this passed before".
@@ -1330,7 +1340,9 @@ Where it runs, and what bounds it:
    failed upload never touches the Attempt's own result. The control plane checks the bounds a third
    time, refuses control characters, keeps the first report per Attempt, accepts none later than 15
    minutes after the Attempt settled, and deletes reports, and flaky rows not seen since, after 30
-   days.
+   days. The passing-test hashes are stored beside each report rather than in it, and the hourly
+   purge deletes at most 1,000 cases per transaction and schedules itself again until it is done,
+   so every read and write stays inside Convex's per-transaction limits at the largest report.
 
 The XML is the job's own output and is treated as hostile. Go's `encoding/xml` resolves no external
 entity and fetches no DTD, refuses any entity it does not define (so neither XXE nor entity expansion
