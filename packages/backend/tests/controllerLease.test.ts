@@ -353,6 +353,16 @@ describe("epoch fencing on every controller route", () => {
           ),
       },
       {
+        name: "job completed before any runner took it",
+        call: (call: Call) =>
+          post(
+            t,
+            "/controller/jobs/completed",
+            { profile: CONTRACT.profile, runnerName: "", result: "canceled", finishedAt: NOW },
+            call,
+          ),
+      },
+      {
         // Last: a pause revokes the lease.
         name: "pause Profile",
         call: (call: Call) =>

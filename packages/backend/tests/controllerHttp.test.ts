@@ -5,6 +5,7 @@ import {
   parseControllerHeartbeat,
   parseCreateAttempt,
   parseJobCompleted,
+  parseRunnerlessJobCompleted,
   parseJobStarted,
   parseRegisterProfile,
 } from "../convex/controllerHttp";
@@ -294,6 +295,19 @@ describe("controller payloads", () => {
     expect(parseJobStarted(base)?.headBranch).toBeUndefined();
     expect(parseJobStarted({ ...base, headBranch: "" })?.headBranch).toBeUndefined();
     expect(parseJobStarted({ ...base, headBranch: 7 })).toBeNull();
+  });
+
+  it("tells a job no Runner took apart from a malformed JobCompleted", () => {
+    const cancelled = { profile: "rc-e2e", result: "canceled", finishedAt: 1_786_300_000_000 };
+    expect(parseRunnerlessJobCompleted({ ...cancelled, runnerName: "" })).toEqual({
+      profile: "rc-e2e",
+    });
+    expect(parseRunnerlessJobCompleted({ ...cancelled, runnerName: "  " })).not.toBeNull();
+    expect(parseRunnerlessJobCompleted(cancelled)).not.toBeNull();
+    expect(parseRunnerlessJobCompleted({ ...cancelled, runnerName: "runner-a" })).toBeNull();
+    expect(parseRunnerlessJobCompleted({ ...cancelled, runnerName: 7 })).toBeNull();
+    expect(parseRunnerlessJobCompleted({ ...cancelled, profile: "" })).toBeNull();
+    expect(parseJobCompleted({ ...cancelled, runnerName: "" })).toBeNull();
   });
 
   it("keeps GitHub int64 request identifiers lossless", () => {

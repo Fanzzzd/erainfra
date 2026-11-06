@@ -490,3 +490,31 @@ func TestScalerRejectsUnsafeConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// GitHub reports a job cancelled before any Runner took it with an empty runner name. The
+// controller has nothing to record for it and must keep listening rather than fail the message.
+func TestScalerSkipsAJobCompletedThatNoRunnerTook(t *testing.T) {
+	store := &fakeStore{}
+	scaler, err := NewScaler(
+		validConfig("rc-e2e", 1),
+		store,
+		&fakeIssuer{},
+		names("unused"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runner := range []string{"", "  "} {
+		err = scaler.HandleJobCompleted(t.Context(), &scaleset.JobCompleted{
+			RunnerName:     runner,
+			Result:         "canceled",
+			JobMessageBase: scaleset.JobMessageBase{JobID: "dd0c1369-92a5-5ff3-9d83-859d6a7ccc8d"},
+		})
+		if err != nil {
+			t.Fatalf("runner %q: error = %v, want the message skipped", runner, err)
+		}
+	}
+	if len(store.completed) != 0 {
+		t.Fatalf("completed events = %#v, want none sent", store.completed)
+	}
+}

@@ -475,6 +475,24 @@ export function parseControllerHeartbeat(payload: unknown) {
   };
 }
 
+/**
+ * GitHub sends JobCompleted for a job cancelled before any Runner took it, with an empty runner
+ * name. No Attempt can match it, so the controller's call has nothing to record. Recognising it
+ * apart from a malformed event keeps a cancelled queue from answering 400, which a controller
+ * treats as fatal and restarts on.
+ */
+export function parseRunnerlessJobCompleted(payload: unknown) {
+  if (
+    !isRecord(payload) ||
+    !nonEmptyString(payload.profile) ||
+    (payload.runnerName !== undefined &&
+      (typeof payload.runnerName !== "string" || payload.runnerName.trim() !== ""))
+  ) {
+    return null;
+  }
+  return { profile: payload.profile.trim() };
+}
+
 export function parseJobCompleted(payload: unknown) {
   if (
     !isRecord(payload) ||

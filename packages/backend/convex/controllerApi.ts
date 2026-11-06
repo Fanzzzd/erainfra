@@ -562,6 +562,16 @@ export const markJobStarted = internalMutation({
   },
 });
 
+// A JobCompleted for a job no Runner took: authorize the caller like any write, record nothing.
+export const acknowledgeRunnerlessJobCompleted = internalMutation({
+  args: { profile: v.string(), caller: callerArg },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await authorize(ctx, args.profile, args.caller);
+    return null;
+  },
+});
+
 export const markJobCompleted = internalMutation({
   args: {
     profile: v.string(),
