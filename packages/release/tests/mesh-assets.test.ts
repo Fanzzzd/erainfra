@@ -62,6 +62,15 @@ describe("erainfra-mesh release assets", () => {
     const windows = meshRustflags(meshBuild("windows-x86_64"), paths).split("\x1f");
     assert.ok(windows.includes("-Clink-arg=/Brepro"), "MSVC must not stamp the link time");
     assert.ok(windows.includes("-Ctarget-feature=+crt-static"));
+    assert.ok(!flags.some((f) => f.includes("oso_prefix")));
+
+    // Apple's linker hashes the object paths it records into LC_UUID before strip removes them,
+    // so without this two builds in differently named target directories differ in 16 bytes.
+    for (const target of ["darwin-arm64", "darwin-x86_64"] as const) {
+      const darwin = meshRustflags(meshBuild(target), paths).split("\x1f");
+      assert.ok(darwin.includes(`-Clink-arg=-Wl,-oso_prefix,${paths.targetDir}`), target);
+      assert.ok(!darwin.some((f) => f.includes("Brepro")));
+    }
   });
 
   it("pins the crate's version, toolchain and iroh", () => {
