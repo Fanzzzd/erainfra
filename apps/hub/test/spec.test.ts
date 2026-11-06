@@ -135,3 +135,16 @@ test("planDeploy: same-node needs use docker DNS, no links, no host port for the
   assert.equal(web.env.DB_PORT, "5432");
   assert.equal(db.hostPort, undefined); // internal-only: never published on the node
 });
+
+const twoRouted = (svc: string) =>
+  `services:\n  ${svc}:\n    image: x\n    port: 80\n    route: true\n  other:\n    image: y\n    port: 81\n    route: true\n`;
+
+test("parseSpec: refuses a route: true label longer than the data plane serves", () => {
+  const spec = twoRouted;
+  const long = parseSpec(spec("s".repeat(30)), "a".repeat(40));
+  assert.equal(long.ok, false);
+  if (!long.ok)
+    assert.match(long.error, /route: true gives the label "a{40}-s{30}" \(71 characters\)/);
+  // 63 characters still deploys.
+  assert.equal(parseSpec(spec("s".repeat(22)), "a".repeat(40)).ok, true);
+});

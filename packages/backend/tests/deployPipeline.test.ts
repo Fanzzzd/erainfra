@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
+import { isRouteLabel } from "../convex/infra/ingress";
 import { implicitSpec, parseSpec } from "../convex/infra/spec";
 import { FAILOVER_GRACE_MS, NODE_SILENCE_MS } from "../convex/infra/policy";
 
@@ -167,6 +168,13 @@ async function setup(names = ["node-a", "node-b", "node-c"]) {
   };
 }
 
+/** A spec whose every service is routed with `route: true`. */
+const routed = (app: string, ...services: string[]) =>
+  parseSpec(
+    `services:\n${services.map((s, i) => `  ${s}:\n    image: x\n    port: ${80 + i}\n    route: true\n`).join("")}`,
+    app,
+  );
+
 describe("spec parsing", () => {
   it("keeps the Hub's rules: route naming, needs, named volumes only, strict keys", () => {
     const parsed = parseSpec(SHOP_SPEC, "shop");
@@ -192,9 +200,46 @@ describe("spec parsing", () => {
     });
     expect(implicitSpec("a", 8080).services[0]).toMatchObject({ route: "a", port: 8080 });
   });
+
+  // A gateway serves only a DNS label (isRouteLabel) and skips any other route row, so a spec
+  // that routes at one would deploy and report a URL nothing answers.
+  it("refuses a route label no gateway can serve, derived or written", () => {
+    const app = "a".repeat(40);
+    const long = routed(app, "s".repeat(30), "other");
+    expect(long).toEqual({
+      ok: false,
+      error:
+        `service "${"s".repeat(30)}": route: true gives the label "${app}-${"s".repeat(30)}" (71 characters), ` +
+        "which is not served: a route label is a DNS label: at most 63 characters, lowercase letters, " +
+        "digits and dashes, starting and ending with a letter or digit. Name the label explicitly (route: <label>)",
+    });
+    // 63 characters is the longest label, and is served.
+    const longest = routed("a".repeat(40), "s".repeat(22), "other");
+    expect(longest.ok && longest.spec.services.map((s) => s.route!).every(isRouteLabel)).toBe(true);
+    // An App or service name may end in a dash; a label may not.
+    expect(routed("shop-", "web")).toMatchObject({
+      ok: false,
+      error: /route: true gives the label "shop-"/,
+    });
+    expect(
+      parseSpec("services:\n  web:\n    image: x\n    port: 80\n    route: shop-\n", "a"),
+    ).toMatchObject({ ok: false, error: /route "shop-" is not served/ });
+  });
 });
 
 describe("deploy pipeline", () => {
+  it("fails a source with no spec whose App name is no route label, before planning", async () => {
+    const s = await setup();
+    await s.beat();
+    const id = await s.startUpload("shop-", await s.upload(), { port: 8080 });
+    await s.agent("node-a", () => ({ outcome: "success", spec: "" }));
+    expect(await s.deployment(id)).toMatchObject({
+      stage: "failed",
+      error: expect.stringMatching(/^service "web": route: true gives the label "shop-"/),
+    });
+    expect(await s.t.run((ctx) => ctx.db.query("appRoutes").collect())).toEqual([]);
+  });
+
   it("runs spec, plan, build, deploy and link, each step a keyed Node command", async () => {
     const s = await setup();
     await s.beat();

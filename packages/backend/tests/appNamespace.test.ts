@@ -8,6 +8,7 @@ import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
 import { upsertRoute } from "../convex/infra/apps";
+import { RENAME_LOSES_DATA } from "../convex/infra/namespace";
 import { insertNodeCommand } from "../convex/infra/nodeCommands";
 import { FAILOVER_GRACE_MS, NODE_SILENCE_MS } from "../convex/infra/policy";
 
@@ -401,6 +402,8 @@ describe("Docker names across Apps", () => {
     expect(other.run.error).toContain(
       'the volume name "shop-db-data": App "shop" already holds it',
     );
+    // Renaming the volume or the App is the advice, and it would start from an empty volume.
+    expect(other.run.error).toContain(RENAME_LOSES_DATA);
   });
 
   it("refuses a mesh link name two Apps get from the 30-character truncation", async () => {

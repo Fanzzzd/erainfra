@@ -133,10 +133,18 @@ export async function namespaceRefusal(
     needOf.set(l.name, l.need);
   }
   const held = await heldByOthers(ctx, app);
-  for (const claim of appClaims(app, plan.services, plan.links)) {
+  const claims = appClaims(app, plan.services, plan.links);
+  for (const claim of claims) {
     const holder = held.get(key(claim));
-    if (holder !== undefined)
-      return `App "${app}" cannot use the ${describe(claim.kind)} "${claim.name}": ${holder} already holds it. Rename the App, or the service, volume or dependency that derives it`;
+    if (holder === undefined) continue;
+    const refusal = `App "${app}" cannot use the ${describe(claim.kind)} "${claim.name}": ${holder} already holds it. Rename the App, or the service, volume or dependency that derives it`;
+    // Renaming the App renames every volume it derives, and a renamed volume is a new, empty one:
+    // the deploy succeeds and the App starts without its data, which stays in the old volume.
+    return claims.some((c) => c.kind === "volume") ? `${refusal}. ${RENAME_LOSES_DATA}` : refusal;
   }
   return null;
 }
+
+export const RENAME_LOSES_DATA =
+  "A renamed App or volume mounts a new, empty volume, so copy the data on each Node first " +
+  '(docs/infra-management.md, "Moving a volume to a new name")';

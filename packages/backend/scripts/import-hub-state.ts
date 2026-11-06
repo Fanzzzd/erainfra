@@ -23,6 +23,7 @@ import { parseArgs } from "node:util";
 import { ConvexHttpClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 import type { ImportBatch } from "../convex/infra/hubImport.ts";
+import { isRouteLabel } from "../convex/infra/ingress.ts";
 
 type Row = Record<string, unknown>;
 
@@ -137,6 +138,7 @@ export function resolveHubSecretScopes(
  * to that App and service. A label no App routes at is a single-container App the Hub deployed
  * under that name. A label two Hub Apps route at is refused: the Hub served whichever deployed
  * last, and copying either owner would hand the label to one App while the other still claims it.
+ * A label no gateway can serve is refused too.
  */
 export function resolveHubRouteOwners<R extends { name: string }>(
   routes: readonly R[],
@@ -149,6 +151,14 @@ export function resolveHubRouteOwners<R extends { name: string }>(
         .filter((s) => s.route === route.name)
         .map((s) => ({ app: a.name, service: s.name })),
     );
+    // The Hub's data plane took any label of up to 63 characters. A gateway serves only a DNS
+    // label (ingress.ts), so one ending in "-" would import and then never be served.
+    if (!isRouteLabel(route.name)) {
+      problems.push(
+        `Hub route "${route.name}" is not a DNS label (it must start and end with a letter or digit), ` +
+          "so no gateway would serve it. Redeploy that App on the Hub under another label, then run the import again.",
+      );
+    }
     if (new Set(claims.map((c) => c.app)).size > 1) {
       problems.push(
         `Hub route "${route.name}" is claimed by ${claims.map((c) => `App "${c.app}"`).join(" and ")}. ` +

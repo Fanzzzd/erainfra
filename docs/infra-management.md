@@ -672,6 +672,14 @@ A deploy derives every runtime name by joining the App's name with another name:
 | cross-Node mesh link       | first 30 characters of `<app>`, `-`, first 30 of the dependency |
 | route label, `route: true` | `<app>` when one service is routed, otherwise `<app>-<service>` |
 
+A route label, written or derived, must be a DNS label, because a gateway serves `<label>.<zone>`
+only for one: at most 63 characters, starting and ending with a letter or digit. `<app>-<service>`
+can be longer than that, and an App name may end in `-`. A deploy whose spec routes at a label that
+is not a DNS label fails when Convex reads the spec, and the error names the label and its length.
+Write the label explicitly (`route: <label>`). The other derived names have no such limit: Docker
+accepts container and network names longer than 63 characters, a derived volume name is at most
+127 characters where the Infra Agent accepts 128, and a mesh link name is cut to 61.
+
 App, service and volume names may all contain `-`, so two Apps can derive the same name. App `shop`
 with service `web-api` and App `shop-web` with service `api` both get container `shop-web-api`. App
 `shop` with volume `db-data` and App `shop-db` with volume `data` both get volume `shop-db-data`.
@@ -706,15 +714,76 @@ owner:
   is attached to `<app>-net` with the service name as its alias, which is how the Hub started every
   App service, and which no other App's container can match. A single-container App's unlabelled
   container must be on Docker's default network only. Any other container is refused and left
-  running, and the deploy fails with the reason. A volume labelled for another App is refused. An
-  unlabelled volume is mounted as before, since nothing on it tells which App created it. Planning
-  is what keeps another App from deriving its name.
+  running, and the deploy fails with the reason. A volume labelled for another App is refused.
+- **An unlabelled volume belongs to the containers that mount it.** Planning cannot protect every
+  volume the Hub created. The Hub's single-container deploy (`agents.deploy`) mounts any volume
+  name its Docker args give, such as `-v postgres-data:/var/lib/postgresql/data` for an App `db`.
+  The Hub stored none of those args, so no control plane knows that `db` keeps its database in
+  `postgres-data`. App `postgres` with volume `data` derives the same name. So before mounting a
+  volume without the `erainfra.app` label, the Infra Agent lists every container that mounts it,
+  running or stopped (`docker ps -a --filter volume=<name>`). It mounts the volume only when each of
+  them passes the test above for this App: labelled for it, or in the shape the Hub gave the App's
+  containers. A container of the same App but of the other deploy kind is refused too, because the
+  deploy would not replace it: App `db`'s services do not start on a volume the Hub's single
+  container `db` still mounts, or two databases would write one data directory. A volume no
+  container mounts carries no evidence, and the first App to mount it adopts it.
+- **An adopted volume is recorded on the Node.** Docker cannot add a label to an existing volume, so
+  a `connect-convex` Infra Agent records the adoption in its state directory instead:
+  `<state-dir>/volume-owners/<volume>` holds the App's name. From then on the record refuses every
+  other App, also after the App's containers are removed, as a label would. A Node in Hub mode has
+  no state directory and records nothing; there the mounting containers are the only evidence.
+
+In Hub mode a refused deploy returns its reason to the Hub. In `connect-convex` mode Convex
+receives only the outcome, and the Infra Agent writes the reason to its standard error as
+`[erainfra] deploy <app> failed: <reason>`.
 
 To adopt a container the Infra Agent refused, first confirm on the Node that it belongs to the App
 being deployed (`docker inspect <name>`, look at its image and networks). Then remove it with
 `docker rm -f <name>` and deploy the App again. The new container carries the labels. The App's
-volumes are not touched. If the container belongs to another App, rename one of the two Apps
-instead.
+volumes are not touched. If the container belongs to another App, change the name that collides
+in the App that has no data yet. An App that already keeps data in a volume moves the data first
+(below).
+
+To move the Hub's single-container App `db` to a spec with services, stop sending it traffic, then
+`docker rm -f db` on its Node and deploy App `db`. A service volume can only be named `db-<volume>`,
+so if `db` kept its data in a volume of another name, move the data into that name first.
+
+#### Moving a volume to a new name
+
+Renaming a volume in a spec, or renaming the App, does not move any data. The next deploy mounts a
+new, empty volume, the App starts as if it were new, and the data stays in the old volume. Copy the
+data first, on every Node where the App keeps it:
+
+1. Stop every container that mounts the old volume, so nothing writes during the copy:
+   `docker ps -a --filter volume=<old>` lists them, and `docker stop <name>` stops each.
+2. Create the new volume, labelled for the App that will mount it, and copy into it. Any image with
+   `sh` and `cp` works, such as the App's own image:
+
+   ```sh
+   docker volume create --label erainfra.app=<app> <app>-<volume>
+   docker run --rm -v <old>:/from:ro -v <app>-<volume>:/to <image> sh -c 'cp -a /from/. /to/'
+   ```
+
+3. Deploy the spec that mounts `<app>-<volume>`, and check the App sees its data.
+4. Keep the old volume until you have checked. Then `docker volume rm <old>`. If the Infra Agent had
+   adopted it, also delete `<state-dir>/volume-owners/<old>`.
+
+To release an adopted volume to another App without copying, for example after removing the App
+that adopted it, delete `<state-dir>/volume-owners/<volume>` on the Node. The next App that mounts
+the volume, and that the containers mounting it allow, adopts it.
+
+#### Names Convex does not record
+
+The Hub and the Infra Agent hold some names that no Convex row records. Each one is either checked
+on the Node or fails loudly:
+
+| Held by                                                         | Name                                                      | What stops a second App                                                                                                                                                                                                           |
+| --------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hub single-container App deployed without a port (no route row) | its container `<name>`                                    | The Infra Agent's container check: the container is unlabelled on the default network, which no `<app>-<service>` matches.                                                                                                        |
+| Hub single-container App                                        | the volumes in its `-v` args                              | The Infra Agent's volume check above. The Hub stores no args for these Apps, so the importer cannot copy the names into Convex.                                                                                                   |
+| Hub single-container App                                        | the host ports in its `-p` args                           | Docker refuses to publish a host port twice, so a Convex App given the same port fails at `docker run` with Docker's "port is already allocated" error. The route row's port is imported, but not into Convex's port allocations. |
+| Infra Agent on a `connect-convex` Node                          | volumes it adopted                                        | The record in `<state-dir>/volume-owners`.                                                                                                                                                                                        |
+| Hub multi-service App, Hub links and Hub ports                  | containers, volumes, networks, link names and their ports | Recorded: the importer copies the App rows (with their Docker args), links and port allocations, and planning checks the names.                                                                                                   |
 
 ### Deploy through the operator API
 

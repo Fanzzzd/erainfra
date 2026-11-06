@@ -649,4 +649,10 @@ describe("Hub route owners", () => {
       ),
     ).toThrow(/Hub route "shop" is claimed by App "shop" and App "evil"/);
   });
+
+  it("refuses a label the Hub served but no gateway would", () => {
+    expect(() => resolveHubRouteOwners([{ name: "solo-" }], apps)).toThrow(
+      /Hub route "solo-" is not a DNS label/,
+    );
+  });
 });

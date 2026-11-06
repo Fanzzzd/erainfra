@@ -101,7 +101,12 @@ Run each check with the `erainfra` CLI logged in to the Convex site, never `port
 
 - **Deploy every real App once through Convex.** Apps copied from the Hub have no stored spec, so
   Convex cannot fail them over until they are deployed through it once. `erainfra apps view <app>`
-  says so until then.
+  says so until then. A single-container App the Hub deployed with `-v` volumes needs a spec that
+  mounts them, and a Convex service can only mount `<app>-<volume>`. Its first Convex deploy starts
+  new containers beside the Hub's container `<app>`, which keeps running. Move its data to a volume
+  of that form and remove the Hub's container first, as
+  [Names and ownership](../infra-management.md#names-and-ownership) describes. The Infra Agent
+  refuses to start the services on a volume the Hub's container still mounts.
 - **Failover.** On a test App spread over two Nodes, stop the Infra Agent on one Node. After about
   two and a half minutes `erainfra deployments list --app <app>` shows a `failover` run ending
   `done`, and the App answers from the other Node. Start the agent again.

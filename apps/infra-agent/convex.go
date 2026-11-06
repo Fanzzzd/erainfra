@@ -57,7 +57,12 @@ func runConnectConvex(ctx context.Context) error {
 		credential = string(b)
 	}
 	// Do not accept the legacy ERAINFRA_TOKEN/PORTLESS_TOKEN here, even when its value looks valid.
-	client, err := convexnode.New(convexnode.Config{URL: *site, Credential: trimCredential(credential), StateDir: *state, Version: version}, convexnode.LocalExecutor{Runner: agent.ShellRunner{Docker: *docker, OutputLimit: 16 * 1024}})
+	client, err := convexnode.New(convexnode.Config{URL: *site, Credential: trimCredential(credential), StateDir: *state, Version: version}, convexnode.LocalExecutor{Runner: agent.ShellRunner{
+		Docker: *docker, OutputLimit: 16 * 1024,
+		// In the state directory beside the journal (New refuses a relative or missing one), so an
+		// adoption lasts as long as the Node's command history.
+		VolumeOwners: filepath.Join(*state, "volume-owners"),
+	}})
 	if err != nil {
 		return err
 	}

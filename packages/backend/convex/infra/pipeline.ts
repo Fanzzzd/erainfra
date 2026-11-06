@@ -33,7 +33,8 @@ import { insertNodeCommand, type NodeCommand } from "./nodeCommands";
 import { changedNodes, planDeploy } from "./plan";
 import { isNodeLive, isTerminalStage, leaseAdmits, type DeployStage } from "./policy";
 import { allocatePort } from "./ports";
-import { implicitSpec, parseSpec, type AppSpec } from "./spec";
+import { isRouteLabel } from "./ingress";
+import { implicitSpec, parseSpec, routeLabelError, type AppSpec } from "./spec";
 
 type Run = Doc<"appDeployments">;
 type Source = NonNullable<Run["source"]>;
@@ -210,6 +211,8 @@ async function runStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
         if (!parsed.ok) return await fail(ctx, run, { error: parsed.error });
         spec = parsed.spec;
       } else if (run.port !== undefined) {
+        if (!isRouteLabel(run.app))
+          return await fail(ctx, run, { error: routeLabelError("web", run.app, true) });
         spec = implicitSpec(run.app, run.port);
       } else {
         return await fail(ctx, run, {
