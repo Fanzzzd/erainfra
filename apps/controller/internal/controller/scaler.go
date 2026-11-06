@@ -487,6 +487,13 @@ func (s *Scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobComple
 	if job == nil {
 		return errors.New("job completed message is nil")
 	}
+	// GitHub reports a job cancelled before any Runner took it with no runner name. No Attempt
+	// can match it, and a backend that predates accepting it answers 400, which would stop the
+	// listener; there is nothing to record, so it is logged and skipped.
+	if strings.TrimSpace(job.RunnerName) == "" {
+		s.logger.Info("job completed before any runner took it", "jobID", job.JobID, "result", job.Result)
+		return nil
+	}
 	finishedAt := job.FinishTime
 	if finishedAt.IsZero() {
 		finishedAt = time.Now()

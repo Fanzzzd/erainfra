@@ -15,6 +15,7 @@ import {
   parseCreateAttempt,
   parseGitHubTokenRequest,
   parseJobCompleted,
+  parseRunnerlessJobCompleted,
   parseJobStarted,
   parseLeaseEpoch,
   parseLeaseRequest,
@@ -818,6 +819,20 @@ http.route({
     if (resolved.failure !== null) return resolved.failure;
 
     const body = await requestJson(request);
+    const runnerless = body.ok ? parseRunnerlessJobCompleted(body.payload) : null;
+    if (runnerless !== null) {
+      // A job cancelled before any Runner took it: nothing to record, but the caller must still
+      // hold the Profile's lease, so a stale holder learns it lost it here as on every write.
+      try {
+        await ctx.runMutation(internal.controllerApi.acknowledgeRunnerlessJobCompleted, {
+          ...runnerless,
+          caller: resolved.caller,
+        });
+      } catch (error) {
+        return controllerRefusal(error) ?? jsonResponse({ error: "Unknown Profile" }, 409);
+      }
+      return new Response(null, { status: 204 });
+    }
     const event = body.ok ? parseJobCompleted(body.payload) : null;
     if (event === null) {
       return jsonResponse({ error: "Invalid JobCompleted event" }, 400);
