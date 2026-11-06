@@ -68,6 +68,11 @@ export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+/** Why `insertUser` would refuse a normalized email, or null. */
+export function emailRefusal(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? null : "Not a valid email address";
+}
+
 /**
  * The only way a users row is created, by sign-up or by the Hub importer, so both of the Hub's
  * account rules hold for every account:
@@ -89,9 +94,8 @@ export async function insertUser(
   },
 ) {
   const email = normalizeEmail(input.email);
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new ConvexError("Not a valid email address");
-  }
+  const refusal = emailRefusal(email);
+  if (refusal !== null) throw new ConvexError(refusal);
   const existing = await ctx.db
     .query("users")
     .withIndex("email", (q) => q.eq("email", email))

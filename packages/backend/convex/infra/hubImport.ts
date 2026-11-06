@@ -12,8 +12,8 @@
 //   tombstone keeps the import from bringing it back;
 // - an App's routes and ports follow the App: once Convex owns the App, they are skipped too.
 //
-// Each row gets its own result. A refused row is reported and never stops the rows and batches
-// after it; the script exits non-zero when any row was refused.
+// Each row gets its own result. A refused row writes nothing, is reported, and never stops the rows
+// and batches after it; the script exits non-zero when any row was refused.
 //
 // Kept: port numbers, audit order, Hub ids (`legacyId`, `legacyHubId`, `hubSeq`), creation times,
 // password hashes, and secret plaintext (re-encrypted under this deployment's master key).
@@ -28,12 +28,12 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "../_generated/server";
-import { insertUser, normalizeEmail } from "./access";
-import { appendAudit } from "./auditLog";
+import { emailRefusal, insertUser, normalizeEmail } from "./access";
+import { appendAudit, auditRefusal } from "./auditLog";
 import { readCounter, writeCounter } from "./counters";
 import { createDeployment } from "./deployments";
 import { routeRefusal, upsertApp, upsertMeshLink, upsertRoute } from "./apps";
-import { bindingKey, findBinding, insertBinding } from "./git";
+import { bindingKey, bindingRefusal, findBinding, insertBinding } from "./git";
 import {
   appOwnedByConvex,
   contentHash,
@@ -52,7 +52,7 @@ import {
   repoKey,
   roleFromHubRoles,
 } from "./policy";
-import { claimPort } from "./ports";
+import { claimPort, claimPortRefusal } from "./ports";
 import { putSecrets, secretScope, storedSecret } from "./secrets";
 import { requireMasterKey, type MasterKey } from "./secretCrypto";
 import { auditOutcomeValidator, deployStageValidator } from "./tables";
@@ -347,6 +347,8 @@ async function decideUser(ctx: QueryCtx, row: Rows<"users">[number]): Promise<De
       });
     });
   }
+  const refusal = emailRefusal(email);
+  if (refusal !== null) return refuse(key, refusal);
   return put(key, false, async (m) => {
     const userId = await insertUser(m, {
       email,
@@ -481,17 +483,16 @@ async function decidePort(ctx: QueryCtx, row: Rows<"ports">[number]): Promise<De
       .withIndex("by_node_key", (q) => q.eq("nodeId", nodeId).eq("key", row.key))
       .unique();
     if (existing !== null && existing.port === row.port) return same(key);
-    if (existing !== null)
-      return writtenByConvex(existing)
-        ? skip(key, owned(`Convex allocated port ${existing.port}`))
-        : refuse(key, `Port key ${row.key} already holds ${existing.port}, not ${row.port}`);
-    const holder = await ctx.db
-      .query("portAllocations")
-      .withIndex("by_node_port", (q) => q.eq("nodeId", nodeId).eq("port", row.port))
-      .first();
-    if (holder !== null)
-      return refuse(key, `Port ${row.port} on ${row.node} is already held by ${holder.key}`);
+    if (existing !== null && writtenByConvex(existing))
+      return skip(key, owned(`Convex allocated port ${existing.port}`));
   }
+  const refusal = await claimPortRefusal(ctx, {
+    nodeId,
+    key: row.key,
+    port: row.port,
+    nodeName: row.node,
+  });
+  if (refusal !== null) return refuse(key, refusal);
   const hash = await contentHash(row);
   return put(key, false, async (m) =>
     claimPort(
@@ -585,6 +586,8 @@ async function decideBinding(ctx: QueryCtx, row: Rows<"gitBindings">[number]): P
     return slot.legacyId === undefined || writtenByConvex(slot)
       ? skip(key, owned(`the branch is bound in Convex to App ${slot.app}`))
       : refuse(key, `Already bound by Hub binding ${slot.legacyId}: ${row.repo}@${row.branch}`);
+  const refusal = await bindingRefusal(ctx, row.repo, row.branch);
+  if (refusal !== null) return refuse(key, refusal);
   return put(key, false, async (m) =>
     insertBinding(m, { ...(await write(m)), legacyId }, { hash }),
   );
@@ -636,6 +639,8 @@ async function decideAudit(
     .withIndex("by_hubSeq", (q) => q.eq("hubSeq", row.hubSeq))
     .first();
   if (existing !== null) return same(key);
+  const refusal = auditRefusal(row);
+  if (refusal !== null) return refuse(key, refusal);
   // Appending a Hub row older than one already imported would put it after a later one.
   if (row.hubSeq <= through)
     return refuse(
@@ -646,9 +651,15 @@ async function decideAudit(
 }
 
 /**
- * Decide every row of a batch and, given a mutation context, write each one the Hub still owns. A
- * row whose write Convex refuses (a ConvexError, thrown before that row writes anything) is
- * reported and the next row goes on. Anything else is a bug: it aborts this batch's transaction.
+ * Decide every row of a batch and, given a mutation context, write each one the Hub still owns.
+ *
+ * Every refusal is decided before the row writes anything, from the same checks the write helpers
+ * enforce (claimPortRefusal, bindingRefusal, emailRefusal, auditRefusal, routeRefusal and the
+ * secret name and scope rules). A refused row is reported and the next row goes on, and the dry
+ * run reports the same refusals. A write is never caught: Convex rolls back writes only when the
+ * mutation fails, so a row refused halfway through its write, after creating a Node say, would
+ * leave that Node behind under a `refused` result. A write that throws therefore fails the whole
+ * batch, which Convex rolls back and `run` reports row by row.
  */
 async function processBatch(
   ctx: QueryCtx,
@@ -657,16 +668,8 @@ async function processBatch(
 ): Promise<ImportItem[]> {
   const items: ImportItem[] = [];
   const settle = async (decision: Decision) => {
-    let { outcome, reason } = decision;
-    if (writer !== null && decision.write !== undefined) {
-      try {
-        await decision.write(writer);
-      } catch (e) {
-        if (!(e instanceof ConvexError)) throw e;
-        outcome = "refused";
-        reason = String(e.data);
-      }
-    }
+    const { outcome, reason } = decision;
+    if (writer !== null && decision.write !== undefined) await decision.write(writer);
     items.push({
       kind: batch.kind,
       key: decision.key,
