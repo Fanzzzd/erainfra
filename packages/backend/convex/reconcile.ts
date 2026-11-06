@@ -2,7 +2,13 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import { deleteAttemptSecret } from "./attemptSecrets";
-import { finishRetirement, retireAttempt, RETIREMENT_UNCONFIRMED_MS } from "./attemptRetirement";
+import {
+  finishRetirement,
+  keepForReturningWorker,
+  retireAttempt,
+  retirementBackstopDue,
+  workerReports,
+} from "./attemptRetirement";
 import { deleteAttemptEgress } from "./egress";
 import { decideAttemptOutcome } from "./retry";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";
@@ -260,9 +266,15 @@ export const run = internalMutation({
         continue;
       }
       if (attempt.retirement !== undefined) {
-        // Already waiting for its controller to delete the Runner (attemptRetirement.ts). Only a
-        // retirement no controller has confirmed for hours is ended here, so the slot comes back.
-        if (now - attempt.retirement.requestedAt > RETIREMENT_UNCONFIRMED_MS) {
+        // Already waiting for its controller to delete the Runner (attemptRetirement.ts). A
+        // running one whose Worker reports again was retired only for the silence: its job runs
+        // on. The heartbeat calls that off first; this catches a report that raced the retirement.
+        if (machine !== undefined && workerReports(machine, now)) {
+          if (await keepForReturningWorker(ctx, attempt)) continue;
+        }
+        // Otherwise only a retirement nothing can settle any more is ended here, so the slot
+        // comes back (retirementBackstopDue).
+        if (await retirementBackstopDue(ctx, attempt, machine, now)) {
           await finishRetirement(ctx, attempt, { unconfirmed: true });
           if (machine !== undefined) {
             const current = await ctx.db.get(machine._id);

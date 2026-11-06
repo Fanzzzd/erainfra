@@ -73,7 +73,8 @@ is per Attempt, never per Worker.
 **Retiring** — an Attempt EraInfra is ending while its Runner may be online (`attempts.retirement`):
 a scale-down, a lost host label, a Worker that stopped reporting. It keeps its state and executor
 until GitHub confirms the Runner is deleted. A JobStarted before that keeps the Attempt, because
-GitHub gave the Runner a job first (`convex/attemptRetirement.ts`). Not the retirement of a
+GitHub gave the Runner a job first, and a running Attempt's Worker reporting again calls off a
+retirement made for its silence (`convex/attemptRetirement.ts`). Not the retirement of a
 Profile's scale set (`runner-center-controller retire`).
 
 **App** — a customer workload deployed onto one or more Nodes, with its own Docker network.
