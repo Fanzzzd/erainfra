@@ -18,12 +18,19 @@ type fakeCache struct {
 	mu     sync.Mutex
 	pushed []cachefacts.Facts
 	err    error
+	// errs, when set, answers the pushes in order; past its end, err answers.
+	errs []error
 }
 
 func (f *fakeCache) Push(_ context.Context, facts cachefacts.Facts) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pushed = append(f.pushed, facts)
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return err
+	}
 	return f.err
 }
 
@@ -370,6 +377,7 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	scaler.cacheRetry = retryPolicy{first: time.Millisecond, ceiling: time.Millisecond, window: 20 * time.Millisecond}
 
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
 		RunnerName: "rc-linux-js-a",
@@ -386,6 +394,64 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 	scaler.publishing.Wait()
 	if len(store.started) != 1 {
 		t.Fatalf("job start was not recorded despite cache failure: %#v", store.started)
+	}
+}
+
+// startJobWithCache runs one JobStarted through a Scaler publishing to cache with
+// a fast retry policy, and waits for the publish to finish.
+func startJobWithCache(t *testing.T, cache *fakeCache, retry retryPolicy) {
+	t.Helper()
+	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
+		WithCachePublisher(cache, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scaler.cacheRetry = retry
+	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
+		RunnerName:     "rc-linux-js-a",
+		JobMessageBase: scaleset.JobMessageBase{RepositoryName: "erainfra", OwnerName: "Fanzzzd", EventName: "push"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scaler.publishing.Wait()
+}
+
+// The controller sends a job's facts once. A push the cache service could not
+// take, because it was restarting or could not make the facts durable, is sent
+// again until it lands, or that job's cache requests are refused until it ends.
+func TestScalerRetriesACacheFactsPushTheServiceCouldNotTake(t *testing.T) {
+	cache := &fakeCache{errs: []error{
+		errors.New("connection refused"),
+		&cachefacts.StatusError{Code: 503},
+	}}
+	startJobWithCache(t, cache, retryPolicy{first: time.Millisecond, ceiling: 2 * time.Millisecond, window: time.Minute})
+	if pushed := cache.facts(); len(pushed) != 3 {
+		t.Fatalf("pushes = %d, want 3 (two failures, then the one that landed)", len(pushed))
+	}
+}
+
+// A refusal sending again cannot fix (a wrong signing key, facts the service will
+// never accept) is not retried.
+func TestScalerDoesNotRetryAPermanentCacheFactsRefusal(t *testing.T) {
+	cache := &fakeCache{err: &cachefacts.StatusError{Code: 401}}
+	startJobWithCache(t, cache, retryPolicy{first: time.Millisecond, ceiling: time.Millisecond, window: time.Minute})
+	if pushed := cache.facts(); len(pushed) != 1 {
+		t.Fatalf("pushes = %d, want 1", len(pushed))
+	}
+}
+
+// Retrying is bounded: a service that stays down is given up on when the window
+// closes.
+func TestScalerGivesUpOnCacheFactsWhenTheWindowCloses(t *testing.T) {
+	cache := &fakeCache{err: &cachefacts.StatusError{Code: 503}}
+	started := time.Now()
+	startJobWithCache(t, cache, retryPolicy{first: time.Millisecond, ceiling: 5 * time.Millisecond, window: 50 * time.Millisecond})
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("publish took %s; the retry window did not bound it", elapsed)
+	}
+	if pushed := cache.facts(); len(pushed) < 2 {
+		t.Fatalf("pushes = %d, want retries before giving up", len(pushed))
 	}
 }
 

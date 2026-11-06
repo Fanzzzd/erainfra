@@ -43,6 +43,7 @@ const (
 	blobMarker     = "/_erainfra-cache-blob/"
 	downloadMarker = "/_erainfra-cache-download/"
 	healthPath     = "/healthz"
+	metricsPath    = "/metrics"
 )
 
 // maxRequestJSON bounds a control-plane request body. The largest one measured
@@ -60,6 +61,9 @@ const maxCacheKeyBytes = 512
 type Server struct {
 	config config.Config
 	index  *cacheindex.Index
+	// store is the bucket itself. The index owns every cache object in it; the
+	// server writes only the job facts it is pushed (see facts.go).
+	store  objectstore.Store
 	verify *cachetoken.Verifier
 	admin  *adminapi.Verifier
 	logger *slog.Logger
@@ -72,8 +76,15 @@ type Server struct {
 	sessions     map[string]*session
 	// facts maps a runner name to the job facts the controller pushed for it.
 	// It is how a request's repository and permission are known, since a VM's
-	// repository is not known when it boots.
+	// repository is not known when it boots. It is a read-through memo of the
+	// copy in the bucket, which is the one that survives a restart.
 	facts map[string]factsEntry
+	// unknown remembers, briefly, runners the bucket had no facts for, so a job
+	// whose facts never arrived costs the store one read per memo window rather
+	// than one per cache request.
+	unknown map[string]time.Time
+
+	metrics metrics
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -113,12 +124,14 @@ func New(cfg config.Config, store objectstore.Store, logger *slog.Logger) (*Serv
 	server := &Server{
 		config:       cfg,
 		index:        index,
+		store:        store,
 		verify:       verify,
 		admin:        admin,
 		logger:       logger,
 		reservations: map[int64]*reservation{},
 		sessions:     map[string]*session{},
 		facts:        map[string]factsEntry{},
+		unknown:      map[string]time.Time{},
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 		retained:     make(chan struct{}),
@@ -187,6 +200,11 @@ func (s *Server) sweep() {
 					delete(s.facts, runner)
 				}
 			}
+			for runner, until := range s.unknown {
+				if now.After(until) {
+					delete(s.unknown, runner)
+				}
+			}
 			s.mu.Unlock()
 		}
 	}
@@ -198,6 +216,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == healthPath:
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
+	case path == metricsPath:
+		s.serveMetrics(w, r)
 	case strings.Contains(path, adminEntriesMarker):
 		s.serveAdminEntries(w, r)
 	case strings.Contains(path, adminFactsMarker):
@@ -239,21 +259,32 @@ func (s *Server) authenticate(r *http.Request) (cachetoken.Claims, bool) {
 		raw, found = strings.CutPrefix(header, "bearer ")
 	}
 	if !found || strings.TrimSpace(raw) == "" {
+		s.metrics.refuse(refusedNoToken)
 		s.logger.Warn("cache request carried no bearer token", "path", r.URL.Path)
 		return cachetoken.Claims{}, false
 	}
 	runner, err := s.verify.VerifyRunner(strings.TrimSpace(raw), s.now())
 	if err != nil {
+		s.metrics.refuse(refusedBadToken)
 		s.logger.Warn("cache runner token rejected", "path", r.URL.Path, "reason", err)
 		return cachetoken.Claims{}, false
 	}
-	facts, ok := s.lookupFacts(runner.Runner, s.now())
-	if !ok {
+	facts, lookup := s.lookupFacts(r.Context(), runner.Runner, s.now())
+	switch lookup {
+	case factsFound:
+	case factsUnreadable:
+		s.metrics.refuse(refusedFactsUnreadable)
+		s.logger.Warn("job facts for runner could not be read from the store",
+			"runner", runner.Runner, "path", r.URL.Path)
+		return cachetoken.Claims{}, false
+	default:
+		s.metrics.refuse(refusedUnknownFacts)
 		s.logger.Warn("no job facts for runner", "runner", runner.Runner, "path", r.URL.Path)
 		return cachetoken.Claims{}, false
 	}
 	claims, err := cachetoken.Scope(facts)
 	if err != nil {
+		s.metrics.refuse(refusedUnscopable)
 		s.logger.Warn("runner facts do not scope a cache", "runner", runner.Runner, "reason", err)
 		return cachetoken.Claims{}, false
 	}

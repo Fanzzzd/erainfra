@@ -133,3 +133,35 @@ func TestScopedAccessAfterEndpointPush(t *testing.T) {
 		t.Fatalf("restored %d bytes, want %d", len(got), len(want))
 	}
 }
+
+// A running job's cache survives a cache-service restart. The controller pushes a
+// runner's facts once, at JobStarted, so a service that forgot them on restart
+// would answer every later request from that job 401 (restores miss, saves are
+// skipped) for the rest of the job, with nothing that would ever push again.
+func TestPushedFactsSurviveARestart(t *testing.T) {
+	h := newHarness(t, nil)
+	body := jsonBody(map[string]any{
+		"runner": "rc-linux-js-a", "repository": "Fanzzzd/erainfra",
+		"event": "push", "ref": "refs/heads/main", "defaultBranch": "refs/heads/main",
+		"expiresUnix": h.now().Add(time.Hour).Unix(),
+	})
+	pushed := h.pushFacts(body, adminSign(body))
+	_ = pushed.Body.Close()
+	if pushed.StatusCode != http.StatusNoContent {
+		t.Fatalf("push = %d, want 204", pushed.StatusCode)
+	}
+	token := h.runnerToken("rc-linux-js-a")
+	before := payload(2048)
+	h.saveV1(token, "before-restart", "v1", before, wholeBody(before))
+
+	h.restart()
+
+	if got := h.restoreV1(token, "before-restart", "v1"); !bytes.Equal(got, before) {
+		t.Fatalf("restored %d bytes after restart, want %d", len(got), len(before))
+	}
+	after := payload(3072)
+	h.saveV1(token, "after-restart", "v1", after, wholeBody(after))
+	if got := h.restoreV1(token, "after-restart", "v1"); !bytes.Equal(got, after) {
+		t.Fatalf("restored %d bytes saved after restart, want %d", len(got), len(after))
+	}
+}

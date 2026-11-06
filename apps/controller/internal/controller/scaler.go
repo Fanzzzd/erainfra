@@ -87,8 +87,10 @@ type Scaler struct {
 	mu      sync.Mutex
 
 	// cacheScopeBudget bounds the GitHub lookups behind one job's cache facts,
-	// and publishing tracks the pushes still in flight.
+	// cacheRetry paces a push the cache service could not take, and publishing
+	// tracks the pushes still in flight.
 	cacheScopeBudget time.Duration
+	cacheRetry       retryPolicy
 	publishing       sync.WaitGroup
 }
 
@@ -142,6 +144,7 @@ func NewScaler(
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 
 		cacheScopeBudget: defaultCacheScopeBudget,
+		cacheRetry:       defaultCachePushRetry,
 	}
 	for _, opt := range opts {
 		opt(scaler)
@@ -292,6 +295,11 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 // cacheScopeBudget; if they fail or run out of time the job gets cold facts,
 // read-only with nothing to read, which is never broader than the real scope. A
 // push failure is logged, not returned: the worst case is a cold cache.
+//
+// This is the only time the controller sends a job's facts, so a push the
+// service could not take (it was restarting, or could not write them to its
+// store) is retried with backoff for cacheRetry.window rather than dropped: a
+// dropped push leaves that job's every cache request refused until it ends.
 func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted) {
 	if s.cache == nil {
 		return
@@ -309,17 +317,60 @@ func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted
 				"runner", started.RunnerName, "workflowRunID", started.WorkflowRunID, "error", err)
 			facts = coldCacheFacts(&started)
 		}
-		pushCtx, cancelPush := context.WithTimeout(base, cachePushBudget)
-		defer cancelPush()
-		if err := s.cache.Push(pushCtx, facts); err != nil {
-			s.logger.Warn("could not publish cache facts", "runner", started.RunnerName, "error", err)
+		attempts, err := s.pushCacheFacts(base, facts)
+		if err != nil {
+			s.logger.Error("could not publish cache facts; the job's cache requests will be refused",
+				"runner", started.RunnerName, "attempts", attempts, "error", err)
 			return
 		}
 		s.logger.Info("published cache facts",
 			"runner", facts.Runner, "repository", facts.Repository, "event", facts.Event,
 			"ref", facts.Ref, "baseRef", facts.BaseRef, "defaultBranch", facts.DefaultBranch,
-			"headRepository", facts.HeadRepository)
+			"headRepository", facts.HeadRepository, "attempts", attempts)
 	}()
+}
+
+// retryPolicy is how a failed facts push is paced: the first retry after first,
+// doubling to at most ceiling, until window has passed since the first attempt.
+type retryPolicy struct {
+	first   time.Duration
+	ceiling time.Duration
+	window  time.Duration
+}
+
+// defaultCachePushRetry outlasts a cache-service deploy or a host reboot, which
+// is what a retryable failure almost always is, and gives up well inside the
+// facts' own six-hour lifetime. A job's first cache step is usually a minute or
+// more in, so facts that land within the window are rarely late at all.
+var defaultCachePushRetry = retryPolicy{first: time.Second, ceiling: 30 * time.Second, window: 15 * time.Minute}
+
+// pushCacheFacts sends facts until the service takes them, the failure is one
+// sending again cannot fix, or the retry window closes. It returns how many
+// attempts it made.
+func (s *Scaler) pushCacheFacts(ctx context.Context, facts cachefacts.Facts) (int, error) {
+	deadline := time.Now().Add(s.cacheRetry.window)
+	delay := s.cacheRetry.first
+	for attempt := 1; ; attempt++ {
+		pushCtx, cancel := context.WithTimeout(ctx, cachePushBudget)
+		err := s.cache.Push(pushCtx, facts)
+		cancel()
+		if err == nil {
+			return attempt, nil
+		}
+		if !cachefacts.Retryable(err) || !time.Now().Add(delay).Before(deadline) {
+			return attempt, err
+		}
+		if attempt == 1 {
+			s.logger.Warn("cache facts push failed; retrying",
+				"runner", facts.Runner, "error", err, "retryFor", s.cacheRetry.window)
+		}
+		select {
+		case <-ctx.Done():
+			return attempt, ctx.Err()
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, s.cacheRetry.ceiling)
+	}
 }
 
 // repositorySlug joins an owner and repository into the "owner/repo" the cache
