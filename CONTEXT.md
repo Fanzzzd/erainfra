@@ -70,6 +70,12 @@ Distinct from a scale set's labels (`RC_LABELS`), which are what `runs-on` match
 **Attempt** — one execution of one CI job inside one disposable boundary. The isolation boundary
 is per Attempt, never per Worker.
 
+**Retiring** — an Attempt EraInfra is ending while its Runner may be online (`attempts.retirement`):
+a scale-down, a lost host label, a Worker that stopped reporting. It keeps its state and executor
+until GitHub confirms the Runner is deleted. A JobStarted before that keeps the Attempt, because
+GitHub gave the Runner a job first (`convex/attemptRetirement.ts`). Not the retirement of a
+Profile's scale set (`runner-center-controller retire`).
+
 **App** — a customer workload deployed onto one or more Nodes, with its own Docker network.
 
 **Executor** — the mechanism providing an Attempt's boundary: `docker` (shared-kernel),

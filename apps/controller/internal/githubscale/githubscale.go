@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -161,11 +162,15 @@ func (i *Issuer) GenerateJIT(ctx context.Context, runnerName string) (rccontroll
 	}, nil
 }
 
+// RemoveRunner deletes a Runner's registration. A Runner that is already gone
+// is success: deletion is a compensating, retried operation, and an ephemeral
+// Runner removes itself when its job ends. GitHub refuses to delete a Runner it
+// has handed a job with an error wrapping scaleset.JobStillRunningError; the
+// caller leaves that Runner to its job and retries later.
 func (i *Issuer) RemoveRunner(ctx context.Context, runnerID int64) error {
 	err := i.client.RemoveRunner(ctx, runnerID)
-	// Deletion is a compensating, retried operation. An ephemeral runner may
-	// have removed itself between reconciliation and this call.
-	if err != nil && strings.Contains(err.Error(), `status="404 Not Found"`) {
+	if err != nil && (errors.Is(err, scaleset.RunnerNotFoundError) ||
+		strings.Contains(err.Error(), `status="404 Not Found"`)) {
 		return nil
 	}
 	return err

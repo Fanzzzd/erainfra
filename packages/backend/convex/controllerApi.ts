@@ -2,7 +2,8 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
-import { cancelIdleAttempt, retireOffPinForProfile } from "./pinnedAttempts";
+import { retireOffPinForProfile } from "./pinnedAttempts";
+import { endIdleAttempt, finishRetirement, isRetiring, keepForJob } from "./attemptRetirement";
 import { conflictsOf, type ScaleSetProfile } from "./scaleSetLabels";
 import { releaseAttemptSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
@@ -304,18 +305,28 @@ export const listActiveAttempts = internalQuery({
             query.eq("profile", args.profile).eq("state", state),
           )
           .collect();
-        return attempts.map(({ runnerName, runnerId, createdAt }) => ({
-          runnerName,
-          runnerId,
-          state,
-          createdAt,
-        }));
+        // A retiring Attempt is on its way out: its Runner is being deleted, so it is not capacity
+        // the controller can count on. If GitHub hands it a job first, it comes back as running.
+        return attempts
+          .filter((attempt) => !isRetiring(attempt))
+          .map(({ runnerName, runnerId, createdAt }) => ({
+            runnerName,
+            runnerId,
+            state,
+            createdAt,
+          }));
       }),
     );
     return ranges.flat();
   },
 });
 
+/**
+ * The Runners the controller must delete from GitHub: those of settled Attempts that ended without
+ * a JobCompleted, and those of retiring Attempts (attemptRetirement.ts), which end only when the
+ * delete is confirmed. One list, so a controller built before retirement existed deletes a retiring
+ * Runner first and acknowledges it after, which is the order retirement needs.
+ */
 export const listRunnerCleanups = internalQuery({
   args: { profile: v.string(), caller: callerArg },
   returns: v.array(
@@ -358,7 +369,13 @@ export const completeRunnerCleanup = internalMutation({
       return false;
     }
     if (attempt.runnerCleanupPending !== true) return true;
-    await ctx.db.patch(attempt._id, { runnerCleanupPending: undefined });
+    // GitHub has confirmed the Runner is gone. A retiring Attempt ends now; its executor stops.
+    if (isRetiring(attempt)) {
+      await finishRetirement(ctx, attempt);
+      await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+      return true;
+    }
+    await ctx.db.patch(attempt._id, { runnerCleanupPending: undefined, retirement: undefined });
     return true;
   },
 });
@@ -435,6 +452,12 @@ export const createAttempt = internalMutation({
   },
 });
 
+/**
+ * A scale-down. An unclaimed Attempt is cancelled at once. A `preparing` or `ready` one is retired:
+ * it ends when the controller has deleted its Runner and acknowledged that (completeRunnerCleanup),
+ * so a job GitHub handed it in the meantime is not lost. The controller of either generation calls
+ * this, deletes the Runner, then acknowledges, so both get that order.
+ */
 export const cancelAttempt = internalMutation({
   args: {
     profile: v.string(),
@@ -455,8 +478,9 @@ export const cancelAttempt = internalMutation({
     if (attempt.state === "running") {
       throw new ConvexError("A running Attempt cannot be removed by a scale-down reconciliation");
     }
-    await cancelIdleAttempt(ctx, attempt, args.reason);
-    await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+    if ((await endIdleAttempt(ctx, attempt, args.reason)) === "cancelled") {
+      await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+    }
     return null;
   },
 });
@@ -505,9 +529,20 @@ export const markJobStarted = internalMutation({
       ) {
         await ctx.db.patch(attempt._id, { headBranch: args.headBranch });
       }
+      // An Attempt that ended without ever starting had its Runner deleted by GitHub, or its
+      // executor exit, first. Neither can be running a job, so this message is late.
+      if (attempt.startedAt === undefined) {
+        console.warn(
+          `JobStarted ${args.jobId ?? "?"} for Runner ${args.runnerName} of ${args.profile} ` +
+            `after its Attempt ended (${attempt.state}) without a job; ignored`,
+        );
+      }
       return null;
     }
     await ctx.db.patch(attempt._id, {
+      // A Runner that took a job while retiring keeps it. A running Attempt retired because its
+      // Worker stopped reporting stays retiring: a redelivered JobStarted says nothing new.
+      ...(attempt.state === "running" ? {} : keepForJob(attempt)),
       state: "running",
       startedAt: attempt.startedAt ?? Date.now(),
       ...(args.runnerRequestId === undefined ? {} : { runnerRequestId: args.runnerRequestId }),
@@ -555,6 +590,7 @@ export const markJobCompleted = internalMutation({
       state: "completed",
       jitConfig: undefined,
       runnerCleanupPending: undefined,
+      retirement: undefined,
       ...(args.runnerRequestId === undefined ? {} : { runnerRequestId: args.runnerRequestId }),
       ...(args.jobId === undefined ? {} : { jobId: args.jobId }),
       ...(args.result === undefined ? {} : { result: args.result }),

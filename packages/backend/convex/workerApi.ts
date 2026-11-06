@@ -508,6 +508,26 @@ export const reportAttempt = mutation({
     }
     await releaseAttemptSlot(ctx, attempt);
     await deleteAttemptSecret(ctx, attempt._id);
+    const retirement = attempt.retirement;
+    if (retirement !== undefined && attempt.state !== "running") {
+      // An idle Runner that exits while retiring most likely saw GitHub delete it before the
+      // controller acknowledged the delete. It ends as the retirement asked, not as a failure the
+      // failure-rate alert would count; the controller's delete of a Runner already gone succeeds.
+      await ctx.db.patch(attempt._id, {
+        state: retirement.outcome,
+        jitConfig: undefined,
+        executorFinishedAt,
+        executorExitCode: args.exitCode,
+        finishedAt: executorFinishedAt,
+        ...(retirement.outcome === "cancelled"
+          ? { cancelReason: retirement.reason }
+          : { lastError: retirement.reason }),
+        runnerCleanupPending: true,
+        retirement: undefined,
+      });
+      await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+      return true;
+    }
     await ctx.db.patch(attempt._id, {
       state: args.exitCode === 0 ? "completed" : "failed",
       jitConfig: undefined,
@@ -515,7 +535,9 @@ export const reportAttempt = mutation({
       executorExitCode: args.exitCode,
       finishedAt: executorFinishedAt,
       lastError: args.exitCode === 0 ? undefined : `Executor exited with code ${args.exitCode}`,
-      runnerCleanupPending: args.exitCode === 0 ? undefined : true,
+      // A retiring Attempt's Runner may still be registered: the controller still deletes it.
+      runnerCleanupPending: args.exitCode === 0 && retirement === undefined ? undefined : true,
+      retirement: undefined,
     });
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     return true;

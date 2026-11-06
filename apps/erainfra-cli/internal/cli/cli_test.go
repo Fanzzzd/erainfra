@@ -472,6 +472,19 @@ func TestJobsViewTable(t *testing.T) {
 	}
 }
 
+func TestJobsViewShowsARetiringAttempt(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	detail := strings.TrimSuffix(attemptJSON, "}") +
+		`,"executor":"firecracker","imageRelease":"ghcr.io/x@sha256:1","vcpus":4,"memoryMiB":16384,"runnerName":"r-1","runnerId":9,` +
+		`"retiring":{"outcome":"cancelled","reason":"GitHub reduced the desired runner count","since":"2026-11-06T09:00:00.000Z"}}`
+	h.api.on("GET /api/v1/attempts/j57abc", 200, `{"attempt":`+detail+`}`)
+	h.expect(ExitOK, "jobs", "view", "j57abc")
+	want := "Retiring:          since 2026-11-06T09:00:00.000Z, then cancelled: GitHub reduced the desired runner count"
+	if !strings.Contains(h.stdout.String(), want) {
+		t.Errorf("jobs view lacks %q:\n%s", want, h.stdout.String())
+	}
+}
+
 func TestJobsLogs(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	h.api.on("GET /api/v1/attempts/j57abc", 200, `{"attempt":`+attemptJSON+`}`)

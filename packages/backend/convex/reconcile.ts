@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import { deleteAttemptSecret } from "./attemptSecrets";
+import { finishRetirement, retireAttempt, RETIREMENT_UNCONFIRMED_MS } from "./attemptRetirement";
 import { deleteAttemptEgress } from "./egress";
 import { decideAttemptOutcome } from "./retry";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";
@@ -258,6 +259,19 @@ export const run = internalMutation({
         requeued += 1;
         continue;
       }
+      if (attempt.retirement !== undefined) {
+        // Already waiting for its controller to delete the Runner (attemptRetirement.ts). Only a
+        // retirement no controller has confirmed for hours is ended here, so the slot comes back.
+        if (now - attempt.retirement.requestedAt > RETIREMENT_UNCONFIRMED_MS) {
+          await finishRetirement(ctx, attempt, { unconfirmed: true });
+          if (machine !== undefined) {
+            const current = await ctx.db.get(machine._id);
+            if (current !== null) machineSlots.set(machine._id, current.usedSlots);
+          }
+          abandoned += 1;
+        }
+        continue;
+      }
       const stuckPreparing =
         (attempt.state === "preparing" || attempt.state === "ready") &&
         now - (attempt.claimedAt ?? attempt.createdAt) > ASSIGNMENT_STUCK_MS;
@@ -268,18 +282,21 @@ export const run = internalMutation({
         stuckPreparing ||
         abandonedRunning
       ) {
-        await deleteAttemptSecret(ctx, attempt._id);
-        await ctx.db.patch(attempt._id, {
-          state: "failed",
-          jitConfig: undefined,
-          finishedAt: now,
-          runnerCleanupPending: true,
-          lastError: abandonedRunning
+        // Each of these may have a Runner online with a job: a Worker that stopped reporting may
+        // only have lost its link to Convex, and an idle Runner may have taken a job whose
+        // JobStarted is still on its way. So the Attempt is retired rather than failed: it fails
+        // once GitHub has deleted the Runner, and a job GitHub reports keeps it alive until its
+        // JobCompleted. The slot stays held until then.
+        await retireAttempt(
+          ctx,
+          attempt,
+          "failed",
+          abandonedRunning
             ? "Worker stopped reporting during the GitHub job"
             : stuckPreparing
               ? "Executor did not become usable within 45 minutes"
               : "Worker stopped reporting while preparing the runner",
-        });
+        );
         abandoned += 1;
       }
     }

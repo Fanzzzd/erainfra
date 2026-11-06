@@ -155,6 +155,21 @@ type attemptDetail struct {
 	ExecutorExitCode   *int64  `json:"executorExitCode"`
 	CancelReason       *string `json:"cancelReason"`
 	LastError          *string `json:"lastError"`
+	// Retiring is set while the control plane waits for GitHub to confirm the
+	// Runner is deleted before it ends the Attempt. Absent from older control planes.
+	Retiring *struct {
+		Outcome string  `json:"outcome"`
+		Reason  string  `json:"reason"`
+		Since   *string `json:"since"`
+	} `json:"retiring"`
+}
+
+// retiringSummary is the Retiring row of `jobs view`.
+func retiringSummary(d attemptDetail) string {
+	if d.Retiring == nil {
+		return "-"
+	}
+	return fmt.Sprintf("since %s, then %s: %s", orDash(d.Retiring.Since), d.Retiring.Outcome, d.Retiring.Reason)
 }
 
 func fetchAttempt(ctx context.Context, a *App, id string) ([]byte, attemptDetail, error) {
@@ -221,6 +236,7 @@ result and the run URL. The id is the first column of ` + "`erainfra jobs list`"
 			{"Queue wait", millis(d.QueueWaitMs)},
 			{"Duration", millis(d.DurationMs)},
 			{"Executor exit", exit},
+			{"Retiring", retiringSummary(d)},
 			{"Cancel reason", orDash(d.CancelReason)},
 			{"Last error", orDash(d.LastError)},
 		} {

@@ -131,6 +131,7 @@ func runHolder(ctx context.Context, cfg config.Config, store *convexstore.Store,
 	if err != nil {
 		return err
 	}
+	scalerOpts = append(scalerOpts, rccontroller.WithRunnerLogger(logger.WithGroup("runners")))
 	scaler, err := rccontroller.NewScaler(rccontroller.Config{
 		Profile: cfg.Profile, Executor: cfg.Executor, ImageRelease: cfg.ImageRelease, VCPUs: cfg.VCPUs, MemoryMiB: cfg.MemoryMiB, MinRunners: cfg.MinRunners, MaxRunners: cfg.MaxRunners,
 	}, store, issuer, func() (string, error) { return githubscale.RunnerName(cfg.Profile) }, scalerOpts...)

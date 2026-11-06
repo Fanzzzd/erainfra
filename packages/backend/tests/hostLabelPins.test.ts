@@ -173,14 +173,16 @@ describe("a Worker that loses a pinned Profile's label", () => {
       requeuedAttempts: 1,
     });
 
+    // Retiring: the controller deletes the Runners first, and their executors keep running until
+    // GitHub has confirmed, so a job GitHub handed one in the meantime is not lost.
     const lacks = "Worker gpu-1: this Worker lacks the host label gpu the Profile is pinned to";
     expect(await state(t, ready)).toEqual({
-      state: "cancelled",
+      state: "ready",
       worker: "gpu-1",
       cleanup: true,
-      reason: `Retired before it took a job. ${lacks}`,
+      reason: undefined,
     });
-    expect((await state(t, preparing)).state).toBe("cancelled");
+    expect((await state(t, preparing)).state).toBe("preparing");
     // Back in the queue, waiting for a Worker with the label rather than spilling elsewhere.
     expect(await state(t, placed)).toEqual({
       state: "pending",
@@ -194,19 +196,43 @@ describe("a Worker that loses a pinned Profile's label", () => {
       cleanup: false,
       reason: undefined,
     });
-    expect(await usedSlots(t, "gpu-1")).toBe(1);
-
-    // The Worker stops the retired executors: they left its live set.
-    const live = (await t.query(api.workerApi.pendingAttempts, { token: "token-gpu-1" }))
-      .liveAttemptIds;
-    expect(live).toEqual([running]);
-    // The controller deletes their GitHub Runners.
+    expect(await usedSlots(t, "gpu-1")).toBe(3);
+    const liveIds = async () =>
+      (await t.query(api.workerApi.pendingAttempts, { token: "token-gpu-1" })).liveAttemptIds;
+    expect(new Set(await liveIds())).toEqual(new Set([ready, preparing, running]));
+    // The controller no longer counts them, so it creates their replacements.
+    expect(
+      (await t.query(internal.controllerApi.listActiveAttempts, { profile: PINNED })).map(
+        (listed) => listed.runnerName,
+      ),
+    ).toEqual(expect.arrayContaining(["runner-3", "runner-4"]));
+    expect(
+      (await t.query(internal.controllerApi.listActiveAttempts, { profile: PINNED })).length,
+    ).toBe(2);
+    // The controller deletes their GitHub Runners, then acknowledges each delete.
     expect(
       (await t.query(internal.controllerApi.listRunnerCleanups, { profile: PINNED })).map(
         (runner) => runner.runnerName,
       ),
     ).toEqual(["runner-1", "runner-2"]);
-    // A JobStarted that raced the retirement cannot bring the Runner back.
+    for (const runnerId of [1, 2]) {
+      await t.mutation(internal.controllerApi.completeRunnerCleanup, {
+        profile: PINNED,
+        runnerName: `runner-${runnerId}`,
+        runnerId,
+      });
+    }
+    expect(await state(t, ready)).toEqual({
+      state: "cancelled",
+      worker: "gpu-1",
+      cleanup: false,
+      reason: `Retired before it took a job. ${lacks}`,
+    });
+    expect((await state(t, preparing)).state).toBe("cancelled");
+    expect(await usedSlots(t, "gpu-1")).toBe(1);
+    // Only now does the Worker stop their executors: they left its live set.
+    expect(await liveIds()).toEqual([running]);
+    // A late JobStarted for a Runner GitHub has deleted changes nothing.
     await t.mutation(internal.controllerApi.markJobStarted, {
       profile: PINNED,
       runnerName: "runner-1",
@@ -219,6 +245,33 @@ describe("a Worker that loses a pinned Profile's label", () => {
     await reportReady(t, "gpu-2", PINNED);
     await t.mutation(internal.attemptScheduler.tryAssign, {});
     expect((await state(t, placed)).worker).toBe("gpu-2");
+  });
+
+  it("keeps a ready Runner's executor alive until GitHub has confirmed the Runner is gone", async () => {
+    // GitHub hands an idle Runner a job before the controller's JobStarted reaches Convex. If the
+    // Attempt left the Worker's live set at setLabels time, the Agent would kill a VM already
+    // running the user's job, and GitHub would then refuse to delete that Runner (JobStillRunning).
+    const t = convexTest(schema, modules);
+    await registerProfile(t, PINNED, ["gpu"]);
+    await addMachine(t, "gpu-1", ["gpu"]);
+    await reportReady(t, "gpu-1", PINNED);
+    const ready = await attempt(t, PINNED, 1, "ready");
+    await t.mutation(internal.machines.setLabels, { name: "gpu-1", labels: [] });
+    // JobStarted for the job GitHub assigned a moment before the labels changed.
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      profile: PINNED,
+      runnerName: "runner-1",
+      jobId: "job-assigned-in-the-race",
+    });
+    const live = (await t.query(api.workerApi.pendingAttempts, { token: "token-gpu-1" }))
+      .liveAttemptIds;
+    expect(live, "the Agent stops the executor of a Runner GitHub already gave a job").toContain(
+      ready,
+    );
+    expect(await state(t, ready)).toMatchObject({ state: "running", cleanup: false });
+    expect(await t.query(internal.controllerApi.listRunnerCleanups, { profile: PINNED })).toEqual(
+      [],
+    );
   });
 
   it("leaves work alone when the Worker keeps every label the Profile needs", async () => {
@@ -250,7 +303,11 @@ describe("a pin added to a Profile that already has Runners", () => {
     const onGpu = onPlain === first ? second : first;
 
     expect(await registerProfile(t, PINNED, ["gpu"])).toBeNull();
-    expect(await state(t, onPlain)).toMatchObject({ state: "cancelled", cleanup: true });
+    // Retiring: its Runner is listed for the controller to delete, and it ends once that is done.
+    expect(await state(t, onPlain)).toMatchObject({ state: "ready", cleanup: true });
+    expect(
+      (await t.query(internal.controllerApi.listRunnerCleanups, { profile: PINNED })).length,
+    ).toBe(1);
     expect(await state(t, onGpu)).toMatchObject({ state: "ready", worker: "gpu-1" });
 
     // Re-registering the same pin, as every controller restart does, retires nothing more.
