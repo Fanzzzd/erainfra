@@ -65,6 +65,8 @@ type ConvexBuilder struct {
 	AllowLoopbackHTTP bool
 	// Nixpacks is the Nixpacks binary for a context with no Dockerfile; empty looks it up on PATH.
 	Nixpacks string
+	// RegistryProbeTimeout bounds the reachability check before a build; zero means 10 seconds.
+	RegistryProbeTimeout time.Duration
 }
 
 func (b ConvexBuilder) checkout(ctx context.Context, r ShellRunner, dir string, src ConvexSource) error {
@@ -225,6 +227,10 @@ func (b ConvexBuilder) BuildConvexImage(ctx context.Context, r ShellRunner, src 
 		}
 		build = exec.CommandContext(ctx, nixpacks, "build", buildDir, "--name", image)
 	}
+	// A registry that cannot be reached fails the push only after the whole build. Find out first.
+	if err := b.probeRegistry(ctx, image); err != nil {
+		return "", err
+	}
 	o, err := r.combinedOutput(build)
 	out.Write(o)
 	if err != nil {
@@ -236,4 +242,61 @@ func (b ConvexBuilder) BuildConvexImage(ctx context.Context, r ShellRunner, src 
 		return out.String(), fmt.Errorf("push: %w", err)
 	}
 	return out.String(), nil
+}
+
+// registryHost is the registry part of an image reference, or "" for a Docker Hub name. Docker's
+// rule: the first path component names a registry when it has a dot or a colon, or is localhost.
+func registryHost(image string) string {
+	first, _, found := strings.Cut(image, "/")
+	if !found || (!strings.ContainsAny(first, ".:") && first != "localhost") {
+		return ""
+	}
+	return first
+}
+
+// probeRegistry checks that the registry an image is pushed to answers from this Node. A loopback
+// registry (the Hub's, or one reached over an erainfra-mesh link) must answer HTTP on /v2/: a mesh
+// listener accepts connections even while its far end is down, so a TCP connect proves nothing.
+// Anything else is dialled on its port, or 443, which is what `docker push` would use.
+func (b ConvexBuilder) probeRegistry(ctx context.Context, image string) error {
+	host := registryHost(image)
+	if host == "" {
+		return nil
+	}
+	timeout := b.RegistryProbeTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	unreachable := func(err error) error {
+		return fmt.Errorf("registry %s is not reachable from this Node (%v): builds push there and "+
+			"Nodes pull from there. Check ERAINFRA_REGISTRY in the Convex environment and, when "+
+			"ERAINFRA_REGISTRY_NODE is set, that this Node's registry mesh link is up", host, err)
+	}
+	name, port, err := net.SplitHostPort(host)
+	if err != nil {
+		name, port = host, "443"
+	}
+	if ip := net.ParseIP(name); (ip != nil && ip.IsLoopback()) || name == "localhost" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+"/v2/", nil)
+		if err != nil {
+			return unreachable(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return unreachable(err)
+		}
+		_ = resp.Body.Close()
+		// 200 for an open registry, 401 for one that wants a login: either way it answered.
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnauthorized {
+			return unreachable(fmt.Errorf("GET /v2/ answered %d", resp.StatusCode))
+		}
+		return nil
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(name, port))
+	if err != nil {
+		return unreachable(err)
+	}
+	return conn.Close()
 }
