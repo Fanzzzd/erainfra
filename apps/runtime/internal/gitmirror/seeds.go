@@ -23,9 +23,14 @@ type SeedInfo struct {
 	// facts the controller pushed. It is the only repository the mirror
 	// serves: every other fetch passes through to GitHub untouched.
 	Repository string
-	// Writable reports whether this job may save a seed. A fork pull
-	// request's job may not, so it never builds one.
+	// Writable reports whether this job should save a seed. A fork pull
+	// request's job may not, so it never builds one; nor does any job while
+	// the cache service is backing off from a seed it refused (RefusedUntil).
 	Writable bool
+	// RefusedUntil is set when the cache service refused this repository's
+	// last seed, for being over its entry size limit, and is not taking
+	// another before then. Zero otherwise.
+	RefusedUntil time.Time
 	// Found reports whether a seed exists for the job's scope.
 	Found bool
 	// Created is when the seed was saved. Zero when none was found.
@@ -95,6 +100,9 @@ func (c *SeedClient) Open(ctx context.Context) (SeedInfo, io.ReadCloser, error) 
 	info := SeedInfo{
 		Repository: response.Header.Get("X-Erainfra-Repository"),
 		Writable:   response.Header.Get("X-Erainfra-Git-Seed-Writable") == "true",
+	}
+	if until, err := strconv.ParseInt(response.Header.Get("X-Erainfra-Git-Seed-Refused-Until"), 10, 64); err == nil {
+		info.RefusedUntil = time.Unix(until, 0)
 	}
 	switch response.StatusCode {
 	case http.StatusOK:

@@ -285,8 +285,19 @@ func startGuest(t *testing.T, fake *fakeGitHub, seeds SeedStore) *guest {
 	if err := os.WriteFile(caFile, authority.TrustAnchorPEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	caDir := filepath.Join(dir, "ca.d")
+	name, err := caPathName(authority.TrustAnchorPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(caDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(caDir, name), authority.TrustAnchorPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	global := filepath.Join(dir, "gitconfig")
-	if err := os.WriteFile(global, []byte(GitConfig(service.ProxyURL(), caFile)), 0o644); err != nil {
+	if err := os.WriteFile(global, []byte(GitConfig(service.ProxyURL(), caFile, caDir)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return &guest{service: service, env: gitEnv(t.TempDir(), global)}
@@ -724,6 +735,7 @@ func TestActivationRoutesGitUntilTheProxyStops(t *testing.T) {
 	cfg := ActivateConfig{
 		SystemRoots: roots,
 		CABundle:    filepath.Join(dir, "erainfra", "ca.pem"),
+		CADir:       filepath.Join(dir, "erainfra", "ca.d"),
 		ConfigFile:  filepath.Join(dir, "erainfra", "mirror.gitconfig"),
 		CAPEM:       authority.TrustAnchorPEM,
 		Include: func(_ context.Context, file string) error {

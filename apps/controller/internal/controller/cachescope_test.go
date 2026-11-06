@@ -89,6 +89,7 @@ type fakeCacheService struct {
 type wireFacts struct {
 	Runner         string `json:"runner"`
 	Repository     string `json:"repository"`
+	RepositoryID   int64  `json:"repositoryId"`
 	HeadRepository string `json:"headRepository"`
 	Event          string `json:"event"`
 	Ref            string `json:"ref"`
@@ -216,6 +217,7 @@ func scope(t *testing.T, facts wireFacts) cachetoken.Claims {
 	t.Helper()
 	claims, err := cachetoken.Scope(cachetoken.JobFacts{
 		Repository:     facts.Repository,
+		RepositoryID:   facts.RepositoryID,
 		HeadRepository: facts.HeadRepository,
 		Event:          facts.Event,
 		Ref:            facts.Ref,
@@ -257,6 +259,7 @@ func TestCacheScopeBranchPush(t *testing.T) {
 	want := wireFacts{
 		Runner:         "rc-a",
 		Repository:     testRepoName,
+		RepositoryID:   testRepoID,
 		HeadRepository: testRepoName,
 		Event:          "push",
 		Ref:            "refs/heads/feature/x",
@@ -319,6 +322,7 @@ func TestCacheScopeSameRepositoryPullRequest(t *testing.T) {
 	want := wireFacts{
 		Runner:         "rc-a",
 		Repository:     testRepoName,
+		RepositoryID:   testRepoID,
 		HeadRepository: testRepoName,
 		Event:          "pull_request",
 		Ref:            "refs/pull/42/merge",

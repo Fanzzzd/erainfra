@@ -18,6 +18,10 @@ type ActivateConfig struct {
 	SystemRoots string
 	// CABundle is where the system roots plus the per-guest CA are written.
 	CABundle string
+	// CADir is a directory written with the per-guest CA alone, which git's
+	// http.sslCAPath names. It keeps the proxy trusted by a job that points
+	// GIT_SSL_CAINFO at a bundle of its own (see caPathName).
+	CADir string
 	// ConfigFile is where the git configuration from [GitConfig] is written.
 	ConfigFile string
 	// CAPEM is the per-guest CA the proxy's leaf chains to.
@@ -35,8 +39,12 @@ type ActivateConfig struct {
 // gone. On error nothing is left behind.
 func Activate(ctx context.Context, s *Service, cfg ActivateConfig) (func(), error) {
 	switch {
-	case cfg.SystemRoots == "", cfg.CABundle == "", cfg.ConfigFile == "", len(cfg.CAPEM) == 0, cfg.Include == nil:
-		return nil, errors.New("gitmirror: activation needs roots, a bundle path, a config path, the CA and an include")
+	case cfg.SystemRoots == "", cfg.CABundle == "", cfg.CADir == "", cfg.ConfigFile == "", len(cfg.CAPEM) == 0, cfg.Include == nil:
+		return nil, errors.New("gitmirror: activation needs roots, a bundle path, a CA directory, a config path, the CA and an include")
+	}
+	caName, err := caPathName(cfg.CAPEM)
+	if err != nil {
+		return nil, err
 	}
 	logf := cfg.Logf
 	if logf == nil {
@@ -51,8 +59,19 @@ func Activate(ctx context.Context, s *Service, cfg ActivateConfig) (func(), erro
 	if err := writeFile(cfg.CABundle, bundle); err != nil {
 		return nil, err
 	}
-	if err := writeFile(cfg.ConfigFile, []byte(GitConfig(s.ProxyURL(), cfg.CABundle))); err != nil {
+	// The directory holds this guest's CA and nothing else: an older file
+	// left by an earlier run of the guest unit names a CA whose key is gone.
+	if err := os.RemoveAll(cfg.CADir); err != nil {
 		_ = os.Remove(cfg.CABundle)
+		return nil, fmt.Errorf("gitmirror: clear %s: %w", cfg.CADir, err)
+	}
+	if err := writeFile(filepath.Join(cfg.CADir, caName), cfg.CAPEM); err != nil {
+		_ = os.Remove(cfg.CABundle)
+		return nil, err
+	}
+	if err := writeFile(cfg.ConfigFile, []byte(GitConfig(s.ProxyURL(), cfg.CABundle, cfg.CADir))); err != nil {
+		_ = os.Remove(cfg.CABundle)
+		_ = os.RemoveAll(cfg.CADir)
 		return nil, err
 	}
 	var once sync.Once
@@ -66,6 +85,7 @@ func Activate(ctx context.Context, s *Service, cfg ActivateConfig) (func(), erro
 	if err := cfg.Include(ctx, cfg.ConfigFile); err != nil {
 		deactivate()
 		_ = os.Remove(cfg.CABundle)
+		_ = os.RemoveAll(cfg.CADir)
 		return nil, fmt.Errorf("gitmirror: include %s in the system git configuration: %w", cfg.ConfigFile, err)
 	}
 	go func() {

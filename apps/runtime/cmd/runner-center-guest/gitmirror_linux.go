@@ -26,7 +26,10 @@ const (
 	// gitMirrorCABundle is the system roots plus the per-guest github.com CA,
 	// which git is pointed at for https://github.com/ only.
 	gitMirrorCABundle = "/etc/erainfra/git-mirror-ca.pem"
-	systemCARoots     = "/etc/ssl/certs/ca-certificates.crt"
+	// gitMirrorCADir holds the per-guest CA alone, for git's sslCAPath, so a
+	// job that sets GIT_SSL_CAINFO still trusts the proxy.
+	gitMirrorCADir = "/etc/erainfra/git-mirror-ca.d"
+	systemCARoots  = "/etc/ssl/certs/ca-certificates.crt"
 	// gitMirrorSaveGrace is how long the guest waits after the runner exits
 	// for a seed save already under way. The job's result is reported by then;
 	// this only delays the VM's reset.
@@ -69,6 +72,7 @@ func startGitMirror(ctx context.Context, md guest.Metadata) (stop func(), err er
 	deactivate, err := gitmirror.Activate(ctx, service, gitmirror.ActivateConfig{
 		SystemRoots: systemCARoots,
 		CABundle:    gitMirrorCABundle,
+		CADir:       gitMirrorCADir,
 		ConfigFile:  gitMirrorConfig,
 		CAPEM:       authority.TrustAnchorPEM,
 		Include:     includeInSystemGitConfig,

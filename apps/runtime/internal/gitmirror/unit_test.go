@@ -40,13 +40,8 @@ func TestParseRequestReadsAFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.command != "fetch" || len(request.wants) != 1 || request.wants[0] != want || request.wantRefs {
+	if request.command != "fetch" || len(request.wants) != 1 || request.wants[0] != want || request.unsupported != "" {
 		t.Fatalf("parsed %+v", request)
-	}
-
-	refs, err := parseRequest([]byte(pkt("command=fetch\n") + "0001" + pkt("want-ref refs/heads/main\n") + "0000"))
-	if err != nil || !refs.wantRefs {
-		t.Fatalf("want-ref parsed as %+v, %v", refs, err)
 	}
 
 	for name, body := range map[string]string{
@@ -62,6 +57,79 @@ func TestParseRequestReadsAFetch(t *testing.T) {
 		if _, err := parseRequest([]byte(body)); err == nil {
 			t.Errorf("%s: parsed without error", name)
 		}
+	}
+}
+
+// Every protocol v2 fetch argument either is one the mirror answers exactly as
+// GitHub would, or sends the fetch to GitHub. Nothing is answered while
+// ignored.
+func TestParseRequestSendsWhatTheMirrorCannotReproduceToGitHub(t *testing.T) {
+	oid := strings.Repeat("ab", 20)
+	request := func(capabilities []string, arguments ...string) string {
+		var body strings.Builder
+		body.WriteString(pkt("command=fetch\n"))
+		for _, line := range capabilities {
+			body.WriteString(pkt(line + "\n"))
+		}
+		body.WriteString("0001")
+		body.WriteString(pkt("want " + oid + "\n"))
+		for _, line := range arguments {
+			body.WriteString(pkt(line + "\n"))
+		}
+		body.WriteString("0000")
+		return body.String()
+	}
+	served := map[string]string{
+		"thin-pack":          request(nil, "thin-pack"),
+		"ofs-delta":          request(nil, "ofs-delta"),
+		"no-progress":        request(nil, "no-progress"),
+		"done":               request(nil, "done"),
+		"have":               request(nil, "have "+oid),
+		"shallow":            request(nil, "shallow "+oid),
+		"deepen":             request(nil, "deepen 3"),
+		"deepen-since":       request(nil, "deepen-since 1700000000"),
+		"include-tag":        request(nil, "include-tag"),
+		"filter blob:none":   request(nil, "filter blob:none"),
+		"filter blob:limit":  request(nil, "filter blob:limit=1024"),
+		"filter tree:0":      request(nil, "filter tree:0"),
+		"agent":              request([]string{"agent=git/2.50.1"}),
+		"session-id":         request([]string{"session-id=abc"}),
+		"object-format sha1": request([]string{"object-format=sha1"}),
+	}
+	for name, body := range served {
+		parsed, err := parseRequest([]byte(body))
+		if err != nil || parsed.unsupported != "" {
+			t.Errorf("%s: parsed as %+v, %v; want it served from the mirror", name, parsed, err)
+		}
+	}
+	forwarded := map[string]string{
+		"want-ref":             request(nil, "want-ref refs/heads/main"),
+		"deepen-relative":      request(nil, "deepen 3", "deepen-relative"),
+		"deepen-not":           request(nil, "deepen-not refs/heads/main"),
+		"filter sparse:oid":    request(nil, "filter sparse:oid="+oid),
+		"filter object:type":   request(nil, "filter object:type=blob"),
+		"filter combine":       request(nil, "filter combine:blob:none+tree:0"),
+		"filter tree:1":        request(nil, "filter tree:1"),
+		"packfile-uris":        request(nil, "packfile-uris https"),
+		"sideband-all":         request(nil, "sideband-all"),
+		"wait-for-done":        request(nil, "wait-for-done"),
+		"an unknown argument":  request(nil, "frobnicate"),
+		"a value on a flag":    request(nil, "include-tag yes"),
+		"server-option":        request([]string{"server-option=x"}),
+		"object-format sha256": request([]string{"object-format=sha256"}),
+		"unknown capability":   request([]string{"frobnicate=1"}),
+	}
+	for name, body := range forwarded {
+		parsed, err := parseRequest([]byte(body))
+		if err != nil || parsed.unsupported == "" {
+			t.Errorf("%s: parsed as %+v, %v; want it sent to GitHub", name, parsed, err)
+		}
+	}
+	if parsed, _ := parseRequest([]byte(request(nil, "include-tag"))); !parsed.includeTag {
+		t.Error("include-tag was not noted")
+	}
+	if parsed, _ := parseRequest([]byte(request(nil, "shallow "+oid))); len(parsed.shallows) != 1 {
+		t.Error("the client's shallow commit was not noted")
 	}
 }
 
@@ -211,6 +279,20 @@ func TestSeedClientSpeaksTheCacheServiceContract(t *testing.T) {
 	_ = body.Close()
 	if string(content) != "bundle bytes" {
 		t.Fatalf("seed body %q", content)
+	}
+
+	// A repository whose last seed was refused reads as not writable, with
+	// the time the cache service takes another.
+	backingOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Erainfra-Repository", "acme/app")
+		w.Header().Set("X-Erainfra-Git-Seed-Writable", "false")
+		w.Header().Set("X-Erainfra-Git-Seed-Refused-Until", "1700086400")
+		http.Error(w, "none", http.StatusNotFound)
+	}))
+	defer backingOff.Close()
+	backingOffClient, _ := NewSeedClient(backingOff.URL, "runner-token", nil)
+	if info, _, err := backingOffClient.Open(ctx); err != nil || info.Writable || info.RefusedUntil.Unix() != 1700086400 {
+		t.Fatalf("a refused repository read as %+v, %v", info, err)
 	}
 
 	refused, _ := NewSeedClient(server.URL, "someone-else", nil)

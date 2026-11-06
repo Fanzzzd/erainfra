@@ -1020,12 +1020,15 @@ connections. That is a side effect, not a fix.
 ### How it works
 
 1. At claim, the guest starts a proxy on loopback and includes `/etc/erainfra/git-mirror.gitconfig`
-   from `/etc/gitconfig`. That file sets `http.https://github.com/.proxy` and
-   `http.https://github.com/.sslCAInfo`, so git, and only git, sends its `https://github.com/`
-   traffic through the proxy. The proxy terminates TLS for github.com with a CA minted for this boot
-   and name-constrained to `github.com` alone. It is a second CA, separate from the cache
-   interceptor's. The CA file git is pointed at holds the system roots too, so a git that bypasses
-   the proxy still verifies the real github.com.
+   from `/etc/gitconfig`. That file sets `http.https://github.com/.proxy`,
+   `http.https://github.com/.sslCAInfo` and `http.https://github.com/.sslCAPath`, so git, and only
+   git, sends its `https://github.com/` traffic through the proxy. The proxy terminates TLS for
+   github.com with a CA minted for this boot and name-constrained to `github.com` alone. It is a
+   second CA, separate from the cache interceptor's. The CA file git is pointed at holds the system
+   roots too, so a git that bypasses the proxy still verifies the real github.com. The CA directory
+   (`/etc/erainfra/git-mirror-ca.d`) holds the per-guest CA alone. A job that sets `GIT_SSL_CAINFO`
+   replaces the CA file but not the directory, so its fetches still trust the proxy instead of
+   failing TLS.
 2. While the runner sets the job up, the guest asks this service for its seed with the runner-auth
    bearer, `GET /_erainfra-git-seed/v1`. The answer names the job's repository, taken from the job
    facts the controller pushed, and carries the newest seed the job may read. The guest imports it
@@ -1036,8 +1039,27 @@ connections. That is a side effect, not a fix.
    The mirror then answers the client's fetch with `git upload-pack`, so the client receives the
    same objects and shallow boundary GitHub would have sent. The workspace has no alternates, no
    extra refs and no borrowed objects; `git fsck` passes and `.git` can be copied into a container.
+   Three details keep the answer exactly GitHub's:
+   - A fetch with no depth would not ask GitHub for a wanted object the mirror already holds, so
+     the proxy asks GitHub for those itself (a fetch that wants each one and claims to have it,
+     which GitHub answers with an empty pack). A commit GitHub no longer serves, such as one purged
+     after a sensitive-data removal, is refused through the mirror as it is by GitHub.
+   - A fetch that follows tags (`include-tag`: a `fetch-depth: 0` checkout, a plain `git fetch`, a
+     clone) first brings the mirror's tags in line with GitHub's, so a tag created or deleted since
+     the seed is there or gone exactly as on GitHub.
+   - The mirror serves one fetch at a time. A fetch that finds it busy, with another fetch or with
+     the seed refresh in step 5, goes to GitHub at once rather than wait.
 4. Everything else goes to GitHub unchanged: ref listings, pushes, other repositories, LFS, protocol
-   v0 clients, and any fetch the mirror cannot answer in full.
+   v0 clients, and any fetch the mirror cannot answer in full. The mirror reads every line of a
+   fetch request and answers only those whose every capability and argument it reproduces exactly:
+   `want`, `have`, `shallow`, `done`, `thin-pack`, `ofs-delta`, `no-progress`, `deepen`,
+   `deepen-since`, `include-tag` (as above) and the filters `blob:none`, `blob:limit=<n>` and
+   `tree:0`. A fetch with anything else goes to GitHub: `deepen-relative` (`git fetch --deepen=<n>`),
+   `deepen-not` (`--shallow-exclude`), `want-ref`, any other filter, `packfile-uris`,
+   `sideband-all`, `wait-for-done`, `server-option`, an object format other than SHA-1, a
+   depth-limited fetch that follows tags (`git clone --depth`), and any line git adds later. The
+   guest journal names each kind once: `git mirror: fetches of <repo> that send "<line>" go to
+GitHub directly`.
 5. After the job's first fetch of its repository, if the job may write the cache and its seed is
    missing or older than a day, the guest fetches the repository's branches and tags into the mirror
    with the credential that fetch presented, bundles them and saves the bundle with
@@ -1050,6 +1072,11 @@ connections. That is a side effect, not a fix.
   the request, so a job can read only its own repository's seed, private repositories included. The
   ref rules are the cache's: a pull request reads its base branch's and the default branch's seeds,
   never a sibling branch's, and a fork's pull request cannot save one.
+- **One repository, not one name.** Seeds are keyed by GitHub's repository ID as well as its name,
+  from the job facts. A repository deleted, or renamed away, and then created again under the same
+  name is a different repository: it never restores the earlier one's seed, and its first save
+  removes it. Seeds saved before the controller pushed the ID are not read by jobs whose facts
+  carry one, so each repository builds one new seed after the upgrade.
 - **GitHub decides who reads.** The mirror answers a fetch only after GitHub has accepted the
   client's credential for that repository within the last minute. A client GitHub refuses gets
   GitHub's refusal, even when the mirror holds every object it asked for.
@@ -1076,7 +1103,9 @@ The Worker must already run the Firecracker interceptor cache (§8): the runtime
 
 1. Deploy a cache service with the seed endpoint (this release or later). An older service answers
    the seed path with a 404 that names no repository, and the guest then leaves every fetch to
-   GitHub.
+   GitHub. Run a controller from the same release too: it pushes the repository ID that seeds are
+   keyed by. An older controller pushes none, and its jobs read and save seeds by name alone, as
+   before.
 2. Repin the Profile to an Image Release whose guest carries the mirror, as in §8 step 2.
 3. On each Worker, add the switch to `runner-center-runtime.service`'s environment and restart the
    runtime:
@@ -1115,6 +1144,13 @@ cache list --repo owner/name --prefix erainfra-git-seed/ --format table
 - Checkouts over SSH (`actions/checkout` with `ssh-key`). Only `https://github.com/` is proxied.
 - Docker, Tart and Hyper-V Profiles. The mirror is part of the Firecracker guest.
 - GitHub Enterprise Server hosts. Only `github.com` is proxied.
+- A job that overrides both `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH`, or sets its own
+  `http.https://github.com/.sslCAInfo`, no longer trusts the proxy, and its fetches of github.com
+  fail TLS. Such a job opts out first (below).
+- A purged commit inside the guest. The proxy never serves one, but the seed it was restored from
+  is on the guest's disk, and a job with `sudo` can read it. After a sensitive-data removal, delete
+  the repository's seeds (below); the next seed is built from GitHub's refs and holds none of the
+  purged objects. Seeds refresh daily in any case.
 
 ### Costs and limits
 
@@ -1122,10 +1158,19 @@ A seed is the size of the repository's branches and tags packed, and it counts a
 repository's quota (§4) like any entry. Each ref scope keeps one seed: a new one replaces the older
 ones in its scope. A job saves into its own ref's scope, so a pull request whose base branch has no
 seed, or only one older than a day, saves one under `refs/pull/<n>/merge` that only that pull
-request reads; a daily push to the default branch keeps that from happening. A seed larger than `ERAINFRA_CACHE_MAX_ENTRY_BYTES` is refused and the job keeps
-checking out from GitHub. A job that finds no seed fetches the repository's full branches and tags
-in the background once, which competes with the job for the uplink; on a large repository the first
-job pays that cost so later ones do not.
+request reads; a daily push to the default branch keeps that from happening. A job that finds no
+seed fetches the repository's full branches and tags in the background once, which competes with
+the job for the uplink; on a large repository the first job pays that cost so later ones do not.
+
+A seed larger than `ERAINFRA_CACHE_MAX_ENTRY_BYTES` is refused, and the job keeps checking out from
+GitHub. The service remembers the refusal (one small object per repository under
+`gitseed-refusals/` in the bucket) and answers that repository's seed lookups as not writable for a
+day, then two, four and at most seven days after each further refusal, so the full background
+fetch is not repeated by every job. The guest journal says
+`git mirror: the cache service refused <repo>'s last seed as too large; no job builds another
+before <time>`, and the service logs `git seed refused` with the size and the limit. Raising
+`ERAINFRA_CACHE_MAX_ENTRY_BYTES` above the refused size lifts the backoff at once; the next saved
+seed clears the record.
 
 ### Opt out, roll back
 

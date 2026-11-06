@@ -143,6 +143,16 @@ func (m *mirror) fetchObjects(ctx context.Context, upstream, authorization strin
 	return m.run(ctx, upstreamConfig(authorization), args...)
 }
 
+// syncTags makes the mirror's tags exactly GitHub's: every tag GitHub has, at
+// the object GitHub has it at, and none it has deleted. That is what lets the
+// mirror answer "include-tag", which adds whichever annotated tags point at the
+// objects sent, as GitHub would. The caller runs it only on a mirror that holds
+// whole history, so no tag is refused for needing a new shallow boundary.
+func (m *mirror) syncTags(ctx context.Context, upstream, authorization string) error {
+	return m.run(ctx, upstreamConfig(authorization),
+		"fetch", "--quiet", "--prune", "--no-tags", "--no-write-fetch-head", upstream, "+refs/tags/*:refs/tags/*")
+}
+
 // shallow reports whether an earlier depth-limited fetch left commits in the
 // mirror whose parents it does not have.
 func (m *mirror) shallow() bool {
