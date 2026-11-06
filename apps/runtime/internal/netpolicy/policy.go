@@ -7,9 +7,10 @@
 //
 //   - a CNI configuration list, which gives each guest a point-to-point link
 //     with no shared layer 2 segment; and
-//   - an nftables table, which drops guest traffic aimed at the host, at
-//     RFC1918 and other special-purpose ranges, and at other guests, while
-//     letting an operator name exceptions explicitly.
+//   - an nftables table, which drops anything arriving on a guest link that
+//     is not IPv4 from that guest's own address, then guest traffic aimed at
+//     the host, at RFC1918 and other special-purpose ranges, and at other
+//     guests, while letting an operator name exceptions explicitly.
 //
 // Everything here is operating-system independent on purpose: rendering and
 // verification are pure functions over bytes, so the isolation contract is unit
@@ -60,8 +61,31 @@ const (
 	BlockedSetName = "rc_blocked"
 )
 
+// Guest link sets. Every other set matches a guest by its IPv4 source address,
+// which says nothing about a packet that is not IPv4, or whose source address
+// the guest chose itself. These bind each guest to the host side of its own
+// link, so the table knows a packet is a guest's by where it arrived rather
+// than by what it claims. The runtime fills them before a guest boots and
+// empties them at teardown, like the per-guest egress sets.
+const (
+	// GuestLinkSetName holds the host-side interface of every live guest's
+	// link: the veth ptp created for it.
+	GuestLinkSetName = "rc_guest_links"
+	// GuestSourceSetName maps each guest link to the one IPv4 address its
+	// guest was given, as interface . address.
+	GuestSourceSetName = "rc_guest_sources"
+)
+
 // RestrictedChain is the regular chain a restricted guest's new flows jump to.
 const RestrictedChain = "restricted"
+
+// GuestLinkChain sees every packet that arrives on a guest link, before
+// conntrack, the DNS redirect, routing, input or forward do. GuestLinkPriority
+// is nftables' raw priority, the earliest a filter chain can hook.
+const (
+	GuestLinkChain    = "guest_links"
+	GuestLinkPriority = -300
+)
 
 // ResolverPort is where the host resolver listens on the guest gateway
 // address. An observed guest's DNS, to whatever server it names, is redirected
@@ -131,12 +155,21 @@ const (
 	RuleRestrictedDeny        = "rc:restricted-deny"
 	RuleRedirectDNS           = "rc:redirect-dns"
 	RuleAllowResolver         = "rc:allow-resolver"
+
+	RuleDenyGuestIPv6     = "rc:deny-guest-ipv6"
+	RuleDenyGuestSpoofing = "rc:deny-guest-spoofing"
 )
 
 // RequiredKernelArgs are boot arguments the guest kernel must carry for the
-// policy to hold. A guest with IPv6 enabled could reach a host or peer address
-// the IPv4 rules never see, so the boundary depends on this as much as on
-// nftables and Preflight refuses to start without it.
+// policy to hold. A guest with IPv6 enabled would try to reach host and peer
+// addresses the IPv4 rules never see, so Preflight refuses to start without it.
+//
+// It is not the IPv6 boundary on its own. The guest kernel is on the
+// attacker's side: root in a job (jobs have sudo) can write any ethertype to a
+// packet socket whatever the boot arguments say. The host therefore refuses
+// IPv6 from a guest link twice more, each enough by itself: the guest_links
+// chain drops it, and the runtime turns IPv6 off on the host side of every
+// guest link before the guest boots.
 var RequiredKernelArgs = []string{"ipv6.disable=1"}
 
 var networkNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
@@ -183,7 +216,9 @@ func DefaultPolicy(name string) Policy {
 // produces a different identity for control-plane readiness evidence.
 func (p Policy) IdentityHash() string {
 	hash := sha256.New()
-	fmt.Fprintf(hash, "runner-center-network-policy/v2\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n", //nolint:errcheck // hash.Hash.Write never returns an error
+	// v3 binds every guest to its own link and drops IPv6 and spoofed
+	// sources arriving on it; a v2 identity did not promise that.
+	fmt.Fprintf(hash, "runner-center-network-policy/v3\nname=%q\nsubnet=%q\negress=%q\nmtu=%d\n", //nolint:errcheck // hash.Hash.Write never returns an error
 		p.Name, p.Subnet, p.EgressMode, p.MTU)
 	for _, destination := range p.AllowedDestinations {
 		fmt.Fprintf(hash, "allow=%q\n", destination) //nolint:errcheck // hash.Hash.Write never returns an error

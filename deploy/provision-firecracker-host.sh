@@ -334,6 +334,11 @@ cat > /etc/sysctl.d/99-runner-center.conf <<'SYSCTL'
 # Guests reach the internet through the host, so forwarding is required. Every
 # private and host-bound destination is denied by the runner-center nftables
 # table, not by leaving forwarding off.
+#
+# IPv6 is deliberately left as the host has it. The runtime turns it off on the
+# host side of each guest link as the guest boots (net.ipv6.conf.<veth>), and
+# the table drops IPv6 arriving on those links. Setting it here for "all" or
+# "default" would take IPv6 from the host and from every Docker container.
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 SYSCTL

@@ -399,25 +399,30 @@ func TestRegistrationBatchWritesOnlyWhatTheGuestNeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("effective: %v", err)
 	}
-	batch, state, err := RegistrationBatch(guest, public)
-	if err != nil || batch != "" || state.Observed || state.Restricted {
-		t.Fatalf("a public guest needs no per-guest state, got %q %+v %v", batch, state, err)
+	// Every guest is bound to its link, whatever its egress: the binding is
+	// what drops IPv6 and borrowed sources, and a public guest can send both.
+	binding := "add element inet runner-center rc_guest_sources { \"veth1a2b3c4d\" . 10.241.0.7 }\n" +
+		"add element inet runner-center rc_guest_links { \"veth1a2b3c4d\" }\n"
+	batch, state, err := RegistrationBatch(guest, "veth1a2b3c4d", public)
+	if err != nil || batch != binding || state.Observed || state.Restricted || state.Link != "veth1a2b3c4d" {
+		t.Fatalf("a public guest needs only its link binding, got %q %+v %v", batch, state, err)
 	}
 
 	audit, _ := Effective(host, ProfileEgress{Mode: EgressAudit}, "")
-	batch, _, err = RegistrationBatch(guest, audit)
-	if err != nil || batch != "add element inet runner-center rc_observed { 10.241.0.7 }\n" {
+	batch, _, err = RegistrationBatch(guest, "veth1a2b3c4d", audit)
+	if err != nil || batch != binding+"add element inet runner-center rc_observed { 10.241.0.7 }\n" {
 		t.Fatalf("audit batch = %q, %v", batch, err)
 	}
 
 	restricted, _ := Effective(host, ProfileEgress{
 		Mode: EgressAllowlist, Presets: []string{"github"}, CIDRs: []string{"140.82.112.0/20", "140.82.113.0/24"},
 	}, "")
-	batch, state, err = RegistrationBatch(guest, restricted)
+	batch, state, err = RegistrationBatch(guest, "veth1a2b3c4d", restricted)
 	if err != nil {
 		t.Fatalf("registration: %v", err)
 	}
-	want := "add element inet runner-center rc_allow_cidr { 10.241.0.7 . 140.82.112.0/20 }\n" +
+	want := binding +
+		"add element inet runner-center rc_allow_cidr { 10.241.0.7 . 140.82.112.0/20 }\n" +
 		"add element inet runner-center rc_restricted { 10.241.0.7 }\n" +
 		"add element inet runner-center rc_observed { 10.241.0.7 }\n"
 	if batch != want {
@@ -545,8 +550,8 @@ func TestHostPolicyAcceptsAuditMode(t *testing.T) {
 
 // The fixtures are `nft --json list table inet runner-center` from nftables
 // 1.0.9 (Ubuntu 24.04) on a real kernel, after loading the rendered table, and
-// again after registering one allowlist guest and admitting two resolved
-// addresses. Verify must accept both: per-guest elements are live state.
+// again after registering one allowlist guest on link veth1a2b3c4d and
+// admitting two resolved addresses. Verify must accept both: per-guest elements are live state.
 func TestVerifyNftablesAcceptsARealKernelListing(t *testing.T) {
 	policy := DefaultPolicy("runner-center")
 	for _, fixture := range []string{"testdata/nft-1.0.9-live-table.json", "testdata/nft-1.0.9-live-table-with-guest.json"} {

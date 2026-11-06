@@ -88,7 +88,10 @@ For a Firecracker Profile, each Attempt gets:
   path, socket, volume or device is shared, and the snapshot is discarded on exit;
 - a point-to-point job network whose policy is rendered and verified by the runtime itself. Traffic
   to the host, to other guests, and to RFC1918, CGNAT, link-local and other special-purpose ranges
-  is dropped. A Worker whose nftables table no longer matches stops being ready;
+  is dropped. The guest's link carries only IPv4 from the guest's own address: IPv6 and borrowed
+  source addresses are dropped as they arrive, even from root writing raw frames, and the host side
+  of the link has IPv6 turned off in the kernel as well. A Worker whose nftables table no longer
+  matches, or whose guest link has IPv6 back on, stops being ready;
 - the egress its Profile publishes, enforced on the host, never inside the guest (see
   [Egress policy](#egress-policy));
 - single-use JIT credentials over MMDSv2, never in argv, an image layer, a host environment or a

@@ -31,7 +31,12 @@ func expectedExpressions() map[string][]any {
 	}
 	private := map[string]any{"set": prefixValues(deniedRanges)}
 	state := map[string]any{"ct": map[string]any{"key": "state"}}
+	inbound := map[string]any{"meta": map[string]any{"key": "iifname"}}
+	guestLink := member(inbound, GuestLinkSetName)
+	family := map[string]any{"meta": map[string]any{"key": "nfproto"}}
 	return map[string][]any{
+		RuleDenyGuestIPv6:         {guestLink, match("==", family, "ipv6"), verdict("drop")},
+		RuleDenyGuestSpoofing:     {guestLink, match("!=", concat(inbound, source), "@"+GuestSourceSetName), verdict("drop")},
 		RuleDenyEastWest:          {member(source, GuestSetName), member(destination, GuestSetName), verdict("drop")},
 		RuleRecordFlows:           {member(source, ObservedSetName), match("in", state, "new"), protocols, record(FlowSetName)},
 		RuleRestrictProfile:       {member(source, RestrictedSetName), map[string]any{"jump": map[string]any{"target": RestrictedChain}}},
@@ -177,6 +182,10 @@ func verifySetDefinition(name string, datatype any, flags []string, timeout, siz
 	case GuestSetName, AllowSetName:
 		expectedFlags = []string{"interval"}
 	case ObservedSetName, RestrictedSetName:
+	case GuestLinkSetName:
+		types = []string{"ifname"}
+	case GuestSourceSetName:
+		types = []string{"ifname", "ipv4_addr"}
 	case AllowCIDRSetName:
 		types = []string{"ipv4_addr", "ipv4_addr"}
 		expectedFlags = []string{"interval"}

@@ -371,17 +371,10 @@ func verifyNetwork(ctx context.Context) (int, error) {
 			fmt.Printf("ok    CNI configuration %s\n", config.ConflistPath())
 		}
 	}
-	live, err := netpolicy.ReadLiveTable(ctx, config.NftBinary)
-	switch {
-	case err != nil:
+	if detail, err := firecracker.VerifyLiveNetwork(ctx, config.Network, config.NftBinary); err != nil {
 		problems = append(problems, err)
-	default:
-		if verifyErr := config.Network.VerifyNftables(live); verifyErr != nil {
-			problems = append(problems, verifyErr)
-		} else {
-			fmt.Printf("ok    nftables table inet %s denies host, RFC1918 and east-west traffic for %s\n",
-				netpolicy.TableName, config.Network.Subnet)
-		}
+	} else {
+		fmt.Printf("ok    nftables table inet %s: %s\n", netpolicy.TableName, detail)
 	}
 	if len(problems) > 0 {
 		return 1, errors.Join(problems...)

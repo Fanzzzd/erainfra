@@ -258,7 +258,7 @@ func liveTable(t *testing.T, chains map[string][]string, guests, allowed []strin
 			map[string]any{"drop": nil},
 		},
 	}
-	for _, chain := range []string{"forward", RestrictedChain, "prerouting", "input"} {
+	for _, chain := range []string{GuestLinkChain, "forward", RestrictedChain, "prerouting", "input"} {
 		comments, ok := chains[chain]
 		if !ok {
 			continue
