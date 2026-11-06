@@ -50,7 +50,9 @@ func (f *fakeExecutor) PrepareProfile(
 	profile executor.Profile,
 ) (executor.WarmPoolStatus, error) {
 	f.preparedProfile = profile
-	return executor.WarmPoolStatus{Target: profile.WarmPool, Parked: profile.WarmPool, Healthy: true}, nil
+	return executor.WarmPoolStatus{
+		Target: profile.WarmPool, Parked: profile.WarmPool, Healthy: true, RunnerVersion: "2.338.2",
+	}, nil
 }
 
 func (f *fakeExecutor) RemoveProfile(_ context.Context, profile string) error {
@@ -163,7 +165,7 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Target != 2 || status.Parked != 2 || !status.Healthy {
+	if status.Target != 2 || status.Parked != 2 || !status.Healthy || status.RunnerVersion != "2.338.2" {
 		t.Fatalf("warm pool status did not cross the socket: %+v", status)
 	}
 	if err := client.RemoveProfile(ctx, profile.Name); err != nil {

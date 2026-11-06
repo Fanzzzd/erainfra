@@ -97,6 +97,8 @@ import type * as retry from "../retry.js";
 import type * as rightsize from "../rightsize.js";
 import type * as rightsizeModel from "../rightsizeModel.js";
 import type * as routing from "../routing.js";
+import type * as runnerReleaseModel from "../runnerReleaseModel.js";
+import type * as runnerReleases from "../runnerReleases.js";
 import type * as runners from "../runners.js";
 import type * as scheduler from "../scheduler.js";
 import type * as settings from "../settings.js";
@@ -202,6 +204,8 @@ declare const fullApi: ApiFromModules<{
   rightsize: typeof rightsize;
   rightsizeModel: typeof rightsizeModel;
   routing: typeof routing;
+  runnerReleaseModel: typeof runnerReleaseModel;
+  runnerReleases: typeof runnerReleases;
   runners: typeof runners;
   scheduler: typeof scheduler;
   settings: typeof settings;

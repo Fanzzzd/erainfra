@@ -571,12 +571,43 @@ describe("evaluateCondition", () => {
       { kind: "controller-silent", minutes: 3 },
       { kind: "node-commands-blocked", minutes: 10 },
       { kind: "node-offline", minutes: 5 },
+      { kind: "runner-release-expiring" },
     ];
     expect(conditions.map((c) => c.kind).toSorted()).toEqual([...ALERT_CONDITION_KINDS].toSorted());
     const fired = conditions.flatMap((c) =>
       evaluateCondition(c, undefined, observation).map((b) => `${c.kind}:${b.subject}`),
     );
     expect(fired).toEqual(["node-commands-blocked:edge-1", "node-offline:edge-1"]);
+  });
+
+  it("runner-release-expiring: active Profiles within five days of GitHub's cutoff", () => {
+    const DAY = 24 * 60 * MINUTE;
+    const observation: FleetObservation = {
+      ...fleet([
+        profile("expiring", { runnerVersion: "2.337.0" }),
+        profile("current", { runnerVersion: "2.338.2" }),
+        profile("unknown"),
+        profile("paused", { state: "paused", runnerVersion: "2.337.0" }),
+      ]),
+      runnerReleases: {
+        fetchedAt: NOW,
+        releases: [
+          { version: "2.337.0", publishedAt: NOW - 40 * DAY },
+          { version: "2.338.2", publishedAt: NOW - 26 * DAY },
+        ],
+      },
+    };
+    const condition: AlertCondition = { kind: "runner-release-expiring" };
+    expect(subjects(condition, observation)).toEqual(["expiring"]);
+    expect(subjects(condition, observation, "current")).toEqual([]);
+    const [breach] = evaluateCondition(condition, undefined, observation);
+    expect(breach?.summary).toBe(
+      "Profile expiring's image runs actions/runner 2.337.0. GitHub published 2.338.2 on " +
+        "2026-10-10, so it stops sending jobs to 2.337.0 on 2026-11-09, in 4d 0h. Rebuild the " +
+        "image on actions/runner 2.338.2 and move the Profile to it.",
+    );
+    // Without a release list there is nothing to compare against: never a guess.
+    expect(subjects(condition, fleet(observation.profiles))).toEqual([]);
   });
 
   it("node-commands-blocked: an unrecognised reason is reported as sent", () => {

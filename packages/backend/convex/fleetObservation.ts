@@ -8,6 +8,13 @@ import { pinDetail } from "./hostLabels";
 import { hasLiveCredential } from "./infra/nodes";
 import { isNodeLive } from "./infra/policy";
 import { readinessAdmissionError } from "./isolation";
+import {
+  compareRunnerVersions,
+  runnerVersionFromImageRelease,
+  runnerVersionOf,
+  type RunnerRelease,
+} from "./runnerReleaseModel";
+import { loadRunnerReleases } from "./runnerReleases";
 import { conflictsOf } from "./scaleSetLabels";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -124,6 +131,12 @@ export type ObservedProfile = {
   recentTruncated: boolean;
   /** Whether a controller is listening for the Profile; `unknown` until one first reports. */
   controller: ControllerLiveness;
+  /**
+   * The actions/runner version the Profile's Image Release carries: the image tag for the Docker
+   * executor, otherwise the oldest version its Workers read from the image. Absent when no Worker
+   * reported one.
+   */
+  runnerVersion?: string;
 };
 
 export type ObservedMachine = {
@@ -171,6 +184,8 @@ export type FleetObservation = {
   nodes: ObservedNode[];
   /** True when the Profile, Worker, Node or readiness range reached its cap. */
   dimensionsTruncated: boolean;
+  /** GitHub's actions/runner releases, absent until the first successful fetch. */
+  runnerReleases?: { releases: RunnerRelease[]; fetchedAt: number };
 };
 
 export async function loadFleetObservation(
@@ -288,6 +303,15 @@ export async function loadFleetObservation(
         ];
       });
 
+      const runnerVersion =
+        profile.executor === "docker"
+          ? runnerVersionFromImageRelease(profile.imageRelease)
+          : oldestRunnerVersion(
+              evidence.map((row) =>
+                row?.imageRelease === profile.imageRelease ? row.runnerVersion : undefined,
+              ),
+            );
+
       const [pending = [], preparing = [], ready = [], running = []] = liveByState;
       const since = now - options.recentWindowMs;
       const finished = recent.filter(
@@ -350,6 +374,7 @@ export async function loadFleetObservation(
           oldestSampled !== undefined &&
           oldestSampled.createdAt >= since,
         controller: controllerLiveness(controllers, now),
+        ...(runnerVersion === undefined ? {} : { runnerVersion }),
       };
     }),
   );
@@ -410,6 +435,7 @@ export async function loadFleetObservation(
     .flat()
     .toSorted((left, right) => left.name.localeCompare(right.name));
 
+  const runnerReleases = await loadRunnerReleases(ctx);
   return {
     now,
     recentWindowMs: options.recentWindowMs,
@@ -417,5 +443,17 @@ export async function loadFleetObservation(
     machines,
     nodes,
     dimensionsTruncated,
+    ...(runnerReleases === undefined ? {} : { runnerReleases }),
   };
+}
+
+/**
+ * The oldest valid version among those a Profile's Workers reported. One Image Release carries one
+ * runner, so they agree unless a report is malformed; the oldest is the one GitHub refuses first.
+ */
+export function oldestRunnerVersion(reported: readonly (string | undefined)[]) {
+  return reported
+    .map(runnerVersionOf)
+    .filter((version) => version !== undefined)
+    .toSorted(compareRunnerVersions)[0];
 }

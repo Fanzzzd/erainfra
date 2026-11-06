@@ -7,6 +7,7 @@ import { CONTROLLER_OFFLINE_AFTER_MS, controllerSilentForMs } from "./controller
 import type { FleetObservation, ObservedProfile } from "./fleetObservation";
 import { COMMANDS_BLOCKED_REASONS } from "./infra/nodeCommandModel";
 import { NODE_SILENCE_MS } from "./infra/policy";
+import { runnerReleaseStanding, type RunnerReleaseStanding } from "./runnerReleaseModel";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 export const alertConditionValidator = v.union(
@@ -49,6 +50,11 @@ export const alertConditionValidator = v.union(
   // silent for `minutes`. A Node whose credentials are all revoked has been retired by an
   // operator and is not tracked. Nodes belong to no Profile, so a Profile scope does not narrow it.
   v.object({ kind: v.literal("node-offline"), minutes: v.number() }),
+  // An active Profile whose image carries an actions/runner release GitHub stops serving within
+  // five days, or already has: 25 days or more since the next release was published
+  // (runnerReleases.ts). Runners register with automatic updates off, so nothing else moves them.
+  // A Profile whose version no Worker reported, or before the first release fetch, never fires.
+  v.object({ kind: v.literal("runner-release-expiring") }),
 );
 
 export type AlertCondition = Infer<typeof alertConditionValidator>;
@@ -72,6 +78,7 @@ export const ALERT_CONDITION_KINDS = [
   "controller-silent",
   "node-commands-blocked",
   "node-offline",
+  "runner-release-expiring",
 ] as const satisfies readonly AlertConditionKind[];
 
 /** The threshold a new controller-silent rule starts from. */
@@ -128,6 +135,7 @@ export function conditionError(condition: AlertCondition): string | undefined {
     case "profile-no-ready-worker":
     case "profile-readiness-degraded":
     case "profile-label-conflict":
+    case "runner-release-expiring":
       return undefined;
   }
 }
@@ -346,6 +354,23 @@ export function evaluateCondition(
           }`,
         }));
     }
+    case "runner-release-expiring": {
+      const releases = observation.runnerReleases?.releases;
+      if (releases === undefined) return [];
+      return profilesInScope(observation, scope).flatMap((profile) => {
+        if (profile.runnerVersion === undefined) return [];
+        const standing = runnerReleaseStanding(profile.runnerVersion, releases, now);
+        if (
+          standing === undefined ||
+          (standing.state !== "expiring" && standing.state !== "expired")
+        ) {
+          return [];
+        }
+        return [
+          { subject: profile.name, summary: describeRunnerRelease(profile.name, standing, now) },
+        ];
+      });
+    }
     case "attempt-duration": {
       const thresholdMs = condition.minutes * 60_000;
       return profilesInScope(observation, scope).flatMap((profile) => {
@@ -364,6 +389,31 @@ export function evaluateCondition(
       });
     }
   }
+}
+
+function isoDay(milliseconds: number) {
+  return new Date(milliseconds).toISOString().slice(0, 10);
+}
+
+/**
+ * One line for an expiring or expired runner: the version, the release that started its clock and
+ * when, the cutoff, and what to do. The cutoff is GitHub's documented 30 days.
+ */
+export function describeRunnerRelease(
+  profileName: string,
+  standing: Extract<RunnerReleaseStanding, { successor: unknown }>,
+  now: number,
+) {
+  const subject = `Profile ${profileName}'s image runs actions/runner ${standing.version}`;
+  const fix = `Rebuild the image on actions/runner ${standing.newest.version} and move the Profile to it.`;
+  if (standing.successorBeforeList) {
+    return `${subject}, older than every release GitHub lists, so GitHub no longer sends it jobs. ${fix}`;
+  }
+  const clock = `GitHub published ${standing.successor.version} on ${isoDay(standing.successor.publishedAt)}`;
+  if (standing.state === "expired") {
+    return `${subject}. ${clock}, so it stopped sending jobs to ${standing.version} on ${isoDay(standing.deadline)}, ${formatAge(now - standing.deadline)} ago. ${fix}`;
+  }
+  return `${subject}. ${clock}, so it stops sending jobs to ${standing.version} on ${isoDay(standing.deadline)}, in ${formatAge(standing.deadline - now)}. ${fix}`;
 }
 
 function describeSilentController(profile: ObservedProfile, silentMs: number, now: number) {
@@ -415,6 +465,8 @@ export function describeCondition(condition: AlertCondition) {
       return `Node unable to run commands for ${condition.minutes}m`;
     case "node-offline":
       return `Node offline for ${condition.minutes}m`;
+    case "runner-release-expiring":
+      return "Image's actions/runner within 5 days of GitHub's cutoff or past it";
   }
 }
 

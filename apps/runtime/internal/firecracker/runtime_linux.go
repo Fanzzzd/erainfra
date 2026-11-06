@@ -542,8 +542,19 @@ func (r *Runtime) PrepareProfile(
 	}
 	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
 	containerdContext := namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
-	if _, err = ensureImage(containerdContext, client, r.config.Snapshotter, profile.ImageRelease); err != nil {
+	image, err := ensureImage(containerdContext, client, r.config.Snapshotter, profile.ImageRelease)
+	if err != nil {
 		return executor.WarmPoolStatus{}, err
+	}
+	// Best effort: an image whose config cannot be read reports no runner
+	// version, which the control plane treats as unknown and never as a
+	// readiness failure.
+	runnerVersion := ""
+	if spec, specErr := image.Spec(containerdContext); specErr != nil {
+		logrus.WithError(specErr).WithField("image", profile.ImageRelease).
+			Warn("could not read the image config for its actions/runner version")
+	} else {
+		runnerVersion = imageRunnerVersion(spec)
 	}
 	if profile.WarmPool > 0 {
 		storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
@@ -558,7 +569,9 @@ func (r *Runtime) PrepareProfile(
 			)
 		}
 	}
-	return r.pool.Configure(ctx, profile)
+	status, err := r.pool.Configure(ctx, profile)
+	status.RunnerVersion = runnerVersion
+	return status, err
 }
 
 func (r *Runtime) RemoveProfile(ctx context.Context, profile string) error {

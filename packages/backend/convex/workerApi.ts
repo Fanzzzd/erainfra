@@ -24,6 +24,7 @@ import {
 } from "./egress";
 import { carriesHostLabels, missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
+import { runnerVersionOf } from "./runnerReleaseModel";
 
 const completedExecutorDrainMs = 30_000;
 const liveAttemptStates = ["pending", "preparing", "ready", "running"] as const;
@@ -781,6 +782,13 @@ export const reportReadiness = mutation({
       storage: args.storage,
       network: args.network,
       warmPool: args.warmPool,
+      // A property of the image, so a report that could not read it (a failed preflight) keeps
+      // what an earlier report for the same Image Release said.
+      runnerVersion:
+        runnerVersionOf(args.runnerVersion) ??
+        (existingEvidence?.imageRelease === args.imageRelease
+          ? existingEvidence.runnerVersion
+          : undefined),
     };
     if (existingEvidence === null) {
       await ctx.db.insert("readinessEvidence", evidence);

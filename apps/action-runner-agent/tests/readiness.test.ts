@@ -16,6 +16,7 @@ import {
   type CoreLease,
   HEALTHY_READINESS_REFRESH_MS,
   parseRuntimeReport,
+  parsePreparedRunnerVersion,
   parseWarmPoolStatus,
   PIDS_LIMIT,
   prepareProfile,
@@ -364,6 +365,18 @@ describe("warm pool readiness", () => {
     assert.equal(parseWarmPoolStatus("not JSON"), undefined);
   });
 
+  it("reads the image's runner version only when the runtime printed a valid one", () => {
+    assert.equal(
+      parsePreparedRunnerVersion('{"target":0,"parked":0,"claimed":0,"runnerVersion":"2.338.2"}'),
+      "2.338.2",
+    );
+    // A runtime that predates the field, or an image that does not say.
+    assert.equal(parsePreparedRunnerVersion('{"target":0,"parked":0,"claimed":0}'), undefined);
+    assert.equal(parsePreparedRunnerVersion('{"runnerVersion":"latest"}'), undefined);
+    assert.equal(parsePreparedRunnerVersion('{"runnerVersion":2}'), undefined);
+    assert.equal(parsePreparedRunnerVersion("not JSON"), undefined);
+  });
+
   it("rejects aggregate slot, CPU, and memory overcommit", () => {
     const profile = {
       profile: "warm",
@@ -413,7 +426,7 @@ async function fakeEgressRuntime(directory: string) {
       }),
       "JSON",
       "else",
-      `  printf '%s\\n' '{"target":0,"parked":0,"claimed":0,"healthy":true}'`,
+      `  printf '%s\\n' '{"target":0,"parked":0,"claimed":0,"healthy":true,"runnerVersion":"2.336.0"}'`,
       "fi",
     ].join("\n"),
     { mode: 0o755 },
@@ -442,6 +455,8 @@ describe("Profile egress readiness", () => {
         egress,
       });
       assert.equal(result.state, "ready");
+      // Read off the prepared image and forwarded for the control plane's expiry warning.
+      assert.equal(result.runnerVersion, "2.336.0");
       const calls = (await readFile(join(directory, "calls"), "utf8")).trim().split("\n");
       assert.deepEqual(
         calls.map((call) => call.split("=")[0]),
