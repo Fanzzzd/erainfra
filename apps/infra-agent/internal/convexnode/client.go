@@ -159,6 +159,12 @@ func (e LocalExecutor) Execute(ctx context.Context, p Payload) string {
 			}
 		}
 		_, err = e.Runner.DeployApp(ctx, p.App, p.Services)
+		if err != nil {
+			// Only the outcome goes to Convex, so this log is where an operator reads why, such as
+			// an ownership refusal. The error names the step and Docker objects, never env values:
+			// those reach Docker through a 0600 env file, and command output is not in the error.
+			fmt.Fprintf(os.Stderr, "[erainfra] deploy %s failed: %v\n", p.App, err)
+		}
 	default:
 		return "failure"
 	}

@@ -73,6 +73,10 @@ type ShellRunner struct {
 	Token       string
 	Reg         *Registry    // records app->port on deploy so the data plane can proxy to it (loopback)
 	Mesh        *MeshManager // the erainfra-mesh endpoint, and legacy dumbpipe links during the expand release
+	// VolumeOwners is the directory where the Infra Agent records which App adopted each volume
+	// that has no erainfra.app label (ownership.go). Empty records nothing: Hub mode has no state
+	// directory, and there the containers mounting a volume are its only evidence.
+	VolumeOwners string
 }
 
 // MeshRunner is optional so runners without a mesh keep their command surface. The Hub drives the
@@ -164,7 +168,7 @@ func (r ShellRunner) Deploy(ctx context.Context, image, name string, args []stri
 	if err := r.ownContainer(ctx, name, name, ""); err != nil {
 		return b.String(), err
 	}
-	if err := r.ownVolumes(ctx, name, args); err != nil {
+	if err := r.ownVolumes(ctx, name, true, args); err != nil {
 		return b.String(), err
 	}
 	_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace the prior container of this App
@@ -209,13 +213,15 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 	net := app + "-net"
 	// Every name this App's services take must be this App's before anything is replaced, so a
 	// refusal leaves the Node as it was (ownership.go).
+	var mounts []string
 	for _, s := range services {
 		if err := r.ownContainer(ctx, app+"-"+s.Name, app, s.Name); err != nil {
 			return "", err
 		}
-		if err := r.ownVolumes(ctx, app, s.Args); err != nil {
-			return "", err
-		}
+		mounts = append(mounts, s.Args...) // validated flag/value pairs, so they concatenate
+	}
+	if err := r.ownVolumes(ctx, app, false, mounts); err != nil {
+		return "", err
 	}
 	var b strings.Builder
 	// Ensure the shared network. `network create` errors if it already exists — that's fine on

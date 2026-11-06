@@ -116,6 +116,13 @@ export function parseSpec(yamlText: string, fallbackApp: string): SpecResult {
     let route: string | undefined;
     if (s.route === true) route = routedNames.length === 1 ? app : `${app}-${name}`;
     else if (typeof s.route === "string") route = s.route;
+    // `<app>-<service>` can pass 63 characters, and the data plane (appFromHost) serves only a
+    // single DNS label, so such a route would report a URL nothing answers.
+    if (route && !LABEL.test(route))
+      return {
+        ok: false,
+        error: `service "${name}": route: true gives the label "${route}" (${route.length} characters), which is not served: a route label is at most 63 characters. Name the label explicitly (route: <label>)`,
+      };
     if (route && !s.port)
       return {
         ok: false,

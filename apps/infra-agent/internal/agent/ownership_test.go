@@ -12,7 +12,8 @@ import (
 
 // stateDocker is a fake docker CLI over a directory of existing objects: `container inspect X`
 // prints containers/X.json, `volume inspect X` prints volumes/X.json, and either fails with
-// Docker's "No such" message when the file is absent. Every call is logged.
+// Docker's "No such" message when the file is absent. `ps --filter volume=V` prints every
+// container whose JSON mounts volume V. Every call is logged.
 type stateDocker struct {
 	path, dir, log string
 }
@@ -33,6 +34,13 @@ if [ "$2" = inspect ] && [ "$1" != image ] && [ "$1" != network ]; then
   if [ -f "$f" ]; then cat "$f"; exit 0; fi
   echo "Error response from daemon: No such $1: $3" >&2
   exit 1
+fi
+if [ "$1" = ps ]; then
+  for a in "$@"; do case "$a" in volume=*) vol="${a#volume=}";; esac; done
+  for f in ` + shellQuote(dir) + `/container/*.json; do
+    [ -f "$f" ] || continue
+    if grep -q "\"Type\":\"volume\",\"Name\":\"$vol\"" "$f"; then basename "$f" .json; fi
+  done
 fi
 exit 0
 `
@@ -72,6 +80,15 @@ func (d stateDocker) has(t *testing.T, prefix string) bool {
 // A container docker inspect describes: its labels, and its networks with their aliases.
 func container(labels string, networks string) string {
 	return `[{"Config":{"Labels":` + labels + `},"NetworkSettings":{"Networks":` + networks + `}}]`
+}
+
+// The same, for a container that mounts the named volumes.
+func mounting(labels string, networks string, volumes ...string) string {
+	mounts := make([]string, len(volumes))
+	for i, v := range volumes {
+		mounts[i] = `{"Type":"volume","Name":"` + v + `","Destination":"/data"}`
+	}
+	return `[{"Config":{"Labels":` + labels + `},"NetworkSettings":{"Networks":` + networks + `},"Mounts":[` + strings.Join(mounts, ",") + `]}]`
 }
 
 func deployService(t *testing.T, d stateDocker, app string, s Service) error {
@@ -196,5 +213,180 @@ func TestDeployRefusesAServiceContainerOfTheSameName(t *testing.T) {
 	}
 	if !d.has(t, "run -d --name solo --label erainfra.app=solo ") {
 		t.Fatalf("calls %q", d.calls(t))
+	}
+}
+
+// A single-container App the Hub deployed (`--name db -v postgres-data:/var/lib/postgresql/data`)
+// keeps its data in an unlabelled volume whose name no control plane records: the Hub stored none
+// of the deploy's args. App postgres's volume `data` derives the same name. Only this Node knows
+// that container db mounts it, so the Infra Agent refuses.
+func TestDeployAppRefusesAHubVolumeAnotherAppMounts(t *testing.T) {
+	d := newStateDocker(t)
+	d.put(t, "container", "db", mounting(`{}`, `{"bridge":{"Aliases":null}}`, "postgres-data"))
+	d.put(t, "volume", "postgres-data", `[{"Labels":null}]`)
+	owners := filepath.Join(t.TempDir(), "volume-owners")
+	_, err := ShellRunner{Docker: d.path, VolumeOwners: owners}.DeployApp(context.Background(), "postgres", []Service{{
+		Name: "main", Image: "postgres:16", Args: []string{"-v", "postgres-data:/var/lib/postgresql/data"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), `volume postgres-data has no erainfra.app label and is mounted by container db, which is not App "postgres"'s`) {
+		t.Fatalf("err = %v", err)
+	}
+	if d.has(t, "rm ") || d.has(t, "run ") || d.has(t, "network create") || d.has(t, "volume create") {
+		t.Fatalf("touched the Node after refusing: %q", d.calls(t))
+	}
+	if _, err := os.Stat(owners); !os.IsNotExist(err) {
+		t.Fatalf("recorded an adoption it refused: %v", err)
+	}
+	// The Hub App itself still redeploys with its volume.
+	if _, err := (ShellRunner{Docker: d.path}).Deploy(context.Background(), "postgres:16", "db",
+		[]string{"-v", "postgres-data:/var/lib/postgresql/data"}, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeployAppRefusesAVolumeAnyOtherContainerMounts(t *testing.T) {
+	for name, tc := range map[string]struct{ container, json string }{
+		"labelled for another App":    {"shop-db-main", mounting(`{"erainfra.app":"shop-db","erainfra.service":"main"}`, `{"shop-db-net":{"Aliases":["main"]}}`, "shop-db-data")},
+		"another App's Hub service":   {"shop-db-main", mounting(`null`, `{"shop-db-net":{"Aliases":["main"]}}`, "shop-db-data")},
+		"started by hand":             {"pg", mounting(`{}`, `{"bridge":{"Aliases":null}}`, "shop-db-data")},
+		"App's prefix, not its shape": {"shop-pg", mounting(`{}`, `{"bridge":{"Aliases":null}}`, "shop-db-data")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newStateDocker(t)
+			d.put(t, "container", tc.container, tc.json)
+			d.put(t, "volume", "shop-db-data", `[{"Labels":{}}]`)
+			err := deployService(t, d, "shop", Service{Name: "db", Image: "p:1", Args: []string{"-v", "shop-db-data:/d"}})
+			if err == nil || !strings.Contains(err.Error(), "refusing to mount it") || !strings.Contains(err.Error(), "container "+tc.container) {
+				t.Fatalf("err = %v", err)
+			}
+			if d.has(t, "run ") {
+				t.Fatalf("started a container after refusing: %q", d.calls(t))
+			}
+		})
+	}
+}
+
+// The App's own containers, labelled or in the shape the Hub gave them, running or stopped, may
+// share the volume. The App adopts it, and the record then refuses every other App even after the
+// App's containers are gone, as a label on the volume would.
+func TestDeployAppAdoptsAHubVolumeItsOwnContainersMount(t *testing.T) {
+	d := newStateDocker(t)
+	d.put(t, "container", "shop-db", mounting(`null`, `{"shop-net":{"Aliases":["db","3f2a"]}}`, "shop-db-data"))
+	d.put(t, "container", "shop-backup", mounting(`{"erainfra.app":"shop","erainfra.service":"backup"}`, `{"shop-net":{"Aliases":["backup"]}}`, "shop-db-data"))
+	d.put(t, "volume", "shop-db-data", `[{"Labels":null}]`)
+	owners := filepath.Join(t.TempDir(), "volume-owners")
+	runner := ShellRunner{Docker: d.path, VolumeOwners: owners}
+	if _, err := runner.DeployApp(context.Background(), "shop", []Service{{Name: "db", Image: "p:1", Args: []string{"-v", "shop-db-data:/d"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(owners, "shop-db-data")); err != nil || string(raw) != "shop\n" {
+		t.Fatalf("adoption record = %q, %v", raw, err)
+	}
+	if d.has(t, "volume create") {
+		t.Fatalf("recreated an existing volume: %q", d.calls(t))
+	}
+	// Its redeploy reads its own record.
+	if _, err := runner.DeployApp(context.Background(), "shop", []Service{{Name: "db", Image: "p:2", Args: []string{"-v", "shop-db-data:/d"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// App shop removed: no container mounts the volume any more, and App shop-db derives its name.
+	for _, c := range []string{"shop-db", "shop-backup"} {
+		if err := os.Remove(filepath.Join(d.dir, "container", c+".json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := runner.DeployApp(context.Background(), "shop-db", []Service{{Name: "web", Image: "x:1", Args: []string{"-v", "shop-db-data:/steal"}}})
+	if err == nil || !strings.Contains(err.Error(), `volume shop-db-data was adopted by App "shop" on this Node`) {
+		t.Fatalf("err = %v", err)
+	}
+	// The single-container Deploy path is held to the same record.
+	if _, err := runner.Deploy(context.Background(), "x:1", "shop-db", []string{"-v", "shop-db-data:/d"}, nil, 0); err == nil {
+		t.Fatal("a single-container App mounted a volume another App adopted")
+	}
+}
+
+// Moving the Hub's single-container App db to services: the services must not start on the volume
+// while the single container still writes to it. Once it is removed, App db adopts the volume.
+func TestDeployAppRefusesAVolumeItsOtherDeploymentKindStillMounts(t *testing.T) {
+	for name, existing := range map[string]string{
+		"Hub-era":  mounting(`{}`, `{"bridge":{"Aliases":null}}`, "db-data"),
+		"labelled": mounting(`{"erainfra.app":"db"}`, `{"bridge":{"Aliases":null}}`, "db-data"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newStateDocker(t)
+			d.put(t, "container", "db", existing)
+			d.put(t, "volume", "db-data", `[{"Labels":null}]`)
+			err := deployService(t, d, "db", Service{Name: "main", Image: "postgres:16", Args: []string{"-v", "db-data:/var/lib/postgresql/data"}})
+			if err == nil || !strings.Contains(err.Error(), `volume db-data is mounted by container db, App "db"'s single-container deployment, which this deploy does not replace`) {
+				t.Fatalf("err = %v", err)
+			}
+			if d.has(t, "run ") {
+				t.Fatalf("started a container after refusing: %q", d.calls(t))
+			}
+			if err := os.Remove(filepath.Join(d.dir, "container", "db.json")); err != nil {
+				t.Fatal(err)
+			}
+			if err := deployService(t, d, "db", Service{Name: "main", Image: "postgres:16", Args: []string{"-v", "db-data:/var/lib/postgresql/data"}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// And the other way round: the single container does not start beside the services.
+	d := newStateDocker(t)
+	d.put(t, "container", "db-main", mounting(`null`, `{"db-net":{"Aliases":["main"]}}`, "db-data"))
+	d.put(t, "volume", "db-data", `[{"Labels":null}]`)
+	_, err := ShellRunner{Docker: d.path}.Deploy(context.Background(), "postgres:16", "db", []string{"-v", "db-data:/d"}, nil, 0)
+	if err == nil || !strings.Contains(err.Error(), `App "db"'s service container`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A volume no container mounts tells nothing about its App: the first App to mount it adopts it.
+// Every volume is checked before any is created or adopted, so a refusal records nothing.
+func TestDeployAppChecksEveryVolumeBeforeChangingAny(t *testing.T) {
+	d := newStateDocker(t)
+	d.put(t, "volume", "shop-cache", `[{"Labels":null}]`)
+	d.put(t, "volume", "shop-db-data", `[{"Labels":{"erainfra.app":"shop-db"}}]`)
+	owners := filepath.Join(t.TempDir(), "volume-owners")
+	runner := ShellRunner{Docker: d.path, VolumeOwners: owners}
+	_, err := runner.DeployApp(context.Background(), "shop", []Service{
+		{Name: "web", Image: "w:1", Args: []string{"-v", "shop-uploads:/u", "-v", "shop-cache:/c"}},
+		{Name: "db", Image: "p:1", Args: []string{"-v", "shop-db-data:/d"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `volume shop-db-data belongs to App "shop-db"`) {
+		t.Fatalf("err = %v", err)
+	}
+	if d.has(t, "volume create") {
+		t.Fatalf("created a volume before refusing: %q", d.calls(t))
+	}
+	if _, err := os.Stat(filepath.Join(owners, "shop-cache")); !os.IsNotExist(err) {
+		t.Fatalf("adopted a volume before refusing: %v", err)
+	}
+	if _, err := runner.DeployApp(context.Background(), "shop", []Service{
+		{Name: "web", Image: "w:1", Args: []string{"-v", "shop-uploads:/u", "-v", "shop-cache:/c"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !d.has(t, "volume create --label erainfra.app=shop shop-uploads") {
+		t.Fatalf("calls %q", d.calls(t))
+	}
+	if raw, err := os.ReadFile(filepath.Join(owners, "shop-cache")); err != nil || string(raw) != "shop\n" {
+		t.Fatalf("adoption record = %q, %v", raw, err)
+	}
+}
+
+func TestDeployAppRefusesWhenItCannotListAVolumesContainers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "docker")
+	script := "#!/bin/sh\n" +
+		"[ \"$1 $2\" = 'volume inspect' ] && { echo '[{\"Labels\":null}]'; exit 0; }\n" +
+		"[ \"$2\" = inspect ] && { echo 'Error: No such object' >&2; exit 1; }\n" +
+		"[ \"$1\" = ps ] && { echo 'Cannot connect to the Docker daemon' >&2; exit 1; }\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ShellRunner{Docker: path}.DeployApp(context.Background(), "shop", []Service{{Name: "db", Image: "p:1", Args: []string{"-v", "legacy:/d"}}})
+	if err == nil || !strings.Contains(err.Error(), "list containers mounting volume legacy") {
+		t.Fatalf("err = %v", err)
 	}
 }

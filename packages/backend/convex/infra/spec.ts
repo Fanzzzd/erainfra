@@ -17,6 +17,7 @@
 //       volumes: [pgdata:/var/lib/postgresql/data]
 //       node: big-box              # optional placement (default: the deploy's default Node)
 import { parse as parseYaml } from "yaml";
+import { isRouteLabel } from "./ingress";
 
 const LABEL = /^[a-z0-9][a-z0-9-]{0,62}$/;
 // name:/abs/path, named volumes only. A spec comes from a repository, and a host bind mount would
@@ -191,6 +192,10 @@ export function parseSpec(yamlText: string, fallbackApp: string): SpecResult {
     let route: string | undefined;
     if (s.route === true) route = routedNames.length === 1 ? app : `${app}-${name}`;
     else if (typeof s.route === "string") route = s.route;
+    // A gateway serves `<label>.<zone>` only for a DNS label (ingress.ts), and skips any other
+    // route row, so a deploy that routed at one would report a URL nothing answers.
+    if (route !== undefined && !isRouteLabel(route))
+      return { ok: false, error: routeLabelError(name, route, s.route === true) };
     if (route && !s.port)
       return {
         ok: false,
@@ -225,8 +230,24 @@ export function parseSpec(yamlText: string, fallbackApp: string): SpecResult {
 }
 
 /**
+ * Why a route label no gateway can serve is refused. `derived` is a `route: true` label, whose
+ * text the spec's author never wrote.
+ */
+export function routeLabelError(service: string, route: string, derived: boolean): string {
+  const rule =
+    "a route label is a DNS label: at most 63 characters, lowercase letters, digits and dashes, " +
+    "starting and ending with a letter or digit";
+  if (!derived) return `service "${service}": route "${route}" is not served: ${rule}`;
+  return (
+    `service "${service}": route: true gives the label "${route}" (${route.length} characters), ` +
+    `which is not served: ${rule}. Name the label explicitly (route: <label>)`
+  );
+}
+
+/**
  * The spec of a repository with no spec file: one service built from the root and routed at the
- * App name. `port` comes from the binding or the deploy request.
+ * App name. `port` comes from the binding or the deploy request. The pipeline refuses an App name
+ * that is not a route label (routeLabelError) before planning it.
  */
 export function implicitSpec(app: string, port: number): AppSpec {
   return {
