@@ -10,6 +10,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 	"github.com/Fanzzzd/erainfra/internal/dualenv"
 )
@@ -99,4 +100,18 @@ func writeTestReport(report *testreport.Report) error {
 		return nil
 	}
 	return writeRecordFile(testReportVariable, "test report", report)
+}
+
+// runnerExitVariable names the file `run` writes how the Attempt's GitHub
+// runner ended to, for the Worker to report with the Attempt.
+const runnerExitVariable = "RC_RUNNER_EXIT_FILE"
+
+// writeRunnerExit writes the guest's runner exit report where
+// RC_RUNNER_EXIT_FILE says, or does nothing when it is unset or the guest
+// reported none.
+func writeRunnerExit(report *runnerexit.Report) error {
+	if report == nil {
+		return nil
+	}
+	return writeRecordFile(runnerExitVariable, "runner exit report", report)
 }

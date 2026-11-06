@@ -292,6 +292,35 @@ describe("evaluateCondition", () => {
     expect(subjects({ kind: "consecutive-failures", count: 1 }, fleet([recovered]))).toEqual([]);
   });
 
+  it("failure alerts name why the newest failure failed", () => {
+    // Every Attempt of a Profile whose runner GitHub refuses fails the same way; the page says how.
+    const refused =
+      "GitHub runner exited with code 1 without taking a job: Runner version v2.336.0 is deprecated and cannot receive messages.";
+    const failing = profile("a", {
+      recentFinished: [
+        { ...finished("failed", 1), error: refused },
+        { ...finished("failed", 2), error: "Executor exited with code 1" },
+        finished("succeeded", 3),
+      ],
+    });
+    const [rate] = evaluateCondition(
+      { kind: "failure-rate", percent: 50, windowMinutes: 60, minAttempts: 3 },
+      undefined,
+      fleet([failing]),
+    );
+    expect(rate?.summary).toBe(
+      `2 of 3 Attempts on Profile a failed in the last 60m (67%). The latest failure: ${refused}`,
+    );
+    const [streak] = evaluateCondition(
+      { kind: "consecutive-failures", count: 2 },
+      undefined,
+      fleet([failing]),
+    );
+    expect(streak?.summary).toBe(
+      `The last 2 finished Attempts on Profile a all failed. The latest failure: ${refused}`,
+    );
+  });
+
   it("attempt-duration: names the longest-running Attempt", () => {
     const observation = fleet([
       profile("a", {

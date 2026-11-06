@@ -1,4 +1,4 @@
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
@@ -481,6 +481,50 @@ function runnerOutlivesExecutor(attempt: Doc<"attempts">, exitCode: number) {
   return attempt.state !== "running" || exitCode !== 0 || attempt.retirement !== undefined;
 }
 
+/**
+ * How the guest's GitHub runner ended, as the Firecracker guest reports it
+ * (apps/runtime/internal/runnerexit). Agents, runtimes and guests that predate it send none.
+ */
+const runnerExitValidator = v.object({
+  exitCode: v.number(),
+  // The runner started a job: the guest found a Worker log in its diagnostic folder.
+  ranJob: v.boolean(),
+  // The last error line of the runner's diagnostic log, sanitized by the guest.
+  diagnostic: v.optional(v.string()),
+});
+type RunnerExit = Infer<typeof runnerExitValidator>;
+
+const MAX_RUNNER_DIAGNOSTIC_CHARS = 300;
+
+/**
+ * Why an Attempt failed when its runner exited without ever taking a job, or undefined when it
+ * did not. Both sides must agree: GitHub never reported a JobStarted (the Attempt is not
+ * `running`), and the guest saw no job either, which covers a JobStarted still on its way for a
+ * job that ran. Such a runner registered, was refused or gave up, and left the job queued: a
+ * runner version GitHub has deprecated exits like this seconds after it starts, for every
+ * Attempt. Without the guest's report the Attempt ends as it always did.
+ */
+function joblessRunnerFailure(
+  attempt: Pick<Doc<"attempts">, "state">,
+  runnerExit: RunnerExit | undefined,
+) {
+  if (runnerExit === undefined || runnerExit.ranJob || attempt.state === "running") {
+    return undefined;
+  }
+  // The Agent passes on what the guest wrote. The guest sanitized it; the control plane bounds it
+  // again because it is shown in the dashboard, the CLI and alert notifications.
+  const diagnostic = Array.from(
+    // oxlint-disable-next-line no-control-regex -- stripping control characters is the point
+    (runnerExit.diagnostic ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim(),
+  )
+    .slice(0, MAX_RUNNER_DIAGNOSTIC_CHARS)
+    .join("");
+  return (
+    `GitHub runner exited with code ${runnerExit.exitCode} without taking a job` +
+    (diagnostic === "" ? "" : `: ${diagnostic}`)
+  );
+}
+
 export const reportAttempt = mutation({
   args: {
     token: v.string(),
@@ -489,10 +533,18 @@ export const reportAttempt = mutation({
     // What the guest talked to, for an audit or allowlist Profile. Older
     // Agents send none.
     egress: v.optional(egressRecordValidator),
+    runnerExit: v.optional(runnerExitValidator),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     if (!Number.isInteger(args.exitCode)) throw new ConvexError("Exit code must be an integer");
+    const runnerExitCode = args.runnerExit?.exitCode;
+    if (
+      runnerExitCode !== undefined &&
+      !(Number.isInteger(runnerExitCode) && runnerExitCode >= 0 && runnerExitCode <= 255)
+    ) {
+      throw new ConvexError("runnerExit exit code must be an integer from 0 to 255");
+    }
     const machine = await machineForToken(ctx, args.token);
     const attempt = await ctx.db.get(args.attemptId);
     if (attempt === null || attempt.machineId !== machine._id) return false;
@@ -547,13 +599,16 @@ export const reportAttempt = mutation({
       await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
       return true;
     }
+    const runnerFailure = joblessRunnerFailure(attempt, args.runnerExit);
     await ctx.db.patch(attempt._id, {
-      state: args.exitCode === 0 ? "completed" : "failed",
+      state: args.exitCode === 0 && runnerFailure === undefined ? "completed" : "failed",
       jitConfig: undefined,
       executorFinishedAt,
       executorExitCode: args.exitCode,
       finishedAt: executorFinishedAt,
-      lastError: args.exitCode === 0 ? undefined : `Executor exited with code ${args.exitCode}`,
+      lastError:
+        runnerFailure ??
+        (args.exitCode === 0 ? undefined : `Executor exited with code ${args.exitCode}`),
       runnerCleanupPending: runnerOutlivesExecutor(attempt, args.exitCode) ? true : undefined,
       retirement: undefined,
     });

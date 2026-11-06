@@ -1,6 +1,7 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "../convex/_generated/api";
+import { attemptDetailJson } from "../convex/operatorHttp";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -591,6 +592,114 @@ describe("readiness-gated Attempt scheduling", () => {
     expect(
       await t.query(internal.controllerApi.listRunnerCleanups, { profile: CONTRACT.profile }),
     ).toEqual([{ runnerName: "runner-a", runnerId: 1 }]);
+  });
+
+  describe("a runner that exited without taking a job", () => {
+    const refused = "Runner version v2.336.0 is deprecated and cannot receive messages.";
+
+    async function readyAttempt() {
+      const t = convexTest(schema, modules);
+      await addWorker(t, "alpha");
+      await createAttempt(t);
+      const attempt = await t.run(async (ctx) => ctx.db.query("attempts").first());
+      if (attempt === null) throw new Error("missing attempt");
+      await t.mutation(api.workerApi.claimAttempt, {
+        token: "token-alpha",
+        attemptId: attempt._id,
+      });
+      await t.mutation(api.workerApi.markReady, { token: "token-alpha", attemptId: attempt._id });
+      return { t, id: attempt._id };
+    }
+
+    it("fails the Attempt with the reason the guest read from the runner's log", async () => {
+      const { t, id } = await readyAttempt();
+      await t.mutation(api.workerApi.reportAttempt, {
+        token: "token-alpha",
+        attemptId: id,
+        exitCode: 0,
+        runnerExit: { exitCode: 1, ranJob: false, diagnostic: refused },
+      });
+
+      expect(await t.run(async (ctx) => ctx.db.get(id))).toMatchObject({
+        state: "failed",
+        executorExitCode: 0,
+        lastError: `GitHub runner exited with code 1 without taking a job: ${refused}`,
+        runnerCleanupPending: true,
+      });
+      // `erainfra jobs view` and the dashboard read the same error.
+      const view = await t.query(internal.operatorApi.attempt, { id });
+      if (view === null) throw new Error("missing attempt");
+      expect(attemptDetailJson(view).error).toBe(
+        `GitHub runner exited with code 1 without taking a job: ${refused}`,
+      );
+    });
+
+    it("keeps an older guest's Attempt as it was: completed, its Runner deleted", async () => {
+      const { t, id } = await readyAttempt();
+      await t.mutation(api.workerApi.reportAttempt, {
+        token: "token-alpha",
+        attemptId: id,
+        exitCode: 0,
+      });
+      const settled = await t.run(async (ctx) => ctx.db.get(id));
+      expect(settled).toMatchObject({ state: "completed", runnerCleanupPending: true });
+      expect(settled?.lastError).toBeUndefined();
+    });
+
+    it("does not fail a job that ran before its JobStarted arrived", async () => {
+      const { t, id } = await readyAttempt();
+      await t.mutation(api.workerApi.reportAttempt, {
+        token: "token-alpha",
+        attemptId: id,
+        exitCode: 0,
+        runnerExit: { exitCode: 0, ranJob: true },
+      });
+      expect((await t.run(async (ctx) => ctx.db.get(id)))?.state).toBe("completed");
+    });
+
+    it("does not fail a running Attempt whatever the guest says", async () => {
+      const { t, id } = await readyAttempt();
+      await t.mutation(internal.controllerApi.markJobStarted, {
+        profile: CONTRACT.profile,
+        runnerName: "runner-a",
+        jobId: "job-1",
+      });
+      await t.mutation(api.workerApi.reportAttempt, {
+        token: "token-alpha",
+        attemptId: id,
+        exitCode: 0,
+        runnerExit: { exitCode: 1, ranJob: false, diagnostic: "forged by the job" },
+      });
+      const settled = await t.run(async (ctx) => ctx.db.get(id));
+      expect(settled?.state).toBe("completed");
+      expect(settled?.lastError).toBeUndefined();
+    });
+
+    it("bounds the diagnostic and drops control characters", async () => {
+      const { t, id } = await readyAttempt();
+      await t.mutation(api.workerApi.reportAttempt, {
+        token: "token-alpha",
+        attemptId: id,
+        exitCode: 0,
+        runnerExit: { exitCode: 2, ranJob: false, diagnostic: `\u001b[31m${"x".repeat(1_000)}` },
+      });
+      const lastError = (await t.run(async (ctx) => ctx.db.get(id)))?.lastError ?? "";
+      expect(lastError).toBe(
+        `GitHub runner exited with code 2 without taking a job: [31m${"x".repeat(296)}`,
+      );
+    });
+
+    it("refuses an exit code no process can have", async () => {
+      const { t, id } = await readyAttempt();
+      await expect(
+        t.mutation(api.workerApi.reportAttempt, {
+          token: "token-alpha",
+          attemptId: id,
+          exitCode: 0,
+          runnerExit: { exitCode: 256, ranJob: false },
+        }),
+      ).rejects.toThrow(/runnerExit/);
+    });
   });
 
   it("leaves the Runner of a job that ran to GitHub, which removes it", async () => {

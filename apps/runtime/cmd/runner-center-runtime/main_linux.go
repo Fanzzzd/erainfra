@@ -274,6 +274,9 @@ func runAttempt(ctx context.Context, client *runtimeapi.Client) (int, error) {
 	if reportErr := writeTestReport(result.Tests); reportErr != nil {
 		fmt.Fprintln(os.Stderr, reportErr)
 	}
+	if exitErr := writeRunnerExit(result.RunnerExit); exitErr != nil {
+		fmt.Fprintln(os.Stderr, exitErr)
+	}
 	return result.ExitCode, nil
 }
 

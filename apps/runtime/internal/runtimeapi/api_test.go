@@ -17,6 +17,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
 
@@ -221,6 +222,35 @@ func TestExecuteCarriesTheTestReportAndTheClientRevalidatesIt(t *testing.T) {
 			}
 			if result.ExitCode != 1 || !reflect.DeepEqual(result.Tests, test.want) {
 				t.Fatalf("result = %+v, tests = %+v, want %+v", result, result.Tests, test.want)
+			}
+		})
+	}
+}
+
+func TestExecuteCarriesTheRunnerExitAndTheClientRevalidatesIt(t *testing.T) {
+	valid := &runnerexit.Report{ExitCode: 1, Diagnostic: "Runner version v2.336.0 is deprecated and cannot receive messages."}
+	for name, test := range map[string]struct {
+		sent *runnerexit.Report
+		want *runnerexit.Report
+	}{
+		"valid":   {sent: valid, want: valid},
+		"invalid": {sent: &runnerexit.Report{ExitCode: 1, Diagnostic: "a\x1bb"}, want: nil},
+		"none":    {sent: nil, want: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lease := &fakeLease{
+				wait: func(context.Context) (executor.Result, error) {
+					return executor.Result{ExitCode: 0, RunnerExit: test.sent}, nil
+				},
+				cancelled: make(chan struct{}),
+			}
+			client := unixClient(t, &fakeExecutor{lease: lease})
+			result, err := client.Execute(context.Background(), testSpec(), time.Second, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.ExitCode != 0 || !reflect.DeepEqual(result.RunnerExit, test.want) {
+				t.Fatalf("result = %+v, runner exit = %+v, want %+v", result, result.RunnerExit, test.want)
 			}
 		})
 	}

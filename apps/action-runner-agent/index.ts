@@ -24,7 +24,9 @@ import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
   readEgressRecord,
+  readRunnerExit,
   readTestReport,
+  reportAttemptWithRunnerExit,
   spawnAttempt,
   spawnExperiment,
   spawnProvisioner,
@@ -110,7 +112,13 @@ const claimAttempt = makeFunctionReference<
 >("workerApi:claimAttempt");
 const reportAttempt = makeFunctionReference<
   "mutation",
-  { token: string; attemptId: string; exitCode: number; egress?: unknown },
+  {
+    token: string;
+    attemptId: string;
+    exitCode: number;
+    egress?: unknown;
+    runnerExit?: { exitCode: number; ranJob: boolean; diagnostic?: string };
+  },
   boolean
 >("workerApi:reportAttempt");
 const reportAttemptMetrics = makeFunctionReference<
@@ -340,6 +348,8 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
       recordDirectory === undefined ? undefined : join(recordDirectory, "record.json");
     const testReportFile =
       recordDirectory === undefined ? undefined : join(recordDirectory, "tests.json");
+    const runnerExitFile =
+      recordDirectory === undefined ? undefined : join(recordDirectory, "runner-exit.json");
     exitCode = await withCores(
       cores,
       {
@@ -365,6 +375,7 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
           cache: config.cache,
           egressRecordFile,
           testReportFile,
+          runnerExitFile,
         });
         running.set(key, child);
         let metrics: AttemptMetrics | undefined;
@@ -409,17 +420,32 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
       recordDirectory === undefined
         ? undefined
         : await readTestReport(join(recordDirectory, "tests.json"));
+    const runnerExit =
+      recordDirectory === undefined
+        ? undefined
+        : await readRunnerExit(join(recordDirectory, "runner-exit.json"));
+    if (runnerExit !== undefined) {
+      console.log(
+        `The runner of Attempt ${item.runnerName} exited with code ${runnerExit.exitCode}` +
+          `${runnerExit.ranJob ? " after a job" : " without taking a job"}` +
+          `${runnerExit.diagnostic === undefined ? "" : `: ${runnerExit.diagnostic}`}`,
+      );
+    }
     if (recordDirectory !== undefined) {
       await rm(recordDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
     if (claimedByThisAgent) {
       try {
-        await client.mutation(reportAttempt, {
-          token: config.machineToken,
-          attemptId: item.id,
-          exitCode,
-          ...(egress === undefined ? {} : { egress }),
-        });
+        await reportAttemptWithRunnerExit(
+          (args) => client.mutation(reportAttempt, args),
+          {
+            token: config.machineToken,
+            attemptId: item.id,
+            exitCode,
+            ...(egress === undefined ? {} : { egress }),
+          },
+          runnerExit,
+        );
       } catch (error) {
         console.error(`Reporting Attempt ${item.runnerName} failed`, error);
       }

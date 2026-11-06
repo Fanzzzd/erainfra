@@ -18,6 +18,7 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
 
@@ -26,7 +27,10 @@ const (
 	runnerDir = "/opt/runner"
 	// runnerWorkDir is the runner's work folder: the controller asks GitHub
 	// for JIT configurations with WorkFolder "_work" (githubscale.go).
-	runnerWorkDir  = runnerDir + "/_work"
+	runnerWorkDir = runnerDir + "/_work"
+	// runnerDiagDir is where the runner writes its Runner_*.log and, for each
+	// job, a Worker_*.log.
+	runnerDiagDir  = runnerDir + "/_diag"
 	toolCache      = "/opt/hostedtoolcache"
 	actionCache    = "/opt/action-cache"
 	runnerUsername = "runner"
@@ -180,6 +184,46 @@ func reportTests(ctx context.Context) {
 	defer console.Close() //nolint:errcheck // every line went out in its own write(2); close flushes nothing
 	if err := testreport.WriteConsole(console, report); err != nil {
 		fmt.Fprintf(os.Stderr, "test results not reported: %v\n", err)
+	}
+}
+
+// runnerExitCode is the exit status Wait returned for run.sh: the process's
+// own, or 128 plus the signal that ended it, as a shell reports it.
+func runnerExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		return 1
+	}
+	if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return exitError.ExitCode()
+}
+
+// reportRunnerExit tells the host how the runner ended, on the console, as
+// the last line the guest writes before it resets: its exit status, whether
+// it ran a job, and the last error in its diagnostic log. A runner GitHub
+// refuses at session start exits in seconds and the guest still resets
+// cleanly, so without this the host cannot tell it from a finished job.
+// Best effort like the test report: a failure is logged in the guest journal
+// and the Attempt is settled as it was before guests reported this.
+func reportRunnerExit(waitErr error) {
+	line, err := runnerexit.Line(runnerexit.Collect(runnerDiagDir, runnerExitCode(waitErr)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "runner exit not reported: %v\n", err)
+		return
+	}
+	console, err := os.OpenFile(consoleDevice, os.O_WRONLY, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "runner exit not reported: open guest console: %v\n", err)
+		return
+	}
+	defer console.Close() //nolint:errcheck // the line went out in one write(2); close flushes nothing
+	if _, err := io.WriteString(console, line); err != nil {
+		fmt.Fprintf(os.Stderr, "runner exit not reported: %v\n", err)
 	}
 }
 
@@ -354,6 +398,7 @@ func run(ctx context.Context) error {
 
 	if metadata.Kind != "experiment" {
 		reportTests(ctx)
+		reportRunnerExit(err)
 	}
 
 	if metadata.Kind == "experiment" {
