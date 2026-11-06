@@ -15,10 +15,13 @@ type flagSpec struct {
 	name    string
 	metavar string // empty for a boolean flag
 	usage   string
+	// repeat lets a value flag be given more than once, collecting every value.
+	repeat bool
 }
 
 type parsedArgs struct {
 	values map[string]string
+	lists  map[string][]string
 	bools  map[string]bool
 	args   []string
 }
@@ -27,6 +30,9 @@ func (p parsedArgs) value(name string) (string, bool) {
 	v, ok := p.values[name]
 	return v, ok
 }
+
+// all returns every value of a repeatable flag, in the order given.
+func (p parsedArgs) all(name string) []string { return p.lists[name] }
 
 type usageError struct{ message string }
 
@@ -49,7 +55,7 @@ func parseArgs(args []string, specs []flagSpec) (parsedArgs, error) {
 	for _, spec := range all {
 		byName[spec.name] = spec
 	}
-	out := parsedArgs{values: map[string]string{}, bools: map[string]bool{}}
+	out := parsedArgs{values: map[string]string{}, lists: map[string][]string{}, bools: map[string]bool{}}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -77,6 +83,10 @@ func parseArgs(args []string, specs []flagSpec) (parsedArgs, error) {
 				}
 				i++
 				value = args[i]
+			}
+			if spec.repeat {
+				out.lists[name] = append(out.lists[name], value)
+				continue
 			}
 			if _, seen := out.values[name]; seen {
 				return out, usagef("--%s given twice", name)

@@ -1,0 +1,5 @@
+on: push
+jobs:
+  last:
+    steps: [{ run: "true" }]
+    runs-on: macos-latest

@@ -1,0 +1,6 @@
+.github/workflows/routed.yml:15:20 change route env.PROFILE: rc-linux-js -> erainfra-4vcpu-ubuntu-2404 [built-in] ADR 0010 renamed rc-linux-js
+.github/workflows/routed.yml:23:75 change route run: rc-e2e -> erainfra-canary-4vcpu-ubuntu-2404 [built-in] ADR 0010 renamed rc-e2e
+.github/workflows/routed.yml:27:62 change route run: rc-linux-js -> erainfra-4vcpu-ubuntu-2404 [built-in] ADR 0010 renamed rc-linux-js
+.github/workflows/routed.yml:37:14 change lint runs-on: ubuntu-latest -> erainfra-4vcpu-ubuntu-2404 [built-in] GitHub-hosted ubuntu-latest: ubuntu 24.04 x64
+.github/workflows/routed.yml:7 note route router: this is the /runs-on router job; it stays on a GitHub-hosted runner so it can answer when the fleet has no room
+.github/workflows/routed.yml:33 note test routed: runs-on is the answer of the /runs-on router in job "route", which names the Profile at run time

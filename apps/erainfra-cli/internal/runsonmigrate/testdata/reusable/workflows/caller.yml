@@ -1,0 +1,15 @@
+on: [push, pull_request]
+jobs:
+  local:
+    uses: ./.github/workflows/build.yml
+    with:
+      runner: ubuntu-22.04 # the input build.yml runs on
+      other: ubuntu-22.04
+  local-expression:
+    uses: ./.github/workflows/build.yml
+    with:
+      runner: ${{ github.event_name == 'push' && 'ubuntu-latest' || 'ubuntu-24.04' }}
+  remote:
+    uses: octo-org/shared/.github/workflows/test.yml@0123456789abcdef0123456789abcdef01234567
+    with:
+      runner: ubuntu-latest

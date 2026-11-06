@@ -1,0 +1,3 @@
+# Fixtures are byte-exact: a CRLF file and a file without a final newline are
+# test cases, so git must not normalise line endings here.
+* -text

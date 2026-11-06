@@ -1,0 +1,30 @@
+.github/workflows/ci.yml:13:14 change plain runs-on: ubuntu-latest -> erainfra-4vcpu-ubuntu-2604 [control-plane] GitHub-hosted ubuntu-latest: the newest ubuntu x64
+.github/workflows/ci.yml:18:14 change single-quoted runs-on: ubuntu-24.04 -> erainfra-4vcpu-ubuntu-2404 [control-plane] GitHub-hosted ubuntu-24.04: ubuntu 24.04 x64
+.github/workflows/ci.yml:22:14 change double-quoted runs-on: ubuntu-24.04-arm -> erainfra-16vcpu-ubuntu-2404-arm [control-plane] GitHub-hosted ubuntu-24.04-arm: ubuntu 24.04 arm64
+.github/workflows/ci.yml:26:14 change upper-case runs-on: Ubuntu-Latest -> erainfra-4vcpu-ubuntu-2604 [control-plane] GitHub-hosted Ubuntu-Latest: the newest ubuntu x64
+.github/workflows/ci.yml:36:9 change block-list runs-on: windows-latest -> erainfra-4vcpu-windows-2025 [map] --map windows-latest=erainfra-4vcpu-windows-2025
+.github/workflows/ci.yml:50:15 change group-and-labels runs-on.labels: ubuntu-24.04 -> erainfra-4vcpu-ubuntu-2404 [control-plane] GitHub-hosted ubuntu-24.04: ubuntu 24.04 x64
+.github/workflows/ci.yml:54:41 change group-and-label-list runs-on.labels: macos-15 -> erainfra-6vcpu-macos-15 [control-plane] GitHub-hosted macos-15: macos 15 Apple silicon
+.github/workflows/ci.yml:63:14 change anchored runs-on: ubuntu-latest -> erainfra-4vcpu-ubuntu-2604 [control-plane] GitHub-hosted ubuntu-latest: the newest ubuntu x64
+.github/workflows/ci.yml:71:14 change tagged runs-on: windows-2022 -> erainfra-8vcpu-windows-2022 [map] --map windows-2022=erainfra-8vcpu-windows-2022
+.github/workflows/ci.yml:74:47 change unicode-before runs-on: ubuntu-latest -> erainfra-4vcpu-ubuntu-2604 [control-plane] GitHub-hosted ubuntu-latest: the newest ubuntu x64
+.github/workflows/ci.yml:98:14 change slim runs-on: ubuntu-slim -> erainfra-4vcpu-ubuntu-2404 [control-plane] GitHub-hosted ubuntu-slim: ubuntu 24.04 x64
+.github/workflows/ci.yml:106:14 change old-profile runs-on: rc-linux-js -> erainfra-4vcpu-ubuntu-2404 [control-plane] ADR 0010 renamed rc-linux-js
+.github/workflows/ci.yml:110:14 change blacksmith runs-on: blacksmith-8vcpu-ubuntu-2404-arm -> erainfra-16vcpu-ubuntu-2404-arm [control-plane] Blacksmith label blacksmith-8vcpu-ubuntu-2404-arm: 8 vCPU, ubuntu 24.04 arm64
+.github/workflows/ci.yml:119:7 change value-on-the-next-line runs-on: ubuntu-latest -> erainfra-4vcpu-ubuntu-2604 [control-plane] GitHub-hosted ubuntu-latest: the newest ubuntu x64
+.github/workflows/ci.yml:30 note flow-list no-profile: no active Profile registered in the control plane runs ubuntu 22.04 x64 (ubuntu-22.04); left unchanged
+.github/workflows/ci.yml:40 note several-labels list: runs-on lists 3 labels (self-hosted, linux, x64); a runner must carry all of them and a Profile's scale set answers to its own name, so replace the list with one Profile name by hand
+.github/workflows/ci.yml:44 note hosted-in-a-list list: runs-on lists 2 labels (ubuntu-latest, gpu); a runner must carry all of them and a Profile's scale set answers to its own name, so replace the list with one Profile name by hand; suggested: ubuntu-latest -> erainfra-4vcpu-ubuntu-2604
+.github/workflows/ci.yml:49 note group-and-labels group: the job also asks for runner group "ubuntu-runners"; the Profile's scale set must be in that group (the controller's ERAINFRA_RUNNER_GROUP), or drop group:
+.github/workflows/ci.yml:54 note group-and-label-list group: the job also asks for runner group "larger"; the Profile's scale set must be in that group (the controller's ERAINFRA_RUNNER_GROUP), or drop group:
+.github/workflows/ci.yml:59 note group-only group: runs-on names only the runner group "ubuntu-runners"; a Profile is chosen by label, so add labels: <profile> by hand
+.github/workflows/ci.yml:67 note aliased alias: runs-on is a YAML alias; edit the anchor it points to
+.github/workflows/ci.yml:71 note tagged unregistered: erainfra-8vcpu-windows-2022 is not a Profile registered in the control plane; jobs sent to it will queue until one is
+.github/workflows/ci.yml:82 note matrix matrix: runs-on is the matrix expression ${{ matrix.os }}; left unchanged, because the matrix value may also be used outside runs-on; the matrix lists ubuntu-latest -> erainfra-4vcpu-ubuntu-2604, macos-latest -> erainfra-6vcpu-macos-15, ubuntu-24.04-arm -> erainfra-16vcpu-ubuntu-2404-arm
+.github/workflows/ci.yml:86 note expression expression: runs-on is the expression ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}; left unchanged
+.github/workflows/ci.yml:90 note intel-mac no-profile: macos-13 is an Intel Mac; Tart Profiles run on Apple silicon only; left unchanged
+.github/workflows/ci.yml:94 note larger-runner no-profile: ubuntu-24.04-16core looks like a GitHub larger runner; map it to a Profile of the size you want with --map; left unchanged
+.github/workflows/ci.yml:114 note vendor-unknown unknown: "depot-ubuntu-24.04-4" is not a GitHub-hosted label this command knows; left unchanged. Map it with --map depot-ubuntu-24.04-4=<profile>
+.github/workflows/ci.yml:123 note escaped in-place: could not find "ubuntu-latest" in the source to edit it in place; change it to erainfra-4vcpu-ubuntu-2604 by hand
+.github/workflows/ci.yml:127 note folded in-place: could not find "ubuntu-latest" in the source to edit it in place; change it to erainfra-4vcpu-ubuntu-2604 by hand
+.github/workflows/ci.yml:137 note runs-on no-profile: no active Profile registered in the control plane runs windows 2025 x64 (windows-2025); left unchanged

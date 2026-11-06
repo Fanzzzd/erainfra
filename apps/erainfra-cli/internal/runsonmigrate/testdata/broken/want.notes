@@ -1,0 +1,2 @@
+.github/workflows/broken.yml:0 note  parse: not valid YAML, left unchanged: yaml: line 2: did not find expected key
+.github/workflows/fine.yaml:4:14 change a runs-on: ubuntu-latest -> erainfra-4vcpu-ubuntu-2404 [built-in] GitHub-hosted ubuntu-latest: ubuntu 24.04 x64

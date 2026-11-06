@@ -147,6 +147,7 @@ func init() {
 		gitBindCommand,
 		gitUnbindCommand,
 		logsCommand,
+		migrateRunsOnCommand,
 		versionCommand,
 	}
 }

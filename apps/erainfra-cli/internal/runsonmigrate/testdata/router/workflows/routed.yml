@@ -1,0 +1,39 @@
+# The README's router: ask the control plane, fall back to GitHub-hosted.
+on: push
+env:
+  AWS_PROFILE: default
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runs-on: ${{ steps.route.outputs.runs-on }}
+    steps:
+      - id: route
+        env:
+          CONTROL_PLANE: https://fleet.example.convex.site
+          PROFILE: rc-linux-js
+          FALLBACK: ubuntu-24.04
+        run: |
+          label=$(curl --fail --silent --get \
+            --data-urlencode "profile=$PROFILE" --data-urlencode "fallback=$FALLBACK" \
+            "$CONTROL_PLANE/runs-on" | jq -er '."runs-on" | strings') || label=$FALLBACK
+          echo "runs-on=$label" >> "$GITHUB_OUTPUT"
+      - id: canary
+        run: curl -fsS "https://fleet.example.convex.site/runs-on?profile=rc-e2e&fallback=ubuntu-latest"
+      - id: literal-query
+        run: >-
+          curl -fsS --max-time 10
+          "https://fleet.example.convex.site/runs-on?profile=rc-linux-js&fallback=ubuntu-24.04"
+          # profile=$NOT_A_NAME and profile=unknown-profile stay
+      - id: legacy-labels
+        run: curl -fsS "https://fleet.example.convex.site/runs-on?labels=rc-linux"
+  test:
+    needs: route
+    runs-on: ${{ needs.route.outputs.runs-on }}
+    steps:
+      - run: pnpm test
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm lint

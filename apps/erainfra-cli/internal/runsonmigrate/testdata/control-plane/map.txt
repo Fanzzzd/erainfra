@@ -1,0 +1,2 @@
+windows-latest=erainfra-4vcpu-windows-2025
+windows-2022=erainfra-8vcpu-windows-2022
