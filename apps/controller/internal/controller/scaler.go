@@ -268,12 +268,7 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 	if job == nil {
 		return errors.New("job started message is nil")
 	}
-	// The cache facts are published off this path: they need GitHub lookups, and
-	// neither MarkJobStarted nor the listener's next message should wait on them.
-	// This is best effort: the cache is an optimization, so a publish failure
-	// must not fail the job.
-	s.publishCacheFacts(ctx, job)
-	return s.store.MarkJobStarted(ctx, fleet.JobStarted{
+	event := fleet.JobStarted{
 		Profile:          s.config.Profile,
 		RunnerName:       job.RunnerName,
 		RunnerRequestID:  job.RunnerRequestID,
@@ -287,21 +282,40 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, job *scaleset.JobStarted)
 		QueueTime:        job.QueueTime,
 		AssignedAt:       job.ScaleSetAssignTime,
 		RunnerAssignedAt: job.RunnerAssignTime,
-	})
+	}
+	// What the workflow run tells (the cache facts, the head branch) is learned
+	// off this path: it needs GitHub lookups, and neither MarkJobStarted nor the
+	// listener's next message should wait on them. This is best effort: the
+	// cache is an optimization and the head branch a label, so a failure there
+	// must not fail the job.
+	s.learnFromWorkflowRun(ctx, job, event)
+	return s.store.MarkJobStarted(ctx, event)
 }
 
-// publishCacheFacts tells the cache service which repository and refs this
-// runner's job may use, in the background. The GitHub lookups are bounded by
-// cacheScopeBudget; if they fail or run out of time the job gets cold facts,
-// read-only with nothing to read, which is never broader than the real scope. A
-// push failure is logged, not returned: the worst case is a cold cache.
+// headBranchBudget bounds the second MarkJobStarted, the one that carries the
+// run's head branch.
+const headBranchBudget = 30 * time.Second
+
+// learnFromWorkflowRun reads the job's workflow run from GitHub in the
+// background, once, and from it
+//
+//   - publishes the job's cache facts: which repository and refs this runner's
+//     job may use. The GitHub lookups are bounded by cacheScopeBudget; if they
+//     fail or run out of time the job gets cold facts, read-only with nothing to
+//     read, which is never broader than the real scope. A push failure is logged,
+//     not returned: the worst case is a cold cache.
+//   - sends JobStarted again with the run's head branch, which the control plane
+//     keys test results by. The job's workflow ref cannot stand in for it: for a
+//     job of a called workflow it names the called file's ref. The control plane
+//     keeps every field it already has, so this send and the first may land in
+//     either order.
 //
 // This is the only time the controller sends a job's facts, so a push the
 // service could not take (it was restarting, or could not write them to its
 // store) is retried with backoff for cacheRetry.window rather than dropped: a
 // dropped push leaves that job's every cache request refused until it ends.
-func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted) {
-	if s.cache == nil {
+func (s *Scaler) learnFromWorkflowRun(ctx context.Context, job *scaleset.JobStarted, event fleet.JobStarted) {
+	if s.cache == nil && s.runs == nil {
 		return
 	}
 	started := *job
@@ -310,11 +324,36 @@ func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted
 	go func() {
 		defer s.publishing.Done()
 		lookupCtx, cancelLookup := context.WithTimeout(base, s.cacheScopeBudget)
-		facts, err := resolveCacheFacts(lookupCtx, s.runs, &started)
+		run, runErr := workflowRunOf(lookupCtx, s.runs, &started)
+		var facts cachefacts.Facts
+		var factsErr error
+		if s.cache != nil {
+			factsErr = runErr
+			if runErr == nil {
+				facts, factsErr = cacheFactsFromRun(lookupCtx, s.runs, &started, run)
+			}
+		}
 		cancelLookup()
-		if err != nil {
+
+		if runErr == nil {
+			if branch := runHeadBranch(run); branch != "" {
+				s.publishing.Add(1)
+				go func() {
+					defer s.publishing.Done()
+					s.recordHeadBranch(base, event, branch)
+				}()
+			}
+		} else if s.cache == nil {
+			s.logger.Warn("could not read the job's workflow run; its test results are joined by workflow run only",
+				"runner", started.RunnerName, "workflowRunID", started.WorkflowRunID, "error", runErr)
+		}
+
+		if s.cache == nil {
+			return
+		}
+		if factsErr != nil {
 			s.logger.Warn("could not establish the job's cache scope; publishing read-only facts",
-				"runner", started.RunnerName, "workflowRunID", started.WorkflowRunID, "error", err)
+				"runner", started.RunnerName, "workflowRunID", started.WorkflowRunID, "error", factsErr)
 			facts = coldCacheFacts(&started)
 		}
 		attempts, err := s.pushCacheFacts(base, facts)
@@ -328,6 +367,19 @@ func (s *Scaler) publishCacheFacts(ctx context.Context, job *scaleset.JobStarted
 			"ref", facts.Ref, "baseRef", facts.BaseRef, "defaultBranch", facts.DefaultBranch,
 			"headRepository", facts.HeadRepository, "attempts", attempts)
 	}()
+}
+
+// recordHeadBranch sends JobStarted again with the run's head branch. A failure
+// costs only the branch: the Attempt's test results are then joined by their
+// workflow run alone, so it is logged and not retried.
+func (s *Scaler) recordHeadBranch(ctx context.Context, event fleet.JobStarted, branch string) {
+	ctx, cancel := context.WithTimeout(ctx, headBranchBudget)
+	defer cancel()
+	event.HeadBranch = branch
+	if err := s.store.MarkJobStarted(ctx, event); err != nil {
+		s.logger.Warn("could not record the job's head branch; its test results are joined by workflow run only",
+			"runner", event.RunnerName, "workflowRunID", event.WorkflowRunID, "error", err)
+	}
 }
 
 // retryPolicy is how a failed facts push is paced: the first retry after first,

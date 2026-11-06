@@ -152,6 +152,29 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// A controller that has not read the run omits headBranch, so an older
+	// control plane, and the field the first send leaves out, are both safe.
+	if _, sent := started["headBranch"]; sent {
+		t.Fatalf("an empty head branch was sent: %#v", started)
+	}
+	if err := store.MarkJobStarted(t.Context(), fleet.JobStarted{
+		Profile:    input.Profile,
+		RunnerName: input.RunnerName,
+		HeadBranch: "feature/x",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if started["headBranch"] != "feature/x" {
+		t.Fatalf("headBranch = %#v", started["headBranch"])
+	}
+	started = nil
+	if err := store.MarkJobStarted(t.Context(), fleet.JobStarted{
+		Profile:         input.Profile,
+		RunnerName:      input.RunnerName,
+		RunnerRequestID: opaqueRequestID,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.MarkJobCompleted(t.Context(), fleet.JobCompleted{
 		Profile:         input.Profile,
 		RunnerName:      input.RunnerName,

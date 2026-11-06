@@ -125,6 +125,7 @@ async function attempt(t: Harness, machineId: Id<"machines">, workflowRunId: num
       owner: "acme",
       workflowRunId,
       workflowRef: "acme/app/.github/workflows/ci.yml@refs/heads/main",
+      headBranch: "main",
       eventName: "push",
       displayName: "test",
     }),

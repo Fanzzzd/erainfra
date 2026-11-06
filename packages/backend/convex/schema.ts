@@ -464,6 +464,13 @@ export default defineSchema({
     owner: v.optional(v.string()),
     jobId: v.optional(v.string()),
     workflowRef: v.optional(v.string()),
+    /**
+     * The workflow run's head_branch, which the controller reads from GitHub's REST API after
+     * JobStarted: the branch or tag the run is for, as `owner:branch` when the run's code comes from
+     * another repository. Unlike workflowRef it is never a called workflow's ref. Absent when the
+     * controller predates it or could not read the run.
+     */
+    headBranch: v.optional(v.string()),
     displayName: v.optional(v.string()),
     workflowRunId: v.optional(v.number()),
     eventName: v.optional(v.string()),

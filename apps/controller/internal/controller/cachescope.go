@@ -61,27 +61,58 @@ var pullRequestRefEvents = map[string]bool{
 	"pull_request_review_comment": true,
 }
 
-// resolveCacheFacts derives a job's cache facts from its workflow run. Any fact it
-// cannot establish is an error, and the caller publishes cold facts instead:
-// unknown never widens a scope.
-func resolveCacheFacts(ctx context.Context, runs WorkflowRuns, job *scaleset.JobStarted) (cachefacts.Facts, error) {
+// workflowRunOf reads the job's workflow run from GitHub, and refuses one that
+// belongs to another repository than the job's.
+func workflowRunOf(ctx context.Context, runs WorkflowRuns, job *scaleset.JobStarted) (githubapi.WorkflowRun, error) {
 	repository := repositorySlug(job.OwnerName, job.RepositoryName)
 	if repository == "" {
-		return cachefacts.Facts{}, errors.New("job names no repository")
+		return githubapi.WorkflowRun{}, errors.New("job names no repository")
 	}
 	if runs == nil {
-		return cachefacts.Facts{}, errors.New("no GitHub API is configured")
+		return githubapi.WorkflowRun{}, errors.New("no GitHub API is configured")
 	}
 	if job.WorkflowRunID <= 0 {
-		return cachefacts.Facts{}, errors.New("job names no workflow run")
+		return githubapi.WorkflowRun{}, errors.New("job names no workflow run")
 	}
 	run, err := runs.WorkflowRun(ctx, repository, job.WorkflowRunID)
 	if err != nil {
-		return cachefacts.Facts{}, err
+		return githubapi.WorkflowRun{}, err
 	}
 	if !strings.EqualFold(run.Repository.FullName, repository) || run.Repository.ID == 0 {
-		return cachefacts.Facts{}, fmt.Errorf("workflow run belongs to %q, not %q", run.Repository.FullName, repository)
+		return githubapi.WorkflowRun{}, fmt.Errorf("workflow run belongs to %q, not %q", run.Repository.FullName, repository)
 	}
+	return run, nil
+}
+
+// runHeadBranch is the run's head_branch as the control plane records it on the
+// Attempt: the branch or tag the run is for. When the run's code comes from
+// another repository (a pull request from a fork), it is "owner:branch", the
+// way GitHub labels such a branch; git forbids ":" in a ref name, so it never
+// equals a branch of the job's own repository. "" when GitHub names none.
+func runHeadBranch(run githubapi.WorkflowRun) string {
+	name := strings.TrimSpace(run.HeadBranch)
+	if name == "" {
+		return ""
+	}
+	if head := run.HeadRepository; head != nil && head.FullName != "" &&
+		!strings.EqualFold(head.FullName, run.Repository.FullName) {
+		owner, _, _ := strings.Cut(head.FullName, "/")
+		return owner + ":" + name
+	}
+	return name
+}
+
+// cacheFactsFromRun derives a job's cache facts from its workflow run, as
+// workflowRunOf returned it. Any fact it cannot establish is an error, and the
+// caller publishes cold facts instead: unknown never widens a scope.
+func cacheFactsFromRun(
+	ctx context.Context,
+	runs WorkflowRuns,
+	job *scaleset.JobStarted,
+	run githubapi.WorkflowRun,
+) (cachefacts.Facts, error) {
+	repository := repositorySlug(job.OwnerName, job.RepositoryName)
+	var err error
 	event := strings.ToLower(strings.TrimSpace(run.Event))
 	if event == "" {
 		return cachefacts.Facts{}, errors.New("workflow run names no event")

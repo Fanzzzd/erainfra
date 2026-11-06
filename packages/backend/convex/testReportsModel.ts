@@ -303,6 +303,44 @@ export function branchFromWorkflowRef(workflowRef: string | undefined) {
   return ref || undefined;
 }
 
+/** The `owner/name` a workflow ref's file lives in, or undefined when it names none. */
+function workflowRefRepository(workflowRef: string) {
+  const at = workflowRef.indexOf("/.github/workflows/");
+  return at < 0 ? undefined : workflowRef.slice(0, at);
+}
+
+type RunFacts = {
+  repo?: string;
+  owner?: string;
+  eventName?: string;
+  workflowRef?: string;
+  headBranch?: string;
+  workflowRunId?: number;
+  displayName?: string;
+};
+
+/**
+ * The branch a run tested, as the Tests views show it.
+ *
+ * The controller's `headBranch` is the workflow run's own head_branch from GitHub's REST API. The
+ * job's workflow ref is not a substitute: for a job of a called workflow it names the called
+ * file's ref (`uses: acme/shared/.github/workflows/test.yml@main` makes it `main` whatever branch
+ * was pushed). An Attempt recorded by a controller that does not send headBranch falls back to the
+ * workflow ref only when that file is in the run's own repository. A called workflow in the same
+ * repository at another ref still looks like the run's branch then, which is why the branch from
+ * a workflow ref labels a run and never joins two (see revisionKey).
+ */
+export function runBranch(attempt: RunFacts) {
+  if (attempt.headBranch !== undefined) return attempt.headBranch;
+  const repository = repositoryName(attempt);
+  const workflowRef = attempt.workflowRef;
+  if (repository === undefined || workflowRef === undefined) return undefined;
+  if (workflowRefRepository(workflowRef)?.toLowerCase() !== repository.toLowerCase()) {
+    return undefined;
+  }
+  return branchFromWorkflowRef(workflowRef);
+}
+
 /**
  * Events whose runs test the code at their own branch's head, so that two runs on one branch
  * naming one commit ran the same code: a push, a schedule and a manual dispatch run the branch's
@@ -319,29 +357,35 @@ const COMMIT_JOINED_EVENTS = new Set(["push", "schedule", "workflow_dispatch", "
  * The commit id comes from the job's own `.git`, which the job can write, so a commit alone would
  * let any job join any other's runs: a pull request claiming main's commit could fail main's
  * tests and so mark them flaky. A commit therefore joins runs only together with the branch, and
- * only for an event in COMMIT_JOINED_EVENTS. The branch and the event are what the controller
- * recorded from GitHub's JobStarted message, not anything the job wrote. Inside that key a job can
- * only claim another commit of its own branch's runs.
+ * only for an event in COMMIT_JOINED_EVENTS. The branch is the workflow run's head_branch, which
+ * the controller read from GitHub (see runBranch), and the event is from GitHub's JobStarted
+ * message; neither is anything the job wrote. Inside that key a job can only claim another commit
+ * of its own branch's runs. An Attempt without a head branch from the controller is never joined
+ * by commit: its workflow ref may be a called workflow's, at any branch the caller names.
  *
  * Every other Attempt is joined by its workflow run alone. GitHub reruns a run at the commit and
  * ref it started with (docs.github.com, "Re-running workflows and jobs": a rerun "uses the same
  * GITHUB_SHA (commit SHA) and GITHUB_REF (Git ref) of the original event"), and the run id is the
  * controller's, so a rerun of a pull request still finds its flaky tests and never another run's.
+ *
+ * Either way the key also names the job, by GitHub's display name, which carries the matrix
+ * values (`test (ubuntu, 18)`). Two legs of a matrix, or two jobs of a run, run the same commit
+ * on different platforms or settings, so a test that fails on one and passes on the other is a
+ * deterministic difference between them, not a flaky test. A rerun of a job keeps its name.
  */
-export function revisionKey(
-  attempt: { eventName?: string; workflowRef?: string; workflowRunId?: number },
-  commitSha: string | undefined,
-) {
-  const branch = branchFromWorkflowRef(attempt.workflowRef);
+export function revisionKey(attempt: RunFacts, commitSha: string | undefined) {
+  const job = attempt.displayName ?? null;
   if (
     commitSha !== undefined &&
-    branch !== undefined &&
+    attempt.headBranch !== undefined &&
     attempt.eventName !== undefined &&
     COMMIT_JOINED_EVENTS.has(attempt.eventName)
   ) {
-    return `commit:${commitSha}@${branch}`;
+    return `commit:${JSON.stringify([commitSha, attempt.headBranch, job])}`;
   }
-  if (attempt.workflowRunId !== undefined) return `run:${attempt.workflowRunId}`;
+  if (attempt.workflowRunId !== undefined) {
+    return `run:${JSON.stringify([attempt.workflowRunId, job])}`;
+  }
   return undefined;
 }
 

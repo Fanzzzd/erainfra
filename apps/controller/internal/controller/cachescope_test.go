@@ -166,6 +166,13 @@ func startedJob(runner, workflowRef, event string) *scaleset.JobStarted {
 // what reached the service.
 func publish(t *testing.T, github *fakeGitHub, budget time.Duration, jobs ...*scaleset.JobStarted) []wireFacts {
 	t.Helper()
+	pushed, _ := publishAndRecord(t, github, budget, jobs...)
+	return pushed
+}
+
+// publishAndRecord is publish that also returns what reached the fleet store.
+func publishAndRecord(t *testing.T, github *fakeGitHub, budget time.Duration, jobs ...*scaleset.JobStarted) ([]wireFacts, *fakeStore) {
+	t.Helper()
 	githubServer := httptest.NewServer(github)
 	t.Cleanup(githubServer.Close)
 	if github.block != nil {
@@ -205,11 +212,11 @@ func publish(t *testing.T, github *fakeGitHub, budget time.Duration, jobs ...*sc
 		}
 	}
 	// MarkJobStarted never waits on the publish.
-	if len(store.started) != len(jobs) {
-		t.Fatalf("recorded %d job starts, want %d", len(store.started), len(jobs))
+	if started := store.startedEvents(true); len(started) != len(jobs) {
+		t.Fatalf("recorded %d job starts, want %d", len(started), len(jobs))
 	}
 	scaler.publishing.Wait()
-	return service.all()
+	return service.all(), store
 }
 
 // scope is the cache service's own decision over what was pushed.

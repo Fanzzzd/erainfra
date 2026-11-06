@@ -175,6 +175,92 @@ describe("scale-set Attempt protocol", () => {
     ).toEqual([]);
   });
 
+  it("keeps the run's head branch from either JobStarted, in either order", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    const started = {
+      profile: "rc-linux-js",
+      repository: "app",
+      owner: "acme",
+      workflowRef: "acme/shared/.github/workflows/test.yml@refs/heads/main",
+      displayName: "test",
+      workflowRunId: 99,
+      eventName: "push",
+      queueTime: 100,
+      assignedAt: 200,
+      runnerAssignedAt: 300,
+    };
+    const branchOf = async (runnerName: string) =>
+      (
+        await t.run(async (ctx) =>
+          ctx.db
+            .query("attempts")
+            .withIndex("by_runnerName", (q) => q.eq("runnerName", runnerName))
+            .unique(),
+        )
+      )?.headBranch;
+    for (const [runnerId, runnerName] of [
+      [1, "in-order"],
+      [2, "branch-first"],
+      [3, "settled"],
+    ] as const) {
+      await t.mutation(internal.controllerApi.createAttempt, {
+        ...CONTRACT,
+        profile: "rc-linux-js",
+        runnerName,
+        runnerId,
+        encodedJITConfig: "secret",
+      });
+    }
+
+    // The message as it arrives, then again once the controller has read the run from GitHub.
+    await t.mutation(internal.controllerApi.markJobStarted, { ...started, runnerName: "in-order" });
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "in-order",
+      headBranch: "feature",
+    });
+    expect(await branchOf("in-order")).toBe("feature");
+
+    // The lookup won the race: the plain message must not clear the branch.
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "branch-first",
+      headBranch: "feature",
+    });
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "branch-first",
+    });
+    expect(await branchOf("branch-first")).toBe("feature");
+
+    // A job that settled before the lookup came back still gets its branch, once.
+    await t.mutation(internal.controllerApi.markJobStarted, { ...started, runnerName: "settled" });
+    await t.mutation(internal.controllerApi.markJobCompleted, {
+      profile: "rc-linux-js",
+      runnerName: "settled",
+      result: "succeeded",
+      finishedAt: 400,
+    });
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "settled",
+      headBranch: "feature",
+    });
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "settled",
+      headBranch: "other",
+    });
+    const [settled] = await t.run(async (ctx) =>
+      ctx.db
+        .query("attempts")
+        .withIndex("by_runnerName", (q) => q.eq("runnerName", "settled"))
+        .collect(),
+    );
+    expect(settled).toMatchObject({ state: "completed", headBranch: "feature" });
+  });
+
   it("cancels only non-running Attempts and clears their JIT", async () => {
     const t = convexTest(schema, modules);
     await registerProfile(t);

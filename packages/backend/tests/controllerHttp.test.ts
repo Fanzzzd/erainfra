@@ -286,6 +286,16 @@ describe("controller payloads", () => {
     ).toEqual({ profile: "rc-linux-js", runnerName: "runner-a", runnerId: 42 });
   });
 
+  it("takes the run's head branch when a controller sends it, and does without it", () => {
+    const base = { profile: "rc-linux-js", runnerName: "runner-a", eventName: "push" };
+    expect(parseJobStarted({ ...base, headBranch: " feature/x " })).toMatchObject({
+      headBranch: "feature/x",
+    });
+    expect(parseJobStarted(base)?.headBranch).toBeUndefined();
+    expect(parseJobStarted({ ...base, headBranch: "" })?.headBranch).toBeUndefined();
+    expect(parseJobStarted({ ...base, headBranch: 7 })).toBeNull();
+  });
+
   it("keeps GitHub int64 request identifiers lossless", () => {
     const base = {
       profile: "rc-linux-js",
