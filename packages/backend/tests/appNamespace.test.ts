@@ -24,7 +24,7 @@ services:
     needs: [db]
     env: { NODE_ENV: production }
   db:
-    image: 127.0.0.1:5000/postgres:16
+    image: registry.test:5000/postgres:16
     port: 5432
     node: node-b
     volumes: [pgdata:/var/lib/postgresql/data]
@@ -35,7 +35,7 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   process.env.ERAINFRA_SECRETS_MASTER_KEY = "22".repeat(32);
   process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
-  process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
+  process.env.ERAINFRA_REGISTRY = "registry.test:5000";
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -207,7 +207,7 @@ async function setup(names = ["node-a", "node-b", "node-c"]) {
   };
 }
 
-const image = (name: string) => `127.0.0.1:5000/${name}:1`;
+const image = (name: string) => `registry.test:5000/${name}:1`;
 
 describe("route ownership across Apps", () => {
   it("refuses an App whose spec claims a route label another App already serves", async () => {

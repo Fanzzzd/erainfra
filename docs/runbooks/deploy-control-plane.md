@@ -17,14 +17,22 @@ Two facts decide the order:
   lease-aware controller cannot talk to a backend from before it. So the controller update runs in
   the same window as the deploy, and a rollback moves both back together.
 
+Every `npx convex` command below reads the deployment from `packages/backend/.env.local`. Git
+ignores `*.local`, so a new worktree does not have it: copy it in after every `git worktree add`,
+as each block below does. Without it, `npx convex deploy` stops with "No CONVEX_DEPLOYMENT set".
+Exporting `CONVEX_DEPLOY_KEY` (the production deploy key) in the shell works too. Relative paths
+below start from the checkout you deploy from today (`$main`), beside which both worktrees go.
+
 ## 1. Before
 
-Pick the release and check it out in a clean worktree:
+Pick the release and check it out in a clean worktree, from the checkout you deploy from today:
 
 ```bash
+main=$PWD                                              # this checkout; its .env.local names production
 git fetch --tags origin
 git worktree add ../erainfra-release v0.2.0-rc.11      # the tag you are deploying
 cd ../erainfra-release
+cp "$main/packages/backend/.env.local" packages/backend/
 grep -n 'version:' packages/backend/convex/agentRelease.ts
 pnpm install --frozen-lockfile
 pnpm check                                             # green on the commit you deploy
@@ -34,32 +42,126 @@ The `version` must be the tag's. `mesh` and `controller` in `AGENT_RELEASE` must
 you will install Nodes with `--convex` or update controllers; an empty map makes `/install` refuse
 that role.
 
-Note the release production runs now, and build its rollback branch before the window
-([Roll back](#4-roll-back) says why a plain checkout of it cannot be deployed). `--update` keeps
-each controller host's old binary and unit as `.bak-<old version>` files, so those need no note.
+### The rollback branch
+
+A plain checkout of the release production runs now cannot be deployed over the new one
+([Roll back](#4-roll-back) says why). Its rollback is a branch with the old functions on the new
+schema, and it must exist and pass its checks before the window.
+
+For v0.2.0-rc.10 to v0.2.0-rc.11 it exists:
+`rollback/v0.2.0-rc.10-on-v0.2.0-rc.11-schema`. It was built against `0bfc2b1`, the rc.11
+candidate, and its commit message lists what it took from there. Confirm the tag's schema is still
+that one. No output means the branch is current:
 
 ```bash
-old=0.2.0-rc.10; new=0.2.0-rc.11                     # production now, and the release you deploy
-git worktree add -b "rollback/v$old-on-v$new-schema" ../erainfra-rollback "v$old"
+git diff --stat 0bfc2b1 v0.2.0-rc.11 -- packages/backend/convex/{schema,alertRules,attemptMetricsModel,benchmark,controllerLiveness,egress,testReportsModel,workerPolicy}.ts \
+  packages/backend/convex/infra/{nodeCommandModel,policy,tables}.ts
+```
+
+If it lists a file, redo the steps below on the branch for what changed. Then check the branch out
+where the rollback will run from, and run its checks:
+
+```bash
+cd "$main"
+git worktree add ../erainfra-rollback origin/rollback/v0.2.0-rc.10-on-v0.2.0-rc.11-schema
 cd ../erainfra-rollback
-git checkout "v$new" -- packages/backend/convex/schema.ts
-grep -n '^import' packages/backend/convex/schema.ts   # the modules its validators come from
+cp "$main/packages/backend/.env.local" packages/backend/
+pnpm install --frozen-lockfile && pnpm check           # green: old functions, new schema
+pnpm --filter @erainfra/dashboard build && rm -rf apps/dashboard/dist
+cd "$main"
 ```
 
-Make the old code compile against the new schema. For each module `schema.ts` imports that the old
-release lacks, or has without an export the schema uses, check out the new release's copy too
-(`git checkout "v$new" -- packages/backend/convex/<module>`). If that breaks old code that imports
-the same module, copy just the validators the schema needs into `schema.ts` instead. Then:
+For a later pair of releases, build the branch the same way (`old` is production now, `new` the
+release you deploy):
+
+1. `git worktree add -b "rollback/v$old-on-v$new-schema" ../erainfra-rollback "v$old"`, then copy
+   `.env.local` in as above.
+2. `git checkout "v$new" -- packages/backend/convex/schema.ts`.
+3. Follow every relative import of `schema.ts`, and of each module it brings in, except
+   `import type`. For each module:
+   - The old release lacks it, and it defines no Convex function (no `query(`, `mutation(`,
+     `action(`, `httpAction(` or `internal…(`): take it from `v$new`.
+   - It would bring in functions, or a module the old functions already use: copy only the
+     validators `schema.ts` needs into `schema.ts`, verbatim.
+   - The old release has it and its exported validators match `v$new`'s: keep the old copy, so the
+     old functions behave as they did.
+4. Add each module you took to `packages/backend/convex/_generated/api.d.ts`, in the order
+   `convex codegen` uses (byte order of the path). Codegen itself needs a deployment.
+5. In the root `package.json`, `deploy:control-plane` must be
+   `pnpm --filter @erainfra/backend run deploy`. Without `run`, pnpm 11 runs its own `deploy`.
+6. `pnpm install --frozen-lockfile && pnpm check`, build the dashboard as above, commit, and
+   `git push origin "rollback/v$old-on-v$new-schema"`. Never merge it into `main`.
+
+The branch adds no function code: the functions are the old release's, and the schema only declares
+more tables and optional fields than the old one did.
+
+### Profile label conflicts
+
+List Profiles whose scale-set labels overlap (ADR 0017). The check is read-only and needs no
+function on the deployment, so it works against the backend you are about to replace. Export to a
+file first, so a failed export stops the command instead of reaching the check as empty input:
 
 ```bash
-pnpm install --frozen-lockfile && pnpm check           # green: old functions, new schema
-git commit -m "chore(rollback): v$old functions on the v$new schema"
-git push origin "rollback/v$old-on-v$new-schema"
-cd - >/dev/null
+cd ../erainfra-release/packages/backend
+npx convex data profiles --prod --limit 10000 --format jsonl > profiles.jsonl &&
+  pnpm --silent profile-label-conflicts "$PWD/profiles.jsonl"; echo "exit $?"
+rm profiles.jsonl
+cd "$main"
 ```
 
-The branch is the rollback. Nothing in it is new code: the functions are the old release's, and
-the schema only declares more tables and optional fields than the old one did.
+| Exit | Meaning                                                                                                                                                                                       |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | No pair, and the export showed every active Profile's labels.                                                                                                                                 |
+| 1    | It lists each conflicting pair.                                                                                                                                                               |
+| 2    | The input could not be read or held no Profile. Fix the export and run it again.                                                                                                              |
+| 3    | No pair among what the export shows, but the Profiles it names carry no labels in it. Their controllers register with `RC_LABELS` from their env files, which the deployment does not record. |
+
+v0.2.0-rc.10 stores no labels, so expect 3. On each controller host, read the labels the
+controllers really use:
+
+```bash
+sudo grep -H LABELS= /etc/runner-center/profiles/*.env
+```
+
+No Profile's `RC_LABELS` (or `ERAINFRA_LABELS`) may include another Profile's name. A pair keeps
+registering after the deploy, but GitHub can run either Profile's jobs on the other, and the new
+backend raises it in `erainfra profiles list`, the Profiles table,
+`erainfra_profile_label_conflicts` and the _Profiles' scale-set labels overlap_ alert. Fix it by
+removing the other Profile's name from one side's labels and restarting that controller.
+
+### Prove `--update` will find the controllers
+
+`--update` moves only instances named `runner-center-controller@<profile>` that run from
+`/etc/systemd/system/runner-center-controller@.service`, it replaces the binary at
+`/usr/local/lib/runner-center/runner-center-controller`, and the unit it installs runs each
+instance as `runner-center-controller` with `/etc/runner-center/profiles/<profile>.env`.
+v0.2.0-rc.10's `/install` has no controller role, so a controller on rc.10 was installed by hand.
+Check each controller host before the window. Everything here only reads:
+
+```bash
+sudo /usr/local/lib/runner-center/runner-center-controller version
+getent passwd runner-center-controller
+units=$(systemctl list-units --type=service --state=active --plain --no-legend \
+  'runner-center-controller@*' | awk '{ print $1 }')
+for u in $units; do
+  p=${u#runner-center-controller@}; p=${p%.service}
+  printf '%s fragment=%s dropins=%s env=%s\n' "$u" \
+    "$(systemctl show -p FragmentPath --value "$u")" \
+    "$(systemctl show -p DropInPaths --value "$u")" \
+    "$(sudo test -f "/etc/runner-center/profiles/$p.env" && echo ok || echo MISSING)"
+done
+```
+
+On `oracle-singapore-1` you expect the old version, an account line, and exactly
+`runner-center-controller@rc-e2e.service` and `runner-center-controller@rc-linux-js.service`, each
+with `fragment=/etc/systemd/system/runner-center-controller@.service`, no drop-ins and `env=ok`.
+Anything else means `--update` would miss that controller or fail to start it, and roll back. Fix
+it before the window, or plan the dedicated-host install from
+[operate-the-controller-host.md](operate-the-controller-host.md#dedicated-host-install-and-update)
+for it. From v0.2.0-rc.11 on, `/install … --role controller --update --dry-run` runs these checks
+itself.
+
+### Stage the controller
 
 Stage the new controller binary on every controller host, so the window does not wait on a
 download. Take it from the GitHub Release of the tag and check it against the pin on the release
@@ -71,46 +173,36 @@ curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/v$v/runner-ce
 sha256sum runner-center-controller-linux-x86_64   # must equal controller["linux-x86_64"] in agentRelease.ts
 ```
 
+`--update` keeps each controller host's old binary and unit as `.bak-<old version>` files, so those
+need no note.
+
 Confirm the EraInfra `smoke` workflow is green; it runs daily against the live fleet and on demand
 via workflow dispatch. Pick a quiet window: running Attempts are not interrupted by a deploy, but
 scheduling decisions made mid-deploy land on whichever code version answers, and GitHub queues new
 jobs while the controllers restart.
 
-List Profiles whose scale-set labels overlap (ADR 0017). The check is read-only and needs no
-function on the deployment, so it works against the backend you are about to replace:
-
-```bash
-(cd packages/backend && npx convex data profiles --prod --limit 10000 --format jsonl) \
-  | pnpm --filter @erainfra/backend --silent profile-label-conflicts
-```
-
-`npx convex data` reads the deployment from `packages/backend`'s `.env.local`, so it runs there,
-not from the repository root.
-
-Exit 0 means no pair. A pair it lists keeps registering after the deploy, but GitHub can run
-either Profile's jobs on the other, and the new backend raises it in `erainfra profiles list`, the
-Profiles table, `erainfra_profile_label_conflicts` and the _Profiles' scale-set labels overlap_
-alert. Fix it by removing the other Profile's name from one side's `ERAINFRA_LABELS` and
-restarting that controller.
-
 ## 2. Deploy, and update the controllers in the same window
 
-From the release worktree:
+From the release worktree, deploy the functions, then build and upload the dashboard:
 
 ```bash
-pnpm run deploy:control-plane
+cd ../erainfra-release/packages/backend
+npx convex deploy -y
+pnpm run deploy --skip-convex
 ```
 
-The script calls the backend's `deploy` script through `pnpm run`, because pnpm 11 treats a bare
-`pnpm deploy` as its own built-in command. The inner `convex deploy` asks for confirmation when
-`CONVEX_DEPLOYMENT` names a dev deployment, and it fails in a shell that cannot prompt. In that case
-run the two halves yourself from `packages/backend`: `npx convex deploy -y`, then
-`pnpm run deploy --skip-convex` to build and upload the dashboard.
+Run the backend's `deploy` script through `pnpm run`: pnpm 11 treats a bare `pnpm deploy` as its
+own built-in command. `-y` skips the confirmation `convex deploy` asks for when `CONVEX_DEPLOYMENT`
+names a dev deployment, which would fail in a shell that cannot prompt.
 
 Then at once, on each controller host, update every running controller to the pin the new
-deployment serves, from the staged file:
+deployment serves, from the staged file. The `--dry-run` line takes seconds, changes nothing, and
+repeats the checks from [Before](#prove---update-will-find-the-controllers) with the new
+installer:
 
 ```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
+  --source "file://$PWD/runner-center-controller-linux-x86_64" --dry-run
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
   --source "file://$PWD/runner-center-controller-linux-x86_64"
 ```
@@ -118,8 +210,6 @@ curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role con
 `--source` changes where the bytes come from, never which digest is accepted. `--update` restarts
 exactly the instances that were running and rolls itself back if one fails its health check
 ([operate-the-controller-host.md](operate-the-controller-host.md#dedicated-host-install-and-update)).
-A controller that was not installed by `/install --role controller` has nothing for `--update` to
-update; install it with the dedicated host command in that runbook instead.
 
 ## 3. Verify, in this order
 
@@ -144,11 +234,49 @@ A Convex deploy swaps the code and keeps the data. Before it accepts a schema, C
 document already stored against it. So once the new release has written a field the old schema
 does not declare, `profiles.githubConfigUrl` for example, a deploy of the old commit as it was is
 refused at that check, and the rollback fails exactly when it is needed. The rollback branch from
-[Before](#1-before) carries the old functions with the new schema, so it deploys over anything the
-new release wrote. Old functions never read the new fields, and every new field is optional, so
-the old code behaves as it did. Roll back the backend and the controllers together, in one window:
+[Before](#the-rollback-branch) carries the old functions with the new schema, so it deploys over
+anything the new release wrote. Old functions never read the new fields, and every new field is
+optional, so the old code behaves as it did.
 
-1. On each controller host, put back the binary and unit `--update` kept, and restart the
+### When a rollback to v0.2.0-rc.10 is safe
+
+v0.2.0-rc.10 has no `convex/infra/`: no Node API, no deploy pipeline, no failover, no operator API.
+Every Node running `connect-convex` and every gateway Node depends on it. Rolled back under them,
+running Apps and gateway routes keep serving their last state (as when
+[Convex is unreachable](../infra-management.md#when-convex-is-unreachable)), but nothing deploys,
+fails over, changes env or links, or updates a route, and the `erainfra` CLI and the dashboard's
+Nodes, Apps, Deployments and Links pages stop working. So the rule depends on how far
+[retire-the-hub.md](retire-the-hub.md) has gone:
+
+- **Before its step 2** (no Node runs `connect-convex`): roll back as below.
+- **After step 2, before step 5** (only the gateway Nodes run `connect-convex`; the Hub still
+  serves every App): first put the gateway Nodes back in Hub mode
+  ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)), then roll back as below.
+- **From step 5 on**: first run [retire-the-hub.md, Roll back](retire-the-hub.md#roll-back) in full,
+  so every Node is in Hub mode and `*.<zone>` points at the Hub again. Then roll back as below.
+
+If the Apps cannot take that, do not roll the control plane back: fix forward with a new release.
+
+### Order and commands
+
+Deploy first, then move the controllers. The deploy is the step that can be refused; while it has
+not succeeded, the new backend and the new controllers still work together, so a refused deploy
+leaves CI running. Once it succeeds, the new controllers cannot talk to the old backend, so revert
+them at once.
+
+1. Deploy the rollback branch from its worktree:
+
+   ```bash
+   cd ../erainfra-rollback/packages/backend
+   npx convex deploy -y
+   pnpm run deploy --skip-convex
+   ```
+
+   If `npx convex deploy` is refused with a schema validation error naming a table or field, stop
+   here: nothing changed, and CI still runs on the new release. The branch is missing part of the
+   new schema. Add that declaration from `v$new`, check the branch again, and deploy again.
+
+2. On each controller host, put back the binary and unit `--update` kept, and restart the
    instances that should run:
 
    ```bash
@@ -159,15 +287,6 @@ the old code behaves as it did. Roll back the backend and the controllers togeth
    sudo systemctl daemon-reload
    sudo systemctl restart 'runner-center-controller@<profile>'
    ```
-
-2. Deploy the rollback branch from its worktree:
-
-   ```bash
-   cd ../erainfra-rollback && pnpm install --frozen-lockfile && pnpm run deploy:control-plane
-   ```
-
-   If the push is refused with a schema validation error naming a table or field, the branch is
-   missing part of the new schema: add that declaration from `v$new`, then deploy again.
 
 Then cancel and retry any Attempt created during the window. Attempts already claimed or running
 are unaffected. If the previous backend predates the controller lease, the previous controller

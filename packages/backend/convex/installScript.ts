@@ -784,13 +784,14 @@ __CONTROLLER_DIGESTS__
     printf '%s\n' '         [--min-runners N] [--max-runners N] [--scale-set-name NAME] [--labels A,B]'
     printf '%s\n' '         [--runner-group NAME] [--worker-labels A,B] [--cache-facts-url URL --cache-signing-key-file PATH]'
     printf '%s\n' '         [--source <url|file:///path>] [--reconfigure] [--no-prompt]'
-    printf '%s\n' '       curl -fsSL <site>/install | sudo bash -s -- --role controller --update [--source ...]'
+    printf '%s\n' '       curl -fsSL <site>/install | sudo bash -s -- --role controller --update [--source ...] [--dry-run]'
     printf '%s\n' ''
     printf '%s\n' 'Installs the scale-set controller for one Profile as runner-center-controller@NAME,'
     printf '%s\n' 'on a dedicated host or beside a Worker. Secrets are given as files and copied to'
     printf '%s\n' '/etc/runner-center/secrets/NAME/; the env file /etc/runner-center/profiles/NAME.env'
     printf '%s\n' 'is kept on a rerun unless --reconfigure is given. --update moves every running'
-    printf '%s\n' 'instance on this host to the release this deployment pins.'
+    printf '%s\n' 'instance on this host to the release this deployment pins; with --dry-run it changes nothing and'
+    printf '%s\n' 'reports which instances it would restart and anything that would stop the update.'
     printf '%s\n' "Without --controller-token-file, on a Worker, it installs a standby that signs in with the Worker's"
     printf '%s\n' 'MACHINE_TOKEN (--worker-env-file, default ~SUDO_USER/.runner-center/agent/.env) and takes no other settings.'
   }
@@ -825,6 +826,7 @@ __CONTROLLER_DIGESTS__
   CTL_SOURCE=''
   CTL_RECONFIGURE=0
   CTL_UPDATE=0
+  CTL_DRY_RUN=0
   CTL_PROMPT=1
   CTL_CONFIG_GIVEN=0
   CTL_SHAPE_GIVEN=''
@@ -859,6 +861,7 @@ __CONTROLLER_DIGESTS__
       --source) ctl_take "$1" "$#"; CTL_SOURCE=$2; shift 2 ;;
       --reconfigure) CTL_RECONFIGURE=1; shift ;;
       --update) CTL_UPDATE=1; shift ;;
+      --dry-run) CTL_DRY_RUN=1; shift ;;
       --no-prompt) CTL_PROMPT=0; shift ;;
       -h|--help) ctl_usage; exit 0 ;;
       *) ctl_usage >&2; ctl_fail "Unknown controller option: $1" ;;
@@ -871,6 +874,8 @@ __CONTROLLER_DIGESTS__
       ctl_fail '--update moves every controller on this host to the pinned release and takes no Profile settings; change a Profile with --profile NAME --reconfigure instead'
     fi
   fi
+  [ "$CTL_DRY_RUN" -eq 0 ] || [ "$CTL_UPDATE" -eq 1 ] ||
+    ctl_fail '--dry-run goes with --update: --role controller --update --dry-run'
 
   # A standby takes both the Profile and GitHub credentials from Convex. Refuse these flags even
   # when their values are empty or there is no Worker credential, so they cannot turn into local
@@ -1030,6 +1035,46 @@ CTL_UNIT_B64
     $CTL_SUDO test -d "$1" || $CTL_SUDO install -d -m "$2" "$1"
   }
 
+  # --update --dry-run: read what --update would act on and check it, writing nothing, so an
+  # operator can prove before a maintenance window that --update finds every controller and that
+  # the release unit it installs can run each one. It exits here, 0 when nothing would stop the
+  # update. Restarting none is a failure: a dry run is asked for to show the instances it moves.
+  ctl_update_preflight() {
+    ctl_log "Dry run: nothing on this host is changed."
+    ctl_log "--update would replace $CTL_BINARY ($CTL_OLD_VERSION) with $CTL_VERSION and keep the old one at $CTL_BACKUP."
+    CTL_PREFLIGHT_ERRORS=0
+    ctl_preflight_fail() {
+      printf '❌ %s\n' "$1" >&2
+      CTL_PREFLIGHT_ERRORS=$((CTL_PREFLIGHT_ERRORS + 1))
+    }
+    getent passwd "$CTL_ACCOUNT" >/dev/null 2>&1 ||
+      ctl_preflight_fail "The account $CTL_ACCOUNT does not exist. The release unit runs every instance as it, so each restart would fail and --update would roll back; install a Profile with --role controller --profile NAME first."
+    [ -n "$CTL_ACTIVE" ] ||
+      ctl_preflight_fail "No runner-center-controller@<profile> instance is running, so --update would restart nothing. A controller under another unit name is not one --update moves."
+    for ctl_unit in $CTL_ACTIVE; do
+      ctl_profile=$(printf '%s' "$ctl_unit" | sed -e 's/^runner-center-controller@//' -e 's/[.]service$//')
+      ctl_fragment=$($CTL_SUDO systemctl show -p FragmentPath --value "$ctl_unit" 2>/dev/null || true)
+      [ -n "$ctl_fragment" ] || ctl_fragment='an unknown unit file'
+      if [ "$ctl_fragment" != "$CTL_UNIT_PATH" ]; then
+        ctl_preflight_fail "$ctl_unit runs from $ctl_fragment, not $CTL_UNIT_PATH, so the unit --update installs would not reach it."
+        continue
+      fi
+      ctl_dropins=$($CTL_SUDO systemctl show -p DropInPaths --value "$ctl_unit" 2>/dev/null || true)
+      [ -z "$ctl_dropins" ] ||
+        ctl_warn "$ctl_unit has drop-ins that override the release unit: $ctl_dropins"
+      if ! $CTL_SUDO test -f "$CTL_ETC_DIR/profiles/$ctl_profile.env"; then
+        ctl_preflight_fail "$ctl_unit has no $CTL_ETC_DIR/profiles/$ctl_profile.env, which the release unit reads; it would fail to start."
+        continue
+      fi
+      ctl_log "--update would restart $ctl_unit."
+    done
+    if [ "$CTL_PREFLIGHT_ERRORS" -gt 0 ]; then
+      ctl_fail "Dry run found $CTL_PREFLIGHT_ERRORS problem(s) above; --update would not move this host cleanly. Nothing was changed."
+    fi
+    ctl_log 'Dry run passed. Run the same command without --dry-run to update.'
+    exit 0
+  }
+
   if [ "$CTL_UPDATE" -eq 1 ]; then
     CTL_CURRENT_SHA=$(ctl_installed_sha)
     [ -n "$CTL_CURRENT_SHA" ] ||
@@ -1048,6 +1093,9 @@ CTL_UNIT_B64
       'runner-center-controller@*') || ctl_fail 'Could not list active controllers; nothing was changed.'
     CTL_ACTIVE=$(printf '%s\n' "$CTL_ACTIVE_ROWS" |
       awk '$1 ~ /^runner-center-controller@[a-z0-9-]+\.service$/ { print $1 }')
+    if [ "$CTL_DRY_RUN" -eq 1 ]; then
+      ctl_update_preflight
+    fi
     $CTL_SUDO cp -p "$CTL_BINARY" "$CTL_BACKUP"
     ctl_log "Kept the previous controller ($CTL_OLD_VERSION) at $CTL_BACKUP."
     CTL_HAD_UNIT=0

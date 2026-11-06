@@ -38,6 +38,11 @@ Gateway Nodes themselves run no Apps, so setting them up costs no traffic.
    Nodes leaves Hub mode, and Convex carries it only once both run `connect-convex`. List them
    with `erainfra links list | grep -F <node>`. Switch a Node whose links must not drop in the
    same window as the App Node at their other end.
+5. **The Hub's own failover is off.** The Hub moves the Apps of a Hub-mode Node that has been
+   disconnected for 20 seconds to another Hub-mode Node, with empty volumes. The installer stops
+   Hub-mode agents on purpose here, so a Node you hold back in Hub mode would receive every App of
+   the Node that switches. Set `PORTLESS_FAILOVER=0` in the Hub's env file and recreate its
+   container ([retire-the-hub.md, Before you start](retire-the-hub.md#before-you-start), item 7).
 
 ## 1. Set up two or more gateway Nodes
 
@@ -88,7 +93,18 @@ gateway's journal (`journalctl -u erainfra-gateway`) logs upstream failures.
 
 ## 3. Switch the App Nodes and move the wildcard
 
-Prepare first: re-run the importer, enroll each App Node and put its credential on it, and have the
+Turn Convex's automatic failover off first:
+
+```sh
+npx convex env set ERAINFRA_FAILOVER 0
+```
+
+The Apps on the App Nodes get a stored spec when you deploy them through Convex after this step,
+and from then on failover would move them to a gateway Node with empty volumes the first time
+their Node is silent for two minutes (a reboot, for example), then remove the old containers when
+it comes back. Leave it off until there is a second Node that should run those Apps.
+
+Prepare: re-run the importer, enroll each App Node and put its credential on it, and have the
 DNS command typed on a gateway Node. Then, in one window:
 
 1. On each App Node, switch to `connect-convex`:
@@ -147,8 +163,14 @@ DNS second. Its Apps are down between the two commands.
 
    ```sh
    sudo systemctl disable --now erainfra-node
+   { systemctl cat portless-agent; sudo cat /etc/portless/agent.env /etc/erainfra/agent.env 2>/dev/null; } |
+     grep -E 'ERAINFRA_MESH_(SOCKET|BIN)'      # prints nothing: the Hub-mode agent runs links with dumbpipe
+   sudo systemctl disable --now erainfra-mesh  # only if the grep printed nothing
    sudo systemctl enable --now portless-agent
    ```
+
+   The sidecar keeps listening on the local ports of the links Convex gave it, which a dumbpipe
+   link needs ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)).
 
 3. On the Hub's host, as the user that ran `hub.sh`, point the wildcard back at the Hub's tunnel
    with the config `hub.sh` wrote:
@@ -161,7 +183,9 @@ DNS second. Its Apps are down between the two commands.
 The Hub still has its `*.<zone>` ingress rule from hub.sh and proxies over `/data` again once the
 Hub-mode agent reconnects. Remove any per-App records that point at `erainfra-gateway` as well.
 Routes changed in Convex after the cutover (a deploy or failover, for example) are not in the Hub's
-database; check `portless apps` after a rollback.
+database; check `portless apps` after a rollback. Once `portless nodes` shows every Node connected,
+turn the Hub's own failover back on: delete `PORTLESS_FAILOVER=0` from its env file and recreate
+its container ([retire-the-hub.md](retire-the-hub.md#recreate-the-hub-container)).
 
 ## Retire the Hub's ingress
 

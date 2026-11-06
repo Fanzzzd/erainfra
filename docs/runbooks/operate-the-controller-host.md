@@ -198,7 +198,9 @@ Update running instances on either kind of host:
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update
 ```
 
-`--update` downloads and verifies the pinned binary. If the installed binary already matches, it
+`--update` finds the instances to move with
+`systemctl list-units --state=active 'runner-center-controller@*'`, so it moves only controllers
+running under that unit name. `--update` downloads and verifies the pinned binary. If the installed binary already matches, it
 changes nothing. Otherwise it keeps the old binary as
 `runner-center-controller.bak-<old version>`, installs the new binary and unit, and restarts exactly
 the instances that were running. It never starts a stopped instance, so a retired Profile stays
@@ -210,6 +212,23 @@ both failures and the backup paths for manual recovery. The previous unit is kep
 backup, even after the installer exits. If either file cannot be restored, it skips restarts rather
 than starting the rejected build. `--source file:///path/to/binary` changes where the bytes come
 from, never which digest is accepted.
+
+Before a maintenance window, prove that `--update` will find every controller on the host:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update --dry-run
+```
+
+It downloads and verifies the pinned binary as `--update` does, then changes nothing. It lists each
+running `runner-center-controller@<profile>` instance it would restart, and fails, naming the
+problem, when the binary is not at `/usr/local/lib/runner-center/runner-center-controller`, the
+`runner-center-controller` account is missing, no instance is running, an instance runs from a unit
+file other than `/etc/systemd/system/runner-center-controller@.service`, or an instance has no
+`/etc/runner-center/profiles/<profile>.env`. It warns about drop-ins, which can override what the
+release unit sets. A controller installed by hand, as releases before v0.2.0-rc.11 required, may
+fail any of these. Releases before v0.2.0-rc.11 serve no `--dry-run`;
+[deploy-control-plane.md](deploy-control-plane.md#prove---update-will-find-the-controllers) has
+the same checks as plain `systemctl` commands.
 
 To roll back by hand:
 
