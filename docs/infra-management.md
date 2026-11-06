@@ -744,8 +744,10 @@ owner:
   them passes the test above for this App: labelled for it, or in the shape the Hub gave the App's
   containers. A container of the same App but of the other deploy kind is refused too, because the
   deploy would not replace it: App `db`'s services do not start on a volume the Hub's single
-  container `db` still mounts, or two databases would write one data directory. A volume no
-  container mounts carries no evidence, and the first App to mount it adopts it.
+  container `db` still mounts, or two databases would write one data directory. The same check runs
+  on a volume labelled for this App, since the label names the App but not which of its deploy
+  kinds wrote the data. A volume no container mounts carries no evidence, and the first App to
+  mount it adopts it.
 - **An adopted volume is recorded on the Node.** Docker cannot add a label to an existing volume, so
   a `connect-convex` Infra Agent records the adoption in its state directory instead:
   `<state-dir>/volume-owners/<volume>` holds the App's name. From then on the record refuses every
