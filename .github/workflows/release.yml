@@ -410,7 +410,9 @@ jobs:
         run: |
           GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           for asset in dist/release/*; do
-            case "$asset" in *.sha256 | *.tar.gz) continue ;; esac
+            # erainfra-mesh is Rust: govulncheck cannot read it, and cargo deny checks its
+            # dependencies against the RustSec database in CI's mesh job.
+            case "$asset" in *.sha256 | *.tar.gz | */erainfra-mesh-*) continue ;; esac
             echo "govulncheck ${asset##*/}"
             "$RUNNER_TEMP/bin/govulncheck" -mode binary "$asset"
           done
