@@ -222,6 +222,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveAdminEntries(w, r)
 	case strings.Contains(path, adminFactsMarker):
 		s.serveRegisterFacts(w, r)
+	case strings.Contains(path, buildMarker):
+		s.serveBuild(w, r, after(path, buildMarker))
 	case strings.Contains(path, blobMarker):
 		s.serveBlob(w, r, after(path, blobMarker))
 	case strings.Contains(path, downloadMarker):

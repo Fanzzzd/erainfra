@@ -7,6 +7,10 @@ RUN go mod download
 COPY apps/runtime ./apps/runtime
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
   -o /out/runner-center-guest ./apps/runtime/cmd/runner-center-guest
+# The Go build cache helper a workflow opts into with GOCACHEPROG. Built here,
+# from the same tree and toolchain as the guest daemon whose proxy it talks to.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' \
+  -o /out/erainfra-gocacheprog ./apps/runtime/cmd/erainfra-gocacheprog
 
 FROM docker.io/library/ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 
@@ -254,11 +258,12 @@ RUN case "$TARGETARCH" in \
   && gh --version
 
 COPY --from=guest /out/runner-center-guest /usr/local/bin/runner-center-guest
+COPY --from=guest /out/erainfra-gocacheprog /usr/local/bin/erainfra-gocacheprog
 COPY images/ubuntu-24.04-js/runner-center-guest.service /etc/systemd/system/runner-center-guest.service
 COPY images/ubuntu-24.04-js/smoke.sh /usr/local/lib/runner-center/smoke.sh
 COPY images/ubuntu-24.04-js/sysctl-hosted-parity.conf /etc/sysctl.d/90-runner-center-hosted-parity.conf
 
-RUN chmod 0755 /usr/local/bin/runner-center-guest /usr/local/lib/runner-center/smoke.sh \
+RUN chmod 0755 /usr/local/bin/runner-center-guest /usr/local/bin/erainfra-gocacheprog /usr/local/lib/runner-center/smoke.sh \
   && systemctl enable docker.service haveged.service runner-center-guest.service \
   && truncate --size 0 /etc/machine-id \
   && rm -f /var/lib/dbus/machine-id \

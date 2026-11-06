@@ -30,6 +30,32 @@ type metrics struct {
 	refused              [len(refusalReasons)]atomic.Int64
 	factsLoaded          atomic.Int64
 	factsPersistFailures atomic.Int64
+	// builds counts build-system cache outcomes, by system and outcome.
+	builds [len(buildSystems)][len(buildOutcomes)]atomic.Int64
+}
+
+// Build-system cache outcomes. A write refused to a read-only token is not one
+// of them: that is a fork pull request doing what it may, not a fault.
+const (
+	buildHit   = "hit"
+	buildMiss  = "miss"
+	buildSaved = "saved"
+)
+
+var buildOutcomes = [...]string{buildHit, buildMiss, buildSaved}
+
+func (m *metrics) build(system, outcome string) {
+	for i, knownSystem := range buildSystems {
+		if knownSystem != system {
+			continue
+		}
+		for j, knownOutcome := range buildOutcomes {
+			if knownOutcome == outcome {
+				m.builds[i][j].Add(1)
+				return
+			}
+		}
+	}
 }
 
 func (m *metrics) refuse(reason string) {
@@ -61,6 +87,14 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	out.WriteString("# HELP erainfra_cache_job_facts_persist_failures_total Facts pushes answered 503 because the store refused the write.\n")
 	out.WriteString("# TYPE erainfra_cache_job_facts_persist_failures_total counter\n")
 	fmt.Fprintf(&out, "erainfra_cache_job_facts_persist_failures_total %d\n", s.metrics.factsPersistFailures.Load())
+	out.WriteString("# HELP erainfra_cache_build_requests_total Build-system cache requests (Turborepo remote cache, Go build cache), by system and outcome.\n")
+	out.WriteString("# TYPE erainfra_cache_build_requests_total counter\n")
+	for i, system := range buildSystems {
+		for j, outcome := range buildOutcomes {
+			fmt.Fprintf(&out, "erainfra_cache_build_requests_total{system=%q,outcome=%q} %d\n",
+				system, outcome, s.metrics.builds[i][j].Load())
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write([]byte(out.String()))

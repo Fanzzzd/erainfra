@@ -50,6 +50,11 @@ type Entry struct {
 	// object's own name, inverted, so a listing sorts newest-first without a
 	// read per candidate.
 	CreatedAt int64 `json:"createdAt"`
+	// Attributes are what a protocol has to hand back with a hit besides the
+	// bytes: the Go build cache's output ID, Turborepo's task duration and
+	// signature tag. The actions/cache protocols store none, and an entry they
+	// wrote decodes with this empty.
+	Attributes map[string]string `json:"attributes,omitempty"`
 	// Object is the name of the metadata object this entry was read from. It
 	// is not stored: it is where the entry was found, which is what an access
 	// marker and an eviction are keyed by.
@@ -154,6 +159,30 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 				i.recordAccess(entry.Object)
 				return entry, nil
 			}
+		}
+	}
+	return nil, nil
+}
+
+// LookupExact resolves one key with no prefix match, in the same scope order as
+// Lookup: own ref, base ref, default branch. The build-system caches use it
+// because their keys are content hashes, and a hash that merely starts with
+// the one asked for names a different build's output.
+func (i *Index) LookupExact(ctx context.Context, claims cachetoken.Claims, key, version string) (*Entry, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, nil
+	}
+	versionSegment := versionSegment(version)
+	encoded := hex.EncodeToString([]byte(key)) + "."
+	for _, ref := range claims.ReadScopes() {
+		entry, err := i.newest(ctx, claims.Repository, ref, versionSegment, encoded, version)
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			i.recordAccess(entry.Object)
+			return entry, nil
 		}
 	}
 	return nil, nil

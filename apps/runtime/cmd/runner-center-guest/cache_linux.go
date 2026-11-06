@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/cacheca"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
@@ -93,6 +94,36 @@ func startCacheRedirect(ctx context.Context, md guest.Metadata) (caPath string, 
 		return "", nil, err
 	}
 	return cacheTrustAnchor, redirect.Stop, nil
+}
+
+// buildCacheAddr is where the build cache proxy listens: guest loopback, so
+// nothing outside this VM can reach it, on a fixed port so TURBO_API is the
+// same in every job. 7457 is unregistered with IANA, below the kernel's
+// ephemeral range, and not a port any common service or test fixture binds;
+// a job that does bind it gets EADDRINUSE from its own listener and nothing
+// else changes. Containers on a Docker bridge do not see guest loopback, so a
+// `container:` job or a `docker build` does not reach the proxy and builds
+// without it.
+const buildCacheAddr = "127.0.0.1:7457"
+
+// startBuildCacheProxy serves turbo's remote cache and the Go helper's remote
+// tier from the cache service, presenting the runner bearer on the job's
+// behalf (guestcache.BuildProxy).
+func startBuildCacheProxy(md guest.Metadata) (*guestcache.BuildProxy, error) {
+	return guestcache.StartBuildProxy(guestcache.BuildProxyConfig{
+		CacheServiceURL: md.CacheServiceURL,
+		RunnerToken:     md.CacheRunnerToken,
+		ListenAddr:      buildCacheAddr,
+		Logf:            logf,
+	})
+}
+
+// closeBuildCacheProxy stops the proxy once the runner has exited. Teardown
+// runs on a fresh context: the job's is already cancelled by then.
+func closeBuildCacheProxy(proxy *guestcache.BuildProxy) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = proxy.Close(ctx)
 }
 
 // installTrustAnchor writes the interceptor's per-guest CA and folds it into the
