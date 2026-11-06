@@ -788,6 +788,13 @@ Where the [`erainfra` CLI](#read-the-fleet-from-the-command-line) is installed o
 `erainfra worker <command>` runs the same commands: it runs `~/.runner-center/bin/rc` with the same
 arguments, output and exit code. `rc` keeps working unchanged and stays the stable path for scripts.
 
+A Worker that stops reporting for 10 minutes during a job may only have lost its link to Convex,
+so its job is not stopped. Its Attempt shows as `Retiring` in `erainfra jobs view`, and the
+controller deletes the Runner from GitHub once the job ends. When the Worker reports again, the
+retirement is called off and the job runs to its end as usual. The reconciler ends a retirement
+on its own only after six hours, and only when nothing else can settle it: no controller reports
+for the Profile, and the Attempt is not running on a Worker that reports.
+
 The Worker runs a bounded benchmark at enrollment and daily while idle: SHA-256 CPU throughput,
 memory copy throughput, write/read/fsync plus a 512-file package-link fan-out on
 `~/.runner-center/benchmarks`, and unauthenticated

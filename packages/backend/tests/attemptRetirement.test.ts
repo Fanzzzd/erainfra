@@ -5,7 +5,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import { RETIREMENT_UNCONFIRMED_MS } from "../convex/attemptRetirement";
+import { RETIREMENT_UNCONFIRMED_MS, retirementBackstopDue } from "../convex/attemptRetirement";
 import schema from "../convex/schema";
 import {
   CONTRACT,
@@ -309,6 +309,173 @@ describe("the reconciler ending an Attempt whose Worker stopped reporting", () =
     expect(ended?.cancelReason).toMatch(/no controller confirmed/);
     expect(await live(t)).toEqual([]);
     expect(await cleanups(t)).toEqual(["unserved"]);
+    expect(await slots(t, machineId)).toBe(0);
+  });
+});
+
+/** A controller for the Profile reporting now, as its heartbeat does every 30 seconds. */
+async function controllerReports(
+  t: Harness,
+  sessionState: "listening" | "standby" | "stopped" = "listening",
+) {
+  await t.mutation(internal.controllerApi.recordHeartbeat, {
+    profile: PROFILE,
+    hostname: "controller-1",
+    version: "test",
+    sessionState,
+    assignedJobs: 0,
+    runningJobs: 1,
+    tokenSlot: "current",
+  });
+}
+
+/** Moves the clock and has the Worker heartbeat through its own mutation, as the Agent does. */
+async function workerHeartbeatAt(t: Harness, at: number) {
+  vi.setSystemTime(at);
+  await t.mutation(api.agentApi.heartbeat, { token: "token-w1" });
+}
+
+describe("a running Attempt whose Worker went silent and came back", () => {
+  async function retiredMidJob(t: Harness) {
+    await insertProfile(t);
+    const machineId = await insertMachine(t, "w1", { lastSeen: NOW - 15 * MINUTE, usedSlots: 1 });
+    const id = await insertAttempt(t, {
+      machineId,
+      state: "running",
+      runnerName: "long-build",
+      runnerId: 21,
+      startedAt: NOW - 20 * MINUTE,
+    });
+    await t.mutation(internal.reconcile.run, {});
+    expect((await row(t, id))?.retirement, "the silence retired it").toBeDefined();
+    expect(await cleanups(t)).toEqual(["long-build"]);
+    expect(await active(t)).toEqual([]);
+    return { machineId, id };
+  }
+
+  it("is no longer retiring after the Worker's first heartbeat", async () => {
+    const t = convexTest(schema, modules);
+    const { id } = await retiredMidJob(t);
+
+    await workerHeartbeatAt(t, NOW + MINUTE);
+    expect(await row(t, id)).toMatchObject({
+      state: "running",
+      retirement: undefined,
+      runnerCleanupPending: undefined,
+    });
+    expect(await cleanups(t), "the controller stops trying to delete a busy Runner").toEqual([]);
+    expect(await active(t), "the controller counts it again").toEqual(["long-build"]);
+  });
+
+  it("keeps its job past the backstop while a controller gets JobStillRunning", async () => {
+    const t = convexTest(schema, modules);
+    const { machineId, id } = await retiredMidJob(t);
+
+    // The Worker is back; only the reconciler sees it (no heartbeat mutation ran).
+    for (let hour = 1; hour <= 7; hour++) {
+      vi.setSystemTime(NOW + hour * 60 * MINUTE);
+      await t.run(async (ctx) => ctx.db.patch(machineId, { lastSeen: Date.now() }));
+      await controllerReports(t);
+      await t.mutation(internal.reconcile.run, {});
+    }
+    expect(Date.now() - NOW).toBeGreaterThan(RETIREMENT_UNCONFIRMED_MS);
+    expect(await row(t, id)).toMatchObject({ state: "running", retirement: undefined });
+    expect(await live(t), "the Agent keeps the VM").toContain(id);
+    expect(await slots(t, machineId)).toBe(1);
+
+    await t.mutation(internal.controllerApi.markJobCompleted, {
+      profile: PROFILE,
+      runnerName: "long-build",
+      result: "succeeded",
+      finishedAt: Date.now(),
+    });
+    expect((await row(t, id))?.state).toBe("completed");
+  });
+
+  it("is retired again if the Worker goes silent again", async () => {
+    const t = convexTest(schema, modules);
+    const { id } = await retiredMidJob(t);
+    await workerHeartbeatAt(t, NOW + MINUTE);
+    expect((await row(t, id))?.retirement).toBeUndefined();
+
+    vi.setSystemTime(NOW + 15 * MINUTE);
+    await t.mutation(internal.reconcile.run, {});
+    expect((await row(t, id))?.retirement?.reason).toBe(
+      "Worker stopped reporting during the GitHub job",
+    );
+  });
+});
+
+describe("the retirement backstop", () => {
+  it("never ends a running Attempt whose Worker reports, even with no controller", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await setup(t);
+    const id = await insertAttempt(t, {
+      machineId,
+      state: "running",
+      runnerName: "busy",
+      startedAt: NOW,
+      runnerCleanupPending: true,
+      retirement: { outcome: "failed", reason: "test", requestedAt: NOW },
+    });
+    const later = NOW + RETIREMENT_UNCONFIRMED_MS + MINUTE;
+    const due = await t.run(async (ctx) => {
+      const attempt = await ctx.db.get(id);
+      const machine = await ctx.db.get(machineId);
+      if (attempt === null || machine === null) throw new Error("fixture rows missing");
+      return retirementBackstopDue(ctx, attempt, { ...machine, lastSeen: later }, later);
+    });
+    expect(due).toBe(false);
+  });
+
+  it("waits for a live controller to settle an idle Runner, and ends it once none reports", async () => {
+    const t = convexTest(schema, modules);
+    const machineId = await setup(t);
+    const id = await insertAttempt(t, { machineId, state: "ready", runnerName: "idle" });
+    await t.mutation(internal.controllerApi.cancelAttempt, {
+      profile: PROFILE,
+      runnerName: "idle",
+      reason: "scale down",
+    });
+
+    vi.setSystemTime(NOW + RETIREMENT_UNCONFIRMED_MS + MINUTE);
+    await t.run(async (ctx) => ctx.db.patch(machineId, { lastSeen: Date.now() }));
+    await controllerReports(t, "standby");
+    await t.mutation(internal.reconcile.run, {});
+    expect(
+      (await row(t, id))?.state,
+      "a controller waiting for the lease can still settle it",
+    ).toBe("ready");
+
+    await controllerReports(t, "stopped");
+    await t.mutation(internal.reconcile.run, {});
+    expect(await row(t, id)).toMatchObject({ state: "cancelled", runnerCleanupPending: true });
+    expect(await live(t)).toEqual([]);
+  });
+
+  it("ends a running Attempt whose Worker stays silent once no controller reports", async () => {
+    const t = convexTest(schema, modules);
+    await insertProfile(t);
+    const machineId = await insertMachine(t, "w1", { lastSeen: NOW - 15 * MINUTE, usedSlots: 1 });
+    const id = await insertAttempt(t, {
+      machineId,
+      state: "running",
+      runnerName: "gone",
+      startedAt: NOW - 20 * MINUTE,
+    });
+    await controllerReports(t);
+    await t.mutation(internal.reconcile.run, {});
+
+    vi.setSystemTime(NOW + RETIREMENT_UNCONFIRMED_MS + MINUTE);
+    await controllerReports(t);
+    await t.mutation(internal.reconcile.run, {});
+    expect((await row(t, id))?.state, "the listening controller still settles it").toBe("running");
+
+    vi.setSystemTime(Date.now() + 5 * MINUTE);
+    await t.mutation(internal.reconcile.run, {});
+    const ended = await row(t, id);
+    expect(ended).toMatchObject({ state: "failed", runnerCleanupPending: true });
+    expect(ended?.lastError).toMatch(/Worker stopped reporting during the GitHub job/);
     expect(await slots(t, machineId)).toBe(0);
   });
 });
