@@ -18,7 +18,7 @@
 .github/workflows/ci.yml:49 note group-and-labels group: the job also asks for runner group "ubuntu-runners"; the Profile's scale set must be in that group (the controller's ERAINFRA_RUNNER_GROUP), or drop group:
 .github/workflows/ci.yml:54 note group-and-label-list group: the job also asks for runner group "larger"; the Profile's scale set must be in that group (the controller's ERAINFRA_RUNNER_GROUP), or drop group:
 .github/workflows/ci.yml:59 note group-only group: runs-on names only the runner group "ubuntu-runners"; a Profile is chosen by label, so add labels: <profile> by hand
-.github/workflows/ci.yml:67 note aliased alias: runs-on is a YAML alias; edit the anchor it points to
+.github/workflows/ci.yml:67 note aliased alias: runs-on is the YAML alias *default-runner; it changes only with its anchor on line 63
 .github/workflows/ci.yml:71 note tagged unregistered: erainfra-8vcpu-windows-2022 is not a Profile registered in the control plane; jobs sent to it will queue until one is
 .github/workflows/ci.yml:82 note matrix matrix: runs-on is the matrix expression ${{ matrix.os }}; left unchanged, because the matrix value may also be used outside runs-on; the matrix lists ubuntu-latest -> erainfra-4vcpu-ubuntu-2604, macos-latest -> erainfra-6vcpu-macos-15, ubuntu-24.04-arm -> erainfra-16vcpu-ubuntu-2404-arm
 .github/workflows/ci.yml:86 note expression expression: runs-on is the expression ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}; left unchanged

@@ -35,7 +35,13 @@ labels with no equivalent, and the /runs-on router job, which has to stay on a
 GitHub-hosted runner. A reusable workflow in this repository that takes
 runs-on from an input has that input's default and its callers' with: values
 rewritten. In a router job, the Profile it asks about (a PROFILE variable or a
-profile= query) is renamed when ADR 0010 or --map renames it.
+profile= query) is renamed when ADR 0010 or --map renames it. A label whose
+YAML anchor an env: value or other non-runs-on field also reads is left
+unchanged too.
+
+Each rewritten file is parsed again and compared with the original; if any
+value other than the reported labels differs, that file is left unchanged with
+a "verify" note.
 
 Examples:
   erainfra migrate runs-on

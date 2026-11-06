@@ -55,6 +55,8 @@ const (
 	NoteUnregistered = "unregistered" // a --map target the control plane does not know
 	NoteParse        = "parse"        // the file is not valid YAML
 	NoteInPlace      = "in-place"     // the label could not be located byte for byte
+	NoteEncoding     = "encoding"     // the file is not UTF-8
+	NoteVerify       = "verify"       // the rewritten file did not read back as planned
 )
 
 // FileResult is one workflow file after the rewrite.
@@ -98,22 +100,29 @@ type edit struct {
 type workflow struct {
 	file     File
 	root     *yaml.Node
-	lines    []int // byte offset where each line starts
+	lines    []int // byte offset where each line starts, as the YAML parser counts lines
 	starts   []int // sorted byte offsets of every node, for the end of a block scalar
 	callable bool
 	changes  []Change
 	notes    []Note
 	edits    []edit
 	mapper   *Mapper
+	// paths lists every path each node is read under; an anchor gives its
+	// node one more path per alias.
+	paths map[*yaml.Node][][]string
+	// want is the value each edited node must hold after the rewrite.
+	want map[*yaml.Node]string
 }
 
+const utf8BOM = "\xef\xbb\xbf"
+
 func parseWorkflow(f File) *workflow {
-	w := &workflow{file: f, lines: []int{0}}
-	for i, b := range f.Content {
-		if b == '\n' {
-			w.lines = append(w.lines, i+1)
-		}
+	w := &workflow{file: f, want: map[*yaml.Node]string{}}
+	if bytes.HasPrefix(f.Content, []byte("\xff\xfe")) || bytes.HasPrefix(f.Content, []byte("\xfe\xff")) {
+		w.note(nil, "", NoteEncoding, "the file is UTF-16; left unchanged. Convert it to UTF-8 and run this again")
+		return w
 	}
+	w.lines = lineStarts(f.Content)
 	var doc yaml.Node
 	if err := yaml.Unmarshal(f.Content, &doc); err != nil {
 		w.note(nil, "", NoteParse, fmt.Sprintf("not valid YAML, left unchanged: %v", err))
@@ -122,11 +131,55 @@ func parseWorkflow(f File) *workflow {
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return w
 	}
-	w.root = doc.Content[0]
+	paths, err := occurrences(doc.Content[0])
+	if err != nil {
+		w.note(nil, "", NoteParse, fmt.Sprintf("left unchanged: %v", err))
+		return w
+	}
+	w.root, w.paths = doc.Content[0], paths
 	w.collectStarts(w.root)
 	sort.Ints(w.starts)
 	w.callable = triggers(mapGet(w.root, "on"))["workflow_call"]
 	return w
+}
+
+// lineStarts finds where each line starts by the YAML parser's rules, so a
+// node's line and column turn into the right byte offset: CR LF is one
+// break, and a lone CR, LF, NEL (U+0085), LS (U+2028) and PS (U+2029) are
+// each one, inside a comment or a quoted string too. A UTF-8 byte order
+// mark comes before line 1, column 1.
+func lineStarts(src []byte) []int {
+	first := 0
+	if bytes.HasPrefix(src, []byte(utf8BOM)) {
+		first = len(utf8BOM)
+	}
+	lines := []int{first}
+	for i := first; i < len(src); {
+		n := breakWidth(src, i)
+		if n == 0 {
+			i++
+			continue
+		}
+		i += n
+		lines = append(lines, i)
+	}
+	return lines
+}
+
+// breakWidth is the length in bytes of the line break at src[i], 0 if there
+// is none.
+func breakWidth(src []byte, i int) int {
+	switch {
+	case src[i] == '\r' && i+1 < len(src) && src[i+1] == '\n':
+		return 2
+	case src[i] == '\r' || src[i] == '\n':
+		return 1
+	case src[i] == 0xC2 && i+1 < len(src) && src[i+1] == 0x85:
+		return 2
+	case src[i] == 0xE2 && i+2 < len(src) && src[i+1] == 0x80 && (src[i+2] == 0xA8 || src[i+2] == 0xA9):
+		return 3
+	}
+	return 0
 }
 
 func (w *workflow) collectStarts(n *yaml.Node) {
@@ -216,7 +269,7 @@ func (w *workflow) rewrite(m *Mapper, callees map[string]map[string]bool) {
 func (w *workflow) rewriteRunsOn(job string, jobNode, runsOn *yaml.Node, routers map[string]bool) {
 	switch runsOn.Kind {
 	case yaml.AliasNode:
-		w.note(runsOn, job, NoteAlias, "runs-on is a YAML alias; edit the anchor it points to")
+		w.note(runsOn, job, NoteAlias, aliasNote("runs-on", runsOn))
 	case yaml.ScalarNode:
 		if isExpression(runsOn.Value) {
 			w.noteExpression(job, jobNode, runsOn, routers)
@@ -244,7 +297,7 @@ func (w *workflow) rewriteRunsOn(job string, jobNode, runsOn *yaml.Node, routers
 		case yaml.SequenceNode:
 			w.labelList(labels, job, "runs-on.labels", jobNode, routers)
 		case yaml.AliasNode:
-			w.note(labels, job, NoteAlias, "runs-on.labels is a YAML alias; edit the anchor it points to")
+			w.note(labels, job, NoteAlias, aliasNote("runs-on.labels", labels))
 		}
 		if group != nil && len(w.changes) > before {
 			w.note(group, job, NoteGroup, fmt.Sprintf("the job also asks for runner group %q; the Profile's scale set must be in that group (the controller's ERAINFRA_RUNNER_GROUP), or drop group:", group.Value))
@@ -264,7 +317,7 @@ func (w *workflow) labelList(seq *yaml.Node, job, field string, jobNode *yaml.No
 		case item.Kind == yaml.ScalarNode:
 			w.label(item, job, field)
 		case item.Kind == yaml.AliasNode:
-			w.note(item, job, NoteAlias, field+" is a YAML alias; edit the anchor it points to")
+			w.note(item, job, NoteAlias, aliasNote(field, item))
 		}
 		return
 	}
@@ -310,14 +363,52 @@ func (w *workflow) label(n *yaml.Node, job, field string) bool {
 }
 
 func (w *workflow) replaceScalar(n *yaml.Node, job, field, from string, t Target) bool {
+	if other := w.sharedWith(n); other != "" {
+		w.note(n, job, NoteAlias, fmt.Sprintf("%s carries a YAML anchor that %s also reads; rewriting it would change that value too, so it is left unchanged. Give %s its own value, then run this again", field, other, field))
+		return false
+	}
 	start, end, ok := w.scalarSpan(n)
 	if !ok {
 		w.note(n, job, NoteInPlace, fmt.Sprintf("could not find %q in the source to edit it in place; change it to %s by hand", from, t.Label))
 		return false
 	}
 	w.edits = append(w.edits, edit{start, end, t.Label})
+	w.want[n] = t.Label
 	w.changes = append(w.changes, Change{Line: n.Line, Column: n.Column, Job: job, Field: field, From: from, Target: t})
 	return true
+}
+
+// sharedWith names a path where n is also read through an anchor and its
+// alias, other than a job's runs-on; "" when there is none. An anchored label
+// that other jobs alias as their runs-on moves with them, which is what those
+// jobs ask for. One that an env value or an input also reads would change
+// that value too.
+func (w *workflow) sharedWith(n *yaml.Node) string {
+	for i, p := range w.paths[n] {
+		if i > 0 && !isRunsOnPath(p) {
+			return showPath(p)
+		}
+	}
+	return ""
+}
+
+// wantByPath turns the value each edited node must hold into the paths the
+// node is read under, for verify.
+func (w *workflow) wantByPath() map[string]string {
+	out := map[string]string{}
+	for n, value := range w.want {
+		for _, p := range w.paths[n] {
+			out[firstDocument(p)] = value
+		}
+	}
+	return out
+}
+
+func aliasNote(field string, alias *yaml.Node) string {
+	if alias.Alias == nil {
+		return field + " is a YAML alias; edit the anchor it points to"
+	}
+	return fmt.Sprintf("%s is the YAML alias *%s; it changes only with its anchor on line %d", field, alias.Value, alias.Alias.Line)
 }
 
 func (w *workflow) noteExpression(job string, jobNode, n *yaml.Node, routers map[string]bool) {
@@ -418,11 +509,24 @@ func (w *workflow) rewriteInputDefaults(inputs map[string]bool) {
 	})
 }
 
-// isRouterJob recognises the README's /runs-on router: a job whose script
-// asks the control plane's /runs-on endpoint which label to use.
+// routerCall is a request to the control plane's /runs-on endpoint: the path
+// ends there, before a query, a quote, a space or the end of the script. A
+// file path such as .github/runs-on.yml does not match.
+var routerCall = regexp.MustCompile(`/runs-on(?:[?"'\s]|$)`)
+
+// isRouterJob recognises the README's /runs-on router: a job that publishes
+// outputs for other jobs to run on, with a step whose script calls the
+// endpoint and names what it asks about (profile=, or the older labels=).
 func isRouterJob(job *yaml.Node) bool {
+	if outputs := mapGet(job, "outputs"); outputs == nil || outputs.Kind != yaml.MappingNode || len(outputs.Content) == 0 {
+		return false
+	}
 	for _, step := range seqItems(mapGet(job, "steps")) {
-		if run := mapGet(step, "run"); run != nil && run.Kind == yaml.ScalarNode && strings.Contains(run.Value, "/runs-on") {
+		run := mapGet(step, "run")
+		if run == nil || run.Kind != yaml.ScalarNode {
+			continue
+		}
+		if routerCall.MatchString(run.Value) && (strings.Contains(run.Value, "profile=") || strings.Contains(run.Value, "labels=")) {
 			return true
 		}
 	}
@@ -467,6 +571,20 @@ func (w *workflow) rewriteProfileQuery(run *yaml.Node, job string) {
 	if !ok {
 		return
 	}
+	want := profileQuery.ReplaceAllStringFunc(run.Value, func(m string) string {
+		if t, _ := w.mapper.resolve(strings.TrimPrefix(m, "profile=")); t.Label != "" {
+			return "profile=" + t.Label
+		}
+		return m
+	})
+	if want == run.Value {
+		return
+	}
+	if other := w.sharedWith(run); other != "" {
+		w.note(run, job, NoteAlias, fmt.Sprintf("this run: script carries a YAML anchor that %s also reads; left unchanged, so rename the Profile in it by hand", other))
+		return
+	}
+	w.want[run] = want
 	end := len(w.file.Content)
 	if i := sort.SearchInts(w.starts, start+1); i < len(w.starts) {
 		end = w.starts[i]
@@ -515,7 +633,7 @@ func (w *workflow) scalarSpan(n *yaml.Node) (int, int, bool) {
 	if end > len(src) || !bytes.Equal(src[i:end], value) {
 		return 0, 0, false
 	}
-	if end < len(src) && !bytes.ContainsRune([]byte(" \t\r\n,]}#"), rune(src[end])) {
+	if end < len(src) && !bytes.ContainsRune([]byte(" \t,]}#"), rune(src[end])) && breakWidth(src, end) == 0 {
 		return 0, 0, false
 	}
 	return i, end, true
@@ -530,7 +648,7 @@ func (w *workflow) offset(line, column int) (int, bool) {
 	i := w.lines[line-1]
 	src := w.file.Content
 	for c := 1; c < column; c++ {
-		if i >= len(src) || src[i] == '\n' {
+		if i >= len(src) || breakWidth(src, i) > 0 {
 			return 0, false
 		}
 		_, size := utf8.DecodeRune(src[i:])
@@ -562,6 +680,15 @@ func (w *workflow) result() FileResult {
 		}
 		out = append(out[:e.start], append([]byte(e.text), out[e.end:]...)...)
 		last = e.start
+	}
+	if len(w.edits) > 0 {
+		if err := verify(w.file.Content, out, w.wantByPath()); err != nil {
+			w.notes = append(w.notes, Note{Kind: NoteVerify, Message: fmt.Sprintf(
+				"read back, the rewritten file was not the original with only its labels renamed: %v. Nothing in this file was changed; rename its %d label(s) by hand",
+				err, len(w.changes))})
+			w.changes = nil
+			out = append([]byte(nil), w.file.Content...)
+		}
 	}
 	sort.SliceStable(w.changes, func(i, j int) bool {
 		if w.changes[i].Line != w.changes[j].Line {
