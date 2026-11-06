@@ -198,8 +198,12 @@ secret values themselves need not change.
    Convex does not.
 
 Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
-inside the `portless-data` volume). Start with `--dry-run`, which reads everything, asks the
-deployment what the import would do, and writes nothing:
+inside the `portless-data` volume). The Hub runs SQLite in WAL mode, so its latest writes may sit
+in `portless.db-wal`: give the importer a `VACUUM INTO` snapshot taken while the Hub runs, or copy
+the `.db` file with its `-wal` and `-shm` files once the Hub is stopped.
+[retire-the-hub.md](runbooks/retire-the-hub.md#1-copy-the-hub-into-convex) has the commands. Start
+with `--dry-run`, which reads everything, asks the deployment what the import would do, and writes
+nothing:
 
 ```sh
 CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
@@ -279,48 +283,75 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    again issues another credential for the same Node. Without the CLI, an owner or admin can call
    `npx convex run infra/nodes:enroll '{"name":"edge-1"}' --identity '{"subject":"<users _id>|cli"}'`.
 
-2. **Store the credential** on the Node in a 0600 file, for example
-   `/etc/erainfra-node.credential`. It is for this one Node, not an operator or fleet token.
+2. **Copy the credential to the Node** as a file, for example `scp edge-1.credential edge-1:`. It
+   is for this one Node, not an operator or fleet token. Never pass it on a command line.
 
-3. **Give the Node a sidecar.** Build `erainfra-mesh` (`cargo build --release` in `apps/mesh`) or
-   take it from a release that ships it, then pick one:
-   - As an ordinary user, set `ERAINFRA_MESH_BIN=/path/to/erainfra-mesh`. The Infra Agent creates
-     the endpoint key on first start and supervises the sidecar under
-     `$ERAINFRA_PREFIX/run/mesh-control/sidecar` (default `~/.portless`). Keep that directory: the
-     key in it is the Node's mesh identity.
-   - With the `erainfra-mesh.service` that `/install --role node --mesh` sets up (see
-     [secure-node-mesh.md](runbooks/secure-node-mesh.md)), stop and disable the Hub-mode
-     `portless-agent.service`, then set `ERAINFRA_MESH_SOCKET=/run/erainfra-mesh/control.sock` and
-     `ERAINFRA_MESH_CONTROL_DIR=/var/lib/erainfra/mesh-control`.
+3. **Install the agent and its sidecar.** On Linux with systemd, run the control plane's installer
+   from the deployment the Node will report to:
 
-   With neither variable set, `connect-convex` still runs commands, but it publishes no endpoint
-   and the Node has no mesh links. Windows is not supported for the sidecar in this mode.
+   ```sh
+   curl --proto '=https' -fsSL https://<deployment>.convex.site/install | sudo bash -s -- \
+     --role node --convex --credential-file ./edge-1.credential
+   ```
+
+   The installer verifies the Infra Agent and `erainfra-mesh` against the deployment's pins,
+   installs `erainfra-mesh.service` exactly as `--mesh` does (see
+   [secure-node-mesh.md](runbooks/secure-node-mesh.md)), and then:
+   - moves the credential to `/etc/erainfra-node.credential` (0600, root) and creates
+     `/var/lib/erainfra-node` (0700) for the journal. Delete the copy you gave it;
+   - writes and starts `erainfra-node.service`, which runs
+     `connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node`
+     with `ERAINFRA_CONVEX_SITE` set to the deployment's own site URL,
+     `ERAINFRA_MESH_SOCKET=/run/erainfra-mesh/control.sock` and
+     `ERAINFRA_MESH_CONTROL_DIR=/var/lib/erainfra/mesh-control`, and no Hub settings.
+
+   `--convex` refuses `--token`, `--hub` and `--name`: the Node's name comes from its enrollment.
+   It also refuses while `portless-agent.service` or `erainfra-agent.service` is running or
+   enabled, because two modes must not drive one sidecar. Add `--replace-hub-agent` to stop and
+   disable that unit first; it does so only after both downloads verify, and it keeps the unit file
+   and `agent.env` for a rollback. In the other direction, the Hub-mode installer refuses while
+   `erainfra-node.service` is running or enabled.
 
 4. **Pick the relay policy.** Each Node reads it from its own environment, with the names the Hub
    uses: `ERAINFRA_MESH_RELAYS` (a JSON array of `https` relay URLs, default `[]`),
    `ERAINFRA_MESH_RELAY_TOKEN` and `ERAINFRA_MESH_N0_FALLBACK` (`true` or `false`, default
    `false`). Convex stores no relay token, so the snapshot's `relays` field is ignored. Two Nodes
-   that are both behind NAT need a relay.
+   that are both behind NAT need a relay. For the installed unit, add them with
+   `systemctl edit erainfra-node` as `Environment=` lines, then `systemctl restart erainfra-node`.
+   The drop-in survives a re-install.
 
-5. **Start the agent** with a private persistent state directory and the credential out of argv:
+5. **Without systemd** (macOS, or Linux without systemd), start the agent by hand. Build
+   `erainfra-mesh` (`cargo build --release` in `apps/mesh`) or take it from a release that ships
+   it. Run the agent as an ordinary user that owns a private persistent state directory and the
+   0600 credential file, with the credential out of argv:
 
    ```sh
-   install -d -m 0700 /var/lib/erainfra-node
+   sudo install -d -m 0700 -o "$USER" /var/lib/erainfra-node
+   chmod 0600 edge-1.credential
    env -u PORTLESS_HUB -u ERAINFRA_HUB \
      ERAINFRA_CONVEX_SITE=https://<deployment>.convex.site \
      ERAINFRA_MESH_BIN=/usr/local/bin/erainfra-mesh \
      ./infra-agent connect-convex \
-       --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node
+       --credential-file ./edge-1.credential --state-dir /var/lib/erainfra-node
    ```
+
+   With `ERAINFRA_MESH_BIN` set, the Infra Agent creates the endpoint key on first start and
+   supervises the sidecar under `$ERAINFRA_PREFIX/run/mesh-control/sidecar` (default
+   `~/.portless`). Keep that directory: the key in it is the Node's mesh identity. Without
+   `ERAINFRA_MESH_BIN` or `ERAINFRA_MESH_SOCKET`, `connect-convex` still runs commands, but it
+   publishes no endpoint and the Node has no mesh links. Windows is not supported for the sidecar
+   in this mode.
 
    `ERAINFRA_NODE_CREDENTIAL_FILE` and `ERAINFRA_NODE_STATE_DIR` can supply the two paths instead.
    `ERAINFRA_NODE_CREDENTIAL` is an alternative to the file, not an additional credential. Both
    modes refuse mixed Hub/Convex configuration, and there is no fallback to a Hub token. The journal
    requires private POSIX permissions and directory fsync. This command does not install a service.
 
-   Within a few seconds the log shows `published mesh endpoint <EndpointId>`, then
+   Either way, within a few seconds the log (`journalctl -u erainfra-node -f` for the installed
+   unit) shows `published mesh endpoint <EndpointId>`, then
    `applied mesh snapshot <revision> (<n> peers, <n> exposures, <n> links)`. The applied snapshot,
    without any relay token, is also written to `desired.json` in the state directory.
+   `erainfra nodes list` shows the Node with transport `convex`, `online` and `MESH proven`.
 
 6. **Declare links** with `erainfra links add <provider>:<port> <consumer>[:<local-port>]`, or
    with `needs:` in an App deployed through Convex. Each Node picks the change up on its next
@@ -392,13 +423,22 @@ dashboard still talk to the Hub only.
 
 ### Roll back to Hub mode
 
-1. Stop `connect-convex`. Its sidecar keeps running if it is the systemd service; a supervised one
-   stops with the agent.
-2. Restore the original `connect` command or re-enable `portless-agent.service`, with its
-   `ERAINFRA_HUB`/`PORTLESS_HUB` and token, and unset `ERAINFRA_CONVEX_SITE` and the
-   `ERAINFRA_NODE_*` variables. Keep `ERAINFRA_MESH_SOCKET` or `ERAINFRA_MESH_BIN` if the Node
-   should stay on the mesh: Hub mode drives the same sidecar, key and EndpointId, and its next
-   healer pass replaces the Convex grants with the Hub's.
+A Node that stops heartbeating looks lost to Convex. If it runs an App with a stored spec, Convex
+fails the App over to another Node after about two and a half minutes and queues `docker rm -f` of
+its containers here for when the Node reports again. Before rolling back such a Node, turn
+automatic failover off with `npx convex env set ERAINFRA_FAILOVER 0`, and turn it on again only
+once the Apps are where you want them.
+
+1. Stop `connect-convex`: `systemctl disable --now erainfra-node` for the installed unit. Its
+   sidecar keeps running if it is the systemd service; a supervised one stops with the agent.
+2. If `--replace-hub-agent` stopped the Hub-mode unit, start it again with
+   `systemctl enable --now portless-agent`: its unit file and `agent.env` are where they were.
+   Otherwise re-run `/install --role node --token <hub token> --hub wss://<hub>/agent --mesh`,
+   which refuses while `erainfra-node.service` is running or enabled. For a hand-started agent,
+   restore the original `connect` command with its `ERAINFRA_HUB`/`PORTLESS_HUB` and token, and
+   unset `ERAINFRA_CONVEX_SITE` and the `ERAINFRA_NODE_*` variables. Keep `ERAINFRA_MESH_SOCKET`
+   or `ERAINFRA_MESH_BIN` if the Node should stay on the mesh: Hub mode drives the same sidecar,
+   key and EndpointId, and its next healer pass replaces the Convex grants with the Hub's.
 3. Keep the state directory and its journal. Do not run both modes against the same workloads: the
    Hub cannot observe Convex command leases or journal outcomes.
 
@@ -828,9 +868,17 @@ curl -fsS -H "Authorization: Bearer $TOKEN" "$SITE/api/v1/deployments?app=my-app
 
 A deploy request names the App and exactly one source: `upload` (a storage id from the upload) or
 `repo` with an optional `branch` (default `main`) and `sha`. `port` is the container port for a
-source with no spec file; `buildNode` and `node` name the build Node and the Node unpinned services
-land on, and default to the first live Node by name. The spec's `app:`, when set, must match the
+source with no spec file; `node` names the Node unpinned services land on, and `buildNode` the Node
+that builds, which defaults to the `node` default. The spec's `app:`, when set, must match the
 request's App. Uploads are limited to 256 MiB.
+
+Without `node`, an App that already runs stays where it runs: its primary Node takes the unpinned
+services, and each service it already runs stays on that service's Node. A Hub single-container
+App, which has only a route row, stays on the route's Node. Only an App Convex has never seen goes
+to the first live Node by name. When the Node an App runs on is not connected to Convex, the run
+fails rather than starting the App elsewhere with empty volumes; name a Node with `node` to move
+it on purpose. Moving an App off a lost Node is failover's job. The same defaults apply to a push
+to a bound branch that names no deploy Node, including bindings copied from the Hub.
 
 The build Node fetches an upload through the Convex file-storage URL in its claimed command payload.
 That URL carries no credential, is given only to the Node holding the step's live claim, and stops
@@ -856,7 +904,7 @@ pnpm convex env set ERAINFRA_GH_WEBHOOK_SECRET <webhook secret>
 Bind a branch with an admin token, from the CLI or the operator API:
 
 ```sh
-erainfra git bind acme/web main --app web                       # first live Node builds and runs it
+erainfra git bind acme/web main --app web                       # builds and runs where the App runs
 erainfra git bind acme/web release/1.2 --app web-rc --build-node edge-1 --deploy-node edge-2 --port 3000
 erainfra git bindings                                           # repository, branch, App, Nodes, last run
 erainfra git unbind acme/web release/1.2
@@ -889,15 +937,31 @@ other Node at the same loopback address over an `erainfra-mesh` link, so Docker 
 registry and no daemon needs configuring. Set both in the Convex environment:
 
 ```sh
-pnpm convex env set ERAINFRA_REGISTRY 127.0.0.1:5000      # where builds push and Nodes pull
-pnpm convex env set ERAINFRA_REGISTRY_NODE <node name>    # the Node running the registry
+npx convex env set ERAINFRA_REGISTRY 127.0.0.1:61050       # where builds push and Nodes pull
+npx convex env set ERAINFRA_REGISTRY_NODE <node name>      # the Node running the registry
 ```
+
+`ERAINFRA_REGISTRY` has no default. It is `host[:port]` with no scheme, and it must name the
+registry that actually runs: `deploy/infra/hub.sh` starts `portless-registry` on
+`127.0.0.1:61050` (`ERAINFRA_REG_PORT`), and `deploy/infra/registry.sh up` on `127.0.0.1:5000`.
+To see what a Hub host uses, read `PORTLESS_REGISTRY` and `PORTLESS_REGISTRY_NODE` in
+`~/portless-env/hub.env` (or `~/erainfra-env/hub.env`) on it, or run `docker port portless-registry`.
+
+A run that would build fails at planning, before anything is built, when:
+
+- `ERAINFRA_REGISTRY` is unset or is not `host[:port]`;
+- `ERAINFRA_REGISTRY_NODE` is set but names no Node, or the port cannot be read from
+  `ERAINFRA_REGISTRY`;
+- a Node other than the registry Node needs the registry and the registry Node is not connected to
+  Convex with a proven mesh endpoint. A registry Node still in Hub mode cannot serve the others.
+
+An App whose services all name an `image:` builds nothing and needs no registry.
 
 During planning, before any build, the pipeline records a standalone link `registry-<node>` from
 the registry Node to the build Node and to every Node that starts a service. Each Node's mesh
-snapshot carries it: the registry Node exposes `127.0.0.1:5000` to that one peer, and the other Node
-listens on `127.0.0.1:5000`. The links stay after the run, so a later failover can pull too. A run
-fails instead of overwriting a link of that name that someone declared. Leave
+snapshot carries it: the registry Node exposes the registry port to that one peer, and the other
+Node listens on the same `127.0.0.1` port. The links stay after the run, so a later failover can
+pull too. A run fails instead of overwriting a link of that name that someone declared. Leave
 `ERAINFRA_REGISTRY_NODE` unset to use a registry every Node reaches by itself, such as one with TLS
 at `registry.example.com` (`docker login` on each Node when it is private); nothing is linked then.
 
@@ -948,8 +1012,10 @@ to that Node cancels the queued removal.
 
 Failover redeploys stateless services only, as on the Hub: a database moved to another Node starts
 with that Node's volume. Apps copied from the Hub have no stored spec and are not failed over until
-deployed once through Convex. Set `ERAINFRA_FAILOVER=0` in the Convex environment to turn automatic
-failover off.
+deployed once through Convex. A survivor is any live Node, gateway Nodes included. Set
+`ERAINFRA_FAILOVER=0` in the Convex environment to turn automatic failover off, which a fleet with
+one Node that should run Apps needs: otherwise a reboot of that Node longer than two minutes moves
+its Apps to a gateway Node with empty volumes.
 
 ### What still needs the Hub
 
@@ -1009,9 +1075,13 @@ A route is served only while its row names the placement the App runs. The App r
 route's service on the route's Node at the route's port, and that port must be allocated on that
 Node to that service (key `<app>/<service>` in `portAllocations`). A route that fails the check is
 refused, not guessed: no exposure on its Node and `upstream: null` at the gateways (503). This
-keeps a stale row from pointing an exposure at a port another App now holds on that Node. A route
-with no App row (a single-container Hub route never deployed through an App) is refused the same
-way.
+keeps a stale row from pointing an exposure at a port another App now holds on that Node.
+
+A single-container App the Hub deployed has a route row and no App row: its container is named
+after the label and publishes the route's port itself, so no port was ever allocated for it. Such
+a route is served as long as no App row routes at the label or carries its name, and no port
+allocation on the route's Node gives that port to anyone else. It keeps serving after its Node
+switches to `connect-convex`, with no redeploy first.
 
 Route count never refuses a snapshot. Every released Infra Agent refuses a snapshot with more than
 128 links or 128 exposures, so each Node's ingress gets what its declared links and exposures

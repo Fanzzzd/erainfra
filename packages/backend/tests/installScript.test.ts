@@ -981,6 +981,257 @@ sleep 5
   });
 });
 
+/**
+ * A systemctl that keeps per-unit active and enabled state as marker files in `stateDir`, so a test
+ * can seed a running Hub-mode unit and see what the installer stopped, enabled and restarted.
+ */
+function statefulSystemctl(stateDir: string) {
+  return `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"
+state='${stateDir}'
+cmd=""
+now=0
+units=()
+for arg in "$@"; do
+  case "$arg" in
+    --now) now=1 ;;
+    -*) ;;
+    *) if [ -z "$cmd" ]; then cmd=$arg; else units+=("\${arg%.service}"); fi ;;
+  esac
+done
+for unit in "\${units[@]}"; do
+  case "$cmd" in
+    enable) touch "$state/$unit.enabled"; [ "$now" -eq 0 ] || touch "$state/$unit.active" ;;
+    disable) rm -f "$state/$unit.enabled"; [ "$now" -eq 0 ] || rm -f "$state/$unit.active" ;;
+    start|restart) touch "$state/$unit.active" ;;
+    stop) rm -f "$state/$unit.active" ;;
+    is-active)
+      if [ -e "$state/$unit.active" ]; then echo active; exit 0; fi
+      echo inactive; exit 3 ;;
+    is-enabled)
+      if [ -e "$state/$unit.enabled" ]; then echo enabled; exit 0; fi
+      echo disabled; exit 1 ;;
+  esac
+done
+exit 0
+`;
+}
+
+function convexArgs(credential: string, extra: readonly string[] = []) {
+  return ["--role", "node", "--convex", "--credential-file", credential, "--no-docker", ...extra];
+}
+
+// connect-convex mode needs Linux with systemd and the systemd sidecar, so this sandbox pretends to
+// be one: uname reports Linux, sudo redirects every system path under the sandbox (and drops -o/-g,
+// since the sandbox has no erainfra-mesh account), and systemctl keeps per-unit active and enabled
+// state so a test can seed a running Hub-mode unit.
+describe("--role node --convex", () => {
+  const TARGET = `linux-${process.arch === "arm64" ? "arm64" : "x86_64"}`;
+  const CREDENTIAL = `erainfra_node_${"ab".repeat(32)}`;
+
+  const UNAME_STUB = `#!/usr/bin/env bash
+if [ "$1" = "-s" ]; then printf 'Linux\\n'; exit 0; fi
+PATH=/usr/bin:/bin exec uname "$@"
+`;
+
+  const SYSTEMD_ROOT_SUDO_STUB = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$RC_TEST_SUDO_LOG"
+[ "$1" = "useradd" ] && exit 0
+count=$#
+skip=0
+while [ "$count" -gt 0 ]; do
+  arg=$1
+  shift
+  count=$((count - 1))
+  if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+  case "$arg" in
+    -o|-g) skip=1 ;;
+    /etc/*|/run/*|/usr/local/*|/var/lib/*) set -- "$@" "$RC_TEST_SUDO_ROOT$arg" ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+exec "$@"
+`;
+
+  function convexSandbox() {
+    const sandbox = createSandbox(CURRENT);
+    grantRoot(sandbox);
+    const bin = path.join(sandbox.root, "bin");
+    const units = path.join(sandbox.root, "units");
+    mkdirSync(units);
+    writeExecutable(path.join(bin, "sudo"), SYSTEMD_ROOT_SUDO_STUB);
+    writeExecutable(path.join(bin, "systemctl"), statefulSystemctl(units));
+    writeExecutable(path.join(bin, "uname"), UNAME_STUB);
+
+    const base = `https://github.com/${CURRENT.repo}/releases/download/v${CURRENT.version}`;
+    const agent = path.join(sandbox.fixtures, `infra-agent-${TARGET}`);
+    writeExecutable(agent, "#!/usr/bin/env bash\nexit 0\n");
+    route(sandbox, `${base}/infra-agent-${TARGET}`, agent);
+    const mesh = path.join(sandbox.fixtures, `erainfra-mesh-${TARGET}`);
+    writeExecutable(mesh, "#!/usr/bin/env bash\nexit 0\n");
+    const meshSha = createHash("sha256").update(readFileSync(mesh)).digest("hex");
+    writeFileSync(`${mesh}.sha256`, `${meshSha}  erainfra-mesh-${TARGET}\n`);
+    route(sandbox, `${base}/erainfra-mesh-${TARGET}`, mesh);
+    route(sandbox, `${base}/erainfra-mesh-${TARGET}.sha256`, `${mesh}.sha256`);
+    const agentSha = createHash("sha256").update(readFileSync(agent)).digest("hex");
+    repin(sandbox, {
+      ...CURRENT,
+      infraAgent: { [TARGET]: agentSha },
+      mesh: { [TARGET]: meshSha },
+    });
+
+    const credential = path.join(sandbox.fixtures, "edge-1.credential");
+    writeFileSync(credential, `${CREDENTIAL}\n`);
+    return {
+      sandbox,
+      credential,
+      unitFile: (name: string) => path.join(sandbox.sudoRoot, "etc", "systemd", "system", name),
+      seed: (unit: string, ...states: Array<"active" | "enabled">) => {
+        for (const state of states) writeFileSync(path.join(units, `${unit}.${state}`), "");
+      },
+      isLive: (unit: string, state: "active" | "enabled") =>
+        existsSync(path.join(units, `${unit}.${state}`)),
+      serviceLog: () => readLog(path.join(sandbox.root, "service.log")).trimEnd().split("\n"),
+    };
+  }
+
+  it("installs connect-convex as erainfra-node.service, with the sidecar and no Hub", () => {
+    const box = convexSandbox();
+    const result = run(box.sandbox, convexArgs(box.credential));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const unit = readFileSync(box.unitFile("erainfra-node.service"), "utf8");
+    const agent = path.join(box.sandbox.home, ".portless", "bin", "portless-agent");
+    expect(unit).toContain(
+      `ExecStart=${agent} connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node\n`,
+    );
+    expect(unit).toMatch(/^Environment=ERAINFRA_CONVEX_SITE=https:\/\/example\.convex\.site$/m);
+    expect(unit).toMatch(/^Environment=ERAINFRA_MESH_SOCKET=\/run\/erainfra-mesh\/control\.sock$/m);
+    expect(unit).toMatch(
+      /^Environment=ERAINFRA_MESH_CONTROL_DIR=\/var\/lib\/erainfra\/mesh-control$/m,
+    );
+    expect(unit).toMatch(/^Requires=erainfra-mesh\.service$/m);
+    expect(unit).toMatch(/^SupplementaryGroups=erainfra-mesh$/m);
+    expect(unit).not.toMatch(/^(Environment=(PORTLESS|ERAINFRA)_(HUB|TOKEN)|EnvironmentFile)/m);
+    expect(unit).not.toContain(CREDENTIAL);
+    expect(existsSync(box.unitFile("erainfra-mesh.service"))).toBe(true);
+    expect(existsSync(box.unitFile("portless-agent.service"))).toBe(false);
+
+    const stored = path.join(box.sandbox.sudoRoot, "etc", "erainfra-node.credential");
+    expect(readFileSync(stored, "utf8")).toBe(`${CREDENTIAL}\n`);
+    expect(statSync(stored).mode & 0o777).toBe(0o600);
+    const state = path.join(box.sandbox.sudoRoot, "var", "lib", "erainfra-node");
+    expect(statSync(state).mode & 0o777).toBe(0o700);
+    // The credential never travels on a command line.
+    expect(readLog(path.join(box.sandbox.root, "sudo.log"))).not.toContain(CREDENTIAL);
+
+    expect(box.isLive("erainfra-node", "active")).toBe(true);
+    expect(box.isLive("erainfra-node", "enabled")).toBe(true);
+    expect(result.stdout).toMatch(/journalctl -u erainfra-node/);
+    expect(result.stdout).toMatch(/erainfra nodes list .*transport convex.*MESH proven/);
+    expect(result.stdout).toMatch(/Roll back to Hub mode: systemctl disable --now erainfra-node/);
+    expect(result.stdout).toMatch(/Delete .*edge-1\.credential/);
+  });
+
+  it("refuses while portless-agent.service is live, names the flag, and changes nothing", () => {
+    const box = convexSandbox();
+    box.seed("portless-agent", "active", "enabled");
+    const result = run(box.sandbox, convexArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/portless-agent\.service runs this Node in Hub mode/);
+    expect(result.stderr).toMatch(/--replace-hub-agent/);
+    expect(readLog(box.sandbox.curlLog)).not.toMatch(/infra-agent|erainfra-mesh/);
+    expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
+    expect(box.isLive("portless-agent", "active")).toBe(true);
+  });
+
+  it("refuses an enabled erainfra-agent.service the same way", () => {
+    const box = convexSandbox();
+    box.seed("erainfra-agent", "enabled");
+    const result = run(box.sandbox, convexArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/erainfra-agent\.service runs this Node in Hub mode/);
+  });
+
+  it("stops and disables the Hub-mode unit first with --replace-hub-agent", () => {
+    const box = convexSandbox();
+    box.seed("portless-agent", "active", "enabled");
+    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(box.isLive("portless-agent", "active")).toBe(false);
+    expect(box.isLive("portless-agent", "enabled")).toBe(false);
+    expect(box.isLive("erainfra-node", "active")).toBe(true);
+    const service = box.serviceLog();
+    const stopped = service.indexOf("disable --now portless-agent");
+    expect(stopped, service.join(" / ")).toBeGreaterThanOrEqual(0);
+    // Before the sidecar restarts: portless-agent.service requires it, so a restart would bounce
+    // the Hub agent too.
+    expect(stopped).toBeLessThan(service.indexOf("restart erainfra-mesh"));
+    expect(stopped).toBeLessThan(service.indexOf("restart erainfra-node"));
+  });
+
+  it("leaves the Hub-mode unit running when the new bytes do not match the pin", () => {
+    const box = convexSandbox();
+    box.seed("portless-agent", "active", "enabled");
+    repin(box.sandbox, {
+      ...CURRENT,
+      infraAgent: { [TARGET]: "0".repeat(64) },
+      mesh: { [TARGET]: "0".repeat(64) },
+    });
+    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/);
+    expect(box.isLive("portless-agent", "active")).toBe(true);
+    expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
+  });
+
+  it("refuses --hub or --token together with --convex", () => {
+    for (const extra of [
+      ["--hub", "wss://hub.example.com/agent"],
+      ["--token", "plt_node_token"],
+    ]) {
+      const box = convexSandbox();
+      const result = run(box.sandbox, convexArgs(box.credential, extra));
+      expect(result.status, extra.join(" ")).not.toBe(0);
+      expect(result.stderr).toMatch(/--convex takes no --token or --hub/);
+      expect(readLog(box.sandbox.curlLog)).toBe("");
+    }
+  });
+
+  it("refuses --convex without a credential file, and a file that holds no Node credential", () => {
+    const box = convexSandbox();
+    const missing = run(box.sandbox, ["--role", "node", "--convex", "--no-docker"]);
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toMatch(/--convex requires --credential-file/);
+
+    writeFileSync(box.credential, "plt_node_token\n");
+    const wrong = run(box.sandbox, convexArgs(box.credential));
+    expect(wrong.status).not.toBe(0);
+    expect(wrong.stderr).toMatch(/does not hold one Node credential/);
+    expect(readLog(box.sandbox.curlLog)).toBe("");
+  });
+
+  it("refuses without systemd", () => {
+    const box = convexSandbox();
+    rmSync(path.join(box.sandbox.sudoRoot, "run", "systemd"), { recursive: true });
+    const result = run(box.sandbox, convexArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/needs Linux with systemd/);
+    expect(readLog(box.sandbox.curlLog)).toBe("");
+  });
+
+  it("makes the Hub-mode path refuse while erainfra-node.service is live", () => {
+    const box = convexSandbox();
+    box.seed("erainfra-node", "active", "enabled");
+    const result = run(box.sandbox, nodeArgs());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/erainfra-node\.service runs this Node in Convex mode/);
+    expect(result.stderr).toMatch(/systemctl disable --now erainfra-node/);
+    expect(readLog(box.sandbox.curlLog)).toBe("");
+    expect(existsSync(box.unitFile("portless-agent.service"))).toBe(false);
+  });
+});
+
 // The dispatch runs in front of both roles, so a bug in it is a bug on every install.
 describe("--role parsing", () => {
   it("refuses a --role with no value, wherever the missing value falls", () => {

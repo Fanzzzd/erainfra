@@ -41,6 +41,17 @@ curl -fsSL https://<your-deployment>.convex.site/install | sudo bash -s -- --rol
 
 `--worker-user` defaults to whoever ran sudo; `--data-device`/`--meta-device` swap the file-backed
 pool for dedicated devices (destroyed, as below); `--uninstall` mirrors the rollback section.
+
+Re-running it on a live Worker, to move the runtime to a newer release, refuses while any
+Firecracker VM runs on the host. That includes the idle warm VMs the runtime keeps parked for the
+next job, so a Worker with no jobs still refuses. Provisioning reloads the job network policy and
+restarts the runtime, which would end those VMs. Drain first, as the refusal lists: wait until the
+dashboard shows nothing running on the Worker (for a Profile's only Worker, follow
+[take-the-only-worker-away.md](take-the-only-worker-away.md)), run
+`sudo systemctl stop runner-center-runtime`, check that `pgrep -x firecracker` prints nothing, then
+re-run. Run by hand, `deploy/provision-firecracker-host.sh --force-network-reload` provisions anyway
+and ends every running job; the one-command form has no such option.
+
 Everything after this paragraph is the same provisioning done by hand — for air-gapped hosts, for
 a runtime built from source, or to read what the one command does.
 

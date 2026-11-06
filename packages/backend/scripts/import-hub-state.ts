@@ -3,9 +3,15 @@
  * deployment, the first step of ADR 0016 phase 2. Safe to repeat: every row is keyed on what the
  * Hub keyed it on, so a second run changes only what changed on the Hub since the first, and never
  * a row Convex has written or deleted since (convex/infra/hubImport.ts). It prints a result for
- * every row that is not unchanged, and exits non-zero when Convex refused any row; the other rows
- * are applied regardless. `--dry-run` asks the deployment what the import would do, writing
- * nothing, when CONVEX_URL and CONVEX_DEPLOY_KEY are set.
+ * every row that is not unchanged, and exits non-zero when Convex refused any row; the rows Convex
+ * did not refuse are applied. Two failures stop more than one row: a Hub state this script refuses
+ * (an ambiguous secret scope, a contested route label) throws before anything is sent, and a write
+ * that throws fails its whole batch of up to 200 rows, which Convex rolls back while earlier calls
+ * stay applied. `--dry-run` asks the deployment what the import would do, writing nothing, when
+ * CONVEX_URL and CONVEX_DEPLOY_KEY are set.
+ *
+ * The Hub's database runs in WAL mode: pass a `VACUUM INTO` snapshot, or a copy of the .db file
+ * with its -wal and -shm files taken while the Hub is stopped (docs/runbooks/retire-the-hub.md).
  *
  * Usage, on the Hub's host (the state directory is inside the `portless-data` volume):
  *

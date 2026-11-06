@@ -275,6 +275,59 @@ describe("gateway ingress in the Node snapshot", () => {
     expect(await served()).toBeNull();
   });
 
+  it("serves a single-container App the Hub deployed, which has a route row and no App row", async () => {
+    const { t, gw, app, route, snapshot, setRoles } = await fixture();
+    await setRoles(gw.nodeId, ["gateway"]);
+    // What the Hub importer copies for `portless deploy --port`: the container is named after the
+    // label and publishes the port itself, so there is no App row and no port allocation.
+    await t.run((ctx) =>
+      ctx.db.insert("appRoutes", {
+        name: "solo",
+        nodeId: app.nodeId,
+        image: "reg/solo:1",
+        port: 8080,
+        updatedAt: T0,
+      }),
+    );
+    const served = async () =>
+      (await snapshot(gw.credential)).desired.ingress?.routes.find((r) => r.host === "solo")
+        ?.upstream ?? null;
+    expect(await served()).not.toBeNull();
+    expect((await snapshot(app.credential)).desired.exposures).toEqual([
+      expect.objectContaining({ name: "ingress.solo", target: "127.0.0.1:8080" }),
+    ]);
+
+    // Another App now holds port 8080 on that Node: the stale row is not sent to it.
+    await route("api", app.nodeId, 8080);
+    expect(await served()).toBeNull();
+    expect((await snapshot(app.credential)).desired.exposures.map((e) => e.name)).toEqual([
+      "ingress.api",
+    ]);
+  });
+
+  it("does not serve a bare route row named after an App that routes elsewhere", async () => {
+    const { t, gw, app, snapshot, setRoles } = await fixture();
+    await setRoles(gw.nodeId, ["gateway"]);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("apps", {
+        name: "solo",
+        nodeId: app.nodeId,
+        services: [{ name: "web", image: "reg/solo:2", args: [], nodeId: app.nodeId }],
+        links: [],
+        updatedAt: T0,
+      });
+      await ctx.db.insert("appRoutes", {
+        name: "solo",
+        nodeId: app.nodeId,
+        image: "reg/solo:1",
+        port: 8080,
+        updatedAt: T0,
+      });
+    });
+    const routes = (await snapshot(gw.credential)).desired.ingress?.routes;
+    expect(routes).toEqual([{ host: "solo", upstream: null }]);
+  });
+
   it("revokes routes and grants when the gateway role is removed or the gateway is revoked", async () => {
     const { t, human, gw, app, route, snapshot, setRoles } = await fixture();
     await route("web", app.nodeId, 62001);

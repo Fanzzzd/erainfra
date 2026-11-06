@@ -20,11 +20,13 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   process.env.ERAINFRA_SECRETS_MASTER_KEY = "44".repeat(32);
   process.env.ERAINFRA_APP_DOMAIN = "apps.example.com";
+  process.env.ERAINFRA_REGISTRY = "127.0.0.1:5000";
 });
 afterEach(() => {
   vi.useRealTimers();
   delete process.env.ERAINFRA_SECRETS_MASTER_KEY;
   delete process.env.ERAINFRA_APP_DOMAIN;
+  delete process.env.ERAINFRA_REGISTRY;
 });
 
 /** A Hub with one multi-service App, one single-container App, links, env and a binding. */

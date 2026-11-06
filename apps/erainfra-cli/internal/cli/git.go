@@ -45,7 +45,7 @@ var gitBindingsCommand = command{
 	summary: "List the repository branches that deploy on push",
 	long: `
 A push to a bound branch queues one deploy of the pushed commit to the App, built on
-BUILD and deployed to DEPLOY (the first live Node when not set). LAST is the result
+BUILD and deployed to DEPLOY (where the App runs when not set). LAST is the result
 of the newest push-triggered run.`,
 	run: func(ctx context.Context, a *App, in invocation) error {
 		c, _, err := a.connect()
@@ -109,8 +109,8 @@ repository without a portless.yaml. A repository branch is bound to one App at m
 and a fleet holds at most 200 bindings.`,
 	flags: []flagSpec{
 		{name: "app", metavar: "NAME", usage: "the App the branch deploys (required)"},
-		{name: "build-node", metavar: "NAME", usage: "the Node that builds the image (default: the first live Node)"},
-		{name: "deploy-node", metavar: "NAME", usage: "the Node that runs the App (default: the first live Node)"},
+		{name: "build-node", metavar: "NAME", usage: "the Node that builds the image (default: the deploy Node)"},
+		{name: "deploy-node", metavar: "NAME", usage: "the Node that runs the App (default: where the App runs now; the first live Node for a new App)"},
 		{name: "port", metavar: "PORT", usage: "the container port, for a repository without portless.yaml"},
 	},
 	run: func(ctx context.Context, a *App, in invocation) error {

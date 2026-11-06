@@ -349,6 +349,9 @@ export const infraTables = {
     sourceDeleted: v.optional(v.boolean()),
     buildNodeId: v.optional(v.id("nodes")),
     defaultNodeId: v.optional(v.id("nodes")),
+    // Set when the request named no Node and the App already ran somewhere: defaultNodeId is the
+    // App's own Node, and each service without `node:` stays on the Node it runs on.
+    keepsPlacement: v.optional(v.boolean()),
     // Container port for a repository with no spec file.
     port: v.optional(v.number()),
     spec: v.optional(appSpecValidator),
