@@ -32,5 +32,12 @@ export async function githubMock() {
       returns: v.object({ listed: v.number(), missing: v.number(), requested: v.number() }),
       handler: async () => ({ listed: 0, missing: 0, requested: 0 }),
     }),
+    // Referenced by crons.ts. The real one fetches the actions/runner release list; parsing and
+    // the expiry rule are tested directly in tests/runnerReleases.test.ts.
+    refreshRunnerReleases: internalAction({
+      args: {},
+      returns: v.null(),
+      handler: async () => null,
+    }),
   };
 }

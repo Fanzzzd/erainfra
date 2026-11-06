@@ -13,6 +13,7 @@ import {
   type RecoveryCandidate,
   type RecoveryClient,
 } from "./recovery";
+import { parseRunnerReleases, RUNNER_RELEASE_PAGE } from "./runnerReleaseModel";
 
 function splitRepo(fullName: string) {
   const [owner, repo, extra] = fullName.split("/");
@@ -304,5 +305,70 @@ export const recoverLostDeliveries = internalAction({
     });
 
     return { listed: result.listed, missing: result.missing, requested: result.requested };
+  },
+});
+
+/**
+ * A client for reading a public repository with the best credential at hand: an installation token
+ * of the App when it is installed anywhere, else the legacy GITHUB_PAT, else none. Any of them can
+ * read actions/runner's releases. A credential only lifts the anonymous limit of 60 requests an
+ * hour, which other tenants on Convex's shared egress addresses may already have spent.
+ */
+async function publicReadOctokit(ctx: ActionCtx): Promise<Octokit> {
+  const stored = await ctx.runQuery(internal.githubApp.credentials, {});
+  const resolved = resolveAppCredentials(stored, {
+    appId: process.env.GITHUB_APP_ID,
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
+  });
+  if (resolved.ok) {
+    try {
+      const app = new App({ appId: resolved.appId, privateKey: resolved.privateKey });
+      const installations = await app.octokit.request("GET /app/installations", { per_page: 1 });
+      const installation = installations.data[0];
+      if (installation !== undefined) return await app.getInstallationOctokit(installation.id);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`Reading the actions/runner releases without the App's token: ${reason}`);
+    }
+  }
+  const token = process.env.GITHUB_PAT;
+  return token === undefined || token.length === 0 ? new Octokit() : new Octokit({ auth: token });
+}
+
+/**
+ * Refresh the actions/runner release list the runner-release-expiring alert reads
+ * (runnerReleases.ts). The cron runs hourly and this asks GitHub only once the list is six hours
+ * old, so a failed fetch is retried within the hour and the steady state is four requests a day.
+ * A failure keeps the last good list.
+ */
+export const refreshRunnerReleases = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx): Promise<null> => {
+    const now = Date.now();
+    if (!(await ctx.runQuery(internal.runnerReleases.refreshDue, { now }))) return null;
+    try {
+      const octokit = await publicReadOctokit(ctx);
+      const response = await octokit.request("GET /repos/{owner}/{repo}/releases", {
+        owner: "actions",
+        repo: "runner",
+        per_page: RUNNER_RELEASE_PAGE,
+        headers: { "X-GitHub-Api-Version": "2022-11-28" },
+        request: { signal: AbortSignal.timeout(30_000) },
+      });
+      const releases = parseRunnerReleases(response.data);
+      if (releases.length === 0) throw new Error("GitHub listed no actions/runner release");
+      await ctx.runMutation(internal.runnerReleases.record, { attemptedAt: now, releases });
+    } catch (error) {
+      const message =
+        error instanceof RequestError
+          ? `GitHub responded ${error.status}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      console.error(`Could not refresh the actions/runner release list: ${message}`);
+      await ctx.runMutation(internal.runnerReleases.record, { attemptedAt: now, error: message });
+    }
+    return null;
   },
 });

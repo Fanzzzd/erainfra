@@ -21,6 +21,7 @@ import {
   LIVE_ATTEMPT_STATES,
   READINESS_STATES,
 } from "./fleetObservation";
+import { runnerReleaseStanding } from "./runnerReleaseModel";
 
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
 export const METRICS_RECENT_WINDOW_MS = 60 * 60_000;
@@ -148,6 +149,10 @@ export function buildMetricFamilies(
     "erainfra_controller_last_heartbeat_age_seconds",
     "Seconds since any controller for the Profile last reported, at scrape time. Absent until a controller first reports for the Profile.",
   );
+  const runnerCutoff = family(
+    "erainfra_profile_runner_release_cutoff_seconds",
+    "Seconds until GitHub stops sending jobs to the actions/runner version in the Profile's image: 30 days after the next release was published. Negative once past. Absent while no newer release exists, no Worker has reported the version, or the release list has not been fetched.",
+  );
 
   for (const profile of observation.profiles) {
     const labels = { profile: profile.name };
@@ -210,6 +215,18 @@ export function buildMetricFamilies(
       controllerAge.samples.push({
         labels,
         value: Math.max(0, now - controller.lastHeartbeatAt) / 1_000,
+      });
+    }
+    const standing =
+      profile.runnerVersion === undefined || observation.runnerReleases === undefined
+        ? undefined
+        : runnerReleaseStanding(profile.runnerVersion, observation.runnerReleases.releases, now);
+    if (standing !== undefined && standing.state !== "current") {
+      // A version older than the whole list is past its cutoff whatever the oldest listed date says.
+      const seconds = (standing.deadline - now) / 1_000;
+      runnerCutoff.samples.push({
+        labels,
+        value: standing.state === "expired" ? Math.min(0, seconds) : seconds,
       });
     }
   }
@@ -372,6 +389,7 @@ export function buildMetricFamilies(
     sampleTruncated,
     controllerUp,
     controllerAge,
+    runnerCutoff,
     window,
     machineInfo,
     online,

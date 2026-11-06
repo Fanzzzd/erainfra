@@ -24,6 +24,15 @@ crons.interval(
 // retention sweep.
 crons.interval("evaluate alert rules", { minutes: 1 }, internal.alerts.evaluate, {});
 
+// The actions/runner release list behind the runner-release-expiring alert. Hourly, but the action
+// asks GitHub only once its list is six hours old, so a failed fetch is retried within the hour.
+crons.interval(
+  "refresh actions/runner releases",
+  { hours: 1 },
+  internal.github.refreshRunnerReleases,
+  {},
+);
+
 // Per-Attempt resource series are kept 14 days after their last upload. Hourly keeps each run's
 // batch small; the purge reschedules itself while it finds full batches.
 crons.interval(

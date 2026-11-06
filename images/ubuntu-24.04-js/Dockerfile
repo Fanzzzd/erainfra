@@ -277,9 +277,15 @@ RUN chmod 0755 /usr/local/bin/runner-center-guest /usr/local/bin/erainfra-gocach
   && rm -f /var/lib/dbus/machine-id \
   && /usr/local/lib/runner-center/smoke.sh
 
+# dev.erainfra.actions-runner.version is read by the Worker's runtime and
+# reported with readiness (firecracker/runnerversion.go). Runners register with
+# automatic updates off, and GitHub stops queueing jobs to a runner 30 days
+# after the next release, so the control plane alerts on the version before
+# that. It follows ARG RUNNER_VERSION, which the pin bump moves.
 LABEL org.opencontainers.image.source="https://github.com/Fanzzzd/EraInfra" \
   org.opencontainers.image.description="EraInfra minimal Ubuntu 24.04 JavaScript Firecracker profile" \
-  org.opencontainers.image.licenses="Apache-2.0"
+  org.opencontainers.image.licenses="Apache-2.0" \
+  dev.erainfra.actions-runner.version="${RUNNER_VERSION}"
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

@@ -368,6 +368,7 @@ const CONDITION_LABEL: Record<ConditionKind, string> = {
   "controller-silent": "No controller listening",
   "node-commands-blocked": "Node unable to run commands",
   "node-offline": "Node offline",
+  "runner-release-expiring": "actions/runner near GitHub's cutoff",
 };
 
 const CONDITION_ORDER = Object.keys(CONDITION_LABEL) as ConditionKind[];
@@ -420,6 +421,7 @@ function buildCondition(kind: ConditionKind, form: ConditionForm): Condition {
     case "profile-no-ready-worker":
     case "profile-readiness-degraded":
     case "profile-label-conflict":
+    case "runner-release-expiring":
       return { kind };
   }
 }

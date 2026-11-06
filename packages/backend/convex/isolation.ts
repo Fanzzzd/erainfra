@@ -78,6 +78,9 @@ export const readinessFactsValidator = {
     }),
   ),
   warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
+  // The actions/runner version the Worker read from the Image Release. Not part of the isolation
+  // contract: a malformed one is dropped rather than refused, so it can never fail readiness.
+  runnerVersion: v.optional(v.string()),
 };
 
 export type ReadinessFacts = {
@@ -101,6 +104,7 @@ export type ReadinessFacts = {
     egress?: EgressEvidence;
   };
   warmPool?: { target: number; parked: number; claimed: number };
+  runnerVersion?: string;
 };
 
 export const FIRECRACKER_REQUIRED_CHECKS = [

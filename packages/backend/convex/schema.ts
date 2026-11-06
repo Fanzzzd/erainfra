@@ -736,6 +736,9 @@ export default defineSchema({
         egress: v.optional(egressEvidenceValidator),
       }),
     ),
+    // The actions/runner version the Worker read from the Image Release. Absent from older
+    // Workers and images that do not say; used only by the runner-release-expiring alert.
+    runnerVersion: v.optional(v.string()),
   }).index("by_machine_profile", ["machineId", "profile"]),
 
   // What one Attempt's guest talked to, as the Worker's host measured it, for
@@ -840,4 +843,14 @@ export default defineSchema({
     attempts: v.number(),
     lastError: v.optional(v.string()),
   }).index("by_createdAt", ["createdAt"]),
+
+  // One row: GitHub's actions/runner releases, for the runner-release-expiring alert
+  // (runnerReleases.ts). `fetchedAt` is the last successful fetch; a failed one sets only
+  // `lastAttemptAt` and `lastError`, so the list survives a GitHub outage.
+  runnerReleases: defineTable({
+    releases: v.array(v.object({ version: v.string(), publishedAt: v.number() })),
+    fetchedAt: v.optional(v.number()),
+    lastAttemptAt: v.number(),
+    lastError: v.optional(v.string()),
+  }),
 });

@@ -80,6 +80,12 @@ export type ReadinessFacts = {
     egress?: EgressEvidence;
   };
   warmPool?: { target: number; parked: number; claimed: number };
+  /**
+   * The actions/runner release the Profile's image carries, as the runtime read it from the
+   * image. Absent when the runtime predates it or the image does not say. The control plane only
+   * uses it to warn before GitHub stops serving that release; it never affects readiness.
+   */
+  runnerVersion?: string;
 };
 
 export type ReadinessResult = ({ state: "ready" } | { state: "failed"; error: string }) &
@@ -737,6 +743,8 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
     });
     const facts = runtimeFacts(report);
     facts.checks.push({ name: "image-release", passed: true, detail: profile.imageRelease });
+    const runnerVersion = parsePreparedRunnerVersion(prepared.stdout);
+    if (runnerVersion !== undefined) facts.runnerVersion = runnerVersion;
     const warmPool = parseWarmPoolStatus(prepared.stdout);
     if (
       prepared.exitCode !== 0 ||
@@ -765,6 +773,26 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
       facts.checks.push({ name: "image-release", passed: false, detail });
     }
     return { state: "failed", error: detail, ...facts };
+  }
+}
+
+/**
+ * The actions/runner version `runner-center-runtime prepare` read from the Profile's image, or
+ * undefined when it printed none (a runtime that predates it, or an image that does not say) or
+ * printed something that is not x.y.z.
+ */
+export function parsePreparedRunnerVersion(stdout: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(stdout.trim());
+    if (typeof parsed !== "object" || parsed === null || !("runnerVersion" in parsed)) {
+      return undefined;
+    }
+    const { runnerVersion } = parsed as Record<string, unknown>;
+    return typeof runnerVersion === "string" && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(runnerVersion)
+      ? runnerVersion
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 

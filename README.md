@@ -480,7 +480,8 @@ updated itself inside a one-job VM would download the update on every job and th
 So, within 30 days of an actions/runner release, merge the bump pull request, publish the image
 and repin each Firecracker Profile to the new digest, deploy the control plane (the Docker
 executor's image is in its catalog), and cut an EraInfra release so Workers receive the new
-provisioners.
+provisioners. The **actions/runner near GitHub's cutoff** alert rule (see
+[Alerts](#alerts)) fires five days before a Profile's image misses that deadline.
 
 Dependabot covers everything else weekly, grouped into one pull request per ecosystem and held
 for 7 days after a release before it is proposed: Actions used by the workflows, Go modules, the
@@ -1556,6 +1557,7 @@ workflow, Runner or job id.
 | `erainfra_machine_benchmark_timestamp_seconds`      | `machine`                              | When the benchmark ran. Older than seven days, the scheduler ignores it.                                                   |
 | `erainfra_controller_up`                            | `profile`                              | 1 when a controller reported in the last 90 seconds and holds the GitHub session. Absent until the first heartbeat.        |
 | `erainfra_controller_last_heartbeat_age_seconds`    | `profile`                              | Seconds since any of the Profile's controllers reported. Absent until the first heartbeat.                                 |
+| `erainfra_profile_runner_release_cutoff_seconds`    | `profile`                              | Seconds until GitHub stops serving the actions/runner in the Profile's image; negative past it. See Alerts.                |
 | `erainfra_node_online`                              | `node`                                 | 1 when the Node's Infra Agent heartbeated in `connect-convex` mode in the last two minutes. Absent for Hub-only Nodes.     |
 | `erainfra_node_commands_blocked`                    | `node`, `reason`                       | 1 while the Node reports it cannot run commands (`journal_full`, `journal_error`, `command_api`, `command_error`), else 0. |
 | `erainfra_node_commands_blocked_seconds`            | `node`, `reason`                       | Seconds since the Node first reported the block. Absent while it can run commands.                                         |
@@ -1609,6 +1611,7 @@ minute against the same fleet state `/metrics` reads.
 | No controller listening             | Profile        | No controller has held an active Profile's GitHub session for N minutes (2 or more; 3 by default). See below.                      |
 | Node unable to run commands         | Node           | A `connect-convex` Node has reported for N minutes that it cannot run commands. See below.                                         |
 | Node offline                        | Node           | A `connect-convex` Node has sent no heartbeat for N minutes (2 or more; 5 by default). See below.                                  |
+| actions/runner near GitHub's cutoff | Profile        | The image's actions/runner is within five days of GitHub's cutoff, or past it. See below.                                          |
 
 A dead controller creates no Attempts, so without its own signal it looks like an idle Profile.
 Every controller reports a heartbeat to the control plane every 30 seconds and whenever its session
@@ -1627,6 +1630,28 @@ left out of both rules and of the `erainfra_node_*` metrics. A Node that stops h
 **Node unable to run commands** fires stays in breach, judged by how long it was blocked when its
 heartbeats stopped, so the incident does not resolve because the Node died. It resolves when the
 Node reports again without the block, or is retired.
+
+**actions/runner near GitHub's cutoff** watches the runner pin described under the pin
+bump above. Every Runner registers with automatic updates disabled, and GitHub stops queueing
+jobs to such a runner 30 days after the next actions/runner release is published, at which point
+the Runner registers, opens a session and exits a few seconds later with "Runner version vX is
+deprecated and cannot receive messages". The clock starts at the release right after the image's
+version, not the newest one: an image on 2.336.0 has 30 days from 2.337.0, however recently 2.338.0
+came out. The rule fires 25 days in, naming the version, the release that started the clock, the
+cutoff date and the release to move to, and keeps firing once the cutoff has passed. The
+`erainfra_profile_runner_release_cutoff_seconds` gauge carries the same countdown.
+
+Where the version comes from: a Firecracker Worker reads it from the Image Release it pulled,
+first the `dev.erainfra.actions-runner.version` label (`images/ubuntu-24.04-js/Dockerfile` sets it
+from `ARG RUNNER_VERSION`), then the `RUNNER_VERSION` build argument BuildKit records in the
+image's history, so images built before the label also report. It travels with readiness and
+never changes a Worker's readiness state. A Docker Profile's version is the tag of its
+`ghcr.io/actions/actions-runner` image. Tart and Hyper-V Profiles report none yet, and the rule
+never fires for a Profile whose version is unknown. The release list is GitHub's
+`/repos/actions/runner/releases`, fetched every six hours (retried hourly on failure) with the
+GitHub App's installation token, the legacy `GITHUB_PAT`, or anonymously; a failed fetch keeps
+the previous list. Until the first fetch succeeds after a deploy, the rule has nothing to compare
+against and stays quiet.
 
 A rule can be limited to one Profile. Each rule and subject has at most one open incident, so a
 condition that keeps holding notifies once. The lifecycle:

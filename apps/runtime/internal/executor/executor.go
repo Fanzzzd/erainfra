@@ -108,6 +108,11 @@ type WarmPoolStatus struct {
 	Claimed int    `json:"claimed"`
 	Healthy bool   `json:"healthy"`
 	Detail  string `json:"detail,omitempty"`
+	// RunnerVersion is the actions/runner release the Profile's image carries,
+	// read from the image itself, or empty when the image does not say. It
+	// never affects readiness: the control plane uses it only to warn before
+	// GitHub stops serving that release.
+	RunnerVersion string `json:"runnerVersion,omitempty"`
 }
 
 func (s Spec) Validate() error {
