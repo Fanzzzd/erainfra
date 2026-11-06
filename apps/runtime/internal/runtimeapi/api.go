@@ -20,6 +20,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 	"golang.org/x/sys/unix"
 )
@@ -42,6 +43,8 @@ type resultResponse struct {
 	Error    string                 `json:"error,omitempty"`
 	Egress   *executor.EgressRecord `json:"egress,omitempty"`
 	Tests    *testreport.Report     `json:"tests,omitempty"`
+	// RunnerExit is unknown to a client that predates it, which ignores it.
+	RunnerExit *runnerexit.Report `json:"runnerExit,omitempty"`
 }
 
 // preflightRequest names the Profile egress the report is for. An empty body,
@@ -176,7 +179,18 @@ func (c *Client) Execute(
 			result.Tests = nil
 		}
 	}
-	return executor.Result{ExitCode: result.ExitCode, Egress: result.Egress, Tests: result.Tests}, nil
+	if result.RunnerExit != nil {
+		if err := result.RunnerExit.Validate(); err != nil {
+			fmt.Fprintf(os.Stderr, "dropped the runtime's runner exit report: %v\n", err)
+			result.RunnerExit = nil
+		}
+	}
+	return executor.Result{
+		ExitCode:   result.ExitCode,
+		Egress:     result.Egress,
+		Tests:      result.Tests,
+		RunnerExit: result.RunnerExit,
+	}, nil
 }
 
 func (c *Client) do(ctx context.Context, path string, input any, output any) error {
@@ -443,7 +457,12 @@ func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handl
 		// makes as soon as this request returns, finds the final Snapshot.
 		finishMetrics()
 		if waitError == nil {
-			writeJSON(response, http.StatusOK, resultResponse{ExitCode: result.ExitCode, Egress: result.Egress, Tests: result.Tests})
+			writeJSON(response, http.StatusOK, resultResponse{
+				ExitCode:   result.ExitCode,
+				Egress:     result.Egress,
+				Tests:      result.Tests,
+				RunnerExit: result.RunnerExit,
+			})
 			return
 		}
 		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)

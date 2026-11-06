@@ -1453,6 +1453,28 @@ Only the Firecracker executor collects test results. A Docker Attempt's containe
 `--rm` when the runner exits, so its workspace is gone before anything could read it; Tart and
 Hyper-V are not covered. An Attempt on an Image Release older than the collector reports none.
 
+## Why a runner exited
+
+A Firecracker guest resets cleanly whatever its runner did, so the executor's exit code cannot
+tell a finished job from a runner GitHub refused at session start. After the runner exits, and
+after the test report, `runner-center-guest` writes one more console line: run.sh's exit status
+(128 plus the signal if one ended it), whether the runner ran a job (a `Worker_*.log` in
+`/opt/runner/_diag`), and the last `ERR` line of the newest `Runner_*.log`. The guest drops control
+characters, redacts any run of 40 or more token-alphabet characters, and cuts the line to 300
+bytes. The runtime validates it again, logs it in its journal, and hands it to the Agent, which
+logs it in its own log and sends it with `reportAttempt`.
+
+An Attempt whose runner exited without a job, with no JobStarted from GitHub and no job seen by the
+guest, ends `failed` with an error such as `GitHub runner exited with code 1 without taking a job:
+Runner version v2.336.0 is deprecated and cannot receive messages.` That error is what
+`erainfra jobs view` shows as the last error, what the dashboard shows on the Attempt, and how the
+failure-rate and consecutive-failure alerts end their summary. Its Runner registration is deleted
+by the controller.
+
+A guest image older than this report writes no line, and its Attempt ends as before: `completed`,
+with its Runner still deleted when it never took a job. A runtime older than the report leaves the
+line in the console log unread. Docker, Tart and Hyper-V Attempts send no report.
+
 ## Experiments
 
 The **Experiments** page runs a shell command in the selected Linux Profile. An Experiment:

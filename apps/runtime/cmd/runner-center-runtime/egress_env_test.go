@@ -9,8 +9,32 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
+
+func TestWriteRunnerExitWritesAnOwnerOnlyFileWhenTheGuestReportedOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner-exit.json")
+	t.Setenv(runnerExitVariable, path)
+	if err := writeRunnerExit(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("an older guest reports nothing, and the Worker must then report nothing")
+	}
+	report := &runnerexit.Report{ExitCode: 1, Diagnostic: "Runner version v2.336.0 is deprecated and cannot receive messages."}
+	if err := writeRunnerExit(report); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("stat = %v, %v", info, err)
+	}
+	contents, _ := os.ReadFile(path)
+	if string(contents) != `{"exitCode":1,"ranJob":false,"diagnostic":"Runner version v2.336.0 is deprecated and cannot receive messages."}` {
+		t.Fatalf("the Worker reads %s", contents)
+	}
+}
 
 func TestProfileEgressEnvDefaultsToPublicOnlyWhenUnset(t *testing.T) {
 	t.Setenv(profileEgressVariable, "")

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -148,5 +150,23 @@ func TestRunnerEnvCarriesTheBuildCacheProxy(t *testing.T) {
 	}
 	if !strings.HasPrefix(buildCacheAddr, "127.0.0.1:") {
 		t.Fatalf("the build cache proxy listens on %s, want guest loopback only", buildCacheAddr)
+	}
+}
+
+// The guest reports run.sh's status the way a shell would, so an operator
+// reading "exited with code 143" knows the runner was sent SIGTERM.
+func TestRunnerExitCodeReadsStatusAndSignal(t *testing.T) {
+	for script, want := range map[string]int{
+		"exit 0":        0,
+		"exit 3":        3,
+		"kill -TERM $$": 128 + 15,
+	} {
+		err := exec.CommandContext(t.Context(), "sh", "-c", script).Run()
+		if got := runnerExitCode(err); got != want {
+			t.Errorf("%q: runnerExitCode = %d, want %d", script, got, want)
+		}
+	}
+	if got := runnerExitCode(errors.New("copying output failed")); got != 1 {
+		t.Errorf("a Wait error that is no exit status: runnerExitCode = %d, want 1", got)
 	}
 }

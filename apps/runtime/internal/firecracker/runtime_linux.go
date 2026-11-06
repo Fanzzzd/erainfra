@@ -21,6 +21,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/leases"
@@ -1038,6 +1039,7 @@ func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 	exitCode := 0
 	var resultError error
 	var tests *testreport.Report
+	var runnerExit *runnerexit.Report
 	if l.resultToken != "" {
 		if syncError := l.console.Sync(); syncError != nil {
 			resultError = fmt.Errorf("flush Experiment console: %w", syncError)
@@ -1046,12 +1048,35 @@ func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 		}
 	} else {
 		tests = l.testReport()
+		runnerExit = l.runnerExit()
 	}
 	cleanupErr := l.cleanup(context.Background(), false)
 	if err != nil || resultError != nil || cleanupErr != nil {
-		return executor.Result{ExitCode: 1, Egress: l.egressRecord, Tests: tests}, errors.Join(err, resultError, cleanupErr)
+		return executor.Result{ExitCode: 1, Egress: l.egressRecord, Tests: tests, RunnerExit: runnerExit}, errors.Join(err, resultError, cleanupErr)
 	}
-	return executor.Result{ExitCode: exitCode, Egress: l.egressRecord, Tests: tests}, nil
+	return executor.Result{ExitCode: exitCode, Egress: l.egressRecord, Tests: tests, RunnerExit: runnerExit}, nil
+}
+
+// runnerExit reads how the GitHub runner ended from the line the guest wrote
+// to its console last, or nil. The exit code stays the guest's: a clean
+// reset is 0 whatever the runner did, and the control plane, which knows
+// whether GitHub handed the Runner a job, decides what the report means. A
+// line that fails validation is logged and dropped. The console was flushed
+// for the test report just before.
+func (l *machineLease) runnerExit() *runnerexit.Report {
+	report, err := runnerexit.ReadConsole(l.consolePath)
+	if err != nil {
+		logrus.WithError(err).Warn("dropped the guest's runner exit report")
+		return nil
+	}
+	if report != nil {
+		logrus.WithFields(logrus.Fields{
+			"exitCode":   report.ExitCode,
+			"ranJob":     report.RanJob,
+			"diagnostic": report.Diagnostic,
+		}).Info("GitHub runner exited")
+	}
+	return report
 }
 
 // testReport reads the JUnit results the guest wrote to its console after

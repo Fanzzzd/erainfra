@@ -86,6 +86,8 @@ export type FinishedAttempt = {
   finishedAt: number;
   queueWaitMs: number | null;
   runDurationMs: number | null;
+  /** Why a failed Attempt failed, for an alert to name. Absent for any other outcome. */
+  error?: string;
 };
 
 export type RunningAttempt = {
@@ -338,6 +340,9 @@ export async function loadFleetObservation(
               attempt.startedAt === undefined || attempt.finishedAt === undefined
                 ? null
                 : Math.max(0, attempt.finishedAt - attempt.startedAt),
+            ...(attempt.state === "failed" && attempt.lastError !== undefined
+              ? { error: attempt.lastError }
+              : {}),
           }))
           .toSorted((left, right) => right.finishedAt - left.finishedAt),
         recentTruncated:

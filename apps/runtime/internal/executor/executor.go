@@ -12,6 +12,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
 
@@ -201,6 +202,10 @@ type Result struct {
 	// Tests is the JUnit results the guest reported for a CI Attempt, already
 	// validated, or nil when it reported none or the executor collects none.
 	Tests *testreport.Report
+	// RunnerExit is how the GitHub runner of a CI Attempt ended, as its guest
+	// reported it, already validated; nil when the guest reported nothing
+	// (one that predates the report) or the executor collects none.
+	RunnerExit *runnerexit.Report
 }
 
 type Lease interface {

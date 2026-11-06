@@ -83,6 +83,12 @@ export type AttemptExecution = {
    * the egress record; absent for executors that collect none.
    */
   testReportFile?: string;
+  /**
+   * Where the runtime writes how the guest's GitHub runner ended, for the
+   * Agent to report with the Attempt. Beside the egress record; absent for
+   * executors whose guest reports none.
+   */
+  runnerExitFile?: string;
   jitConfig: string;
 };
 
@@ -204,6 +210,9 @@ export function attemptInvocation(
         ...(attempt.testReportFile === undefined
           ? {}
           : { RC_TEST_REPORT_FILE: attempt.testReportFile }),
+        ...(attempt.runnerExitFile === undefined
+          ? {}
+          : { RC_RUNNER_EXIT_FILE: attempt.runnerExitFile }),
       },
     };
   }
@@ -268,6 +277,8 @@ export function attemptEnvironment(env: Record<string, string>): NodeJS.ProcessE
   delete inherited.ERAINFRA_EGRESS_RECORD_FILE;
   delete inherited.RC_TEST_REPORT_FILE;
   delete inherited.ERAINFRA_TEST_REPORT_FILE;
+  delete inherited.RC_RUNNER_EXIT_FILE;
+  delete inherited.ERAINFRA_RUNNER_EXIT_FILE;
   return childEnvironment(env, inherited);
 }
 
@@ -336,6 +347,58 @@ export async function readEgressRecord(path: string | undefined): Promise<unknow
  */
 export async function readTestReport(path: string | undefined): Promise<unknown> {
   return await readRecordFile(path, 2 * 1024 * 1024);
+}
+
+/** How the guest's GitHub runner ended, as the control plane accepts it. */
+export type RunnerExit = { exitCode: number; ranJob: boolean; diagnostic?: string };
+
+/**
+ * Reads how the guest's GitHub runner ended, as the runtime wrote it, or
+ * undefined when it wrote nothing: a guest image or runtime that predates the
+ * report, or an executor that collects none. Only the fields the control plane
+ * accepts are kept, so a later runtime that adds one cannot get the Attempt's
+ * report refused; the runtime has validated the values and the control plane
+ * bounds them again.
+ */
+export async function readRunnerExit(path: string | undefined): Promise<RunnerExit | undefined> {
+  const record = (await readRecordFile(path, 16 * 1024)) as Record<string, unknown> | undefined;
+  if (record === undefined) return undefined;
+  const { exitCode, ranJob, diagnostic } = record;
+  if (typeof exitCode !== "number" || !Number.isInteger(exitCode) || typeof ranJob !== "boolean") {
+    return undefined;
+  }
+  return {
+    exitCode,
+    ranJob,
+    ...(typeof diagnostic === "string" && diagnostic !== "" ? { diagnostic } : {}),
+  };
+}
+
+/**
+ * Sends an Attempt's report with the runner's exit when there is one. A
+ * control plane deployed before it accepted `runnerExit` refuses the whole
+ * report for the unknown field, and an Attempt whose report is refused never
+ * settles, so the report is sent again without it: the reason is lost, the
+ * Attempt is not.
+ */
+export async function reportAttemptWithRunnerExit<Args extends object>(
+  send: (args: Args & { runnerExit?: RunnerExit }) => Promise<unknown>,
+  args: Args,
+  runnerExit: RunnerExit | undefined,
+): Promise<void> {
+  if (runnerExit === undefined) {
+    await send(args);
+    return;
+  }
+  try {
+    await send({ ...args, runnerExit });
+  } catch (error) {
+    if (!String(error).includes("runnerExit")) throw error;
+    console.warn(
+      "The control plane does not accept a runner exit yet; reporting the Attempt without it",
+    );
+    await send(args);
+  }
 }
 
 async function readRecordFile(path: string | undefined, maxBytes: number): Promise<unknown> {

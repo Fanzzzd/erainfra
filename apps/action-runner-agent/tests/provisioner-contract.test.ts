@@ -14,7 +14,9 @@ import {
   provisionerPath,
   provisionInvocation,
   readEgressRecord,
+  readRunnerExit,
   readTestReport,
+  reportAttemptWithRunnerExit,
 } from "../provision.ts";
 import { parseCpuset } from "../cpuset.ts";
 import { PIDS_LIMIT, probeInvocation } from "../readiness.ts";
@@ -467,6 +469,103 @@ describe("scale-set Attempt invocation", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("hands the runtime a fresh runner exit path and never an inherited one", () => {
+    const base = {
+      attemptId: "attempt-1",
+      runnerName: "runner-a",
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      executor: "firecracker" as const,
+      imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
+      vcpus: 4,
+      memoryMiB: 16384,
+    };
+    const withFile = attemptInvocation({
+      ...base,
+      runnerExitFile: "/tmp/rc-egress-abc/runner-exit.json",
+    });
+    assert.equal(withFile.env.RC_RUNNER_EXIT_FILE, "/tmp/rc-egress-abc/runner-exit.json");
+    assert.equal("RC_RUNNER_EXIT_FILE" in attemptInvocation(base).env, false);
+
+    const saved = [process.env.RC_RUNNER_EXIT_FILE, process.env.ERAINFRA_RUNNER_EXIT_FILE];
+    process.env.RC_RUNNER_EXIT_FILE = "/tmp/stale-runner-exit.json";
+    process.env.ERAINFRA_RUNNER_EXIT_FILE = "/tmp/stale-runner-exit.json";
+    try {
+      const inherited = attemptEnvironment({});
+      assert.equal("RC_RUNNER_EXIT_FILE" in inherited, false);
+      assert.equal("ERAINFRA_RUNNER_EXIT_FILE" in inherited, false);
+    } finally {
+      if (saved[0] === undefined) delete process.env.RC_RUNNER_EXIT_FILE;
+      else process.env.RC_RUNNER_EXIT_FILE = saved[0];
+      if (saved[1] === undefined) delete process.env.ERAINFRA_RUNNER_EXIT_FILE;
+      else process.env.ERAINFRA_RUNNER_EXIT_FILE = saved[1];
+    }
+  });
+
+  it("reads the runner exit the runtime wrote, keeping only what the control plane accepts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rc-runner-exit-test-"));
+    try {
+      const path = join(directory, "runner-exit.json");
+      assert.equal(await readRunnerExit(undefined), undefined);
+      // An older runtime or guest writes no file: the Attempt is reported as before.
+      assert.equal(await readRunnerExit(path), undefined);
+      await writeFile(
+        path,
+        JSON.stringify({ exitCode: 1, ranJob: false, diagnostic: "deprecated", later: true }),
+      );
+      assert.deepEqual(await readRunnerExit(path), {
+        exitCode: 1,
+        ranJob: false,
+        diagnostic: "deprecated",
+      });
+      await writeFile(path, JSON.stringify({ exitCode: 0, ranJob: true }));
+      assert.deepEqual(await readRunnerExit(path), { exitCode: 0, ranJob: true });
+      await writeFile(path, JSON.stringify({ exitCode: "1", ranJob: false }));
+      assert.equal(await readRunnerExit(path), undefined);
+      await writeFile(path, JSON.stringify({ exitCode: 1.5, ranJob: false }));
+      assert.equal(await readRunnerExit(path), undefined);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an Attempt without its runner exit when the control plane refuses the field", async () => {
+    const runnerExit = { exitCode: 1, ranJob: false, diagnostic: "deprecated" };
+    const sent: unknown[] = [];
+    await reportAttemptWithRunnerExit(
+      async (args) => {
+        sent.push(args);
+        if ("runnerExit" in args) {
+          throw new Error("ArgumentValidationError: Object contains extra field `runnerExit`");
+        }
+      },
+      { attemptId: "a", exitCode: 0 },
+      runnerExit,
+    );
+    assert.deepEqual(sent, [
+      { attemptId: "a", exitCode: 0, runnerExit },
+      { attemptId: "a", exitCode: 0 },
+    ]);
+
+    const accepted: unknown[] = [];
+    await reportAttemptWithRunnerExit(
+      async (args) => void accepted.push(args),
+      { attemptId: "a", exitCode: 0 },
+      runnerExit,
+    );
+    assert.deepEqual(accepted, [{ attemptId: "a", exitCode: 0, runnerExit }]);
+
+    await assert.rejects(
+      reportAttemptWithRunnerExit(
+        async () => {
+          throw new Error("network down");
+        },
+        { attemptId: "a", exitCode: 0 },
+        runnerExit,
+      ),
+      /network down/,
+    );
   });
 
   it("reads the runtime's egress record and ignores anything that is not one", async () => {

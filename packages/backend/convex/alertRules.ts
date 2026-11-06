@@ -152,6 +152,16 @@ function profilesInScope(observation: FleetObservation, scope: string | undefine
   );
 }
 
+/**
+ * " The latest failure: <why>." for the newest failure that recorded a reason, or "". A Profile
+ * whose every Attempt fails the same way (a runner version GitHub refuses) says why in the alert
+ * itself, not only in each Attempt. `failures` is newest first, as recentFinished is.
+ */
+function latestFailure(failures: readonly ObservedProfile["recentFinished"][number][]) {
+  const error = failures.find((attempt) => attempt.error !== undefined)?.error;
+  return error === undefined ? "" : ` The latest failure: ${error}`;
+}
+
 function decided(profile: ObservedProfile, since: number) {
   return profile.recentFinished.filter(
     (attempt) =>
@@ -258,13 +268,13 @@ export function evaluateCondition(
       return profilesInScope(observation, scope).flatMap((profile) => {
         const window = decided(profile, since);
         if (window.length < condition.minAttempts) return [];
-        const failed = window.filter((attempt) => attempt.outcome === "failed").length;
-        const rate = (failed / window.length) * 100;
+        const failures = window.filter((attempt) => attempt.outcome === "failed");
+        const rate = (failures.length / window.length) * 100;
         if (rate < condition.percent) return [];
         return [
           {
             subject: profile.name,
-            summary: `${failed} of ${window.length} Attempts on Profile ${profile.name} failed in the last ${condition.windowMinutes}m (${Math.round(rate)}%).`,
+            summary: `${failures.length} of ${window.length} Attempts on Profile ${profile.name} failed in the last ${condition.windowMinutes}m (${Math.round(rate)}%).${latestFailure(failures)}`,
           },
         ];
       });
@@ -281,7 +291,7 @@ export function evaluateCondition(
         return [
           {
             subject: profile.name,
-            summary: `The last ${streak} finished Attempts on Profile ${profile.name} all failed.`,
+            summary: `The last ${streak} finished Attempts on Profile ${profile.name} all failed.${latestFailure(window.slice(0, streak))}`,
           },
         ];
       });
