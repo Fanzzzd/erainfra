@@ -56,12 +56,15 @@ var ErrEntryTooLarge = errors.New("cache entry exceeds ERAINFRA_CACHE_MAX_ENTRY_
 type reservation struct {
 	id         int64
 	repository string
-	ref        string
-	key        string
-	version    string
-	path       string
-	limit      int64
-	expires    time.Time
+	// repositoryID is the saving repository's GitHub ID, zero when the job's
+	// facts carried none. The entry is committed with it.
+	repositoryID int64
+	ref          string
+	key          string
+	version      string
+	path         string
+	limit        int64
+	expires      time.Time
 
 	mu      sync.Mutex
 	file    *os.File
@@ -168,14 +171,15 @@ type stagedBlock struct {
 // blocklist commit (capture L081-L085), so the first byte of the finished
 // object is not known until the last request.
 type session struct {
-	id         string
-	repository string
-	ref        string
-	key        string
-	version    string
-	dir        string
-	limit      int64
-	expires    time.Time
+	id           string
+	repository   string
+	repositoryID int64
+	ref          string
+	key          string
+	version      string
+	dir          string
+	limit        int64
+	expires      time.Time
 
 	mu        sync.Mutex
 	blocks    map[string]stagedBlock

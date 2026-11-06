@@ -119,7 +119,7 @@ func (s *Server) gitSeedRead(w http.ResponseWriter, r *http.Request) {
 	// last seed was refused reads as not writable until the backoff passes.
 	writable := claims.CanWrite()
 	if writable {
-		if until := s.gitSeedBackoff(lookup, claims.Repository); !until.IsZero() {
+		if until := s.gitSeedBackoff(lookup, claims); !until.IsZero() {
 			writable = false
 			w.Header().Set(headerGitSeedRefusedUntil, strconv.FormatInt(until.Unix(), 10))
 		}
@@ -179,7 +179,7 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	case size > s.config.MaxEntryBytes:
 		record, cancel := s.deadline(w, r, s.config.LookupTimeout)
-		s.recordGitSeedRefusal(record, claims.Repository, size)
+		s.recordGitSeedRefusal(record, claims, size)
 		cancel()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": ErrEntryTooLarge.Error()})
 		return
@@ -225,14 +225,14 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	key := gitSeedKeyPrefix + strconv.FormatInt(s.now().UnixMilli(), 10)
 	if err := s.index.Commit(ctx, cacheindex.Entry{
-		Key: key, Version: gitSeedVersionFor(claims), Repository: claims.Repository,
+		Key: key, Version: gitSeedVersionFor(claims), Repository: claims.Repository, RepositoryID: claims.RepositoryID,
 		Ref: scope, Blob: blob, Size: size,
 	}); err != nil {
 		s.logger.Error("git seed could not be published", "repository", claims.Repository, "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "git seed could not be published"})
 		return
 	}
-	s.clearGitSeedRefusal(ctx, claims.Repository)
+	s.clearGitSeedRefusal(ctx, claims)
 	s.logger.Info("git seed saved", "repository", claims.Repository, "ref", scope, "bytes", size)
 	w.Header().Set(headerGitSeedRepository, claims.Repository)
 	w.WriteHeader(http.StatusCreated)

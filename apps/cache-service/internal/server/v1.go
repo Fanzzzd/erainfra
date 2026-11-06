@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 )
 
@@ -142,7 +143,7 @@ func (s *Server) v1Reserve(w http.ResponseWriter, r *http.Request) {
 	// Entries are immutable, as GitHub's are. A second save of a key that has
 	// already been written is refused rather than allowed to replace bytes an
 	// earlier job has already restored.
-	exists, err := s.index.Exists(ctx, claims.Repository, claims.WriteScope(), request.Key, request.Version)
+	exists, err := s.index.Exists(ctx, claims, request.Key, request.Version)
 	if err != nil {
 		s.logger.Error("v1 reserve could not read the index", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
@@ -166,7 +167,7 @@ func (s *Server) v1Reserve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
 		return
 	}
-	held.repository, held.ref = claims.Repository, claims.WriteScope()
+	held.repository, held.repositoryID, held.ref = claims.Repository, claims.RepositoryID, claims.WriteScope()
 	held.key, held.version = request.Key, request.Version
 
 	s.mu.Lock()
@@ -186,7 +187,7 @@ func (s *Server) v1Upload(w http.ResponseWriter, r *http.Request, rawID string) 
 	if !ok {
 		return
 	}
-	held, ok := s.reservationFor(w, rawID, claims.Repository, claims.WriteScope())
+	held, ok := s.reservationFor(w, rawID, claims)
 	if !ok {
 		return
 	}
@@ -225,7 +226,7 @@ func (s *Server) v1Commit(w http.ResponseWriter, r *http.Request, rawID string) 
 	if !ok {
 		return
 	}
-	held, ok := s.reservationFor(w, rawID, claims.Repository, claims.WriteScope())
+	held, ok := s.reservationFor(w, rawID, claims)
 	if !ok {
 		return
 	}
@@ -280,7 +281,7 @@ func (s *Server) v1Commit(w http.ResponseWriter, r *http.Request, rawID string) 
 		return
 	}
 	if err := s.index.Commit(ctx, cacheindex.Entry{
-		Key: held.key, Version: held.version, Repository: held.repository,
+		Key: held.key, Version: held.version, Repository: held.repository, RepositoryID: held.repositoryID,
 		Ref: held.ref, Blob: blob, Size: size,
 	}); err != nil {
 		s.failCommit(ctx, w, upload, held.id, "v1 commit could not publish the entry", err)
@@ -305,7 +306,8 @@ func (s *Server) failCommit(ctx context.Context, w http.ResponseWriter, upload i
 // reservationFor resolves a cache id and proves the caller owns it. A
 // reservation belongs to one repository and one ref; anything else is a
 // different job asking to write into this upload.
-func (s *Server) reservationFor(w http.ResponseWriter, rawID, repository, ref string) (*reservation, bool) {
+func (s *Server) reservationFor(w http.ResponseWriter, rawID string, claims cachetoken.Claims) (*reservation, bool) {
+	repository, ref := claims.Repository, claims.WriteScope()
 	id, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such cache reservation"})
@@ -318,13 +320,21 @@ func (s *Server) reservationFor(w http.ResponseWriter, rawID, repository, ref st
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no such cache reservation"})
 		return nil, false
 	}
-	if !strings.EqualFold(held.repository, repository) || held.ref != ref {
+	if !strings.EqualFold(held.repository, repository) || held.ref != ref ||
+		!sameRepositoryID(held.repositoryID, claims.RepositoryID) {
 		s.logger.Warn("a cache reservation was claimed by another scope",
-			"cacheId", id, "reserved", held.repository, "asked", repository)
+			"cacheId", id, "reserved", held.repository, "asked", repository,
+			"reservedId", held.repositoryID, "askedId", claims.RepositoryID)
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "this token does not own that reservation"})
 		return nil, false
 	}
 	return held, true
+}
+
+// sameRepositoryID reports whether two GitHub repository IDs can be the same
+// repository. Zero is unknown, from an older controller, and matches either.
+func sameRepositoryID(a, b int64) bool {
+	return a == 0 || b == 0 || a == b
 }
 
 func (s *Server) dropReservation(id int64) {

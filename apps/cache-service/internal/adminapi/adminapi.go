@@ -201,16 +201,25 @@ type Entry struct {
 	SizeInBytes    int64     `json:"size_in_bytes"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at"`
+	// RepositoryID is GitHub's ID for the repository that saved the entry.
+	// Absent for an entry saved before IDs were recorded, or by a job whose
+	// controller pushed none.
+	RepositoryID int64 `json:"repository_id,omitempty"`
 }
 
 // ListResponse is GET EntriesPath.
 type ListResponse struct {
-	Repository string  `json:"repository"`
-	TotalCount int     `json:"total_count"`
-	TotalBytes int64   `json:"total_bytes"`
-	Page       int     `json:"page"`
-	PerPage    int     `json:"per_page"`
-	Entries    []Entry `json:"entries"`
+	Repository string `json:"repository"`
+	// RepositoryID is the GitHub repository ID that holds this name: the last
+	// one that saved under it. Jobs of any other ID restore nothing listed
+	// here, and entries without an ID belong to this one. Absent while no save
+	// with an ID has been made under the name.
+	RepositoryID int64   `json:"repository_id,omitempty"`
+	TotalCount   int     `json:"total_count"`
+	TotalBytes   int64   `json:"total_bytes"`
+	Page         int     `json:"page"`
+	PerPage      int     `json:"per_page"`
+	Entries      []Entry `json:"entries"`
 }
 
 // DeleteResponse is DELETE EntriesPath. The bytes are deleted from the index at
@@ -234,6 +243,7 @@ type ListQuery struct {
 	Search        string
 	Ref           string
 	Version       string
+	RepositoryID  int64 // entries saved by this GitHub repository ID; zero is any
 	SortBy        string
 	SortDirection string
 	Page          int
@@ -252,6 +262,9 @@ func (q ListQuery) values() url.Values {
 	set("search", q.Search)
 	set("ref", q.Ref)
 	set("version", q.Version)
+	if q.RepositoryID > 0 {
+		values.Set("repository_id", strconv.FormatInt(q.RepositoryID, 10))
+	}
 	set("sort", q.SortBy)
 	set("direction", q.SortDirection)
 	if q.Page > 0 {
@@ -271,6 +284,10 @@ type DeleteQuery struct {
 	All        bool
 	Version    string
 	Ref        string
+	// RepositoryID narrows any of the three to entries saved by that GitHub
+	// repository ID, which is how the entries a repository left under a name
+	// it no longer holds are cleared without touching the new holder's.
+	RepositoryID int64
 }
 
 func (q DeleteQuery) values() url.Values {
@@ -285,6 +302,9 @@ func (q DeleteQuery) values() url.Values {
 	set("prefix", q.Prefix)
 	set("version", q.Version)
 	set("ref", q.Ref)
+	if q.RepositoryID > 0 {
+		values.Set("repository_id", strconv.FormatInt(q.RepositoryID, 10))
+	}
 	if q.All {
 		values.Set("all", "true")
 	}

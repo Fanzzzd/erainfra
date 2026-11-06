@@ -26,6 +26,8 @@ package cacheindex
 //	tombstones/<blob object>       one per blob whose entry was deleted. Its
 //	                               LastModified is when, and the blob is kept
 //	                               until BlobGrace has passed.
+//	names/<owner>/<name>           which repository ID holds a name (see
+//	                               ownership.go). No sweep lists it.
 
 import (
 	"context"
@@ -822,6 +824,9 @@ type Match struct {
 	Version string
 	// Ref matches the scope an entry was saved under, such as refs/heads/main.
 	Ref string
+	// RepositoryID matches entries saved by that GitHub repository ID. Zero
+	// matches any; entries saved without an ID never match a non-zero one.
+	RepositoryID int64
 	// All is the explicit "every entry", for clearing a repository.
 	All bool
 }
@@ -841,6 +846,9 @@ func (m Match) Matches(record Record) bool {
 		return false
 	}
 	if m.Ref != "" && record.Ref != m.Ref {
+		return false
+	}
+	if m.RepositoryID != 0 && record.RepositoryID != m.RepositoryID {
 		return false
 	}
 	return true
