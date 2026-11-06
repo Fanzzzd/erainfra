@@ -236,10 +236,16 @@ type Decision = {
 const skip = (key: string, reason: string): Decision => ({ key, outcome: "skipped", reason });
 const refuse = (key: string, reason: string): Decision => ({ key, outcome: "refused", reason });
 const same = (key: string): Decision => ({ key, outcome: "unchanged" });
-const put = (key: string, exists: boolean, write: Decision["write"]): Decision => ({
+const put = (
+  key: string,
+  exists: boolean,
+  write: Decision["write"],
+  reason?: string,
+): Decision => ({
   key,
   outcome: exists ? "updated" : "created",
   write,
+  ...(reason === undefined ? {} : { reason }),
 });
 
 type Rows<K extends ImportBatch["kind"]> = Extract<ImportBatch, { kind: K }>["rows"];
@@ -406,6 +412,54 @@ async function decideRoute(ctx: QueryCtx, row: Rows<"routes">[number]): Promise<
   );
 }
 
+/**
+ * The Hub's App row with each service on the Node it runs on, and what the operator should know
+ * about that. The Hub fails an App over by its primary Node: it redeploys every service on the
+ * survivor and moves the App's node and each of its routes there, but stores services[].node as
+ * it was (apps/hub/src/runtime/failover.ts). Copied as is, a routed service would sit on the Node
+ * it left, where the gateway refuses to serve it and a redeploy that names no Node starts it with
+ * empty volumes. So a routed service takes its route's Node, and once a route shows such a move
+ * every unrouted service takes the App's Node too, where that failover redeployed it. Route rows
+ * are read from Convex: the script sends routes before Apps, so `run` has written them by now.
+ */
+async function placeServices(ctx: QueryCtx, row: Rows<"apps">[number]) {
+  const routeNode = new Map<string, string>();
+  for (const s of row.services) {
+    if (s.route === undefined) continue;
+    const route = await ctx.db
+      .query("appRoutes")
+      .withIndex("by_name", (q) => q.eq("name", s.route!))
+      .unique();
+    if (route === null) continue;
+    if ((route.app ?? row.name) !== row.name || (route.service ?? s.name) !== s.name) continue;
+    const routed = await ctx.db.get(route.nodeId);
+    if (routed !== null) routeNode.set(s.name, routed.name);
+  }
+  const failedOver = row.services.some(
+    (s) => routeNode.get(s.name) === row.node && (s.node ?? row.node) !== row.node,
+  );
+  const notes: string[] = [];
+  const services = row.services.map((s) => {
+    const stored = s.node ?? row.node;
+    const runs = routeNode.get(s.name) ?? (failedOver ? row.node : stored);
+    if (runs !== stored)
+      notes.push(
+        `service ${s.name} placed on ${runs}, where ` +
+          (routeNode.has(s.name)
+            ? `its route ${s.route} points`
+            : "the Hub's failover redeployed the App") +
+          `; the Hub's App row still says ${stored}`,
+      );
+    if (runs !== row.node)
+      notes.push(
+        `service ${s.name} runs on ${runs}, not on the App's Node ${row.node}; ` +
+          `check it runs there before a redeploy keeps it there`,
+      );
+    return runs === stored ? s : { ...s, node: runs };
+  });
+  return { row: { ...row, services }, notes };
+}
+
 async function decideApp(ctx: QueryCtx, row: Rows<"apps">[number]): Promise<Decision> {
   const key = row.name;
   const app = await appOwnership(ctx, row.name);
@@ -414,28 +468,36 @@ async function decideApp(ctx: QueryCtx, row: Rows<"apps">[number]): Promise<Deci
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", row.name))
     .unique();
-  const hash = await contentHash(row);
+  const { row: placed, notes } = await placeServices(ctx, row);
+  // Hashed as placed, so an App imported before its placement was corrected is written again.
+  const hash = await contentHash(placed);
   if (existing !== null && hubHash(existing) === hash) return same(key);
-  return put(key, existing !== null, async (m) => {
-    const services = [];
-    for (const { node: serviceNode, ...service } of row.services) {
-      const nodeId = await optionalNode(m, serviceNode);
-      services.push({ ...service, ...(nodeId === undefined ? {} : { nodeId }) });
-    }
-    const links = [];
-    for (const { provider, consumer, ...link } of row.links) {
-      links.push({
-        ...link,
-        providerNodeId: await node(m, provider),
-        consumerNodeId: await node(m, consumer),
-      });
-    }
-    await upsertApp(
-      m,
-      { name: row.name, nodeId: await node(m, row.node), services, links },
-      { hash },
-    );
-  });
+  const reason = notes.length === 0 ? undefined : notes.join("; ");
+  return put(
+    key,
+    existing !== null,
+    async (m) => {
+      const services = [];
+      for (const { node: serviceNode, ...service } of placed.services) {
+        const nodeId = await optionalNode(m, serviceNode);
+        services.push({ ...service, ...(nodeId === undefined ? {} : { nodeId }) });
+      }
+      const links = [];
+      for (const { provider, consumer, ...link } of row.links) {
+        links.push({
+          ...link,
+          providerNodeId: await node(m, provider),
+          consumerNodeId: await node(m, consumer),
+        });
+      }
+      await upsertApp(
+        m,
+        { name: row.name, nodeId: await node(m, row.node), services, links },
+        { hash },
+      );
+    },
+    reason,
+  );
 }
 
 async function decideLink(ctx: QueryCtx, row: Rows<"links">[number]): Promise<Decision> {

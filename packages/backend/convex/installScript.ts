@@ -253,7 +253,7 @@ node_convex_install_service() {
     'Environment=ERAINFRA_MESH_SOCKET=/run/erainfra-mesh/control.sock' \
     'Environment=ERAINFRA_MESH_CONTROL_DIR=/var/lib/erainfra/mesh-control' \
     'SupplementaryGroups=erainfra-mesh' \
-    "ExecStart=$NODE_BIN_DIR/portless-agent connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node" \
+    "ExecStart=$NODE_CONVEX_BIN connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node" \
     'Restart=always' \
     'RestartSec=3' \
     '[Install]' \
@@ -271,21 +271,48 @@ node_convex_install_service() {
   return 0
 }
 
+# Where --convex installs the Infra Agent. Never the Hub-mode agent's $NODE_BIN_DIR/portless-agent:
+# portless-agent.service runs that file, and a rollback to Hub mode must start the bytes it ran
+# before, not this release in Hub mode. Root-owned and world-readable beside erainfra-mesh, so
+# deploy/infra/gateway.sh finds it without reading root's home.
+NODE_CONVEX_BIN=/usr/local/lib/erainfra/erainfra-node
+
+# The installer's EXIT trap. Once --replace-hub-agent has stopped a Hub-mode unit, any failure
+# after it (set -e included) would leave the Node with no agent at all: put the Hub-mode unit back,
+# and say so on stderr. A Node never runs both modes, so erainfra-node goes first.
+node_on_exit() {
+  if [ "$1" -ne 0 ] && [ -n "$NODE_HUB_STOPPED" ]; then
+    printf '❌ %s
+' "The install failed after it stopped the Hub-mode agent. Putting it back:" >&2
+    $NODE_SUDO systemctl disable --now erainfra-node >/dev/null 2>&1 || true
+    for node_unit in $NODE_HUB_STOPPED; do
+      if $NODE_SUDO systemctl enable --now "$node_unit" >/dev/null 2>&1; then
+        printf '   %s\n' "$node_unit.service is enabled and started again (systemctl enable --now $node_unit)." >&2
+      else
+        printf '   %s\n' "Could not start $node_unit.service. Start it with: systemctl enable --now $node_unit" >&2
+      fi
+    done
+  fi
+  rm -rf "$NODE_TMP_DIR"
+}
+
 # Runs only past both checksum verifications, so bad bytes leave a Hub-mode agent running.
 node_convex_install() {
   node_ensure_runtime
   for node_unit in $NODE_HUB_UNITS; do
     $NODE_SUDO systemctl disable --now "$node_unit" >/dev/null 2>&1 ||
       node_fail "Could not stop $node_unit.service. Nothing else was changed."
-    node_log "Stopped and disabled $node_unit.service. Its unit file and agent.env stay for a rollback to Hub mode."
+    NODE_HUB_STOPPED="$NODE_HUB_STOPPED $node_unit"
+    node_log "Stopped and disabled $node_unit.service. Its unit file, agent.env and binary stay for a rollback to Hub mode."
   done
-  mkdir -p "$NODE_BIN_DIR"
   node_mesh_install
-  chmod +x "$NODE_DOWNLOAD"
-  mv "$NODE_DOWNLOAD" "$NODE_BIN_DIR/portless-agent"
-  node_log "Installed $NODE_BIN_DIR/portless-agent."
+  $NODE_SUDO install -d -m 755 /usr/local/lib/erainfra
+  $NODE_SUDO install -m 755 "$NODE_DOWNLOAD" "$NODE_CONVEX_BIN.new"
+  $NODE_SUDO mv "$NODE_CONVEX_BIN.new" "$NODE_CONVEX_BIN"
+  node_log "Installed $NODE_CONVEX_BIN."
   node_convex_install_service ||
     node_fail 'erainfra-node.service did not start; its last log lines are above. Fix it and re-run, or roll back to Hub mode: systemctl disable --now erainfra-node, then systemctl enable --now portless-agent'
+  NODE_HUB_STOPPED=''
   node_log "systemd service 'erainfra-node' is active: connect-convex to $NODE_SITE through erainfra-mesh.service."
   printf '%s\n' "   Logs:  journalctl -u erainfra-node -f   (expect 'published mesh endpoint', then 'applied mesh snapshot')"
   printf '%s\n' '   Check: erainfra nodes list   (this Node shows transport convex, online, MESH proven)'
@@ -441,7 +468,8 @@ node_install() {
   fi
 
   NODE_TMP_DIR=$(mktemp -d)
-  trap 'rm -rf "$NODE_TMP_DIR"' EXIT
+  NODE_HUB_STOPPED=''
+  trap 'node_on_exit $?' EXIT
 
   NODE_URL="https://github.com/$NODE_REPO/releases/download/v$NODE_VERSION/$NODE_ASSET"
   NODE_ORIGIN="the release this deployment pins"

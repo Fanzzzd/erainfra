@@ -276,15 +276,18 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
 1. **Enroll the Node** with an admin API token, or as an owner or admin in the dashboard (Nodes):
 
    ```sh
-   erainfra nodes enroll edge-1 > edge-1.credential
+   (umask 077 && erainfra nodes enroll edge-1 > edge-1.credential)
    ```
 
-   The command prints an `erainfra_node_…` credential once, on standard output. Enrolling a name
+   The subshell's `umask` creates the file 0600; under the default umask it would be readable by
+   every local user. The command prints an `erainfra_node_…` credential once, on standard output. Enrolling a name
    again issues another credential for the same Node. Without the CLI, an owner or admin can call
    `npx convex run infra/nodes:enroll '{"name":"edge-1"}' --identity '{"subject":"<users _id>|cli"}'`.
 
-2. **Copy the credential to the Node** as a file, for example `scp edge-1.credential edge-1:`. It
-   is for this one Node, not an operator or fleet token. Never pass it on a command line.
+2. **Copy the credential to the Node** as a file, then make the copy private:
+   `scp edge-1.credential edge-1: && ssh edge-1 chmod 600 edge-1.credential`. It is for this one
+   Node, not an operator or fleet token. Never pass it on a command line. Delete your local copy
+   once the Node is installed.
 
 3. **Install the agent and its sidecar.** On Linux with systemd, run the control plane's installer
    from the deployment the Node will report to:
@@ -299,6 +302,9 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    [secure-node-mesh.md](runbooks/secure-node-mesh.md)), and then:
    - moves the credential to `/etc/erainfra-node.credential` (0600, root) and creates
      `/var/lib/erainfra-node` (0700) for the journal. Delete the copy you gave it;
+   - installs the agent as `/usr/local/lib/erainfra/erainfra-node`, beside `erainfra-mesh`. It
+     never writes the Hub-mode agent's `~/.portless/bin/portless-agent`, so a rollback to Hub mode
+     starts the release that ran before;
    - writes and starts `erainfra-node.service`, which runs
      `connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node`
      with `ERAINFRA_CONVEX_SITE` set to the deployment's own site URL,
@@ -308,8 +314,10 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    `--convex` refuses `--token`, `--hub` and `--name`: the Node's name comes from its enrollment.
    It also refuses while `portless-agent.service` or `erainfra-agent.service` is running or
    enabled, because two modes must not drive one sidecar. Add `--replace-hub-agent` to stop and
-   disable that unit first; it does so only after both downloads verify, and it keeps the unit file
-   and `agent.env` for a rollback. In the other direction, the Hub-mode installer refuses while
+   disable that unit first; it does so only after both downloads verify, and it keeps the unit file,
+   `agent.env` and the binary for a rollback. If anything fails after that, the sidecar or
+   `erainfra-node.service` not starting for example, the installer disables `erainfra-node`,
+   enables and starts the Hub-mode unit again, and says so on stderr before it exits non-zero. In the other direction, the Hub-mode installer refuses while
    `erainfra-node.service` is running or enabled.
 
 4. **Pick the relay policy.** Each Node reads it from its own environment, with the names the Hub
@@ -432,7 +440,8 @@ once the Apps are where you want them.
 1. Stop `connect-convex`: `systemctl disable --now erainfra-node` for the installed unit. Its
    sidecar keeps running if it is the systemd service; a supervised one stops with the agent.
 2. If `--replace-hub-agent` stopped the Hub-mode unit, start it again with
-   `systemctl enable --now portless-agent`: its unit file and `agent.env` are where they were.
+   `systemctl enable --now portless-agent`: its unit file, `agent.env` and binary are where they
+   were, so it runs the release it ran before.
    Otherwise re-run `/install --role node --token <hub token> --hub wss://<hub>/agent --mesh`,
    which refuses while `erainfra-node.service` is running or enabled. For a hand-started agent,
    restore the original `connect` command with its `ERAINFRA_HUB`/`PORTLESS_HUB` and token, and
@@ -955,10 +964,14 @@ A run that would build fails at planning, before anything is built, when:
 - a Node other than the registry Node needs the registry and the registry Node is not connected to
   Convex with a proven mesh endpoint. A registry Node still in Hub mode cannot serve the others.
 
-An App whose services all name an `image:` builds nothing and needs no registry.
+A Node needs the registry when it builds (it pushes) or starts a service whose image is in
+`ERAINFRA_REGISTRY` (it pulls): a built image, or an `image:` that begins with the registry
+address. An App whose services all name an image from elsewhere, such as `nginx:1`, builds
+nothing and pulls nothing from the registry, so it deploys and fails over while the registry Node
+is down or still in Hub mode.
 
 During planning, before any build, the pipeline records a standalone link `registry-<node>` from
-the registry Node to the build Node and to every Node that starts a service. Each Node's mesh
+the registry Node to each of those Nodes, other than the registry Node itself. Each Node's mesh
 snapshot carries it: the registry Node exposes the registry port to that one peer, and the other
 Node listens on the same `127.0.0.1` port. The links stay after the run, so a later failover can
 pull too. A run fails instead of overwriting a link of that name that someone declared. Leave
@@ -1079,9 +1092,14 @@ keeps a stale row from pointing an exposure at a port another App now holds on t
 
 A single-container App the Hub deployed has a route row and no App row: its container is named
 after the label and publishes the route's port itself, so no port was ever allocated for it. Such
-a route is served as long as no App row routes at the label or carries its name, and no port
-allocation on the route's Node gives that port to anyone else. It keeps serving after its Node
-switches to `connect-convex`, with no redeploy first.
+a route is served as long as no App row routes at the label or carries its name, and nothing
+Convex knows of holds its port on the route's Node: no port allocation, no mesh link listening
+there, and none of the fleet's host-service ports (61050 and 61080 for the Hub's registry and API,
+61090 for the gateway proxy, 61100-61999 for ingress links, and the port in `ERAINFRA_REGISTRY`).
+Convex cannot see containers, so this catches a row that outlived its container only once one of
+those took its port, which is exactly when serving it would publish something else at
+`<label>.<zone>`, such as the unauthenticated registry. It keeps serving after its Node switches to
+`connect-convex`, with no redeploy first.
 
 Route count never refuses a snapshot. Every released Infra Agent refuses a snapshot with more than
 128 links or 128 exposures, so each Node's ingress gets what its declared links and exposures
@@ -1115,14 +1133,20 @@ root unless given `--allow-root`.
 
 1. Run the Node in `connect-convex` mode with an `erainfra-mesh` sidecar
    ([Set up a Node](#set-up-a-node)).
-2. On the Node, with `sudo`, a Cloudflare origin cert for the zone (`cloudflared login`) and
-   cloudflared installed:
+2. On the Node, as your own user with `sudo` (not under `sudo`: the script reads
+   `~/.cloudflared/cert.pem`), with a Cloudflare origin cert for the zone (`cloudflared login`) and
+   cloudflared installed. The script needs no checkout; take it from the release tag the Node's
+   agent came from:
 
    ```sh
-   ERAINFRA_ZONE=example.com ERAINFRA_AGENT_BIN=/usr/local/bin/infra-agent sh deploy/infra/gateway.sh
+   curl -fsSLO https://raw.githubusercontent.com/Fanzzzd/erainfra/v<version>/deploy/infra/gateway.sh
+   ERAINFRA_ZONE=example.com sh gateway.sh
    ```
 
-   It creates the `erainfra-gateway` system user, `/var/lib/erainfra-gateway` (0750, owned by the
+   It runs the agent's `gateway` command from `/usr/local/lib/erainfra/erainfra-node`, where
+   `/install --role node --convex` installs it, or from `ERAINFRA_AGENT_BIN`. It reads that binary
+   through `sudo`, so the binary may sit where only root can enter. It creates the
+   `erainfra-gateway` system user, `/var/lib/erainfra-gateway` (0750, owned by the
    agent's user, `ERAINFRA_AGENT_USER`, default root, group `erainfra-gateway`), a root-owned copy of
    the binary in `/usr/local/libexec/erainfra-gateway`, and two units that both run as
    `erainfra-gateway`:
@@ -1133,6 +1157,12 @@ root unless given `--allow-root`.
      It is bound to the proxy unit: if the proxy stops, this replica leaves the tunnel. The script
      creates the tunnel on first use and fetches its credentials with
      `cloudflared tunnel token --cred-file`, so no credentials file is copied between Nodes.
+
+   It also writes `~/.cloudflared/config-erainfra-gateway.yml`, naming the tunnel, for DNS
+   commands. Pass it to every `cloudflared tunnel route dns` for this tunnel:
+   `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns …`. Without
+   `--config`, cloudflared reads a default config (`~/.cloudflared/config.yml`,
+   `/etc/cloudflared/config.yml`) and routes to the tunnel that file names, as `hub.sh` notes.
 
    The script does not touch DNS. Without systemd, run the proxy as an ordinary user:
    `infra-agent gateway --zone example.com --routes-file <path> [--listen 127.0.0.1:61090]`, and
@@ -1256,7 +1286,7 @@ view commands; everything that changes state, and log tails, needs an `admin` to
 erainfra auth login --url https://<deployment>.convex.site --token -
 
 erainfra nodes list                         # transport, liveness, mesh endpoint proof
-erainfra nodes enroll edge-1 > edge-1.credential
+(umask 077 && erainfra nodes enroll edge-1 > edge-1.credential)
 erainfra nodes revoke edge-1                # every live credential; --credential <hint> for one
 erainfra nodes reset-endpoint edge-1        # after a Node lost its mesh key
 erainfra nodes set-roles edge-1 gateway     # placement roles; --clear removes them

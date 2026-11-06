@@ -12,6 +12,7 @@ import { api, internal } from "../convex/_generated/api";
 import { MASTER_KEY_ENV } from "../convex/infra/secretCrypto";
 import schema from "../convex/schema";
 import { upsertRoute } from "../convex/infra/apps";
+import { contentHash } from "../convex/infra/hubProvenance";
 import {
   formatImportReport,
   mergeImportReports,
@@ -683,5 +684,110 @@ describe("Hub route owners", () => {
     expect(() => resolveHubRouteOwners([{ name: "solo-" }], apps)).toThrow(
       /Hub route "solo-" is not a DNS label/,
     );
+  });
+});
+
+/** Each service of App `shop`, by the name of the Node it is placed on. */
+const placement = (t: Harness) =>
+  t.run(async (ctx) => {
+    const app = (await ctx.db
+      .query("apps")
+      .withIndex("by_name", (q) => q.eq("name", "shop"))
+      .unique())!;
+    const names = new Map<string, string>();
+    for (const n of await ctx.db.query("nodes").collect()) names.set(n._id, n.name);
+    return Object.fromEntries(app.services.map((s) => [s.name, names.get(s.nodeId!)]));
+  });
+
+// The Hub fails an App over by its primary Node: every service is redeployed on the survivor, and
+// the App's node and each route move there, but services[].node keeps the Node it left
+// (apps/hub/src/runtime/failover.ts). The importer places services where they run, and says so.
+describe("Hub App placement", () => {
+  const failedOver = {
+    name: "shop",
+    node: "survivor",
+    services: [
+      { name: "web", image: "reg/shop-web:1", args: [], port: 62001, route: "shop", node: "lost" },
+      { name: "db", image: "postgres:16", args: [], node: "lost" },
+    ],
+    links: [],
+  };
+  const routes = {
+    kind: "routes" as const,
+    rows: [
+      {
+        name: "shop",
+        node: "survivor",
+        image: "reg/shop-web:1",
+        port: 62001,
+        app: "shop",
+        service: "web",
+      },
+    ],
+  };
+  it("moves every service of a failed-over App to the App's Node, and reports it", async () => {
+    const t = convexTest(schema, modules);
+    const report = await t.action(internal.infra.hubImport.run, {
+      batches: [routes, { kind: "apps", rows: [failedOver] }],
+    });
+    expect(await placement(t)).toEqual({ web: "survivor", db: "survivor" });
+    const item = report.items.find((i) => i.kind === "apps")!;
+    expect(item.outcome).toBe("created");
+    expect(item.reason).toContain("service web placed on survivor, where its route shop points");
+    expect(item.reason).toContain(
+      "service db placed on survivor, where the Hub's failover redeployed the App",
+    );
+  });
+
+  it("keeps a placement the Hub deployed, and warns about a service off the App's Node", async () => {
+    const t = convexTest(schema, modules);
+    const placed = {
+      ...failedOver,
+      node: "a",
+      services: [
+        { ...failedOver.services[0], node: "b" },
+        { ...failedOver.services[1], node: "a" },
+      ],
+    };
+    const report = await t.action(internal.infra.hubImport.run, {
+      batches: [
+        { kind: "routes", rows: [{ ...routes.rows[0], node: "b" }] },
+        { kind: "apps", rows: [placed] },
+      ],
+    });
+    expect(await placement(t)).toEqual({ web: "b", db: "a" });
+    expect(report.items.find((i) => i.kind === "apps")!.reason).toBe(
+      "service web runs on b, not on the App's Node a; check it runs there before a redeploy keeps it there",
+    );
+  });
+
+  it("corrects an App an earlier import copied with the stale placement", async () => {
+    const t = convexTest(schema, modules);
+    // What an importer that copied services[].node as is left behind.
+    await t.action(internal.infra.hubImport.run, { batches: [routes] });
+    await t.run(async (ctx) => {
+      const lost = await ctx.db.insert("nodes", {
+        name: "lost",
+        source: "hub-import",
+        createdAt: 0,
+      });
+      const survivor = (await ctx.db
+        .query("nodes")
+        .withIndex("by_name", (q) => q.eq("name", "survivor"))
+        .unique())!._id;
+      await ctx.db.insert("apps", {
+        name: "shop",
+        nodeId: survivor,
+        services: failedOver.services.map(({ node: _, ...s }) => ({ ...s, nodeId: lost })),
+        links: [],
+        provenance: { by: "hub", hash: await contentHash(failedOver), at: 0 },
+        updatedAt: 0,
+      });
+    });
+    const report = await t.action(internal.infra.hubImport.run, {
+      batches: [{ kind: "apps", rows: [failedOver] }],
+    });
+    expect(report.items.find((i) => i.kind === "apps")?.outcome).toBe("updated");
+    expect(await placement(t)).toEqual({ web: "survivor", db: "survivor" });
   });
 });

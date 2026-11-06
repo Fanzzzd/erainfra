@@ -12,6 +12,7 @@ import {
   MESH_LINK_LIMIT,
   ingressPorts,
   ingressServiceName,
+  isHostServicePort,
   isRouteLabel,
 } from "./ingress";
 
@@ -260,6 +261,7 @@ async function desired(ctx: QueryCtx, nodeId: Id<"nodes">) {
     nodeId,
     isGateway: self?.placementRoles?.includes("gateway") ?? false,
     apps,
+    listeners: new Set(links.map((l) => listenerKey(l.consumerNodeId, l.localPort))),
     exposureBudget: MESH_EXPOSURE_LIMIT - expose.size,
     linkBudget: MESH_LINK_LIMIT - outgoing.size,
   });
@@ -340,6 +342,8 @@ async function ingressFor(
     nodeId: Id<"nodes">;
     isGateway: boolean;
     apps: Doc<"apps">[];
+    /** Every Node port a mesh link listens on, as `listenerKey`. */
+    listeners: ReadonlySet<string>;
     exposureBudget: number;
     linkBudget: number;
   },
@@ -355,7 +359,8 @@ async function ingressFor(
     return { peers: [], exposures, links, routes: isGateway ? [] : null, overflow: 0 };
   const owners = routeOwners(input.apps);
   const appNames = new Set(input.apps.map((a) => a.name));
-  const accepted = (route: Doc<"appRoutes">) => servesPlacement(ctx, route, owners, appNames);
+  const accepted = (route: Doc<"appRoutes">) =>
+    servesPlacement(ctx, route, owners, appNames, input.listeners);
 
   // Provider side: this Node runs routed Apps, and the gateways (other than itself) reach them.
   const hosted = (
@@ -479,6 +484,7 @@ async function servesPlacement(
   route: Doc<"appRoutes">,
   owners: ReturnType<typeof routeOwners>,
   appNames: ReadonlySet<string>,
+  listeners: ReadonlySet<string>,
 ) {
   if (!Number.isInteger(route.port) || route.port < 1 || route.port > 65535) return false;
   const owner = owners.get(route.name);
@@ -486,7 +492,7 @@ async function servesPlacement(
     console.warn(`route ${route.name}: claimed by more than one App; serving it 503`);
     return false;
   }
-  if (owner === undefined) return await servesSingleContainer(ctx, route, appNames);
+  if (owner === undefined) return await servesSingleContainer(ctx, route, appNames, listeners);
   if (owner.nodeId !== route.nodeId || owner.port !== route.port) return false;
   // A row that names its owner must name this one.
   if (
@@ -503,21 +509,33 @@ async function servesPlacement(
   return allocation !== null && allocation.key === `${owner.app}/${owner.service}`;
 }
 
+const listenerKey = (nodeId: Id<"nodes">, port: number) => `${nodeId}:${port}`;
+
 /**
  * A single-container App the Hub deployed has a route row and no App row: its container is named
  * after the label and publishes the route's port on the Node's loopback itself, so no port was
- * ever allocated for it. Served while no App row claims the label or the name and no allocation on
- * that Node hands the port to anyone else. Refusing it would answer 503 for every such App from
- * the moment its Node leaves Hub mode until it is redeployed through Convex.
+ * ever allocated for it. Served while no App row claims the label or the name and nothing else
+ * Convex knows of holds the port on that Node: no allocation, no mesh link listener, no host
+ * service (`isHostServicePort`). Convex cannot see the container itself, so a row that outlived it
+ * is caught only when something it knows took the port; that is what makes it dangerous, since
+ * the gateway would then publish that listener. Refusing every such row would answer 503 for each
+ * single-container App from the moment its Node leaves Hub mode until it is redeployed.
  */
 async function servesSingleContainer(
   ctx: QueryCtx,
   route: Doc<"appRoutes">,
   appNames: ReadonlySet<string>,
+  listeners: ReadonlySet<string>,
 ) {
   if (route.service !== undefined || (route.app !== undefined && route.app !== route.name))
     return false;
   if (appNames.has(route.name)) return false;
+  if (isHostServicePort(route.port) || listeners.has(listenerKey(route.nodeId, route.port))) {
+    console.warn(
+      `route ${route.name}: port ${route.port} is held by a host service or mesh link, not its container; serving it 503`,
+    );
+    return false;
+  }
   const allocation = await ctx.db
     .query("portAllocations")
     .withIndex("by_node_port", (q) => q.eq("nodeId", route.nodeId).eq("port", route.port))

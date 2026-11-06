@@ -21,6 +21,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -1101,10 +1102,18 @@ exec "$@"
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const unit = readFileSync(box.unitFile("erainfra-node.service"), "utf8");
-    const agent = path.join(box.sandbox.home, ".portless", "bin", "portless-agent");
     expect(unit).toContain(
-      `ExecStart=${agent} connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node\n`,
+      "ExecStart=/usr/local/lib/erainfra/erainfra-node connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node\n",
     );
+    const agent = path.join(
+      box.sandbox.sudoRoot,
+      "usr",
+      "local",
+      "lib",
+      "erainfra",
+      "erainfra-node",
+    );
+    expect(statSync(agent).mode & 0o777).toBe(0o755);
     expect(unit).toMatch(/^Environment=ERAINFRA_CONVEX_SITE=https:\/\/example\.convex\.site$/m);
     expect(unit).toMatch(/^Environment=ERAINFRA_MESH_SOCKET=\/run\/erainfra-mesh\/control\.sock$/m);
     expect(unit).toMatch(
@@ -1168,6 +1177,55 @@ exec "$@"
     // the Hub agent too.
     expect(stopped).toBeLessThan(service.indexOf("restart erainfra-mesh"));
     expect(stopped).toBeLessThan(service.indexOf("restart erainfra-node"));
+  });
+
+  // portless-agent.service runs $PREFIX/bin/portless-agent. A rollback to Hub mode starts that
+  // unit again, so it must find the bytes it ran before, not this release's connect-convex agent.
+  it("keeps the Hub-mode agent's binary for a rollback", () => {
+    const box = convexSandbox();
+    box.seed("portless-agent", "active", "enabled");
+    const hubAgent = path.join(box.sandbox.home, ".portless", "bin", "portless-agent");
+    mkdirSync(path.dirname(hubAgent), { recursive: true });
+    writeExecutable(hubAgent, "#!/usr/bin/env bash\n# the Hub-mode agent\n");
+    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(hubAgent, "utf8")).toBe("#!/usr/bin/env bash\n# the Hub-mode agent\n");
+  });
+
+  // --replace-hub-agent stops the Hub unit before the sidecar (re)starts. Any failure after that,
+  // here the sidecar failing to restart under set -e, must not leave the Node with no agent.
+  it("puts the Hub-mode agent back when the install fails after stopping it", () => {
+    const box = convexSandbox();
+    box.seed("portless-agent", "active", "enabled");
+    const bin = path.join(box.sandbox.root, "bin");
+    const real = path.join(bin, "systemctl.real");
+    renameSync(path.join(bin, "systemctl"), real);
+    writeExecutable(
+      path.join(bin, "systemctl"),
+      `#!/usr/bin/env bash\nif [ "$1" = restart ] && [ "$2" = erainfra-mesh ]; then printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"; exit 1; fi\nexec "${real}" "$@"\n`,
+    );
+    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    expect(result.status).not.toBe(0);
+    expect(box.isLive("portless-agent", "active")).toBe(true);
+    expect(box.isLive("portless-agent", "enabled")).toBe(true);
+    expect(box.isLive("erainfra-node", "active")).toBe(false);
+    expect(result.stderr).toMatch(/failed after it stopped the Hub-mode agent/);
+    expect(result.stderr).toMatch(/systemctl enable --now portless-agent/);
+  });
+
+  it("does not touch a Hub-mode unit it did not stop when the install fails", () => {
+    const box = convexSandbox();
+    const bin = path.join(box.sandbox.root, "bin");
+    const real = path.join(bin, "systemctl.real");
+    renameSync(path.join(bin, "systemctl"), real);
+    writeExecutable(
+      path.join(bin, "systemctl"),
+      `#!/usr/bin/env bash\nif [ "$1" = restart ] && [ "$2" = erainfra-mesh ]; then exit 1; fi\nexec "${real}" "$@"\n`,
+    );
+    const result = run(box.sandbox, convexArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(box.isLive("portless-agent", "active")).toBe(false);
+    expect(result.stderr).not.toMatch(/Hub-mode agent/);
   });
 
   it("leaves the Hub-mode unit running when the new bytes do not match the pin", () => {

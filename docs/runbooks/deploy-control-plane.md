@@ -34,8 +34,32 @@ The `version` must be the tag's. `mesh` and `controller` in `AGENT_RELEASE` must
 you will install Nodes with `--convex` or update controllers; an empty map makes `/install` refuse
 that role.
 
-Note the commit production runs now, for the rollback. `--update` keeps each controller host's old
-binary and unit as `.bak-<old version>` files, so those need no note.
+Note the release production runs now, and build its rollback branch before the window
+([Roll back](#4-roll-back) says why a plain checkout of it cannot be deployed). `--update` keeps
+each controller host's old binary and unit as `.bak-<old version>` files, so those need no note.
+
+```bash
+old=0.2.0-rc.10; new=0.2.0-rc.11                     # production now, and the release you deploy
+git worktree add -b "rollback/v$old-on-v$new-schema" ../erainfra-rollback "v$old"
+cd ../erainfra-rollback
+git checkout "v$new" -- packages/backend/convex/schema.ts
+grep -n '^import' packages/backend/convex/schema.ts   # the modules its validators come from
+```
+
+Make the old code compile against the new schema. For each module `schema.ts` imports that the old
+release lacks, or has without an export the schema uses, check out the new release's copy too
+(`git checkout "v$new" -- packages/backend/convex/<module>`). If that breaks old code that imports
+the same module, copy just the validators the schema needs into `schema.ts` instead. Then:
+
+```bash
+pnpm install --frozen-lockfile && pnpm check           # green: old functions, new schema
+git commit -m "chore(rollback): v$old functions on the v$new schema"
+git push origin "rollback/v$old-on-v$new-schema"
+cd - >/dev/null
+```
+
+The branch is the rollback. Nothing in it is new code: the functions are the old release's, and
+the schema only declares more tables and optional fields than the old one did.
 
 Stage the new controller binary on every controller host, so the window does not wait on a
 download. Take it from the GitHub Release of the tag and check it against the pin on the release
@@ -56,9 +80,12 @@ List Profiles whose scale-set labels overlap (ADR 0017). The check is read-only 
 function on the deployment, so it works against the backend you are about to replace:
 
 ```bash
-npx convex data profiles --prod --limit 10000 --format jsonl \
+(cd packages/backend && npx convex data profiles --prod --limit 10000 --format jsonl) \
   | pnpm --filter @erainfra/backend --silent profile-label-conflicts
 ```
+
+`npx convex data` reads the deployment from `packages/backend`'s `.env.local`, so it runs there,
+not from the repository root.
 
 Exit 0 means no pair. A pair it lists keeps registering after the deploy, but GitHub can run
 either Profile's jobs on the other, and the new backend raises it in `erainfra profiles list`, the
@@ -113,8 +140,13 @@ update; install it with the dedicated host command in that runbook instead.
 
 ## 4. Roll back
 
-Convex deploys are code swaps; data written in between stays. Roll back the backend and the
-controllers together, in one window:
+A Convex deploy swaps the code and keeps the data. Before it accepts a schema, Convex checks every
+document already stored against it. So once the new release has written a field the old schema
+does not declare, `profiles.githubConfigUrl` for example, a deploy of the old commit as it was is
+refused at that check, and the rollback fails exactly when it is needed. The rollback branch from
+[Before](#1-before) carries the old functions with the new schema, so it deploys over anything the
+new release wrote. Old functions never read the new fields, and every new field is optional, so
+the old code behaves as it did. Roll back the backend and the controllers together, in one window:
 
 1. On each controller host, put back the binary and unit `--update` kept, and restart the
    instances that should run:
@@ -128,12 +160,14 @@ controllers together, in one window:
    sudo systemctl restart 'runner-center-controller@<profile>'
    ```
 
-2. Deploy the previous commit from its own worktree:
+2. Deploy the rollback branch from its worktree:
 
    ```bash
-   git worktree add ../erainfra-previous <previous commit>
-   cd ../erainfra-previous && pnpm install --frozen-lockfile && pnpm run deploy:control-plane
+   cd ../erainfra-rollback && pnpm install --frozen-lockfile && pnpm run deploy:control-plane
    ```
+
+   If the push is refused with a schema validation error naming a table or field, the branch is
+   missing part of the new schema: add that declaration from `v$new`, then deploy again.
 
 Then cancel and retry any Attempt created during the window. Attempts already claimed or running
 are unaffected. If the previous backend predates the controller lease, the previous controller

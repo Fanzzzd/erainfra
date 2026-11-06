@@ -1195,3 +1195,135 @@ describe("failover", () => {
     expect(app?.services.some((x) => x.nodeId === c)).toBe(false);
   });
 });
+
+// Only a Node that builds, or pulls an image from ERAINFRA_REGISTRY, needs the registry Node. An
+// image-only App deploys and fails over while the registry Node is away or still in Hub mode
+// (retire-the-hub.md runs its canary in exactly that state).
+describe("the registry Node is needed only by Nodes that use the registry", () => {
+  it("deploys an image-only App on another Node while the registry Node is in Hub mode", async () => {
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+    process.env.ERAINFRA_REGISTRY_NODE = "node-c"; // Hub mode: never heartbeats
+    const s = await setup();
+    await s.beat("node-a", "node-b");
+    const spec =
+      "services:\n  web:\n    image: traefik/whoami:v1.10\n    port: 80\n    route: true\n";
+    const id = await s.startUpload("hello-retire", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec }));
+    await s.agent("node-a");
+    const run = await s.deployment(id);
+    expect(run.error).toBeUndefined();
+    expect(run.stage).toBe("done");
+    // Nothing pulls from the registry, so nothing was linked to it.
+    const links = await s.t.run((ctx) => ctx.db.query("meshLinks").collect());
+    expect(links).toEqual([]);
+  });
+
+  it("still refuses a pull of a registry image on another Node while the registry Node is away", async () => {
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+    process.env.ERAINFRA_REGISTRY_NODE = "node-c";
+    const s = await setup();
+    await s.beat("node-a", "node-b");
+    const spec =
+      "services:\n  web:\n    image: 127.0.0.1:61050/web:1\n    port: 80\n    route: true\n";
+    const id = await s.startUpload("pulls", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec }));
+    const run = await s.deployment(id);
+    expect(run.stage).toBe("failed");
+    expect(run.error).toContain("the registry Node node-c (ERAINFRA_REGISTRY_NODE)");
+  });
+});
+
+// The Hub fails an App over by its primary Node and leaves services[].node where it was, while the
+// App's node and its routes move. A redeploy that names no Node keeps each service where it runs.
+describe("redeploy of an imported App the Hub had failed over", () => {
+  it("keeps each service on the Node it actually runs on (its route's Node)", async () => {
+    const s = await setup(["aliyun", "work-remote"]);
+    await s.beat();
+    await s.t.action(internal.infra.hubImport.run, {
+      batches: [
+        {
+          kind: "routes",
+          rows: [
+            {
+              name: "shop",
+              node: "work-remote",
+              image: "reg/shop:1",
+              port: 62001,
+              app: "shop",
+              service: "web",
+            },
+          ],
+        },
+        {
+          kind: "apps",
+          rows: [
+            {
+              name: "shop",
+              node: "work-remote",
+              services: [
+                {
+                  name: "web",
+                  image: "reg/shop:1",
+                  args: [],
+                  port: 62001,
+                  route: "shop",
+                  node: "aliyun",
+                },
+              ],
+              links: [],
+            },
+          ],
+        },
+        { kind: "ports", rows: [{ node: "work-remote", key: "shop/web", port: 62001 }] },
+      ],
+    });
+    const spec = "services:\n  web:\n    image: reg/shop:2\n    port: 3000\n    route: shop\n";
+    const res = await s.operator("deployments", s.admin, { app: "shop", upload: await s.upload() });
+    expect(res.status).toBe(202);
+    const id = ((await res.json()) as { deployment: { id: string } }).deployment.id;
+    await s.settle();
+    for (let i = 0; i < 4; i++)
+      for (const n of ["aliyun", "work-remote"])
+        await s.agent(n, (_p, c) =>
+          c.kind === "spec" ? { outcome: "success", spec } : { outcome: "success" },
+        );
+    const app = await s.t.run((ctx) =>
+      ctx.db
+        .query("apps")
+        .withIndex("by_name", (q) => q.eq("name", "shop"))
+        .unique(),
+    );
+    const run = await s.deployment(id);
+    expect({ stage: run.stage, error: run.error }).toEqual({ stage: "done", error: undefined });
+    expect(app!.services[0].nodeId).toBe(s.nodes["work-remote"].nodeId);
+  });
+});
+
+// Losing the registry Node must not block the failover of an App that pulls nothing from it.
+describe("failover off the registry Node", () => {
+  it("moves an image-only App off a lost registry Node", async () => {
+    process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
+    process.env.ERAINFRA_REGISTRY_NODE = "node-a";
+    const s = await setup();
+    await s.beat();
+    await s.t.run((ctx) => ctx.db.patch(s.nodes["node-a"].nodeId, { endpointProvenAt: T0 }));
+    const spec = "services:\n  web:\n    image: nginx:1\n    port: 80\n    route: true\n";
+    const id = await s.startUpload("plain", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec }));
+    await s.agent("node-a");
+    expect((await s.deployment(id)).stage).toBe("done");
+
+    let now = T0 + NODE_SILENCE_MS + 1_000;
+    vi.setSystemTime(now);
+    await s.beat("node-b", "node-c");
+    await s.t.mutation(internal.infra.failover.check, {});
+    now += FAILOVER_GRACE_MS;
+    vi.setSystemTime(now);
+    await s.beat("node-b", "node-c");
+    const [runId] = await s.t.mutation(internal.infra.failover.check, {});
+    await s.settle();
+    const run = await s.deployment(runId);
+    expect(run.error).toBeUndefined();
+    expect(run.stage).toBe("deploying");
+  });
+});

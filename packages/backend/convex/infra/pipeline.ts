@@ -76,6 +76,15 @@ const REGISTRY_UNSET =
   "deploy/infra/hub.sh runs, with ERAINFRA_REGISTRY_NODE naming the Node that runs it " +
   "(docs/infra-management.md, Image registry and cross-Node links)";
 
+/**
+ * Whether Docker pulls `image` from `registry`. A reference names a registry only in its first
+ * path component, so `registry` must be followed by `/`: "127.0.0.1:61050" does not own
+ * "127.0.0.1:610500/x", and a bare "nginx:1" is Docker Hub's.
+ */
+export function pullsFrom(image: string, registry: string) {
+  return image.startsWith(`${registry}/`);
+}
+
 /** Why the configured registry cannot be used, or null. */
 function registryRefusal(registry: string | null) {
   if (registry === null) return REGISTRY_UNSET;
@@ -549,9 +558,15 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
     s.route ? [domain ? `https://${s.route}.${domain}` : s.route] : [],
   );
   // The registry must be reachable from the build Node (push) and every Node that starts a
-  // service (pull) before either step runs.
+  // service whose image lives in it (pull) before either step runs. A Node that pulls only
+  // public images never touches the registry, so it neither gets a link nor waits on the
+  // registry Node: an image-only App deploys, and fails over, while that Node is away.
   const registryError = await ensureRegistryLinks(ctx, [
-    ...deployNodeIds,
+    ...deployNodeIds.filter((nodeId) =>
+      plan.services.some(
+        (s) => s.nodeId === nodeId && registry !== null && pullsFrom(s.image, registry),
+      ),
+    ),
     ...(plan.builds.length > 0 && run.buildNodeId !== undefined ? [run.buildNodeId] : []),
   ]);
   if (registryError !== null) return await fail(ctx, run, { error: registryError });
@@ -581,11 +596,13 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
  * as a local insecure registry and no daemon needs configuring. Each link is a standalone
  * `meshLinks` row named `registry-<node>`, which the Nodes' mesh snapshots carry
  * (nodeState.ts); the links persist, so a later failover can still pull. Unset, the registry is
- * one every Node reaches by itself (ERAINFRA_REGISTRY), and nothing is linked.
+ * one every Node reaches by itself (ERAINFRA_REGISTRY), and nothing is linked. `nodeIds` are the
+ * Nodes that push to or pull from the registry; a run with none needs nothing from the registry
+ * Node, and one whose only user is the registry Node needs no mesh endpoint.
  */
 async function ensureRegistryLinks(ctx: MutationCtx, nodeIds: Id<"nodes">[]) {
   const registryNode = process.env.ERAINFRA_REGISTRY_NODE;
-  if (!registryNode) return null;
+  if (!registryNode || nodeIds.length === 0) return null;
   const provider = await ctx.db
     .query("nodes")
     .withIndex("by_name", (q) => q.eq("name", registryNode))

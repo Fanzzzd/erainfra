@@ -18,6 +18,23 @@
 export const INGRESS_PORT_START = 61100;
 export const INGRESS_PORT_END = 61999;
 /**
+ * Loopback ports the fleet keeps for host services: the Hub's registry and API (deploy/infra/hub.sh,
+ * 61050 and 61080), the gateway proxy (61090, apps/infra-agent/gateway.go), the gateway's ingress
+ * links, and the registry ERAINFRA_REGISTRY names, which every Node that pulls reaches over a mesh
+ * link on its own loopback. A single-container route at one of these ports is not served on any
+ * Node. Where the service runs, the row has outlived its container (the Hub could not publish a
+ * port its host already held), and serving it would publish whatever listens there now, such as
+ * the unauthenticated registry, at `<label>.<zone>`. On a Node without the service, it costs an App
+ * that picked such a port one redeploy through Convex, which allocates from 62000-63999.
+ */
+export function isHostServicePort(port: number, registry = process.env.ERAINFRA_REGISTRY) {
+  if (port === 61050 || port === 61080 || port === 61090) return true;
+  if (port >= INGRESS_PORT_START && port <= INGRESS_PORT_END) return true;
+  const registryPort = /^[^/:]+:(\d{1,5})(\/|$)/.exec(registry?.trim() ?? "")?.[1];
+  return registryPort !== undefined && Number(registryPort) === port;
+}
+
+/**
  * The Infra Agent refuses a snapshot with more than 128 links or 128 exposures
  * (meshclient.Desired.Validate in every released agent). Ingress takes what a Node's declared
  * links and exposures leave of that budget, and never more: a route that does not fit is left out

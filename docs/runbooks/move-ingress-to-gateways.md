@@ -30,17 +30,26 @@ Gateway Nodes themselves run no Apps, so setting them up costs no traffic.
    ([State in Convex](../infra-management.md#state-in-convex)) right before the window, and do not
    deploy through the Hub after it: a Hub deploy changes the Hub's `routes`, not Convex's.
 3. **You have a Cloudflare origin cert for the zone** (`~/.cloudflared/cert.pem`) on each gateway
-   Node and on the machine where you run the DNS commands below.
+   Node. Run the DNS commands below on a gateway Node, as the user that ran `gateway.sh`: each
+   passes the config it writes, `~/.cloudflared/config-erainfra-gateway.yml`. Without `--config`,
+   `cloudflared tunnel route dns` reads a default config (`~/.cloudflared/config.yml`,
+   `/etc/cloudflared/config.yml`) and routes to the tunnel that file names.
+4. **You know which links drop when a gateway Node switches.** A Hub link stops when either of its
+   Nodes leaves Hub mode, and Convex carries it only once both run `connect-convex`. List them
+   with `erainfra links list | grep -F <node>`. Switch a Node whose links must not drop in the
+   same window as the App Node at their other end.
 
 ## 1. Set up two or more gateway Nodes
 
 On each gateway Node, run `deploy/infra/gateway.sh` with the same `ERAINFRA_ZONE` and tunnel name,
 set `ERAINFRA_GATEWAY_ROUTES_FILE` for its Infra Agent, and mark it a gateway
-([Set up a gateway Node](../infra-management.md#set-up-a-gateway-node)):
+([Set up a gateway Node](../infra-management.md#set-up-a-gateway-node)). Run the script as your
+own user, not under `sudo`. It needs no checkout: take it from the release tag the Node's agent
+came from. It finds the agent where `/install --role node --convex` put it:
 
 ```sh
-AGENT_BIN=$(systemctl cat erainfra-node | sed -n 's/^ExecStart=\([^ ]*\).*/\1/p')
-ERAINFRA_ZONE=<zone> ERAINFRA_AGENT_BIN="$AGENT_BIN" sh deploy/infra/gateway.sh
+curl -fsSLO "https://raw.githubusercontent.com/Fanzzzd/erainfra/v<version>/deploy/infra/gateway.sh"
+ERAINFRA_ZONE=<zone> sh gateway.sh
 sudo systemctl edit erainfra-node
 #   [Service]
 #   Environment=ERAINFRA_GATEWAY_ROUTES_FILE=/var/lib/erainfra-gateway/routes.json
@@ -67,7 +76,8 @@ rule), so only this name moves:
 ```sh
 erainfra deploy ./hello-retire --app hello-retire \
   --node <gateway node> --build-node <gateway node>
-cloudflared tunnel route dns erainfra-gateway hello-retire.<zone>
+cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml \
+  route dns erainfra-gateway hello-retire.<zone>
 ```
 
 [retire-the-hub.md, step 4](retire-the-hub.md#4-canary-through-a-gateway) has the spec. Check
@@ -79,7 +89,7 @@ gateway's journal (`journalctl -u erainfra-gateway`) logs upstream failures.
 ## 3. Switch the App Nodes and move the wildcard
 
 Prepare first: re-run the importer, enroll each App Node and put its credential on it, and have the
-DNS command typed on the machine with the origin cert. Then, in one window:
+DNS command typed on a gateway Node. Then, in one window:
 
 1. On each App Node, switch to `connect-convex`:
 
@@ -99,10 +109,11 @@ DNS command typed on the machine with the origin cert. Then, in one window:
    done
    ```
 
-3. Move the wildcard:
+3. Move the wildcard, on a gateway Node:
 
    ```sh
-   cloudflared tunnel route dns --overwrite-dns erainfra-gateway '*.<zone>'
+   cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml \
+     route dns --overwrite-dns erainfra-gateway '*.<zone>'
    ```
 
 This rewrites the proxied `*` CNAME to the gateway tunnel. Cloudflare answers visitors with its own
@@ -120,8 +131,9 @@ The gateways learn routes only from Convex. Deploy these Apps through Convex
 ([phase 3a](../infra-management.md#deploy-and-failover-from-convex-phase-3a)), whose pipeline and
 failover write the route rows the gateways read. A route row whose port is not the one allocated to
 that App on that Node is refused (503) rather than sent to whatever holds that port. A
-single-container App the Hub deployed has no allocation and is served as long as nothing else holds
-its port.
+single-container App the Hub deployed has no allocation and is served as long as nothing Convex
+knows of holds its port: no allocation, no mesh link listener, and none of the host-service ports
+([What Convex sends](../infra-management.md#what-convex-sends)).
 
 ## Roll back
 
@@ -138,10 +150,12 @@ DNS second. Its Apps are down between the two commands.
    sudo systemctl enable --now portless-agent
    ```
 
-3. Where the origin cert is, point the wildcard back at the Hub's tunnel:
+3. On the Hub's host, as the user that ran `hub.sh`, point the wildcard back at the Hub's tunnel
+   with the config `hub.sh` wrote:
 
    ```sh
-   cloudflared tunnel route dns --overwrite-dns portless '*.<zone>'
+   cloudflared tunnel --config ~/.cloudflared/config-portless.yml \
+     route dns --overwrite-dns portless '*.<zone>'
    ```
 
 The Hub still has its `*.<zone>` ingress rule from hub.sh and proxies over `/data` again once the
