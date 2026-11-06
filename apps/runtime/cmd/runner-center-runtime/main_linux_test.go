@@ -81,3 +81,19 @@ func TestRuntimeConfigReadsTheNewNames(t *testing.T) {
 		t.Fatalf("with neither name set the socket must stay where every host has it, got %q", runtimeSocket())
 	}
 }
+
+func TestBoolEnvReadsASwitchAndRefusesATypo(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "off": false, "0": false, "on": true, "1": true, "TRUE": true} {
+		isolate(t)
+		t.Setenv("ERAINFRA_GIT_MIRROR", value)
+		got, err := boolEnv("RC_GIT_MIRROR")
+		if err != nil || got != want {
+			t.Errorf("boolEnv with %q = %v, %v; want %v", value, got, err, want)
+		}
+	}
+	isolate(t)
+	t.Setenv("RC_GIT_MIRROR", "enabled")
+	if _, err := boolEnv("RC_GIT_MIRROR"); err == nil {
+		t.Fatal("boolEnv accepted a value that is neither on nor off")
+	}
+}

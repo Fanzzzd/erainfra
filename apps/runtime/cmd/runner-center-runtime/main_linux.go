@@ -75,6 +75,10 @@ func run(ctx context.Context, args []string) (int, error) {
 		config.CacheSigningKey = key
 		config.CacheServiceURL = strings.TrimSpace(dualenv.Value("RC_CACHE_SERVICE_URL"))
 		config.RegistryMirrorURL = strings.TrimSpace(dualenv.Value("RC_REGISTRY_MIRROR_URL"))
+		config.GitMirror, err = boolEnv("RC_GIT_MIRROR")
+		if err != nil {
+			return 2, err
+		}
 		runtime, err := firecracker.New(config)
 		if err != nil {
 			return 2, err
@@ -477,6 +481,19 @@ func positiveInt64Env(name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return parsed, nil
+}
+
+// boolEnv reads an on/off switch. Unset is off; anything that is not a clear
+// yes or no is refused, so a typo does not silently leave a feature off.
+func boolEnv(name string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(dualenv.Value(name))) {
+	case "", "0", "false", "off", "no":
+		return false, nil
+	case "1", "true", "on", "yes":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be on or off", name)
+	}
 }
 
 func nonnegativeIntEnv(name string) (int, error) {

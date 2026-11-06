@@ -215,6 +215,15 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
 - **Registry mirror.** Workers can also give guests a Docker Hub pull-through mirror
   ([runbook](docs/runbooks/operate-the-registry-mirror.md)). dockerd and buildx builders use it
   with no workflow change, and fall back to Docker Hub when it is down.
+- **Git checkout mirror.** With `RC_GIT_MIRROR=on`, a job's `actions/checkout` of its own
+  repository fetches from GitHub only the objects missing from the repository's seed, a git bundle
+  an earlier job saved in the cache service under the cache's own scope rules. The guest's git
+  reaches `https://github.com/` through a proxy in the guest, which checks the job's credential with
+  GitHub before every fetch it answers and forwards everything else unchanged. On this repository a
+  depth-1 checkout drops from 2.4 MB to 34 KB with a seed one commit old. A checkout still contacts
+  GitHub every time, so it does not avoid ubuntu0's SYN stalls (#149). Any failure sends the fetch
+  to GitHub. Details, measurements and limits are in
+  [the runbook](docs/runbooks/operate-the-job-cache.md#11-git-checkout-mirror).
 - **Activation.** The cache is off until an operator deploys the service and its bucket and turns
   the interception on, following
   [docs/runbooks/operate-the-job-cache.md](docs/runbooks/operate-the-job-cache.md). Until every
@@ -222,16 +231,16 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
 
 Blacksmith's cache paths, and what serves each one here on a Firecracker Profile with the cache on:
 
-| Blacksmith                                         | EraInfra                                                                                                                                           | workflow change               |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| Actions cache (`actions/cache`, `setup-*` caching) | cache service through the in-guest interceptor                                                                                                     | none                          |
-| Docker layer cache (`setup-docker-builder`)        | BuildKit `type=gha` against the same service                                                                                                       | one buildx `driver-opts` line |
-| Container image caching                            | Docker Hub pull-through registry mirror                                                                                                            | none                          |
-| Turborepo build cache                              | Turborepo Remote Cache API through the guest's build proxy                                                                                         | none                          |
-| Go build cache (`GOCACHEPROG`)                     | `erainfra-gocacheprog`, local disk first, then the service                                                                                         | one `env` line                |
-| Bazel and Buck2 remote cache                       | not served                                                                                                                                         | —                             |
-| Git checkout cache (`useblacksmith/checkout`)      | not served                                                                                                                                         | —                             |
-| Sticky disks (`useblacksmith/stickydisk`)          | not served: a writable disk that outlives the job breaks the per-Attempt boundary ([ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md)) | —                             |
+| Blacksmith                                               | EraInfra                                                                                                                                           | workflow change               |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| Actions cache (`actions/cache`, `setup-*` caching)       | cache service through the in-guest interceptor                                                                                                     | none                          |
+| Docker layer cache (`setup-docker-builder`)              | BuildKit `type=gha` against the same service                                                                                                       | one buildx `driver-opts` line |
+| Container image caching                                  | Docker Hub pull-through registry mirror                                                                                                            | none                          |
+| Turborepo build cache                                    | Turborepo Remote Cache API through the guest's build proxy                                                                                         | none                          |
+| Go build cache (`GOCACHEPROG`)                           | `erainfra-gocacheprog`, local disk first, then the service                                                                                         | one `env` line                |
+| Bazel and Buck2 remote cache                             | not served                                                                                                                                         | —                             |
+| Git checkout cache (`useblacksmith/checkout`, git proxy) | git checkout mirror with `RC_GIT_MIRROR=on`: the job's own repository over HTTPS, seeded from the service                                          | none                          |
+| Sticky disks (`useblacksmith/stickydisk`)                | not served: a writable disk that outlives the job breaks the per-Attempt boundary ([ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md)) | —                             |
 
 ### Egress policy
 

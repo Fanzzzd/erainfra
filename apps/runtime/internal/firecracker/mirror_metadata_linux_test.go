@@ -21,6 +21,7 @@ func TestMetadataRoundTripsIntoTheGuestsDecoder(t *testing.T) {
 		CacheServiceURL:   "https://cache.internal:8721",
 		CacheRunnerToken:  "erainfra-cache-runner-v1.payload.signature",
 		RegistryMirrorURL: "http://10.20.0.5:5000",
+		GitMirror:         true,
 	}
 	tree := metadataFor(spec)
 	encoded, err := json.Marshal(tree["latest"].(map[string]any)["meta-data"].(map[string]any)["runner-center"])
@@ -36,7 +37,8 @@ func TestMetadataRoundTripsIntoTheGuestsDecoder(t *testing.T) {
 	}
 	if decoded.RegistryMirrorURL != spec.RegistryMirrorURL ||
 		decoded.CacheServiceURL != spec.CacheServiceURL ||
-		decoded.CacheRunnerToken != spec.CacheRunnerToken {
+		decoded.CacheRunnerToken != spec.CacheRunnerToken ||
+		!decoded.GitMirror {
 		t.Fatalf("round trip lost a field: %+v", decoded)
 	}
 

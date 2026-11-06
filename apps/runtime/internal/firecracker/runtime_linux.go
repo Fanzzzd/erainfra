@@ -587,6 +587,12 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if spec.RegistryMirrorURL == "" {
 		spec.RegistryMirrorURL = r.config.RegistryMirrorURL
 	}
+	// And for the git checkout mirror, which needs the cache service the spec
+	// ended up with.
+	spec.GitMirror = spec.GitMirror || r.config.GitMirror
+	if spec.CacheServiceURL == "" {
+		spec.GitMirror = false
+	}
 	lease, err := r.pool.Claim(ctx, spec)
 	if err == nil {
 		return lease, nil
@@ -841,6 +847,7 @@ func metadataFor(spec executor.Spec) map[string]any {
 					"cache_service_url":   spec.CacheServiceURL,
 					"cache_runner_token":  spec.CacheRunnerToken,
 					"registry_mirror_url": spec.RegistryMirrorURL,
+					"git_mirror":          spec.GitMirror,
 					"shutdown_on_exit":    true,
 				},
 			},
