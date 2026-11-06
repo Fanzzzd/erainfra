@@ -52,6 +52,20 @@ via workflow dispatch. Pick a quiet window: running Attempts are not interrupted
 scheduling decisions made mid-deploy land on whichever code version answers, and GitHub queues new
 jobs while the controllers restart.
 
+List Profiles whose scale-set labels overlap (ADR 0017). The check is read-only and needs no
+function on the deployment, so it works against the backend you are about to replace:
+
+```bash
+npx convex data profiles --prod --limit 10000 --format jsonl \
+  | pnpm --filter @erainfra/backend --silent profile-label-conflicts
+```
+
+Exit 0 means no pair. A pair it lists keeps registering after the deploy, but GitHub can run
+either Profile's jobs on the other, and the new backend raises it in `erainfra profiles list`, the
+Profiles table, `erainfra_profile_label_conflicts` and the _Profiles' scale-set labels overlap_
+alert. Fix it by removing the other Profile's name from one side's `ERAINFRA_LABELS` and
+restarting that controller.
+
 ## 2. Deploy, and update the controllers in the same window
 
 From the release worktree:

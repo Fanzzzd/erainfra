@@ -23,6 +23,8 @@ type profileRow struct {
 	FreeSlots    int64          `json:"freeSlots"`
 	Readiness    map[string]int `json:"readiness"`
 	WorkerLabels []string       `json:"workerLabels"`
+	// Absent from a control plane that predates the field.
+	LabelConflicts []string `json:"labelConflicts"`
 }
 
 var profilesListCommand = command{
@@ -33,7 +35,12 @@ READY counts Workers that can take a job now: ready, admitted, online, and the
 Profile active. NOT READY counts the other Workers that reported for the
 Profile, by state. SLOTS is free/total across the ready Workers. PINNED TO
 lists the host labels a Worker must carry to serve the Profile, from the
-controller's ERAINFRA_WORKER_LABELS; "-" means any compatible Worker.`,
+controller's ERAINFRA_WORKER_LABELS; "-" means any compatible Worker.
+
+A warning on stderr follows the table for each active Profile whose scale set
+shares labels with another's, so GitHub can run either one's jobs on the
+other. The control plane refuses a registration that adds such an overlap;
+one it warns about predates that check.`,
 	run: func(ctx context.Context, a *App, in invocation) error {
 		c, _, err := a.connect()
 		if err != nil {
@@ -65,7 +72,17 @@ controller's ERAINFRA_WORKER_LABELS; "-" means any compatible Worker.`,
 				fmt.Sprintf("%d/%d", p.FreeSlots, p.ReadySlots),
 				notReady(p.Readiness), labelList(p.WorkerLabels))
 		}
-		return tw.Flush()
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		for _, p := range page.Profiles {
+			for _, conflict := range p.LabelConflicts {
+				if _, err := fmt.Fprintf(a.Stderr, "warning: Profile %s: %s\n", p.Name, conflict); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	},
 }
 
@@ -222,8 +239,11 @@ The labels given replace the Worker's host labels; --clear removes them all. A
 Profile pinned to host labels (the controller's ERAINFRA_WORKER_LABELS) runs
 only on Workers carrying every one of them, so adding gpu to a Worker lets it
 serve a Profile pinned to gpu, and removing it stops new jobs of that Profile
-from going there. Jobs already running finish where they are. A Worker sets its
-labels once, at install (--labels a,b), and cannot change them afterwards.
+from going there: the Worker's idle Runners of that Profile are retired at
+once, so GitHub cannot hand them a job, and Attempts placed there but not yet
+started go back to the queue. Jobs already running finish where they are. A
+Worker sets its labels once, at install (--labels a,b), and cannot change them
+afterwards.
 
 Example:
   erainfra workers set-labels hk-worker01 gpu nvme`,
@@ -262,6 +282,8 @@ Example:
 			Worker struct {
 				Labels []string `json:"labels"`
 			} `json:"worker"`
+			RetiredRunners   int `json:"retiredRunners"`
+			RequeuedAttempts int `json:"requeuedAttempts"`
 		}
 		if err := decode(body, &out); err != nil {
 			return err
@@ -270,7 +292,13 @@ Example:
 		if set == "" {
 			set = "none"
 		}
-		_, err = fmt.Fprintf(a.Stdout, "%s host labels: %s\n", name, set)
+		if _, err := fmt.Fprintf(a.Stdout, "%s host labels: %s\n", name, set); err != nil {
+			return err
+		}
+		if out.RetiredRunners > 0 || out.RequeuedAttempts > 0 {
+			_, err = fmt.Fprintf(a.Stdout, "%s no longer serves some pinned Profiles: retired %d idle Runner(s), sent %d placed Attempt(s) back to the queue\n",
+				name, out.RetiredRunners, out.RequeuedAttempts)
+		}
 		return err
 	},
 }

@@ -1054,6 +1054,14 @@ function ProfileRow({
               pinned to {profile.workerLabels.join(", ")}
             </p>
           )}
+          {profile.labelConflicts.length > 0 && (
+            <p
+              className="mt-0.5 text-[10px] text-warning"
+              title={profile.labelConflicts.join("\n")}
+            >
+              scale-set labels overlap another Profile
+            </p>
+          )}
         </TableCell>
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}

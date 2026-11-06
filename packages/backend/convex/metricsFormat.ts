@@ -112,6 +112,10 @@ export function buildMetricFamilies(
     "erainfra_profile_workers_schedulable",
     "Workers the scheduler would place this Profile's work on now: ready, admitted, fresh readiness, and an online heartbeat. Zero for a paused Profile.",
   );
+  const labelConflicts = family(
+    "erainfra_profile_label_conflicts",
+    "Other active Profiles whose scale set shares labels with this one's, so GitHub can run either one's jobs on the other. The control plane refuses a registration that adds one; a nonzero value predates that check. Zero for a paused Profile.",
+  );
   const attempts = family(
     "erainfra_attempts",
     'Live Attempts by state. state="pending" is the queue: Attempts not yet assigned to a Worker.',
@@ -163,6 +167,7 @@ export function buildMetricFamilies(
       labels,
       value: profile.workers.filter((worker) => worker.schedulable).length,
     });
+    labelConflicts.samples.push({ labels, value: profile.labelConflicts.length });
     for (const state of LIVE_ATTEMPT_STATES) {
       attempts.samples.push({
         labels: { profile: profile.name, state },
@@ -358,6 +363,7 @@ export function buildMetricFamilies(
     runnersMax,
     workers,
     schedulable,
+    labelConflicts,
     attempts,
     oldestQueued,
     finished,

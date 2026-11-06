@@ -65,3 +65,12 @@ export function missingHostLabelsDetail(missing: readonly string[]) {
   const noun = missing.length === 1 ? "host label" : "host labels";
   return `this Worker lacks the ${noun} ${missing.join(", ")} the Profile is pinned to`;
 }
+
+/** Why a Worker's readiness row does not count for a pinned Profile, if it does not. */
+export function pinDetail(
+  required: readonly string[] | undefined,
+  carried: readonly string[] | undefined,
+) {
+  const missing = missingHostLabels(required, carried);
+  return missing.length === 0 ? undefined : missingHostLabelsDetail(missing);
+}

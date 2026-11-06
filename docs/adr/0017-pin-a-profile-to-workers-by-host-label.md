@@ -74,7 +74,11 @@ and labels written before this rule are compared lowercased.
 **No scale set may answer to another Profile's name.** Registration is refused (HTTP 409 to the
 controller) when a Profile's scale-set labels include another active Profile's name, or another
 Profile's labels include this one's. That is the second failed design above, and the guard keeps an
-operator from building it with `ERAINFRA_LABELS`.
+operator from building it with `ERAINFRA_LABELS`. The guard refuses only a conflict the registration
+adds. A pair that already overlapped when the guard was deployed keeps registering; refusing it
+would refuse both Profiles at their next controller restart while their rows stayed active and the
+router kept sending jobs to them. Such a pair is logged at each registration and raised by the
+Profile list, `erainfra profiles list`, a metric and an alert until an operator relabels one side.
 
 ## Consequences
 
@@ -84,7 +88,12 @@ operator from building it with `ERAINFRA_LABELS`.
   a fleet with a few kinds of special hardware has a few extra Profiles. The pinned and unpinned
   Profiles share the pinned Workers' slots: an unpinned Profile still schedules onto a GPU Worker.
   Pin the unpinned Profile too, to a label only the other Workers carry, to keep it off.
-- Removing a label from a Worker stops new placements for the pinned Profile at once; Attempts
-  already placed or running finish where they are. The Worker stops seeing the Profile on its next
-  discovery update and removes what it prepared for it, as it does when a Profile is paused.
+- Removing a label from a Worker stops new placements for the pinned Profile at once. A Runner
+  that is starting or idle there is registered with GitHub and could still be handed the Profile's
+  next job, so it is cancelled and its registration deleted, as a scale-down does; the controller
+  creates a replacement, which is placed on a labelled Worker. An Attempt placed there but not yet
+  claimed goes back to the queue. Running jobs finish where they are. A pin added to a Profile that
+  already has Runners does the same on every Worker without the labels. The Worker stops seeing the
+  Profile on its next discovery update and removes what it prepared for it, as it does when a
+  Profile is paused.
 - Profiles registered before the field have no pin and behave exactly as before. No migration.

@@ -16,6 +16,10 @@ export const alertConditionValidator = v.union(
   v.object({ kind: v.literal("profile-no-ready-worker") }),
   // A Worker reporting degraded or failed readiness for an active Profile.
   v.object({ kind: v.literal("profile-readiness-degraded") }),
+  // An active Profile whose scale set and another active Profile's can take each other's jobs
+  // (scaleSetLabels.ts). The control plane refuses a registration that adds such a conflict, so
+  // this fires for one that predates that check, until an operator relabels one side.
+  v.object({ kind: v.literal("profile-label-conflict") }),
   // The oldest unassigned Attempt on a Profile has waited `minutes`.
   v.object({ kind: v.literal("queue-backlog"), minutes: v.number() }),
   // At least `percent` of the Attempts that finished in the window failed, once `minAttempts`
@@ -60,6 +64,7 @@ export const ALERT_CONDITION_KINDS = [
   "worker-offline",
   "profile-no-ready-worker",
   "profile-readiness-degraded",
+  "profile-label-conflict",
   "queue-backlog",
   "failure-rate",
   "consecutive-failures",
@@ -122,6 +127,7 @@ export function conditionError(condition: AlertCondition): string | undefined {
         : "Consecutive failures must be a whole number from 1 to 50";
     case "profile-no-ready-worker":
     case "profile-readiness-degraded":
+    case "profile-label-conflict":
       return undefined;
   }
 }
@@ -190,15 +196,39 @@ export function evaluateCondition(
       return profilesInScope(observation, scope)
         .filter((profile) => !profile.workers.some((worker) => worker.schedulable))
         .map((profile) => {
-          const reported = profile.workers.map((worker) => `${worker.machineName} ${worker.state}`);
+          // A Worker that lost a pinned label still has its ready row; its detail says why it does
+          // not count, which "w1 ready" alone would hide.
+          const withDetail = profile.workers.some((worker) => worker.detail !== undefined);
+          const reported = profile.workers.map(
+            (worker) =>
+              `${worker.machineName} ${worker.state}${
+                worker.detail === undefined ? "" : `: ${worker.detail}`
+              }`,
+          );
+          const one = profile.workerLabels.length === 1;
+          const pinned =
+            profile.workerLabels.length === 0
+              ? ""
+              : ` It is pinned to the ${one ? "host label" : "host labels"} ${profile.workerLabels.join(", ")}; only Workers carrying ${one ? "it" : "every one"} count.`;
           return {
             subject: profile.name,
             summary:
               reported.length === 0
-                ? `Profile ${profile.name} has no Worker reporting readiness for its current Image Release.`
-                : `Profile ${profile.name} has no schedulable Worker (${reported.join(", ")}).`,
+                ? `Profile ${profile.name} has no Worker reporting readiness for its current Image Release.${pinned}`
+                : `Profile ${profile.name} has no schedulable Worker (${reported.join(withDetail ? "; " : ", ")}).${pinned}`,
           };
         });
+    case "profile-label-conflict":
+      return profilesInScope(observation, scope).flatMap((profile) =>
+        profile.labelConflicts.length === 0
+          ? []
+          : [
+              {
+                subject: profile.name,
+                summary: `Profile ${profile.name} shares scale-set labels with another active Profile, so GitHub can run either one's jobs on the other: ${profile.labelConflicts.join("; ")}. Give one of them labels that do not include the other's name.`,
+              },
+            ],
+      );
     case "profile-readiness-degraded":
       return profilesInScope(observation, scope).flatMap((profile) =>
         profile.workers
@@ -359,6 +389,8 @@ export function describeCondition(condition: AlertCondition) {
       return "Profile has no ready Worker";
     case "profile-readiness-degraded":
       return "Worker readiness degraded or failed";
+    case "profile-label-conflict":
+      return "Profiles' scale-set labels overlap";
     case "queue-backlog":
       return `Oldest queued Attempt older than ${condition.minutes}m`;
     case "failure-rate":

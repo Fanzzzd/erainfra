@@ -1,6 +1,9 @@
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
+import { cancelIdleAttempt, retireOffPinForProfile } from "./pinnedAttempts";
+import { conflictsOf, type ScaleSetProfile } from "./scaleSetLabels";
 import { releaseAttemptSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import { fitPolicyValidator } from "./benchmark";
@@ -103,64 +106,61 @@ export const registerProfile = internalMutation({
       state: "active" as const,
       updatedAt: Date.now(),
     };
-    const conflict = await scaleSetLabelConflict(ctx, value);
-    if (conflict !== undefined) return { conflict };
-    if (existing === null) {
-      await ctx.db.insert("profiles", value);
+    const introduced = await introducedLabelConflicts(ctx, existing, value);
+    if (introduced.added[0] !== undefined) return { conflict: introduced.added[0].reason };
+    for (const kept of introduced.kept) {
+      // Registered before the control plane refused conflicts. Refusing it now would refuse both
+      // Profiles at their next controller restart, so it stays, logged here and raised by the
+      // profile-label-conflict alert, the Profile list and `erainfra profiles list` until an
+      // operator relabels one side.
+      console.warn(
+        `Profile ${value.name} registered with an existing label conflict: ${kept.reason}`,
+      );
+    }
+    let profileId = existing?._id;
+    if (profileId === undefined) {
+      profileId = await ctx.db.insert("profiles", value);
     } else {
-      await ctx.db.patch(existing._id, value);
+      await ctx.db.patch(profileId, value);
     }
     if (existing?.workerLabels?.join(",") !== value.workerLabels?.join(",")) {
-      // A pin that changed can make a queued Attempt placeable, or a placed one's Worker wrong.
+      // A new or narrower pin leaves idle Runners on Workers that no longer qualify: retire them
+      // so GitHub cannot hand them a job. A wider one can make a queued Attempt placeable.
+      const stored = await ctx.db.get(profileId);
+      if (stored !== null) await retireOffPinForProfile(ctx, stored);
       await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     }
     return null;
   },
 });
 
-/** The labels GitHub matches a Profile's scale set by: its configured labels, else its name. */
-function scaleSetLabels(profile: { scaleSetName: string; labels?: string[] }) {
-  const labels =
-    profile.labels !== undefined && profile.labels.length > 0
-      ? profile.labels
-      : [profile.scaleSetName];
-  return labels.map((label) => label.toLowerCase());
-}
-
 /**
- * GitHub sends a job to a scale set whose labels include every label the job asks for, and to any
- * one of them when several qualify. So a scale set that also answers to another Profile's name can
- * take that Profile's jobs and run them under its own contract: its image, its egress, its pinned
- * Workers. `runs-on: [erainfra-4vcpu-ubuntu-2404, gpu]` served by a second scale set labelled with
- * both is exactly that, which is why a pin is a Profile of its own (ADR 0017).
+ * Splits the label conflicts this registration would leave (scaleSetLabels.ts) into those it adds
+ * and those that already existed: the stored row was active and conflicted with the same Profile.
+ * A new Profile, a paused one coming back, or a label change that adds a conflict is refused; an
+ * old conflict is kept so a controller restart does not take both Profiles down.
  */
-async function scaleSetLabelConflict(
+async function introducedLabelConflicts(
   ctx: MutationCtx,
-  profile: { name: string; scaleSetName: string; labels?: string[] },
+  existing: Doc<"profiles"> | null,
+  value: ScaleSetProfile,
 ) {
-  const mine = scaleSetLabels(profile);
   const others = (
     await ctx.db
       .query("profiles")
       .withIndex("by_state", (q) => q.eq("state", "active"))
       .collect()
-  ).filter((other) => other.name !== profile.name);
-  for (const other of others) {
-    const theirs = scaleSetLabels(other);
-    const taken = mine.find(
-      (label) => label === other.scaleSetName.toLowerCase() || label === other.name.toLowerCase(),
-    );
-    if (taken !== undefined) {
-      return `scale-set label ${taken} is Profile ${other.name}'s name; its jobs could run on this Profile instead (ADR 0017)`;
-    }
-    if (
-      theirs.includes(profile.scaleSetName.toLowerCase()) ||
-      theirs.includes(profile.name.toLowerCase())
-    ) {
-      return `Profile ${other.name}'s scale set also answers to ${profile.name}; this Profile's jobs could run there instead (ADR 0017)`;
-    }
-  }
-  return undefined;
+  ).filter((other) => other.name !== value.name);
+  const before = new Set(
+    existing === null || existing.state !== "active"
+      ? []
+      : conflictsOf(existing, others).map((conflict) => conflict.other),
+  );
+  const now = conflictsOf(value, others);
+  return {
+    added: now.filter((conflict) => !before.has(conflict.other)),
+    kept: now.filter((conflict) => before.has(conflict.other)),
+  };
 }
 
 // The inverse of registerProfile, for a Profile whose scale set has been retired. A paused Profile
@@ -455,15 +455,7 @@ export const cancelAttempt = internalMutation({
     if (attempt.state === "running") {
       throw new ConvexError("A running Attempt cannot be removed by a scale-down reconciliation");
     }
-    await releaseAttemptSlot(ctx, attempt);
-    await deleteAttemptSecret(ctx, attempt._id);
-    await ctx.db.patch(attempt._id, {
-      state: "cancelled",
-      jitConfig: undefined,
-      cancelReason: args.reason.slice(0, 500),
-      finishedAt: Date.now(),
-      runnerCleanupPending: true,
-    });
+    await cancelIdleAttempt(ctx, attempt, args.reason);
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     return null;
   },

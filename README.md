@@ -579,19 +579,38 @@ runs-on: erainfra-4vcpu-ubuntu-2404-gpu
 Only a Worker carrying every label in `ERAINFRA_WORKER_LABELS` (or `RC_WORKER_LABELS`; the
 installer's `--worker-labels`) sees the Profile, prepares its image, reports readiness for it and
 is scheduled onto for it. The `/runs-on` router, the Profile list, `/metrics` and the alerts count
-the same Workers. Removing a label stops new jobs of the pinned Profile from going to that Worker;
-running ones finish. `erainfra profiles list` shows the pin under `PINNED TO` and `erainfra workers
-list` shows each Worker's `LABELS`. A Worker names its labels once, at registration. After that only
-an admin token changes them, because a label decides which jobs a machine may run. Labels are
-lowercase letters, digits, `.`, `_` and `-`, up to 16 of them.
+the same Workers. Removing a label stops new jobs of the pinned Profile from going to that Worker.
+Its idle Runners of that Profile (starting, or online and waiting for a job) are cancelled at once
+and their GitHub registrations deleted, so GitHub cannot hand them a job, and the controller
+creates replacements on Workers that carry the label. Attempts placed on the Worker but not yet
+started go back to the queue. Running jobs finish. Adding a pin to a Profile that already has
+Runners does the same on every Worker without the labels. `erainfra workers set-labels` prints how
+many Runners and Attempts it moved. `erainfra profiles list` shows the pin under `PINNED TO` and
+`erainfra workers list` shows each Worker's `LABELS`. A Worker names its labels once, at
+registration, under the same rules an admin's labels follow: lowercased, and a registration with a
+label outside them is refused before its token is spent. After that only an admin token changes
+them, because a label decides which jobs a machine may run. Labels are lowercase letters, digits,
+`.`, `_` and `-`, up to 16 of them.
 
 actuated's form, `runs-on: [actuated-2cpu-8gb, r2]`, has no equivalent here. GitHub hands a job to
 any idle Runner of the scale set it matched, and a Runner is created before the job it will run is
 known, so a label cannot choose a Worker inside one Profile. A second scale set that also answers
-to `erainfra-4vcpu-ubuntu-2404` would take plain jobs as well, so the control plane refuses a
-Profile whose `ERAINFRA_LABELS` include another Profile's name. The pinned Profile also does not
-keep an unpinned one off the labelled Workers: they share their slots. To reserve the Workers, pin
-the other Profile to a label only the other Workers carry.
+to `erainfra-4vcpu-ubuntu-2404` would take plain jobs as well, so the control plane refuses (HTTP 409) a registration that makes a Profile's `ERAINFRA_LABELS` include another active Profile's
+name, or another Profile's include this one's. A pair that already overlapped before the control
+plane refused them keeps registering, so a controller restart does not take both Profiles down.
+Such a pair shows as a warning in `erainfra profiles list` and on the dashboard's Profiles table,
+in `erainfra_profile_label_conflicts`, and in the _Profiles' scale-set labels overlap_ alert, until
+an operator removes the other Profile's name from one side's labels. To list the pairs on a
+deployment, including one running an older backend:
+
+```bash
+npx convex data profiles --prod --limit 10000 --format jsonl \
+  | pnpm --filter @erainfra/backend --silent profile-label-conflicts
+```
+
+It exits 1 when there is a conflicting pair. The pinned Profile also does not keep an unpinned one
+off the labelled Workers: they share their slots. To reserve the Workers, pin the other Profile to
+a label only the other Workers carry.
 
 A dedicated controller publishes its env contract when it first acquires the lease after startup.
 Worker standbys never overwrite it. Existing deployments can keep the dedicated host while adding
@@ -1415,6 +1434,7 @@ workflow, Runner or job id.
 | `erainfra_profile_runners_min` / `_max`             | `profile`                              | `minRunners` and `maxRunners`.                                                                                             |
 | `erainfra_profile_workers`                          | `profile`, `state`                     | Workers by readiness (`preparing`, `ready`, `degraded`, `failed`). A ready report that fails admission counts as degraded. |
 | `erainfra_profile_workers_schedulable`              | `profile`                              | Workers the scheduler would use now: ready, admitted, fresh, online. 0 when paused.                                        |
+| `erainfra_profile_label_conflicts`                  | `profile`                              | Other active Profiles whose scale set shares labels with this one's. Nonzero only for a pair stored before 409s.           |
 | `erainfra_attempts`                                 | `profile`, `state`                     | Live Attempts. `state="pending"` is the queue of unassigned Attempts.                                                      |
 | `erainfra_attempt_queue_oldest_age_seconds`         | `profile`                              | Age of the oldest pending Attempt, 0 when the queue is empty.                                                              |
 | `erainfra_recent_attempts_finished`                 | `profile`, `result`                    | Attempts finished in the last hour by `succeeded`, `failed`, `cancelled`, `unknown`.                                       |
@@ -1479,6 +1499,7 @@ minute against the same fleet state `/metrics` reads.
 | Worker offline                      | Worker         | No heartbeat for N minutes (2 or more). A Worker that never connected is ignored.                                                  |
 | Profile has no ready Worker         | Profile        | An active Profile has no schedulable Worker.                                                                                       |
 | Worker readiness degraded or failed | Profile/Worker | A Worker reports degraded or failed readiness for an active Profile.                                                               |
+| Profiles' scale-set labels overlap  | Profile        | An active Profile's scale set shares labels with another active Profile's, so GitHub can run either one's jobs on the other.       |
 | Queue backlog                       | Profile        | The oldest pending Attempt has waited N minutes.                                                                                   |
 | Attempt failure rate                | Profile        | At least P% of Attempts finished in the last W minutes failed, once M have finished. Cancelled Attempts count toward neither side. |
 | Consecutive failed Attempts         | Profile        | The newest N finished Attempts (in the last 24 hours, cancellations skipped) all failed.                                           |

@@ -4,9 +4,11 @@ import { isSchedulableReadiness } from "./attemptScheduler";
 import { queueWaitMs } from "./attempts";
 import { controllerLiveness, type ControllerLiveness } from "./controllerLiveness";
 import { profileEgressOf, type ProfileEgress } from "./egress";
+import { pinDetail } from "./hostLabels";
 import { hasLiveCredential } from "./infra/nodes";
 import { isNodeLive } from "./infra/policy";
 import { readinessAdmissionError } from "./isolation";
+import { conflictsOf } from "./scaleSetLabels";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 // What `/metrics` and the alert evaluator both read about the fleet, loaded through indexes with a
@@ -99,6 +101,14 @@ export type ObservedProfile = {
   state: Doc<"profiles">["state"];
   minRunners: number;
   maxRunners: number;
+  /** Host labels a Worker must carry to serve the Profile (ADR 0017); empty when not pinned. */
+  workerLabels: string[];
+  /**
+   * Why the Profile's scale set and another active Profile's can take each other's jobs, one line
+   * per such Profile (scaleSetLabels.ts). The control plane refuses a registration that adds one;
+   * these predate that check. Empty for a paused Profile.
+   */
+  labelConflicts: string[];
   /** Readiness rows for this Profile's current executor and Image Release only. */
   workers: ObservedWorker[];
   liveAttempts: Record<LiveAttemptState, number>;
@@ -247,7 +257,10 @@ export async function loadFleetObservation(
         if (machine === undefined) return [];
         const rowEvidence = evidence[index] ?? undefined;
         const currentEvidence = rowEvidence?.checkedAt === row.checkedAt ? rowEvidence : undefined;
+        // The same order the Profile list uses: a missing pin label outranks anything the Worker
+        // itself reported, because it is why the row does not count.
         const detail =
+          pinDetail(profile.workerLabels, machine.labels) ??
           currentEvidence?.lastError ??
           row.lastError ??
           readinessAdmissionError(row, rowEvidence, profileEgressOf(profile)) ??
@@ -290,6 +303,11 @@ export async function loadFleetObservation(
         state: profile.state,
         minRunners: profile.minRunners,
         maxRunners: profile.maxRunners,
+        workerLabels: profile.workerLabels ?? [],
+        labelConflicts:
+          profile.state === "active"
+            ? conflictsOf(profile, activeProfiles).map((conflict) => conflict.reason)
+            : [],
         workers: workers.toSorted((left, right) =>
           left.machineName.localeCompare(right.machineName),
         ),
