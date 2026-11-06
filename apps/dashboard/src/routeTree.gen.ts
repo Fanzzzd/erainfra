@@ -18,6 +18,7 @@ import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as LinksRouteImport } from './routes/links'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as NodesRouteImport } from './routes/nodes'
+import { Route as RightsizeRouteImport } from './routes/rightsize'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AttemptsAttemptIdRouteImport } from './routes/attempts_.$attemptId'
 
@@ -66,6 +67,11 @@ const NodesRoute = NodesRouteImport.update({
   path: '/nodes',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RightsizeRoute = RightsizeRouteImport.update({
+  id: '/rightsize',
+  path: '/rightsize',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -87,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/links': typeof LinksRoute
   '/login': typeof LoginRoute
   '/nodes': typeof NodesRoute
+  '/rightsize': typeof RightsizeRoute
   '/settings': typeof SettingsRoute
   '/attempts/$attemptId': typeof AttemptsAttemptIdRoute
 }
@@ -100,6 +107,7 @@ export interface FileRoutesByTo {
   '/links': typeof LinksRoute
   '/login': typeof LoginRoute
   '/nodes': typeof NodesRoute
+  '/rightsize': typeof RightsizeRoute
   '/settings': typeof SettingsRoute
   '/attempts/$attemptId': typeof AttemptsAttemptIdRoute
 }
@@ -114,6 +122,7 @@ export interface FileRoutesById {
   '/links': typeof LinksRoute
   '/login': typeof LoginRoute
   '/nodes': typeof NodesRoute
+  '/rightsize': typeof RightsizeRoute
   '/settings': typeof SettingsRoute
   '/attempts_/$attemptId': typeof AttemptsAttemptIdRoute
 }
@@ -129,6 +138,7 @@ export interface FileRouteTypes {
     | '/links'
     | '/login'
     | '/nodes'
+    | '/rightsize'
     | '/settings'
     | '/attempts/$attemptId'
   fileRoutesByTo: FileRoutesByTo
@@ -142,6 +152,7 @@ export interface FileRouteTypes {
     | '/links'
     | '/login'
     | '/nodes'
+    | '/rightsize'
     | '/settings'
     | '/attempts/$attemptId'
   id:
@@ -155,6 +166,7 @@ export interface FileRouteTypes {
     | '/links'
     | '/login'
     | '/nodes'
+    | '/rightsize'
     | '/settings'
     | '/attempts_/$attemptId'
   fileRoutesById: FileRoutesById
@@ -169,6 +181,7 @@ export interface RootRouteChildren {
   LinksRoute: typeof LinksRoute
   LoginRoute: typeof LoginRoute
   NodesRoute: typeof NodesRoute
+  RightsizeRoute: typeof RightsizeRoute
   SettingsRoute: typeof SettingsRoute
   AttemptsAttemptIdRoute: typeof AttemptsAttemptIdRoute
 }
@@ -238,6 +251,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NodesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/rightsize': {
+      id: '/rightsize'
+      path: '/rightsize'
+      fullPath: '/rightsize'
+      preLoaderRoute: typeof RightsizeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -265,6 +285,7 @@ const rootRouteChildren: RootRouteChildren = {
   LinksRoute: LinksRoute,
   LoginRoute: LoginRoute,
   NodesRoute: NodesRoute,
+  RightsizeRoute: RightsizeRoute,
   SettingsRoute: SettingsRoute,
   AttemptsAttemptIdRoute: AttemptsAttemptIdRoute,
 }

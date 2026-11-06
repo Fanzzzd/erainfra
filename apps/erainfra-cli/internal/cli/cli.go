@@ -123,6 +123,7 @@ func init() {
 		jobsListCommand,
 		jobsViewCommand,
 		jobsLogsCommand,
+		rightsizeCommand,
 		nodesListCommand,
 		nodesEnrollCommand,
 		nodesRevokeCommand,
