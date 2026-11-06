@@ -32,19 +32,19 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request, rest, arch stri
 		if !ok {
 			return
 		}
-		entry := s.findBuildEntry(w, r, claims, key, version)
+		entry, err := s.findBuildEntry(w, r, claims, key, version)
 		// An entry without an output ID cannot be handed to cmd/go. Only an
 		// actions/cache save filed under this key and version could make one,
 		// and a miss is the safe answer to it.
 		if entry == nil || !goIDPattern.MatchString(entry.Attributes["outputID"]) {
-			s.metrics.build(buildGo, buildMiss)
+			s.metrics.build(buildGo, missOrError(err))
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "not in the cache"})
 			return
 		}
 		w.Header().Set(GoOutputIDHeader, entry.Attributes["outputID"])
-		if !s.streamBuildEntry(w, r, entry) {
+		if sent, err := s.streamBuildEntry(w, r, entry); !sent {
 			w.Header().Del(GoOutputIDHeader)
-			s.metrics.build(buildGo, buildMiss)
+			s.metrics.build(buildGo, missOrError(err))
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "not in the cache"})
 			return
 		}
@@ -72,6 +72,7 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request, rest, arch stri
 		case saveShortBody:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "the body is shorter than its Content-Length"})
 		default:
+			s.metrics.build(buildGo, buildError)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cache store unavailable"})
 		}
 	default:

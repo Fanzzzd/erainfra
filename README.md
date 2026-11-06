@@ -208,7 +208,12 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   change. Go opts in with one line, `GOCACHEPROG: erainfra-gocacheprog`, which the image ships.
   Turborepo artifacts and Go outputs are ordinary entries: the same scope rules, quota, eviction
   and admin commands apply, and a fork pull request reads them without writing. A workflow that
-  sets its own `TURBO_API` or `TURBO_TOKEN` keeps its own remote cache. If the cache service is
+  sets its own `TURBO_API` keeps its own remote cache. turbo ranks the guest's `TURBO_API` above
+  `remoteCache.apiUrl` in `turbo.json`, so a repository that names its cache only there, or that
+  sets only `TURBO_TOKEN` for Vercel, must also set `TURBO_API` in the workflow
+  (`https://vercel.com/api` for Vercel). Until it does, the proxy forwards that token nowhere,
+  turbo prints one `check TURBO_TOKEN` warning and builds uncached. The proxy answers only
+  requests addressed to `127.0.0.1:7457` that carry no browser `Origin`. If the cache service is
   down, turbo prints one warning and the Go helper one line, and both build uncached.
   `container:` jobs and `docker build` do not reach the proxy. Details are in
   [the runbook](docs/runbooks/operate-the-job-cache.md#10-build-system-caches-turborepo-and-go).

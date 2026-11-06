@@ -106,38 +106,47 @@ func (s *Server) buildClaims(r *http.Request, write bool, refuse func(status int
 
 // findBuildEntry is a build-cache lookup. A store that fails or is slow is
 // answered as a miss, as a v1 restore is: the build runs, which is the cost of
-// a miss, and the log says why.
-func (s *Server) findBuildEntry(w http.ResponseWriter, r *http.Request, claims cachetoken.Claims, key, version string) *cacheindex.Entry {
+// a miss, and the log says why. The error it returns with a nil entry is only
+// for the caller's metric (missOrError).
+func (s *Server) findBuildEntry(w http.ResponseWriter, r *http.Request, claims cachetoken.Claims, key, version string) (*cacheindex.Entry, error) {
 	ctx, cancel := s.deadline(w, r, s.config.LookupTimeout)
 	defer cancel()
 	entry, err := s.index.LookupExact(ctx, claims, key, version)
 	if err != nil {
 		s.logger.Error("build cache lookup degraded to a miss", "repository", claims.Repository,
 			"key", key, "error", err)
-		return nil
+		return nil, err
 	}
-	return entry
+	return entry, nil
 }
+
+// errBlobMismatch is a blob whose size is not its entry's.
+var errBlobMismatch = errors.New("build cache blob does not match its entry")
 
 // streamBuildEntry sends an entry's bytes. Build-system entries are always
 // streamed through this service, in presign mode too: they are many and small,
 // so a redirect would add a round trip to every hit, and neither client
 // documents following one. Headers are set by the caller before this runs.
-func (s *Server) streamBuildEntry(w http.ResponseWriter, r *http.Request, entry *cacheindex.Entry) bool {
+//
+// It reports whether it sent the entry. When it did not, the error is nil for
+// a blob evicted since the lookup, a plain miss, and the store's failure
+// otherwise.
+func (s *Server) streamBuildEntry(w http.ResponseWriter, r *http.Request, entry *cacheindex.Entry) (bool, error) {
 	ctx, cancel := s.deadline(w, r, s.config.TransferTimeout)
 	defer cancel()
 	body, size, err := s.index.OpenBlob(ctx, entry.Blob)
 	if err != nil {
-		if !errors.Is(err, objectstore.ErrNotFound) {
-			s.logger.Error("build cache download degraded to a miss", "blob", entry.Blob, "error", err)
+		if errors.Is(err, objectstore.ErrNotFound) {
+			return false, nil
 		}
-		return false
+		s.logger.Error("build cache download degraded to a miss", "blob", entry.Blob, "error", err)
+		return false, err
 	}
 	defer body.Close() //nolint:errcheck // read-only body; a close error loses nothing
 	if size >= 0 && size != entry.Size {
 		s.logger.Error("build cache blob does not match its entry; answering a miss",
 			"blob", entry.Blob, "entry", entry.Size, "blob_size", size)
-		return false
+		return false, errBlobMismatch
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
@@ -145,7 +154,7 @@ func (s *Server) streamBuildEntry(w http.ResponseWriter, r *http.Request, entry 
 	if _, err := io.Copy(w, body); err != nil {
 		s.logger.Warn("build cache download stopped early", "error", err)
 	}
-	return true
+	return true, nil
 }
 
 // saveResult is how a build-cache upload ended. Each protocol turns it into

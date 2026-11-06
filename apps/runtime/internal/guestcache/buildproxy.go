@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"runtime"
 	"strings"
@@ -29,21 +28,22 @@ import (
 //
 // Both clients fail open. turbo through the degraded answers below, which
 // keep it to one warning line in the job log; the Go helper on its own.
+//
+// The proxy sends exactly one credential anywhere: the runner bearer, to the
+// cache service. A token the workflow set itself is never forwarded, to the
+// cache service or to anyone else (see ServeHTTP). And it answers only the
+// job's own processes: a request that names another host or comes from a
+// browser is refused (see admit).
 
 // TurboToken is the TURBO_TOKEN the job is handed. It is not a credential and
 // the proxy never forwards it. It only tells the proxy apart from a token the
-// workflow set itself, which the proxy forwards to Vercel untouched (see
-// ServeHTTP).
+// workflow set itself, which the proxy refuses (see ServeHTTP).
 const TurboToken = "erainfra-build-cache"
 
 // TurboTeam is the TURBO_TEAM the job is handed. turbo enables its remote
 // cache only when a team is set; the cache service ignores it, because the
 // repository comes from the runner's facts.
 const TurboTeam = "erainfra"
-
-// VercelAPI is turbo's default remote cache, where a workflow that set its own
-// TURBO_TOKEN (and not TURBO_API) expects its requests to go.
-const VercelAPI = "https://vercel.com/api"
 
 // buildArchHeader matches the cache service's server.BuildArchHeader.
 const buildArchHeader = "X-Erainfra-Build-Arch"
@@ -76,11 +76,6 @@ type BuildProxyConfig struct {
 	// Transport reaches the cache service. Nil defaults to a plain transport
 	// with a short dial timeout.
 	Transport http.RoundTripper
-	// VercelURL is where a workflow's own TURBO_TOKEN is forwarded. Defaults to
-	// VercelAPI.
-	VercelURL string
-	// VercelTransport reaches VercelURL. Nil defaults to a plain transport.
-	VercelTransport http.RoundTripper
 	// Logf receives one line per state change. Nil discards.
 	Logf func(format string, args ...any)
 	// Now is the clock for the cooldown. Nil is time.Now.
@@ -99,8 +94,10 @@ type buildProxy struct {
 	token     string
 	arch      string
 	transport http.RoundTripper
-	vercel    *httputil.ReverseProxy
 	logf      func(format string, args ...any)
+	// host is the proxy's own host:port as Env advertises it, the only Host
+	// header it answers.
+	host string
 	now       func() time.Time
 
 	// readOnly is set by the first write the service refuses with 403: this
@@ -124,14 +121,6 @@ func StartBuildProxy(cfg BuildProxyConfig) (*BuildProxy, error) {
 	cache, err := url.Parse(cfg.CacheServiceURL)
 	if err != nil || (cache.Scheme != "http" && cache.Scheme != "https") || cache.Host == "" {
 		return nil, fmt.Errorf("guestcache: cache service URL %q is not an http(s) URL", cfg.CacheServiceURL)
-	}
-	vercelURL := cfg.VercelURL
-	if vercelURL == "" {
-		vercelURL = VercelAPI
-	}
-	vercel, err := url.Parse(vercelURL)
-	if err != nil {
-		return nil, fmt.Errorf("guestcache: parse Vercel URL: %w", err)
 	}
 	arch := cfg.Arch
 	if arch == "" {
@@ -158,14 +147,6 @@ func StartBuildProxy(cfg BuildProxyConfig) (*BuildProxy, error) {
 		now:       now,
 		logged:    map[string]bool{},
 	}
-	handler.vercel = &httputil.ReverseProxy{
-		Rewrite: func(out *httputil.ProxyRequest) {
-			out.SetURL(vercel)
-			out.Out.Host = vercel.Host
-		},
-		Transport: transportOrDefault(cfg.VercelTransport),
-	}
-
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = "127.0.0.1:0"
@@ -174,6 +155,7 @@ func StartBuildProxy(cfg BuildProxyConfig) (*BuildProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("guestcache: listen for the build cache proxy: %w", err)
 	}
+	handler.host = listener.Addr().String()
 	server := &http.Server{
 		Handler: handler,
 		// Loopback faces the job's own processes; a connection that sends no
@@ -193,7 +175,15 @@ func (p *BuildProxy) URL() string { return "http://" + p.listener.Addr().String(
 // finds the proxy; the helper itself is opt-in, through GOCACHEPROG.
 //
 // A workflow that sets any of these in its own env keeps its value, because a
-// step's env overrides the runner's.
+// step's env overrides the runner's. turbo.json is another matter: turbo
+// (measured on 2.10.9 with `turbo config`) ranks environment variables and its
+// global config file above turbo.json's remoteCache block, so this TURBO_API
+// shadows a remoteCache.apiUrl the repository names there. The guest cannot
+// read turbo.json when it builds this environment, before the job has checked
+// anything out, and the global config file is no lower in turbo's order. So a
+// repository with its own remote cache sets TURBO_API in its workflow, and
+// until it does, the proxy refuses its token rather than send it anywhere
+// (ServeHTTP).
 func (p *BuildProxy) Env() []string {
 	return []string{
 		"TURBO_API=" + p.URL(),
@@ -224,16 +214,24 @@ func buildTransport() *http.Transport {
 }
 
 func (p *buildProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.admit(w, r) {
+		return
+	}
 	switch {
+	case r.URL.Path == "/v8/artifacts/events":
+		// Analytics the cache service drops anyway; answering here saves a
+		// round trip at the end of every run, whatever token it carries.
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
 	case strings.HasPrefix(r.URL.Path, "/v8/"):
-		// A workflow that set its own TURBO_TOKEN but not TURBO_API still has
-		// our TURBO_API, so its requests arrive here. It meant turbo's default
-		// remote cache, Vercel, and the configuration it chose is left in place:
-		// its request goes there untouched and its token never reaches the
-		// cache service.
+		// A workflow that set its own TURBO_TOKEN still has our TURBO_API
+		// unless it set that too, so its requests arrive here. Where it meant
+		// them to go is not in the request: Vercel, turbo's default, or a
+		// server named in turbo.json, which our TURBO_API outranks (see Env).
+		// Sending the token to a guess could hand a credential to a host the
+		// workflow never named, so it goes nowhere.
 		if auth := r.Header.Get("Authorization"); auth != "" && auth != "Bearer "+TurboToken {
-			p.logOnce("foreign-token", "build cache proxy: turbo presented a TURBO_TOKEN the workflow set; forwarding it to Vercel")
-			p.vercel.ServeHTTP(w, r)
+			p.refuseForeignToken(w, r)
 			return
 		}
 		p.serveTurbo(w, r)
@@ -244,15 +242,51 @@ func (p *buildProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// admit refuses a request that did not come from the job's own build tools.
+// Loopback is reachable from a browser the job runs (an end-to-end test's
+// Chromium, say), and a page that rebinds its own DNS name to 127.0.0.1 can
+// send requests here that would read and write the repository's cache under
+// the runner bearer. Such a request names the page's host in Host, and a
+// browser marks what it sends with Sec-Fetch-Site and, cross-origin, Origin.
+// turbo and the Go helper send Host as Env advertises it and neither header.
+func (p *buildProxy) admit(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case !strings.EqualFold(r.Host, p.host):
+		p.logOnce("foreign-host", "build cache proxy: refused a request for host %q; it answers only %s", r.Host, p.host)
+	case r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "":
+		p.logOnce("browser", "build cache proxy: refused a request from a browser (Origin %q)", r.Header.Get("Origin"))
+	default:
+		return true
+	}
+	writeJSONBody(w, http.StatusForbidden, `{"message":"the build cache proxy answers only the job's own build tools"}`)
+	return false
+}
+
+// foreignTokenMessage is what the job log and the guest journal say when turbo
+// presents a token the workflow set.
+const foreignTokenMessage = "this TURBO_TOKEN is not EraInfra's and is not forwarded; set TURBO_API to your own remote cache"
+
+// refuseForeignToken answers a request that carries the workflow's own
+// TURBO_TOKEN without sending it anywhere. The status check gets a 401, which
+// turbo 2.10.9 prints once as "Remote caching unavailable (Authentication
+// failed — check TURBO_TOKEN ...)", so the job log points at the token the
+// workflow set, which is the cause. Everything else gets the disabled-cache
+// answers: turbo builds uncached and prints nothing more.
+func (p *buildProxy) refuseForeignToken(w http.ResponseWriter, r *http.Request) {
+	p.logOnce("foreign-token", "build cache proxy: turbo presented a TURBO_TOKEN the workflow set, which the proxy does not forward; "+
+		"turbo runs without a remote cache. To use the workflow's own remote cache, set TURBO_API to it in the workflow's env "+
+		"(TURBO_API=https://vercel.com/api for Vercel)")
+	if r.URL.Path == "/v8/artifacts/status" {
+		writeJSONBody(w, http.StatusUnauthorized, `{"code":"forbidden","message":"`+foreignTokenMessage+`",`+
+			`"error":{"code":"forbidden","message":"`+foreignTokenMessage+`"}}`)
+		return
+	}
+	p.degradeTurbo(w, r)
+}
+
 func (p *buildProxy) serveTurbo(w http.ResponseWriter, r *http.Request) {
 	write := r.Method == http.MethodPut
 	switch {
-	case r.URL.Path == "/v8/artifacts/events":
-		// Analytics the cache service drops anyway; answering here saves a
-		// round trip at the end of every run.
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.WriteHeader(http.StatusOK)
-		return
 	case write && p.readOnly.Load():
 		p.dropWrite(w, r)
 		return
@@ -279,11 +313,20 @@ func (p *buildProxy) serveTurbo(w http.ResponseWriter, r *http.Request) {
 		p.logOnce("read-only", "build cache proxy: this job may read the cache but not write to it (a fork pull request); turbo uploads are skipped")
 		drain(response.Body)
 		p.dropWrite(w, r)
+	case write && response.StatusCode >= http.StatusInternalServerError:
+		// An upload the cache service accepted but could not store. Unlike a
+		// fork's refusal, this job's outputs were meant to be saved and were
+		// not, so turbo hears the failure and prints a warning for that task;
+		// a 202 would tell it the artifact is cached when it is not. The
+		// service counts it under outcome "error".
+		p.logOnce("upload-failed", "build cache proxy: the cache service could not store a turbo upload (%d); turbo warns once per failed upload", response.StatusCode)
+		copyResponse(w, response)
 	case response.StatusCode == http.StatusUnauthorized || response.StatusCode >= http.StatusInternalServerError:
 		// 401 is the service not knowing this runner yet (the controller's
 		// facts have not arrived), never the job's TURBO_TOKEN, so turbo's
-		// "check TURBO_TOKEN" advice would mislead. A 5xx is the store. Both
-		// are answered as a cache that is not there, for this request.
+		// "check TURBO_TOKEN" advice would mislead. A 5xx here is a read the
+		// store failed. Both are answered as a cache that is not there, for this
+		// request.
 		p.logOnce(fmt.Sprintf("status-%d", response.StatusCode),
 			"build cache proxy: the cache service answered %d; turbo builds this uncached", response.StatusCode)
 		drain(response.Body)

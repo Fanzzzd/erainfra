@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +70,10 @@ func send(t *testing.T, method, url string, body []byte, headers map[string]stri
 		t.Fatal(err)
 	}
 	for name, value := range headers {
+		if name == "Host" {
+			request.Host = value
+			continue
+		}
 		request.Header.Set(name, value)
 	}
 	response, err := http.DefaultClient.Do(request)
@@ -163,33 +166,139 @@ func TestBuildProxyStampsTheGuestArchitecture(t *testing.T) {
 	}
 }
 
-// A workflow that set its own TURBO_TOKEN meant its own remote cache. Its
-// request goes to Vercel as it was, and its token never reaches the cache
-// service.
-func TestBuildProxyForwardsAWorkflowsOwnTokenToVercel(t *testing.T) {
-	var gotPath, gotAuth string
-	vercel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath, gotAuth = r.URL.RequestURI(), r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(vercel.Close)
+// A workflow that set its own TURBO_TOKEN meant some other remote cache, and
+// which one is not in the request: Vercel, or a server its turbo.json names
+// that the guest's TURBO_API outranks. The token leaves the guest for neither,
+// nor for the cache service. turbo gets a 401 on its status check, which it
+// prints once as "check TURBO_TOKEN", then the answers of a switched-off cache;
+// the guest journal gets one line saying to set TURBO_API.
+func TestBuildProxyNeverForwardsAWorkflowsOwnToken(t *testing.T) {
+	service := cachetest.Start(t, cachetest.Options{})
+	var outbound []string
+	var mu sync.Mutex
+	recording := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		outbound = append(outbound, r.Method+" "+r.URL.String()+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	log := &lines{}
+	proxy := startProxy(t, BuildProxyConfig{
+		CacheServiceURL: service.URL, RunnerToken: service.PushJob("acme/web", "refs/heads/main"),
+		Transport: recording, Logf: log.logf,
+	})
+	own := map[string]string{"Authorization": "Bearer the-workflows-own-secret"}
+	cases := []struct {
+		method, path string
+		body         []byte
+		status       int
+		contains     string
+	}{
+		{http.MethodGet, "/v8/artifacts/status?teamId=team_123", nil, http.StatusUnauthorized, "set TURBO_API"},
+		{http.MethodGet, "/v8/artifacts/ffee?teamId=team_123", nil, http.StatusNotFound, ""},
+		{http.MethodHead, "/v8/artifacts/ffee", nil, http.StatusNotFound, ""},
+		{http.MethodPut, "/v8/artifacts/ffee", []byte("outputs"), http.StatusAccepted, `"urls"`},
+		{http.MethodPost, "/v8/artifacts", []byte(`{"hashes":["ffee"]}`), http.StatusOK, "{}"},
+		{http.MethodPost, "/v8/artifacts/events", []byte(`[]`), http.StatusOK, ""},
+	}
+	for _, tc := range cases {
+		status, body, _ := send(t, tc.method, proxy.URL()+tc.path, tc.body, own)
+		if status != tc.status || !strings.Contains(string(body), tc.contains) {
+			t.Errorf("%s %s = %d %s, want %d containing %q", tc.method, tc.path, status, body, tc.status, tc.contains)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outbound) != 0 {
+		t.Fatalf("requests carrying the workflow's own token left the proxy: %q", outbound)
+	}
+	got := log.snapshot()
+	if len(got) != 1 || !strings.Contains(got[0], "set TURBO_API") || !strings.Contains(got[0], "https://vercel.com/api") {
+		t.Fatalf("log = %q, want one line saying to set TURBO_API", got)
+	}
+}
+
+// The proxy answers only the job's own build tools. A page in a browser the
+// job runs can reach loopback by rebinding its DNS name to 127.0.0.1; its
+// requests name the page's host, and a browser marks them with Origin or
+// Sec-Fetch-Site. None of them reaches the cache service.
+func TestBuildProxyRefusesOtherHostsAndBrowsers(t *testing.T) {
 	service := cachetest.Start(t, cachetest.Options{})
 	cache := &countingTransport{next: http.DefaultTransport}
 	log := &lines{}
 	proxy := startProxy(t, BuildProxyConfig{
 		CacheServiceURL: service.URL, RunnerToken: service.PushJob("acme/web", "refs/heads/main"),
-		Transport: cache, VercelURL: vercel.URL + "/api", Logf: log.logf,
+		Transport: cache, Logf: log.logf,
 	})
-	status, _, _ := send(t, http.MethodGet, proxy.URL()+"/v8/artifacts/ffee?teamId=team_123", nil,
-		map[string]string{"Authorization": "Bearer vercel-user-token"})
-	if status != http.StatusNotFound || gotPath != "/api/v8/artifacts/ffee?teamId=team_123" || gotAuth != "Bearer vercel-user-token" {
-		t.Fatalf("forwarded to Vercel as %d %q with %q", status, gotPath, gotAuth)
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(proxy.URL(), "http://"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cache.count.Load() != 0 {
-		t.Fatal("a request carrying the workflow's own token reached the cache service")
+	refused := []map[string]string{
+		{"Host": "rebind.attacker.example:" + port},
+		{"Host": "localhost:" + port},
+		{"Host": "127.0.0.1"},
+		{"Origin": "http://rebind.attacker.example:" + port},
+		{"Origin": "null"},
+		{"Sec-Fetch-Site": "same-origin"},
 	}
-	if len(log.snapshot()) != 1 {
-		t.Fatalf("log = %q, want one line", log.snapshot())
+	for _, headers := range refused {
+		for _, request := range []struct{ method, path string }{
+			{http.MethodGet, "/v8/artifacts/status"},
+			{http.MethodPut, "/v8/artifacts/00ff"},
+			{http.MethodGet, "/go/" + strings.Repeat("c", 64)},
+			{http.MethodPost, "/v8/artifacts/events"},
+		} {
+			merged := map[string]string{"Authorization": turbo["Authorization"]}
+			for name, value := range headers {
+				merged[name] = value
+			}
+			if status, body, _ := send(t, request.method, proxy.URL()+request.path, []byte("x"), merged); status != http.StatusForbidden {
+				t.Errorf("%s %s with %v = %d %s, want 403", request.method, request.path, headers, status, body)
+			}
+		}
+	}
+	if got := cache.count.Load(); got != 0 {
+		t.Fatalf("%d refused requests reached the cache service", got)
+	}
+	// The job's own tools, which name the advertised address, still get in,
+	// whatever case they write it in.
+	upper := map[string]string{"Authorization": turbo["Authorization"], "Host": strings.ToUpper(strings.TrimPrefix(proxy.URL(), "http://"))}
+	if status, body, _ := send(t, http.MethodGet, proxy.URL()+"/v8/artifacts/status", nil, upper); status != http.StatusOK || !strings.Contains(string(body), "enabled") {
+		t.Fatalf("turbo's own status check = %d %s", status, body)
+	}
+	if got := log.snapshot(); len(got) != 2 {
+		t.Fatalf("log = %q, want one line for another host and one for a browser", got)
+	}
+}
+
+// An upload the cache service could not store is a failure turbo hears about,
+// so it warns for that task instead of believing the artifact is cached. A
+// fork's refused upload is not: it stays a quiet 202 (see
+// TestBuildProxyDropsAReadOnlyJobsUploadsQuietly). A read the store failed
+// stays a miss.
+func TestBuildProxyPassesAFailedUploadToTurbo(t *testing.T) {
+	storeDown := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"code":"unavailable","message":"cache store unavailable"}`
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: r,
+		}, nil
+	})
+	log := &lines{}
+	proxy := startProxy(t, BuildProxyConfig{CacheServiceURL: "http://cache.invalid", RunnerToken: "erainfra-cache-runner-v1.x.y", Transport: storeDown, Logf: log.logf})
+	for i := range 2 {
+		status, body, _ := send(t, http.MethodPut, proxy.URL()+fmt.Sprintf("/v8/artifacts/0e0%d", i), []byte("outputs"), turbo)
+		if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "unavailable") {
+			t.Fatalf("upload %d with the store down = %d %s, want the 503", i, status, body)
+		}
+	}
+	if status, _, _ := send(t, http.MethodGet, proxy.URL()+"/v8/artifacts/0e00", nil, turbo); status != http.StatusNotFound {
+		t.Fatalf("read with the store down = %d, want a miss", status)
+	}
+	got := log.snapshot()
+	if len(got) != 2 || !strings.Contains(got[0], "could not store a turbo upload") {
+		t.Fatalf("log = %q, want one line for the failed uploads and one for the failed read", got)
 	}
 }
 

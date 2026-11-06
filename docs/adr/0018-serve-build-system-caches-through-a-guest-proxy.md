@@ -36,13 +36,25 @@ guest daemon. It has never been in the job's environment.
    runner bearer on the job's behalf. The job gets `TURBO_API` pointing at it, `TURBO_TEAM`, and a
    placeholder `TURBO_TOKEN` that is not a credential. A job can do through the proxy what it can
    already do through the interceptor, nothing more. A fork pull request reads and does not write.
+   The proxy answers only requests whose `Host` is the address it advertises and that carry no
+   `Origin` or `Sec-Fetch-Site` header, so a page in a browser the job runs cannot reach it by
+   rebinding its DNS name to `127.0.0.1`.
 3. **turbo is on by default; the Go helper is a one-line opt-in.** The guest sets the three `TURBO_`
    variables whenever a cache is configured. It ships `erainfra-gocacheprog` and sets
    `ERAINFRA_BUILD_CACHE_URL`, but a workflow turns the helper on with `GOCACHEPROG:
 erainfra-gocacheprog`.
-4. **A workflow's own configuration wins.** A step's `env` overrides the runner's, so a workflow that
-   sets `TURBO_API` bypasses the proxy. One that sets only `TURBO_TOKEN` meant Vercel, turbo's
-   default, and the proxy forwards its requests to `https://vercel.com/api` untouched.
+4. **A workflow's own `TURBO_API` wins, and the proxy never forwards a token it did not issue.** A
+   step's `env` overrides the runner's, so a workflow that sets `TURBO_API` bypasses the proxy.
+   `turbo.json` does not: turbo 2.10.9 (`turbo config`) ranks environment variables and its global
+   config file above `remoteCache.apiUrl`. The guest cannot read `turbo.json` when it builds the
+   runner's environment, because nothing is checked out yet, and neither source it can write ranks
+   below `turbo.json`. So a workflow that sets only `TURBO_TOKEN` reaches the proxy, and the proxy
+   cannot tell whether that token was meant for Vercel or for a server `turbo.json` names. It sends
+   the token nowhere: the status check gets a `401`, which turbo prints once as "check
+   TURBO_TOKEN", and every other request gets the disabled-cache answers in decision 5. The guest
+   journal says to set `TURBO_API`, `https://vercel.com/api` for Vercel. An earlier version
+   forwarded such requests to Vercel, which sent a self-hosted cache's token to a host the
+   workflow never named.
 5. **Both fail open with one line.** When the cache service cannot be reached or does not know the
    runner yet, the proxy answers turbo as a disabled cache: status `disabled`, reads `404`, uploads
    `202`. Measured against turbo 2.10.9, that prints one "Remote caching unavailable" warning; a
@@ -60,6 +72,9 @@ erainfra-gocacheprog`.
   upload, and the one code it acts on, `remote_caching_disabled`, also stops its reads for the rest
   of the run (`turborepo-cache` `multiplexer.rs`, v2.10.9). The cache service still answers `403`;
   only the guest translates it.
+- An upload the store fails is different: the job's outputs were meant to be saved. The cache
+  service answers `503` and counts it as `outcome="error"`, and the proxy passes the `503` on, so
+  turbo prints a warning for that task instead of taking the artifact as cached.
 - Build entries are always streamed through the cache service, in presign mode too. They are many
   and small, so a redirect would add a round trip per hit.
 - `container:` jobs and `docker build` do not reach the proxy, because a Docker bridge does not see

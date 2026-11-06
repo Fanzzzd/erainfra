@@ -35,14 +35,27 @@ type metrics struct {
 }
 
 // Build-system cache outcomes. A write refused to a read-only token is not one
-// of them: that is a fork pull request doing what it may, not a fault.
+// of them: that is a fork pull request doing what it may, not a fault. error
+// is the store failing a request: a lookup or download the job was answered as
+// a miss, or an upload that was not saved. It is counted apart from miss so a
+// store outage does not read as a cold cache.
 const (
 	buildHit   = "hit"
 	buildMiss  = "miss"
 	buildSaved = "saved"
+	buildError = "error"
 )
 
-var buildOutcomes = [...]string{buildHit, buildMiss, buildSaved}
+var buildOutcomes = [...]string{buildHit, buildMiss, buildSaved, buildError}
+
+// missOrError is the outcome of a lookup that found nothing: a miss, or an
+// error when the store did not answer.
+func missOrError(err error) string {
+	if err != nil {
+		return buildError
+	}
+	return buildMiss
+}
 
 func (m *metrics) build(system, outcome string) {
 	for i, knownSystem := range buildSystems {
