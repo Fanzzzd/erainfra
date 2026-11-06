@@ -136,9 +136,35 @@ func (c *Client) Push(ctx context.Context, facts Facts) error {
 	// Drain a bounded amount so the keep-alive connection can be reused.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("cache facts push returned %d", resp.StatusCode)
+		return &StatusError{Code: resp.StatusCode}
 	}
 	return nil
+}
+
+// StatusError is a push the cache service answered with something other than
+// 204.
+type StatusError struct {
+	Code int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("cache facts push returned %d", e.Code)
+}
+
+// Retryable reports whether a failed push is worth sending again. A transport
+// failure or a 5xx is the service restarting, overloaded, or unable to make the
+// facts durable yet, all of which pass; a 4xx is a wrong signing key or facts the
+// service will never accept, which sending again cannot fix. 408 and 429 are the
+// two 4xx answers that do mean "later".
+func Retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var status *StatusError
+	if !errors.As(err, &status) {
+		return true
+	}
+	return status.Code >= 500 || status.Code == http.StatusRequestTimeout || status.Code == http.StatusTooManyRequests
 }
 
 // sign is the same HMAC the cache service checks: sha256 of the exact body under

@@ -33,6 +33,10 @@ type harness struct {
 	http   *httptest.Server
 	store  *fakes3.Server
 	issuer *cachetoken.Issuer
+	// config and backing are what a restart reuses: the same configuration over
+	// the same bucket, which is what a redeployed or rebooted service sees.
+	config  config.Config
+	backing objectstore.Store
 
 	mu    sync.Mutex
 	clock time.Time
@@ -80,19 +84,11 @@ func newHarnessWithEndpoint(t *testing.T, store *fakes3.Server, endpoint string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, store: store, clock: startedAt}
+	h := &harness{t: t, store: store, clock: startedAt, config: cfg, backing: backing}
 	// The store stamps LastModified, which is where eviction reads last access
 	// from, so it runs on the test's clock too.
 	store.SetNow(h.now)
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server, err := New(cfg, backing, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server.Now = h.now
-	server.index.Now = h.now
-	t.Cleanup(server.Close)
+	h.start()
 
 	issuer, err := cachetoken.NewIssuer(cfg.SigningKey, 30*time.Minute)
 	if err != nil {
@@ -100,11 +96,35 @@ func newHarnessWithEndpoint(t *testing.T, store *fakes3.Server, endpoint string,
 	}
 	issuer.Now = h.now
 
-	h.server = server
 	h.issuer = issuer
-	h.http = httptest.NewServer(server)
-	t.Cleanup(h.http.Close)
 	return h
+}
+
+// start builds a Server over the harness's configuration and bucket and serves
+// it on a fresh listener.
+func (h *harness) start() {
+	h.t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := New(h.config, h.backing, logger)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	server.Now = h.now
+	server.index.Now = h.now
+	h.t.Cleanup(server.Close)
+	h.server = server
+	h.http = httptest.NewServer(server)
+	h.t.Cleanup(h.http.Close)
+}
+
+// restart stops the service and starts a new process's worth of it over the same
+// configuration and bucket: everything held only in memory is gone, everything in
+// the store survives. It is a deploy, a crash or a host reboot.
+func (h *harness) restart() {
+	h.t.Helper()
+	h.http.Close()
+	h.server.Close()
+	h.start()
 }
 
 func (h *harness) now() time.Time {

@@ -95,8 +95,30 @@ func TestPushErrorsOnRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Push(t.Context(), Facts{Runner: "rc-a", Repository: "o/r", Ref: "refs/heads/main"}); err == nil {
+	err = client.Push(t.Context(), Facts{Runner: "rc-a", Repository: "o/r", Ref: "refs/heads/main"})
+	if err == nil {
 		t.Fatal("a 401 push reported success")
+	}
+	if Retryable(err) {
+		t.Fatal("a 401 push is retryable; a wrong signing key does not fix itself")
+	}
+}
+
+// A service that is restarting, or that could not write the facts to its store,
+// answers 5xx; that push is worth sending again.
+func TestPushUnavailableIsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.Push(t.Context(), Facts{Runner: "rc-a", Repository: "o/r", Ref: "refs/heads/main"})
+	if !Retryable(err) {
+		t.Fatalf("a 503 push is not retryable: %v", err)
 	}
 }
 
@@ -111,7 +133,11 @@ func TestPushErrorsWhenUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Push(t.Context(), Facts{Runner: "rc-a", Repository: "o/r", Ref: "refs/heads/main"}); err == nil {
+	err = client.Push(t.Context(), Facts{Runner: "rc-a", Repository: "o/r", Ref: "refs/heads/main"})
+	if err == nil {
 		t.Fatal("a push to a closed server reported success")
+	}
+	if !Retryable(err) {
+		t.Fatalf("a refused connection is not retryable: %v", err)
 	}
 }

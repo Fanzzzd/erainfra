@@ -82,6 +82,14 @@ func (s *Server) sweepAll(ctx context.Context, interval time.Duration) {
 		s.logger.Error("cache eviction sweep failed; the next one retries", "error", err)
 	}
 	s.logSweep("cache eviction sweep finished", report)
+
+	deleted, err := s.sweepStoredFacts(sweep)
+	if err != nil {
+		s.logger.Error("expired job facts sweep failed; the next one retries", "error", err)
+	}
+	if deleted > 0 {
+		s.logger.Info("expired job facts deleted from the store", "records", deleted)
+	}
 }
 
 func (s *Server) logSweep(message string, report cacheindex.SweepReport) {

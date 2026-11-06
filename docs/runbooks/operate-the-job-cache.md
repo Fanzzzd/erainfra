@@ -257,6 +257,10 @@ curl -fsS http://127.0.0.1:8721/healthz     # {"ok":true}
 the bucket is reachable. The truth about the store is in the log — a restore that could not read
 the bucket is logged at `error` and answered as a miss, on purpose (see §5).
 
+`/metrics` needs no token either and answers in the Prometheus text format. It carries counts only,
+with no repository, runner or key in any label. Scrape it from wherever you scrape the rest of the
+fleet; §5 lists what to alert on.
+
 ---
 
 ## 4. Eviction: the service evicts, a lifecycle rule is the backstop
@@ -324,8 +328,10 @@ next 30-second check, and deleted entries' bytes stay in the bucket for the 40-m
 Eviction keeps all of its state in the bucket, and every step is safe to repeat: two replicas that
 evict the same entry write the same tombstone and delete the same objects. Running it on several
 replicas costs duplicate listings; it cannot delete bytes a live entry names. The service as a whole
-is still single-replica today for a different reason: the controller pushes each runner's job facts
-to one process, and they live in that process's memory.
+is still single-replica today for a different reason: a save's v1 reservation or v2 upload session
+lives in the memory of the process that opened it, so a save whose requests reach two replicas
+fails. Job facts are not a reason. They are kept in the bucket under `<prefix>facts/`, so any
+replica can serve any runner (§8, "Job facts survive a restart").
 
 ### The credential needs delete
 
@@ -402,13 +408,15 @@ The dangerous outage for a cache is not an error, it is silence: a client with n
 cache outage into a job that hangs rather than one that misses. Every handler therefore has a
 service-side budget, and every store call is bounded by it.
 
-| what broke                                     | budget                                  | what the job sees                                 |
-| ---------------------------------------------- | --------------------------------------- | ------------------------------------------------- |
-| store slow, hung, or unreachable, on a restore | `ERAINFRA_CACHE_LOOKUP_TIMEOUT` (5s)    | a cache miss — `204` on v1, `{"ok":false}` on v2  |
-| store slow or hung, on a reserve               | `ERAINFRA_CACHE_RESERVE_TIMEOUT` (10s)  | the save is refused; the step warns and continues |
-| store fails mid-upload                         | `ERAINFRA_CACHE_TRANSFER_TIMEOUT` (30m) | the save fails; the step warns and continues      |
-| token missing, forged or expired               | —                                       | `401`, which is deliberately **not** a miss       |
-| a fork pull request tries to save              | —                                       | `403`                                             |
+| what broke                                     | budget                                  | what the job sees                                  |
+| ---------------------------------------------- | --------------------------------------- | -------------------------------------------------- |
+| store slow, hung, or unreachable, on a restore | `ERAINFRA_CACHE_LOOKUP_TIMEOUT` (5s)    | a cache miss — `204` on v1, `{"ok":false}` on v2   |
+| store slow or hung, on a reserve               | `ERAINFRA_CACHE_RESERVE_TIMEOUT` (10s)  | the save is refused; the step warns and continues  |
+| store fails mid-upload                         | `ERAINFRA_CACHE_TRANSFER_TIMEOUT` (30m) | the save fails; the step warns and continues       |
+| token missing, forged or expired               | —                                       | `401`, which is deliberately **not** a miss        |
+| the job's facts never arrived, or expired      | —                                       | `401` on every cache request of that job           |
+| the service restarted while jobs ran           | —                                       | nothing: their facts are read back from the bucket |
+| a fork pull request tries to save              | —                                       | `403`                                              |
 
 A restore never answers `404` and never answers `500`, whatever went wrong. Those shapes are
 measured to be expensive: a v1 `404` costs a warning and a lost cache, and a v2 `500` costs five
@@ -442,6 +450,34 @@ journalctl -u erainfra-cache-service -f
 | `cache entry names a blob that is gone; answering a miss`         | an entry's bytes went outside the service, often the lifecycle rule; swept next     |
 | `cache entries deleted by an operator`                            | an `admin delete` or `admin clear` (§9)                                             |
 | `cache admin request rejected`                                    | a bad, stale or replayed admin signature                                            |
+| `no job facts for runner`                                         | the controller's push for this runner never landed, or its facts expired (§8)       |
+| `job facts loaded from the store`                                 | a restarted or second replica picked up a running job's facts from the bucket       |
+| `job facts could not be loaded from the store`                    | the bucket did not answer the facts read; the request was refused, the next retries |
+| `job facts not written to the store; ...`                         | a push was answered `503` and the controller retries it; **investigate the store**  |
+| `expired job facts deleted from the store`                        | the eviction sweep removed facts whose job window closed                            |
+
+### Metrics and the alert worth having
+
+| series                                            | means                                                          |
+| ------------------------------------------------- | -------------------------------------------------------------- |
+| `erainfra_cache_requests_refused_total{reason}`   | requests answered `401`; `reason` is one of the five below     |
+| `erainfra_cache_job_facts_loaded_total`           | facts read back from the bucket, which is what a restart costs |
+| `erainfra_cache_job_facts_persist_failures_total` | pushes answered `503` because the bucket refused the write     |
+
+`reason` is `no_token`, `bad_token` (forged, expired, or a signing key mismatch), `unknown_facts`
+(the controller's push for the runner never landed, or the facts expired), `facts_unreadable` (the
+bucket did not answer the facts read) or `unscopable`. A refused request is the one cache failure a
+job does not report loudly: `actions/cache` warns and carries on, so its restores miss and its saves
+are skipped without a red step. Alert on it:
+
+```yaml
+- alert: ErainfraCacheRequestsRefused
+  expr: sum by (reason) (increase(erainfra_cache_requests_refused_total[15m])) > 0
+  for: 15m
+```
+
+`unknown_facts` is the reason to look at first. Check the controller log for the runner:
+`could not publish cache facts` names the error it gave up on.
 
 ---
 
@@ -579,7 +615,34 @@ reusable workflow, to Contents (to tell a tag from a branch). For a GitHub App t
 Without `Actions: Read` every job reads cold; without `Contents: Read`, jobs inside reusable
 workflows on branch and tag events do. Either way the controller logs
 `could not establish the job's cache scope; publishing read-only facts` with GitHub's status code.
-A successful push logs `published cache facts` with the ref, base ref and default branch it sent.
+A successful push logs `published cache facts` with the ref, base ref, default branch and the
+number of attempts it took.
+
+### Job facts survive a restart
+
+The controller pushes a job's facts once, at `JobStarted`, and never again. Two things keep that one
+push from being lost:
+
+- The service answers the push `204` only after it has written the facts to the bucket, at
+  `<prefix>facts/<runner>`, beside the cache entries. A restarted service, or a second replica,
+  reads them back on the runner's first request and logs `job facts loaded from the store`. The
+  record keeps the controller's signature and is verified again on every read, so whoever can write
+  to the bucket still cannot grant a runner a repository's cache without the signing key. The eviction
+  sweep (`ERAINFRA_CACHE_EVICTION_INTERVAL`, hourly by default) deletes records whose job window has
+  closed, so `facts/` holds one small object per job started in the last six hours plus one sweep
+  interval. No lifecycle rule is needed for it, and the 30-day rule in §4 does
+  no harm.
+- The controller retries a push the service could not take: a refused connection, a timeout, a
+  `5xx` (including the `503` the service sends when the bucket refused the write), `408` or `429`.
+  It backs off from one second to 30 seconds and gives up after 15 minutes, which outlasts a
+  deploy or a host reboot. It logs `cache facts push failed; retrying` once, and
+  `could not publish cache facts; the job's cache requests will be refused` if it gives up. A `401`
+  or `400` is not retried, because a wrong signing key or facts the service will never accept do
+  not fix themselves.
+
+A controller failover does not matter to either: facts already pushed are in the bucket, and no
+controller has to remember them. A job whose `JobStarted` the old leader took but never published
+is the one gap left, and it shows up as `unknown_facts`.
 
 ### Roll it out, in order
 
