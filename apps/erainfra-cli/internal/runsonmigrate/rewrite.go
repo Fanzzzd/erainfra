@@ -46,6 +46,7 @@ const (
 	NoteRouted       = "routed"       // runs-on is the /runs-on router's answer
 	NoteRouter       = "router"       // the router job itself, which stays GitHub-hosted
 	NoteInput        = "input"        // runs-on is a reusable workflow's input
+	NoteInputShared  = "input-shared" // that input is also read as something other than a label
 	NoteRemote       = "remote-call"  // a reusable workflow in another repository
 	NoteUnknown      = "unknown"      // a label with no known equivalent
 	NoteNoProfile    = "no-profile"   // a known label with no registered Profile
@@ -77,7 +78,7 @@ func (r FileResult) Changed() bool { return !bytes.Equal(r.Original, r.Updated) 
 // input that its callers, in other files, set.
 func Rewrite(files []File, m *Mapper) []FileResult {
 	parsed := make([]*workflow, len(files))
-	callees := map[string]map[string]bool{}
+	callees := map[string]map[string]inputUse{}
 	for i, f := range files {
 		parsed[i] = parseWorkflow(f)
 		if parsed[i].root != nil && parsed[i].callable {
@@ -107,6 +108,8 @@ type workflow struct {
 	notes    []Note
 	edits    []edit
 	mapper   *Mapper
+	// inputs are this workflow's own runs-on inputs when it is callable.
+	inputs map[string]inputUse
 	// paths lists every path each node is read under; an anchor gives its
 	// node one more path per alias.
 	paths map[*yaml.Node][][]string
@@ -215,26 +218,118 @@ func triggers(on *yaml.Node) map[string]bool {
 	return out
 }
 
-var inputReference = regexp.MustCompile(`\binputs\.([A-Za-z_][A-Za-z0-9_-]*)`)
+var (
+	inputReference = regexp.MustCompile(`\binputs\.([A-Za-z_][A-Za-z0-9_-]*)`)
+	// wholeInputs is the inputs object read other than by one property:
+	// inputs['name'], toJSON(inputs), or inputs passed on as a whole.
+	wholeInputs = regexp.MustCompile(`\binputs\b(?:[^.A-Za-z0-9_-]|$)`)
+	// labelInput is a runs-on expression that is the input itself, or the
+	// input with a fallback for when the caller leaves it empty. In either
+	// form the input's value is used as a label and nothing else.
+	labelInput    = regexp.MustCompile(`^\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_-]*)\s*(?:\|\|\s*'[^']*'\s*)?\}\}$`)
+	expressionRun = regexp.MustCompile(`(?s)\$\{\{(.*?)\}\}`)
+)
 
-// runsOnInputs names the inputs a callable workflow's jobs take `runs-on` from.
-func (w *workflow) runsOnInputs() map[string]bool {
-	out := map[string]bool{}
+// inputUse is how a callable workflow reads one input that a job's runs-on
+// takes its label from.
+type inputUse struct {
+	// elsewhere is the first place the workflow also reads the input other
+	// than as a runs-on label (an if:, an env value, a with: to another call, a
+	// script, a cache key...), shown as "<path> on line N"; "" when there is none.
+	// Renaming the label the callers pass would change what that place sees
+	// too, so such an input is left alone.
+	elsewhere string
+}
+
+// runsOnInputs names the inputs a callable workflow's jobs take runs-on from,
+// and where else the workflow reads each one.
+func (w *workflow) runsOnInputs() map[string]inputUse {
+	out := map[string]inputUse{}
 	forEachPair(mapGet(w.root, "jobs"), func(_ *yaml.Node, job *yaml.Node) {
 		for _, scalar := range scalarsUnder(mapGet(job, "runs-on")) {
 			for _, m := range inputReference.FindAllStringSubmatch(scalar.Value, -1) {
-				out[m[1]] = true
+				out[m[1]] = inputUse{}
 			}
 		}
 	})
+	if len(out) == 0 {
+		return out
+	}
+	type read struct {
+		line int
+		path string
+	}
+	first := map[string]read{}
+	see := func(name string, r read) {
+		if prev, ok := first[name]; !ok || r.line < prev.line || (r.line == prev.line && r.path < prev.path) {
+			first[name] = r
+		}
+	}
+	for n, paths := range w.paths {
+		if n.Kind != yaml.ScalarNode {
+			continue
+		}
+		for _, p := range paths {
+			if isRunsOnPath(p) && labelInput.MatchString(strings.TrimSpace(n.Value)) {
+				continue // the input used as the label itself
+			}
+			text := expressionText(p, n.Value)
+			if text == "" {
+				continue
+			}
+			r := read{n.Line, showPath(p)}
+			if wholeInputs.MatchString(text) {
+				for name := range out {
+					see(name, r)
+				}
+				continue
+			}
+			for _, m := range inputReference.FindAllStringSubmatch(text, -1) {
+				if _, ok := out[m[1]]; ok {
+					see(m[1], r)
+				}
+			}
+		}
+	}
+	for name, r := range first {
+		out[name] = inputUse{elsewhere: fmt.Sprintf("%s on line %d", r.path, r.line)}
+	}
 	return out
 }
 
-func (w *workflow) rewrite(m *Mapper, callees map[string]map[string]bool) {
+// expressionText is the part of a value GitHub evaluates as an expression:
+// the whole of an if:, which may leave out ${{ }}, and otherwise what is
+// inside each ${{ }}.
+func expressionText(path []string, value string) string {
+	if len(path) > 0 && path[len(path)-1] == "if" {
+		return value
+	}
+	var b strings.Builder
+	for _, m := range expressionRun.FindAllStringSubmatch(value, -1) {
+		b.WriteString(m[1])
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// sharedInputs lists the inputs among refs that the workflow also reads as
+// something other than a runs-on label, with where.
+func sharedInputs(inputs map[string]inputUse, refs [][]string) []string {
+	var out []string
+	for _, ref := range refs {
+		if use, ok := inputs[ref[1]]; ok && use.elsewhere != "" {
+			out = append(out, "inputs."+ref[1]+" in "+use.elsewhere)
+		}
+	}
+	return unique(out)
+}
+
+func (w *workflow) rewrite(m *Mapper, callees map[string]map[string]inputUse) {
 	w.mapper = m
 	if w.root == nil {
 		return
 	}
+	w.inputs = callees[w.file.Path]
 	jobs := mapGet(w.root, "jobs")
 	routers := map[string]bool{}
 	forEachPair(jobs, func(key, job *yaml.Node) {
@@ -243,7 +338,7 @@ func (w *workflow) rewrite(m *Mapper, callees map[string]map[string]bool) {
 		}
 	})
 	if w.callable {
-		w.rewriteInputDefaults(callees[w.file.Path])
+		w.rewriteInputDefaults(w.inputs)
 	}
 	if len(routers) > 0 {
 		w.rewriteEnv(mapGet(w.root, "env"), "")
@@ -434,7 +529,11 @@ func (w *workflow) noteExpression(job string, jobNode, n *yaml.Node, routers map
 		w.note(n, job, NoteRouted, fmt.Sprintf("runs-on is the answer of the /runs-on router in job %q, which names the Profile at run time", m[1]))
 		return
 	}
-	if inputReference.MatchString(value) && w.callable {
+	if refs := inputReference.FindAllStringSubmatch(value, -1); refs != nil && w.callable {
+		if shared := sharedInputs(w.inputs, refs); len(shared) > 0 {
+			w.note(n, job, NoteInputShared, fmt.Sprintf("runs-on is %s, an input of this reusable workflow that it also reads other than as a runs-on label (%s); renaming the label would change what those reads see, so its default and the calls in this repository are left unchanged. Rename them by hand where those reads allow it", value, strings.Join(shared, "; ")))
+			return
+		}
 		w.note(n, job, NoteInput, fmt.Sprintf("runs-on is %s, an input of this reusable workflow; its default and the calls in this repository are rewritten instead", value))
 		return
 	}
@@ -469,7 +568,7 @@ func matrixValues(matrix *yaml.Node, key string) []string {
 // rewriteCall follows a job that calls a reusable workflow. A local one
 // (./.github/workflows/x.yml) is in this repository: the with: values it
 // takes runs-on from are labels too. A remote one is another repository's.
-func (w *workflow) rewriteCall(job string, jobNode, uses *yaml.Node, callees map[string]map[string]bool) {
+func (w *workflow) rewriteCall(job string, jobNode, uses *yaml.Node, callees map[string]map[string]inputUse) {
 	target := strings.TrimSpace(uses.Value)
 	if !strings.Contains(target, ".github/workflows/") {
 		return // a step action never sits at job level, but be safe
@@ -483,24 +582,35 @@ func (w *workflow) rewriteCall(job string, jobNode, uses *yaml.Node, callees map
 		return
 	}
 	forEachPair(mapGet(jobNode, "with"), func(key, value *yaml.Node) {
-		if !inputs[key.Value] || value.Kind != yaml.ScalarNode {
+		use, ok := inputs[key.Value]
+		if !ok || value.Kind != yaml.ScalarNode {
 			return
 		}
 		if isExpression(value.Value) {
 			w.note(value, job, NoteExpression, fmt.Sprintf("with.%s, the runs-on of %s, is the expression %s; left unchanged", key.Value, target, strings.TrimSpace(value.Value)))
 			return
 		}
+		if use.elsewhere != "" {
+			msg := fmt.Sprintf("with.%s is the runs-on of %s, which also reads inputs.%s other than as a runs-on label, in %s; left unchanged, because renaming the label would change what that read sees", key.Value, target, key.Value, use.elsewhere)
+			if t, _ := w.mapper.resolve(value.Value); t.Label != "" {
+				msg += fmt.Sprintf(". Its Profile would be %s", t.Label)
+			}
+			w.note(value, job, NoteInputShared, msg)
+			return
+		}
 		w.label(value, job, "with."+key.Value)
 	})
 }
 
-func (w *workflow) rewriteInputDefaults(inputs map[string]bool) {
+// rewriteInputDefaults renames the default of each runs-on input that nothing
+// else in the workflow reads; noteExpression explains the ones left alone.
+func (w *workflow) rewriteInputDefaults(inputs map[string]inputUse) {
 	if len(inputs) == 0 {
 		return
 	}
 	declared := mapGet(mapGet(mapGet(w.root, "on"), "workflow_call"), "inputs")
 	forEachPair(declared, func(key, spec *yaml.Node) {
-		if !inputs[key.Value] {
+		if use, ok := inputs[key.Value]; !ok || use.elsewhere != "" {
 			return
 		}
 		if def := mapGet(spec, "default"); def != nil && def.Kind == yaml.ScalarNode && !isExpression(def.Value) {
