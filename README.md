@@ -1152,6 +1152,7 @@ shows it, and the current Profile:
 ```
 
 The same object is the `map` field of `GET /api/v1/rightsize` and of `erainfra rightsize --json`.
+
 ## Test results
 
 If a job writes JUnit XML into its workspace, the **Tests** page shows it: the runs with failures and
