@@ -21,6 +21,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
@@ -1029,18 +1030,38 @@ func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 	}
 	exitCode := 0
 	var resultError error
+	var tests *testreport.Report
 	if l.resultToken != "" {
 		if syncError := l.console.Sync(); syncError != nil {
 			resultError = fmt.Errorf("flush Experiment console: %w", syncError)
 		} else {
 			exitCode, resultError = parseExperimentResult(l.consolePath, l.resultToken)
 		}
+	} else {
+		tests = l.testReport()
 	}
 	cleanupErr := l.cleanup(context.Background(), false)
 	if err != nil || resultError != nil || cleanupErr != nil {
-		return executor.Result{ExitCode: 1, Egress: l.egressRecord}, errors.Join(err, resultError, cleanupErr)
+		return executor.Result{ExitCode: 1, Egress: l.egressRecord, Tests: tests}, errors.Join(err, resultError, cleanupErr)
 	}
-	return executor.Result{ExitCode: exitCode, Egress: l.egressRecord}, nil
+	return executor.Result{ExitCode: exitCode, Egress: l.egressRecord, Tests: tests}, nil
+}
+
+// testReport reads the JUnit results the guest wrote to its console after
+// the runner exited, or nil. The guest is untrusted, so ReadConsole bounds
+// and validates what it decodes; a report that fails is logged and dropped,
+// and never changes the Attempt's own result.
+func (l *machineLease) testReport() *testreport.Report {
+	if err := l.console.Sync(); err != nil {
+		logrus.WithError(err).Warn("could not flush the console to read test results")
+		return nil
+	}
+	report, err := testreport.ReadConsole(l.consolePath)
+	if err != nil {
+		logrus.WithError(err).Warn("dropped the guest's test results")
+		return nil
+	}
+	return report
 }
 
 // ResourceSource measures this microVM from the host: the VMM process's CPU,

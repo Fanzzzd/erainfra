@@ -20,6 +20,7 @@ import {
   LogOut,
   Server,
   Settings,
+  TestTubeDiagonal,
   UserRound,
 } from "lucide-react";
 import {
@@ -60,6 +61,7 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Machines", icon: Server },
   { to: "/attempts", label: "Runs", icon: Activity },
   { to: "/rightsize", label: "Rightsize", icon: Gauge },
+  { to: "/tests", label: "Tests", icon: TestTubeDiagonal },
   { to: "/experiments", label: "Experiments", icon: FlaskConical },
   { to: "/settings", label: "Alerts and metrics", icon: Settings },
 ];

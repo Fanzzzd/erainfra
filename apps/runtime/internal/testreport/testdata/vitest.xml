@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="3" failures="1" errors="0" time="0.042">
+    <testsuite name="src/math.test.ts" timestamp="2026-11-06T01:02:03.456Z" hostname="runner" tests="3" failures="1" errors="0" skipped="1" time="0.021">
+        <testcase classname="src/math.test.ts" name="math &gt; adds" time="0.002">
+        </testcase>
+        <testcase classname="src/math.test.ts" name="math &gt; subtracts" time="0.011">
+            <failure message="expected 2 to be 3 // Object.is equality" type="AssertionError">
+AssertionError: expected 2 to be 3 // Object.is equality
+ ❯ src/math.test.ts:9:22
+            </failure>
+        </testcase>
+        <testcase classname="src/math.test.ts" name="math &gt; todo" time="0">
+            <skipped/>
+        </testcase>
+    </testsuite>
+</testsuites>

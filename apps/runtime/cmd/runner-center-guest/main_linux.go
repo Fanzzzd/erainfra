@@ -17,11 +17,15 @@ import (
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/testreport"
 )
 
 const (
-	mmdsURL        = "http://169.254.169.254"
-	runnerDir      = "/opt/runner"
+	mmdsURL   = "http://169.254.169.254"
+	runnerDir = "/opt/runner"
+	// runnerWorkDir is the runner's work folder: the controller asks GitHub
+	// for JIT configurations with WorkFolder "_work" (githubscale.go).
+	runnerWorkDir  = runnerDir + "/_work"
 	toolCache      = "/opt/hostedtoolcache"
 	actionCache    = "/opt/action-cache"
 	runnerUsername = "runner"
@@ -145,6 +149,37 @@ func reportResult(token string, exitCode int) error {
 		return fmt.Errorf("report Experiment result: %w", err)
 	}
 	return nil
+}
+
+// reportTests hands the job's JUnit results to the host on the console, the
+// same channel the Experiment result takes, once the runner has exited. The
+// workspace is still on disk then: an ephemeral runner leaves its work
+// directory for the VM's teardown to discard.
+//
+// It runs as root after the job, so the job sees no extra step and cannot
+// stop it from running, and it is bounded (testreport.DefaultBudget, file and
+// byte caps) so a workspace built to stall it delays the reset by seconds at
+// most. Collection is best effort: a failure is logged in the guest journal
+// and the Attempt reports no test results, exactly as a job without JUnit
+// files does.
+func reportTests(ctx context.Context) {
+	report, err := testreport.Collector{WorkDir: runnerWorkDir}.Collect(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "test results not collected: %v\n", err)
+		return
+	}
+	if report == nil {
+		return
+	}
+	console, err := os.OpenFile(consoleDevice, os.O_WRONLY, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "test results not reported: open guest console: %v\n", err)
+		return
+	}
+	defer console.Close() //nolint:errcheck // every line went out in its own write(2); close flushes nothing
+	if err := testreport.WriteConsole(console, report); err != nil {
+		fmt.Fprintf(os.Stderr, "test results not reported: %v\n", err)
+	}
 }
 
 func reportWarmReady() error {
@@ -289,6 +324,10 @@ func run(ctx context.Context) error {
 	err = command.Wait()
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
 		return ctx.Err()
+	}
+
+	if metadata.Kind != "experiment" {
+		reportTests(ctx)
 	}
 
 	if metadata.Kind == "experiment" {

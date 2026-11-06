@@ -77,6 +77,12 @@ export type AttemptExecution = {
    * record nothing.
    */
   egressRecordFile?: string;
+  /**
+   * Where the runtime writes the JUnit results the guest reported, for the
+   * Agent to send after the Attempt. A fresh path the Agent created, beside
+   * the egress record; absent for executors that collect none.
+   */
+  testReportFile?: string;
   jitConfig: string;
 };
 
@@ -195,6 +201,9 @@ export function attemptInvocation(
         ...(attempt.egressRecordFile === undefined
           ? {}
           : { RC_EGRESS_RECORD_FILE: attempt.egressRecordFile }),
+        ...(attempt.testReportFile === undefined
+          ? {}
+          : { RC_TEST_REPORT_FILE: attempt.testReportFile }),
       },
     };
   }
@@ -257,6 +266,8 @@ export function attemptEnvironment(env: Record<string, string>): NodeJS.ProcessE
   delete inherited.RC_EGRESS_RECORD_FILE;
   delete inherited.ERAINFRA_PROFILE_EGRESS;
   delete inherited.ERAINFRA_EGRESS_RECORD_FILE;
+  delete inherited.RC_TEST_REPORT_FILE;
+  delete inherited.ERAINFRA_TEST_REPORT_FILE;
   return childEnvironment(env, inherited);
 }
 
@@ -313,10 +324,25 @@ export function spawnExperiment(experiment: ExperimentExecution) {
  * fails the report of the Attempt itself.
  */
 export async function readEgressRecord(path: string | undefined): Promise<unknown> {
+  return await readRecordFile(path, 1024 * 1024);
+}
+
+/**
+ * Reads the test report the runtime wrote for an Attempt, or undefined when it
+ * wrote none: the job left no JUnit file, the image predates the collector, or
+ * the executor collects none. The runtime bounds the report to 1 MiB of JSON;
+ * the control plane validates every field, so this only refuses what is not a
+ * bounded JSON object.
+ */
+export async function readTestReport(path: string | undefined): Promise<unknown> {
+  return await readRecordFile(path, 2 * 1024 * 1024);
+}
+
+async function readRecordFile(path: string | undefined, maxBytes: number): Promise<unknown> {
   if (path === undefined) return undefined;
   try {
     const contents = await readFile(path, "utf8");
-    if (contents.length > 1024 * 1024) return undefined;
+    if (contents.length > maxBytes) return undefined;
     const parsed: unknown = JSON.parse(contents);
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? parsed

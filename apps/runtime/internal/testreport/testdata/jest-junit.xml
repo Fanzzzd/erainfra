@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="4" failures="1" errors="0" time="1.234">
+  <testsuite name="Calculator" errors="0" failures="1" skipped="1" timestamp="2026-11-06T01:02:03" time="1.1" tests="4">
+    <testcase classname="Calculator adds two numbers" name="Calculator adds two numbers" time="0.004">
+    </testcase>
+    <testcase classname="Calculator divides by zero" name="Calculator divides by zero" time="0.812">
+      <failure>Error: expect(received).toThrow()
+
+Received function did not throw
+    at Object.&lt;anonymous&gt; (/home/runner/work/app/app/src/calc.test.ts:12:5)
+    at Promise.then.completed (node_modules/jest-circus/build/utils.js:298:28)</failure>
+    </testcase>
+    <testcase classname="Calculator handles &lt;script&gt;alert(1)&lt;/script&gt;" name="Calculator handles &lt;script&gt;alert(1)&lt;/script&gt;" time="0.250">
+    </testcase>
+    <testcase classname="Calculator is pending" name="Calculator is pending" time="0">
+      <skipped/>
+    </testcase>
+  </testsuite>
+</testsuites>

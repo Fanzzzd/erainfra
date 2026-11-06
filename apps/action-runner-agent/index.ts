@@ -24,6 +24,7 @@ import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
   readEgressRecord,
+  readTestReport,
   spawnAttempt,
   spawnExperiment,
   spawnProvisioner,
@@ -117,6 +118,11 @@ const reportAttemptMetrics = makeFunctionReference<
   { token: string; attemptId: string } & MetricsReport,
   boolean
 >("workerApi:reportAttemptMetrics");
+const reportAttemptTests = makeFunctionReference<
+  "mutation",
+  { token: string; attemptId: string; report: unknown },
+  boolean
+>("workerApi:reportAttemptTests");
 const reportReadiness = makeFunctionReference<
   "mutation",
   {
@@ -332,6 +338,8 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
     }
     const egressRecordFile =
       recordDirectory === undefined ? undefined : join(recordDirectory, "record.json");
+    const testReportFile =
+      recordDirectory === undefined ? undefined : join(recordDirectory, "tests.json");
     exitCode = await withCores(
       cores,
       {
@@ -356,6 +364,7 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
           // per Attempt -- an Attempt exists before GitHub assigns it a job.
           cache: config.cache,
           egressRecordFile,
+          testReportFile,
         });
         running.set(key, child);
         let metrics: AttemptMetrics | undefined;
@@ -396,6 +405,10 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
       recordDirectory === undefined
         ? undefined
         : await readEgressRecord(join(recordDirectory, "record.json"));
+    const tests =
+      recordDirectory === undefined
+        ? undefined
+        : await readTestReport(join(recordDirectory, "tests.json"));
     if (recordDirectory !== undefined) {
       await rm(recordDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -409,6 +422,20 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
         });
       } catch (error) {
         console.error(`Reporting Attempt ${item.runnerName} failed`, error);
+      }
+      // After the Attempt's own report, and separately: test results are
+      // evidence about the job, so a refused or failed upload never touches
+      // the Attempt's outcome.
+      if (tests !== undefined) {
+        try {
+          await client.mutation(reportAttemptTests, {
+            token: config.machineToken,
+            attemptId: item.id,
+            report: tests,
+          });
+        } catch (error) {
+          console.error(`Reporting test results for ${item.runnerName} failed`, error);
+        }
       }
     }
   }

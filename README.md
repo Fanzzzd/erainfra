@@ -1005,6 +1005,8 @@ erainfra jobs view <id>
 erainfra jobs logs <id>
 erainfra rightsize --repo acme/web --since 7d
 erainfra rightsize --map > runs-on-map.json
+erainfra tests list --repo acme/web --failed --since 24h
+erainfra tests flaky --repo acme/web --json | jq '.flakyTests[] | {name, occurrences, evidence}'
 ```
 
 The login is stored in `$XDG_CONFIG_HOME/erainfra/config.json` (default
@@ -1030,6 +1032,8 @@ The API under `/api/v1` takes the token as `Authorization: Bearer <token>`:
 | `GET /api/v1/attempts/<id>`                | read  | one Attempt with its timeline, queue wait, duration and run URL                                                 |
 | `GET /api/v1/rightsize`                    | read  | a Profile recommendation per repository and job, and the `runs-on` map; `repo`, `since` (at most 14 days back)  |
 | `POST /api/v1/workers/registration-tokens` | admin | a single-use Worker registration token and the install commands                                                 |
+| `GET /api/v1/tests`                        | read  | runs with JUnit results and their failures, newest first; `repo`, `since`, `limit`, `failed`                    |
+| `GET /api/v1/tests/flaky`                  | read  | tests seen both failing and passing, latest first; `repo`, `since`, `limit`                                     |
 
 The infrastructure routes (`/api/v1/nodes`, `/apps`, `/deployments`, `/links`, `/logs`) are listed
 in [docs/infra-management.md](docs/infra-management.md#the-operator-api-routes).
@@ -1148,6 +1152,78 @@ shows it, and the current Profile:
 ```
 
 The same object is the `map` field of `GET /api/v1/rightsize` and of `erainfra rightsize --json`.
+## Test results
+
+If a job writes JUnit XML into its workspace, the **Tests** page shows it: the runs with failures and
+the tests that failed in each, the tests that are flaky, and the slowest tests across recent runs.
+Each Attempt page lists that run's failed, errored and flaky tests and its slowest passes.
+`erainfra tests list` and `erainfra tests flaky` read the same data. Nothing in the workflow
+changes; the job only has to write the file.
+
+The collector looks in each workspace (`_work/<repository>/<repository>`) for these paths, which
+cover jest-junit, Vitest's `junit` reporter, pytest's `--junitxml`, gotestsum's `--junitfile`,
+Maven Surefire and Failsafe, and Gradle:
+
+```text
+**/junit*.xml   **/TEST-*.xml   **/test-results/**/*.xml   **/test-reports/**/*.xml
+**/*.junit.xml  **/surefire-reports/*.xml   **/failsafe-reports/*.xml
+```
+
+A repository adds its own paths in `.github/erainfra-test-reports`, one glob per line relative to
+the workspace, `#` for comments. They add to the defaults. A matching file whose root element is not
+`<testsuites>` or `<testsuite>` is skipped. `.git`, `node_modules`, `testdata`, `__fixtures__`,
+`vendor`, `.venv`, `.pnpm-store`, `.gradle` and `.m2` are never searched, because the JUnit files in
+them belong to dependencies or fixtures, not to this run.
+
+```text
+# .github/erainfra-test-reports
+build/reports/*.xml
+packages/*/results/**/*.xml
+```
+
+What counts as what:
+
+- **A test** is identified by its suite (the `classname`, or the enclosing `<testsuite>` when the
+  classname is empty or repeats the name, as jest-junit writes it) and its name.
+- **Failed** and **errored** follow JUnit's `<failure>` and `<error>`. A test listed more than once
+  in a run takes its worst outcome.
+- **Flaky** has two kinds of evidence. Within one run, the test runner retried a test into a pass:
+  Surefire's `<flakyFailure>`, or a test listed as failed and then passed, which is how gotestsum
+  `--rerun-fails` writes it. Across runs, the test failed in one Attempt and passed in another of the
+  same commit, such as a workflow rerun or a second job. The commit comes from the workspace's
+  `.git`; without one, Attempts of the same workflow run are compared. Flaky tests are found when a
+  report arrives, against at most 20 earlier reports of that commit.
+- **Slowest** is built from the 50 slowest passing tests each run keeps, grouped by test and ordered
+  by mean duration.
+
+Where it runs, and what bounds it:
+
+1. After the runner exits, `runner-center-guest` (root, inside the microVM) walks the workspaces and
+   parses the files. The job sees no extra step and cannot skip it. The walk stops at 200,000
+   entries, 200 files, 16 MiB per file, 128 MiB in total and 20 seconds, and never follows a symbolic
+   link or opens anything that is not a regular file. The report counts every test and lists up to
+   500 cases (every failed, errored and flaky one first, then the 50 slowest passes, with messages
+   cut to 1 KiB). It also carries a 12-character SHA-256 prefix of every passing test's id, up to
+   20,000, which is what lets a later run of the same commit say "this passed before".
+2. The guest writes the report to its serial console as gzip and base64 in numbered lines, at most
+   512 KiB, the channel the Experiment result already takes. The runtime reads the console after the
+   VM exits, checks every bound again, cuts the report to 1 MiB of JSON if it must, and hands it to
+   the Agent beside the egress record.
+3. The Agent sends it with `workerApi:reportAttemptTests` after `reportAttempt`, so a refused or
+   failed upload never touches the Attempt's own result. The control plane checks the bounds a third
+   time, refuses control characters, keeps the first report per Attempt, accepts none later than 15
+   minutes after the Attempt settled, and deletes reports, and flaky rows not seen since, after 30
+   days.
+
+The XML is the job's own output and is treated as hostile. Go's `encoding/xml` resolves no external
+entity and fetches no DTD, refuses any entity it does not define (so neither XXE nor entity expansion
+works), and refuses encodings other than UTF-8; nesting deeper than 64 elements fails the file. Names
+and messages lose control characters before they leave the guest, the dashboard renders them only as
+text, and the CLI prints them with control characters replaced.
+
+Only the Firecracker executor collects test results. A Docker Attempt's container is removed with
+`--rm` when the runner exits, so its workspace is gone before anything could read it; Tart and
+Hyper-V are not covered. An Attempt on an Image Release older than the collector reports none.
 
 ## Experiments
 

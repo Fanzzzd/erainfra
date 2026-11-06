@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { ArrowLeft, Gauge, OctagonAlert } from "lucide-react";
+import { ArrowLeft, Gauge, OctagonAlert, TestTubeDiagonal } from "lucide-react";
 import { api } from "@erainfra/backend/api";
 import type { Id } from "@erainfra/backend/dataModel";
 import { EmptyState } from "@/components/empty-state";
 import { MetricChart } from "@/components/metric-chart";
 import { PageHeader } from "@/components/page-header";
+import { TestCaseList, totalsLine } from "@/components/test-results";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -175,7 +176,50 @@ function AttemptPage() {
           <DataTable rows={rows} />
         </>
       )}
+
+      <AttemptTests attemptId={attempt._id} executor={attempt.executor} />
     </div>
+  );
+}
+
+/** The JUnit results this run reported, failures first and then its slowest passes. */
+function AttemptTests({ attemptId, executor }: { attemptId: Id<"attempts">; executor: string }) {
+  const tests = useQuery(api.testReports.forAttempt, { attemptId });
+  if (tests === undefined) return <Skeleton className="h-24" />;
+  if (tests === null) {
+    return (
+      <Card>
+        <EmptyState
+          icon={TestTubeDiagonal}
+          title="No test results for this run"
+          description={
+            executor === "firecracker"
+              ? "The job left no JUnit XML file the collector looks for, or it ran on an image older than the collector. Results are kept for 30 days."
+              : "Test results are collected on the Firecracker executor only."
+          }
+        />
+      </Card>
+    );
+  }
+  return (
+    <Card className="gap-0 overflow-hidden py-0">
+      <div className="border-b border-border px-4 py-3">
+        <p className="text-sm font-medium text-foreground">Tests</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {totalsLine(tests.totals)} · from {tests.files} JUnit{" "}
+          {tests.files === 1 ? "file" : "files"}
+          {tests.commitSha !== undefined && (
+            <span className="font-mono"> · {tests.commitSha.slice(0, 8)}</span>
+          )}
+          {tests.truncated && " · the report hit a size bound and lists only part of the run"}
+        </p>
+      </div>
+      {tests.cases.length === 0 ? (
+        <p className="px-4 py-3 text-xs text-muted-foreground">Every test passed.</p>
+      ) : (
+        <TestCaseList cases={tests.cases} />
+      )}
+    </Card>
   );
 }
 

@@ -10,6 +10,7 @@ import {
 import { alertConditionValidator } from "./alertRules";
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
+import { flakyTestFields, testCaseFields, testReportFields } from "./testReportsModel";
 
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 
@@ -488,6 +489,27 @@ export default defineSchema({
   attemptMetricSummaries: defineTable(attemptMetricSummaryFields)
     .index("by_attempt", ["attemptId"])
     .index("by_updatedAt", ["updatedAt"]),
+
+  // One row per Attempt that reported JUnit results (testReportsModel.ts): totals, the revision
+  // that joins it to other runs of the same code, and every passing test as a short hash. Kept
+  // 30 days; by_recordedAt drives the purge.
+  testReports: defineTable(testReportFields)
+    .index("by_attempt", ["attemptId"])
+    .index("by_recordedAt", ["recordedAt"])
+    .index("by_repository_recordedAt", ["repository", "recordedAt"])
+    .index("by_repository_revision", ["repository", "revision"]),
+
+  // The cases a report listed: failures, errors, flaky cases and its slowest passes (at most 500).
+  testCases: defineTable(testCaseFields)
+    .index("by_report", ["reportId"])
+    .index("by_status_recordedAt", ["status", "recordedAt"])
+    .index("by_repository_status_recordedAt", ["repository", "status", "recordedAt"]),
+
+  // One row per repository and test seen both failing and passing, written when a report arrives.
+  flakyTests: defineTable(flakyTestFields)
+    .index("by_repository_test", ["repository", "testId"])
+    .index("by_repository_lastSeen", ["repository", "lastSeenAt"])
+    .index("by_lastSeen", ["lastSeenAt"]),
 
   // Credentials are deliberately absent from every scheduler/reconcile scan.
   // A Worker point-reads this row exactly once while claiming its Attempt.

@@ -14,6 +14,8 @@ import {
 } from "./benchmark";
 import { recordAttemptMetrics } from "./attemptMetrics";
 import { metricsSnapshotValidator } from "./attemptMetricsModel";
+import { recordAttemptTests } from "./testReports";
+import { testReportValidator } from "./testReportsModel";
 import {
   egressRecordValidator,
   profileEgressOf,
@@ -527,6 +529,23 @@ export const reportAttemptMetrics = mutation({
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
     return await recordAttemptMetrics(ctx, machine._id, args);
+  },
+});
+
+/**
+ * The JUnit results the guest reported for an Attempt, sent once by the Agent after
+ * reportAttempt. Returns false when the Attempt is not this Worker's or no longer accepts writes.
+ */
+export const reportAttemptTests = mutation({
+  args: {
+    token: v.string(),
+    attemptId: v.id("attempts"),
+    report: testReportValidator,
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const machine = await machineForToken(ctx, args.token);
+    return await recordAttemptTests(ctx, machine._id, args);
   },
 });
 

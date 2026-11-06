@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.example.CalculatorTest" time="1,234.567" tests="4" errors="1" skipped="0" failures="1">
+  <properties>
+    <property name="java.version" value="21.0.5"/>
+  </properties>
+  <testcase name="adds" classname="com.example.CalculatorTest" time="0.012"/>
+  <testcase name="divides" classname="com.example.CalculatorTest" time="0.034">
+    <failure message="expected: &lt;2&gt; but was: &lt;3&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: expected: <2> but was: <3>
+	at com.example.CalculatorTest.divides(CalculatorTest.java:21)
+]]></failure>
+    <rerunFailure message="expected: &lt;2&gt; but was: &lt;3&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[at com.example.CalculatorTest.divides(CalculatorTest.java:21)]]></stackTrace>
+    </rerunFailure>
+    <system-out><![CDATA[a great deal of output that is never kept]]></system-out>
+  </testcase>
+  <testcase name="connects" classname="com.example.CalculatorTest" time="1,200.5">
+    <flakyFailure message="Connection reset" type="java.net.SocketException">
+      <stackTrace><![CDATA[java.net.SocketException: Connection reset
+	at com.example.CalculatorTest.connects(CalculatorTest.java:30)]]></stackTrace>
+    </flakyFailure>
+  </testcase>
+  <testcase name="boots" classname="com.example.CalculatorTest" time="0.001">
+    <error message="java.lang.IllegalStateException: no context" type="java.lang.IllegalStateException"><![CDATA[java.lang.IllegalStateException: no context]]></error>
+  </testcase>
+</testsuite>
