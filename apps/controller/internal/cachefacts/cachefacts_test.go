@@ -65,17 +65,18 @@ func TestPushSignsAndStampsExpiry(t *testing.T) {
 	client.now = func() time.Time { return fixedNow }
 
 	err = client.Push(t.Context(), Facts{
-		Runner:     "rc-linux-js-a",
-		Repository: "Fanzzzd/erainfra",
-		Event:      "push",
-		Ref:        "refs/heads/main",
+		Runner:       "rc-linux-js-a",
+		Repository:   "Fanzzzd/erainfra",
+		RepositoryID: 1001,
+		Event:        "push",
+		Ref:          "refs/heads/main",
 	})
 	if err != nil {
 		t.Fatalf("push: %v", err)
 	}
 
 	if got.Runner != "rc-linux-js-a" || got.Repository != "Fanzzzd/erainfra" ||
-		got.Event != "push" || got.Ref != "refs/heads/main" {
+		got.RepositoryID != 1001 || got.Event != "push" || got.Ref != "refs/heads/main" {
 		t.Fatalf("pushed facts = %#v", got)
 	}
 	if want := fixedNow.Add(6 * time.Hour).Unix(); got.ExpiresUnix != want {

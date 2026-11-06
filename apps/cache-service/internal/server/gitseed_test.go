@@ -173,3 +173,140 @@ func TestGitSeedRefusesWhatItCannotStore(t *testing.T) {
 		t.Fatalf("POST = %d, want 405", response.StatusCode)
 	}
 }
+
+// A seed the service refuses for its size is not built again by every job:
+// the lookups that follow answer not writable until a backoff that doubles
+// with each refusal has passed, and raising the limit lifts it.
+func TestGitSeedRefusedForItsSizeBacksOff(t *testing.T) {
+	h := newHarness(t, func(cfg *config.Config) { cfg.MaxEntryBytes = 1 << 10 })
+	writable := func(token string) (string, string) {
+		t.Helper()
+		response, _ := h.getSeed(token)
+		return response.Header.Get(headerGitSeedWritable), response.Header.Get(headerGitSeedRefusedUntil)
+	}
+	refuse := func() {
+		t.Helper()
+		put := h.putSeed(h.pushToken("Fanzzzd/erainfra", "refs/heads/main"), payload(2<<10))
+		_ = put.Body.Close()
+		if put.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("PUT over the limit = %d, want 413", put.StatusCode)
+		}
+	}
+
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "true" {
+		t.Fatalf("before any refusal writable = %q, want true", got)
+	}
+	refuse()
+	got, until := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/feature"))
+	if got != "false" || until != strconv.FormatInt(h.now().Add(24*time.Hour).Unix(), 10) {
+		t.Fatalf("after a refusal writable = %q until %q, want false for a day", got, until)
+	}
+	// Another repository is not affected.
+	if got, _ := writable(h.pushToken("Fanzzzd/other", "refs/heads/main")); got != "true" {
+		t.Fatalf("another repository's writable = %q, want true", got)
+	}
+
+	h.advance(24 * time.Hour)
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "true" {
+		t.Fatalf("after the first backoff writable = %q, want true", got)
+	}
+	refuse()
+	h.advance(36 * time.Hour)
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "false" {
+		t.Fatalf("a second refusal backs off two days; at 36h writable = %q", got)
+	}
+	for range 5 {
+		h.advance(8 * 24 * time.Hour)
+		refuse()
+	}
+	h.advance(7*24*time.Hour - time.Minute)
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "false" {
+		t.Fatalf("just inside the week cap writable = %q, want false", got)
+	}
+	h.advance(time.Minute)
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "true" {
+		t.Fatalf("the backoff is capped at a week; after it writable = %q", got)
+	}
+
+	// The operator raises the limit above the refused size: the next job
+	// builds at once, and its save clears the refusal.
+	refuse()
+	h.server.config.MaxEntryBytes = 4 << 10
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "true" {
+		t.Fatalf("after the limit was raised writable = %q, want true", got)
+	}
+	put := h.putSeed(h.pushToken("Fanzzzd/erainfra", "refs/heads/main"), payload(2<<10))
+	_ = put.Body.Close()
+	if put.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT under the raised limit = %d, want 201", put.StatusCode)
+	}
+	h.server.config.MaxEntryBytes = 1 << 10
+	if got, _ := writable(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); got != "true" {
+		t.Fatalf("a saved seed clears the refusal; writable = %q", got)
+	}
+
+	// A read-only job is never writable, refusal or not.
+	readOnly := h.token(cachetoken.JobFacts{
+		Repository: "Fanzzzd/erainfra", HeadRepository: "someone/fork", Event: "pull_request",
+		Ref: "refs/pull/1/merge", BaseRef: "refs/heads/main",
+	})
+	if got, _ := writable(readOnly); got != "false" {
+		t.Fatalf("a fork's job writable = %q", got)
+	}
+}
+
+// A repository deleted (or renamed away) and created again under the same
+// name is another repository: it never restores the earlier one's seed, and
+// its first save replaces it.
+func TestGitSeedIsKeyedByRepositoryID(t *testing.T) {
+	h := newHarness(t, nil)
+	job := func(id int64) string {
+		return h.token(cachetoken.JobFacts{
+			Repository: "Fanzzzd/erainfra", RepositoryID: id, Event: "push",
+			Ref: "refs/heads/main", DefaultBranch: "refs/heads/main",
+		})
+	}
+	old := payload(4 << 10)
+	if put := h.putSeed(job(1001), old); put.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d", put.StatusCode)
+	}
+	if response, body := h.getSeed(job(1001)); response.StatusCode != http.StatusOK || !bytes.Equal(body, old) {
+		t.Fatalf("the same repository's GET = %d, want its seed", response.StatusCode)
+	}
+	if response, _ := h.getSeed(job(2002)); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("a new repository of the same name got %d, want 404 rather than the old repository's seed", response.StatusCode)
+	}
+
+	h.advance(time.Second)
+	fresh := payload(5 << 10)
+	if put := h.putSeed(job(2002), fresh); put.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT = %d", put.StatusCode)
+	}
+	if response, body := h.getSeed(job(2002)); response.StatusCode != http.StatusOK || !bytes.Equal(body, fresh) {
+		t.Fatalf("the new repository's GET = %d, want its own seed", response.StatusCode)
+	}
+	records, err := h.server.index.Entries(t.Context(), "Fanzzzd/erainfra", cacheindex.Match{Prefix: gitSeedKeyPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Version != gitSeedVersion+"+repository-2002" {
+		t.Fatalf("seeds left in the scope: %+v, want only the new repository's", records)
+	}
+
+	// The ID arrives in the controller's facts push.
+	body := jsonBody(map[string]any{
+		"runner": "rc-pushed-id", "repository": "Fanzzzd/erainfra", "repositoryId": 2002,
+		"event": "push", "ref": "refs/heads/main", "expiresUnix": h.now().Add(time.Hour).Unix(),
+	})
+	if pushed := h.pushFacts(body, adminSign(body)); pushed.StatusCode != http.StatusNoContent {
+		t.Fatalf("facts push = %d", pushed.StatusCode)
+	}
+	if response, body := h.getSeed(h.runnerToken("rc-pushed-id")); response.StatusCode != http.StatusOK || !bytes.Equal(body, fresh) {
+		t.Fatalf("a job whose pushed facts carry the ID got %d, want that repository's seed", response.StatusCode)
+	}
+
+	// A controller from before the ID was pushed: the version seeds had then.
+	if response, _ := h.getSeed(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); response.StatusCode != http.StatusNotFound {
+		t.Fatalf("a job without an ID got %d, want no ID-keyed seed", response.StatusCode)
+	}
+}

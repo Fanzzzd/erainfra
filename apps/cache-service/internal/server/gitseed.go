@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
 )
@@ -45,6 +48,46 @@ const (
 	headerGitSeedCreated    = "X-Erainfra-Git-Seed-Created"
 )
 
+// gitSeedVersionFor is the version a job's seed is saved and looked up under.
+// It carries GitHub's ID for the repository when the controller pushed one.
+// The name alone is not the repository: one deleted, or renamed away, and then
+// created again under the same name is a different repository, with a
+// different history, and must not restore the old one's seed. GitHub deletes a
+// repository's own Actions cache with it; this is the seed's equivalent. A
+// controller from before the ID was pushed leaves it zero, and its jobs keep
+// the version every seed had then.
+func gitSeedVersionFor(claims cachetoken.Claims) string {
+	if claims.RepositoryID == 0 {
+		return gitSeedVersion
+	}
+	return gitSeedVersion + gitSeedRepositoryIDTag + strconv.FormatInt(claims.RepositoryID, 10)
+}
+
+const gitSeedRepositoryIDTag = "+repository-"
+
+func isGitSeedVersion(version string) bool {
+	return version == gitSeedVersion || strings.HasPrefix(version, gitSeedVersion+gitSeedRepositoryIDTag)
+}
+
+// removeGitSeeds removes every seed in one scope, of any version.
+func (s *Server) removeGitSeeds(ctx context.Context, repository, scope string) error {
+	records, err := s.index.Entries(ctx, repository, cacheindex.Match{Prefix: gitSeedKeyPrefix, Ref: scope})
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if !isGitSeedVersion(record.Version) {
+			continue
+		}
+		if _, err := s.index.Remove(ctx, repository, cacheindex.Match{
+			Key: record.Key, Version: record.Version, Ref: scope,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // serveGitSeed answers the guest's git seed requests.
 //
 //   - HEAD or GET: 200 with the newest seed this runner may read, or 404 when
@@ -70,10 +113,19 @@ func (s *Server) gitSeedRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set(headerGitSeedRepository, claims.Repository)
-	w.Header().Set(headerGitSeedWritable, strconv.FormatBool(claims.CanWrite()))
 
 	lookup, cancel := s.deadline(w, r, s.config.LookupTimeout)
-	entry, err := s.index.Lookup(lookup, claims, []string{gitSeedKeyPrefix}, gitSeedVersion)
+	// Writable tells the guest whether to build a seed, so a repository whose
+	// last seed was refused reads as not writable until the backoff passes.
+	writable := claims.CanWrite()
+	if writable {
+		if until := s.gitSeedBackoff(lookup, claims.Repository); !until.IsZero() {
+			writable = false
+			w.Header().Set(headerGitSeedRefusedUntil, strconv.FormatInt(until.Unix(), 10))
+		}
+	}
+	w.Header().Set(headerGitSeedWritable, strconv.FormatBool(writable))
+	entry, err := s.index.Lookup(lookup, claims, []string{gitSeedKeyPrefix}, gitSeedVersionFor(claims))
 	cancel()
 	if err != nil {
 		s.logger.Error("git seed lookup failed", "repository", claims.Repository, "error", err)
@@ -126,6 +178,9 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusLengthRequired, map[string]string{"message": "a git seed needs a Content-Length"})
 		return
 	case size > s.config.MaxEntryBytes:
+		record, cancel := s.deadline(w, r, s.config.LookupTimeout)
+		s.recordGitSeedRefusal(record, claims.Repository, size)
+		cancel()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": ErrEntryTooLarge.Error()})
 		return
 	}
@@ -159,22 +214,25 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 	// published. A guest that looks the seed up in between gets a miss and
 	// checks out from GitHub alone, which is the fail-open path anyway; a guest
 	// already downloading an old one keeps its bytes for the blob grace period.
+	//
+	// Every seed in the scope goes, whatever its version: one saved for an
+	// earlier repository of the same name, or before seeds were keyed by
+	// repository ID, is never read again.
 	scope := claims.WriteScope()
-	if _, err := s.index.Remove(ctx, claims.Repository, cacheindex.Match{
-		Prefix: gitSeedKeyPrefix, Version: gitSeedVersion, Ref: scope,
-	}); err != nil {
+	if err := s.removeGitSeeds(ctx, claims.Repository, scope); err != nil {
 		s.logger.Warn("older git seeds could not be removed; idle eviction will",
 			"repository", claims.Repository, "ref", scope, "error", err)
 	}
 	key := gitSeedKeyPrefix + strconv.FormatInt(s.now().UnixMilli(), 10)
 	if err := s.index.Commit(ctx, cacheindex.Entry{
-		Key: key, Version: gitSeedVersion, Repository: claims.Repository,
+		Key: key, Version: gitSeedVersionFor(claims), Repository: claims.Repository,
 		Ref: scope, Blob: blob, Size: size,
 	}); err != nil {
 		s.logger.Error("git seed could not be published", "repository", claims.Repository, "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "git seed could not be published"})
 		return
 	}
+	s.clearGitSeedRefusal(ctx, claims.Repository)
 	s.logger.Info("git seed saved", "repository", claims.Repository, "ref", scope, "bytes", size)
 	w.Header().Set(headerGitSeedRepository, claims.Repository)
 	w.WriteHeader(http.StatusCreated)

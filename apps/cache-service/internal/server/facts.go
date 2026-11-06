@@ -60,6 +60,7 @@ type factsEntry struct {
 type registerFactsRequest struct {
 	Runner         string `json:"runner"`
 	Repository     string `json:"repository"`
+	RepositoryID   int64  `json:"repositoryId,omitempty"`
 	HeadRepository string `json:"headRepository,omitempty"`
 	Event          string `json:"event,omitempty"`
 	Ref            string `json:"ref"`
@@ -111,6 +112,7 @@ func parseFactsPush(body []byte) (string, cachetoken.JobFacts, time.Time, error)
 	}
 	facts := cachetoken.JobFacts{
 		Repository:     req.Repository,
+		RepositoryID:   req.RepositoryID,
 		HeadRepository: req.HeadRepository,
 		Event:          req.Event,
 		Ref:            req.Ref,

@@ -50,6 +50,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,9 +138,10 @@ type Service struct {
 	// prepareMu serializes the first contact with the seed store and the
 	// restore that follows it.
 	prepareMu sync.Mutex
-	// writeMu serializes everything that writes into the mirror. upload-pack
-	// only reads, and git keeps a repository readable while a fetch adds to
-	// it, so serving does not take it.
+	// writeMu serializes everything that writes into the mirror, and a fetch
+	// answered from the mirror holds it until the answer is sent (see
+	// serveFromMirror). Fetches only ever try it: one that finds it held goes
+	// to GitHub instead of waiting.
 	writeMu sync.Mutex
 
 	mu             sync.Mutex
@@ -154,6 +157,9 @@ type Service struct {
 	// authorized remembers, briefly, credentials GitHub just let read a
 	// repository; see authorizedFor.
 	authorized map[string]time.Time
+	// forwarded is which kinds of fetch argument have been logged as sending
+	// a fetch to GitHub; see logForwarded.
+	forwarded map[string]bool
 
 	background    sync.WaitGroup
 	bgCtx         context.Context
@@ -292,15 +298,18 @@ func Start(cfg Config) (*Service, error) {
 func (s *Service) ProxyURL() string { return "http://" + s.proxyLn.Addr().String() }
 
 // GitConfig is the configuration that sends git's https://github.com/ traffic
-// through the proxy at proxyURL, trusting the CAs in caFile there. Both keys
-// are scoped to that URL, so git's traffic to every other host, and every
-// other program, is untouched. caFile should hold the system roots as well as
-// the per-guest CA, so that a git that bypasses the proxy (a job that sets
-// no_proxy, say) still verifies the real github.com.
-func GitConfig(proxyURL, caFile string) string {
+// through the proxy at proxyURL, trusting the CAs in caFile and caDir there.
+// Every key is scoped to that URL, so git's traffic to every other host, and
+// every other program, is untouched. caFile should hold the system roots as
+// well as the per-guest CA, so that a git that bypasses the proxy (a job that
+// sets no_proxy, say) still verifies the real github.com. caDir holds the
+// per-guest CA alone, under the name [caPathName] gives it, so that a job that
+// replaces caFile with GIT_SSL_CAINFO still trusts the proxy.
+func GitConfig(proxyURL, caFile, caDir string) string {
 	return "[http \"https://" + GitHubHost + "/\"]\n" +
 		"\tproxy = " + proxyURL + "\n" +
-		"\tsslCAInfo = " + caFile + "\n"
+		"\tsslCAInfo = " + caFile + "\n" +
+		"\tsslCAPath = " + caDir + "\n"
 }
 
 // Wait returns when any of the proxy's servers stops, with the reason. A
@@ -417,9 +426,12 @@ func (s *Service) serveGitHub(w http.ResponseWriter, r *http.Request) {
 	authorization := r.Header.Get("Authorization")
 	served := false
 	if body, err := decodeBody(r.Header.Get("Content-Encoding"), raw); err == nil {
-		if request, err := parseRequest(body); err == nil &&
-			request.command == "fetch" && len(request.wants) > 0 && !request.wantRefs {
-			served = s.serveFromMirror(w, r, repository, authorization, request, body)
+		if request, err := parseRequest(body); err == nil && request.command == "fetch" && len(request.wants) > 0 {
+			if request.unsupported == "" {
+				served = s.serveFromMirror(w, r, repository, authorization, request, body)
+			} else {
+				s.logForwarded(repository, request.unsupported)
+			}
 		}
 	}
 	if !served {
@@ -438,9 +450,24 @@ func (s *Service) forward(w http.ResponseWriter, r *http.Request, body io.Reader
 
 // serveFromMirror answers a fetch from the mirror, or reports false having
 // written nothing, which sends the request to GitHub.
+//
+// It holds writeMu from the mirror's fetch to the end of the answer. Another
+// fetch's depth-limited fetch into the mirror rewrites its shallow boundary,
+// and an upload-pack reading the mirror while that happens could cut a
+// whole-history answer short. A fetch that finds the mirror busy, with a
+// background refresh or with another fetch, goes to GitHub at once rather than
+// wait: a refresh of a large repository runs for many minutes.
 func (s *Service) serveFromMirror(
 	w http.ResponseWriter, r *http.Request, repository, authorization string, request fetchRequest, body []byte,
 ) bool {
+	if request.includeTag && request.depth > 0 && request.depth < infiniteDepth {
+		// Following tags needs the tags brought in line with GitHub's, which
+		// git refuses on the shallow mirror this fetch would leave (see
+		// below). A clone --depth that follows tags goes to GitHub;
+		// actions/checkout passes --no-tags.
+		s.logForwarded(repository, "include-tag with deepen")
+		return false
+	}
 	if !s.prepare(r.Context(), repository) {
 		return false
 	}
@@ -449,18 +476,56 @@ func (s *Service) serveFromMirror(
 		s.logf("git mirror: GitHub did not let this client read %s, passing its fetch to GitHub: %v", repository, err)
 		return false
 	}
-	s.writeMu.Lock()
-	err := s.mirror.fetchObjects(ctx, s.upstream(repository), authorization, request.wants, request.depth)
-	s.writeMu.Unlock()
-	if err != nil {
+	if !s.writeMu.TryLock() {
+		s.logf("git mirror: the mirror of %s is busy (a seed refresh or another fetch), fetching from GitHub directly", repository)
+		return false
+	}
+	defer s.writeMu.Unlock()
+
+	// A fetch without a depth completes without asking GitHub for a wanted
+	// object the mirror already holds, so for those GitHub is asked here. A
+	// depth-limited fetch names every want to GitHub, which refuses one it no
+	// longer serves.
+	var held []string
+	if request.depth == 0 {
+		absent, err := s.mirror.missing(ctx, request.wants)
+		if err != nil {
+			s.logf("git mirror: could not read the mirror of %s, fetching from GitHub directly: %v", repository, err)
+			return false
+		}
+		held = without(request.wants, absent)
+	}
+	if err := s.mirror.fetchObjects(ctx, s.upstream(repository), authorization, request.wants, request.depth); err != nil {
 		s.logf("git mirror: GitHub did not give the mirror %s's wanted objects, fetching from GitHub directly: %v", repository, err)
 		return false
 	}
-	if missing, err := s.mirror.missing(ctx, request.wants); err != nil || len(missing) > 0 {
-		s.logf("git mirror: the mirror lacks %d wanted objects of %s, fetching from GitHub directly", len(missing), repository)
+	if len(held) > 0 {
+		if err := s.confirmServed(ctx, repository, authorization, held); err != nil {
+			s.logf("git mirror: GitHub does not serve every object this fetch of %s wants, fetching from GitHub directly: %v", repository, err)
+			return false
+		}
+	}
+	// The client's shallow commits as well as its wants: upload-pack ignores a
+	// shallow commit it does not hold, and would then leave the client's
+	// boundary where it was.
+	needed := append(append([]string(nil), request.wants...), request.shallows...)
+	if missing, err := s.mirror.missing(ctx, needed); err != nil || len(missing) > 0 {
+		s.logf("git mirror: the mirror lacks %d wanted or shallow objects of %s, fetching from GitHub directly", len(missing), repository)
 		return false
 	}
-	err = s.mirror.uploadPack(ctx, body, func() io.Writer {
+	if request.includeTag {
+		if s.mirror.shallow() {
+			// Bringing the tags in line on a shallow mirror would need new
+			// shallow boundaries, which git refuses.
+			s.logf("git mirror: a depth-limited fetch of %s follows tags, fetching from GitHub directly", repository)
+			return false
+		}
+		if err := s.mirror.syncTags(ctx, s.upstream(repository), authorization); err != nil {
+			s.logf("git mirror: could not bring %s's tags in line with GitHub, fetching from GitHub directly: %v", repository, err)
+			return false
+		}
+	}
+	err := s.mirror.uploadPack(ctx, body, func() io.Writer {
 		header := w.Header()
 		header.Set("Content-Type", "application/x-git-upload-pack-result")
 		header.Set("Cache-Control", "no-cache, max-age=0, must-revalidate")
@@ -477,6 +542,110 @@ func (s *Service) serveFromMirror(
 		s.logf("git mirror: serving %s stopped part way: %v", repository, err)
 	}
 	return true
+}
+
+// logForwarded notes, once per kind of argument, that fetches carrying it go
+// to GitHub because the mirror does not reproduce it exactly.
+func (s *Service) logForwarded(repository, line string) {
+	kind, _, _ := strings.Cut(line, " ")
+	s.mu.Lock()
+	if s.forwarded == nil {
+		s.forwarded = map[string]bool{}
+	}
+	seen := s.forwarded[kind]
+	s.forwarded[kind] = true
+	s.mu.Unlock()
+	if !seen {
+		s.logf("git mirror: fetches of %s that send %q go to GitHub directly; the mirror cannot answer them exactly", repository, line)
+	}
+}
+
+func without(values, remove []string) []string {
+	var kept []string
+	for _, value := range values {
+		if !slices.Contains(remove, value) {
+			kept = append(kept, value)
+		}
+	}
+	return kept
+}
+
+// confirmServed asks GitHub whether it serves every object in oids to this
+// client now, with a fetch that wants each one and says it already has each
+// one. GitHub answers that with an empty pack, or refuses it with "not our
+// ref" for an object it does not have: a commit purged after a sensitive-data
+// removal, say, or one from an earlier repository of the same name. Only the
+// start of the answer is needed, because upload-pack checks every want before
+// it begins the packfile section.
+func (s *Service) confirmServed(ctx context.Context, repository, authorization string, oids []string) error {
+	var body bytes.Buffer
+	writePkt := func(line string) { fmt.Fprintf(&body, "%04x%s\n", len(line)+5, line) }
+	writePkt("command=fetch")
+	writePkt("agent=git/erainfra-git-mirror")
+	writePkt("object-format=sha1")
+	body.WriteString("0001")
+	writePkt("no-progress")
+	for _, oid := range oids {
+		writePkt("want " + oid)
+	}
+	for _, oid := range oids {
+		writePkt("have " + oid)
+	}
+	writePkt("done")
+	body.WriteString("0000")
+
+	target := *s.config.GitHub
+	target.Path = "/" + repository + "/git-upload-pack"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), &body)
+	if err != nil {
+		return err
+	}
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
+	request.Header.Set("Git-Protocol", "version=2")
+	request.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+	request.Header.Set("Accept", "application/x-git-upload-pack-result")
+	request.Header.Set("User-Agent", "git/erainfra-git-mirror")
+	response, err := s.config.Transport.RoundTrip(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close() //nolint:errcheck // the first line is the answer
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub answered %d", response.StatusCode)
+	}
+	line, err := readPktLine(response.Body)
+	if err != nil {
+		return err
+	}
+	if line != "packfile" {
+		return fmt.Errorf("GitHub answered %q", line)
+	}
+	// The empty pack that follows is a few dozen bytes; reading it lets the
+	// connection be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	return nil
+}
+
+// readPktLine reads one pkt-line and returns its payload without the newline.
+func readPktLine(reader io.Reader) (string, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		return "", fmt.Errorf("read a pkt-line: %w", err)
+	}
+	length, err := strconv.ParseUint(string(header[:]), 16, 16)
+	if err != nil {
+		return "", fmt.Errorf("read a pkt-line: length %q", header[:])
+	}
+	if length < 4 {
+		return "", fmt.Errorf("GitHub answered the special packet %04x", length)
+	}
+	payload := make([]byte, length-4)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return "", fmt.Errorf("read a pkt-line: %w", err)
+	}
+	return strings.TrimSuffix(string(payload), "\n"), nil
 }
 
 // authorize asks GitHub whether this client's credential can read repository
@@ -653,6 +822,10 @@ func (s *Service) load(ctx context.Context) {
 	s.repository, s.writable, s.seedFound, s.seedCreated = info.Repository, info.Writable, info.Found, info.Created
 	s.prepared = true
 	s.mu.Unlock()
+	if !info.RefusedUntil.IsZero() {
+		s.logf("git mirror: the cache service refused %s's last seed as too large; no job builds another before %s",
+			info.Repository, info.RefusedUntil.UTC().Format(time.RFC3339))
+	}
 	if seed == nil {
 		s.logf("git mirror: %s has no seed in this job's scope yet; its checkout goes to GitHub directly", info.Repository)
 		return

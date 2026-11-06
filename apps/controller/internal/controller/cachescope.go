@@ -88,9 +88,10 @@ func resolveCacheFacts(ctx context.Context, runs WorkflowRuns, job *scaleset.Job
 	}
 
 	facts := cachefacts.Facts{
-		Runner:     job.RunnerName,
-		Repository: repository,
-		Event:      event,
+		Runner:       job.RunnerName,
+		Repository:   repository,
+		RepositoryID: run.Repository.ID,
+		Event:        event,
 	}
 	if run.HeadRepository != nil {
 		facts.HeadRepository = run.HeadRepository.FullName

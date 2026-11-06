@@ -79,6 +79,10 @@ type Claims struct {
 	// on that stability: a per-Attempt identifier would give every Attempt its
 	// own object prefix and the cache would never hit.
 	Repository string `json:"repository"`
+	// RepositoryID is GitHub's ID for Repository, zero when the controller did
+	// not push one. It tells apart repositories that had the same name at
+	// different times, and the git checkout seed is keyed by it.
+	RepositoryID int64 `json:"repositoryId,omitempty"`
 	// Ref is the scope writes land in, and the first scope reads look in.
 	Ref string `json:"ref"`
 	// BaseRef and DefaultBranch are the second and third read scopes. A fork
@@ -164,6 +168,8 @@ type JobFacts struct {
 	// that is the base repository, which is exactly the one whose cache is at
 	// stake.
 	Repository string
+	// RepositoryID is GitHub's ID for Repository, or zero when unknown.
+	RepositoryID int64
 	// HeadRepository is where the code that will run comes from. Empty for
 	// events that have no head repository, which is most of them.
 	//
@@ -264,6 +270,7 @@ func Scope(facts JobFacts) (Claims, error) {
 
 	claims := Claims{
 		Repository:    repository,
+		RepositoryID:  max(facts.RepositoryID, 0),
 		Ref:           ref,
 		BaseRef:       strings.TrimSpace(facts.BaseRef),
 		DefaultBranch: strings.TrimSpace(facts.DefaultBranch),

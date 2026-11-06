@@ -44,8 +44,12 @@ const MinSigningKeyLen = 32
 // runner is about to run the job, and the GitHub facts the cache service scopes
 // that runner's requests from.
 type Facts struct {
-	Runner         string
-	Repository     string
+	Runner     string
+	Repository string
+	// RepositoryID is GitHub's ID for Repository. It tells apart repositories
+	// that had the same name at different times; the cache service keys the
+	// git checkout seed by it. Zero when unknown.
+	RepositoryID   int64
 	HeadRepository string
 	Event          string
 	Ref            string
@@ -60,6 +64,7 @@ type Facts struct {
 type request struct {
 	Runner         string `json:"runner"`
 	Repository     string `json:"repository"`
+	RepositoryID   int64  `json:"repositoryId,omitempty"`
 	HeadRepository string `json:"headRepository,omitempty"`
 	Event          string `json:"event,omitempty"`
 	Ref            string `json:"ref"`
@@ -109,6 +114,7 @@ func (c *Client) Push(ctx context.Context, facts Facts) error {
 	body, err := json.Marshal(request{
 		Runner:         facts.Runner,
 		Repository:     facts.Repository,
+		RepositoryID:   facts.RepositoryID,
 		HeadRepository: facts.HeadRepository,
 		Event:          facts.Event,
 		Ref:            facts.Ref,
