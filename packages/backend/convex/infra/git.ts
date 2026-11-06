@@ -28,6 +28,20 @@ export async function findBinding(ctx: QueryCtx, repo: string, branch: string) {
     .unique();
 }
 
+/**
+ * Why `insertBinding` would refuse to bind `repo@branch`, or null. The Hub importer asks before it
+ * creates the binding's Nodes, so a refused row writes nothing.
+ */
+export async function bindingRefusal(ctx: QueryCtx, repo: string, branch: string) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return "Name the repository as owner/name";
+  if (branch.length === 0) return "Name a branch";
+  if ((await findBinding(ctx, repo, branch)) !== null) return `Already bound: ${repo}@${branch}`;
+  // At most MAX_GIT_BINDINGS rows, so reading one past the cap is a bounded read.
+  const bound = await ctx.db.query("gitBindings").take(MAX_GIT_BINDINGS);
+  if (bound.length >= MAX_GIT_BINDINGS) return `Binding limit reached (${MAX_GIT_BINDINGS})`;
+  return null;
+}
+
 export async function insertBinding(
   ctx: MutationCtx,
   input: {
@@ -43,17 +57,8 @@ export async function insertBinding(
   },
   hub?: HubOrigin,
 ) {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(input.repo))
-    throw new ConvexError("Name the repository as owner/name");
-  if (input.branch.length === 0) throw new ConvexError("Name a branch");
-  if ((await findBinding(ctx, input.repo, input.branch)) !== null) {
-    throw new ConvexError(`Already bound: ${input.repo}@${input.branch}`);
-  }
-  // At most MAX_GIT_BINDINGS rows, so reading one past the cap is a bounded read.
-  const bound = await ctx.db.query("gitBindings").take(MAX_GIT_BINDINGS);
-  if (bound.length >= MAX_GIT_BINDINGS) {
-    throw new ConvexError(`Binding limit reached (${MAX_GIT_BINDINGS})`);
-  }
+  const refusal = await bindingRefusal(ctx, input.repo, input.branch);
+  if (refusal !== null) throw new ConvexError(refusal);
   const now = Date.now();
   return await ctx.db.insert("gitBindings", {
     ...input,

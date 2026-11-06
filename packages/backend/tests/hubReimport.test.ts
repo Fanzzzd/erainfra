@@ -570,3 +570,115 @@ describe("re-importing the Hub after Convex writes", () => {
     expect(formatImportReport(report, false).refused).toBe(1);
   });
 });
+
+/** Every document in every table, so a test can say nothing at all changed. */
+async function everything(t: ReturnType<typeof convexTest>, except: string[] = []) {
+  return await t.run(async (ctx) => {
+    const tables: Record<string, unknown[]> = {};
+    for (const table of Object.keys(schema.tables).toSorted()) {
+      if (except.includes(table)) continue;
+      tables[table] = await ctx.db.query(table as keyof typeof schema.tables).collect();
+    }
+    return tables;
+  });
+}
+
+// The rows of a batch share one mutation and a refused row does not stop the rows after it, so
+// Convex never rolls back a refused row's writes. A refused row must have written nothing. A port or
+// binding row naming a Node that does not exist yet is the case to watch: creating the Node is its
+// first write, and the port or binding can still be refused after it.
+describe("a refused row", () => {
+  const cases: Array<{ name: string; batch: ImportBatch; reason: RegExp; except?: string[] }> = [
+    {
+      name: "a port on a Node the import would create",
+      batch: { kind: "ports", rows: [{ node: "node-new", key: "web/web", port: 0 }] },
+      reason: /Not a port/,
+    },
+    {
+      name: "a binding whose build Node the import would create",
+      batch: {
+        kind: "gitBindings",
+        rows: [
+          {
+            legacyId: "hub-bad",
+            repo: "not a repository",
+            branch: "main",
+            app: "web",
+            buildNode: "node-new",
+            deployNode: "node-other",
+          },
+        ],
+      },
+      reason: /owner\/name/,
+    },
+    {
+      name: "an account",
+      batch: {
+        kind: "users",
+        rows: [
+          {
+            legacyId: "u-bad",
+            email: "not an email",
+            name: "Bad",
+            roles: ["admin"],
+            passwordHash: "scrypt$x",
+            createdAt: 1,
+          },
+        ],
+      },
+      reason: /valid email/,
+    },
+    {
+      name: "an audit row",
+      batch: {
+        kind: "audit",
+        rows: [{ hubSeq: 7, at: 1, actor: "u-owner", action: " ", outcome: "success" }],
+      },
+      reason: /audit action/,
+      // The batch records how far the trail was imported, refused rows or not.
+      except: ["infraCounters"],
+    },
+  ];
+
+  for (const { name, batch, reason, except } of cases) {
+    it(`leaves nothing behind for ${name}`, async () => {
+      const t = convexTest(schema, modules);
+      const before = await everything(t, except);
+      const report = await t.action(internal.infra.hubImport.run, { batches: [batch] });
+      expect(report.items).toEqual([
+        expect.objectContaining({
+          kind: batch.kind,
+          outcome: "refused",
+          reason: expect.stringMatching(reason),
+        }),
+      ]);
+      expect(await everything(t, except)).toEqual(before);
+      // The refusal is decided before writing, so a dry run sees it too.
+      const preview = await t.action(internal.infra.hubImport.preview, { batches: [batch] });
+      expect(preview.items).toEqual(report.items);
+    });
+  }
+
+  it("still writes the rows after a refused one in full", async () => {
+    const t = convexTest(schema, modules);
+    const report = await t.action(internal.infra.hubImport.run, {
+      batches: [
+        {
+          kind: "ports",
+          rows: [
+            { node: "node-new", key: "web/web", port: 0 },
+            { node: "node-next", key: "web/web", port: 4100 },
+          ],
+        },
+      ],
+    });
+    expect(report.items.map((i) => [i.key, i.outcome])).toEqual([
+      ["node-new web/web", "refused"],
+      ["node-next web/web", "created"],
+    ]);
+    const nodes = await t.run(async (ctx) =>
+      (await ctx.db.query("nodes").collect()).map((n) => n.name),
+    );
+    expect(nodes).toEqual(["node-next"]);
+  });
+});

@@ -229,7 +229,9 @@ skips it with `skipped … owned by Convex: <why>`. Per table:
 
 The importer prints a result for every row that is not unchanged. A row Convex refuses (a port
 another key holds on that Node, a branch bound by another Hub binding, an audit row out of order) is
-listed as `refused`; the rows and batches after it still apply, and the command exits non-zero.
+listed as `refused` and writes nothing, not even a Node it would have created; the rows and
+batches after it still apply, and the command exits non-zero. `--dry-run` reports the same
+refusals.
 It does not copy:
 
 - sessions: people sign in to the dashboard again;

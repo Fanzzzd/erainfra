@@ -7,12 +7,12 @@
 // serializable transaction, so neither invariant depends on who calls.
 import { ConvexError, v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
-import { internalMutation, query, type MutationCtx } from "../_generated/server";
+import { internalMutation, query, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { requirePermission } from "./access";
 import { convexWrite, provenanceFor, type HubOrigin, type Provenance } from "./hubProvenance";
 import { appOfPortKey, firstFreePort, PORT_RANGE_END, PORT_RANGE_START } from "./policy";
 
-async function byNodeKey(ctx: MutationCtx, nodeId: Id<"nodes">, key: string) {
+async function byNodeKey(ctx: QueryCtx, nodeId: Id<"nodes">, key: string) {
   return await ctx.db
     .query("portAllocations")
     .withIndex("by_node_key", (q) => q.eq("nodeId", nodeId).eq("key", key))
@@ -57,17 +57,47 @@ export async function claimPort(
   input: { nodeId: Id<"nodes">; key: string; port: number; allocatedAt: number },
   hub: HubOrigin,
 ) {
+  const refusal = await claimPortRefusal(ctx, input);
+  if (refusal !== null) throw new ConvexError(refusal);
   const existing = await byNodeKey(ctx, input.nodeId, input.key);
-  if (existing !== null) {
-    if (existing.port !== input.port) {
-      throw new ConvexError(
-        `Port key ${input.key} already holds ${existing.port}, not ${input.port}`,
-      );
-    }
-    return existing.port;
-  }
+  if (existing !== null) return existing.port;
   await insertAllocation(ctx, { ...input, provenance: provenanceFor(input.allocatedAt, hub) });
   return input.port;
+}
+
+/**
+ * Why `claimPort` would refuse, or null. `nodeId` is null for a Node that does not exist yet, which
+ * holds no ports. The importer asks before it creates the Node, so a refused row writes nothing.
+ * `nodeName` only names the Node in the reason.
+ */
+export async function claimPortRefusal(
+  ctx: QueryCtx,
+  input: { nodeId: Id<"nodes"> | null; key: string; port: number; nodeName?: string },
+) {
+  if (input.nodeId !== null) {
+    const existing = await byNodeKey(ctx, input.nodeId, input.key);
+    if (existing !== null)
+      return existing.port === input.port
+        ? null
+        : `Port key ${input.key} already holds ${existing.port}, not ${input.port}`;
+  }
+  return await portRefusal(ctx, input.nodeId, input.port, input.nodeName);
+}
+
+/** Why `port` cannot be recorded on the Node, or null. */
+async function portRefusal(
+  ctx: QueryCtx,
+  nodeId: Id<"nodes"> | null,
+  port: number,
+  nodeName = "this Node",
+) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return `Not a port: ${port}`;
+  if (nodeId === null) return null;
+  const holder = await ctx.db
+    .query("portAllocations")
+    .withIndex("by_node_port", (q) => q.eq("nodeId", nodeId).eq("port", port))
+    .first();
+  return holder === null ? null : `Port ${port} on ${nodeName} is already held by ${holder.key}`;
 }
 
 async function insertAllocation(
@@ -80,16 +110,8 @@ async function insertAllocation(
     provenance: Provenance;
   },
 ) {
-  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535) {
-    throw new ConvexError(`Not a port: ${input.port}`);
-  }
-  const holder = await ctx.db
-    .query("portAllocations")
-    .withIndex("by_node_port", (q) => q.eq("nodeId", input.nodeId).eq("port", input.port))
-    .first();
-  if (holder !== null) {
-    throw new ConvexError(`Port ${input.port} on this Node is already held by ${holder.key}`);
-  }
+  const refusal = await portRefusal(ctx, input.nodeId, input.port);
+  if (refusal !== null) throw new ConvexError(refusal);
   const app = appOfPortKey(input.key);
   await ctx.db.insert("portAllocations", { ...input, ...(app === undefined ? {} : { app }) });
 }
