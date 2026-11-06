@@ -18,6 +18,10 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/images.yml"
+      # The Firecracker and guest kernel pins the boot test reads. Only a pull
+      # request runs for it: a kernel bump has to boot the image, but it does
+      # not change the image, so main publishes nothing for it.
+      - "deploy/provision-firecracker-host.sh"
   workflow_dispatch:
   # A weekly rebuild of main from the same source. The Dockerfile pins every
   # tool and the base image by digest, but `apt-get install` takes whatever the
@@ -48,6 +52,27 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # smoke.sh runs inside the build, with no guest kernel and no dockerd, so
+      # it cannot see what only the guest kernel decides. This boots the image
+      # in Firecracker on the kernel a Worker pins and starts containers on a
+      # user-defined network, as every `container:` and `services:` job does.
+      # amd64 only: GitHub's hosted x86_64 runners expose /dev/kvm. The build
+      # below reuses this one's layers.
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: images/ubuntu-24.04-js/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: erainfra-boot-test:candidate
+      - name: Boot the image on the pinned guest kernel
+        run: |
+          set -euo pipefail
+          # /mnt is the runner's large scratch disk; the root image is a few GiB.
+          workdir=/mnt/erainfra-boot-test
+          sudo mkdir -p "$workdir" || workdir="$RUNNER_TEMP/erainfra-boot-test"
+          sudo env BOOT_TEST_WORKDIR="$workdir" \
+            images/ubuntu-24.04-js/boot-test.sh erainfra-boot-test:candidate
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -69,6 +94,24 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # The same boot test as validate-ubuntu-24-04-js, before the push, so
+      # nothing is published that cannot start a container on the guest
+      # kernel. The multi-arch build below reuses this build's amd64 layers.
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: images/ubuntu-24.04-js/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: erainfra-boot-test:candidate
+      - name: Boot the image on the pinned guest kernel
+        run: |
+          set -euo pipefail
+          # /mnt is the runner's large scratch disk; the root image is a few GiB.
+          workdir=/mnt/erainfra-boot-test
+          sudo mkdir -p "$workdir" || workdir="$RUNNER_TEMP/erainfra-boot-test"
+          sudo env BOOT_TEST_WORKDIR="$workdir" \
+            images/ubuntu-24.04-js/boot-test.sh erainfra-boot-test:candidate
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
