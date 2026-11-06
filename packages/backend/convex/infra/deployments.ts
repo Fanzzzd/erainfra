@@ -13,6 +13,7 @@ import { requirePermission } from "./access";
 import { loadRouteOwner } from "./apps";
 import { appendAudit } from "./auditLog";
 import { bumpCounter, readCounter, writeCounter } from "./counters";
+import { convexWrite } from "./hubProvenance";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
 import {
   DEPLOY_STAGES,
@@ -265,10 +266,12 @@ export const completeFailover = internalMutation({
         ...(port === undefined ? {} : { port }),
       });
     }
+    const now = Date.now();
     await ctx.db.patch(app._id, {
       nodeId: app.nodeId === args.fromNodeId ? args.toNodeId : app.nodeId,
       services,
-      updatedAt: Date.now(),
+      provenance: convexWrite(now),
+      updatedAt: now,
     });
     for (const s of services) {
       if (s.route === undefined || s.nodeId !== args.toNodeId) continue;
@@ -283,7 +286,8 @@ export const completeFailover = internalMutation({
         await ctx.db.patch(route._id, {
           nodeId: args.toNodeId,
           ...(s.port === undefined ? {} : { port: s.port }),
-          updatedAt: Date.now(),
+          provenance: convexWrite(now),
+          updatedAt: now,
         });
       }
     }

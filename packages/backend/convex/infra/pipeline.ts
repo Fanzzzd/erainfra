@@ -32,6 +32,7 @@ import { namespaceRefusal } from "./namespace";
 import { insertNodeCommand, type NodeCommand } from "./nodeCommands";
 import { changedNodes, planDeploy } from "./plan";
 import { isNodeLive, isTerminalStage, leaseAdmits, type DeployStage } from "./policy";
+import { convexWrite } from "./hubProvenance";
 import { allocatePort } from "./ports";
 import { isRouteLabel } from "./ingress";
 import { implicitSpec, parseSpec, routeLabelError, type AppSpec } from "./spec";
@@ -667,10 +668,14 @@ async function cleanUp(ctx: MutationCtx, run: Run) {
   }
   if (run.gitBindingId !== undefined) {
     const binding = await ctx.db.get(run.gitBindingId);
+    const now = Date.now();
+    // The result of a Convex run: the binding is Convex's from now on (hubProvenance.ts).
     if (binding !== null)
       await ctx.db.patch(binding._id, {
+        provenance: convexWrite(now),
+        updatedAt: now,
         lastStatus: {
-          at: Date.now(),
+          at: now,
           sha: run.trigger?.sha ?? "",
           ok: run.stage === "done",
           stage: run.stage === "done" ? "done" : run.detail,

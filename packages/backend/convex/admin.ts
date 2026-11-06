@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { recordTombstone } from "./infra/hubProvenance";
 import { discardCommand } from "./runners";
 
 function commandsForJob(ctx: MutationCtx, jobId: Id<"jobs">) {
@@ -89,7 +90,10 @@ export const deleteUser = internalMutation({
       }
       await ctx.db.delete(session._id);
     }
+    const user = await ctx.db.get(args.userId);
     await ctx.db.delete(args.userId);
+    // A Hub import must not bring the account back with its Hub password.
+    if (user?.legacyHubId !== undefined) await recordTombstone(ctx, "user", user.legacyHubId);
     return null;
   },
 });

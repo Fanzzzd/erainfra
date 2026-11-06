@@ -28,8 +28,8 @@ instead.
 ## 1. Copy the Hub into Convex
 
 On the Hub's host, set the secrets master key once and run the importer
-([State in Convex](../infra-management.md#state-in-convex)). Start with `--dry-run`; it reads
-everything and sends nothing, and it lists every scope it would refuse:
+([State in Convex](../infra-management.md#state-in-convex)). Start with `--dry-run`; it writes
+nothing and lists every row the import would create, update, skip or refuse:
 
 ```sh
 pnpm convex env set ERAINFRA_SECRETS_MASTER_KEY "$(openssl rand -hex 32)"   # first time only
@@ -43,9 +43,22 @@ CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
     --db "$PWD/$(basename "$DB")" --secret-key "$PWD/secret.key" --dry-run
 ```
 
-Drop `--dry-run` when it reports nothing refused. The import is safe to repeat, and you re-run it
-before each later step that moves a reader to Convex. Delete the two copied files afterwards; they
-hold every secret.
+Drop `--dry-run` when it reports nothing refused. A run that refuses a row still applies every other
+row, prints the refused ones and exits non-zero; fix them and run it again.
+
+The import is safe to repeat, and you re-run it before each later step that moves a reader to
+Convex. It copies only what the Hub still owns. Once Convex writes or deletes a row, that row is
+Convex's and every later import skips it, printing `skipped … owned by Convex`:
+
+- An App, with its routes and ports, becomes Convex's at its first deploy, failover or removal
+  through Convex.
+- An env variable, a link or a git binding becomes Convex's the first time Convex sets, adds,
+  binds, removes or unbinds it, or a Convex run records its result on the binding.
+- An account is copied once; Convex owns it from then on.
+
+So a change made on the Hub to something Convex already owns is never imported. The
+[ownership table](../infra-management.md#state-in-convex) lists every table. Delete the two copied
+files afterwards; they hold every secret.
 
 Check what arrived:
 
@@ -75,6 +88,7 @@ until you switch it, so the Hub keeps driving the rest.
 3. Within a minute `erainfra nodes list` shows the Node with transport `convex`, `online`, and
    `MESH proven`. Its Apps show status `running` in `erainfra apps list`.
 4. Re-run the importer (step 1) after each switch, so Convex holds what the Hub last deployed.
+   Nothing Convex has written is overwritten.
 
 Once both ends of a link run `connect-convex`, `erainfra links list` shows that link with
 transport `mesh`. When every Node is switched, every link must show `mesh` and state `active`.
@@ -90,7 +104,15 @@ runs.
 
 ## 4. Verify everything through Convex
 
-Run each check with the `erainfra` CLI logged in to the Convex site, never `portless`.
+From this step on, Convex is the authority. Before the first check:
+
+1. Stop changing anything through the Hub: no `portless deploy`, `env`, `link`, `bind` or account
+   changes. Make every change with `erainfra` or the dashboard.
+2. Re-run the importer (step 1), so Convex holds the Hub's last state.
+
+Run each check with the `erainfra` CLI logged in to the Convex site, never `portless`. Each check
+writes through Convex, and what it writes is Convex's from then on: deploying an App makes the App
+Convex's, and later imports skip it.
 
 - **Deploy.** Deploy a small App and follow it to `done`, then open its URL through the gateways:
 
@@ -101,7 +123,7 @@ Run each check with the `erainfra` CLI logged in to the Convex site, never `port
 
 - **Deploy every real App once through Convex.** Apps copied from the Hub have no stored spec, so
   Convex cannot fail them over until they are deployed through it once. `erainfra apps view <app>`
-  says so until then. A single-container App the Hub deployed with `-v` volumes needs a spec that
+  says so until then. Each deploy is the moment that App becomes Convex's. A single-container App the Hub deployed with `-v` volumes needs a spec that
   mounts them, and a Convex service can only mount `<app>-<volume>`. Its first Convex deploy starts
   new containers beside the Hub's container `<app>`, which keeps running. Move its data to a volume
   of that form and remove the Hub's container first, as
@@ -134,9 +156,14 @@ Then remove the test App: `erainfra apps remove hello-retire --yes`.
 
 ## 5. Stop the Hub, keep its data
 
-Re-run the importer once more, then export the chat transcripts if anyone wants them, and stop the
-Hub container and its tunnel connector. Do not delete `portless-data`, `portless-registry` or the
-Hub's tunnel: they are the rollback source.
+Run the importer with `--dry-run` once more. It should report nothing refused and nothing to create
+or update; every App deployed in step 4 shows as `skipped … owned by Convex`. A row it would create
+or update is a change someone made on the Hub after step 4 began. Drop `--dry-run` to copy it; the
+import cannot overwrite anything Convex owns.
+
+Then export the chat transcripts if anyone wants them, and stop the Hub container and its tunnel
+connector. Do not delete `portless-data`, `portless-registry` or the Hub's tunnel: they are the
+rollback source.
 
 ```sh
 # The transcripts and everything else the Hub held, as one file you keep elsewhere.

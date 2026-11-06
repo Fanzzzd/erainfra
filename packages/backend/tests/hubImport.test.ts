@@ -13,6 +13,8 @@ import { MASTER_KEY_ENV } from "../convex/infra/secretCrypto";
 import schema from "../convex/schema";
 import { upsertRoute } from "../convex/infra/apps";
 import {
+  formatImportReport,
+  mergeImportReports,
   planImportCalls,
   readHubState,
   resolveHubRouteOwners,
@@ -235,10 +237,11 @@ function buildHubDb() {
 async function importAll(t: Harness) {
   const state = readHubState(dbPath, HUB_KEY);
   // A tiny call size forces several action calls, as a large Hub would need.
+  const reports = [];
   for (const batches of planImportCalls(state.batches, 2_000)) {
-    await t.action(internal.infra.hubImport.run, { batches });
+    reports.push(await t.action(internal.infra.hubImport.run, { batches }));
   }
-  return state;
+  return { ...state, report: mergeImportReports(reports) };
 }
 
 beforeAll(async () => {
@@ -303,9 +306,15 @@ describe("Hub importer", () => {
 
   it("round-trips the Hub's state, idempotently", async () => {
     const t = convexTest(schema, modules);
-    await importAll(t);
+    const firstRun = await importAll(t);
+    expect(firstRun.report.items.filter((i) => i.outcome !== "created")).toEqual([]);
     const first = await snapshot(t);
-    await importAll(t);
+    // A second run finds every row as the first left it and writes nothing.
+    const secondRun = await importAll(t);
+    expect(secondRun.report.items).toEqual([]);
+    expect(Object.values(secondRun.report.counts).flatMap((c) => Object.keys(c))).toEqual(
+      Array(Object.keys(secondRun.report.counts).length).fill("unchanged"),
+    );
     expect(await snapshot(t)).toEqual(first);
 
     const nodeName = (id: string) => first.nodes.find((n) => n._id === id)?.name;
@@ -421,7 +430,7 @@ describe("Hub importer", () => {
     ]);
   });
 
-  it("refuses to change a port a Node already holds", async () => {
+  it("refuses a port a Node already holds, reports it, and imports everything else", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
       const node = await ctx.db.insert("nodes", {
@@ -436,7 +445,27 @@ describe("Hub importer", () => {
         allocatedAt: 0,
       });
     });
-    await expect(importAll(t)).rejects.toThrow(/62000 on this Node is already held by other\/web/);
+    const { report } = await importAll(t);
+    expect(report.items.filter((i) => i.outcome === "refused")).toEqual([
+      {
+        kind: "ports",
+        key: "box-2 solo/web",
+        outcome: "refused",
+        reason: "Port 62000 on box-2 is already held by other/web",
+      },
+    ]);
+    // The refusal stopped nothing: the other ports, and the batches after them, all arrived.
+    const after = await snapshot(t);
+    expect(after.ports.map((p) => p.key).toSorted()).toEqual(
+      ["other/web", "registry/link", "shop/db", "shop/link-db", "shop/web"].toSorted(),
+    );
+    expect(after.bindings).toHaveLength(1);
+    expect(after.audit).toHaveLength(3);
+    const printed = formatImportReport(report, false);
+    expect(printed.refused).toBe(1);
+    expect(printed.lines).toContain(
+      "  refused  ports box-2 solo/web: Port 62000 on box-2 is already held by other/web",
+    );
   });
 
   it("lets an imported account sign in with its Hub password", async () => {

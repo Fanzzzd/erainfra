@@ -1,7 +1,11 @@
 /**
  * Copies a Hub's state (portless.db and the key that encrypts its secrets) into this Convex
  * deployment, the first step of ADR 0016 phase 2. Safe to repeat: every row is keyed on what the
- * Hub keyed it on, so a second run changes only what changed on the Hub since the first.
+ * Hub keyed it on, so a second run changes only what changed on the Hub since the first, and never
+ * a row Convex has written or deleted since (convex/infra/hubImport.ts). It prints a result for
+ * every row that is not unchanged, and exits non-zero when Convex refused any row; the other rows
+ * are applied regardless. `--dry-run` asks the deployment what the import would do, writing
+ * nothing, when CONVEX_URL and CONVEX_DEPLOY_KEY are set.
  *
  * Usage, on the Hub's host (the state directory is inside the `portless-data` volume):
  *
@@ -22,7 +26,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { ConvexHttpClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
-import type { ImportBatch } from "../convex/infra/hubImport.ts";
+import type { ImportBatch, ImportReport } from "../convex/infra/hubImport.ts";
 import { isRouteLabel } from "../convex/infra/ingress.ts";
 
 type Row = Record<string, unknown>;
@@ -409,6 +413,50 @@ function summarize(state: HubState) {
   return rows;
 }
 
+/** One report from the reports of every action call, in call order. */
+export function mergeImportReports(reports: readonly ImportReport[]): ImportReport {
+  const merged: ImportReport = { counts: {}, items: [] };
+  for (const report of reports) {
+    for (const [kind, outcomes] of Object.entries(report.counts)) {
+      const counts = (merged.counts[kind] ??= {});
+      for (const [outcome, n] of Object.entries(outcomes))
+        counts[outcome] = (counts[outcome] ?? 0) + n;
+    }
+    merged.items.push(...report.items);
+  }
+  return merged;
+}
+
+const OUTCOMES = ["created", "updated", "unchanged", "skipped", "refused"] as const;
+
+/**
+ * What an import did, or would do, as lines for the operator: a count per table and outcome, then
+ * every row that is not unchanged with its reason. `refused` is how many rows Convex refused; the
+ * script exits non-zero when it is above zero.
+ */
+export function formatImportReport(report: ImportReport, dryRun: boolean) {
+  const lines = [dryRun ? "What the import would do:" : "What the import did:"];
+  for (const [kind, counts] of Object.entries(report.counts)) {
+    const parts = OUTCOMES.filter((o) => (counts[o] ?? 0) > 0).map((o) => `${counts[o]} ${o}`);
+    lines.push(`  ${kind}: ${parts.join(", ")}`);
+  }
+  for (const outcome of ["refused", "skipped", "created", "updated"] as const) {
+    for (const item of report.items.filter((i) => i.outcome === outcome)) {
+      lines.push(
+        `  ${outcome}  ${item.kind} ${item.key}${item.reason === undefined ? "" : `: ${item.reason}`}`,
+      );
+    }
+  }
+  const refused = report.items.filter((i) => i.outcome === "refused").length;
+  if (refused > 0) {
+    lines.push(
+      `${refused} row(s) refused. Every other row was ${dryRun ? "checked" : "applied"}; ` +
+        "fix each refused row on the Hub or in Convex and run the import again.",
+    );
+  }
+  return { lines, refused };
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -436,27 +484,39 @@ async function main() {
   for (const token of state.notImported.apiTokens) {
     console.log(`  ${token.prefix}…  ${token.name}  [${token.roles.join(", ")}]`);
   }
-  if (values["dry-run"]) return;
 
+  const dryRun = values["dry-run"];
   const url = process.env.CONVEX_URL;
   const adminKey = process.env.CONVEX_DEPLOY_KEY;
   if (url === undefined || adminKey === undefined) {
-    throw new Error("Set CONVEX_URL and CONVEX_DEPLOY_KEY to the target deployment");
+    if (!dryRun) throw new Error("Set CONVEX_URL and CONVEX_DEPLOY_KEY to the target deployment");
+    console.log(
+      "Not compared with Convex. Set CONVEX_URL and CONVEX_DEPLOY_KEY to see which rows the " +
+        "import would create, update, or skip because Convex owns them.",
+    );
+    return;
   }
-  // An internal action is callable only with a deployment's admin key. This is how
+  // An internal function is callable only with a deployment's admin key. This is how
   // `npx convex run` calls one (convex/dist/esm/cli/lib/run.js); neither method is in the client's
   // published types.
   const client = new ConvexHttpClient(url) as unknown as {
     setAdminAuth(key: string): void;
-    function(reference: unknown, componentPath: undefined, args: unknown): Promise<unknown>;
+    function(reference: unknown, componentPath: undefined, args: unknown): Promise<ImportReport>;
   };
   client.setAdminAuth(adminKey);
-  const reference = makeFunctionReference<"action">("infra/hubImport:run");
+  // A dry run asks Convex what it would do and writes nothing.
+  const reference = makeFunctionReference<"action">(
+    dryRun ? "infra/hubImport:preview" : "infra/hubImport:run",
+  );
   const calls = planImportCalls(state.batches);
+  const reports: ImportReport[] = [];
   for (const [index, call] of calls.entries()) {
-    const applied = await client.function(reference, undefined, { batches: call });
-    console.log(`Call ${index + 1}/${calls.length} applied:`, applied);
+    reports.push(await client.function(reference, undefined, { batches: call }));
+    console.log(`Call ${index + 1}/${calls.length} done`);
   }
+  const { lines, refused } = formatImportReport(mergeImportReports(reports), dryRun);
+  for (const line of lines) console.log(line);
+  if (refused > 0) process.exitCode = 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
