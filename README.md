@@ -1012,7 +1012,11 @@ them. If it is logged in and the control plane cannot be read, it stops rather t
 
 It changes `runs-on` written as a string, a one-item list, or the `labels` of a `group`/`labels`
 mapping. In a reusable workflow whose `runs-on` is an input, it changes that input's default and
-the `with:` value of each call in the repository. In a [router job](#fall-back-to-github-hosted-runners),
+the `with:` value of each call in the repository, as long as the workflow reads the input only as
+its `runs-on` label (`${{ inputs.runner }}`, or `${{ inputs.runner || 'ubuntu-latest' }}`). If
+anything else in the workflow reads it, such as an `if:`, an `env:` value, a script, a cache key
+or a `with:` to another workflow, renaming the label would change what that sees, so the default
+and the calls stay as they are and an `input-shared` note names the first such read. In a [router job](#fall-back-to-github-hosted-runners),
 it renames the Profile the router asks about (a `PROFILE` variable or a `profile=` query) and
 leaves the router's own `runs-on`, which has to stay GitHub-hosted. A router job is one that
 declares `outputs:` and has a step calling the `/runs-on` endpoint with `profile=` or `labels=`;

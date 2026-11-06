@@ -13,3 +13,7 @@ jobs:
     uses: octo-org/shared/.github/workflows/test.yml@0123456789abcdef0123456789abcdef01234567
     with:
       runner: ubuntu-latest
+  shared:
+    uses: ./.github/workflows/shared.yml
+    with:
+      runner: ubuntu-latest # shared.yml also reads it in an if: and a cache key

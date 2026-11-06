@@ -1,0 +1,18 @@
+# A reusable workflow that also reads its runner input outside runs-on: the
+# label cannot be renamed without changing the if: and the cache key.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+jobs:
+  test:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - if: inputs.runner == 'ubuntu-latest'
+        run: sudo apt-get install -y libfoo
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/foo
+          key: ${{ inputs.runner }}-foo
