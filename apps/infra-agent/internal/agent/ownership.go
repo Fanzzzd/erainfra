@@ -145,6 +145,11 @@ func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, ar
 			if owner != app {
 				return fmt.Errorf("volume %s belongs to App %q, not App %q; refusing to mount it", name, owner, app)
 			}
+			// The label names the App, not the deploy kind: the Hub's single container `db` and
+			// App db's services both label what they create erainfra.app=db. The users decide.
+			if err := r.checkVolumeUsers(ctx, name, app, single, true); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := r.ownUnlabelledVolume(ctx, name, app, single); err != nil {
@@ -187,6 +192,14 @@ func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, 
 		return fmt.Errorf("volume %s was adopted by App %q on this Node, not App %q; refusing to mount it "+
 			"(docs/infra-management.md, \"Names and ownership\")", name, owner, app)
 	}
+	return r.checkVolumeUsers(ctx, name, app, single, false)
+}
+
+// checkVolumeUsers refuses the volume unless every container that mounts it, running or stopped,
+// is one this deploy may share it with: a container of this App and of this deploy's kind. It runs
+// for a volume labelled for this App as well as an unlabelled one, since the label says nothing
+// about which of the App's deploy kinds wrote the data.
+func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, single, volumeLabelled bool) error {
 	ids, err := r.volumeUsers(ctx, name)
 	if err != nil {
 		return err
@@ -227,6 +240,10 @@ func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, 
 			return fmt.Errorf("volume %s is mounted by container %s, App %q's %s, which this deploy does not replace; "+
 				"refusing to mount it, since two containers would write one data directory. Once nothing needs %s, "+
 				"remove it on this Node (docker rm -f %s) and deploy again", name, container, app, kind, container, container)
+		case volumeLabelled:
+			return fmt.Errorf("volume %s is App %q's but is mounted by container %s, which is not; refusing to mount it, "+
+				"since two containers would write one data directory. Once nothing needs %s, remove it on this Node "+
+				"(docker rm -f %s) and deploy again", name, app, container, container, container)
 		default:
 			return fmt.Errorf("volume %s has no %s label and is mounted by container %s, which is not App %q's; "+
 				"refusing to mount it, since two Apps would share one data directory. Give App %q's volume another "+
