@@ -154,17 +154,22 @@ secrets unreadable, so the command generates one only while none is set, and sav
 only you can read before it sets it:
 
 ```sh
-if current=$(npx convex env get --prod ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
+if current=$(npx convex env get --prod ERAINFRA_SECRETS_MASTER_KEY 2>&1) &&
+  printf '%s\n' "$current" | grep -q 'not found (on prod deployment' &&
+  [ ! -e ~/erainfra-secrets-master-key ]; then
   (umask 077 && openssl rand -hex 32 | tr -d '\n' > ~/erainfra-secrets-master-key)
   npx convex env set --prod ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
 else
-  echo 'Not generated: the key is already set, or Convex could not be read. Keep the saved key.'
+  echo 'Not generated: the key is already set, a saved key file exists, or Convex could not be read.'
 fi
 unset current
 ```
 
-`npx convex env get --prod` prints nothing for an unset variable and fails when it cannot reach the
-deployment, so a repeat of this step never replaces a key. Move `~/erainfra-secrets-master-key`
+For an unset variable `npx convex env get --prod` still exits 0, and prints
+`✖ Environment variable "ERAINFRA_SECRETS_MASTER_KEY" not found (on prod deployment <name>)`, so
+the command generates a key only on that exact answer. It fails when it cannot reach the
+deployment, and it refuses while a saved key file exists, so a repeat of this step never replaces
+a key. Move `~/erainfra-secrets-master-key`
 into your password manager or another safe place, and delete it here.
 
 The Hub keeps its database in SQLite WAL mode (`apps/hub/src/db.ts`): recent writes sit in a
