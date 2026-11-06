@@ -184,8 +184,9 @@ func repositoryPatterns(workspace string) []string {
 }
 
 // validPattern accepts a relative slash-separated glob that path.Match can
-// read, that cannot climb out of the workspace, and that has at most four **
-// (each one multiplies the matcher's work by the path depth).
+// read, that cannot climb out of the workspace, and that has at most four **.
+// The matcher's work no longer grows with the number of ** (see
+// matchSegments); the cap stays because no report layout needs more.
 func validPattern(pattern string) bool {
 	if strings.HasPrefix(pattern, "/") || strings.Contains(pattern, "\\") {
 		return false
@@ -209,6 +210,10 @@ func validPattern(pattern string) bool {
 }
 
 func (state *collection) walk(workspace string, patterns []string) {
+	compiled := make([][]string, len(patterns))
+	for index, pattern := range patterns {
+		compiled[index] = strings.Split(pattern, "/")
+	}
 	_ = filepath.WalkDir(workspace, func(file string, entry fs.DirEntry, err error) error {
 		if state.ctx.Err() != nil || state.entries >= MaxWalkEntries {
 			state.truncated = true
@@ -236,9 +241,14 @@ func (state *collection) walk(workspace string, patterns []string) {
 		if err != nil {
 			return nil
 		}
-		relative = filepath.ToSlash(relative)
-		for _, pattern := range patterns {
-			if MatchPattern(pattern, relative) {
+		segments := strings.Split(filepath.ToSlash(relative), "/")
+		for _, pattern := range compiled {
+			matched, err := matchSegments(state.ctx, pattern, segments)
+			if err != nil {
+				state.truncated = true
+				return fs.SkipAll
+			}
+			if matched {
 				if len(state.files) >= MaxFiles {
 					state.truncated = true
 					return fs.SkipAll
@@ -287,36 +297,54 @@ func (state *collection) parseFile(file string) bool {
 // in which ** stands for any number of directories, including none, and every
 // other segment is a path.Match pattern.
 func MatchPattern(pattern, name string) bool {
-	return matchSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
+	matched, _ := matchSegments(context.Background(), strings.Split(pattern, "/"), strings.Split(name, "/"))
+	return matched
 }
 
-func matchSegments(pattern, name []string) bool {
-	for len(pattern) > 0 {
-		if pattern[0] == "**" {
-			// Collapse repeated ** and try every split point.
-			for len(pattern) > 0 && pattern[0] == "**" {
-				pattern = pattern[1:]
-			}
-			if len(pattern) == 0 {
-				return true
-			}
-			for skip := 0; skip <= len(name); skip++ {
-				if matchSegments(pattern, name[skip:]) {
-					return true
-				}
-			}
-			return false
+// matchCheckInterval is how many segment comparisons the matcher makes between
+// looks at its context.
+const matchCheckInterval = 256
+
+// matchSegments is the wildcard matcher of shell globs, one level up: ** is the
+// star and every other segment matches exactly one name segment. It scans
+// forward and, on a mismatch, returns to the most recent ** and lets it absorb
+// one more segment. That one backtrack point is enough: once a later ** has
+// matched, whatever an earlier one absorbs can be absorbed by the later one
+// instead. So the work is at most len(pattern) × len(name) segment comparisons,
+// whatever the pattern, where trying every split point for every ** is
+// len(name) to the power of the number of **. The job writes both the pattern
+// (ConfigFile) and the path, so the matcher also stops with the context's
+// error once the collection's budget is spent.
+func matchSegments(ctx context.Context, pattern, name []string) (bool, error) {
+	p, n := 0, 0
+	star, absorbed := -1, 0
+	for steps := 1; n < len(name); steps++ {
+		if steps%matchCheckInterval == 0 && ctx.Err() != nil {
+			return false, ctx.Err()
 		}
-		if len(name) == 0 {
-			return false
+		switch {
+		case p < len(pattern) && pattern[p] == "**":
+			star, absorbed = p, n
+			p++
+		case p < len(pattern) && segmentMatches(pattern[p], name[n]):
+			p++
+			n++
+		case star >= 0:
+			absorbed++
+			p, n = star+1, absorbed
+		default:
+			return false, nil
 		}
-		matched, err := path.Match(pattern[0], name[0])
-		if err != nil || !matched {
-			return false
-		}
-		pattern, name = pattern[1:], name[1:]
 	}
-	return len(name) == 0
+	for p < len(pattern) && pattern[p] == "**" {
+		p++
+	}
+	return p == len(pattern), nil
+}
+
+func segmentMatches(pattern, name string) bool {
+	matched, err := path.Match(pattern, name)
+	return err == nil && matched
 }
 
 // readCommit reads the commit a workspace has checked out from its .git

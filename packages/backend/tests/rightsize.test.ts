@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { parseRightsizeQuery } from "../convex/operatorHttp";
-import { windowStartFor } from "../convex/rightsize";
+import { MAX_SCANNED_SUMMARIES, windowStartFor } from "../convex/rightsize";
 import {
   MAX_WINDOW_MS,
   MIN_ATTEMPTS,
@@ -512,6 +512,103 @@ describe("right-sizing over stored metrics", () => {
 
     const filtered = await operator.query(api.rightsize.report, { repo: "other" });
     expect(filtered.recommendations.map((entry) => entry.repo)).toEqual(["acme/other"]);
+  });
+
+  it("reads one repository's runs by its index, past a busier repository's newer ones", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const machineId = await ctx.db.insert("machines", {
+        name: "w",
+        os: "linux",
+        labels: [],
+        maxSlots: 4,
+        usedSlots: 0,
+        lastSeen: T0,
+        token: "t",
+      });
+      await ctx.db.insert("profiles", {
+        name: "erainfra-4vcpu-ubuntu-2404",
+        scaleSetName: "erainfra-4vcpu-ubuntu-2404",
+        executor: "firecracker",
+        imageRelease: IMAGE,
+        vcpus: 4,
+        memoryMiB: 16_384,
+        minRunners: 0,
+        maxRunners: 2,
+        state: "active",
+        updatedAt: T0,
+      });
+      const add = async (index: number, repo: string, finishedAt: number) => {
+        const attemptId = await ctx.db.insert("attempts", {
+          profile: "erainfra-4vcpu-ubuntu-2404",
+          executor: "firecracker",
+          imageRelease: IMAGE,
+          vcpus: 4,
+          memoryMiB: 16_384,
+          runnerName: `r${index}`,
+          runnerId: index,
+          state: "completed",
+          machineId,
+          createdAt: finishedAt - 1000,
+          finishedAt,
+          repo,
+          owner: "acme",
+          displayName: "build",
+        });
+        const seriesId = await ctx.db.insert("attemptMetrics", {
+          attemptId,
+          source: "firecracker-vmm",
+          startedAt: finishedAt - 1000,
+          sampleSeconds: 5,
+          bucketSeconds: 5,
+          samples: 1,
+          errors: 0,
+          memoryPeakBytes: 0,
+          oomKills: 0,
+          points: { offset: [], ms: [], cpuMs: [], cpuMaxMilli: [], memBytes: [] },
+        });
+        await ctx.db.insert("attemptMetricSummaries", {
+          attemptId,
+          machineId,
+          seriesId,
+          updatedAt: finishedAt,
+          source: "firecracker-vmm",
+          samples: 120,
+          errors: 0,
+          final: true,
+          durationMs: 600_000,
+          vcpus: 4,
+          cpuAvgVcpus: 0.5,
+          cpuP95Vcpus: 0.8,
+          cpuMaxVcpus: 1.5,
+          memoryLimitBytes: 16 * GIB,
+          memoryPeakBytes: GIB,
+          oomKills: 0,
+        });
+      };
+      for (let index = 0; index < 6; index++) await add(index, "quiet", T0 - 3 * 86_400_000);
+      for (let index = 0; index < MAX_SCANNED_SUMMARIES + 1; index++) {
+        await add(100 + index, "busy", T0 - 86_400_000 + index);
+      }
+    });
+    const operator = t.withIdentity({ subject: "operator", issuer: "https://example.test" });
+    // Unfiltered, the busy repository's newer runs fill the scan.
+    const all = await operator.query(api.rightsize.report, {});
+    expect(all.truncated).toBe(true);
+    expect(all.recommendations.map((entry) => entry.repo)).toEqual(["acme/busy"]);
+    for (const repo of ["acme/quiet", "quiet", "ACME/QUIET"]) {
+      const report = await operator.query(api.rightsize.report, { repo });
+      expect(report.truncated).toBe(false);
+      expect(report.scanned).toBe(6);
+      expect(report.recommendations.map((entry) => [entry.repo, entry.attempts])).toEqual([
+        ["acme/quiet", 6],
+      ]);
+    }
+    const otherOwner = await operator.query(api.rightsize.report, { repo: "other/quiet" });
+    expect(otherOwner.recommendations).toEqual([]);
+    const busy = await operator.query(api.rightsize.report, { repo: "acme/busy" });
+    expect(busy.truncated).toBe(true);
+    expect(busy.scanned).toBe(MAX_SCANNED_SUMMARIES);
   });
 
   it("answers /api/v1/rightsize with a read token, including the runs-on map", async () => {

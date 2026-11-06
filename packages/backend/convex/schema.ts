@@ -10,7 +10,12 @@ import {
 import { alertConditionValidator } from "./alertRules";
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
-import { flakyTestFields, testCaseFields, testReportFields } from "./testReportsModel";
+import {
+  flakyTestFields,
+  testCaseFields,
+  testReportFields,
+  testReportHashFields,
+} from "./testReportsModel";
 
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 
@@ -482,7 +487,12 @@ export default defineSchema({
     // The finishedAt column exists for the Worker poll: it bounds the
     // completed range to the executor-drain window instead of the machine's
     // whole history. Live-state lookups use the (machineId, state) prefix.
-    .index("by_machine_state_finishedAt", ["machineId", "state", "finishedAt"]),
+    .index("by_machine_state_finishedAt", ["machineId", "state", "finishedAt"])
+    // Right-sizing for one repository (rightsize.ts) reads its finished Attempts by name instead
+    // of scanning every measured one. Not staged: settled Attempts are deleted 30 days after they
+    // finish (reconcile.ts), so the backfill is one table of a month's jobs and fits inside the
+    // push, where a staged index would leave the query unusable until a second deploy.
+    .index("by_repo_finishedAt", ["repo", "finishedAt"]),
 
   // One bounded resource series per Attempt (at most 360 points per column), replaced whole by
   // every upload from the Worker that ran it. Read only by the Attempt page.
@@ -494,18 +504,28 @@ export default defineSchema({
     .index("by_attempt", ["attemptId"])
     .index("by_updatedAt", ["updatedAt"]),
 
-  // One row per Attempt that reported JUnit results (testReportsModel.ts): totals, the revision
-  // that joins it to other runs of the same code, and every passing test as a short hash. Kept
-  // 30 days; by_recordedAt drives the purge.
+  // One row per Attempt that reported JUnit results (testReportsModel.ts): totals and the revision
+  // that joins it to other runs of the same code, about 1 kB, so the Tests page can read hundreds.
+  // Kept 30 days; by_recordedAt drives the purge. The failing indexes serve the failing-runs list
+  // without reading the passing runs between its rows.
   testReports: defineTable(testReportFields)
     .index("by_attempt", ["attemptId"])
     .index("by_recordedAt", ["recordedAt"])
     .index("by_repository_recordedAt", ["repository", "recordedAt"])
-    .index("by_repository_revision", ["repository", "revision"]),
+    .index("by_repository_revision", ["repository", "revision"])
+    .index("by_failing_recordedAt", ["failing", "recordedAt"])
+    .index("by_repository_failing_recordedAt", ["repository", "failing", "recordedAt"]),
+
+  // A report's test-id hashes (up to 246 kB), read only by a later upload of the same revision.
+  testReportHashes: defineTable(testReportHashFields).index("by_report", ["reportId"]),
 
   // The cases a report listed: failures, errors, flaky cases and its slowest passes (at most 500).
+  // by_report_status reads one report's failures without its passes; by_report_testHash finds the
+  // case behind an earlier run's failing hash.
   testCases: defineTable(testCaseFields)
     .index("by_report", ["reportId"])
+    .index("by_report_status", ["reportId", "status"])
+    .index("by_report_testHash", ["reportId", "testHash"])
     .index("by_status_recordedAt", ["status", "recordedAt"])
     .index("by_repository_status_recordedAt", ["repository", "status", "recordedAt"]),
 

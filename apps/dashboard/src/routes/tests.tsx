@@ -185,7 +185,7 @@ function FlakyView({ filter, now }: { filter: Filter; now: number }) {
         <EmptyState
           icon={Shuffle}
           title="No flaky tests in this window"
-          description="A test is flaky when it failed and passed for the same commit, across a rerun or another job, or when its test runner retried it into a pass."
+          description="A test is flaky when it failed and passed in two runs of the same code (a rerun, or another push or scheduled run of the same branch and commit), or when its test runner retried it into a pass."
         />
       </Card>
     );
