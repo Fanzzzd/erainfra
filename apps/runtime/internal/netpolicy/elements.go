@@ -89,28 +89,34 @@ func RegistrationBatch(guest netip.Addr, link string, effective EffectiveEgress)
 		}
 		state.CIDRs = CollapsePrefixes(prefixes)
 	}
+	return RestoreBatch(state), state, nil
+}
+
+// RestoreBatch writes the elements RegistrationBatch wrote for state: the link
+// binding, the allowed CIDRs and the membership. `add element` leaves an
+// element that is already there alone, so the batch is safe to apply to a
+// guest whose elements are partly or wholly present. Addresses the resolver
+// admitted are not in it: their timeouts are not known here, and a guest
+// missing one only fails closed until it resolves the name again.
+func RestoreBatch(state GuestEgressState) string {
 	var batch strings.Builder
 	// The link first: what the link may carry, then that it is a guest's. In
 	// one transaction a packet sees both or neither.
 	writeElements(&batch, "add", GuestSourceSetName, []string{state.sourceElement()})
 	writeElements(&batch, "add", GuestLinkSetName, []string{state.linkElement()})
 	if len(state.CIDRs) > 0 {
-		elements := make([]string, 0, len(state.CIDRs))
-		for _, prefix := range state.CIDRs {
-			elements = append(elements, fmt.Sprintf("%s . %s", guest, prefix))
-		}
-		writeElements(&batch, "add", AllowCIDRSetName, elements)
+		writeElements(&batch, "add", AllowCIDRSetName, state.cidrElements())
 	}
 	// Membership last: within one transaction the order does not matter to a
 	// packet, but reading the batch top to bottom then says "what it may reach,
 	// then that it is restricted".
 	if state.Restricted {
-		writeElements(&batch, "add", RestrictedSetName, []string{guest.String()})
+		writeElements(&batch, "add", RestrictedSetName, []string{state.Guest.String()})
 	}
 	if state.Observed {
-		writeElements(&batch, "add", ObservedSetName, []string{guest.String()})
+		writeElements(&batch, "add", ObservedSetName, []string{state.Guest.String()})
 	}
-	return batch.String(), state, nil
+	return batch.String()
 }
 
 // ResolvedBatch admits addresses the host resolver answered for an allowed
@@ -155,11 +161,7 @@ func RemovalBatch(state GuestEgressState) string {
 	if state.Restricted {
 		remove(RestrictedSetName, []string{state.Guest.String()})
 	}
-	cidrs := make([]string, 0, len(state.CIDRs))
-	for _, prefix := range state.CIDRs {
-		cidrs = append(cidrs, fmt.Sprintf("%s . %s", state.Guest, prefix))
-	}
-	remove(AllowCIDRSetName, cidrs)
+	remove(AllowCIDRSetName, state.cidrElements())
 	resolved := make([]string, 0, len(state.Resolved))
 	for _, address := range state.Resolved {
 		resolved = append(resolved, fmt.Sprintf("%s . %s", state.Guest, address))
@@ -193,6 +195,174 @@ func (s GuestEgressState) linkElement() string {
 
 func (s GuestEgressState) sourceElement() string {
 	return fmt.Sprintf("%s . %s", strconv.Quote(s.Link), s.Guest)
+}
+
+func (s GuestEgressState) cidrElements() []string {
+	elements := make([]string, 0, len(s.CIDRs))
+	for _, prefix := range s.CIDRs {
+		elements = append(elements, fmt.Sprintf("%s . %s", s.Guest, prefix))
+	}
+	return elements
+}
+
+// MissingGuestElements returns the guests in registered whose link binding,
+// allowed CIDRs or membership is absent from listOutput, the output of
+// `nft --json list table inet runner-center`. registered is what the runtime
+// wrote when it registered each guest, so anything missing was taken out by
+// something other than the runtime. The usual cause is a reload of the table
+// file: it starts with `delete table`, which empties every per-guest set under
+// guests that are still running.
+func MissingGuestElements(listOutput []byte, registered []GuestEgressState) ([]GuestEgressState, error) {
+	live, err := liveGuestElements(listOutput)
+	if err != nil {
+		return nil, err
+	}
+	var missing []GuestEgressState
+	for _, state := range registered {
+		if !live.holds(state) {
+			missing = append(missing, state)
+		}
+	}
+	return missing, nil
+}
+
+// guestElements is the per-guest set membership a table listing shows, one
+// normalised key per element.
+type guestElements struct {
+	links, sources, observed, restricted, cidrs map[string]struct{}
+}
+
+func (e guestElements) holds(state GuestEgressState) bool {
+	has := func(set map[string]struct{}, key string) bool {
+		_, ok := set[key]
+		return ok
+	}
+	guest := state.Guest.String()
+	if !has(e.links, state.Link) || !has(e.sources, state.Link+" . "+guest) {
+		return false
+	}
+	if state.Observed && !has(e.observed, guest) {
+		return false
+	}
+	if state.Restricted && !has(e.restricted, guest) {
+		return false
+	}
+	for _, prefix := range state.CIDRs {
+		if !has(e.cidrs, guest+" . "+prefix.Masked().String()) {
+			return false
+		}
+	}
+	return true
+}
+
+func liveGuestElements(listOutput []byte) (guestElements, error) {
+	var document struct {
+		Nftables []struct {
+			Set *struct {
+				Family string `json:"family"`
+				Table  string `json:"table"`
+				Name   string `json:"name"`
+				Elem   []any  `json:"elem"`
+			} `json:"set,omitempty"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(listOutput, &document); err != nil {
+		return guestElements{}, fmt.Errorf("decode nftables state: %w", err)
+	}
+	live := guestElements{
+		links: map[string]struct{}{}, sources: map[string]struct{}{},
+		observed: map[string]struct{}{}, restricted: map[string]struct{}{}, cidrs: map[string]struct{}{},
+	}
+	for _, entry := range document.Nftables {
+		set := entry.Set
+		if set == nil || set.Family != "inet" || set.Table != TableName {
+			continue
+		}
+		var into map[string]struct{}
+		switch set.Name {
+		case GuestLinkSetName:
+			into = live.links
+		case GuestSourceSetName:
+			into = live.sources
+		case ObservedSetName:
+			into = live.observed
+		case RestrictedSetName:
+			into = live.restricted
+		case AllowCIDRSetName:
+			into = live.cidrs
+		default:
+			continue
+		}
+		for _, element := range set.Elem {
+			// An element in a shape this build does not read counts as absent.
+			// Its guest is then restored, which adds nothing, and readiness
+			// fails rather than vouch for what it cannot see.
+			if key, ok := elementKey(set.Name, element); ok {
+				into[key] = struct{}{}
+			}
+		}
+	}
+	return live, nil
+}
+
+// elementKey normalises one element of a per-guest set. nft prints a single
+// value as a bare string and a concatenation as {"concat": [...]}. An interval
+// part is either a bare address, meaning a /32, or
+// {"prefix": {"addr": ..., "len": ...}}.
+func elementKey(set string, element any) (string, bool) {
+	if set == GuestLinkSetName || set == ObservedSetName || set == RestrictedSetName {
+		value, ok := element.(string)
+		return value, ok
+	}
+	object, ok := element.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	parts, ok := object["concat"].([]any)
+	if !ok || len(parts) != 2 {
+		return "", false
+	}
+	first, ok := parts[0].(string)
+	if !ok {
+		return "", false
+	}
+	if set == GuestSourceSetName {
+		second, ok := parts[1].(string)
+		return first + " . " + second, ok
+	}
+	prefix, ok := intervalPrefix(parts[1])
+	if !ok {
+		return "", false
+	}
+	return first + " . " + prefix.String(), true
+}
+
+func intervalPrefix(value any) (netip.Prefix, bool) {
+	switch typed := value.(type) {
+	case string:
+		address, err := netip.ParseAddr(typed)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		return netip.PrefixFrom(address, address.BitLen()), true
+	case map[string]any:
+		prefix, ok := typed["prefix"].(map[string]any)
+		if !ok {
+			return netip.Prefix{}, false
+		}
+		addressText, addressOK := prefix["addr"].(string)
+		length, lengthOK := prefix["len"].(float64)
+		if !addressOK || !lengthOK {
+			return netip.Prefix{}, false
+		}
+		address, err := netip.ParseAddr(addressText)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		parsed, err := address.Prefix(int(length))
+		return parsed, err == nil
+	}
+	return netip.Prefix{}, false
 }
 
 // GuestLinks reads the interfaces in rc_guest_links out of

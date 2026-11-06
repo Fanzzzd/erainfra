@@ -91,7 +91,10 @@ For a Firecracker Profile, each Attempt gets:
   is dropped. The guest's link carries only IPv4 from the guest's own address: IPv6 and borrowed
   source addresses are dropped as they arrive, even from root writing raw frames, and the host side
   of the link has IPv6 turned off in the kernel as well. A Worker whose nftables table no longer
-  matches, or whose guest link has IPv6 back on, stops being ready;
+  matches, or whose guest link has IPv6 back on, stops being ready. If the table is reloaded under
+  a running guest, which empties the guest's sets, the runtime writes them back within 10 seconds
+  and readiness fails if it cannot; drain the Worker before reloading (see
+  [Restrict job egress](docs/runbooks/restrict-job-egress.md));
 - the egress its Profile publishes, enforced on the host, never inside the guest (see
   [Egress policy](#egress-policy));
 - single-use JIT credentials over MMDSv2, never in argv, an image layer, a host environment or a
@@ -759,6 +762,9 @@ Useful flags: `--file-backed-pool GIB` (32 minimum) backs the thin-pool with spa
 evaluation only (never in production: a full backing filesystem then fails every running job at
 once), and `--pool-dir PATH` puts those files on a data filesystem when the root filesystem is
 nearly full;
+`--force-network-reload` provisions even with Firecracker VMs running, which the script otherwise
+refuses because reloading the table strips their per-guest sets and restarting the runtime ends
+them;
 `--egress-mode public|audit|allowlist` and `--egress-allow CIDR,CIDR` set the host operator's
 override for every guest on this Worker, on top of each Profile's own egress (see
 [Egress policy](#egress-policy)); `--network-subnet` moves the guest range if it collides with the

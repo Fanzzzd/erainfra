@@ -90,6 +90,10 @@ func run(ctx context.Context, args []string) (int, error) {
 		if _, err := runtime.Preflight(ctx, netpolicy.ProfileEgress{}); err != nil {
 			return 1, err
 		}
+		// A hand reload of the table under running guests empties their sets;
+		// this puts them back within seconds rather than at the next readiness
+		// check.
+		go runtime.KeepGuestElements(ctx)
 		group := strings.TrimSpace(dualenv.Value("RC_RUNTIME_GROUP"))
 		if group == "" {
 			group = "runner-center"

@@ -96,7 +96,7 @@ func TestVerifyNetworkStateNeedsBothLayers(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed := fakeProcSysNet(t, map[string]string{"veth1a2b3c4d": "1"})
-	detail, err := verifyNetworkState(policy, withGuest, closed)
+	detail, err := verifyNetworkState(policy, withGuest, closed, nil)
 	if err != nil {
 		t.Fatalf("both layers in place must pass: %v", err)
 	}
@@ -105,12 +105,12 @@ func TestVerifyNetworkStateNeedsBothLayers(t *testing.T) {
 	}
 
 	open := fakeProcSysNet(t, map[string]string{"veth1a2b3c4d": "0"})
-	if _, err := verifyNetworkState(policy, withGuest, open); err == nil {
+	if _, err := verifyNetworkState(policy, withGuest, open, nil); err == nil {
 		t.Fatal("a live guest link that accepts IPv6 must fail readiness even with the table intact")
 	}
 
 	noTable := []byte(`{"nftables":[{"metainfo":{"version":"1.0.9"}}]}`)
-	if _, err := verifyNetworkState(policy, noTable, closed); err == nil {
+	if _, err := verifyNetworkState(policy, noTable, closed, nil); err == nil {
 		t.Fatal("a host with no table must fail readiness even with every link closed")
 	}
 }

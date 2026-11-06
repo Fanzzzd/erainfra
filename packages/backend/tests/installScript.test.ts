@@ -2392,4 +2392,70 @@ exec /bin/cp "$@"
       'rm -f "$RC_LIB_DIR/runner-center-runtime" "$RC_LIB_DIR/thinpool-setup.sh"',
     );
   });
+
+  // Loading the table file starts with `delete table`, which strips every running guest's
+  // per-guest sets, so the provisioner refuses while Firecracker VMs run and says how to drain.
+  describe("the Firecracker provisioner with guests running", () => {
+    const provisioner = repoFile("deploy", "provision-firecracker-host.sh").toString("utf8");
+    const start = provisioner.indexOf("refuse_reload_under_running_guests() {");
+    const guard = provisioner.slice(start, provisioner.indexOf("\n}\n", start) + 3);
+
+    function runGuard(pids: string[], force: boolean) {
+      const bin = mkdtempSync(path.join(tmpdir(), "rc-fc-guard-"));
+      sandboxes.push(bin);
+      // pgrep exits 1 when nothing matches, as the real one does.
+      writeFileSync(
+        path.join(bin, "pgrep"),
+        `#!/bin/sh\n[ "$1 $2" = "-x firecracker" ] || exit 2\n${
+          pids.length > 0 ? `printf '%s\\n' ${pids.join(" ")}` : "exit 1"
+        }\n`,
+      );
+      chmodSync(path.join(bin, "pgrep"), 0o755);
+      const script = [
+        "set -euo pipefail",
+        "fail() { printf 'error: %s\\n' \"$1\" >&2; exit 1; }",
+        "note() { printf '    %s\\n' \"$1\"; }",
+        "RUNTIME_UNIT=runner-center-runtime.service",
+        `FORCE_NETWORK_RELOAD=${force ? 1 : 0}`,
+        guard,
+        "refuse_reload_under_running_guests",
+        "echo reached-the-reload",
+      ].join("\n");
+      return spawnSync("bash", ["-c", script], {
+        encoding: "utf8",
+        env: { PATH: `${bin}:/usr/bin:/bin` },
+      });
+    }
+
+    it("is called before the host is changed", () => {
+      expect(start).toBeGreaterThan(0);
+      const call = provisioner.indexOf("\nrefuse_reload_under_running_guests\n");
+      expect(call).toBeGreaterThan(0);
+      expect(call).toBeLessThan(provisioner.indexOf("step 'Loading kernel modules"));
+      expect(call).toBeLessThan(provisioner.indexOf('nft -f "$RC_ETC_DIR/nftables.rc.conf"'));
+    });
+
+    it("refuses with running VMs and says how to drain", () => {
+      const result = runGuard(["4242", "4243"], false);
+      expect(result.status).toBe(1);
+      expect(result.stdout).not.toContain("reached-the-reload");
+      expect(result.stderr).toContain("2 Firecracker VMs are running");
+      expect(result.stderr).toContain("sudo systemctl stop runner-center-runtime.service");
+      expect(result.stderr).toContain("take-the-only-worker-away.md");
+      expect(result.stderr).toContain("--force-network-reload");
+    });
+
+    it("goes ahead with no VMs running", () => {
+      const result = runGuard([], false);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("reached-the-reload");
+    });
+
+    it("goes ahead when forced, and says the jobs end", () => {
+      const result = runGuard(["4242"], true);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("1 Firecracker VMs running");
+      expect(result.stdout).toContain("reached-the-reload");
+    });
+  });
 });
