@@ -2,6 +2,7 @@ package convexstore
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -271,5 +272,34 @@ func TestPauseProfileTreatsAnUnknownProfileAsNothingToDo(t *testing.T) {
 	}
 	if _, err := store.PauseProfile(t.Context(), "other"); err == nil {
 		t.Fatal("a 500 must be an error")
+	}
+}
+
+func TestCancelAttemptReportsAnAttemptThatAlreadyStartedAJob(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/controller/attempts/cancel" {
+			http.NotFound(response, request)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["runnerName"] == "running" {
+			http.Error(response, `{"error":"Attempt is already running"}`, http.StatusConflict)
+			return
+		}
+		http.Error(response, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	store, err := New(server.URL, "controller-secret", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelAttempt(t.Context(), "rc-linux-js", "running", "scale down"); !errors.Is(err, fleet.ErrAttemptRunning) {
+		t.Fatalf("409 = %v, want ErrAttemptRunning", err)
+	}
+	if err := store.CancelAttempt(t.Context(), "rc-linux-js", "other", "scale down"); err == nil || errors.Is(err, fleet.ErrAttemptRunning) {
+		t.Fatalf("500 = %v, want a plain error", err)
 	}
 }

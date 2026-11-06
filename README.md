@@ -597,10 +597,14 @@ Only a Worker carrying every label in `ERAINFRA_WORKER_LABELS` (or `RC_WORKER_LA
 installer's `--worker-labels`) sees the Profile, prepares its image, reports readiness for it and
 is scheduled onto for it. The `/runs-on` router, the Profile list, `/metrics` and the alerts count
 the same Workers. Removing a label stops new jobs of the pinned Profile from going to that Worker.
-Its idle Runners of that Profile (starting, or online and waiting for a job) are cancelled at once
-and their GitHub registrations deleted, so GitHub cannot hand them a job, and the controller
-creates replacements on Workers that carry the label. Attempts placed on the Worker but not yet
-started go back to the queue. Running jobs finish. Adding a pin to a Profile that already has
+Its idle Runners of that Profile (starting, or online and waiting for a job) are retired, and the
+controller creates replacements on Workers that carry the label. The controller deletes a retired
+Runner's GitHub registration first, so GitHub cannot hand it a job. Its Attempt is cancelled and its
+executor stopped only after GitHub confirms the delete, usually within a minute. GitHub may already
+have handed the Runner a job before the controller heard about it. Then it refuses the delete, and
+the job runs to the end where it is. `erainfra jobs view` shows a retiring Attempt under
+`Retiring`. Attempts placed on the Worker but not yet started go back to the queue. Running jobs
+finish. Adding a pin to a Profile that already has
 Runners does the same on every Worker without the labels. `erainfra workers set-labels` prints how
 many Runners and Attempts it moved. `erainfra profiles list` shows the pin under `PINNED TO` and
 `erainfra workers list` shows each Worker's `LABELS`. A Worker names its labels once, at

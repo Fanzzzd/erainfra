@@ -136,12 +136,19 @@ func (s *Store) CreateAttempt(ctx context.Context, attempt fleet.NewAttempt) err
 	return s.doJSON(ctx, http.MethodPost, "/controller/attempts", attempt, nil, false)
 }
 
+// CancelAttempt asks the control plane to end an idle Attempt. Its 409 means
+// the Attempt is running: GitHub handed its Runner a job, which keeps it.
 func (s *Store) CancelAttempt(ctx context.Context, profile, runnerName, reason string) error {
-	return s.doJSON(ctx, http.MethodPost, "/controller/attempts/cancel", map[string]string{
+	err := s.doJSON(ctx, http.MethodPost, "/controller/attempts/cancel", map[string]string{
 		"profile":    profile,
 		"runnerName": runnerName,
 		"reason":     reason,
 	}, nil, true)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+		return fmt.Errorf("%w: %w", fleet.ErrAttemptRunning, err)
+	}
+	return err
 }
 
 func (s *Store) MarkJobStarted(ctx context.Context, event fleet.JobStarted) error {

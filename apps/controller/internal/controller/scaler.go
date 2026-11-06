@@ -20,7 +20,10 @@ import (
 )
 
 // JITIssuer is the narrow part of the GitHub scale-set client the reconciler
-// needs. RemoveRunner compensates a registration that never became an Attempt.
+// needs. RemoveRunner deletes a Runner registration: one that never became an
+// Attempt, one whose Attempt ended without a JobCompleted, and one being
+// retired. A Runner already gone is success; one GitHub has handed a job fails
+// with an error wrapping scaleset.JobStillRunningError.
 type JITIssuer interface {
 	GenerateJIT(ctx context.Context, runnerName string) (JITConfig, error)
 	RemoveRunner(ctx context.Context, runnerID int64) error
@@ -84,7 +87,9 @@ type Scaler struct {
 	cache   CachePublisher
 	runs    WorkflowRuns
 	logger  *slog.Logger
-	mu      sync.Mutex
+	// runnerLog records Runner deletions the Scaler left for a later pass.
+	runnerLog *slog.Logger
+	mu        sync.Mutex
 
 	// cacheScopeBudget bounds the GitHub lookups behind one job's cache facts,
 	// cacheRetry paces a push the cache service could not take, and publishing
@@ -106,6 +111,17 @@ func WithCachePublisher(cache CachePublisher, logger *slog.Logger) Option {
 		s.cache = cache
 		if logger != nil {
 			s.logger = logger
+		}
+	}
+}
+
+// WithRunnerLogger gives the Scaler a logger for the Runner deletions it could
+// not finish in a pass: a Runner busy with a job, or a GitHub error. Without it
+// they are retried silently.
+func WithRunnerLogger(logger *slog.Logger) Option {
+	return func(s *Scaler) {
+		if logger != nil {
+			s.runnerLog = logger
 		}
 	}
 }
@@ -143,6 +159,8 @@ func NewScaler(
 		newName: newName,
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 
+		runnerLog: slog.New(slog.NewTextHandler(io.Discard, nil)),
+
 		cacheScopeBudget: defaultCacheScopeBudget,
 		cacheRetry:       defaultCachePushRetry,
 	}
@@ -165,11 +183,8 @@ func (s *Scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 		return 0, fmt.Errorf("list runner cleanups: %w", err)
 	}
 	for _, cleanup := range cleanups {
-		if err := s.issuer.RemoveRunner(ctx, cleanup.RunnerID); err != nil {
-			return 0, fmt.Errorf("remove abandoned runner %q: %w", cleanup.RunnerName, err)
-		}
-		if err := s.store.CompleteRunnerCleanup(ctx, s.config.Profile, cleanup); err != nil {
-			return 0, fmt.Errorf("complete runner cleanup %q: %w", cleanup.RunnerName, err)
+		if err := s.deleteRunner(ctx, cleanup); err != nil {
+			return 0, err
 		}
 	}
 	active, err := s.store.ListActiveAttempts(ctx, s.config.Profile)
@@ -196,28 +211,60 @@ func (s *Scaler) HandleDesiredRunnerCount(ctx context.Context, assignedJobs int)
 		})
 		toCancel := min(len(active)-target, len(cancelable))
 		for _, attempt := range cancelable[:toCancel] {
-			if err := s.store.CancelAttempt(
+			// The control plane records the intent and leaves the executor
+			// running; the Attempt ends once GitHub confirms the Runner is
+			// deleted (deleteRunner), so a job GitHub just handed it survives.
+			err := s.store.CancelAttempt(
 				ctx,
 				s.config.Profile,
 				attempt.RunnerName,
 				"GitHub reduced the desired runner count",
-			); err != nil {
+			)
+			if errors.Is(err, fleet.ErrAttemptRunning) {
+				continue
+			}
+			if err != nil {
 				return len(active), fmt.Errorf("cancel attempt %q: %w", attempt.RunnerName, err)
 			}
-			if err := s.issuer.RemoveRunner(ctx, attempt.RunnerID); err != nil {
-				return len(active) - 1, fmt.Errorf("remove cancelled runner %q: %w", attempt.RunnerName, err)
-			}
-			if err := s.store.CompleteRunnerCleanup(ctx, s.config.Profile, fleet.RunnerCleanup{
+			active = active[:len(active)-1]
+			if err := s.deleteRunner(ctx, fleet.RunnerCleanup{
 				RunnerName: attempt.RunnerName,
 				RunnerID:   attempt.RunnerID,
 			}); err != nil {
-				return len(active) - 1, fmt.Errorf("complete cancelled runner cleanup %q: %w", attempt.RunnerName, err)
+				return len(active), err
 			}
-			active = active[:len(active)-1]
 		}
 	}
 
 	return len(active), nil
+}
+
+// deleteRunner deletes a Runner from GitHub and, once GitHub confirms, tells
+// the control plane, which ends a retiring Attempt and its executor then.
+//
+// A Runner GitHub has handed a job cannot be deleted until the job ends
+// (JobStillRunningException). That is not a failure: the job keeps its Runner,
+// its JobStarted makes the Attempt running, and a Runner still owed a delete is
+// tried again on the next pass. Any other GitHub error is retried the same way.
+// Neither may stop this pass, or one busy Runner would hold back every Runner
+// the Profile's queued jobs need, and the listener would exit on the error.
+// Only a control-plane error is returned.
+func (s *Scaler) deleteRunner(ctx context.Context, cleanup fleet.RunnerCleanup) error {
+	err := s.issuer.RemoveRunner(ctx, cleanup.RunnerID)
+	if errors.Is(err, scaleset.JobStillRunningError) {
+		s.runnerLog.Info("runner is running a job; leaving it to the job and retrying its deletion later",
+			"runner", cleanup.RunnerName, "runnerID", cleanup.RunnerID)
+		return nil
+	}
+	if err != nil {
+		s.runnerLog.Warn("could not delete runner; retrying on the next pass",
+			"runner", cleanup.RunnerName, "runnerID", cleanup.RunnerID, "error", err)
+		return nil
+	}
+	if err := s.store.CompleteRunnerCleanup(ctx, s.config.Profile, cleanup); err != nil {
+		return fmt.Errorf("complete runner cleanup %q: %w", cleanup.RunnerName, err)
+	}
+	return nil
 }
 
 func (s *Scaler) createAttempt(ctx context.Context) error {

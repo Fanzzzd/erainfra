@@ -326,6 +326,15 @@ export function attemptDetailJson(attempt: OperatorAttempt) {
     lastError: attempt.lastError ?? null,
     cancelReason: attempt.cancelReason ?? null,
     runnerCleanupPending: attempt.runnerCleanupPending === true,
+    // Set while the Attempt waits for its controller to delete its Runner before it ends.
+    retiring:
+      attempt.retirement === undefined
+        ? null
+        : {
+            outcome: attempt.retirement.outcome,
+            reason: attempt.retirement.reason,
+            since: iso(attempt.retirement.requestedAt),
+          },
   };
 }
 

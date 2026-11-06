@@ -5,8 +5,14 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrAttemptRunning is CancelAttempt's answer for an Attempt whose Runner
+// GitHub has already handed a job. The job keeps its Runner; the scale-down
+// skips it.
+var ErrAttemptRunning = errors.New("attempt is already running a job")
 
 // AttemptState is the control-plane state of one isolated execution.
 type AttemptState string
@@ -116,6 +122,16 @@ type JobCompleted struct {
 
 // Store is the deep boundary between GitHub demand and EraInfra's durable
 // scheduler. It deliberately says nothing about Convex, Firecracker, or Tart.
+//
+// Ending an Attempt whose Runner may be online takes two steps, in ARC's
+// order. CancelAttempt records the intent and leaves the executor running
+// (an unclaimed Attempt, which has no Runner online, ends at once). The
+// caller deletes the Runner from GitHub, and CompleteRunnerCleanup then ends
+// the Attempt and its executor. ListRunnerCleanups lists those retiring
+// Runners along with the Runners of Attempts that ended without a
+// JobCompleted, and ListActiveAttempts leaves the retiring ones out. A
+// MarkJobStarted for a retiring Attempt keeps it: GitHub gave its Runner a
+// job first.
 type Store interface {
 	RegisterProfile(ctx context.Context, profile ProfileSpec) error
 	ListActiveAttempts(ctx context.Context, profile string) ([]Attempt, error)

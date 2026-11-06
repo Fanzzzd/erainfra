@@ -268,8 +268,8 @@ export const setLabels = internalMutation({
       ok: v.literal(true),
       name: v.string(),
       labels: v.array(v.string()),
-      // Idle Runners cancelled, and placed Attempts sent back to the queue, because this Worker no
-      // longer carries their pinned Profile's labels.
+      // Idle Runners retired (deleted from GitHub, then cancelled), and placed Attempts sent back
+      // to the queue, because this Worker no longer carries their pinned Profile's labels.
       retiredRunners: v.number(),
       requeuedAttempts: v.number(),
     }),
@@ -294,7 +294,7 @@ export const setLabels = internalMutation({
       ok: true as const,
       name: machine.name,
       labels: normalized.labels,
-      retiredRunners: retired.cancelled,
+      retiredRunners: retired.retired,
       requeuedAttempts: retired.requeued,
     };
   },

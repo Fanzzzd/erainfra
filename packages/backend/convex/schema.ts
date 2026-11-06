@@ -481,9 +481,21 @@ export default defineSchema({
     lastError: v.optional(v.string()),
     cancelReason: v.optional(v.string()),
     // Set when EraInfra settles an Attempt without a GitHub JobCompleted
-    // event. Its owning controller retries idempotent runner deletion, then
-    // acknowledges this tombstone.
+    // event, or retires one whose Runner may be online (`retirement`). Its
+    // owning controller retries idempotent runner deletion, then acknowledges
+    // it with completeRunnerCleanup.
     runnerCleanupPending: v.optional(v.boolean()),
+    // An Attempt EraInfra is ending while its Runner may be online
+    // (attemptRetirement.ts). It keeps its state and executor until GitHub
+    // confirms the Runner is deleted; a JobStarted first clears it. Absent on
+    // every Attempt written before it existed, which read as not retiring.
+    retirement: v.optional(
+      v.object({
+        outcome: v.union(v.literal("cancelled"), v.literal("failed")),
+        reason: v.string(),
+        requestedAt: v.number(),
+      }),
+    ),
   })
     .index("by_runnerName", ["runnerName"])
     .index("by_profile", ["profile"])

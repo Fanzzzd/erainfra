@@ -90,8 +90,11 @@ Profile list, `erainfra profiles list`, a metric and an alert until an operator 
   Pin the unpinned Profile too, to a label only the other Workers carry, to keep it off.
 - Removing a label from a Worker stops new placements for the pinned Profile at once. A Runner
   that is starting or idle there is registered with GitHub and could still be handed the Profile's
-  next job, so it is cancelled and its registration deleted, as a scale-down does; the controller
-  creates a replacement, which is placed on a labelled Worker. An Attempt placed there but not yet
+  next job, so it is retired as a scale-down does. The controller deletes its registration first,
+  and the Attempt is cancelled and its executor stopped only once GitHub confirms. If GitHub
+  handed it a job before that, GitHub refuses the delete and the job finishes where it is. That is
+  ARC's order for an ephemeral runner. The controller creates a replacement, which is placed on a
+  labelled Worker. An Attempt placed there but not yet
   claimed goes back to the queue. Running jobs finish where they are. A pin added to a Profile that
   already has Runners does the same on every Worker without the labels. The Worker stops seeing the
   Profile on its next discovery update and removes what it prepared for it, as it does when a

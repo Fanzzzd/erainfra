@@ -3,6 +3,7 @@ package githubscale
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -114,6 +115,25 @@ func TestIssuerTreatsAnAlreadyRemovedRunnerAsClean(t *testing.T) {
 	}
 	if err := issuer.RemoveRunner(t.Context(), 12); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIssuerSeparatesAGoneRunnerFromABusyOne(t *testing.T) {
+	gone := &fakeClient{removeErr: fmt.Errorf("request failed: %w: no such agent", scaleset.RunnerNotFoundError)}
+	issuer, err := NewIssuer(gone, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := issuer.RemoveRunner(t.Context(), 12); err != nil {
+		t.Fatalf("AgentNotFoundException = %v, want success", err)
+	}
+	busy := &fakeClient{removeErr: fmt.Errorf(`request failed (status="400 Bad Request"): %w: job 9`, scaleset.JobStillRunningError)}
+	issuer, err = NewIssuer(busy, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := issuer.RemoveRunner(t.Context(), 12); !errors.Is(err, scaleset.JobStillRunningError) {
+		t.Fatalf("JobStillRunningException = %v, want it passed through for the caller to retry", err)
 	}
 }
 
