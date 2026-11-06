@@ -181,7 +181,10 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   upgrade, and another ID that later takes the name gets none of it. So for each name the
   by-name window ends at the first save from an upgraded controller. If the name changed hands
   before that save, the new repository adopts the old one's entries, because nothing stored can
-  tell the two apart. `erainfra-cache-service admin list` shows each entry's ID and the ID that holds the
+  tell the two apart. A job of the old repository that was already running when the name moved
+  cannot take it back: for six hours after a newer repository (a larger ID) takes the name, saves
+  from a smaller ID are refused and leave the new holder's entries alone.
+  `erainfra-cache-service admin list` shows each entry's ID and the ID that holds the
   name, and `--repository-id` narrows a list, delete or clear to one ID.
 - **Failure.** A cache service or store that cannot answer in time turns into a cache miss or a
   request forwarded to GitHub. A guest whose redirect does not come up talks to GitHub directly. A

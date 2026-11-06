@@ -206,6 +206,16 @@ before it is a feature.
    saved before IDs were recorded belong to the ID in that record. Tokens without an ID, from an
    older controller, keep matching by name (`internal/cacheindex/ownership.go`).
 
+   A job of the repository that gave the name up keeps facts naming it until they expire, six
+   hours after its JobStarted. If its save took the name back, the two repositories would remove
+   each other's entries on every save. GitHub assigns repository IDs in increasing order, so the
+   repository created under the name later has the larger ID. For six hours after an ID takes the
+   name, a save from a smaller ID is refused, and so is its removal of the holder's git seed.
+   After that window, a smaller ID can only be an older repository renamed into the name, and it
+   takes the name the usual way. This uses a fact the service already has, the claim time in the
+   name record. The alternative, comparing each job's start time with the holder's, would need a
+   start time the facts do not carry.
+
 2. **A fork pull request must never write.** This is the poisoning attack, and the one to get right
    first. GitHub-hosted runners already enforce it; a self-hosted fleet that omits it has shipped a
    hole that its users did not have before they moved, which is the worst possible shape for a

@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
@@ -77,9 +78,13 @@ type Index struct {
 	// Retention is the eviction policy. A zero field takes its default.
 	Retention Retention
 
-	access accessLog
-	memo   metadataMemo
-	names  nameMemo
+	access    accessLog
+	memo      metadataMemo
+	names     nameMemo
+	nameLocks nameLocks
+	// staleSaves counts saves refused because the name belongs to a newer
+	// repository (see claimName).
+	staleSaves atomic.Int64
 
 	dirtyMu sync.Mutex
 	dirty   map[string]struct{}
@@ -313,7 +318,9 @@ func (i *Index) servable(ctx context.Context, entry *Entry, repository string) (
 // hands: before it answers, the entries another repository saved under the name
 // are removed (see claimName). Otherwise a key the earlier repository saved
 // would refuse the new repository's save of it for as long as the old entry
-// lived.
+// lived. A save the name refuses, from a job of a repository that gave the
+// name up to a newer one, is answered as a key that exists: every caller
+// already turns that into a skipped save the client does not retry.
 //
 // It is a check, not a lock. Two jobs reserving the same key at the same
 // instant both pass it and both publish, and the newer one wins every later
@@ -322,6 +329,9 @@ func (i *Index) servable(ctx context.Context, entry *Entry, repository string) (
 // decided before this is ever called.
 func (i *Index) Exists(ctx context.Context, claims cachetoken.Claims, key, version string) (bool, error) {
 	if err := i.claimName(ctx, claims.Repository, claims.RepositoryID); err != nil {
+		if errors.Is(err, ErrNameHeldByNewerRepository) {
+			return true, nil
+		}
 		return false, err
 	}
 	prefix := scopePrefix(claims.Repository, claims.WriteScope(), versionSegment(version)) +
@@ -365,10 +375,16 @@ func (i *Index) Commit(ctx context.Context, entry Entry) error {
 	if entry.RepositoryID < 0 {
 		return errors.New("a repository ID is positive, or zero when unknown")
 	}
-	// A save that did not start at Exists (the git seed's) takes the name
-	// here. For one that did, the name is already this ID's and this is a
-	// memo read.
+	// A save that did not start at Exists takes the name here. For one that
+	// did, the name is already this ID's and this is a memo read, unless a
+	// newer repository took the name since. That save is dropped rather than
+	// failed: it is refused for good, the job can do nothing about it, and a
+	// failure would only make the client retry. claimName has logged and
+	// counted it.
 	if err := i.claimName(ctx, entry.Repository, entry.RepositoryID); err != nil {
+		if errors.Is(err, ErrNameHeldByNewerRepository) {
+			return nil
+		}
 		return err
 	}
 	entry.CreatedAt = i.now().UnixMilli()
