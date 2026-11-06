@@ -480,6 +480,26 @@ describe("re-importing the Hub after Convex writes", () => {
     ]);
   });
 
+  it("treats a later write that did not claim a binding as Convex's", async () => {
+    const s = await setup();
+    await s.importHub();
+    vi.setSystemTime(T0 + 1_000);
+    // A writer that sets the time but forgets provenance; tests/provenanceWrites.test.ts keeps
+    // such a writer out of convex/, and this is the backstop if one slips through.
+    await s.t.run(async (ctx) => {
+      const row = (await ctx.db
+        .query("gitBindings")
+        .withIndex("by_legacyId", (q) => q.eq("legacyId", "hub-b1"))
+        .unique())!;
+      await ctx.db.patch(row._id, { app: "web-renamed", updatedAt: Date.now() });
+    });
+    const report = await s.importHub();
+    expect((await s.state()).bindings).toEqual(["acme/web@main:web-renamed"]);
+    expect(skipped(report.items)).toEqual([
+      "gitBindings acme/web@main: owned by Convex: the binding was changed in Convex",
+    ]);
+  });
+
   it("keeps a branch bound in Convex before the Hub's binding was ever imported", async () => {
     const s = await setup();
     await s.call("POST", "/git/bindings", { repo: "acme/web", branch: "main", app: "web2" });

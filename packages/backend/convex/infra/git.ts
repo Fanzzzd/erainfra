@@ -60,6 +60,7 @@ export async function insertBinding(
     repoKey: repoKey(input.repo),
     createdAt: input.createdAt ?? now,
     provenance: provenanceFor(now, hub),
+    updatedAt: now,
   });
 }
 

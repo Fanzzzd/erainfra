@@ -556,19 +556,28 @@ async function decideBinding(ctx: QueryCtx, row: Rows<"gitBindings">[number]): P
   const slot = await findBinding(ctx, row.repo, row.branch);
   if (existing !== null) {
     if (writtenByConvex(existing))
-      return skip(key, owned("a Convex run recorded its result on the binding"));
+      return skip(
+        key,
+        owned(
+          existing.provenance?.by === "convex"
+            ? "a Convex run recorded its result on the binding"
+            : "the binding was changed in Convex",
+        ),
+      );
     if (hubHash(existing) === hash) return same(key);
     if (slot !== null && slot._id !== existing._id)
       return slot.legacyId === undefined || writtenByConvex(slot)
         ? skip(key, owned(`the branch is bound in Convex to App ${slot.app}`))
         : refuse(key, `Already bound: ${row.repo}@${row.branch}`);
-    return put(key, true, async (m) =>
-      m.db.patch(existing._id, {
+    return put(key, true, async (m) => {
+      const now = Date.now();
+      await m.db.patch(existing._id, {
         ...(await write(m)),
         repoKey: repoKey(row.repo),
-        provenance: provenanceFor(Date.now(), { hash }),
-      }),
-    );
+        provenance: provenanceFor(now, { hash }),
+        updatedAt: now,
+      });
+    });
   }
   if (await hasTombstone(ctx, "gitBinding", bindingKey(row.repo, row.branch)))
     return skip(key, owned("the branch was unbound in Convex"));

@@ -48,6 +48,7 @@
     "@types/node": "catalog:",
     "convex-test": "0.0.55",
     "typescript": "catalog:",
+    "typescript-compiler-api": "npm:typescript@5.9.3",
     "vite": "8.2.1",
     "vitest": "4.1.10"
   }

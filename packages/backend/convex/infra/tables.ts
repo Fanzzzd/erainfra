@@ -306,6 +306,9 @@ export const infraTables = {
     createdAt: v.number(),
     legacyId: v.optional(v.string()),
     provenance: v.optional(provenanceValidator),
+    // Last write, set with `provenance.at` by every writer (hubProvenance.ts `writtenByConvex`).
+    // Absent on rows written before it existed.
+    updatedAt: v.optional(v.number()),
   })
     .index("by_repoKey_branch", ["repoKey", "branch"])
     .index("by_legacyId", ["legacyId"]),

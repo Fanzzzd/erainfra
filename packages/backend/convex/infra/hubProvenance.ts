@@ -30,7 +30,10 @@ export const convexWrite = (at: number): Provenance => ({ by: "convex", at });
 /**
  * Whether Convex wrote this row after the importer last did. A row stamped `hub` whose `updatedAt`
  * moved past the stamp was written by something that did not claim it; that write is Convex's too.
- * A row with no provenance predates the field and counts as the Hub's.
+ * Every owned table but `portAllocations` carries `updatedAt`; an allocation is only ever inserted
+ * or deleted, never changed, so it has no later write to detect. A row with no provenance predates
+ * the field and counts as the Hub's. tests/provenanceWrites.test.ts fails on any Convex write to
+ * these tables that neither stamps provenance nor is on its reviewed list.
  */
 export function writtenByConvex(row: { provenance?: Provenance; updatedAt?: number }) {
   const p = row.provenance;

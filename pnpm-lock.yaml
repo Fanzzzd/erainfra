@@ -344,6 +344,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      typescript-compiler-api:
+        specifier: npm:typescript@5.9.3
+        version: typescript@5.9.3
       vite:
         specifier: 8.2.1
         version: 8.2.1(@types/node@22.20.1)(esbuild@0.27.0)(jiti@2.7.0)(yaml@2.9.0)
