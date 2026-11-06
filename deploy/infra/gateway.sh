@@ -201,5 +201,6 @@ fi
 log "proxy: erainfra-gateway.service on 127.0.0.1:$PORT; connector: erainfra-gateway-tunnel.service"
 log "next, if not done yet:"
 log "  1. give the connect-convex Infra Agent ERAINFRA_GATEWAY_ROUTES_FILE=$STATE/routes.json and restart it"
-log "  2. mark this Node a gateway: npx convex run infra/nodes:setPlacementRoles '{\"nodeId\":\"<id>\",\"roles\":[\"gateway\"]}' --identity '…'"
+log "  2. mark this Node a gateway: erainfra nodes set-roles <name> gateway"
+log "     (without the CLI, from packages/backend: npx convex run --prod infra/nodes:setPlacementRoles '{\"nodeId\":\"<id>\",\"roles\":[\"gateway\"]}' --identity '…')"
 log "  3. check: cloudflared tunnel info $TUNNEL   (one connector per gateway Node)"

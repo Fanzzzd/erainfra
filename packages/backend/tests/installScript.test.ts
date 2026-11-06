@@ -1923,6 +1923,35 @@ exit 0
     expect(readLog(sandbox.curlLog)).not.toContain(ASSET);
   });
 
+  // deploy-control-plane.md stages both hosts' binaries the same way and passes the directory, so
+  // the one command picks linux-arm64 on oracle-singapore-1 (aarch64) and linux-x86_64 elsewhere.
+  it("reads the asset for the host's CPU from a --source directory", () => {
+    const { sandbox, secrets } = controllerSandbox();
+    writeExecutable(
+      path.join(sandbox.root, "bin", "uname"),
+      `#!/usr/bin/env bash\ncase "$1" in -m) printf 'aarch64\\n' ;; *) printf 'Linux\\n' ;; esac\n`,
+    );
+    const staged = path.join(sandbox.fixtures, "staged");
+    mkdirSync(staged, { recursive: true });
+    const arm = fakeController("1.4.2-arm64");
+    const x86 = fakeController("1.4.2-x86_64");
+    writeFileSync(path.join(staged, controllerAssetName("linux-arm64")), arm);
+    writeFileSync(path.join(staged, controllerAssetName("linux-x86_64")), x86);
+    const [x86Sha, armSha] = [x86, arm].map((body) =>
+      createHash("sha256").update(body).digest("hex"),
+    );
+    repin(sandbox, {
+      ...CURRENT,
+      controller: { "linux-x86_64": x86Sha, "linux-arm64": armSha },
+    });
+
+    const result = ctlRun(sandbox, installArgs(secrets, ["--source", `file://${staged}/`]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`Verified ${controllerAssetName("linux-arm64")}`);
+    expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(arm);
+    expect(readLog(sandbox.curlLog)).not.toContain("runner-center-controller-");
+  });
+
   it("keeps an existing env file unless --reconfigure is given", () => {
     const { sandbox, secrets } = readyToInstall();
     mkdirSync(path.dirname(envPath(sandbox)), { recursive: true });

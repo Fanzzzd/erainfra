@@ -6,6 +6,30 @@ failover, links, env and logs in Convex, public traffic at gateway Nodes, and op
 `erainfra` CLI and the EraInfra dashboard. The Hub container is stopped. Its data volume,
 `portless-data`, is kept as the rollback source and is never deleted here.
 
+## Check which deployment the CLI reaches
+
+Run every `npx convex` command in this runbook from `packages/backend` of the release checkout.
+The CLI finds the Convex project through `packages/backend/.env.local`, and on the owner's machine
+that file names a dev deployment (`CONVEX_DEPLOYMENT=dev:…`). Without `--prod`, `npx convex env`
+and `npx convex run` change that dev deployment and the live fleet never sees it. Every such
+command below passes `--prod`. Add it to any you type yourself.
+
+Before step 1, confirm what `--prod` reaches:
+
+```sh
+grep '^CONVEX_DEPLOYMENT=' .env.local      # dev:<name> is expected; --prod picks the same project's production
+npx convex dashboard --prod --no-open      # https://dashboard.convex.dev/d/<production name>
+npx convex env list --prod --names-only    # production's variables: CONTROLLER_TOKEN, SITE_URL, …
+```
+
+The name after `/d/` is the production deployment. Its URLs are `https://<name>.convex.cloud` and
+`https://<name>.convex.site`, and `<deployment>` in every URL below is that name. It must be the
+deployment the fleet talks to: on `oracle-singapore-1`,
+`sudo grep -h CONVEX /etc/runner-center/profiles/*.env` shows `https://<name>.convex.site`
+for every Profile. If the name differs, or `env list --prod` shows no `CONTROLLER_TOKEN`, stop:
+`.env.local` belongs to another project. Each `env set --prod` ends its output with
+`(on prod deployment <name>)`; check that it names the same deployment.
+
 ## Where traffic breaks, and for how long
 
 The Hub serves `<app>.<zone>` only for Apps on a Node in Hub mode: it proxies each request over
@@ -71,7 +95,7 @@ instead.
    Then, from `packages/backend`, set the same address:
 
    ```sh
-   npx convex env set ERAINFRA_REGISTRY 127.0.0.1:61050
+   npx convex env set --prod ERAINFRA_REGISTRY 127.0.0.1:61050
    ```
 
    Do not set `ERAINFRA_REGISTRY_NODE` yet. It names the Node whose registry every other Node
@@ -83,7 +107,7 @@ instead.
    ([Image registry](../infra-management.md#image-registry-and-cross-node-links)).
 
 3. **Set the App domain** so deploys report the URLs the gateways serve:
-   `npx convex env set ERAINFRA_APP_DOMAIN <zone>`.
+   `npx convex env set --prod ERAINFRA_APP_DOMAIN <zone>`.
 
 4. **Have a Cloudflare origin cert for the zone** (`cloudflared login`, which writes
    `~/.cloudflared/cert.pem`) and `cloudflared` on each future gateway Node. Run the gateway DNS
@@ -123,22 +147,23 @@ instead.
 
 ## 1. Copy the Hub into Convex
 
-Set the secrets master key once, from `packages/backend` with the deployment's `.env.local`.
+Set the secrets master key once, on production, from `packages/backend` as in
+[Check which deployment the CLI reaches](#check-which-deployment-the-cli-reaches).
 Every App secret Convex stores is encrypted under it, and a second key makes the first one's
 secrets unreadable, so the command generates one only while none is set, and saves it to a file
 only you can read before it sets it:
 
 ```sh
-if current=$(npx convex env get ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
+if current=$(npx convex env get --prod ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
   (umask 077 && openssl rand -hex 32 | tr -d '\n' > ~/erainfra-secrets-master-key)
-  npx convex env set ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
+  npx convex env set --prod ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
 else
   echo 'Not generated: the key is already set, or Convex could not be read. Keep the saved key.'
 fi
 unset current
 ```
 
-`npx convex env get` prints nothing for an unset variable and fails when it cannot reach the
+`npx convex env get --prod` prints nothing for an unset variable and fails when it cannot reach the
 deployment, so a repeat of this step never replaces a key. Move `~/erainfra-secrets-master-key`
 into your password manager or another safe place, and delete it here.
 
@@ -173,6 +198,10 @@ CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=<deploy key> \
   pnpm --filter @erainfra/backend import-hub-state \
     --db ~/hub-import/hub-import.db --secret-key ~/hub-import/secret.key --dry-run
 ```
+
+`<deployment>` is the production name from the check above, and `<deploy key>` a production deploy
+key (Convex dashboard, production deployment, Settings). The importer reads only these two and
+ignores `.env.local`.
 
 Drop `--dry-run` when it reports nothing refused. A row Convex refuses is reported, the rows around
 it still apply, and the script exits non-zero. Two cases stop more than one row:
@@ -346,10 +375,12 @@ to a gateway Node with empty volumes the first time `work-remote` is silent for 
 reboot for example, and remove the old containers when it comes back:
 
 ```sh
-npx convex env set ERAINFRA_FAILOVER 0
+npx convex env set --prod ERAINFRA_FAILOVER 0
 ```
 
-Leave it off until there is a second Node that should run those Apps.
+Leave it off until there is a second Node that should run those Apps. That Node needs
+`work-remote`'s CPU: an image built on `work-remote` is x86_64 only, so it cannot start on
+`oracle-singapore-1`, which is aarch64.
 
 ## 5. Switch the App Node and move DNS, in one window
 
@@ -409,7 +440,7 @@ Now that `work-remote` is on the mesh, name it as the registry Node, so builds o
 registry and other Nodes pull from it over `registry-<node>` links:
 
 ```sh
-npx convex env set ERAINFRA_REGISTRY_NODE work-remote
+npx convex env set --prod ERAINFRA_REGISTRY_NODE work-remote
 ```
 
 If a Node was held back in step 2 because of a link, switch it now (step 2), then make it a
@@ -515,7 +546,7 @@ The order matters. The Hub can serve an App only once its Node is back in Hub mo
 Node goes back before DNS moves back. Between the two commands its Apps are down, as in step 5.
 
 1. Make sure automatic failover is off before any Node stops talking to Convex:
-   `npx convex env set ERAINFRA_FAILOVER 0`. With it on, a Node you roll back looks lost: Convex
+   `npx convex env set --prod ERAINFRA_FAILOVER 0`. With it on, a Node you roll back looks lost: Convex
    moves its spec'd Apps to another Node and queues `docker rm -f` of their containers for when it
    reports again.
 2. Start the Hub if it is stopped, and give it back the restart policy `hub.sh` gave it. Step 7 set
@@ -585,7 +616,8 @@ it takes.
 
 ```sh
 ENVFILE=$(ls ~/erainfra-env/hub.env ~/portless-env/hub.env 2>/dev/null | head -1)
-docker inspect portless-hub > ~/portless-hub.inspect.json      # the container as it ran, for reference
+rm -f ~/portless-hub.inspect.json                                  # a new file, so umask sets its mode
+(umask 077 && docker inspect portless-hub > ~/portless-hub.inspect.json)  # 0600: it holds the Hub's secrets
 IMAGE=$(docker inspect -f '{{.Image}}' portless-hub)
 WORKDIR=$(docker inspect -f '{{.Config.WorkingDir}}' portless-hub)
 PORT=$(docker inspect -f '{{with index .HostConfig.PortBindings "8787/tcp"}}{{(index . 0).HostIp}}:{{(index . 0).HostPort}}{{end}}' portless-hub)
@@ -605,10 +637,12 @@ docker rm -f portless-hub
 docker run -d --name portless-hub --restart unless-stopped -p "$PORT:8787" $MOUNTS \
   -w "$WORKDIR" --env-file "$ENVFILE" "$IMAGE" $CMD
 sleep 3
-curl -fsS "http://$PORT/health" && echo
+curl -fsS "http://$PORT/health" && echo && rm ~/portless-hub.inspect.json
 docker exec portless-hub printenv PORTLESS_FAILOVER
 ```
 
 `$MOUNTS` and `$CMD` are unquoted on purpose, so the shell splits them into separate arguments.
-The Hub-mode agents reconnect within seconds. If `/health` does not answer, `docker logs
-portless-hub` says why; `~/portless-hub.inspect.json` holds the old container's settings.
+The Hub-mode agents reconnect within seconds. `~/portless-hub.inspect.json` holds the old
+container's settings, including every secret in its environment, so it is created mode 0600 and
+deleted once `/health` answers. If `/health` does not answer, `docker logs portless-hub` says why
+and the file is kept for reference. Delete it once the Hub is back.

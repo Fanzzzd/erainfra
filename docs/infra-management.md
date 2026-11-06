@@ -154,14 +154,20 @@ service names may contain `-`, so the Hub's `<app>-<service>` string `web-api` n
 Each scope's values are encrypted with a random data key for that scope, and the data keys are
 encrypted with a master key you hold in the Convex environment. The associated data of every
 encryption is a JSON array of the App, the service and the variable name, so a row moved to
-another scope or name fails to decrypt. Generate a master key and set it before importing. Run this
-from `packages/backend`: it generates a key only while none is set, and saves it to a file only you
-can read before it sets it, so running it twice never replaces a key:
+another scope or name fails to decrypt. Generate a master key and set it before importing.
+
+Every `npx convex env` and `npx convex run` command in this document runs from `packages/backend`
+and passes `--prod`. Without it the CLI acts on the deployment `packages/backend/.env.local` names,
+which on a developer's checkout is a dev deployment, so production never sees the change.
+`npx convex dashboard --prod --no-open` prints the production deployment's name.
+
+This command generates a key only while none is set, and saves it to a file only you can read
+before it sets it, so running it twice never replaces a key:
 
 ```sh
-if current=$(npx convex env get ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
+if current=$(npx convex env get --prod ERAINFRA_SECRETS_MASTER_KEY) && [ -z "$current" ]; then
   (umask 077 && openssl rand -hex 32 | tr -d '\n' > ~/erainfra-secrets-master-key)
-  npx convex env set ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
+  npx convex env set --prod ERAINFRA_SECRETS_MASTER_KEY --from-file ~/erainfra-secrets-master-key
 else
   echo 'Not generated: the key is already set, or Convex could not be read. Keep the saved key.'
 fi
@@ -290,7 +296,7 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    The subshell's `umask` creates the file 0600; under the default umask it would be readable by
    every local user. The command prints an `erainfra_node_…` credential once, on standard output. Enrolling a name
    again issues another credential for the same Node. Without the CLI, an owner or admin can call
-   `npx convex run infra/nodes:enroll '{"name":"edge-1"}' --identity '{"subject":"<users _id>|cli"}'`.
+   `npx convex run --prod infra/nodes:enroll '{"name":"edge-1"}' --identity '{"subject":"<users _id>|cli"}'`.
 
 2. **Copy the credential to the Node** as a file, then make the copy private:
    `scp edge-1.credential edge-1: && ssh edge-1 chmod 600 edge-1.credential`. It is for this one
@@ -442,7 +448,7 @@ dashboard still talk to the Hub only.
 A Node that stops heartbeating looks lost to Convex. If it runs an App with a stored spec, Convex
 fails the App over to another Node after about two and a half minutes and queues `docker rm -f` of
 its containers here for when the Node reports again. Before rolling back such a Node, turn
-automatic failover off with `npx convex env set ERAINFRA_FAILOVER 0`, and turn it on again only
+automatic failover off with `npx convex env set --prod ERAINFRA_FAILOVER 0`, and turn it on again only
 once the Apps are where you want them.
 
 1. Stop `connect-convex`: `systemctl disable --now erainfra-node` for the installed unit. Its
@@ -925,9 +931,9 @@ the secret by event type before it checks the signature, so a `push` verifies on
 cannot trigger the other's work. With no deploy secret set, every push is refused.
 
 ```sh
-pnpm convex env set ERAINFRA_GH_APP_ID <app id>
-pnpm convex env set ERAINFRA_GH_APP_KEY "$(cat app.private-key.pem)"
-pnpm convex env set ERAINFRA_GH_WEBHOOK_SECRET <webhook secret>
+npx convex env set --prod ERAINFRA_GH_APP_ID <app id>
+npx convex env set --prod ERAINFRA_GH_APP_KEY --from-file app.private-key.pem
+npx convex env set --prod ERAINFRA_GH_WEBHOOK_SECRET <webhook secret>
 ```
 
 Bind a branch with an admin token, from the CLI or the operator API:
@@ -966,8 +972,8 @@ other Node at the same loopback address over an `erainfra-mesh` link, so Docker 
 registry and no daemon needs configuring. Set both in the Convex environment:
 
 ```sh
-npx convex env set ERAINFRA_REGISTRY 127.0.0.1:61050       # where builds push and Nodes pull
-npx convex env set ERAINFRA_REGISTRY_NODE <node name>      # the Node running the registry
+npx convex env set --prod ERAINFRA_REGISTRY 127.0.0.1:61050       # where builds push and Nodes pull
+npx convex env set --prod ERAINFRA_REGISTRY_NODE <node name>      # the Node running the registry
 ```
 
 `ERAINFRA_REGISTRY` has no default. It is `host[:port]` with no scheme, and it must name the
@@ -1088,7 +1094,7 @@ An owner or admin, or an admin API token, marks a Node as a gateway with its pla
 erainfra nodes set-roles edge-1 gateway
 ```
 
-Without the CLI: `npx convex run infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' --identity '{"subject":"<users _id>|cli"}'`.
+Without the CLI: `npx convex run --prod infra/nodes:setPlacementRoles '{"nodeId":"<id>","roles":["gateway"]}' --identity '{"subject":"<users _id>|cli"}'`.
 
 A Node cannot set its own roles: a gateway gets a mesh path to every routed App. An empty `roles`
 list removes the role, and the next snapshot revokes the gateway's links and grants. The Node's

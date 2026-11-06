@@ -475,7 +475,7 @@ function RepositoryPolicyCard({ policy }: { policy: RepositoryPolicy | undefined
             job is created. Set it before installing the GitHub App:
           </p>
           <pre className="mt-1 w-full overflow-x-auto rounded border border-destructive/15 bg-black/30 p-2 font-mono text-[11px]">
-            <code>pnpm convex env set ALLOWED_REPOS &apos;owner/repo&apos;</code>
+            <code>pnpm convex env set --prod ALLOWED_REPOS &apos;owner/repo&apos;</code>
           </pre>
         </AlertDescription>
       </Alert>

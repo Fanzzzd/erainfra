@@ -70,7 +70,7 @@ function claimFailureMessage(result: { reason: string; retryAfterMs?: number | u
       return "This instance already has an admin account. Sign in instead, or ask an admin for an invitation.";
     }
     case "unavailable": {
-      return "This deployment has no bootstrap secret configured, so no account can be created. Set BOOTSTRAP_SECRET with `pnpm convex env set BOOTSTRAP_SECRET …` and reload.";
+      return "This deployment has no bootstrap secret configured, so no account can be created. Set BOOTSTRAP_SECRET with `pnpm convex env set --prod BOOTSTRAP_SECRET …` and reload.";
     }
     default: {
       return "That bootstrap secret was not accepted.";

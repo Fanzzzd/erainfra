@@ -96,7 +96,7 @@ gateway's journal (`journalctl -u erainfra-gateway`) logs upstream failures.
 Turn Convex's automatic failover off first:
 
 ```sh
-npx convex env set ERAINFRA_FAILOVER 0
+npx convex env set --prod ERAINFRA_FAILOVER 0
 ```
 
 The Apps on the App Nodes get a stored spec when you deploy them through Convex after this step,
@@ -157,7 +157,7 @@ The Hub serves an App only once its Node is back in Hub mode, so the App Node go
 DNS second. Its Apps are down between the two commands.
 
 1. Turn automatic failover off before any Node stops talking to Convex:
-   `npx convex env set ERAINFRA_FAILOVER 0`. Otherwise Convex treats the rolled-back Node as lost,
+   `npx convex env set --prod ERAINFRA_FAILOVER 0`. Otherwise Convex treats the rolled-back Node as lost,
    moves its spec'd Apps elsewhere and queues `docker rm -f` of their containers there.
 2. On each App Node:
 

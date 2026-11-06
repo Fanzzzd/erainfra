@@ -371,7 +371,9 @@ pnpm run deploy --skip-convex
 for confirmation on a dev deployment and fails in a shell that cannot prompt. For production, follow
 [Runbook: deploy the control plane](docs/runbooks/deploy-control-plane.md).
 
-Set these deployment variables before production use:
+Set these deployment variables before production use, from `packages/backend` with
+`npx convex env set --prod NAME value`. Without `--prod` the command sets them on the deployment
+`.env.local` names, which is a dev deployment on a developer's checkout:
 
 | Variable                | Purpose                                                                                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1157,9 +1159,10 @@ Install it from a release (releases after v0.2.0-rc.10; Linux, macOS and Windows
 except Windows ARM64), or build it from source:
 
 ```bash
-gh release download v<version> -R Fanzzzd/erainfra -p 'erainfra-linux-x86_64*'
-sha256sum -c erainfra-linux-x86_64.sha256
-install -m 0755 erainfra-linux-x86_64 ~/.local/bin/erainfra
+case "$(uname -m)" in x86_64) cpu=x86_64 ;; aarch64) cpu=arm64 ;; esac   # Linux; aarch64 is arm64
+gh release download v<version> -R Fanzzzd/erainfra -p "erainfra-linux-$cpu*"
+sha256sum -c "erainfra-linux-$cpu.sha256"
+install -m 0755 "erainfra-linux-$cpu" ~/.local/bin/erainfra
 
 go install github.com/Fanzzzd/erainfra/apps/erainfra-cli/cmd/erainfra@latest
 ```

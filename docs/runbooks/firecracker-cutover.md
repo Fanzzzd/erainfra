@@ -60,7 +60,10 @@ sidecar before it touches the host:
 
 ```bash
 version=v0.3.0            # the EraInfra release you are deploying
-arch=x86_64               # or arm64
+case "$(uname -m)" in    # release assets say arm64 where uname -m says aarch64
+  x86_64) arch=x86_64 ;;
+  aarch64) arch=arm64 ;;
+esac
 base="https://github.com/Fanzzzd/erainfra/releases/download/$version"
 curl -fsSLO "$base/runner-center-runtime-linux-$arch"
 curl -fsSLO "$base/runner-center-runtime-linux-$arch.sha256"
