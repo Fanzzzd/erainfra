@@ -288,6 +288,30 @@ source and holder epoch. `/metrics` exposes `erainfra_controller_up` and
 three minutes. A failed heartbeat no longer means the holder can serve forever: lease renewal
 is separate, and it stops at lease expiry if Convex is unreachable.
 
+**Leftover Runner registrations.** The controller deletes the Runner of every Attempt that ended
+without running a job. Control planes deployed before that change did not: when a runner exited
+without taking a job, as every runner of an image GitHub had deprecated did, its Attempt ended
+`completed` and its registration stayed on GitHub, one per Attempt. GitHub removes an ephemeral
+Runner that has been offline for more than a day, so those registrations clear on their own a day
+after the cause is fixed. To remove them sooner, run this from a machine where `gh` is signed in
+with admin rights on the registration scope. Runner names are `rc-<profile>-` followed by 12 hex
+digits, with the Profile name lowercased and any character outside `a-z`, `0-9` and `-` turned
+into `-`. List first, and delete only when the count is what you expect:
+
+```bash
+scope=repos/<owner>/<repo>   # the scope ERAINFRA_GITHUB_CONFIG_URL names; orgs/<org> for an organization
+prefix=rc-<profile>-
+gh api --paginate "$scope/actions/runners?per_page=100" --jq \
+  ".runners[] | select(.status == \"offline\" and .busy == false and (.name | startswith(\"$prefix\"))) | .id" \
+  > leftover-runners.txt
+wc -l < leftover-runners.txt
+while read -r id; do gh api -X DELETE "$scope/actions/runners/$id"; sleep 1; done < leftover-runners.txt
+```
+
+The one-second pause keeps 1,700 deletes at about 30 minutes, well inside the API's hourly limit.
+An Attempt that is still booting also has an offline Runner. Deleting it ends that Attempt, and the
+controller creates a replacement, so run this while the Profile is quiet if you can.
+
 **Back up.** Encrypt the dedicated host's env files and secrets and keep the archive off-host:
 
 ```bash

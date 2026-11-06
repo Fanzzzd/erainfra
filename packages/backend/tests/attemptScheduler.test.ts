@@ -567,6 +567,59 @@ describe("readiness-gated Attempt scheduling", () => {
     expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
   });
 
+  it("has the controller delete the Runner of an Attempt that never took a job", async () => {
+    // A Firecracker guest resets cleanly and reports 0 whatever the runner did. A runner GitHub
+    // refused at session start exits in seconds, its Attempt never runs, and its registration
+    // stays on GitHub unless the controller deletes it.
+    const t = convexTest(schema, modules);
+    await addWorker(t, "alpha");
+    await createAttempt(t);
+    const attempt = await t.run(async (ctx) => ctx.db.query("attempts").first());
+    if (attempt === null) throw new Error("missing attempt");
+    await t.mutation(api.workerApi.claimAttempt, { token: "token-alpha", attemptId: attempt._id });
+    await t.mutation(api.workerApi.markReady, { token: "token-alpha", attemptId: attempt._id });
+
+    await t.mutation(api.workerApi.reportAttempt, {
+      token: "token-alpha",
+      attemptId: attempt._id,
+      exitCode: 0,
+    });
+
+    expect(await t.run(async (ctx) => ctx.db.get(attempt._id))).toMatchObject({
+      runnerCleanupPending: true,
+    });
+    expect(
+      await t.query(internal.controllerApi.listRunnerCleanups, { profile: CONTRACT.profile }),
+    ).toEqual([{ runnerName: "runner-a", runnerId: 1 }]);
+  });
+
+  it("leaves the Runner of a job that ran to GitHub, which removes it", async () => {
+    const t = convexTest(schema, modules);
+    await addWorker(t, "alpha");
+    await createAttempt(t);
+    const attempt = await t.run(async (ctx) => ctx.db.query("attempts").first());
+    if (attempt === null) throw new Error("missing attempt");
+    await t.mutation(api.workerApi.claimAttempt, { token: "token-alpha", attemptId: attempt._id });
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      profile: CONTRACT.profile,
+      runnerName: "runner-a",
+      jobId: "job-1",
+    });
+
+    await t.mutation(api.workerApi.reportAttempt, {
+      token: "token-alpha",
+      attemptId: attempt._id,
+      exitCode: 0,
+    });
+
+    const settled = await t.run(async (ctx) => ctx.db.get(attempt._id));
+    expect(settled?.state).toBe("completed");
+    expect(settled?.runnerCleanupPending).toBeUndefined();
+    expect(
+      await t.query(internal.controllerApi.listRunnerCleanups, { profile: CONTRACT.profile }),
+    ).toEqual([]);
+  });
+
   it("lets a later GitHub completion enrich an executor-settled Attempt", async () => {
     const t = convexTest(schema, modules);
     await addWorker(t, "alpha");

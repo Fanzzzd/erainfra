@@ -462,6 +462,25 @@ export const markReady = mutation({
   },
 });
 
+/**
+ * Whether an Attempt's Runner may still be registered with GitHub after its executor exited, so
+ * the controller must delete it (`listRunnerCleanups`). GitHub removes an ephemeral Runner itself
+ * only once the Runner has run a job, so the registration outlives the executor when:
+ *
+ * - the Attempt never reached `running`: no JobStarted, so GitHub never handed the Runner a job.
+ *   The executor's exit code says nothing here. A Firecracker guest resets cleanly and reports 0
+ *   whatever the runner did, so a runner GitHub refused at session start (a deprecated version)
+ *   used to end `completed` with its registration left behind, one per Attempt;
+ * - the executor failed, so the job may not have finished;
+ * - the Attempt was retiring.
+ *
+ * Deleting a Runner GitHub already removed succeeds (githubscale.Issuer.RemoveRunner), so asking
+ * for a delete that turns out to be unneeded costs one API call.
+ */
+function runnerOutlivesExecutor(attempt: Doc<"attempts">, exitCode: number) {
+  return attempt.state !== "running" || exitCode !== 0 || attempt.retirement !== undefined;
+}
+
 export const reportAttempt = mutation({
   args: {
     token: v.string(),
@@ -535,8 +554,7 @@ export const reportAttempt = mutation({
       executorExitCode: args.exitCode,
       finishedAt: executorFinishedAt,
       lastError: args.exitCode === 0 ? undefined : `Executor exited with code ${args.exitCode}`,
-      // A retiring Attempt's Runner may still be registered: the controller still deletes it.
-      runnerCleanupPending: args.exitCode === 0 && retirement === undefined ? undefined : true,
+      runnerCleanupPending: runnerOutlivesExecutor(attempt, args.exitCode) ? true : undefined,
       retirement: undefined,
     });
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
