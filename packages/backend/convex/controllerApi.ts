@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import { releaseAttemptSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import { fitPolicyValidator } from "./benchmark";
@@ -59,9 +59,11 @@ export const registerProfile = internalMutation({
     githubCacheFacts: v.optional(v.boolean()),
     runnerGroup: v.optional(v.string()),
     labels: v.optional(v.array(v.string())),
+    workerLabels: v.optional(v.array(v.string())),
     caller: callerArg,
   },
-  returns: v.null(),
+  // A conflict is refused rather than thrown, so the controller is told why (HTTP 409).
+  returns: v.union(v.null(), v.object({ conflict: v.string() })),
   handler: async (ctx, { caller, ...args }) => {
     // Only the controller token publishes a Profile. A Worker that could rewrite one could point
     // every other Worker at an image of its choosing, which is more than serving the Profiles it
@@ -85,6 +87,12 @@ export const registerProfile = internalMutation({
           : args.githubCacheFacts === true,
       runnerGroup: args.githubConfigUrl === undefined ? existing?.runnerGroup : args.runnerGroup,
       labels: args.githubConfigUrl === undefined ? existing?.labels : args.labels,
+      // Part of the Profile contract, not of the GitHub registration: every controller sends it,
+      // and one that sends none (including one built before ADR 0017) unpins the Profile.
+      workerLabels:
+        args.workerLabels === undefined || args.workerLabels.length === 0
+          ? undefined
+          : args.workerLabels,
       fitPolicy: args.fitPolicy ?? "balanced",
       warmPool: args.warmPool ?? 0,
       // Public is stored as no field at all, the same shape every Profile
@@ -95,14 +103,65 @@ export const registerProfile = internalMutation({
       state: "active" as const,
       updatedAt: Date.now(),
     };
+    const conflict = await scaleSetLabelConflict(ctx, value);
+    if (conflict !== undefined) return { conflict };
     if (existing === null) {
       await ctx.db.insert("profiles", value);
     } else {
       await ctx.db.patch(existing._id, value);
     }
+    if (existing?.workerLabels?.join(",") !== value.workerLabels?.join(",")) {
+      // A pin that changed can make a queued Attempt placeable, or a placed one's Worker wrong.
+      await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+    }
     return null;
   },
 });
+
+/** The labels GitHub matches a Profile's scale set by: its configured labels, else its name. */
+function scaleSetLabels(profile: { scaleSetName: string; labels?: string[] }) {
+  const labels =
+    profile.labels !== undefined && profile.labels.length > 0
+      ? profile.labels
+      : [profile.scaleSetName];
+  return labels.map((label) => label.toLowerCase());
+}
+
+/**
+ * GitHub sends a job to a scale set whose labels include every label the job asks for, and to any
+ * one of them when several qualify. So a scale set that also answers to another Profile's name can
+ * take that Profile's jobs and run them under its own contract: its image, its egress, its pinned
+ * Workers. `runs-on: [erainfra-4vcpu-ubuntu-2404, gpu]` served by a second scale set labelled with
+ * both is exactly that, which is why a pin is a Profile of its own (ADR 0017).
+ */
+async function scaleSetLabelConflict(
+  ctx: MutationCtx,
+  profile: { name: string; scaleSetName: string; labels?: string[] },
+) {
+  const mine = scaleSetLabels(profile);
+  const others = (
+    await ctx.db
+      .query("profiles")
+      .withIndex("by_state", (q) => q.eq("state", "active"))
+      .collect()
+  ).filter((other) => other.name !== profile.name);
+  for (const other of others) {
+    const theirs = scaleSetLabels(other);
+    const taken = mine.find(
+      (label) => label === other.scaleSetName.toLowerCase() || label === other.name.toLowerCase(),
+    );
+    if (taken !== undefined) {
+      return `scale-set label ${taken} is Profile ${other.name}'s name; its jobs could run on this Profile instead (ADR 0017)`;
+    }
+    if (
+      theirs.includes(profile.scaleSetName.toLowerCase()) ||
+      theirs.includes(profile.name.toLowerCase())
+    ) {
+      return `Profile ${other.name}'s scale set also answers to ${profile.name}; this Profile's jobs could run there instead (ADR 0017)`;
+    }
+  }
+  return undefined;
+}
 
 // The inverse of registerProfile, for a Profile whose scale set has been retired. A paused Profile
 // is invisible to Worker discovery, the scheduler and the /runs-on router, so Workers stop

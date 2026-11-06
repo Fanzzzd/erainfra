@@ -575,8 +575,9 @@ http.route({
     if (profile === null) {
       return jsonResponse({ error: "Invalid Profile" }, 400);
     }
+    let result;
     try {
-      await ctx.runMutation(internal.controllerApi.registerProfile, {
+      result = await ctx.runMutation(internal.controllerApi.registerProfile, {
         ...profile,
         caller: resolved.caller,
       });
@@ -585,6 +586,7 @@ http.route({
       if (refused !== null) return refused;
       throw error;
     }
+    if (result !== null) return jsonResponse({ error: result.conflict }, 409);
     return new Response(null, { status: 204 });
   }),
 });

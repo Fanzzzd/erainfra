@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
+import { carriesHostLabels } from "./hostLabels";
 import { profileEgressOf, type ProfileEgress } from "./egress";
 import { hasSnapshotHeadroomForGuests, readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
@@ -36,13 +37,20 @@ export function isSchedulableReadiness(
   readiness: Doc<"workerReadiness">,
   evidence: Doc<"readinessEvidence"> | undefined,
   machine: Doc<"machines"> | undefined,
-  contract: { executor: Doc<"profiles">["executor"]; imageRelease: string },
+  contract: {
+    executor: Doc<"profiles">["executor"];
+    imageRelease: string;
+    // The host labels the Profile is pinned to (ADR 0017); a Worker must carry every one.
+    workerLabels?: string[];
+  },
   // The Profile's egress, which the evidence must prove; see egressEvidenceError.
   profileEgress: ProfileEgress,
   now: number,
 ): machine is Doc<"machines"> {
   return (
     readiness.state === "ready" &&
+    machine !== undefined &&
+    carriesHostLabels(contract.workerLabels, machine.labels) &&
     readiness.executor === contract.executor &&
     readiness.imageRelease === contract.imageRelease &&
     now - readiness.checkedAt < READINESS_STALE_AFTER_MS &&
@@ -263,8 +271,11 @@ export function placeInOrder<I extends { work: WorkContract }>(
     snapshot;
   return items.map((item) => {
     const work = item.work;
-    const fitPolicy: FitPolicy =
-      snapshot.activeProfileByName.get(work.profile)?.fitPolicy ?? "balanced";
+    const profile = snapshot.activeProfileByName.get(work.profile);
+    const fitPolicy: FitPolicy = profile?.fitPolicy ?? "balanced";
+    // The pin is read from the Profile now, not copied onto the Attempt: a queued Attempt waits for
+    // a Worker that carries the Profile's current labels.
+    const contract = { ...work, workerLabels: profile?.workerLabels };
     const candidates = (snapshot.readyByProfile.get(work.profile) ?? [])
       .map((readiness) => ({ readiness, machine: machineById.get(readiness.machineId) }))
       .filter((entry): entry is { readiness: Doc<"workerReadiness">; machine: Doc<"machines"> } =>
@@ -274,8 +285,8 @@ export function placeInOrder<I extends { work: WorkContract }>(
             `${entry.readiness.machineId}:${entry.readiness.profile}`,
           ),
           entry.machine,
-          work,
-          profileEgressOf(snapshot.activeProfileByName.get(work.profile) ?? {}),
+          contract,
+          profileEgressOf(profile ?? {}),
           now,
         ),
       )

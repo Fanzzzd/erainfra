@@ -49,6 +49,9 @@ type ProfileSpec struct {
 	GitHubCacheFacts bool     `json:"githubCacheFacts,omitempty"`
 	RunnerGroup      string   `json:"runnerGroup,omitempty"`
 	Labels           []string `json:"labels,omitempty"`
+	// WorkerLabels are the host labels a Worker must carry to serve the Profile (ADR 0017).
+	// Omitted when empty, so a control plane that predates them reads an unpinned Profile.
+	WorkerLabels []string `json:"workerLabels,omitempty"`
 	// Egress is the Profile's egress policy, or nil for public egress. It is
 	// omitted rather than sent as public so a control plane that predates it
 	// reads the same Profile it always did.

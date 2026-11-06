@@ -1,8 +1,10 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
+import { missingHostLabels, missingHostLabelsDetail, normalizeHostLabels } from "./hostLabels";
 import { readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import {
@@ -157,11 +159,12 @@ export async function listMachines(ctx: QueryCtx) {
   const activeJobs = [...assignedJobs, ...runningJobs];
   const attempts = attemptRanges.flat();
   const experiments = experimentRanges.flat();
+  const profileRows = await ctx.db.query("profiles").collect();
   const profileEgressByName = new Map(
-    (await ctx.db.query("profiles").collect()).map((profile) => [
-      profile.name,
-      profileEgressOf(profile),
-    ]),
+    profileRows.map((profile) => [profile.name, profileEgressOf(profile)]),
+  );
+  const workerLabelsByProfile = new Map(
+    profileRows.map((profile) => [profile.name, profile.workerLabels]),
   );
   const readinessEvidenceByKey = new Map(
     readinessEvidence.map((evidence) => [`${evidence.machineId}:${evidence.profile}`, evidence]),
@@ -237,11 +240,50 @@ export async function listMachines(ctx: QueryCtx) {
             // Legacy hot rows are the one-cycle fallback until their next
             // readiness report creates a matching evidence document.
             statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
-            lastError: currentEvidence?.lastError ?? entry.lastError ?? admissionError,
+            lastError:
+              pinDetail(workerLabelsByProfile.get(entry.profile), machine.labels) ??
+              currentEvidence?.lastError ??
+              entry.lastError ??
+              admissionError,
           };
         }),
     }));
 }
+
+/** Why a Worker's readiness row does not count for a pinned Profile, if it does not. */
+export function pinDetail(required: string[] | undefined, carried: string[]) {
+  const missing = missingHostLabels(required, carried);
+  return missing.length === 0 ? undefined : missingHostLabelsDetail(missing);
+}
+
+/**
+ * Replaces a Worker's host labels: the operator API's `PUT /api/v1/workers/<name>/labels`. A
+ * Worker cannot set its own; it names them once, at registration, with the installer's
+ * `--labels`, and from then on only an admin changes them, because a label decides which pinned
+ * Profiles' jobs the Worker may run (ADR 0017).
+ */
+export const setLabels = internalMutation({
+  args: { name: v.string(), labels: v.array(v.string()) },
+  returns: v.union(
+    v.object({ ok: v.literal(true), name: v.string(), labels: v.array(v.string()) }),
+    v.object({ ok: v.literal(false), status: v.number(), error: v.string() }),
+  ),
+  handler: async (ctx, args) => {
+    const normalized = normalizeHostLabels(args.labels);
+    if (!normalized.ok) return { ok: false as const, status: 400, error: normalized.error };
+    const machine = await ctx.db
+      .query("machines")
+      .withIndex("by_name", (q) => q.eq("name", args.name))
+      .unique();
+    if (machine === null) {
+      return { ok: false as const, status: 404, error: "No Worker has that name" };
+    }
+    await ctx.db.patch(machine._id, { labels: normalized.labels });
+    // A new label can make a queued Attempt placeable on this Worker.
+    await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
+    return { ok: true as const, name: machine.name, labels: normalized.labels };
+  },
+});
 
 export const createRegistrationToken = mutation({
   args: {},

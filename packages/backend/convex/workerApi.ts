@@ -22,6 +22,7 @@ import {
   boundedEgressRecord,
   profileEgressValidator,
 } from "./egress";
+import { carriesHostLabels, missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 
 const completedExecutorDrainMs = 30_000;
@@ -78,22 +79,30 @@ export const profiles = query({
         ? new Set(["docker", "firecracker"])
         : new Set([machine.os === "mac" ? "tart" : "hyperv"]);
     return (
-      await ctx.db
-        .query("profiles")
-        .withIndex("by_state", (q) => q.eq("state", "active"))
-        .collect()
-    )
-      .filter((profile) => compatibleExecutors.has(profile.executor))
-      .toSorted((left, right) => left.name.localeCompare(right.name))
-      .map((profile) => ({
-        profile: profile.name,
-        executor: profile.executor,
-        imageRelease: profile.imageRelease,
-        vcpus: profile.vcpus,
-        memoryMiB: profile.memoryMiB,
-        warmPool: profile.warmPool ?? 0,
-        egress: profileEgressOf(profile),
-      }));
+      (
+        await ctx.db
+          .query("profiles")
+          .withIndex("by_state", (q) => q.eq("state", "active"))
+          .collect()
+      )
+        // A pinned Profile is invisible to a Worker without its labels, so that Worker never
+        // prepares its image, parks warm guests for it or reports readiness for it (ADR 0017).
+        .filter(
+          (profile) =>
+            compatibleExecutors.has(profile.executor) &&
+            carriesHostLabels(profile.workerLabels, machine.labels),
+        )
+        .toSorted((left, right) => left.name.localeCompare(right.name))
+        .map((profile) => ({
+          profile: profile.name,
+          executor: profile.executor,
+          imageRelease: profile.imageRelease,
+          vcpus: profile.vcpus,
+          memoryMiB: profile.memoryMiB,
+          warmPool: profile.warmPool ?? 0,
+          egress: profileEgressOf(profile),
+        }))
+    );
   },
 });
 
@@ -588,6 +597,10 @@ export const reportReadiness = mutation({
       (args.state === "ready" && (profile.warmPool ?? 0) > 0 && args.warmPool === undefined)
     ) {
       throw new ConvexError("Readiness does not match an active Profile contract");
+    }
+    const missing = missingHostLabels(profile.workerLabels, machine.labels);
+    if (missing.length > 0) {
+      throw new ConvexError(`Readiness refused: ${missingHostLabelsDetail(missing)}`);
     }
     // A Worker measures its own host, so the control plane cannot re-run these
     // checks. It can, and does, refuse a report that contradicts itself.

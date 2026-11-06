@@ -13,6 +13,7 @@ import { isSchedulableReadiness } from "./attemptScheduler";
 import { fitPolicyValidator } from "./benchmark";
 import { effectiveReadinessState } from "./fleetObservation";
 import { egressEvidenceValidator, profileEgressOf, profileEgressValidator } from "./egress";
+import { pinDetail } from "./machines";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const executorValidator = v.union(
@@ -39,6 +40,8 @@ export const list = query({
       fitPolicy: fitPolicyValidator,
       minRunners: v.number(),
       maxRunners: v.number(),
+      // Host labels a Worker must carry to serve this Profile; empty when it is not pinned.
+      workerLabels: v.array(v.string()),
       state: v.union(v.literal("active"), v.literal("paused")),
       updatedAt: v.number(),
       readyWorkers: v.number(),
@@ -176,7 +179,11 @@ export async function listProfiles(ctx: QueryCtx) {
             network: (currentEvidence?.network ?? row.network) as
               | Doc<"readinessEvidence">["network"]
               | undefined,
-            lastError: currentEvidence?.lastError ?? row.lastError ?? admissionError,
+            lastError:
+              pinDetail(profile.workerLabels, machine.labels) ??
+              currentEvidence?.lastError ??
+              row.lastError ??
+              admissionError,
           },
         ];
       });
@@ -198,6 +205,7 @@ export async function listProfiles(ctx: QueryCtx) {
         fitPolicy: profile.fitPolicy ?? "balanced",
         minRunners: profile.minRunners,
         maxRunners: profile.maxRunners,
+        workerLabels: profile.workerLabels ?? [],
         state: profile.state,
         updatedAt: profile.updatedAt,
         readyWorkers: workers.length,

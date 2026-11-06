@@ -120,6 +120,7 @@ func init() {
 		profilesListCommand,
 		workersListCommand,
 		workersAddCommand,
+		workersSetLabelsCommand,
 		jobsListCommand,
 		jobsViewCommand,
 		jobsLogsCommand,

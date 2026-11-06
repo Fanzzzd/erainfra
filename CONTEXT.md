@@ -58,7 +58,14 @@ that Workers report to; the two have not been merged and the terms are not inter
 **Profile** — the immutable contract a Worker advertises capacity against. Not just a size: it
 carries `executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`, `fitPolicy`, `minRunners` and
 `maxRunners` (`convex/schema.ts:70-82`), and its `egress` (public, audit or allowlist; see
-[ADR 0015](docs/adr/0015-egress-is-a-property-of-the-profile.md)). Readiness is per Worker _and_ Profile.
+[ADR 0015](docs/adr/0015-egress-is-a-property-of-the-profile.md)), and the `workerLabels` it is pinned
+to. Readiness is per Worker _and_ Profile.
+
+**Host label** — a word an admin puts on a Worker (`gpu`, `nvme`, `hk`), stored in
+`machines.labels`. A Profile pinned to host labels is served only by Workers carrying every one.
+It never appears in `runs-on`: GitHub routes to a Profile's scale set, so a Worker is chosen by
+Profile, never by label ([ADR 0017](docs/adr/0017-pin-a-profile-to-workers-by-host-label.md)).
+Distinct from a scale set's labels (`RC_LABELS`), which are what `runs-on` matches.
 
 **Attempt** — one execution of one CI job inside one disposable boundary. The isolation boundary
 is per Attempt, never per Worker.

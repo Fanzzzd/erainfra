@@ -350,7 +350,7 @@ function MachinesPage() {
                             <code className="text-secondary-foreground">
                               {installOs === "win" ? "-Labels gpu,hyperv" : "--labels gpu,docker"}
                             </code>{" "}
-                            for machine capability labels.
+                            for host labels, which pin Profiles to this Worker.
                           </p>
                           <p>
                             Append{" "}
@@ -1046,6 +1046,14 @@ function ProfileRow({
           >
             {describeProfileEgress(profile.egress)}
           </p>
+          {profile.workerLabels.length > 0 && (
+            <p
+              className="mt-0.5 font-mono text-[10px] text-secondary-foreground"
+              title="Only Workers carrying every one of these host labels serve this Profile"
+            >
+              pinned to {profile.workerLabels.join(", ")}
+            </p>
+          )}
         </TableCell>
         <TableCell className="tabular-nums text-xs text-secondary-foreground">
           {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
