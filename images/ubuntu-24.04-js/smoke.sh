@@ -14,6 +14,25 @@ test -x /usr/local/bin/erainfra-gocacheprog
 test -x /sbin/init
 # The guest kernel has no nf_tables, so dockerd must speak legacy xtables.
 out_matches -Fx 'Value: /usr/sbin/iptables-legacy' update-alternatives --query iptables
+# Nor a raw table, which dockerd 28+ writes for every container endpoint.
+# docker.service must run the probe before dockerd and read what it wrote.
+raw_dropin=/etc/systemd/system/docker.service.d/10-runner-center-raw-table.conf
+grep -Fxq 'ExecStartPre=/usr/local/lib/runner-center/docker-raw-table.sh' "$raw_dropin"
+grep -Fxq 'EnvironmentFile=-/run/runner-center/docker-raw-table.env' "$raw_dropin"
+test -x /usr/local/lib/runner-center/docker-raw-table.sh
+# The probe's two answers, against a stand-in iptables. The real kernel's
+# answer is boot-test.sh's to measure; this pins what each answer does.
+raw_probe_dir=$(mktemp -d)
+printf '#!/bin/sh\nexit %s\n' 3 > "$raw_probe_dir/iptables"
+chmod 0755 "$raw_probe_dir/iptables"
+PATH="$raw_probe_dir:$PATH" RC_DOCKER_RAW_TABLE_ENV="$raw_probe_dir/out/env" \
+  /usr/local/lib/runner-center/docker-raw-table.sh >/dev/null
+grep -Fxq 'DOCKER_INSECURE_NO_IPTABLES_RAW=1' "$raw_probe_dir/out/env"
+printf '#!/bin/sh\nexit %s\n' 0 > "$raw_probe_dir/iptables"
+PATH="$raw_probe_dir:$PATH" RC_DOCKER_RAW_TABLE_ENV="$raw_probe_dir/out/env" \
+  /usr/local/lib/runner-center/docker-raw-table.sh >/dev/null
+test ! -s "$raw_probe_dir/out/env"
+rm -rf "$raw_probe_dir"
 test -r /opt/action-cache/actions_checkout/3d3c42e5aac5ba805825da76410c181273ba90b1.tar.gz
 test -r /opt/action-cache/pnpm_action-setup/0977fd99725f1db4007ccb2928dbb4e90d06cc86.tar.gz
 test -r /opt/action-cache/actions_setup-node/e51e5fe84fc33b4c73ebe40526b2694712b5b858.tar.gz

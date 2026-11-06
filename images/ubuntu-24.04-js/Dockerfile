@@ -98,10 +98,15 @@ ENV LANG=C.UTF-8
 # runner service with it. This is the guest's own alternative and has no bearing
 # on the host's.
 #
-# Newer series do set CONFIG_NF_TABLES, so revisit this together with
-# GUEST_KERNEL_SERIES in deploy/provision-firecracker-host.sh -- smoke.sh
-# asserts the alternative, so a kernel bump that makes this unnecessary will
-# show up there rather than silently.
+# The same kernel has no legacy raw table either (`# CONFIG_IP_NF_RAW is not
+# set`), which Docker 28 and later need for every container endpoint;
+# docker-raw-table.sh, installed below, handles that at boot.
+#
+# Firecracker's builds after the v1.15 series do set CONFIG_NF_TABLES, so
+# revisit this together with GUEST_KERNEL_SERIES in
+# deploy/provision-firecracker-host.sh. The images workflow boots this image on
+# that pinned kernel (boot-test.sh), so a kernel bump that breaks the choice
+# shows up there rather than on a Worker.
 RUN update-alternatives --set iptables /usr/sbin/iptables-legacy \
   && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 
@@ -262,8 +267,11 @@ COPY --from=guest /out/erainfra-gocacheprog /usr/local/bin/erainfra-gocacheprog
 COPY images/ubuntu-24.04-js/runner-center-guest.service /etc/systemd/system/runner-center-guest.service
 COPY images/ubuntu-24.04-js/smoke.sh /usr/local/lib/runner-center/smoke.sh
 COPY images/ubuntu-24.04-js/sysctl-hosted-parity.conf /etc/sysctl.d/90-runner-center-hosted-parity.conf
+COPY images/ubuntu-24.04-js/docker-raw-table.sh /usr/local/lib/runner-center/docker-raw-table.sh
+COPY images/ubuntu-24.04-js/docker-raw-table.conf /etc/systemd/system/docker.service.d/10-runner-center-raw-table.conf
 
 RUN chmod 0755 /usr/local/bin/runner-center-guest /usr/local/bin/erainfra-gocacheprog /usr/local/lib/runner-center/smoke.sh \
+    /usr/local/lib/runner-center/docker-raw-table.sh \
   && systemctl enable docker.service haveged.service runner-center-guest.service \
   && truncate --size 0 /etc/machine-id \
   && rm -f /var/lib/dbus/machine-id \
