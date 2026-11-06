@@ -602,6 +602,29 @@ func TestProfilesListShowsThePin(t *testing.T) {
 	}
 }
 
+func TestProfilesListWarnsAboutAnOverlappingScaleSet(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	h.api.on("GET /api/v1/profiles", 200, `{"profiles":[`+
+		`{"name":"gpu","state":"active","executor":"firecracker","vcpus":4,"memoryMiB":16384,"readiness":{},"workerLabels":["gpu"],"labelConflicts":["scale-set label plain is Profile plain's name; its jobs could run on this Profile instead (ADR 0017)"]},`+
+		`{"name":"plain","state":"active","executor":"firecracker","vcpus":4,"memoryMiB":16384,"readiness":{},"workerLabels":[]}]}`)
+	h.expect(ExitOK, "profiles", "list")
+	want := "warning: Profile gpu: scale-set label plain is Profile plain's name; its jobs could run on this Profile instead (ADR 0017)\n"
+	if h.stderr.String() != want {
+		t.Errorf("stderr = %q, want %q", h.stderr.String(), want)
+	}
+}
+
+func TestWorkersSetLabelsSaysWhatItMovedOff(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	h.api.on("PUT /api/v1/workers/gpu-1/labels", 200, `{"worker":{"name":"gpu-1","labels":[]},"retiredRunners":1,"requeuedAttempts":2}`)
+	h.expect(ExitOK, "workers", "set-labels", "gpu-1", "--clear")
+	want := "gpu-1 host labels: none\n" +
+		"gpu-1 no longer serves some pinned Profiles: retired 1 idle Runner(s), sent 2 placed Attempt(s) back to the queue\n"
+	if h.stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", h.stdout.String(), want)
+	}
+}
+
 func TestWorkersSetLabelsReplacesTheLabels(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	var sent struct {

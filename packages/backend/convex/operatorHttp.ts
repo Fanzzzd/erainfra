@@ -213,6 +213,8 @@ export function profileJson(profile: Profile) {
     maxRunners: profile.maxRunners,
     // Host labels a Worker must carry to serve the Profile (ADR 0017); [] when it is not pinned.
     workerLabels: profile.workerLabels,
+    // Why this Profile's scale set and another active one's can take each other's jobs; [] normally.
+    labelConflicts: profile.labelConflicts,
     // Workers that can take a job now: ready, admitted, online, Profile active.
     readyWorkers: profile.readyWorkers,
     readySlots: profile.readySlots,
@@ -597,7 +599,15 @@ export function registerOperatorRoutes(http: HttpRouter) {
           result.error,
         );
       }
-      return apiJson({ worker: { name: result.name, labels: result.labels } }, 200);
+      return apiJson(
+        {
+          worker: { name: result.name, labels: result.labels },
+          // Work moved off the Worker because it no longer carries a pinned Profile's labels.
+          retiredRunners: result.retiredRunners,
+          requeuedAttempts: result.requeuedAttempts,
+        },
+        200,
+      );
     }),
   });
 

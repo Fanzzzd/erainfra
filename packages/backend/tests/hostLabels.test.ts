@@ -184,7 +184,13 @@ describe("a Profile pinned to host labels", () => {
     expect((await route())["runs-on"]).toBe(PINNED);
 
     const result = await t.mutation(internal.machines.setLabels, { name: "gpu-1", labels: [] });
-    expect(result).toEqual({ ok: true, name: "gpu-1", labels: [] });
+    expect(result).toEqual({
+      ok: true,
+      name: "gpu-1",
+      labels: [],
+      retiredRunners: 0,
+      requeuedAttempts: 0,
+    });
 
     // The readiness row is still there, but neither the router, the Profile list nor the
     // scheduler counts it.
@@ -337,7 +343,11 @@ describe("the controller and operator HTTP surfaces", () => {
 
     const ok = await put("/api/v1/workers/hk-worker01/labels", { labels: ["GPU", "nvme"] });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ worker: { name: "hk-worker01", labels: ["gpu", "nvme"] } });
+    expect(await ok.json()).toEqual({
+      worker: { name: "hk-worker01", labels: ["gpu", "nvme"] },
+      retiredRunners: 0,
+      requeuedAttempts: 0,
+    });
 
     expect((await put("/api/v1/workers/hk-worker01/labels", { labels: ["x"] }, read)).status).toBe(
       403,

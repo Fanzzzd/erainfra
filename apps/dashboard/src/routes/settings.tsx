@@ -360,6 +360,7 @@ const CONDITION_LABEL: Record<ConditionKind, string> = {
   "worker-offline": "Worker offline",
   "profile-no-ready-worker": "Profile has no ready Worker",
   "profile-readiness-degraded": "Worker readiness degraded or failed",
+  "profile-label-conflict": "Profiles' scale-set labels overlap",
   "queue-backlog": "Queue backlog",
   "failure-rate": "Attempt failure rate",
   "consecutive-failures": "Consecutive failed Attempts",
@@ -418,6 +419,7 @@ function buildCondition(kind: ConditionKind, form: ConditionForm): Condition {
       return { kind, count: Number(form.count) };
     case "profile-no-ready-worker":
     case "profile-readiness-degraded":
+    case "profile-label-conflict":
       return { kind };
   }
 }

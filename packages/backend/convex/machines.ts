@@ -4,8 +4,9 @@ import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator }
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
-import { missingHostLabels, missingHostLabelsDetail, normalizeHostLabels } from "./hostLabels";
+import { normalizeHostLabels, pinDetail } from "./hostLabels";
 import { readinessAdmissionError } from "./isolation";
+import { retireOffPinOnWorker } from "./pinnedAttempts";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import {
   internalMutation,
@@ -250,22 +251,28 @@ export async function listMachines(ctx: QueryCtx) {
     }));
 }
 
-/** Why a Worker's readiness row does not count for a pinned Profile, if it does not. */
-export function pinDetail(required: string[] | undefined, carried: string[]) {
-  const missing = missingHostLabels(required, carried);
-  return missing.length === 0 ? undefined : missingHostLabelsDetail(missing);
-}
-
 /**
  * Replaces a Worker's host labels: the operator API's `PUT /api/v1/workers/<name>/labels`. A
  * Worker cannot set its own; it names them once, at registration, with the installer's
  * `--labels`, and from then on only an admin changes them, because a label decides which pinned
  * Profiles' jobs the Worker may run (ADR 0017).
+ *
+ * A removed label takes effect at once: the Worker's idle Runners of a Profile it no longer
+ * qualifies for are retired, and placed but unclaimed Attempts go back to the queue, so GitHub
+ * cannot hand the Worker another job of that Profile. Running jobs finish (pinnedAttempts.ts).
  */
 export const setLabels = internalMutation({
   args: { name: v.string(), labels: v.array(v.string()) },
   returns: v.union(
-    v.object({ ok: v.literal(true), name: v.string(), labels: v.array(v.string()) }),
+    v.object({
+      ok: v.literal(true),
+      name: v.string(),
+      labels: v.array(v.string()),
+      // Idle Runners cancelled, and placed Attempts sent back to the queue, because this Worker no
+      // longer carries their pinned Profile's labels.
+      retiredRunners: v.number(),
+      requeuedAttempts: v.number(),
+    }),
     v.object({ ok: v.literal(false), status: v.number(), error: v.string() }),
   ),
   handler: async (ctx, args) => {
@@ -279,9 +286,17 @@ export const setLabels = internalMutation({
       return { ok: false as const, status: 404, error: "No Worker has that name" };
     }
     await ctx.db.patch(machine._id, { labels: normalized.labels });
-    // A new label can make a queued Attempt placeable on this Worker.
+    const retired = await retireOffPinOnWorker(ctx, { ...machine, labels: normalized.labels });
+    // A new label can make a queued Attempt placeable on this Worker, and a requeued one needs a
+    // Worker that carries its Profile's labels.
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
-    return { ok: true as const, name: machine.name, labels: normalized.labels };
+    return {
+      ok: true as const,
+      name: machine.name,
+      labels: normalized.labels,
+      retiredRunners: retired.cancelled,
+      requeuedAttempts: retired.requeued,
+    };
   },
 });
 
@@ -356,6 +371,11 @@ export const registerAgent = internalMutation({
     if (now - registration.createdAt >= REGISTRATION_TOKEN_TTL_MS) {
       return { ok: false as const, status: 410, error: "Registration token has expired" };
     }
+    // The same rules an admin's set-labels follows: a Worker registered with `--labels GPU` must
+    // serve a Profile pinned to gpu, and one with a label no admin could set is refused before
+    // its token is spent, so the installer can be rerun with the label fixed.
+    const labels = normalizeHostLabels(args.labels ?? []);
+    if (!labels.ok) return { ok: false as const, status: 400, error: labels.error };
 
     const baseName = sanitizeMachineName(args.name);
     let name = baseName;
@@ -372,7 +392,6 @@ export const registerAgent = internalMutation({
 
     const defaultSlots = resourceRecommendedSlots(args.os, args.cpus, args.memoryMiB);
     const maxSlots = args.maxSlots ?? defaultSlots;
-    const labels = [...new Set((args.labels ?? []).map((label) => label.trim()).filter(Boolean))];
 
     let machineToken = "";
     do {
@@ -388,7 +407,7 @@ export const registerAgent = internalMutation({
     await ctx.db.insert("machines", {
       name,
       os: args.os,
-      labels,
+      labels: labels.labels,
       arch: args.arch,
       cpus: args.cpus,
       memoryMiB: args.memoryMiB,

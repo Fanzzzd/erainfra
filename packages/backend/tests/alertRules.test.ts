@@ -48,6 +48,8 @@ function profile(name: string, fields: Partial<ObservedProfile> = {}): ObservedP
     state: "active",
     minRunners: 0,
     maxRunners: 4,
+    workerLabels: [],
+    labelConflicts: [],
     workers: [],
     liveAttempts: { pending: 0, preparing: 0, ready: 0, running: 0 },
     liveAttemptsTruncated: false,
@@ -161,6 +163,39 @@ describe("evaluateCondition", () => {
       "Profile broken has no schedulable Worker (w1 degraded, w2 ready).",
     );
     expect(subjects({ kind: "profile-no-ready-worker" }, observation, "fine")).toEqual([]);
+  });
+
+  it("profile-no-ready-worker: names the pin, and why a ready Worker does not count", () => {
+    const lacks = "this Worker lacks the host label gpu the Profile is pinned to";
+    const observation = fleet([
+      profile("gpu", {
+        workerLabels: ["gpu"],
+        workers: [worker("w1", "ready", false, lacks), worker("w2", "degraded", false)],
+      }),
+      profile("gpu-nvme", { workerLabels: ["gpu", "nvme"] }),
+    ]);
+    const breaches = evaluateCondition({ kind: "profile-no-ready-worker" }, undefined, observation);
+    expect(breaches.map((breach) => breach.summary)).toEqual([
+      `Profile gpu has no schedulable Worker (w1 ready: ${lacks}; w2 degraded). It is pinned to the host label gpu; only Workers carrying it count.`,
+      "Profile gpu-nvme has no Worker reporting readiness for its current Image Release. It is pinned to the host labels gpu, nvme; only Workers carrying every one count.",
+    ]);
+  });
+
+  it("profile-label-conflict: each active Profile in a conflicting pair", () => {
+    const reason =
+      "scale-set label plain is Profile plain's name; its jobs could run on this Profile instead (ADR 0017)";
+    const observation = fleet([
+      profile("gpu", { labelConflicts: [reason] }),
+      profile("plain", { labelConflicts: ["Profile gpu's scale set also answers to plain"] }),
+      profile("alone"),
+    ]);
+    expect(subjects({ kind: "profile-label-conflict" }, observation)).toEqual(["gpu", "plain"]);
+    expect(subjects({ kind: "profile-label-conflict" }, observation, "alone")).toEqual([]);
+    expect(
+      evaluateCondition({ kind: "profile-label-conflict" }, "gpu", observation)[0]?.summary,
+    ).toBe(
+      `Profile gpu shares scale-set labels with another active Profile, so GitHub can run either one's jobs on the other: ${reason}. Give one of them labels that do not include the other's name.`,
+    );
   });
 
   it("profile-readiness-degraded: one subject per Profile and Worker", () => {
@@ -499,6 +534,7 @@ describe("evaluateCondition", () => {
       { kind: "worker-offline", minutes: 5 },
       { kind: "profile-no-ready-worker" },
       { kind: "profile-readiness-degraded" },
+      { kind: "profile-label-conflict" },
       { kind: "queue-backlog", minutes: 5 },
       { kind: "failure-rate", percent: 50, windowMinutes: 60, minAttempts: 1 },
       { kind: "consecutive-failures", count: 1 },
