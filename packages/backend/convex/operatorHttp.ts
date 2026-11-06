@@ -15,6 +15,18 @@ import { resolveSiteUrl } from "./githubAppConfig";
 import type { listMachines } from "./machines";
 import type { OperatorAttempt } from "./operatorApi";
 import type { listProfiles } from "./profiles";
+import type { RightsizeReport } from "./rightsize";
+import {
+  CPU_SATURATED,
+  CPU_TARGET_UTILISATION,
+  MAX_ERROR_RATIO,
+  MAX_WINDOW_MS,
+  MEMORY_HEADROOM,
+  MEMORY_PRESSURE,
+  MIN_ATTEMPTS,
+  MIN_MEASURED_MS,
+  runsOnMap,
+} from "./rightsizeModel";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 // The operator API: what the `erainfra` CLI and anyone's scripts read the fleet
@@ -153,6 +165,33 @@ export function parseAttemptQuery(
   return { ok: true, query };
 }
 
+export type RightsizeQuery = { since?: number; repo?: string };
+
+export function parseRightsizeQuery(
+  params: URLSearchParams,
+  now: number,
+): { ok: true; query: RightsizeQuery } | { ok: false; error: string } {
+  const known = new Set(["since", "repo"]);
+  for (const key of params.keys()) {
+    if (!known.has(key)) return { ok: false, error: `unknown parameter ${key}` };
+  }
+  const query: RightsizeQuery = {};
+  const repo = params.get("repo");
+  if (repo !== null) {
+    if (!REPO_NAME.test(repo)) return { ok: false, error: "repo must be owner/name or name" };
+    query.repo = repo;
+  }
+  const since = params.get("since");
+  if (since !== null) {
+    const parsed = parseSince(since, now);
+    if (parsed === null) {
+      return { ok: false, error: "since must be a span such as 24h or 7d, or an RFC 3339 time" };
+    }
+    query.since = parsed;
+  }
+  return { ok: true, query };
+}
+
 // ---------------------------------------------------------------------------
 // Response bodies
 
@@ -281,6 +320,58 @@ export function attemptDetailJson(attempt: OperatorAttempt) {
     lastError: attempt.lastError ?? null,
     cancelReason: attempt.cancelReason ?? null,
     runnerCleanupPending: attempt.runnerCleanupPending === true,
+  };
+}
+
+function round(value: number, places: number) {
+  const factor = 10 ** places;
+  return Math.round(value * factor) / factor;
+}
+
+/**
+ * The right-sizing report. `map` holds the same recommendations as a `runs-on` rewrite: repository,
+ * then job name, then the current Profile, mapped to the registered Profile to use instead.
+ */
+export function rightsizeJson(report: RightsizeReport) {
+  return {
+    window: { start: iso(report.windowStart), end: iso(report.windowEnd) },
+    scanned: report.scanned,
+    truncated: report.truncated,
+    policy: {
+      minAttempts: MIN_ATTEMPTS,
+      minMeasuredMs: MIN_MEASURED_MS,
+      maxErrorRatio: MAX_ERROR_RATIO,
+      cpuTargetUtilisation: CPU_TARGET_UTILISATION,
+      cpuSaturated: CPU_SATURATED,
+      memoryHeadroom: MEMORY_HEADROOM,
+      memoryPressure: MEMORY_PRESSURE,
+      maxWindowMs: MAX_WINDOW_MS,
+    },
+    recommendations: report.recommendations.map((recommendation) => ({
+      repo: recommendation.repo,
+      job: recommendation.job,
+      profile: recommendation.profile,
+      verdict: recommendation.verdict,
+      recommendedProfile: recommendation.recommendedProfile,
+      suggestedProfile: recommendation.suggestedProfile,
+      current: recommendation.current,
+      target: recommendation.target,
+      attempts: recommendation.attempts,
+      excludedAttempts: recommendation.excludedAttempts,
+      lastSeenAt: recommendation.lastSeenAt > 0 ? iso(recommendation.lastSeenAt) : null,
+      cpu: {
+        p95Vcpus: round(recommendation.cpu.p95Vcpus, 2),
+        maxVcpus: round(recommendation.cpu.maxVcpus, 2),
+        saturatedAttempts: recommendation.cpu.saturatedAttempts,
+      },
+      memory: {
+        peakBytes: Math.round(recommendation.memory.peakBytes),
+        measure: recommendation.memory.measure,
+        oomAttempts: recommendation.memory.oomAttempts,
+      },
+      explanation: recommendation.explanation,
+    })),
+    map: runsOnMap(report.recommendations),
   };
 }
 
@@ -430,6 +521,17 @@ export function registerOperatorRoutes(http: HttpRouter) {
         return apiError(404, "not_found", "No Attempt has that id");
       }
       return apiJson({ attempt: attemptDetailJson(attempt) }, 200);
+    }),
+  });
+
+  http.route({
+    path: `${API_PREFIX}/rightsize`,
+    method: "GET",
+    handler: operatorRoute("read", async (ctx, request) => {
+      const parsed = parseRightsizeQuery(new URL(request.url).searchParams, Date.now());
+      if (!parsed.ok) return apiError(400, "invalid_request", parsed.error);
+      const report = await ctx.runQuery(internal.rightsize.operatorReport, parsed.query);
+      return apiJson(rightsizeJson(report), 200);
     }),
   });
 

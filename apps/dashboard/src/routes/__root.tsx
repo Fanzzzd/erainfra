@@ -12,6 +12,7 @@ import {
   Activity,
   Boxes,
   FlaskConical,
+  Gauge,
   HardDrive,
   Link2,
   Rocket,
@@ -58,6 +59,7 @@ type NavItem = { to: LinkProps["to"]; label: string; icon: ComponentType<{ class
 const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Machines", icon: Server },
   { to: "/attempts", label: "Runs", icon: Activity },
+  { to: "/rightsize", label: "Rightsize", icon: Gauge },
   { to: "/experiments", label: "Experiments", icon: FlaskConical },
   { to: "/settings", label: "Alerts and metrics", icon: Settings },
 ];

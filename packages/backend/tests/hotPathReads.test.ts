@@ -51,6 +51,11 @@ const justifiedFullScans: Record<string, FullScanAllowance> = {
     occurrences: 1,
     reason: "The bounded 200-row Job dashboard joins the operator-managed Worker fleet.",
   },
+  "rightsize.ts:profiles": {
+    occurrences: 1,
+    reason:
+      "Right-sizing compares each job with every operator-registered Profile it could move to.",
+  },
   "machines.ts:benchmarkEvidence": {
     occurrences: 1,
     reason: "There is at most one benchmark evidence row per Worker in the fleet dashboard.",

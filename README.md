@@ -1003,6 +1003,8 @@ erainfra jobs list --profile erainfra-4vcpu-ubuntu-2404 --state failed --since 2
 erainfra jobs list --repo acme/web --all --json | jq '.attempts[] | {id, queueWaitMs, durationMs}'
 erainfra jobs view <id>
 erainfra jobs logs <id>
+erainfra rightsize --repo acme/web --since 7d
+erainfra rightsize --map > runs-on-map.json
 ```
 
 The login is stored in `$XDG_CONFIG_HOME/erainfra/config.json` (default
@@ -1026,6 +1028,7 @@ The API under `/api/v1` takes the token as `Authorization: Bearer <token>`:
 | `GET /api/v1/workers`                      | read  | Workers with slots, readiness per Profile, last heartbeat and active Attempts                                   |
 | `GET /api/v1/attempts`                     | read  | Attempts newest first; `profile`, `state`, `repo`, `since` (`24h`, `7d` or RFC 3339), `limit` (1–100), `cursor` |
 | `GET /api/v1/attempts/<id>`                | read  | one Attempt with its timeline, queue wait, duration and run URL                                                 |
+| `GET /api/v1/rightsize`                    | read  | a Profile recommendation per repository and job, and the `runs-on` map; `repo`, `since` (at most 14 days back)  |
 | `POST /api/v1/workers/registration-tokens` | admin | a single-use Worker registration token and the install commands                                                 |
 
 The infrastructure routes (`/api/v1/nodes`, `/apps`, `/deployments`, `/links`, `/logs`) are listed
@@ -1099,6 +1102,52 @@ Measurement never touches the job. The sampler only reads; at most one upload is
 the newest waiting snapshot is kept behind it; the final collection and upload are bounded and run
 beside `reportAttempt`, never in front of it; and a sampler or upload failure is logged once and
 costs the chart, not the Attempt.
+
+### Right-size recommendations
+
+The **Rightsize** page and `erainfra rightsize` use these metrics to say which Profile each workflow
+job should run on. For every repository, job name and Profile seen in the window (default and
+maximum 14 days, the metrics retention), they compare the job's CPU p95 and memory peak with the
+Profile and give one of four verdicts: larger, smaller, right size, or not enough data. A
+recommendation names a registered, active Profile of the same family (same executor; same OS,
+architecture, flavour and canary-ness for [ADR 0010](docs/adr/0010-name-profiles-the-way-runner-vendors-name-labels.md)
+names, or the same image for older names). When none fits, it names the Profile to register, for
+example `erainfra-8vcpu-ubuntu-2404`. Every recommendation carries a sentence saying why.
+
+The policy leaves a job alone unless the evidence is clear:
+
+- A verdict needs five qualifying Attempts. An Attempt qualifies when its final snapshot arrived, it
+  was measured for at least 30 seconds, and no more than 10% of its readings failed.
+- CPU p95 across Attempts is the nearest-rank p95 of each Attempt's own p95, so with fewer than 20
+  Attempts it is the busiest one.
+- Smaller: the Profile must keep that p95 at or under 70% of its vCPUs and hold the memory peak with
+  30% to spare. Without an OOM kill or memory pressure the current memory counts as enough, so a
+  job can drop vCPUs and keep its memory.
+- Larger on CPU: the median Attempt's p95 is at 90% or more of the Profile. The gap between 70% and
+  90% keeps a recommendation from flipping back in the next window.
+- Larger on memory: any OOM kill, or, on Docker, a working set at 90% or more of the limit. A job
+  with an OOM kill is never offered less memory. Firecracker memory is the VM's host-resident
+  memory, which fills with page cache, so on Firecracker only an OOM kill asks for more; the peak
+  still bounds a move down from above.
+
+Nothing is stored. The report reads at most the newest 2,000 metric summaries in the window and
+says so (`truncated`) when there were more. The dashboard reads it on opening and on **Refresh**
+rather than live, because live Attempts rewrite their summaries every 30 seconds.
+
+`erainfra rightsize --map` prints only the recommendations that name a registered Profile, as the
+`runs-on` rewrite a migration tool can apply. The keys are the repository, the job's name as GitHub
+shows it, and the current Profile:
+
+```json
+{
+  "acme/web": {
+    "test": { "erainfra-4vcpu-ubuntu-2404": "erainfra-8vcpu-ubuntu-2404" },
+    "lint": { "erainfra-4vcpu-ubuntu-2404": "erainfra-2vcpu-ubuntu-2404" }
+  }
+}
+```
+
+The same object is the `map` field of `GET /api/v1/rightsize` and of `erainfra rightsize --json`.
 
 ## Experiments
 
