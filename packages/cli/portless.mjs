@@ -86,6 +86,18 @@ const die = (msg) => {
   process.exit(1);
 };
 
+// The TRANSPORT column of `portless links`. It tells a migrating operator which links still ride
+// the unauthenticated dumbpipe transport (ADR 0016 phase 1b): those need erainfra-mesh on the Node
+// the warning names.
+const linkTransport = (l) =>
+  l.transport === "mesh"
+    ? l.state === "secure"
+      ? c.green("mesh")
+      : c.yellow(`mesh (${l.state})`)
+    : l.transport === "legacy-dumbpipe"
+      ? c.red("legacy-dumbpipe (unauthenticated)")
+      : c.yellow(l.state ?? "-");
+
 // One-line, in-place progress (falls back to plain lines when piped).
 function stageLine(text) {
   if (isTTY) process.stdout.write(`\r\x1b[2K${c.cyan("…")} ${text}`);
@@ -931,23 +943,13 @@ const commands = {
     if (flags.json) return console.log(JSON.stringify(list, null, 2));
     if (!list.length)
       return console.log("no mesh links — create one: portless link <node>:<port> <node>");
-    // TRANSPORT tells a migrating operator which links still ride the unauthenticated dumbpipe
-    // transport (ADR 0016 phase 1b): those need erainfra-mesh on the Node the warning names.
-    const transport = (l) =>
-      l.transport === "mesh"
-        ? l.state === "secure"
-          ? c.green("mesh")
-          : c.yellow(`mesh (${l.state})`)
-        : l.transport === "legacy-dumbpipe"
-          ? c.red("legacy-dumbpipe (unauthenticated)")
-          : c.yellow(l.state ?? "-");
     table(
       list.map((l) => [
         l.name,
         `${l.provider}:${l.providerPort}`,
         `${l.consumer} @127.0.0.1:${l.localPort}`,
         l.online ? c.green("online") : c.red("node offline"),
-        transport(l),
+        linkTransport(l),
         c.dim(l.app ? `app:${l.app}` : (l.createdBy ?? "-")),
       ]),
       ["LINK", "FROM", "SURFACED ON", "STATUS", "TRANSPORT", "BY"],

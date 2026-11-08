@@ -59,6 +59,15 @@ function errorMessage(caught: unknown, fallback: string) {
   return fallback;
 }
 
+// Runs one row action and reports a failure as a toast, leaving the row as it was.
+async function runOrToast(action: () => Promise<unknown>, failure: string) {
+  try {
+    await action();
+  } catch (caught) {
+    toast.error(errorMessage(caught, failure));
+  }
+}
+
 const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25";
 
@@ -196,14 +205,6 @@ function RulesCard({
   const remove = useMutation(api.alerts.deleteRule);
   const destinationName = new Map(destinations.map((item) => [item._id, item.name]));
 
-  async function run(action: () => Promise<unknown>, failure: string) {
-    try {
-      await action();
-    } catch (caught) {
-      toast.error(errorMessage(caught, failure));
-    }
-  }
-
   return (
     <Card className="overflow-hidden">
       <CardHeader className="border-b">
@@ -287,7 +288,10 @@ function RulesCard({
                           size="sm"
                           variant="outline"
                           onClick={() =>
-                            void run(() => mute({ id: rule._id, until: null }), "Could not unmute")
+                            void runOrToast(
+                              () => mute({ id: rule._id, until: null }),
+                              "Could not unmute",
+                            )
                           }
                         >
                           Unmute
@@ -298,7 +302,7 @@ function RulesCard({
                             size="sm"
                             variant="outline"
                             onClick={() =>
-                              void run(
+                              void runOrToast(
                                 () => mute({ id: rule._id, until: Date.now() + 60 * 60_000 }),
                                 "Could not mute",
                               )
@@ -310,7 +314,7 @@ function RulesCard({
                             size="sm"
                             variant="outline"
                             onClick={() =>
-                              void run(
+                              void runOrToast(
                                 () => mute({ id: rule._id, until: Date.now() + 24 * 60 * 60_000 }),
                                 "Could not mute",
                               )
@@ -324,7 +328,7 @@ function RulesCard({
                         size="sm"
                         variant="outline"
                         onClick={() =>
-                          void run(
+                          void runOrToast(
                             () => setEnabled({ id: rule._id, enabled: !rule.enabled }),
                             "Could not change the rule",
                           )
@@ -338,7 +342,10 @@ function RulesCard({
                         aria-label={`Delete ${rule.name}`}
                         onClick={() => {
                           if (window.confirm(`Delete the rule "${rule.name}" and its incidents?`)) {
-                            void run(() => remove({ id: rule._id }), "Could not delete the rule");
+                            void runOrToast(
+                              () => remove({ id: rule._id }),
+                              "Could not delete the rule",
+                            );
                           }
                         }}
                       >
@@ -647,14 +654,6 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
   const remove = useMutation(api.alerts.deleteDestination);
   const [revealed, setRevealed] = useState<{ name: string; secret: string }>();
 
-  async function run(action: () => Promise<unknown>, failure: string) {
-    try {
-      await action();
-    } catch (caught) {
-      toast.error(errorMessage(caught, failure));
-    }
-  }
-
   return (
     <Card className="overflow-hidden">
       <CardHeader className="border-b">
@@ -747,7 +746,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         size="sm"
                         variant="outline"
                         onClick={() =>
-                          void run(async () => {
+                          void runOrToast(async () => {
                             await sendTest({ id: destination._id });
                             toast.success("Test notification queued");
                           }, "Could not queue a test")
@@ -767,7 +766,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                                 `Rotate the signing secret for ${destination.name}? The old one stops working at once.`,
                               )
                             ) {
-                              void run(async () => {
+                              void runOrToast(async () => {
                                 const result = await rotate({ id: destination._id });
                                 setRevealed({
                                   name: destination.name,
@@ -785,7 +784,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         size="sm"
                         variant="outline"
                         onClick={() =>
-                          void run(
+                          void runOrToast(
                             () => update({ id: destination._id, enabled: !destination.enabled }),
                             "Could not change the destination",
                           )
@@ -799,7 +798,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         aria-label={`Delete ${destination.name}`}
                         onClick={() => {
                           if (window.confirm(`Delete the destination "${destination.name}"?`)) {
-                            void run(
+                            void runOrToast(
                               () => remove({ id: destination._id }),
                               "Could not delete the destination",
                             );

@@ -118,8 +118,8 @@ export const run = internalMutation({
     const attempts = attemptRanges.flat();
     const experiments = experimentRanges.flat();
     const referencedMachineIds = new Set(
-      [...assignedJobs, ...runningJobs, ...queuedJobs, ...attempts, ...experiments].flatMap(
-        (row) => (row.machineId === undefined ? [] : [row.machineId]),
+      [...assignedJobs, ...runningJobs, ...queuedJobs, ...attempts, ...experiments].flatMap((row) =>
+        row.machineId === undefined ? [] : [row.machineId],
       ),
     );
     const [referencedMachines, machinesWithSlots] = await Promise.all([
