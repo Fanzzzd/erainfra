@@ -10,6 +10,8 @@
 // A deploy request is one of:
 //   {"app":"web","upload":"<storageId from the upload>","port":3000?,"buildNode":"a"?,"node":"b"?}
 //   {"app":"web","repo":"owner/name","branch":"main"?,"sha":"<40 hex>"?, ...}
+// Either may add "adopt":["web-api", ...]: unlabelled containers this deploy replaces although they
+// lack the Hub's shape (docs/infra-management.md, "Names and ownership").
 import type { HttpRouter } from "convex/server";
 import { internal } from "../_generated/api";
 import { httpAction, type ActionCtx } from "../_generated/server";
@@ -26,6 +28,7 @@ const DEPLOY_FIELDS = new Set([
   "port",
   "buildNode",
   "node",
+  "adopt",
 ]);
 
 function route(
@@ -106,6 +109,11 @@ export function registerDeployRoutes(http: HttpRouter) {
       if (strings.app === undefined) return apiError(400, "invalid_request", "app is required");
       if (body.port !== undefined && typeof body.port !== "number")
         return apiError(400, "invalid_request", "port must be a number");
+      if (
+        body.adopt !== undefined &&
+        (!Array.isArray(body.adopt) || body.adopt.some((name) => typeof name !== "string"))
+      )
+        return apiError(400, "invalid_request", "adopt must be an array of container names");
       const started = await ctx.runMutation(internal.infra.deployApi.start, {
         actor,
         app: strings.app,
@@ -113,6 +121,7 @@ export function registerDeployRoutes(http: HttpRouter) {
           Object.entries(strings).filter(([key, value]) => key !== "app" && value !== undefined),
         ),
         ...(body.port === undefined ? {} : { port: body.port as number }),
+        ...(body.adopt === undefined ? {} : { adopt: body.adopt as string[] }),
       });
       if (!started.ok) return apiError(400, "invalid_request", started.error);
       const deployment = await ctx.runQuery(internal.infra.deployApi.get, {

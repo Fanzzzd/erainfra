@@ -157,6 +157,85 @@ func TestDeployAppAdoptsAHubContainerOfTheSameService(t *testing.T) {
 	}
 }
 
+// What a deploy changes (mounts, ports, image) is no part of the shape: a Hub container an
+// operator gave extra read-only bind mounts by hand is still adopted.
+func TestDeployAppAdoptsAHubContainerWithExtraBindMounts(t *testing.T) {
+	d := newStateDocker(t)
+	d.put(t, "container", "shop-web", `[{"Config":{"Labels":null,"Image":"old:1"},"NetworkSettings":{"Networks":{"shop-net":{"Aliases":["web"]}}},`+
+		`"Mounts":[{"Type":"bind","Source":"/etc/ssl/certs","Destination":"/etc/dsh-ca","RW":false},`+
+		`{"Type":"bind","Source":"/etc/ssl/certs","Destination":"/etc/ssl/certs","RW":false}]}]`)
+	if err := deployService(t, d, "shop", Service{Name: "web", Image: "w:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !d.has(t, "rm -f shop-web") {
+		t.Fatalf("Hub container not replaced: %q", d.calls(t))
+	}
+}
+
+// A container without the label or the Hub's shape is refused, and the refusal says how to
+// replace it without removing it by hand first. With --adopt the deploy replaces it in one step.
+func TestDeployAppReplacesAnAdoptedContainerInOneStep(t *testing.T) {
+	d := newStateDocker(t)
+	// On the App's network but without the service alias: started by hand, not by the Hub.
+	d.put(t, "container", "shop-web", container(`null`, `{"shop-net":{"Aliases":null}}`))
+	err := deployService(t, d, "shop", Service{Name: "web", Image: "w:1"})
+	if err == nil || !strings.Contains(err.Error(), "deploy again with erainfra deploy --adopt shop-web, which replaces it in the same step") {
+		t.Fatalf("err = %v", err)
+	}
+	if d.has(t, "rm ") || d.has(t, "run ") {
+		t.Fatalf("touched the Node after refusing: %q", d.calls(t))
+	}
+
+	runner := ShellRunner{Docker: d.path}
+	if _, err := runner.DeployAppAdopting(context.Background(), "shop", []Service{{Name: "web", Image: "w:1"}}, []string{"shop-web"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Join(d.calls(t), "\n")
+	rm, run := strings.Index(calls, "rm -f shop-web"), strings.Index(calls, "run -d --name shop-web ")
+	if rm < 0 || run < rm {
+		t.Fatalf("adopted container not replaced by the deploy: %q", d.calls(t))
+	}
+	if !strings.Contains(calls, "--label erainfra.app=shop --label erainfra.service=web") {
+		t.Fatalf("the replacement is not labelled: %q", d.calls(t))
+	}
+}
+
+func TestAdoptionNeverOverridesALabelOrReachesAnotherName(t *testing.T) {
+	d := newStateDocker(t)
+	d.put(t, "container", "shop-web-api", container(`{"erainfra.app":"shop-web","erainfra.service":"api"}`, `{"shop-web-net":{"Aliases":["api"]}}`))
+	runner := ShellRunner{Docker: d.path}
+	_, err := runner.DeployAppAdopting(context.Background(), "shop", []Service{{Name: "web-api", Image: "b:1"}}, []string{"shop-web-api"})
+	if err == nil || !strings.Contains(err.Error(), `belongs to service "api" of App "shop-web"`) {
+		t.Fatalf("err = %v", err)
+	}
+	d.put(t, "container", "blog-web", container(`null`, `{"bridge":{}}`))
+	_, err = runner.DeployAppAdopting(context.Background(), "shop", []Service{{Name: "web", Image: "w:1"}}, []string{"blog-web"})
+	if err == nil || !strings.Contains(err.Error(), "adopt blog-web: this deploy starts no container of that name") {
+		t.Fatalf("err = %v", err)
+	}
+	if d.has(t, "rm ") || d.has(t, "run ") {
+		t.Fatalf("touched the Node after refusing: %q", d.calls(t))
+	}
+}
+
+// The adopted container's volume is this deploy's to mount: the deploy replaces its only user.
+func TestAnAdoptedContainersVolumeIsMounted(t *testing.T) {
+	d := newStateDocker(t)
+	d.put(t, "container", "shop-db", mounting(`null`, `{"shop-net":{"Aliases":null}}`, "shop-db-data"))
+	d.put(t, "volume", "shop-db-data", `[{"Name":"shop-db-data","Labels":null}]`)
+	s := Service{Name: "db", Image: "p:1", Args: []string{"-v", "shop-db-data:/d"}}
+	runner := ShellRunner{Docker: d.path}
+	if _, err := runner.DeployApp(context.Background(), "shop", []Service{s}); err == nil {
+		t.Fatal("deployed over an unlabelled container that has not the Hub's shape")
+	}
+	if _, err := runner.DeployAppAdopting(context.Background(), "shop", []Service{s}, []string{"shop-db"}); err != nil {
+		t.Fatal(err)
+	}
+	if !d.has(t, "run -d --name shop-db ") {
+		t.Fatalf("not deployed: %q", d.calls(t))
+	}
+}
+
 func TestDeployAppRefusesAnotherAppsVolume(t *testing.T) {
 	d := newStateDocker(t)
 	// App shop's volume db-data and App shop-db's volume data are both shop-db-data.

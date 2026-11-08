@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -165,10 +166,10 @@ func (r ShellRunner) Deploy(ctx context.Context, image, name string, args []stri
 		args = append([]string{"--env-file", ef}, args...) // before args, so a platform -e PORT still wins
 	}
 	// The Hub names a single-container App's container after the App. Replace only that App's.
-	if err := r.ownContainer(ctx, name, name, ""); err != nil {
+	if err := r.ownContainer(ctx, name, name, "", false); err != nil {
 		return b.String(), err
 	}
-	if err := r.ownVolumes(ctx, name, true, args); err != nil {
+	if err := r.ownVolumes(ctx, name, true, args, nil); err != nil {
 		return b.String(), err
 	}
 	_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run() // replace the prior container of this App
@@ -204,6 +205,20 @@ func (r ShellRunner) Serve(app string, port int) (string, error) {
 // data plane can reverse-proxy them — their Args must publish the port (e.g. -p 127.0.0.1:port:cport).
 // Best-effort sequential: a service that fails to run aborts and returns the output so far.
 func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Service) (string, error) {
+	return r.DeployAppAdopting(ctx, app, services, nil)
+}
+
+// DeployAppAdopting is DeployApp, but it also replaces each unlabelled container named in adopt,
+// which the ownership check would otherwise refuse (ownership.go, ownContainer). The operator
+// names them with `erainfra deploy --adopt`. Each must be a container this deploy starts
+// (`<app>-<service>`), so adopt can only take a name the deploy was going to replace anyway; a
+// container labelled for another App or service is refused even when named.
+func (r ShellRunner) DeployAppAdopting(ctx context.Context, app string, services []Service, adopt []string) (string, error) {
+	for _, name := range adopt {
+		if !slices.ContainsFunc(services, func(s Service) bool { return app+"-"+s.Name == name }) {
+			return "", fmt.Errorf("adopt %s: this deploy starts no container of that name", name)
+		}
+	}
 	for _, service := range services {
 		if err := validateDockerArgs(service.Args); err != nil {
 			return "", fmt.Errorf("service %s: %w", service.Name, err)
@@ -215,12 +230,13 @@ func (r ShellRunner) DeployApp(ctx context.Context, app string, services []Servi
 	// refusal leaves the Node as it was (ownership.go).
 	var mounts []string
 	for _, s := range services {
-		if err := r.ownContainer(ctx, app+"-"+s.Name, app, s.Name); err != nil {
+		name := app + "-" + s.Name
+		if err := r.ownContainer(ctx, name, app, s.Name, slices.Contains(adopt, name)); err != nil {
 			return "", err
 		}
 		mounts = append(mounts, s.Args...) // validated flag/value pairs, so they concatenate
 	}
-	if err := r.ownVolumes(ctx, app, false, mounts); err != nil {
+	if err := r.ownVolumes(ctx, app, false, mounts, adopt); err != nil {
 		return "", err
 	}
 	var b strings.Builder

@@ -361,6 +361,10 @@ export const infraTables = {
     gitBindingId: v.optional(v.id("gitBindings")),
     // Failover runs: the Node the App is moving off, and the survivor chosen when it was queued.
     failover: v.optional(v.object({ lostNodeId: v.id("nodes"), toNodeId: v.id("nodes") })),
+    // Containers the operator adopted for this run (`erainfra deploy --adopt`): unlabelled
+    // containers the Infra Agent replaces although they lack the Hub's shape. Each is a container
+    // this run starts, `<app>-<service>`; only this run's deploy step carries them.
+    adopt: v.optional(v.array(v.string())),
   })
     .index("by_startedAt", ["startedAt"])
     .index("by_app_startedAt", ["app", "startedAt"])
