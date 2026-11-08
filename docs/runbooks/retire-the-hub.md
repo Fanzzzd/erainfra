@@ -120,9 +120,12 @@ instead.
    If the zone's origin cert is not `~/.cloudflared/cert.pem`, for example on a Node whose
    `cert.pem` belongs to another zone, give `gateway.sh` its path in `TUNNEL_ORIGIN_CERT`. The
    script then writes its config beside that file, as `config-erainfra-gateway.yml` in the same
-   directory, and prints the path. Every `cloudflared tunnel route dns` below then needs
-   `--origincert <that file>` as well as that `--config`. Without `--origincert`, cloudflared reads
-   `~/.cloudflared/cert.pem`, which belongs to the other zone.
+   directory, with `origincert: <that file>` in it, and prints the DNS command. Every
+   `cloudflared tunnel route dns` below then takes that `--config` path instead of
+   `~/.cloudflared/config-erainfra-gateway.yml`. The config names the cert, so no `--origincert`
+   is needed.
+   A config written by a `gateway.sh` from before 2026-11-08 has no `origincert` line. Re-run
+   `gateway.sh` with the same `TUNNEL_ORIGIN_CERT` to rewrite it, or add `--origincert <that file>`.
 
    If a gateway Node has no `cloudflared`, downloads from GitHub can be very slow: one host in China
    got about 7 KB/s on 2026-11-08. If the box already has the official `cloudflare/cloudflared`
@@ -390,9 +393,8 @@ erainfra nodes set-roles <name> gateway
 ```
 
 On a Node where the zone's origin cert is another file, run
-`TUNNEL_ORIGIN_CERT=<that file> ERAINFRA_ZONE=<zone> sh gateway.sh` instead, and add
-`--origincert <that file>` to every DNS command in steps 4 and 5, with the `--config` path the
-script printed
+`TUNNEL_ORIGIN_CERT=<that file> ERAINFRA_ZONE=<zone> sh gateway.sh` instead, and use the
+`--config` path the script printed in every DNS command in steps 4 and 5
 ([Before you start](#before-you-start), item 4).
 
 Then on each gateway Node:
@@ -430,7 +432,7 @@ curl -fsS https://hello-retire.<zone>/
 ```
 
 If the gateway Node ran `gateway.sh` with `TUNNEL_ORIGIN_CERT`, this command and the two in step 5
-also need `--origincert <that file>`, as step 3 says.
+use the `--config` path the script printed, as step 3 says.
 
 An explicit DNS record beats the `*.<zone>` wildcard, so only this name goes to the gateways. Also
 request it on the other gateway Node, which reaches the App over the mesh:
@@ -480,7 +482,7 @@ Get everything ready first, so the window holds only the commands that must be i
 5. On `work-remote`, write the relay drop-in from [Before you start](#before-you-start), item 8.
    The Hub-mode agent ignores it, so nothing changes until the install starts `erainfra-node`.
    Without it the gateways cannot reach `work-remote`'s Apps and the window stays open.
-6. On a gateway Node, have this command typed and ready, with `--origincert` if step 3 needed it:
+6. On a gateway Node, have this command typed and ready, with the `--config` path step 3 printed:
    `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns --overwrite-dns erainfra-gateway '*.<zone>'`.
 
 The window starts at the next command. On `work-remote`:

@@ -55,6 +55,20 @@ case "\$1 \$2" in
   "tunnel list") printf 'ID NAME CREATED\n6f1d0c2e-0000-4000-8000-000000000001 erainfra-gateway 2026-11-06\n' ;;
   "tunnel token") for a in "\$@"; do [ "\${prev:-}" = --cred-file ] && printf '{}' > "\$a"; prev=\$a; done ;;
 esac
+# route dns finds the origin cert as cloudflared does: --origincert, then TUNNEL_ORIGIN_CERT, then
+# the --config file's origincert, then ~/.cloudflared/cert.pem. It logs the one it used.
+case " \$* " in *" route dns "*)
+  cert="" config="" prev=""
+  for a in "\$@"; do
+    case "\$prev" in --origincert) cert=\$a ;; --config) config=\$a ;; esac
+    prev=\$a
+  done
+  [ -n "\$cert" ] || cert=\${TUNNEL_ORIGIN_CERT:-}
+  if [ -z "\$cert" ] && [ -n "\$config" ]; then
+    cert=\$(sed -n "s/^origincert: '\\(.*\\)'\$/\\1/p" "\$config")
+  fi
+  printf 'origincert=%s\n' "\${cert:-\$HOME/.cloudflared/cert.pem}" >> "$C/cloudflared.log" ;;
+esac
 exit 0
 EOF
   chmod +x "$C/bin/"*
@@ -120,6 +134,34 @@ if gateway dns ERAINFRA_AGENT_BIN="$WORK/dns/agent" ERAINFRA_GATEWAY_ROUTE_DNS=1
   fi
 else
   fail "ERAINFRA_GATEWAY_ROUTE_DNS=1 failed: $(tail -1 "$WORK/dns/out")"
+fi
+
+# With TUNNEL_ORIGIN_CERT naming another zone's cert (here a relative path), the route config
+# carries that cert, so the DNS command the script prints works as printed, from any directory and
+# with no TUNNEL_ORIGIN_CERT set, instead of falling back to ~/.cloudflared/cert.pem.
+sandbox othercert
+agent "$WORK/othercert/agent" 1
+mkdir -p "$WORK/othercert/zone-b"
+: > "$WORK/othercert/zone-b/cert.pem"
+if gateway othercert ERAINFRA_AGENT_BIN="$WORK/othercert/agent" TUNNEL_ORIGIN_CERT="zone-b/cert.pem"; then
+  route_config="$WORK/othercert/zone-b/config-erainfra-gateway.yml"
+  if grep -qxF "origincert: '$WORK/othercert/zone-b/cert.pem'" "$route_config" 2>/dev/null; then
+    ok "writes the origin cert's absolute path into the route config"
+  else
+    fail "the route config does not name the origin cert: $(cat "$route_config" 2>/dev/null || echo missing)"
+  fi
+  printed=$(sed -n 's/.*DNS commands: //p' "$WORK/othercert/out" | sed 's/<hostname>$/app.on99.ai/')
+  : > "$WORK/othercert/cloudflared.log"
+  # Run it as an operator pastes it: elsewhere, with no TUNNEL_ORIGIN_CERT.
+  (cd / && env -u TUNNEL_ORIGIN_CERT HOME="$WORK/othercert/home" PATH="$WORK/othercert/bin:/usr/bin:/bin" \
+    sh -c "$printed")
+  if grep -qxF "origincert=$WORK/othercert/zone-b/cert.pem" "$WORK/othercert/cloudflared.log"; then
+    ok "the printed DNS command uses the given origin cert without --origincert"
+  else
+    fail "the printed DNS command ($printed) used $(grep origincert= "$WORK/othercert/cloudflared.log" || echo nothing)"
+  fi
+else
+  fail "a TUNNEL_ORIGIN_CERT run failed: $(tail -1 "$WORK/othercert/out")"
 fi
 
 # A binary without the gateway command is refused before anything is installed.
