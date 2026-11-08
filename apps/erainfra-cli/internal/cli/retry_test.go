@@ -210,10 +210,13 @@ func TestTransientClassification(t *testing.T) {
 		{&apiError{Status: 500}, true},
 		{&apiError{Status: 504}, true},
 		{&apiError{Status: 501}, false},
-		{&apiError{Status: 429}, false},
+		{&apiError{Status: 429}, true},
+		{&apiError{Status: 408}, true},
+		{&apiError{Status: 409}, false},
 		{&apiError{Status: 404}, false},
 		{&uploadStatusError{status: 502}, true},
 		{&uploadStatusError{status: 403}, false},
+		{&uploadStatusError{status: 429}, true},
 		{errors.New("x509: certificate signed by unknown authority"), false},
 	} {
 		if got := transient(tc.err); got != tc.want {
@@ -244,5 +247,131 @@ func TestRedactSecrets(t *testing.T) {
 	want := `Post "https://a.convex.cloud/api/storage/upload?token=REDACTED": EOF; https://x/?a=1&access_token=REDACTED&b=2`
 	if got := redactSecrets(in); got != want {
 		t.Errorf("redactSecrets = %q", got)
+	}
+}
+
+// throttle answers the first n requests with 429 and retryAfter, then 200 with reply.
+func throttle(n int, retryAfter, reply string) (func(http.ResponseWriter, *http.Request), *int) {
+	var mu sync.Mutex
+	seen := 0
+	return func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		seen++
+		limited := seen <= n
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if limited {
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"code":"rate_limited","message":"Too many requests"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, reply)
+	}, &seen
+}
+
+func TestA429WaitsAtLeastItsRetryAfter(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	route, seen := throttle(2, "5", `{"nodes":[]}`)
+	h.api.routes["GET /api/v1/nodes"] = route
+	var waits []time.Duration
+	h.sleep = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return nil
+	}
+	h.expect(ExitOK, "nodes", "list")
+	if *seen != 3 {
+		t.Errorf("GET /nodes sent %d times, want 3", *seen)
+	}
+	if len(waits) != 2 || waits[0] < 5*time.Second || waits[1] < 5*time.Second {
+		t.Errorf("waits = %v, want two of at least the 5s Retry-After", waits)
+	}
+	if !strings.Contains(h.stderr.String(), "trying again in 5s") {
+		t.Errorf("the retry should announce the server's wait:\n%s", h.stderr.String())
+	}
+}
+
+func TestA429WithoutRetryAfterUsesTheBackoff(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	route, seen := throttle(1, "", `{"nodes":[]}`)
+	h.api.routes["GET /api/v1/nodes"] = route
+	var waits []time.Duration
+	h.sleep = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return nil
+	}
+	h.expect(ExitOK, "nodes", "list")
+	if *seen != 2 || len(waits) != 1 || waits[0] > retryBase {
+		t.Errorf("sent %d times with waits %v, want 2 and one backoff of at most %s", *seen, waits, retryBase)
+	}
+}
+
+func TestA429ThatAsksForMoreThanAMinuteFailsAtOnce(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	route, seen := throttle(100, "120", `{"nodes":[]}`)
+	h.api.routes["GET /api/v1/nodes"] = route
+	h.sleep = func(context.Context, time.Duration) error {
+		t.Error("the CLI slept although the server asked for more than maxRetryAfter")
+		return nil
+	}
+	h.expect(ExitError, "nodes", "list")
+	if *seen != 1 {
+		t.Errorf("GET /nodes sent %d times, want 1", *seen)
+	}
+	if !strings.Contains(h.stderr.String(), "the server asks to wait 2m0s before trying again") {
+		t.Errorf("stderr should say how long to wait:\n%s", h.stderr.String())
+	}
+}
+
+func TestAPostIsNotRetriedEvenAfterA429(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	route, seen := throttle(1, "1", `{"node":{"name":"edge-2"}}`)
+	h.api.routes["POST /api/v1/nodes"] = route
+	h.expect(ExitError, "nodes", "enroll", "edge-2")
+	if *seen != 1 {
+		t.Errorf("POST /nodes sent %d times, want 1", *seen)
+	}
+}
+
+func TestDeployRetriesAStorage429AfterItsRetryAfter(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	slots, _, dir := uploadRoutes(t, h, 200)
+	route, seen := throttle(1, "3", `{"storageId":"kg2storage"}`)
+	h.api.routes["POST /api/storage/upload"] = route
+	var waits []time.Duration
+	h.sleep = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return nil
+	}
+	h.expect(ExitOK, "deploy", dir)
+	if *seen != 2 || len(slots.requests) != 2 {
+		t.Errorf("%d uploads with %d URLs, want 2 of each", *seen, len(slots.requests))
+	}
+	if len(waits) != 1 || waits[0] < 3*time.Second {
+		t.Errorf("waits = %v, want one of at least 3s", waits)
+	}
+}
+
+func TestRetryAfterHeaderParsesSecondsAndDates(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{"", 0},
+		{"7", 7 * time.Second},
+		{" 0 ", 0},
+		{"-3", 0},
+		{"soon", 0},
+		{"4294967296", 4294967296 * time.Second},
+		{"1844674407370955161600", time.Duration(1<<63 - 1)},
+		{now.Add(90 * time.Second).Format(http.TimeFormat), 90 * time.Second},
+		{now.Add(-time.Minute).Format(http.TimeFormat), 0},
+	} {
+		if got := retryAfterHeader(tc.value, now); got != tc.want {
+			t.Errorf("retryAfterHeader(%q) = %s, want %s", tc.value, got, tc.want)
+		}
 	}
 }
