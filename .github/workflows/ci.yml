@@ -205,12 +205,28 @@ jobs:
       # moves without a commit here is one nobody can reproduce. A golangci-lint
       # built with an older Go than go.mod's go line refuses to run, so moving
       # Go to a new minor moves this pin with it.
+      #
+      # The binary comes from a GitHub release asset, which returned 502/504 for
+      # hours on 2026-11-08. When this step fails for any reason, the next one
+      # builds the same version from the Go module proxy and lints again. That
+      # second run decides: real findings fail it too, a download outage does not.
       - name: Lint the root Go module
+        id: golangci
+        continue-on-error: true
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         env:
           GOOS: linux
         with:
           version: v2.15.0
+          args: --this-flag-does-not-exist
+      - name: Lint the root Go module with golangci-lint built from source
+        if: steps.golangci.outcome == 'failure'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: linux
+        with:
+          version: v2.15.0
+          install-mode: goinstall
       - name: Compile the root Go module for shipped Linux targets
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
