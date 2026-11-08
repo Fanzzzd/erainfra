@@ -1208,17 +1208,17 @@ root unless given `--allow-root`.
      creates the tunnel on first use and fetches its credentials with
      `cloudflared tunnel token --cred-file`, so no credentials file is copied between Nodes.
 
-   It also writes `~/.cloudflared/config-erainfra-gateway.yml`, naming the tunnel, for DNS
-   commands. Pass it to every `cloudflared tunnel route dns` for this tunnel:
+   It also writes `~/.cloudflared/config-erainfra-gateway.yml`, naming the tunnel and the origin
+   cert, for DNS commands. Pass it to every `cloudflared tunnel route dns` for this tunnel:
    `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns …`. Without
    `--config`, cloudflared reads a default config (`~/.cloudflared/config.yml`,
    `/etc/cloudflared/config.yml`) and routes to the tunnel that file names, as `hub.sh` notes.
 
    If the zone's origin cert is not `~/.cloudflared/cert.pem`, for example because that file
    belongs to another zone, set `TUNNEL_ORIGIN_CERT=<path>` for the script. It then writes
-   `config-erainfra-gateway.yml` in the cert's directory and prints the full DNS command. Add
-   `--origincert <path>` to every `cloudflared tunnel route dns` for this tunnel as well: without
-   it cloudflared reads `~/.cloudflared/cert.pem`.
+   `config-erainfra-gateway.yml` in the cert's directory, with `origincert: <path>` in it, and
+   prints the full DNS command. That command works as printed: cloudflared takes the cert from
+   the config, so it needs no `--origincert`.
 
    If the Node has no `cloudflared` and downloads from GitHub are slow (one host in China got
    about 7 KB/s), take the binary from the official `cloudflare/cloudflared` image if the box

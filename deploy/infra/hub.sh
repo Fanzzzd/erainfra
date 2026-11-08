@@ -50,6 +50,7 @@ ZONE="$(dual_env ERAINFRA_ZONE PORTLESS_ZONE)"
 [ -n "$ZONE" ] || { printf '❌ set ERAINFRA_ZONE (e.g. example.com — apps get <app>.<zone>)\n' >&2; exit 1; }
 HUB_HOST="$(dual_env ERAINFRA_HUB_HOST PORTLESS_HUB_HOST "portless.$ZONE")"
 CERT="${TUNNEL_ORIGIN_CERT:-$HOME/.cloudflared/cert.pem}"
+case "$CERT" in /*) ;; *) CERT="$(pwd)/$CERT" ;; esac # the tunnel config names it
 HUB_PORT="$(dual_env ERAINFRA_HUB_PORT PORTLESS_HUB_PORT 61080)"   # host loopback port the tunnel points at
 REG_PORT="$(dual_env ERAINFRA_REG_PORT PORTLESS_REG_PORT 61050)"   # host loopback port for the OCI registry
 TUNNEL="$(dual_env ERAINFRA_TUNNEL_NAME PORTLESS_TUNNEL_NAME portless)"
@@ -229,9 +230,12 @@ if [ -z "$ID" ]; then
 fi
 [ -n "$ID" ] || die "could not create/find tunnel $TUNNEL"
 log "tunnel $TUNNEL = $ID"
+# origincert lets a later `route dns --config <this file>` (the retire-the-hub rollback) find the
+# zone's cert without --origincert, even when TUNNEL_ORIGIN_CERT named another file.
 cat > "$HOME/.cloudflared/config-$TUNNEL.yml" <<EOF
 tunnel: $ID
 credentials-file: $HOME/.cloudflared/$ID.json
+origincert: '$(printf '%s' "$CERT" | sed "s/'/''/g")'
 ingress:
   - hostname: $HUB_HOST
     service: http://127.0.0.1:$HUB_PORT

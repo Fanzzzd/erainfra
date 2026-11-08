@@ -39,6 +39,8 @@ ZONE="${ERAINFRA_ZONE:-}"
 PORT="${ERAINFRA_GATEWAY_PORT:-61090}"
 TUNNEL="${ERAINFRA_GATEWAY_TUNNEL:-erainfra-gateway}"
 CERT="${TUNNEL_ORIGIN_CERT:-$HOME/.cloudflared/cert.pem}"
+# Absolute, because the route config written below names it and is used from any directory.
+case "$CERT" in /*) ;; *) CERT="$(pwd)/$CERT" ;; esac
 CONVEX_AGENT=/usr/local/lib/erainfra/erainfra-node # where /install --role node --convex puts it
 if [ -n "${ERAINFRA_AGENT_BIN:-}" ]; then
   AGENT_BIN=$ERAINFRA_AGENT_BIN
@@ -109,10 +111,16 @@ sudo chmod 0640 "$ETC/cloudflared.yml"
 # The same file where this user can read it, for DNS commands. `cloudflared tunnel route dns`
 # without --config reads a default config (~/.cloudflared/config.yml, /etc/cloudflared/config.yml)
 # and routes to the tunnel that one names, so every route command passes this one, as hub.sh does.
+# It also names the origin cert: without it, `route dns` reads ~/.cloudflared/cert.pem, which may
+# belong to another zone, so the printed command would need --origincert. The connector's own copy
+# above has no origincert: it runs on the tunnel credentials and cannot read this user's cert.
 ROUTE_CONFIG="$(dirname "$CERT")/config-$TUNNEL.yml"
 mkdir -p "$(dirname "$ROUTE_CONFIG")"
-# shellcheck disable=SC2024 # root reads the file, this user owns the copy
-sudo cat "$ETC/cloudflared.yml" > "$ROUTE_CONFIG"
+{
+  # shellcheck disable=SC2024 # root reads the file, this user owns the copy
+  sudo cat "$ETC/cloudflared.yml"
+  printf "origincert: '%s'\n" "$(printf '%s' "$CERT" | sed "s/'/''/g")"
+} > "$ROUTE_CONFIG"
 log "DNS commands: cloudflared tunnel --config $ROUTE_CONFIG route dns --overwrite-dns $TUNNEL <hostname>"
 
 # --- units ----------------------------------------------------------------------------------------
