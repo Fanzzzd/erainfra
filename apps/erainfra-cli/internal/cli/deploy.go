@@ -238,17 +238,7 @@ deployment and returns at once; follow it with ` + "`erainfra deployments view <
 			if len(archive) > maxUploadBytes {
 				return fmt.Errorf("the packed source is %d MiB; the limit is %d MiB", len(archive)>>20, maxUploadBytes>>20)
 			}
-			body, err := c.send(ctx, http.MethodPost, "/deployments/uploads", nil, map[string]string{})
-			if err != nil {
-				return err
-			}
-			var slot struct {
-				UploadURL string `json:"uploadUrl"`
-			}
-			if err := decode(body, &slot); err != nil {
-				return err
-			}
-			storageID, err := c.upload(ctx, slot.UploadURL, archive)
+			storageID, err := c.uploadSource(ctx, archive)
 			if err != nil {
 				return err
 			}

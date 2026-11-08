@@ -1220,7 +1220,11 @@ The login is stored in `$XDG_CONFIG_HOME/erainfra/config.json` (default
 `~/.config/erainfra/config.json`, `%AppData%\erainfra\config.json` on Windows) with mode 0600.
 `ERAINFRA_URL` and `ERAINFRA_TOKEN` together override it, for CI and scripts. Every command takes
 `--format table|json` (or `--json`) and `--help`. Exit codes: 0 success, 1 the request failed, 2
-usage error or a filter the API refused, 4 not logged in or token refused.
+usage error or a filter the API refused, 4 not logged in or token refused. A read (GET) or a
+whole-value write (PUT) that loses its connection, times out or gets a 5xx is sent again, up to 4
+attempts with jittered exponential backoff, and each retry is noted on stderr. A POST or DELETE is
+sent once, since a repeat could create something twice or report a done delete as failed. Printed
+errors never show a `token=` URL value.
 
 Each `jobs` row is one Attempt. `WAIT` is how long GitHub held the job before a Runner of this fleet
 took it, and `DURATION` runs from the job starting to it finishing. The control plane stores no job

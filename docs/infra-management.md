@@ -1383,7 +1383,9 @@ erainfra logs --node edge-1 --unit erainfra-mesh.service
 Every command takes `--format table|json`. `erainfra deploy` packs a git repository with
 `git archive HEAD`, so uncommitted changes are left out and it says so; any other directory is
 packed without `node_modules`, `.git`, `dist` and `.turbo`. It exits 0 when the run ends `done`
-and 1 when it fails.
+and 1 when it fails. A source upload that loses its connection, times out or gets a 5xx is tried
+again with a new upload URL, up to 4 attempts with 3.5 to 7 seconds of waits in all. A 4xx is
+not retried.
 
 ### Nodes
 

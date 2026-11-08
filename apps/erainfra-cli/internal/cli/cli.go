@@ -293,11 +293,14 @@ func (a *App) report(err error, cmd command) int {
 	if err == nil {
 		return ExitOK
 	}
+	// Every command's failure is printed here, and an error from the HTTP client quotes the URL
+	// it tried. Strip token= query values from whatever reaches the terminal.
+	err = redacted{err}
 	var usage *usageError
 	var failure *apiError
 	switch {
 	case errors.As(err, &usage):
-		_, _ = fmt.Fprintf(a.Stderr, "erainfra: %s\nRun `erainfra %s --help` for usage.\n", usage.message, cmd.path)
+		_, _ = fmt.Fprintf(a.Stderr, "erainfra: %s\nRun `erainfra %s --help` for usage.\n", redactSecrets(usage.message), cmd.path)
 		return ExitUsage
 	case isAuthFailure(err):
 		_, _ = fmt.Fprintf(a.Stderr, "erainfra: %s\n", err)
@@ -310,6 +313,12 @@ func (a *App) report(err error, cmd command) int {
 	_, _ = fmt.Fprintf(a.Stderr, "erainfra: %s\n", err)
 	return ExitError
 }
+
+// redacted prints an error with token query values removed; errors.As still reaches the cause.
+type redacted struct{ err error }
+
+func (r redacted) Error() string { return redactSecrets(r.err.Error()) }
+func (r redacted) Unwrap() error { return r.err }
 
 func findCommand(argv []string) (command, []string, bool) {
 	for _, c := range commands {
@@ -341,7 +350,7 @@ func (a *App) connect() (*client, credentials, error) {
 }
 
 func (a *App) clientFor(cfg Config) *client {
-	return &client{http: a.HTTP, base: cfg.URL, token: cfg.Token, userAgent: "erainfra-cli/" + a.Version}
+	return &client{http: a.HTTP, base: cfg.URL, token: cfg.Token, userAgent: "erainfra-cli/" + a.Version, sleep: a.sleep, warn: a.Stderr}
 }
 
 var versionCommand = command{
