@@ -778,8 +778,9 @@ pub(crate) fn relay_configs(
             "auth_token must not be empty; omit it instead",
         ));
     }
-    let mut want = BTreeMap::new();
-    for raw in &spec.relays {
+    let mut want: BTreeMap<RelayUrl, Arc<RelayConfig>> = BTreeMap::new();
+    for entry in &spec.relays {
+        let raw = &entry.url;
         let url: RelayUrl = raw
             .parse()
             .map_err(|e| ApiError::bad_request(format!("relay URL {raw:?}: {e}")))?;
@@ -797,9 +798,24 @@ pub(crate) fn relay_configs(
                 )));
             }
         }
+        // RelayConfig::from sets iroh's default QAD port. A relay behind a cloud firewall that
+        // blocks it serves QAD on another UDP port (often 443), or not at all.
         let mut config = RelayConfig::from(url.clone());
+        config.quic = config.quic.take().and_then(|mut quic| {
+            quic.port = entry.quic_port()?;
+            Some(quic)
+        });
         if let Some(token) = &spec.auth_token {
             config = config.with_auth_token(token.clone());
+        }
+        // The same URL twice collapses into one relay, as before, when both entries agree. Two
+        // different QAD settings for one relay cannot both apply, so that is refused.
+        if let Some(earlier) = want.get(&url)
+            && earlier.quic != config.quic
+        {
+            return Err(ApiError::bad_request(format!(
+                "relay {raw} is listed twice with different QUIC address discovery settings"
+            )));
         }
         want.insert(url, Arc::new(config));
     }

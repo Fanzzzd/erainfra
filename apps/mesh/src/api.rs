@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::API_VERSION;
 
@@ -34,7 +34,7 @@ pub enum Request {
     },
     SetRelays {
         #[serde(default)]
-        relays: Vec<String>,
+        relays: Vec<RelayEntry>,
         #[serde(default)]
         auth_token: Option<String>,
         #[serde(default)]
@@ -75,6 +75,120 @@ pub struct PeerSpec {
     pub relay_urls: Vec<String>,
     #[serde(default)]
     pub direct_addrs: Vec<String>,
+}
+
+/// One relay in `set_relays`. On the wire it is either a URL string, as before, or an object
+/// `{"url":"https://relay.example.com","quic_port":443}` for a relay that serves QUIC address
+/// discovery (QAD) on another UDP port, or `{"url":...,"quic":false}` for a relay without it.
+///
+/// A string means QAD on iroh's default port. It is written back as a string, so a state file
+/// that uses no other port stays readable by an older daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayEntry {
+    pub url: String,
+    pub quic: RelayQuic,
+}
+
+/// Where a Node sends QUIC address discovery for one relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayQuic {
+    /// iroh's default UDP port, 7842 ([`iroh::defaults::DEFAULT_RELAY_QUIC_PORT`]).
+    Default,
+    /// This UDP port. A cloud firewall that blocks 7842 often allows 443.
+    Port(u16),
+    /// No QAD with this relay. The Node still relays through it.
+    Off,
+}
+
+impl RelayEntry {
+    pub fn url(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            quic: RelayQuic::Default,
+        }
+    }
+
+    /// The UDP port QAD goes to, or `None` when it is off.
+    pub fn quic_port(&self) -> Option<u16> {
+        match self.quic {
+            RelayQuic::Default => Some(iroh::defaults::DEFAULT_RELAY_QUIC_PORT),
+            RelayQuic::Port(p) => Some(p),
+            RelayQuic::Off => None,
+        }
+    }
+
+    fn from_json(value: Value) -> Result<Self, String> {
+        let obj = match value {
+            Value::String(url) => return Ok(Self::url(url)),
+            Value::Object(obj) => obj,
+            other => {
+                return Err(format!(
+                    "a relay is a URL string or an object like {{\"url\":\"https://relay.example.com\",\"quic_port\":443}}, not {other}"
+                ));
+            }
+        };
+        if let Some(key) = obj
+            .keys()
+            .find(|k| !matches!(k.as_str(), "url" | "quic" | "quic_port"))
+        {
+            return Err(format!(
+                "relay field {key:?} is unknown; a relay object has \"url\", \"quic_port\" and \"quic\""
+            ));
+        }
+        let Some(Value::String(url)) = obj.get("url") else {
+            return Err("a relay object needs \"url\", a string".into());
+        };
+        let quic = match obj.get("quic") {
+            None => true,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => {
+                return Err(format!(
+                    "relay {url}: \"quic\" must be true or false, not {other}"
+                ));
+            }
+        };
+        let port = match obj.get("quic_port") {
+            None => None,
+            Some(v) => match v.as_u64().and_then(|p| u16::try_from(p).ok()) {
+                Some(p) if p >= 1 => Some(p),
+                _ => {
+                    return Err(format!(
+                        "relay {url}: \"quic_port\" must be a port number from 1 to 65535, not {v}"
+                    ));
+                }
+            },
+        };
+        let quic = match (quic, port) {
+            (false, Some(_)) => {
+                return Err(format!(
+                    "relay {url}: \"quic\": false turns QUIC address discovery off, so drop \"quic_port\""
+                ));
+            }
+            (false, None) => RelayQuic::Off,
+            (true, Some(p)) => RelayQuic::Port(p),
+            (true, None) => RelayQuic::Default,
+        };
+        Ok(Self {
+            url: url.clone(),
+            quic,
+        })
+    }
+}
+
+impl Serialize for RelayEntry {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.quic {
+            RelayQuic::Default => s.serialize_str(&self.url),
+            RelayQuic::Port(p) => json!({ "url": self.url, "quic_port": p }).serialize(s),
+            RelayQuic::Off => json!({ "url": self.url, "quic": false }).serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RelayEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::from_json(Value::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Serialize)]

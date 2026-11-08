@@ -15,6 +15,7 @@ import { parseSpec, implicitSpec, envName, type AppSpec } from "./spec.ts";
 import { renamedEnv } from "../env.ts";
 import {
   forgetLegacyLinks,
+  parseMeshRelays,
   reconcileMesh,
   type LinkOutcome,
   type MeshDesired,
@@ -135,14 +136,10 @@ export function desiredMeshLinks(overrides: readonly MeshLink[] = []): MeshLink[
   ];
 }
 function relayPolicy(): MeshDesired["relays"] {
-  let relays: unknown = [];
-  try {
-    relays = JSON.parse(process.env.ERAINFRA_MESH_RELAYS ?? "[]");
-  } catch {
-    throw new Error("ERAINFRA_MESH_RELAYS must be a JSON URL array");
-  }
-  if (!Array.isArray(relays) || !relays.every((r) => typeof r === "string"))
-    throw new Error("ERAINFRA_MESH_RELAYS must be a JSON URL array");
+  const relays = parseMeshRelays(
+    process.env.ERAINFRA_MESH_RELAYS || "[]",
+    Boolean(process.env.ERAINFRA_MESH_RELAY_TOKEN),
+  );
   const fallback = process.env.ERAINFRA_MESH_N0_FALLBACK ?? "false";
   if (fallback !== "true" && fallback !== "false")
     throw new Error("ERAINFRA_MESH_N0_FALLBACK must be true or false");

@@ -117,13 +117,16 @@ func convexMesh(ctx context.Context) (*agent.MeshManager, error) {
 }
 
 // meshRelayPolicy reads the relay policy from the same variables the Hub reads it from. In
-// connect-convex mode each Node holds its own: Convex stores no relay token.
+// connect-convex mode each Node holds its own: Convex stores no relay token. An entry is a URL or
+// an object with a QUIC address discovery port (meshclient.Relay).
 func meshRelayPolicy() (meshclient.Relays, error) {
-	policy := meshclient.Relays{URLs: []string{}}
+	policy := meshclient.Relays{List: []meshclient.Relay{}, AuthToken: os.Getenv("ERAINFRA_MESH_RELAY_TOKEN")}
 	if raw := os.Getenv("ERAINFRA_MESH_RELAYS"); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &policy.URLs); err != nil || policy.URLs == nil {
-			return policy, errors.New("ERAINFRA_MESH_RELAYS must be a JSON URL array")
+		list, err := meshclient.ParseRelays([]byte(raw), policy.AuthToken != "")
+		if err != nil {
+			return policy, fmt.Errorf("ERAINFRA_MESH_RELAYS %w", err)
 		}
+		policy.List = list
 	}
 	switch os.Getenv("ERAINFRA_MESH_N0_FALLBACK") {
 	case "", "false":
@@ -132,7 +135,6 @@ func meshRelayPolicy() (meshclient.Relays, error) {
 	default:
 		return policy, errors.New("ERAINFRA_MESH_N0_FALLBACK must be true or false")
 	}
-	policy.AuthToken = os.Getenv("ERAINFRA_MESH_RELAY_TOKEN")
 	return policy, nil
 }
 

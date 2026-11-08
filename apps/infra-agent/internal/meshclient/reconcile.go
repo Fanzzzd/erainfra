@@ -36,8 +36,13 @@ func (d Desired) Validate() error {
 	if d.V != 1 {
 		return errors.New("mesh desired state must be v1")
 	}
-	if len(d.Fleet) > 4096 || len(d.Exposures) > 128 || len(d.Links) > 128 || len(d.Relays.URLs) > 16 {
+	if len(d.Fleet) > 4096 || len(d.Exposures) > 128 || len(d.Links) > 128 || len(d.Relays.List) > 16 {
 		return errors.New("mesh desired state exceeds fleet/service/link limits")
+	}
+	for _, r := range d.Relays.List {
+		if r.URL == "" || r.NoQUIC && r.QUICPort != 0 {
+			return errors.New("invalid mesh relay entry")
+		}
 	}
 	ids := map[string]bool{}
 	for _, p := range d.Fleet {

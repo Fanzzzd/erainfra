@@ -12,6 +12,9 @@ The examples use the relay host `relay.on99.ai` at `134.185.92.116`. Replace bot
 - **The host.** Linux with systemd, aarch64 or x86_64, a public IPv4 address, and nothing else
   listening on tcp/443, tcp/80 or udp/7842 (`relay.sh` checks and names the holder). It is usually
   already a `connect-convex` Node, but it need not be.
+- **The UDP port for QUIC address discovery.** iroh's default is udp/7842. If the cloud's firewall
+  will not open it, use udp/443 instead (step 2). That needs a Node release whose Infra Agent and
+  `erainfra-mesh` read a relay entry with `quic_port`; older Nodes can only use udp/7842.
 - **The backend.** The Convex deployment runs a release with `POST /api/v1/relay/access`. On an
   older one, `relay.sh` reports `does not exist` and the relay admits nobody.
 - **Which relay each Node will use.** iroh does not read `ERAINFRA_MESH_RELAYS` in order. Each Node
@@ -42,15 +45,23 @@ Check: `dig +short relay.on99.ai` prints `134.185.92.116`.
 
 ## 2. Firewall: the host and the cloud
 
-| Port     | What uses it                                                                       | Needed                    |
-| -------- | ---------------------------------------------------------------------------------- | ------------------------- |
-| tcp/443  | the relay itself (HTTPS and WebSocket) and Let's Encrypt's challenge               | yes                       |
-| udp/7842 | QUIC address discovery: a Node learns its public address, which helps direct paths | yes, to keep direct paths |
-| tcp/80   | the captive-portal probe iroh sends to `/generate_204`                             | no                        |
+| Port     | What uses it                                                                                       | Needed |
+| -------- | -------------------------------------------------------------------------------------------------- | ------ |
+| tcp/443  | the relay itself (HTTPS and WebSocket) and Let's Encrypt's challenge                               | yes    |
+| udp/7842 | QUIC address discovery: iroh times the relay with it, and a Node learns its public address from it | yes    |
+| tcp/80   | the captive-portal probe iroh sends to `/generate_204`                                             | no     |
 
-Without udp/7842 Nodes still relay through it, but they learn less about their own addresses, so
-fewer pairs connect directly. Without tcp/80 the probe fails, which iroh does not treat as a
-captive portal.
+Without QUIC address discovery the fleet relay goes unused in practice. iroh then times the relay
+only with an HTTPS request, whose time includes the TCP and TLS handshakes, while it times n0's
+relays with one QUIC round trip. n0's look faster. On 2026-11-08 the OCI security list
+for `oracle-singapore-1` blocked udp/7842, and every Node homed on n0's
+`aps1-1.relay.n0.iroh.link` instead of `relay.on99.ai`. Without tcp/80 the probe fails, which iroh
+does not treat as a captive portal.
+
+**When the cloud blocks udp/7842.** Serve QUIC address discovery on udp/443 instead. UDP 443 is
+free beside HTTPS, which uses TCP 443, and cloud firewalls often allow it already. Run `relay.sh`
+with `ERAINFRA_RELAY_QUIC_PORT=443` in step 4, open udp/443 where the table says udp/7842, and list
+the relay with `"quic_port":443` in step 6. `relay.sh` prints the exact value.
 
 Open them in the host firewall. Oracle's Ubuntu images end the INPUT chain with a REJECT rule, so
 insert before it and save:
@@ -116,16 +127,27 @@ keeps the installed secret.
 Other settings: `ERAINFRA_RELAY_CERT_FILE` and `ERAINFRA_RELAY_KEY_FILE` serve a certificate you
 manage instead of Let's Encrypt (publicly trusted; a Cloudflare origin certificate will not do).
 `ERAINFRA_RELAY_BIND=0.0.0.0` is for a kernel with IPv6 disabled. `ERAINFRA_RELAY_HTTP_PORT` moves
-the probe port off 80. `ERAINFRA_RELAY_METRICS=127.0.0.1:9090` serves Prometheus metrics on
-loopback.
+the probe port off 80. `ERAINFRA_RELAY_QUIC_PORT=443` moves QUIC address discovery from udp/7842
+to udp/443 (step 2); the script writes it as `quic_bind_addr` and checks that port is free.
+`ERAINFRA_RELAY_METRICS=127.0.0.1:9090` serves Prometheus metrics on loopback.
+
+At the end the script prints the `ERAINFRA_MESH_RELAYS` line for step 6. With the default port it
+is the plain URL. With another port it is an object that names the port:
+
+```ini
+Environment='ERAINFRA_MESH_RELAYS=[{"url":"https://relay.on99.ai","quic_port":443}]'
+```
 
 ## 5. Check the relay alone
 
 ```sh
 curl -fsS https://relay.on99.ai/healthz          # from anywhere: a trusted certificate and an answer
-sudo ss -ltnup '( sport = :443 or sport = :80 or sport = :7842 )'   # all three held by iroh-relay
+sudo ss -ltnup '( sport = :443 or sport = :80 or sport = :7842 )'   # all held by iroh-relay
 journalctl -u erainfra-relay -n 20                # "relay: serving on [::]:443"
 ```
+
+With `ERAINFRA_RELAY_QUIC_PORT=443`, `ss` shows iroh-relay on udp/443 as well as tcp/443, and
+nothing on udp/7842.
 
 Convex must say `true` for a real Node. Take an EndpointId from
 `erainfra nodes list --json | jq -r '.nodes[] | [.name, .endpoint.id] | @tsv'`, then on the relay
@@ -144,19 +166,44 @@ client logs `HTTP access check failed: Deny access`.
 
 ## 6. List the relay on every Node
 
-Start with the relay host, then one Node at a time. On each `connect-convex` Node run
-`sudo systemctl edit erainfra-node` and put these lines in the drop-in:
+Start with the relay host, then one Node at a time. On each `connect-convex` Node write a drop-in
+for `erainfra-node` and restart it. Use the line `relay.sh` printed. From your machine, over ssh:
 
-```ini
+```sh
+ssh <node> 'sudo install -d -m 755 /etc/systemd/system/erainfra-node.service.d &&
+  sudo tee /etc/systemd/system/erainfra-node.service.d/30-fleet-relay.conf >/dev/null' <<'EOF'
 [Service]
 Environment='ERAINFRA_MESH_RELAYS=["https://relay.on99.ai"]'
 Environment=ERAINFRA_MESH_N0_FALLBACK=true
+EOF
+ssh <node> 'sudo systemctl daemon-reload && sudo systemctl restart erainfra-node'
 ```
 
-Then `sudo systemctl restart erainfra-node`. The single quotes keep the JSON's double quotes
-intact. A change to the relay policy rebinds the sidecar, so the Node's links drop for a few
-seconds and its peers reconnect once it has published its new address. A Node still in Hub mode
-takes its relay policy from the Hub's environment instead
+On the Node itself, `sudo systemctl edit erainfra-node` with the same three lines does the same.
+
+The JSON must reach the file with its double quotes. The quoted heredoc (`<<'EOF'`) sends the
+lines unchanged: neither your shell nor the remote one reads them. Do not build the line with
+`printf` or `echo` inside an ssh command. On 2026-11-08 that lost the double quotes, and the agent
+restart-looped with `ERAINFRA_MESH_RELAYS must be a JSON URL array`. In the file, the single quotes
+around the whole assignment keep systemd from stripping the double quotes in turn. Check the file
+with `sudo cat` before the restart.
+
+A relay on udp/443 is listed with its port:
+
+```ini
+Environment='ERAINFRA_MESH_RELAYS=[{"url":"https://relay.on99.ai","quic_port":443}]'
+```
+
+Each entry is a URL string or an object. `"quic_port"` is the relay's UDP port for QUIC address
+discovery, 1 to 65535; a plain URL means 7842. `"quic":false` turns address discovery off for that
+relay. Entries of both kinds can share one list. A Node running a release without the object form
+refuses it at startup with `ERAINFRA_MESH_RELAYS must be a JSON URL array`, so upgrade the Node
+first. Its journal names the bad entry, for example `ERAINFRA_MESH_RELAYS entry 1: relay
+https://relay.on99.ai: "quic_port" must be a port number from 1 to 65535, not 0`.
+
+A change to the relay policy rebinds the sidecar, so the Node's links drop for a few seconds and
+its peers reconnect once it has published its new address. A Node still in Hub mode takes its
+relay policy from the Hub's environment instead
 ([secure-node-mesh.md](secure-node-mesh.md#relays)).
 
 A new Node, or one that just reset its endpoint, is refused by the relay until its key is proven.
@@ -184,17 +231,21 @@ journalctl -u erainfra-node | grep 'published mesh endpoint' | tail -n 1
 # connect-convex: published mesh endpoint 3f9a… (1 relay https://relay.on99.ai/, 4 direct addresses)
 ```
 
-Infra Agent releases before this change log only the count (`1 relay`). Convex records the same
-address for every Node, whatever its release:
+When the policy lists the home relay with a port other than 7842, the line names it as written in
+`ERAINFRA_MESH_RELAYS`: `(1 relay https://relay.on99.ai/ quic_port=443, 4 direct addresses)`, or
+`quic=false` when address discovery is off. Infra Agent releases before the fleet relay log only
+the count (`1 relay`). Convex records the same address for every Node, whatever its release:
 
 ```sh
 erainfra nodes list --json | jq -r '.nodes[] | [.name, (.endpoint.relayUrls | join(" "))] | @tsv'
 ```
 
 A Node showing `https://relay.on99.ai/` homes on the fleet relay. One showing an n0 URL measured
-n0 as faster, as described above. `0 relay` means it reaches no relay at all: check its
-`ERAINFRA_MESH_RELAYS`, and on the relay host the access check in step 5. Last, `erainfra links
-list` shows every link as `transport mesh`, and an App served through a gateway answers.
+n0 as faster, as described above. If every Node shows n0, check that the relay's QUIC port is
+open in the cloud firewall and that the Nodes list the same port (step 2). `0 relay` means it
+reaches no relay at all: check its `ERAINFRA_MESH_RELAYS`, and on the relay host the access check
+in step 5. Last, `erainfra links list` shows every link as `transport mesh`, and an App served
+through a gateway answers.
 
 ## Rotate the secret
 

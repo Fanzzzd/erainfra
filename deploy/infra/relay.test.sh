@@ -96,10 +96,12 @@ case "\$*" in
 esac
 exit 7
 EOF
+  # SS_BUSY_PORT is held by another process; SS_BUSY_FLAGS (-Hltnp or -Hlunp) narrows it to TCP
+  # or UDP.
   cat > "$C/bin/ss" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$C/ss.log"
-case "\$*" in *":\${SS_BUSY_PORT:-none}") echo "LISTEN 0 4096 *:\$SS_BUSY_PORT *:* users:((\"nginx\",pid=812,fd=6))" ;; esac
+case "\$*" in "\${SS_BUSY_FLAGS:-}"*":\${SS_BUSY_PORT:-none}") echo "LISTEN 0 4096 *:\$SS_BUSY_PORT *:* users:((\"nginx\",pid=812,fd=6))" ;; esac
 exit 0
 EOF
   cat > "$C/bin/uname" <<'EOF'
@@ -159,6 +161,26 @@ check "says Convex has no secret and how to set it" \
   sh -c "grep -q 'Convex has no RELAY_ACCESS_TOKEN' '$WORK/fresh/out' && grep -q 'npx convex env set --prod RELAY_ACCESS_TOKEN --from-file' '$WORK/fresh/out'"
 check "checks every port before installing" \
   sh -c "grep -q 'sport = :443' '$WORK/fresh/ss.log' && grep -q 'sport = :80' '$WORK/fresh/ss.log' && grep -q 'sport = :7842' '$WORK/fresh/ss.log'"
+check "prints the plain URL for every Node's ERAINFRA_MESH_RELAYS, in systemd's single quotes" \
+  sh -c "grep -qF \"Environment='ERAINFRA_MESH_RELAYS=[\\\"https://relay.on99.ai\\\"]'\" '$WORK/fresh/out' && ! grep -q quic_port '$WORK/fresh/out'"
+
+# --- QUIC address discovery on udp/443, for a cloud security list that blocks udp/7842 --------------
+sandbox udp443
+if relay udp443 "$WORK/relay-fake-pin.sh" ERAINFRA_CONVEX_SITE="$SITE" ERAINFRA_RELAY_QUIC_PORT=443; then
+  U="$WORK/udp443"
+  check "binds QUIC address discovery on udp/443 beside HTTPS on tcp/443" \
+    sh -c "grep -qx 'quic_bind_addr = \"\[::\]:443\"' '$U/root/etc/erainfra-relay/config.toml' && grep -qx 'https_bind_addr = \"\[::\]:443\"' '$U/root/etc/erainfra-relay/config.toml' && grep -qx 'enable_quic_addr_discovery = true' '$U/root/etc/erainfra-relay/config.toml'"
+  check "checks udp/443 and tcp/443 before installing, and not udp/7842" \
+    sh -c "grep -qx -- '-Hlunp sport = :443' '$U/ss.log' && grep -qx -- '-Hltnp sport = :443' '$U/ss.log' && ! grep -q 7842 '$U/ss.log'"
+  check "names udp/443 in its log lines" \
+    sh -c "grep -q 'runs https://relay.on99.ai/ (tcp/443, tcp/80, udp/443)' '$U/out' && grep -q 'open tcp/443, tcp/80 and udp/443' '$U/out' && ! grep -q 7842 '$U/out'"
+  check "prints the ERAINFRA_MESH_RELAYS entry with quic_port 443" \
+    grep -qF "Environment='ERAINFRA_MESH_RELAYS=[{\"url\":\"https://relay.on99.ai\",\"quic_port\":443}]'" "$U/out"
+  check "says a Node needs a release that reads the quic_port form" \
+    grep -q 'An older one refuses it with "ERAINFRA_MESH_RELAYS must be a JSON URL array"' "$U/out"
+else
+  fail "install with ERAINFRA_RELAY_QUIC_PORT=443 failed: $(tail -3 "$WORK/udp443/out")"
+fi
 
 # --- a secret from a file, then a re-run that keeps it ----------------------------------------------
 sandbox given
@@ -207,6 +229,31 @@ elif grep -q 'tcp/443 is already in use on this host: .*nginx' "$WORK/busy/out" 
 else
   fail "wrong refusal for a busy port: $(tail -2 "$WORK/busy/out")"
 fi
+
+sandbox busyudp
+if relay busyudp "$WORK/relay-fake-pin.sh" ERAINFRA_CONVEX_SITE="$SITE" ERAINFRA_RELAY_QUIC_PORT=443 \
+  SS_BUSY_FLAGS=-Hlunp SS_BUSY_PORT=443; then
+  fail "installed with udp/443 held by another process"
+elif grep -q 'udp/443 is already in use on this host: .*nginx' "$WORK/busyudp/out" && nothing_installed busyudp; then
+  ok "names the process holding udp/443 when QUIC address discovery moves there"
+else
+  fail "wrong refusal for a busy udp/443: $(tail -2 "$WORK/busyudp/out")"
+fi
+
+for bad in 0 65536 abc 7842x ''; do
+  sandbox "badquic$bad"
+  if relay "badquic$bad" "$WORK/relay-fake-pin.sh" ERAINFRA_CONVEX_SITE="$SITE" ERAINFRA_RELAY_QUIC_PORT="$bad"; then
+    if [ -z "$bad" ]; then
+      ok "an empty ERAINFRA_RELAY_QUIC_PORT means the default"
+    else
+      fail "accepted ERAINFRA_RELAY_QUIC_PORT=$bad"
+    fi
+  elif [ -n "$bad" ] && grep -q 'ERAINFRA_RELAY_QUIC_PORT must be a UDP port from 1 to 65535' "$WORK/badquic$bad/out" && nothing_installed "badquic$bad"; then
+    ok "refuses ERAINFRA_RELAY_QUIC_PORT=$bad before installing anything"
+  else
+    fail "wrong outcome for ERAINFRA_RELAY_QUIC_PORT=$bad: $(tail -2 "$WORK/badquic$bad/out")"
+  fi
+done
 
 sandbox nohost
 if relay nohost "$WORK/relay-fake-pin.sh" ERAINFRA_CONVEX_SITE="$SITE" ERAINFRA_RELAY_HOSTNAME=; then

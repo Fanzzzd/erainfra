@@ -12,12 +12,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::api::PeerSpec;
+use crate::api::{PeerSpec, RelayEntry};
 use crate::key::{sync_dir, write_new_private};
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelaysSpec {
-    pub relays: Vec<String>,
+    /// Each entry is a URL string or an object with a QUIC address discovery port
+    /// ([`RelayEntry`]). State saved before the object form existed holds only strings.
+    pub relays: Vec<RelayEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
     #[serde(default)]

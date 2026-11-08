@@ -26,6 +26,9 @@
 #   erainfra-relay.service          the relay on tcp/443 (HTTPS and the ACME TLS-ALPN-01
 #                                   challenge), tcp/80 (the captive-portal probe) and udp/7842
 #                                   (QUIC address discovery, the port iroh clients assume).
+#                                   ERAINFRA_RELAY_QUIC_PORT=443 moves QUIC address discovery to
+#                                   udp/443, for a cloud security list that blocks udp/7842. Nodes
+#                                   then list the relay with that port (the script prints the value).
 #
 # TLS: Let's Encrypt by default. iroh-relay answers the TLS-ALPN-01 challenge itself on tcp/443,
 # so tcp/443 must be reachable from the internet at the A record; tcp/80 is not used for it. With
@@ -47,11 +50,13 @@ die() { printf '\033[31m[relay] %s\033[0m\n' "$*" >&2; exit 1; }
 IROH_RELAY_VERSION=1.4.1
 IROH_RELAY_SHA256_AARCH64=3fc0c2d67c1cd66250bf82f3e2f17a985b7081a3d272186bad9d63e3f2347b38
 IROH_RELAY_SHA256_X86_64=75254641e3fad7fcbac6dee4d485556fbe06ef708340a9d8810469270ba626b8
-# The UDP port iroh clients send QUIC address discovery to (iroh-relay DEFAULT_RELAY_QUIC_PORT).
-# A client takes it from its relay config, and erainfra-mesh uses the default, so it is fixed here.
-QUIC_PORT=7842
+# The UDP port iroh clients send QUIC address discovery to by default (iroh-relay
+# DEFAULT_RELAY_QUIC_PORT). A client takes the port from its relay entry, so a relay on another
+# port is listed on every Node as {"url":"https://<host>","quic_port":<port>}.
+DEFAULT_QUIC_PORT=7842
 
 HOST="${ERAINFRA_RELAY_HOSTNAME:-}"
+QUIC_PORT="${ERAINFRA_RELAY_QUIC_PORT:-$DEFAULT_QUIC_PORT}"
 CONTACT="${ERAINFRA_RELAY_CONTACT:-}"
 SITE="${ERAINFRA_CONVEX_SITE:-}"
 TOKEN_FILE="${ERAINFRA_RELAY_ACCESS_TOKEN_FILE:-}"
@@ -82,6 +87,8 @@ SITE=${SITE%/}
 printf '%s' "$SITE" | grep -Eqx 'https://[A-Za-z0-9.-]+(:[0-9]+)?' ||
   die "set ERAINFRA_CONVEX_SITE to the deployment's site URL (https://<deployment>.convex.site)"
 case "$HTTP_PORT" in *[!0-9]*|'') die "ERAINFRA_RELAY_HTTP_PORT must be a port number" ;; esac
+{ printf '%s' "$QUIC_PORT" | grep -Eqx '[1-9][0-9]{0,4}' && [ "$QUIC_PORT" -le 65535 ]; } ||
+  die "ERAINFRA_RELAY_QUIC_PORT must be a UDP port from 1 to 65535 (443 when the cloud blocks udp/7842)"
 case "$BIND" in '[::]'|0.0.0.0) ;; *) die "ERAINFRA_RELAY_BIND must be [::] or 0.0.0.0" ;; esac
 if [ -n "$METRICS" ]; then
   printf '%s' "$METRICS" | grep -Eqx '127\.0\.0\.1:[0-9]+|\[::1\]:[0-9]+' ||
@@ -298,7 +305,20 @@ else
   log "https://$HOST/healthz does not answer yet: check that $HOST is an A record to this host,"
   log "not proxied, and that tcp/443 is open to the internet (Let's Encrypt connects to it)"
 fi
+# The value every Node lists. A Node takes the QUIC address discovery port from its relay entry, so
+# a port other than iroh's default goes in the entry. The single quotes keep systemd from
+# stripping the JSON's double quotes.
+if [ "$QUIC_PORT" = "$DEFAULT_QUIC_PORT" ]; then
+  RELAYS="[\"https://$HOST\"]"
+else
+  RELAYS="[{\"url\":\"https://$HOST\",\"quic_port\":$QUIC_PORT}]"
+fi
 log "next, if not done yet (docs/runbooks/run-a-fleet-relay.md):"
 log "  1. open tcp/443, tcp/$HTTP_PORT and udp/$QUIC_PORT in the host firewall and the cloud security list"
-log "  2. on every Node: ERAINFRA_MESH_RELAYS='[\"https://$HOST\"]' and ERAINFRA_MESH_N0_FALLBACK as chosen"
+log "  2. on every Node, in the erainfra-node drop-in, with ERAINFRA_MESH_N0_FALLBACK as chosen:"
+log "       Environment='ERAINFRA_MESH_RELAYS=$RELAYS'"
+if [ "$QUIC_PORT" != "$DEFAULT_QUIC_PORT" ]; then
+  log "     A Node needs a release whose Infra Agent and erainfra-mesh read the quic_port form."
+  log "     An older one refuses it with \"ERAINFRA_MESH_RELAYS must be a JSON URL array\"."
+fi
 log "  3. mark this Node: erainfra nodes set-roles <name> relay (keep its other roles)"

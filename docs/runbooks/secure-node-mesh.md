@@ -131,7 +131,9 @@ The transport change follows the expand, migrate, contract rule (CONTEXT.md rule
 The Hub sends every Node the same relay policy, read from its own environment:
 
 - `ERAINFRA_MESH_RELAYS`: a JSON array of relay URLs, for example
-  `["https://relay.example.com"]`. Default `[]`.
+  `["https://relay.example.com"]`. Default `[]`. An entry may also be an object that names the
+  relay's QUIC address discovery port, `{"url":"https://relay.example.com","quic_port":443}`
+  ([run-a-fleet-relay.md](run-a-fleet-relay.md#6-list-the-relay-on-every-node)).
 - `ERAINFRA_MESH_RELAY_TOKEN`: an optional bearer token sent only to those relays. It never appears
   in `status` output or in agent logs.
 - `ERAINFRA_MESH_N0_FALLBACK`: `true` adds n0's public relays. Default `false`, because n0 describes
