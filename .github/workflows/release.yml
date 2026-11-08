@@ -59,11 +59,18 @@ jobs:
           ZIGBUILD_VERSION: 0.24.1
           ZIGBUILD_SHA256: f09b180a517af0e4dd4bffc921bb88e5ab705452a9dd948c61e489b3020c68c2
         run: |
-          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/zigbuild.tar.xz" \
-            "https://github.com/rust-cross/cargo-zigbuild/releases/download/v$ZIGBUILD_VERSION/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
-          echo "$ZIGBUILD_SHA256  $RUNNER_TEMP/zigbuild.tar.xz" | sha256sum -c -
+          # GitHub release downloads can fail for an hour at a time (504s on 2026-11-08). After
+          # the retries, build the same pinned version from crates.io instead.
           mkdir -p "$RUNNER_TEMP/zigbuild"
-          tar -xJf "$RUNNER_TEMP/zigbuild.tar.xz" -C "$RUNNER_TEMP/zigbuild" --strip-components=1
+          if curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 15 --retry-all-errors --connect-timeout 30 -o "$RUNNER_TEMP/zigbuild.tar.xz" \
+            "https://github.com/rust-cross/cargo-zigbuild/releases/download/v$ZIGBUILD_VERSION/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"; then
+            echo "$ZIGBUILD_SHA256  $RUNNER_TEMP/zigbuild.tar.xz" | sha256sum -c -
+            tar -xJf "$RUNNER_TEMP/zigbuild.tar.xz" -C "$RUNNER_TEMP/zigbuild" --strip-components=1
+          else
+            echo "::warning::cargo-zigbuild $ZIGBUILD_VERSION download failed; building it from crates.io"
+            cargo install --locked --version "$ZIGBUILD_VERSION" --root "$RUNNER_TEMP/zigbuild-src" cargo-zigbuild
+            cp "$RUNNER_TEMP/zigbuild-src/bin/cargo-zigbuild" "$RUNNER_TEMP/zigbuild/"
+          fi
           echo "$RUNNER_TEMP/zigbuild" >> "$GITHUB_PATH"
       - name: Install the pinned Rust toolchain
         working-directory: apps/mesh
