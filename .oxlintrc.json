@@ -44,6 +44,22 @@
         "packages/release/**"
       ],
       "env": { "node": true }
+    },
+    {
+      // A helper declared inside a describe block sits next to the only tests that use it. The
+      // rule's reason, not recreating a function on every call, does not apply: a describe body
+      // runs once.
+      "files": ["**/tests/**", "**/test/**", "**/*.test.*"],
+      "rules": { "unicorn/consistent-function-scoping": "off" }
+    },
+    {
+      // The Hub's web app is retired (docs/runbooks/retire-the-hub.md) and kept only as the
+      // rollback source, so its behaviour is frozen. These two React Compiler rules, new in
+      // oxlint 1.90, flag its polling refreshes, its default-select effects and a
+      // location.hash write in a click handler. Rewriting them would change a UI nobody runs
+      // any more for no gain. The live dashboard keeps both rules.
+      "files": ["apps/hub-web/**"],
+      "rules": { "react/set-state-in-effect": "off", "react/immutability": "off" }
     }
   ]
 }

@@ -78,7 +78,7 @@ container — far lighter than building one — so it doesn't need the build too
     registry. Use another port: `registry.sh up 5005` and `PORTLESS_REGISTRY=127.0.0.1:5005`.
   - Docker Desktop runs the daemon **in a VM**, so a _host-binary_ zot on `127.0.0.1` isn't reachable
     from the daemon for push/pull. Either run the store **as a container** (`docker run -d -p
-5005:5000 registry:2` — its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
+    5005:5000 registry:2` — its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
     for both push and pull and stays auto-insecure/HTTP), or push to `host.docker.internal:5005` after
     adding it to the daemon's `insecure-registries`. On a native Linux build box the host-binary zot on
     `127.0.0.1:5000` just works — dockerd shares the host loopback.

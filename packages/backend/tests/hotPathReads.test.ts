@@ -130,11 +130,10 @@ describe("hot-path database reads", () => {
     for (const { key } of findings) counts.set(key, (counts.get(key) ?? 0) + 1);
 
     const unexpected = findings.filter(({ key }) => justifiedFullScans[key] === undefined);
-    const staleOrChangedAllowlist = Object.entries(justifiedFullScans).flatMap(
-      ([key, allowance]) =>
-        counts.get(key) === allowance.occurrences
-          ? []
-          : [`${key}: expected ${allowance.occurrences}, found ${counts.get(key) ?? 0}`],
+    const staleOrChangedAllowlist = Object.entries(justifiedFullScans).flatMap(([key, allowance]) =>
+      counts.get(key) === allowance.occurrences
+        ? []
+        : [`${key}: expected ${allowance.occurrences}, found ${counts.get(key) ?? 0}`],
     );
 
     expect(unexpected).toEqual([]);

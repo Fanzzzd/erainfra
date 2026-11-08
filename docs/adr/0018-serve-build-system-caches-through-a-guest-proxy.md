@@ -42,7 +42,7 @@ guest daemon. It has never been in the job's environment.
 3. **turbo is on by default; the Go helper is a one-line opt-in.** The guest sets the three `TURBO_`
    variables whenever a cache is configured. It ships `erainfra-gocacheprog` and sets
    `ERAINFRA_BUILD_CACHE_URL`, but a workflow turns the helper on with `GOCACHEPROG:
-erainfra-gocacheprog`.
+   erainfra-gocacheprog`.
 4. **A workflow's own `TURBO_API` wins, and the proxy never forwards a token it did not issue.** A
    step's `env` overrides the runner's, so a workflow that sets `TURBO_API` bypasses the proxy.
    `turbo.json` does not: turbo 2.10.9 (`turbo config`) ranks environment variables and its global

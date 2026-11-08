@@ -25,25 +25,29 @@ const CALLBACK_ERRORS: Record<string, string> = {
 
 type CallbackResult = { ok: true } | { ok: false; message: string };
 
+function readCallbackResult(search: string): CallbackResult | undefined {
+  const params = new URLSearchParams(search);
+  const setup = params.get("setup");
+  if (setup === null) return undefined;
+  return setup === "created"
+    ? { ok: true }
+    : {
+        ok: false,
+        message:
+          CALLBACK_ERRORS[params.get("reason") ?? ""] ?? "GitHub App setup did not complete.",
+      };
+}
+
 // The Manifest callback redirects here with a result; read it once, then strip
-// it from the URL so a refresh does not replay the banner.
+// it from the URL so a refresh does not replay the banner. The result is the
+// initial state rather than set from the effect, so the banner is there on the
+// first render instead of one render later.
 function useCallbackResult() {
-  const [result, setResult] = useState<CallbackResult>();
+  const [result] = useState(() => readCallbackResult(window.location.search));
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const setup = params.get("setup");
-    if (setup === null) return;
-
-    setResult(
-      setup === "created"
-        ? { ok: true }
-        : {
-            ok: false,
-            message:
-              CALLBACK_ERRORS[params.get("reason") ?? ""] ?? "GitHub App setup did not complete.",
-          },
-    );
+    if (params.get("setup") === null) return;
     params.delete("setup");
     params.delete("reason");
     const query = params.toString();

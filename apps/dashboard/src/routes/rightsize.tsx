@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useConvex } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -58,30 +58,38 @@ function RightsizePage() {
   const [days, setDays] = useState<number>(14);
   const [repoInput, setRepoInput] = useState("");
   const [repo, setRepo] = useState("");
+  const [refreshes, setRefreshes] = useState(0);
   const [report, setReport] = useState<Report | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(undefined);
-    try {
-      setReport(
-        await convex.query(api.rightsize.report, {
-          sinceDays: days,
-          ...(repo === "" ? {} : { repo }),
-        }),
-      );
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setLoading(false);
-    }
-  }, [convex, days, repo]);
+  // Which request last finished, and its error if it failed. The page is loading until the
+  // request for the current filters and refresh count finishes; a reply to an older request is
+  // dropped, so a slow earlier query cannot overwrite a newer one. The last good report stays on
+  // screen while the next one loads or after it fails.
+  const [settled, setSettled] = useState<{ key: string; error?: string }>();
+  const key = JSON.stringify([days, repo, refreshes]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let current = true;
+    void (async () => {
+      try {
+        const next = await convex.query(api.rightsize.report, {
+          sinceDays: days,
+          ...(repo === "" ? {} : { repo }),
+        });
+        if (!current) return;
+        setReport(next);
+        setSettled({ key });
+      } catch (caught) {
+        if (!current) return;
+        setSettled({ key, error: caught instanceof Error ? caught.message : String(caught) });
+      }
+    })();
+    return () => {
+      current = false;
+    };
+  }, [convex, days, repo, key]);
+
+  const loading = settled?.key !== key;
+  const error = loading ? undefined : settled.error;
 
   const recommendations = report?.recommendations;
   const actionable =
@@ -94,7 +102,12 @@ function RightsizePage() {
         title="Rightsize"
         description="Which Profile each workflow job should run on, from the CPU and memory its own runs used."
       >
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setRefreshes((count) => count + 1)}
+          disabled={loading}
+        >
           <RefreshCw className={loading ? "animate-spin" : undefined} />
           Refresh
         </Button>

@@ -778,7 +778,7 @@ describe("Hub App placement", () => {
       await ctx.db.insert("apps", {
         name: "shop",
         nodeId: survivor,
-        services: failedOver.services.map(({ node: _, ...s }) => ({ ...s, nodeId: lost })),
+        services: failedOver.services.map(({ node: _node, ...s }) => ({ ...s, nodeId: lost })),
         links: [],
         provenance: { by: "hub", hash: await contentHash(failedOver), at: 0 },
         updatedAt: 0,
