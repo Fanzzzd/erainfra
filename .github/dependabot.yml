@@ -81,6 +81,11 @@ updates:
       - dependency-name: typescript
         update-types: [version-update:semver-major]
 
+  # The agent is also a pnpm workspace importer, so pnpm-lock.yaml records its
+  # specifiers too. This entry updates package.json and package-lock.json only,
+  # and CI's `pnpm install --frozen-lockfile` fails until someone runs
+  # `pnpm install` on the branch and commits pnpm-lock.yaml. Every PR from this
+  # entry needs that one extra commit.
   - package-ecosystem: npm
     directory: /apps/action-runner-agent
     schedule:
