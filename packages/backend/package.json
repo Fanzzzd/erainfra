@@ -35,22 +35,22 @@
   },
   "dependencies": {
     "@auth/core": "0.41.3",
-    "@convex-dev/auth": "0.0.94",
+    "@convex-dev/auth": "0.0.96",
     "@convex-dev/static-hosting": "0.2.1",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "convex": "catalog:",
     "octokit": "5.0.5",
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",
     "@erainfra/typescript-config": "workspace:*",
     "@types/node": "catalog:",
-    "convex-test": "0.0.55",
+    "convex-test": "0.0.66",
     "typescript": "catalog:",
     "typescript-compiler-api": "npm:typescript@5.9.3",
-    "vite": "8.2.1",
+    "vite": "8.3.5",
     "vitest": "5.0.5"
   }
 }

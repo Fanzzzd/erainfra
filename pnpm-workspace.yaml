@@ -7,8 +7,8 @@ packages:
 # download that directory on its own and install it with plain `npm install`,
 # which does not understand the `catalog:` or `workspace:` protocols.
 catalog:
-  "@types/node": 22.20.1
-  convex: 1.43.0
+  "@types/node": 22.20.5
+  convex: 1.49.0
   typescript: 7.0.2
 
 # apps/docs only. next@16 resolves `typescript/lib/typescript.js` during `next typegen`, and the
