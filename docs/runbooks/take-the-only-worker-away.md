@@ -21,6 +21,35 @@ Worker be away, and is that longer than the consumer's rule.
 
 The first two rows need no coordination: the queue is shorter than the rule. The last two do.
 
+## Check the host before a runtime update
+
+Stage the new release binary before replacing the daemon. Check that the host's kernel and
+nftables userspace can load its generated policy. This command checks the transaction without
+changing the live rules:
+
+```sh
+(
+  set -eu
+  new=/path/to/release/runner-center-runtime-linux-x86_64
+  candidate=$(mktemp)
+  trap 'rm -f "$candidate"' EXIT
+  "$new" render-nftables > "$candidate"
+  sudo nft -c -f "$candidate"
+)
+```
+
+On the Ubuntu 20.04 Worker with kernel 5.4.0-216 and nftables 0.9.3, the rc.12 policy fails this
+probe with `concatenated types not supported in interval sets`. Its old live table also lacks the
+Profile egress rules. Replacing only the daemon does not update that table.
+
+If the probe fails, keep the old runtime. Upgrade the host's kernel and nftables userspace in a
+maintenance window with out-of-band console access. Do not remove isolation rules or weaken
+readiness to make the update start.
+
+Passing this probe does not install the policy. After draining the Worker, use the release's host
+provisioner to install the full policy before switching the daemon. Run the new binary's
+`verify-network` afterward. Keep both the old binary and the old policy for rollback.
+
 ## Before
 
 1. Look at what is running and queued: the dashboard's Attempts page, and `rc logs -f` on the

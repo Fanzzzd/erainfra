@@ -138,3 +138,62 @@ func TestVerifierIgnoresOnlyNonPolicyDifferences(t *testing.T) {
 		})
 	}
 }
+
+// Captured from the Ubuntu 20.04 Worker. nft 0.9.3 renders merged anonymous
+// intervals as ranges rather than the prefixes nft 1.0.9 prints. This historical
+// table lacks later Profile egress rules: its deny-private expression is valid,
+// but the whole table must still fail the current policy contract.
+func TestVerifierAcceptsNft093RangeExpression(t *testing.T) {
+	live, err := os.ReadFile("testdata/nft-0.9.3-live-table.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document nftDocument
+	if err := json.Unmarshal(live, &document); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range document.Nftables {
+		if entry.Rule != nil && entry.Rule.Comment == RuleDenyPrivate {
+			found = true
+			if err := verifyExpressions(RuleDenyPrivate, entry.Rule.Expr); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("captured table lacks deny-private")
+	}
+	if err := DefaultPolicy("runner-center").VerifyNftables(live); err == nil {
+		t.Fatal("accepting range syntax must not admit a table missing Profile egress rules")
+	}
+}
+
+func TestVerifierRejectsInvalidAnonymousRanges(t *testing.T) {
+	for _, endpoints := range [][]any{
+		{"224.0.0.1", "255.255.255.255"},       // leaves 224.0.0.0 reachable
+		{"223.255.255.255", "255.255.255.255"}, // denies an extra public address
+		{"255.255.255.255", "224.0.0.0"},       // reversed
+		{"224.0.0.0"},                          // missing bound
+		{"224.0.0.0", "255.255.255.255", "extra"},
+		{"224.0.0.0", float64(1)},
+		{"::", "ffff::"},
+		{"garbage", "255.255.255.255"},
+	} {
+		t.Run(stringJSON(endpoints), func(t *testing.T) {
+			live := mutateKernelFixture(t, "rule", RuleDenyPrivate, func(v map[string]any) {
+				set := expressionMatch(v, 1)["right"].(map[string]any)
+				members := set["set"].([]any)
+				members[len(members)-1] = map[string]any{"range": endpoints}
+			})
+			if err := DefaultPolicy("runner-center").VerifyNftables(live); err == nil {
+				t.Fatal("invalid or changed interval must fail readiness")
+			}
+		})
+	}
+}
+
+func stringJSON(value any) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
