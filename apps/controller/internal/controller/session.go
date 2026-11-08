@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
+	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 )
 
@@ -141,13 +142,16 @@ func (s *SessionSupervisor) observe(state fleet.SessionState, cause error) {
 }
 
 // IsSessionConflict reports whether creating a message session failed because
-// the scale set already has one. The scaleset client returns that as an
-// opaque error whose text carries the HTTP status and, when GitHub sends one,
-// the Actions exception name; the 404 check in githubscale.Issuer.RemoveRunner
-// reads the same format.
+// the scale set already has one. The scaleset client wraps a 409 in
+// scaleset.ConflictError. The text match stays for an error that reaches here
+// without that wrapping: its text carries the HTTP status and, when GitHub
+// sends one, the Actions exception name.
 func IsSessionConflict(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, scaleset.ConflictError) {
+		return true
 	}
 	message := err.Error()
 	return strings.Contains(message, `status="409 Conflict"`) ||

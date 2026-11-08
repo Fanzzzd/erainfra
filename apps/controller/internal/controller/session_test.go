@@ -95,7 +95,7 @@ func (s *fakeActionsService) client(t *testing.T) *scaleset.Client {
 		GitHubConfigURL:     s.server.URL + "/owner/repository",
 		PersonalAccessToken: "pat",
 		SystemInfo:          scaleset.SystemInfo{System: "erainfra-test"},
-	}, scaleset.WithRetryMax(0))
+	}, scaleset.WithRetry(scaleset.RetryConfig{}))
 	if err != nil {
 		t.Fatal(err)
 	}

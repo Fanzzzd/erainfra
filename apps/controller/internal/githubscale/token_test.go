@@ -225,10 +225,15 @@ func readTokenResponse(t *testing.T, client *http.Client, req *http.Request) err
 
 func TestTokenHTTPClientScopesAuthorizationAndOwnsHeaders(t *testing.T) {
 	var fetched atomic.Int32
+	var sharedAuth sync.Map
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		want := r.Header.Get("X-Want-Auth")
-		if got := r.Header.Get("Authorization"); got != want {
-			t.Errorf("%s %s auth = %q; want %q", r.Method, r.URL, got, want)
+		want, checked := r.Header["X-Want-Auth"]
+		if !checked {
+			// The shared-header requests below carry no expectation; their
+			// credentials are collected and compared afterwards.
+			sharedAuth.Store(r.Header.Get("Authorization"), true)
+		} else if got := r.Header.Get("Authorization"); got != want[0] {
+			t.Errorf("%s %s auth = %q; want %q", r.Method, r.URL, got, want[0])
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -236,13 +241,12 @@ func TestTokenHTTPClientScopesAuthorizationAndOwnsHeaders(t *testing.T) {
 	other := httptest.NewServer(server.Config.Handler)
 	defer other.Close()
 	endpoint, _ := url.Parse(server.URL + "/api/v3/orgs/acme/actions/runners/registration-token")
-	retry := tokenHTTPClient(endpoint, func(ctx context.Context) (string, error) {
+	client := tokenHTTPClient(endpoint, func(ctx context.Context) (string, error) {
 		fetched.Add(1)
 		value, _ := ctx.Value(tokenTestKey{}).(string)
 		return value, nil
 	})
-	defer retry.HTTPClient.CloseIdleConnections()
-	client := retry.StandardClient()
+	defer client.CloseIdleConnections()
 	for _, test := range []struct{ method, target string }{
 		{http.MethodGet, endpoint.String()},
 		{http.MethodPost, endpoint.String() + "/extra"},
@@ -258,34 +262,76 @@ func TestTokenHTTPClientScopesAuthorizationAndOwnsHeaders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Scheme matching is checked without sending plaintext to a TLS endpoint.
+	// Scheme matching is checked without sending plaintext to a TLS endpoint:
+	// the token transport hands the request to a base that only records it.
+	var forwarded *http.Request
+	recording := *client.Transport.(*tokenTransport)
+	recording.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded = req
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Request: req}, nil
+	})
 	mismatch, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+endpoint.Host+endpoint.Path, nil)
 	mismatch.Header.Set("Authorization", "Bearer actions-token")
-	retry.RequestLogHook(nil, mismatch, 0)
-	if mismatch.Header.Get("Authorization") != "Bearer actions-token" || fetched.Load() != 0 {
-		t.Fatal("hook replaced auth outside the exact REST origin/path/method")
+	if _, err := recording.RoundTrip(mismatch); err != nil {
+		t.Fatal(err)
+	}
+	if forwarded.Header.Get("Authorization") != "Bearer actions-token" || fetched.Load() != 0 {
+		t.Fatal("transport replaced auth outside the exact REST origin/path/method")
 	}
 
 	shared := http.Header{"Authorization": {"Bearer placeholder"}}
 	var group sync.WaitGroup
 	for n := range 30 {
 		group.Go(func() {
-			value := fmt.Sprintf("credential-%d", n)
-			ctx := context.WithValue(t.Context(), tokenTestKey{}, value)
+			ctx := context.WithValue(t.Context(), tokenTestKey{}, fmt.Sprintf("credential-%d", n))
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), nil)
 			req.Header = shared
-			// Clone for this test-only expectation header. The hook's clone is
-			// verified separately below using the shared map itself.
-			retry.RequestLogHook(nil, req, 0)
-			req.Header.Set("X-Want-Auth", "Bearer "+value)
 			if err := readTokenResponse(t, client, req); err != nil {
 				t.Error(err)
 			}
 		})
 	}
 	group.Wait()
-	if shared.Get("Authorization") != "Bearer placeholder" || shared.Get("X-Want-Auth") != "" {
-		t.Fatalf("hook mutated shared caller headers: %v", shared)
+	if shared.Get("Authorization") != "Bearer placeholder" || len(shared) != 1 {
+		t.Fatalf("transport mutated shared caller headers: %v", shared)
+	}
+	for n := range 30 {
+		if _, ok := sharedAuth.LoadAndDelete(fmt.Sprintf("Bearer credential-%d", n)); !ok {
+			t.Errorf("credential-%d was not sent with its own request", n)
+		}
+	}
+	sharedAuth.Range(func(key, _ any) bool {
+		t.Errorf("unexpected credential sent: %v", key)
+		return true
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// A denied redirect and a missing credential cannot succeed on a resend, so
+// the policy ends the request instead of spending the four retries on them.
+func TestTokenRetryConfigStopsOnRedirectAndMissingCredential(t *testing.T) {
+	retry := tokenRetryConfig()
+	if retry.Max != 4 || retry.WaitMax != 30*time.Second {
+		t.Fatalf("retry = %d retries, waits up to %s; want 4 and 30s", retry.Max, retry.WaitMax)
+	}
+	for _, err := range []error{
+		&url.Error{Op: "Post", URL: "https://api.github.com/x", Err: errRedirectDenied},
+		&url.Error{Op: "Post", URL: "https://api.github.com/x", Err: ErrTokenUnavailable},
+	} {
+		again, stop := retry.ShouldRetry(t.Context(), nil, err)
+		if again || !errors.Is(stop, err) {
+			t.Errorf("ShouldRetry(%v) = %v, %v; want false and the error", err, again, stop)
+		}
+	}
+	reset := &url.Error{Op: "Post", URL: "https://api.github.com/x", Err: errors.New("connection reset by peer")}
+	if again, stop := retry.ShouldRetry(t.Context(), nil, reset); !again || stop != nil {
+		t.Errorf("ShouldRetry(transport error) = %v, %v; want a retry", again, stop)
+	}
+	if again, _ := retry.ShouldRetry(t.Context(), &http.Response{StatusCode: http.StatusBadGateway}, nil); !again {
+		t.Error("a 502 is not retried")
 	}
 }
 
@@ -321,14 +367,13 @@ func TestTokenHTTPClientFailsClosedIncludingHTTP2(t *testing.T) {
 			})
 			source.now = func() time.Time { return now }
 			endpoint, _ := url.Parse(server.URL + "/api/v3/orgs/acme/actions/runners/registration-token")
-			retry := tokenHTTPClient(endpoint, source.Token)
+			client := tokenHTTPClient(endpoint, source.Token)
 			if http2 {
-				transport := retry.HTTPClient.Transport.(*http.Transport)
+				transport := client.Transport.(*tokenTransport).base.(*http.Transport)
 				transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 				transport.ForceAttemptHTTP2 = true
 			}
-			defer retry.HTTPClient.CloseIdleConnections()
-			client := retry.StandardClient()
+			defer client.CloseIdleConnections()
 			request := func() error {
 				req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.String(), nil)
 				req.Header.Set("Authorization", "Bearer stale-secret")
@@ -354,9 +399,9 @@ func TestTokenHTTPClientFailsClosedIncludingHTTP2(t *testing.T) {
 			}
 			// A source that has never had a credential must also send nothing.
 			empty := tokenHTTPClient(endpoint, func(context.Context) (string, error) { return "", errors.New("leaked-secret") })
-			defer empty.HTTPClient.CloseIdleConnections()
+			defer empty.CloseIdleConnections()
 			req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.String(), nil)
-			if err := readTokenResponse(t, empty.StandardClient(), req); err == nil || strings.Contains(err.Error(), "secret") {
+			if err := readTokenResponse(t, empty, req); err == nil || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("unavailable request error = %v", err)
 			}
 			if requests.Load() != 2 {
@@ -387,10 +432,10 @@ func TestTokenHTTPClientRejectsRedirects(t *testing.T) {
 				}))
 				defer server.Close()
 				endpoint, _ := url.Parse(server.URL + "/registration-token")
-				retry := tokenHTTPClient(endpoint, func(context.Context) (string, error) { return "secret", nil })
-				defer retry.HTTPClient.CloseIdleConnections()
+				client := tokenHTTPClient(endpoint, func(context.Context) (string, error) { return "secret", nil })
+				defer client.CloseIdleConnections()
 				req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, endpoint.String(), nil)
-				if err := readTokenResponse(t, retry.StandardClient(), req); err == nil {
+				if err := readTokenResponse(t, client, req); err == nil {
 					t.Fatal("redirect was accepted")
 				}
 				if redirected.Load() != 0 {
@@ -481,7 +526,7 @@ func TestTokenRefreshPreservesMessageSession(t *testing.T) {
 		t.Fatalf("refresh = %q, %v", value, err)
 	}
 	// Parent calls refresh admin auth while the same session polls concurrently.
-	// This catches sharing a retryablehttp.Client between those two paths.
+	// This catches the two paths sharing mutable HTTP client state.
 	var group sync.WaitGroup
 	group.Go(func() {
 		for range 20 {
