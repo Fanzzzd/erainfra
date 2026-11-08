@@ -101,6 +101,23 @@ type harness struct {
 	gh      func(args []string) ([]byte, error)
 	git     func(dir string, args []string) ([]byte, error)
 	ghCalls [][]string
+	// faults, when set, may fail a request before it reaches the fake API, as a dropped
+	// connection does. sleep, when set, is App.Sleep.
+	faults func(r *http.Request) error
+	sleep  func(ctx context.Context, d time.Duration) error
+}
+
+// faultTransport fails a request with the error faults returns, or passes it on.
+type faultTransport struct {
+	next   http.RoundTripper
+	faults func(r *http.Request) error
+}
+
+func (t faultTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := t.faults(r); err != nil {
+		return nil, err
+	}
+	return t.next.RoundTrip(r)
 }
 
 var fixedNow = time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
@@ -153,6 +170,10 @@ func (h *harness) run(args ...string) int {
 			return h.git(dir, args)
 		},
 	}
+	if h.faults != nil {
+		app.HTTP.Transport = faultTransport{next: app.HTTP.Transport, faults: h.faults}
+	}
+	app.Sleep = h.sleep
 	return app.Run(context.Background(), args)
 }
 
