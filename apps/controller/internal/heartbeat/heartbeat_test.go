@@ -175,6 +175,45 @@ func TestObserveCountsEveryAnswerFromGitHubButNotAFailure(t *testing.T) {
 	}
 }
 
+type sessionWithStatistics struct {
+	fakeSessionClient
+	statistics *scaleset.RunnerScaleSetStatistic
+}
+
+func (c sessionWithStatistics) Session() scaleset.RunnerScaleSetSession {
+	return scaleset.RunnerScaleSetSession{Statistics: c.statistics}
+}
+
+// The job counts reach the report through the observed session: the session's
+// own statistics when the listener starts, then each message's.
+func TestObserveRecordsTheStatisticsGitHubSends(t *testing.T) {
+	reporter := New(newRecordingSender(), base())
+	session := reporter.Observe(sessionWithStatistics{
+		fakeSessionClient: fakeSessionClient{message: &scaleset.RunnerScaleSetMessage{
+			MessageID:  3,
+			Statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: 4, TotalRunningJobs: 2},
+		}},
+		statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: 1, TotalRunningJobs: 1},
+	})
+	session.Session()
+	if snapshot := reporter.Snapshot(); snapshot.AssignedJobs != 1 || snapshot.RunningJobs != 1 {
+		t.Fatalf("after Session: %+v", snapshot)
+	}
+	if _, err := session.GetMessage(t.Context(), 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := reporter.Snapshot(); snapshot.AssignedJobs != 4 || snapshot.RunningJobs != 2 {
+		t.Fatalf("after GetMessage: %+v", snapshot)
+	}
+	// An empty poll carries no statistics and keeps the last ones.
+	if _, err := reporter.Observe(fakeSessionClient{}).GetMessage(t.Context(), 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := reporter.Snapshot(); snapshot.AssignedJobs != 4 {
+		t.Fatalf("after an empty poll: %+v", snapshot)
+	}
+}
+
 func TestRecordStatisticsKeepsGitHubsCounts(t *testing.T) {
 	reporter := New(newRecordingSender(), base())
 	reporter.RecordStatistics(nil)

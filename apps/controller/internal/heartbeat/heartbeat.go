@@ -42,9 +42,9 @@ type Sender interface {
 	SendHeartbeat(ctx context.Context, report fleet.ControllerHeartbeat) error
 }
 
-// Reporter holds the controller's current report and sends it. It also
-// implements listener.MetricsRecorder, which is how GitHub's statistics reach
-// it without the Scaler knowing about heartbeats.
+// Reporter holds the controller's current report and sends it. GitHub's
+// statistics reach it through the session client Observe wraps, so the Scaler
+// knows nothing about heartbeats.
 type Reporter struct {
 	sender   Sender
 	interval time.Duration
@@ -162,13 +162,6 @@ func (r *Reporter) RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic
 	r.current.RunningJobs = statistics.TotalRunningJobs
 }
 
-// RecordJobStarted, RecordJobCompleted and RecordDesiredRunners complete
-// listener.MetricsRecorder. The Scaler already records each of them in the
-// control plane, so the heartbeat does not repeat them.
-func (r *Reporter) RecordJobStarted(*scaleset.JobStarted)     {}
-func (r *Reporter) RecordJobCompleted(*scaleset.JobCompleted) {}
-func (r *Reporter) RecordDesiredRunners(int)                  {}
-
 // Run reports at once, then every interval and on every state change, until
 // ctx ends. It then sends one last report with a fresh deadline, so a stopping
 // controller's final state reaches the control plane even though ctx is gone.
@@ -205,8 +198,9 @@ func (r *Reporter) send(ctx context.Context, budget time.Duration) {
 }
 
 // Observe wraps the listener's session client so every answer GitHub gives to
-// the long poll, a message or an empty reply, counts as contact. A failed poll
-// does not.
+// the long poll, a message or an empty reply, counts as contact, and the job
+// counts it carries become the report's. A failed poll does not count. The
+// session's own statistics are recorded when the listener reads them at start.
 func (r *Reporter) Observe(client listener.Client) listener.Client {
 	return observedClient{Client: client, reporter: r}
 }
@@ -220,8 +214,15 @@ func (c observedClient) GetMessage(ctx context.Context, lastMessageID, maxCapaci
 	message, err := c.Client.GetMessage(ctx, lastMessageID, maxCapacity)
 	if err == nil {
 		c.reporter.RecordPoll()
+		if message != nil {
+			c.reporter.RecordStatistics(message.Statistics)
+		}
 	}
 	return message, err
 }
 
-var _ listener.MetricsRecorder = (*Reporter)(nil)
+func (c observedClient) Session() scaleset.RunnerScaleSetSession {
+	session := c.Client.Session()
+	c.reporter.RecordStatistics(session.Statistics)
+	return session
+}

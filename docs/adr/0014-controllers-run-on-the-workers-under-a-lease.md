@@ -87,12 +87,14 @@ arbiter.
   registered Profile setting. Convex rechecks the lease after minting and never returns the key
   or App JWT. Enterprise runner registrations remain on the dedicated PAT path because GitHub
   does not support App authentication for them.
-- The scaleset v0.4.0 client has no mutable token provider. `githubscale.TokenClient` keeps its
-  inner client and message session, and supplies the current token only on the exact GitHub
-  registration-token request. Its adapter rejects redirects and prevents a request with an
-  expired/unavailable credential from reaching the network, including on cached HTTP/2
-  connections. Token refresh happens five minutes before expiry. Session polling gets a separate
-  retry client because this scaleset version mutates retry settings during admin-token refresh.
+- The scaleset client (v0.5.0) takes a JWT provider for App signing but no mutable installation
+  token. `githubscale.TokenClient` keeps its inner client and message session, and its HTTP
+  transport supplies the current token only on the exact GitHub registration-token request. It
+  rejects redirects and prevents a request with an expired/unavailable credential from reaching
+  the network, including on cached HTTP/2 connections, and neither is retried. Token refresh
+  happens five minutes before expiry. Session polling gets its own HTTP client. v0.4.0 needed that
+  because it mutated retry settings during admin-token refresh; v0.5.0 no longer writes to the
+  client, and the separate client stays so a session's connections are its own.
 - `retire --yes` holds the lease, checks busy counters, pauses, then deletes the scale set. It keeps
   renewing while deleting. Pausing before deletion prevents another standby from recreating it.
   All controller instances must be stopped first; `--force` overrides busy counters, not leases.

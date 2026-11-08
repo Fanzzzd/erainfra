@@ -144,12 +144,14 @@ func runHolder(ctx context.Context, cfg config.Config, store *convexstore.Store,
 			return client.MessageSessionClient(ctx, scaleSet.ID, hostname+":"+cfg.Profile)
 		},
 		Listen: func(ctx context.Context, session listener.Client) error {
-			scaleSetListener, err := listener.New(reporter.Observe(session), listener.Config{ScaleSetID: scaleSet.ID, MaxRunners: cfg.MaxRunners, Logger: logger.WithGroup("listener")}, listener.WithMetricsRecorder(reporter))
+			listenerLogger := logger.WithGroup("listener")
+			observed := reporter.Observe(session)
+			scaleSetListener, err := listener.New(observed, listener.Config{ScaleSetID: scaleSet.ID, MaxRunners: cfg.MaxRunners, Logger: listenerLogger})
 			if err != nil {
 				return err
 			}
 			logger.Info("runner scale-set controller started", "profile", cfg.Profile, "scaleSetID", scaleSet.ID, "epoch", epoch)
-			return scaleSetListener.Run(ctx, scaler)
+			return scaleSetListener.Run(ctx, scaler.ForSession(observed, listenerLogger))
 		}, Observer: reporter, Logger: logger.WithGroup("session"),
 	}
 	runErr = supervisor.Run(ctx)

@@ -16,7 +16,6 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/listener"
 )
 
 // JITIssuer is the narrow part of the GitHub scale-set client the reconciler
@@ -507,5 +506,3 @@ func (s *Scaler) HandleJobCompleted(ctx context.Context, job *scaleset.JobComple
 		FinishedAt:      finishedAt,
 	})
 }
-
-var _ listener.Scaler = (*Scaler)(nil)
