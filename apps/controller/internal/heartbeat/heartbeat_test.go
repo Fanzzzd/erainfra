@@ -184,3 +184,62 @@ func TestRecordStatisticsKeepsGitHubsCounts(t *testing.T) {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }
+
+// blockingSender holds its first report until released, so a test can stop the
+// Reporter while that report is in flight.
+type blockingSender struct {
+	*recordingSender
+	started  chan struct{}
+	release  chan struct{}
+	inFlight error
+}
+
+func (s *blockingSender) SendHeartbeat(ctx context.Context, report fleet.ControllerHeartbeat) error {
+	s.mu.Lock()
+	first := len(s.reports) == 0
+	s.mu.Unlock()
+	if first {
+		close(s.started)
+		<-s.release
+		s.mu.Lock()
+		s.inFlight = ctx.Err()
+		s.mu.Unlock()
+	}
+	return s.recordingSender.SendHeartbeat(ctx, report)
+}
+
+// The control plane keeps the report it received last. A stop that abandoned
+// the report in flight would let that older report land after "stopped", so
+// the in-flight report must finish on a live context before the final one goes.
+func TestAStopWaitsForTheReportInFlightBeforeTheFinalOne(t *testing.T) {
+	sender := &blockingSender{
+		recordingSender: newRecordingSender(),
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	reporter := New(sender, base(), WithInterval(time.Hour))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reporter.Run(ctx)
+	}()
+
+	<-sender.started
+	reporter.SetSession(fleet.SessionStopped, nil)
+	cancel()
+	close(sender.release)
+	<-done
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if sender.inFlight != nil {
+		t.Fatalf("stopping cancelled the report in flight: %v", sender.inFlight)
+	}
+	if first := sender.reports[0]; first.SessionState != fleet.SessionStarting {
+		t.Fatalf("first report = %+v, want starting", first)
+	}
+	if last := sender.reports[len(sender.reports)-1]; last.SessionState != fleet.SessionStopped {
+		t.Fatalf("last report = %+v, want stopped after the in-flight one", last)
+	}
+}

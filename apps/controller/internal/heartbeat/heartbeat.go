@@ -29,6 +29,14 @@ const DefaultInterval = 30 * time.Second
 // needs some of that.
 const finalReportBudget = 5 * time.Second
 
+// reportBudget bounds every other report. A stop does not cancel a report in
+// flight: the control plane keeps whichever report it received last, and a
+// request the controller abandoned can still be processed after the final one,
+// so abandoning it could overwrite "stopped" with an older state. Waiting out a
+// slow report at shutdown costs at most this long, which with the session close
+// and the final report stays inside systemd's 30 s.
+const reportBudget = 10 * time.Second
+
 // Sender delivers one report. convexstore.Store implements it.
 type Sender interface {
 	SendHeartbeat(ctx context.Context, report fleet.ControllerHeartbeat) error
@@ -168,25 +176,28 @@ func (r *Reporter) RecordDesiredRunners(int)                  {}
 func (r *Reporter) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
-	r.send(ctx)
+	r.send(ctx, reportBudget)
 	for {
 		select {
 		case <-ctx.Done():
-			final, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalReportBudget)
-			r.send(final)
-			cancel()
+			r.send(ctx, finalReportBudget)
 			return
 		case <-ticker.C:
-			r.send(ctx)
+			r.send(ctx, reportBudget)
 		case <-r.wake:
-			r.send(ctx)
+			r.send(ctx, reportBudget)
 		}
 	}
 }
 
-func (r *Reporter) send(ctx context.Context) {
+// send delivers the current report on a context that ctx's cancellation does
+// not reach, bounded by budget. Reports go out one at a time, so the control
+// plane has answered each one before the next is sent, and they land in order.
+func (r *Reporter) send(ctx context.Context, budget time.Duration) {
 	report := r.Snapshot()
-	if err := r.sender.SendHeartbeat(ctx, report); err != nil && ctx.Err() == nil {
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	defer cancel()
+	if err := r.sender.SendHeartbeat(sendCtx, report); err != nil {
 		// A failed report is not fatal: the controller keeps serving jobs, and
 		// the control plane notices the silence on its own.
 		r.logger.Warn("could not report controller heartbeat", "state", report.SessionState, "error", err)
