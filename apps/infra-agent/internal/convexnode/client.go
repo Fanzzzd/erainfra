@@ -59,6 +59,9 @@ type Payload struct {
 	Source    agent.ConvexSource `json:"source"`
 	Dir       string             `json:"dir"`
 	Image     string             `json:"image"`
+	// Adopt names unlabelled containers this deploy replaces on the operator's word (erainfra deploy
+	// --adopt). Convex sends only names this Node's services derive; DeployAppAdopting checks again.
+	Adopt []string `json:"adopt"`
 }
 type Executor interface {
 	Execute(context.Context, Payload) string
@@ -158,7 +161,10 @@ func (e LocalExecutor) Execute(ctx context.Context, p Payload) string {
 				}
 			}
 		}
-		_, err = e.Runner.DeployApp(ctx, p.App, p.Services)
+		if len(p.Adopt) > len(p.Services) {
+			return "failure"
+		}
+		_, err = e.Runner.DeployAppAdopting(ctx, p.App, p.Services, p.Adopt)
 		if err != nil {
 			// Only the outcome goes to Convex, so this log is where an operator reads why, such as
 			// an ownership refusal. The error names the step and Docker objects, never env values:

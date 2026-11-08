@@ -122,6 +122,7 @@ export async function createRun(
     port?: number;
     gitBindingId?: Id<"gitBindings">;
     failover?: NonNullable<Run["failover"]>;
+    adopt?: string[];
   },
 ) {
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.app))
@@ -139,6 +140,7 @@ export async function createRun(
     ...(input.port === undefined ? {} : { port: input.port }),
     ...(input.gitBindingId === undefined ? {} : { gitBindingId: input.gitBindingId }),
     ...(input.failover === undefined ? {} : { failover: input.failover }),
+    ...(input.adopt === undefined || input.adopt.length === 0 ? {} : { adopt: input.adopt }),
   });
   await ctx.scheduler.runAfter(0, internal.infra.pipeline.tick, { deploymentId: id });
   return id;
@@ -329,6 +331,13 @@ async function runStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       if (spec.app !== run.app)
         return await fail(ctx, run, {
           error: `the spec names App "${spec.app}", but this run deploys "${run.app}"`,
+        });
+      // --adopt may only name a container this run starts, so it never reaches another name.
+      const starts = spec.services.map((s) => `${run.app}-${s.name}`);
+      const stray = (run.adopt ?? []).find((name) => !starts.includes(name));
+      if (stray !== undefined)
+        return await fail(ctx, run, {
+          error: `--adopt ${stray}: this deploy starts no container of that name; it starts ${starts.join(", ")}`,
         });
       return await moveTo(ctx, run, "planning", "planning placement and ports", { spec });
     }

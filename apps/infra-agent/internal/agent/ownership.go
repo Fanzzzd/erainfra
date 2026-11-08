@@ -72,8 +72,15 @@ func (r ShellRunner) inspect(ctx context.Context, kind, name string, out any) (b
 //
 // A labelled container must carry exactly this App and service. A container without the labels
 // predates them; it was created by the Hub, and it is this App's only when it carries the shape the
-// Hub gave it (hubShaped). Anything else is refused with instructions, never removed.
-func (r ShellRunner) ownContainer(ctx context.Context, name, app, service string) error {
+// Hub gave it (hubShaped). Anything else is refused with instructions, never removed, unless the
+// operator named it for adoption (adopted): then an unlabelled container is this App's on the
+// operator's word, and this deploy replaces it in the same step. A label is evidence of another
+// owner, and adoption never overrides it.
+//
+// The shape test reads the name, the networks and the alias only. Mounts, ports, the image and the
+// command are what a deploy changes, so a container that differs from the spec in them (extra
+// read-only bind mounts an operator added by hand, say) is adopted when its shape matches.
+func (r ShellRunner) ownContainer(ctx context.Context, name, app, service string, adopted bool) error {
 	var info containerInfo
 	found, err := r.inspect(ctx, "container", name, &info)
 	if err != nil || !found {
@@ -86,12 +93,18 @@ func (r ShellRunner) ownContainer(ctx context.Context, name, app, service string
 		return fmt.Errorf("container %s belongs to %s, not %s; refusing to replace it", name,
 			describeOwner(owner, info.Config.Labels[LabelService]), describeOwner(app, service))
 	}
-	if hubShaped(name, info, app, service == "") {
+	if adopted || hubShaped(name, info, app, service == "") {
 		return nil
 	}
-	return fmt.Errorf("container %s has no %s label and is not shaped like %s's, so it may be another App's; "+
-		"refusing to replace it. If it is %s's, remove it on this Node (docker rm -f %s) and deploy again "+
-		"(docs/infra-management.md, \"Names and ownership\")", name, LabelApp, describeOwner(app, service), app, name)
+	if service == "" {
+		return fmt.Errorf("container %s has no %s label and is not shaped like %s's, so it may be another App's; "+
+			"refusing to replace it. If it is %s's, remove it on this Node (docker rm -f %s) and deploy again "+
+			"(docs/infra-management.md, \"Names and ownership\")", name, LabelApp, describeOwner(app, service), app, name)
+	}
+	return fmt.Errorf("container %s has no %s label and is not shaped like %s's (on network %s-net with alias %s), "+
+		"so it may be another App's; refusing to replace it. If it is %s's, deploy again with "+
+		"erainfra deploy --adopt %s, which replaces it in the same step "+
+		"(docs/infra-management.md, \"Names and ownership\")", name, LabelApp, describeOwner(app, service), app, service, app, name)
 }
 
 // hubShaped reports whether an unlabelled container named `name` has the shape the Hub gave one of
@@ -126,7 +139,11 @@ func hubShaped(name string, info containerInfo, app string, single bool) bool {
 //
 // `single` is true for the Hub's single-container deploy (Deploy) and false for an App's services
 // (DeployApp).
-func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, args []string) error {
+//
+// adoptedContainers names the unlabelled containers the operator adopted for this deploy
+// (ownContainer). This deploy replaces them, so a volume they mount counts as mounted by this
+// App's own containers.
+func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, args, adoptedContainers []string) error {
 	var create, adopt []string
 	for _, name := range mountedVolumes(args) {
 		if slices.Contains(create, name) || slices.Contains(adopt, name) {
@@ -147,12 +164,12 @@ func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, ar
 			}
 			// The label names the App, not the deploy kind: the Hub's single container `db` and
 			// App db's services both label what they create erainfra.app=db. The users decide.
-			if err := r.checkVolumeUsers(ctx, name, app, single, true); err != nil {
+			if err := r.checkVolumeUsers(ctx, name, app, single, true, adoptedContainers); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := r.ownUnlabelledVolume(ctx, name, app, single); err != nil {
+		if err := r.ownUnlabelledVolume(ctx, name, app, single, adoptedContainers); err != nil {
 			return err
 		}
 		adopt = append(adopt, name)
@@ -183,7 +200,7 @@ func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, ar
 // redeploy replaces its own container, but the Hub's single container `db` and App db's services
 // are not each other's replacements: deploying the services while the single container still runs
 // would put two databases on one data directory, the same harm with one App name.
-func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, single bool) error {
+func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, single bool, adoptedContainers []string) error {
 	owner, recorded, err := r.recordedVolumeOwner(name)
 	if err != nil {
 		return err
@@ -192,14 +209,14 @@ func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, 
 		return fmt.Errorf("volume %s was adopted by App %q on this Node, not App %q; refusing to mount it "+
 			"(docs/infra-management.md, \"Names and ownership\")", name, owner, app)
 	}
-	return r.checkVolumeUsers(ctx, name, app, single, false)
+	return r.checkVolumeUsers(ctx, name, app, single, false, adoptedContainers)
 }
 
 // checkVolumeUsers refuses the volume unless every container that mounts it, running or stopped,
 // is one this deploy may share it with: a container of this App and of this deploy's kind. It runs
 // for a volume labelled for this App as well as an unlabelled one, since the label says nothing
 // about which of the App's deploy kinds wrote the data.
-func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, single, volumeLabelled bool) error {
+func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, single, volumeLabelled bool, adoptedContainers []string) error {
 	ids, err := r.volumeUsers(ctx, name)
 	if err != nil {
 		return err
@@ -226,7 +243,7 @@ func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, sin
 			sameKind = (info.Config.Labels[LabelService] == "") == single
 			otherKind = !sameKind
 		} else {
-			sameKind = hubShaped(container, info, app, single)
+			sameKind = slices.Contains(adoptedContainers, container) || hubShaped(container, info, app, single)
 			otherKind = !sameKind && hubShaped(container, info, app, !single)
 		}
 		switch {

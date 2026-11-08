@@ -158,7 +158,14 @@ The run reads erainfra.yaml or portless.yaml from the source; without one it nee
 With --repo the build Node clones the repository instead, and nothing is uploaded.
 
 The exit code is 0 when the run ends done, 1 when it fails. --detach prints the
-deployment and returns at once; follow it with ` + "`erainfra deployments view <id>`" + `.`,
+deployment and returns at once; follow it with ` + "`erainfra deployments view <id>`" + `.
+
+Before replacing a container, the Infra Agent checks it is this App's: labelled for
+it, or a Hub container on <app>-net under the service's alias. It refuses anything
+else and leaves it running. If the refused container is this App's (one started by
+hand, say), --adopt <container> tells the deploy to replace it in the same step,
+with no manual removal and no gap before the new one starts. It names a container
+this deploy starts (<app>-<service>), and it never overrides another App's label.`,
 	flags: []flagSpec{
 		{name: "app", metavar: "NAME", usage: "App name (default: the directory's name)"},
 		{name: "port", metavar: "PORT", usage: "container port, for a source with no spec file"},
@@ -168,6 +175,7 @@ deployment and returns at once; follow it with ` + "`erainfra deployments view <
 		{name: "branch", metavar: "BRANCH", usage: "branch with --repo (default main)"},
 		{name: "sha", metavar: "SHA", usage: "exact 40-character commit with --repo"},
 		{name: "detach", usage: "start the deploy and return without following it"},
+		{name: "adopt", metavar: "CONTAINER", repeat: true, usage: "replace this unlabelled container although the ownership check refused it (repeatable)"},
 	},
 	run: func(ctx context.Context, a *App, in invocation) error {
 		req := map[string]any{}
@@ -213,6 +221,14 @@ deployment and returns at once; follow it with ` + "`erainfra deployments view <
 			return usagef("cannot use %q as an App name; pass --app (lowercase letters, digits, dashes)", name)
 		}
 		req["app"] = name
+		if adopt := in.all("adopt"); len(adopt) > 0 {
+			for _, container := range adopt {
+				if !strings.HasPrefix(container, name+"-") {
+					return usagef("--adopt %s: name a container of App %s, %s-<service>", container, name, name)
+				}
+			}
+			req["adopt"] = adopt
+		}
 		if raw, ok := in.value("port"); ok {
 			port, err := strconv.Atoi(raw)
 			if err != nil || port < 1 || port > 65535 {

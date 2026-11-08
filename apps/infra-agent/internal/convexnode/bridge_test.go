@@ -56,6 +56,41 @@ func TestDeployStartsContainersWithTheHostGatewayEntry(t *testing.T) {
 	}
 }
 
+// A deploy payload's adopt list reaches the ownership check: a container that is neither labelled
+// nor in the Hub's shape is replaced when the payload adopts it, and refused when it does not.
+func TestDeployPayloadAdoptsTheContainersItNames(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls.log")
+	docker := filepath.Join(dir, "docker")
+	// `container inspect shop-web` finds a container on shop-net without the service alias.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\n" +
+		"if [ \"$1 $2 $3\" = 'container inspect shop-web' ]; then echo '[{\"Config\":{\"Labels\":null},\"NetworkSettings\":{\"Networks\":{\"shop-net\":{\"Aliases\":null}}}}]'; exit 0; fi\n" +
+		"[ \"$2\" = inspect ] && [ \"$1\" != image ] && { echo \"Error: No such object: $3\" >&2; exit 1; }\nexit 0\n"
+	if err := os.WriteFile(docker, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exec := LocalExecutor{Runner: agent.ShellRunner{Docker: docker}}
+	p := Payload{Kind: "deploy", App: "shop", Services: []agent.Service{{Name: "web", Image: "127.0.0.1:5000/shop-web:abc"}}}
+	if got := exec.Execute(context.Background(), p); got != "failure" {
+		t.Fatalf("without adopt: %s", got)
+	}
+	p.Adopt = []string{"shop-web", "shop-db"}
+	if got := exec.Execute(context.Background(), p); got != "failure" {
+		t.Fatalf("an adopt list longer than the services: %s", got)
+	}
+	p.Adopt = []string{"shop-web"}
+	if got := exec.Execute(context.Background(), p); got != "success" {
+		t.Fatalf("with adopt: %s", got)
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "rm -f shop-web\nrun -d --name shop-web ") {
+		t.Fatalf("docker calls %q", calls)
+	}
+}
+
 // fakeDockerCLI answers `docker network inspect bridge` with out, or fails when out is "fail".
 func fakeDockerCLI(t *testing.T, out string) string {
 	t.Helper()

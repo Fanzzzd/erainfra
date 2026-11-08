@@ -504,6 +504,69 @@ describe("deploy pipeline", () => {
   });
 });
 
+describe("adopting a container (erainfra deploy --adopt)", () => {
+  it("hands each Node only the adopted containers it starts, for this run only, and audits them", async () => {
+    const s = await setup();
+    await s.beat();
+    const id = await s.startUpload("shop", await s.upload(), { adopt: ["shop-web"] });
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    await s.agent("node-a"); // build web
+    const onA = await s.agent("node-a");
+    const onB = await s.agent("node-b");
+    expect(onA[0].payload).toMatchObject({ kind: "deploy", app: "shop", adopt: ["shop-web"] });
+    expect(onB[0].payload.adopt).toBeUndefined();
+    expect((await s.deployment(id)).stage).toBe("done");
+    const audit = await s.t.run((ctx) => ctx.db.query("auditEvents").collect());
+    const request = audit.find(
+      (e) => e.action === "apps.deploy.request" && e.outcome === "attempt",
+    );
+    expect(JSON.parse(request!.metaJson!)).toMatchObject({ deploymentId: id, adopt: ["shop-web"] });
+
+    // The next deploy adopts nothing unless it asks again.
+    await s.startUpload("shop", await s.upload());
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    await s.agent("node-a");
+    const again = await s.agent("node-a");
+    expect(again[0].payload.kind).toBe("deploy");
+    expect(again[0].payload.adopt).toBeUndefined();
+  });
+
+  it("fails a run that adopts a container it does not start, before any Node acts", async () => {
+    const s = await setup();
+    await s.beat();
+    const id = await s.startUpload("shop", await s.upload(), { adopt: ["shop-cache"] });
+    await s.agent("node-a", () => ({ outcome: "success", spec: SHOP_SPEC }));
+    const run = await s.deployment(id);
+    expect(run.stage).toBe("failed");
+    expect(run.error).toBe(
+      "--adopt shop-cache: this deploy starts no container of that name; it starts shop-web, shop-db",
+    );
+    expect(await s.pending("node-a")).toEqual([]);
+    expect(await s.pending("node-b")).toEqual([]);
+  });
+
+  it("refuses an adopt list that names another App's container or is not a list of names", async () => {
+    const s = await setup();
+    await s.beat();
+    const storageId = await s.upload();
+    for (const [adopt, message] of [
+      [["blog-web"], "adopt blog-web: name a container of this App, <app>-<service>"],
+      [["shop-"], "adopt shop-: name a container of this App, <app>-<service>"],
+      [["shop-web", "shop-web"], "adopt names a container twice"],
+      ["shop-web", "adopt must be an array of container names"],
+      [[1], "adopt must be an array of container names"],
+    ] as const) {
+      const res = await s.operator("deployments", s.admin, {
+        app: "shop",
+        upload: storageId,
+        adopt,
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: { message: string } }).error.message).toBe(message);
+    }
+  });
+});
+
 async function sign(secret: string, body: string) {
   const key = await crypto.subtle.importKey(
     "raw",

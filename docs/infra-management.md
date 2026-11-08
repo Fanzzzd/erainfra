@@ -828,8 +828,11 @@ owner:
   labels must match. An unlabelled container is one the Hub created, and it is accepted only when it
   is attached to `<app>-net` with the service name as its alias, which is how the Hub started every
   App service, and which no other App's container can match. A single-container App's unlabelled
-  container must be on Docker's default network only. Any other container is refused and left
-  running, and the deploy fails with the reason. A volume labelled for another App is refused.
+  container must be on Docker's default network only. The check reads only the name, the networks
+  and the alias. Mounts, ports and the image are what a deploy replaces, so extra bind mounts an
+  operator added by hand do not stop a Hub container from being accepted. Any other container is
+  refused and left running, and the deploy fails with the reason, unless the operator adopts it
+  (below). A volume labelled for another App is refused.
 - **An unlabelled volume belongs to the containers that mount it.** Planning cannot protect every
   volume the Hub created. The Hub's single-container deploy (`agents.deploy`) mounts any volume
   name its Docker args give, such as `-v postgres-data:/var/lib/postgresql/data` for an App `db`.
@@ -855,11 +858,26 @@ receives only the outcome, and the Infra Agent writes the reason to its standard
 `[erainfra] deploy <app> failed: <reason>`.
 
 To adopt a container the Infra Agent refused, first confirm on the Node that it belongs to the App
-being deployed (`docker inspect <name>`, look at its image and networks). Then remove it with
-`docker rm -f <name>` and deploy the App again. The new container carries the labels. The App's
-volumes are not touched. If the container belongs to another App, change the name that collides
-in the App that has no data yet. An App that already keeps data in a volume moves the data first
-(below).
+being deployed (`docker inspect <name>`, look at its image and networks). Then deploy again with
+`--adopt`:
+
+```sh
+erainfra deploy ./my-app --adopt my-app-web
+```
+
+The Infra Agent replaces the named container in the deploy step, as it replaces any container of
+the App: it removes it and starts the new one right after, so the App is down no longer than in a
+normal redeploy. Do not remove the container by hand first; that leaves the App down until the next
+deploy succeeds. The new container carries the labels, so later deploys need no `--adopt`. The
+App's volumes are not touched, and a volume the adopted container mounts counts as this App's.
+`--adopt` is repeatable and holds for one run only. It must name a container the run starts,
+`<app>-<service>`: the CLI and Convex refuse any other name, and the Infra Agent checks again.
+It never overrides a label, so a container labelled for another App or service is still refused.
+Each adoption is in the audit log, in the `apps.deploy.request` entry. A Node whose Infra Agent
+predates `--adopt` ignores it and refuses as before.
+
+If the container belongs to another App, change the name that collides in the App that has no data
+yet. An App that already keeps data in a volume moves the data first (below).
 
 To move the Hub's single-container App `db` to a spec with services, stop sending it traffic, then
 `docker rm -f db` on its Node and deploy App `db`. A service volume can only be named `db-<volume>`,
@@ -923,7 +941,9 @@ curl -fsS -H "Authorization: Bearer $TOKEN" "$SITE/api/v1/deployments?app=my-app
 A deploy request names the App and exactly one source: `upload` (a storage id from the upload) or
 `repo` with an optional `branch` (default `main`) and `sha`. `port` is the container port for a
 source with no spec file; `node` names the Node unpinned services land on, and `buildNode` the Node
-that builds, which defaults to the `node` default. The spec's `app:`, when set, must match the
+that builds, which defaults to the `node` default. `adopt` lists containers the run replaces
+although the ownership check would refuse them, as `erainfra deploy --adopt` sends it
+([Names and ownership](#names-and-ownership)). The spec's `app:`, when set, must match the
 request's App. Uploads are limited to 256 MiB.
 
 Without `node`, an App that already runs stays where it runs: its primary Node takes the unpinned

@@ -7,6 +7,7 @@ import { appendAudit } from "./auditLog";
 import { createRun, MAX_UPLOAD_BYTES } from "./pipeline";
 
 const APP = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const SERVICE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const REPO = /^[\w.-]+\/[\w.-]+$/;
 const BRANCH = /^[A-Za-z0-9._/-]{1,255}$/;
 
@@ -50,6 +51,7 @@ export const start = internalMutation({
     port: v.optional(v.number()),
     buildNode: v.optional(v.string()),
     node: v.optional(v.string()),
+    adopt: v.optional(v.array(v.string())),
   },
   returns: v.union(
     v.object({ ok: v.literal(true), deploymentId: v.id("appDeployments") }),
@@ -95,6 +97,13 @@ export const start = internalMutation({
         ...(args.sha === undefined ? {} : { sha: args.sha }),
       };
     }
+    const adopt = args.adopt ?? [];
+    if (adopt.length > 32) return await refuse("adopt names at most 32 containers");
+    for (const name of adopt) {
+      if (!name.startsWith(`${args.app}-`) || !SERVICE.test(name.slice(args.app.length + 1)))
+        return await refuse(`adopt ${name}: name a container of this App, <app>-<service>`);
+    }
+    if (new Set(adopt).size !== adopt.length) return await refuse("adopt names a container twice");
     let buildNodeId: Id<"nodes"> | undefined;
     let defaultNodeId: Id<"nodes"> | undefined;
     try {
@@ -115,13 +124,15 @@ export const start = internalMutation({
       ...(buildNodeId === undefined ? {} : { buildNodeId }),
       ...(defaultNodeId === undefined ? {} : { defaultNodeId }),
       ...(args.port === undefined ? {} : { port: args.port }),
+      ...(adopt.length === 0 ? {} : { adopt }),
     });
     await appendAudit(ctx, {
       actor: args.actor,
       action: "apps.deploy.request",
       target: args.app,
       outcome: "attempt",
-      meta: { deploymentId, source: source.kind },
+      // An adoption replaces a container no ownership check vouched for: the log names it.
+      meta: { deploymentId, source: source.kind, ...(adopt.length === 0 ? {} : { adopt }) },
     });
     return { ok: true as const, deploymentId };
   },

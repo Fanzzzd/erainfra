@@ -412,6 +412,33 @@ func TestDeployFailsWithTheRunsErrorAndDeploysARepository(t *testing.T) {
 	h.expect(ExitUsage, "deploy", filepath.Join(t.TempDir(), "missing"))
 }
 
+func TestDeployAdoptSendsTheContainersToReplace(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	_, _, start := deployRoutes(h, `{"deployment":{"id":"dep1","app":"my-site","stage":"done","detail":"deployed"}}`)
+	h.expect(ExitOK, "deploy", "--repo", "acme/my-site", "--adopt", "my-site-web", "--adopt=my-site-db", "--detach")
+	adopt, _ := start.last(t).body["adopt"].([]any)
+	if len(adopt) != 2 || adopt[0] != "my-site-web" || adopt[1] != "my-site-db" {
+		t.Errorf("deploy body = %v", start.last(t).body)
+	}
+	// Without --adopt the request carries no adopt field, so an older control plane accepts it.
+	h.expect(ExitOK, "deploy", "--repo", "acme/my-site", "--detach")
+	if _, ok := start.last(t).body["adopt"]; ok {
+		t.Errorf("deploy body = %v", start.last(t).body)
+	}
+	before := len(start.requests)
+	h.expect(ExitUsage, "deploy", "--repo", "acme/my-site", "--adopt", "blog-web")
+	if !strings.Contains(h.stderr.String(), "--adopt blog-web: name a container of App my-site, my-site-<service>") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	if len(start.requests) != before {
+		t.Error("a refused --adopt still started a deploy")
+	}
+	h.expect(ExitOK, "deploy", "--help")
+	if !strings.Contains(h.stdout.String(), "--adopt CONTAINER") {
+		t.Errorf("deploy --help lacks --adopt:\n%s", h.stdout.String())
+	}
+}
+
 func TestDeployPacksAGitRepositoryWithGitArchive(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	var gitCalls [][]string

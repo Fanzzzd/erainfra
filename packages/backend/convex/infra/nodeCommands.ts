@@ -496,7 +496,19 @@ export const payload = internalQuery({
         env,
       };
     });
-    const result = { kind: "deploy" as const, app: spec.app.name, services };
+    // Only an operator's deploy run adopts, and each Node only the containers it starts.
+    const adopt =
+      row.command.operation === "failover"
+        ? []
+        : (spec.dep.adopt ?? []).filter((name) =>
+            spec.services.some((s) => `${spec.app.name}-${s.name}` === name),
+          );
+    const result = {
+      kind: "deploy" as const,
+      app: spec.app.name,
+      services,
+      ...(adopt.length === 0 ? {} : { adopt }),
+    };
     if (new TextEncoder().encode(JSON.stringify(result)).length > 200 * 1024)
       throw new ConvexError("Deployment payload too large");
     return result;
