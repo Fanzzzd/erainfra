@@ -5,13 +5,80 @@ export const MESH_CAPABILITY = "erainfra-mesh/v1";
 export type MeshPeer = { id: string; relay_urls: string[]; direct_addrs: string[] };
 export type MeshExposure = { name: string; target: string; allowed_peers: string[] };
 export type MeshConsumer = { name: string; peer: string; service: string; listen: string };
+// A relay is a URL string, or an object for a relay whose QUIC address discovery is on another
+// UDP port (often 443 where a cloud firewall blocks iroh's default 7842) or off.
+export type MeshRelay = string | { url: string; quic_port: number } | { url: string; quic: false };
 export type MeshDesired = {
   v: 1;
   fleet: MeshPeer[];
-  relays: { relays: string[]; auth_token?: string; n0_fallback: boolean };
+  relays: { relays: MeshRelay[]; auth_token?: string; n0_fallback: boolean };
   exposures: MeshExposure[];
   links: MeshConsumer[];
 };
+
+// Parses ERAINFRA_MESH_RELAYS with the rules the Infra Agent and erainfra-mesh apply
+// (meshclient.ParseRelays), so a bad entry fails here with its number rather than on every Node.
+export function parseMeshRelays(raw: string, withToken: boolean): MeshRelay[] {
+  const shape =
+    'ERAINFRA_MESH_RELAYS must be a JSON URL array, each entry a URL string or {"url":"https://relay.example.com","quic_port":443}';
+  let list: unknown;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    throw new Error(shape);
+  }
+  if (!Array.isArray(list)) throw new Error(shape);
+  return list.map((entry: unknown, i) => {
+    const fail = (why: string): never => {
+      throw new Error(`ERAINFRA_MESH_RELAYS entry ${i + 1}: ${why}`);
+    };
+    let relay: MeshRelay;
+    let url: string;
+    if (typeof entry === "string") {
+      relay = url = entry;
+    } else if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+      const o = entry as Record<string, unknown>;
+      const unknownKey = Object.keys(o)
+        .toSorted()
+        .find((k) => !["url", "quic", "quic_port"].includes(k));
+      if (unknownKey !== undefined)
+        fail(
+          `relay field ${JSON.stringify(unknownKey)} is unknown; a relay object has "url", "quic_port" and "quic"`,
+        );
+      if (typeof o.url !== "string") return fail('a relay object needs "url", a string');
+      url = o.url;
+      if ("quic" in o && typeof o.quic !== "boolean")
+        fail(`relay ${url}: "quic" must be true or false, not ${JSON.stringify(o.quic)}`);
+      if ("quic_port" in o) {
+        const p = o.quic_port;
+        if (typeof p !== "number" || !Number.isInteger(p) || p < 1 || p > 65535)
+          fail(
+            `relay ${url}: "quic_port" must be a port number from 1 to 65535, not ${JSON.stringify(p)}`,
+          );
+        if (o.quic === false)
+          fail(`relay ${url}: "quic": false turns QUIC address discovery off, so drop "quic_port"`);
+        relay = { url, quic_port: p as number };
+      } else {
+        relay = o.quic === false ? { url, quic: false } : url;
+      }
+    } else {
+      return fail(
+        `a relay is a URL string or an object like {"url":"https://relay.example.com","quic_port":443}, not ${JSON.stringify(entry)}`,
+      );
+    }
+    let scheme = "";
+    try {
+      scheme = new URL(url).protocol.replace(/:$/, "");
+    } catch {
+      // Not an absolute URL: reported as an empty scheme, as the Infra Agent does.
+    }
+    if (scheme === "http" && withToken)
+      fail(`relay ${url} is plain http; refusing to send the relay auth token over it`);
+    if (scheme !== "https" && scheme !== "http")
+      fail(`relay ${url} has scheme ${JSON.stringify(scheme)}; use https`);
+    return relay;
+  });
+}
 type Gateway = Pick<AgentGateway, "list" | "send">;
 type MeshStatus = {
   endpoint_id: string;

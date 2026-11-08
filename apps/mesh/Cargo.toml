@@ -46,10 +46,13 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# `unstable-net-report` lets a test read Endpoint::net_report to see a QUIC address discovery
+# round trip complete. Tests only: the shipped binary does not use it.
 iroh = { version = "=1.4.1", default-features = false, features = [
   "tls-ring",
   "portmapper",
   "test-utils",
+  "unstable-net-report",
 ] }
 tempfile = "3"
 

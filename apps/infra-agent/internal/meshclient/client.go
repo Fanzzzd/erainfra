@@ -27,9 +27,9 @@ type Peer struct {
 	DirectAddrs []string `json:"direct_addrs"`
 }
 type Relays struct {
-	URLs       []string `json:"relays"`
-	AuthToken  string   `json:"auth_token,omitempty"`
-	N0Fallback bool     `json:"n0_fallback"`
+	List       []Relay `json:"relays"`
+	AuthToken  string  `json:"auth_token,omitempty"`
+	N0Fallback bool    `json:"n0_fallback"`
 }
 type Exposure struct {
 	Name           string   `json:"name"`
@@ -193,8 +193,8 @@ func (c *Client) SetFleet(ctx context.Context, peers []Peer) error {
 	}{peers}, nil)
 }
 func (c *Client) SetRelays(ctx context.Context, r Relays) error {
-	if r.URLs == nil {
-		r.URLs = []string{}
+	if r.List == nil {
+		r.List = []Relay{}
 	}
 	return c.call(ctx, "set_relays", r, nil)
 }

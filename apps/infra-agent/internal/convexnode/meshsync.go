@@ -193,7 +193,7 @@ func (m *meshLoop) tick(ctx context.Context) {
 				m.published, m.publishedAt, m.stateDue = &addr, m.now(), true
 				// iroh puts only the home relay in an address, so naming it shows an operator which
 				// relay peers reach this Node through (docs/runbooks/run-a-fleet-relay.md).
-				m.o.Logf("connect-convex: published mesh endpoint %s (%d relay%s, %d direct addresses)", key, len(addr.RelayURLs), namedRelays(addr.RelayURLs), len(addr.DirectAddrs))
+				m.o.Logf("connect-convex: published mesh endpoint %s (%d relay%s, %d direct addresses)", key, len(addr.RelayURLs), namedRelays(addr.RelayURLs, m.o.Relays.List), len(addr.DirectAddrs))
 			}
 		}
 	}
@@ -499,12 +499,34 @@ func publishable(p meshclient.Peer) meshclient.Peer {
 }
 
 // namedRelays is the relay part of the publication log line: empty for none, otherwise a space and
-// the URLs. They come from the sidecar's own address and carry no token.
-func namedRelays(urls []string) string {
-	if len(urls) == 0 {
-		return ""
+// the URLs. They come from the sidecar's own address and carry no token. A URL the Node's policy
+// lists with a QUIC address discovery setting other than the default carries it, as written in
+// ERAINFRA_MESH_RELAYS (" quic_port=443"), so the line shows what the Node measured the relay with.
+func namedRelays(urls []string, policy []meshclient.Relay) string {
+	var b strings.Builder
+	for _, u := range urls {
+		b.WriteString(" " + u)
+		for _, r := range policy {
+			if sameRelayURL(u, r.URL) {
+				b.WriteString(r.QUICNote())
+				break
+			}
+		}
 	}
-	return " " + strings.Join(urls, " ")
+	return b.String()
+}
+
+// sameRelayURL compares a relay URL as iroh prints it (lowercase host, trailing slash) with one as
+// an operator wrote it.
+func sameRelayURL(a, b string) bool {
+	norm := func(s string) string {
+		u, err := url.Parse(s)
+		if err != nil {
+			return s
+		}
+		return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimSuffix(u.Path, "/")
+	}
+	return norm(a) == norm(b)
 }
 
 func samePeer(a, b meshclient.Peer) bool {

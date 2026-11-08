@@ -338,14 +338,19 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    `erainfra-node.service` is running or enabled.
 
 4. **Pick the relay policy.** Each Node reads it from its own environment, with the names the Hub
-   uses: `ERAINFRA_MESH_RELAYS` (a JSON array of `https` relay URLs, default `[]`),
+   uses: `ERAINFRA_MESH_RELAYS` (a JSON array of `https` relay URLs, default `[]`; an entry may
+   instead be an object such as `{"url":"https://relay.example.com","quic_port":443}`, see
+   [Fleet relay](#fleet-relay)),
    `ERAINFRA_MESH_RELAY_TOKEN` and `ERAINFRA_MESH_N0_FALLBACK` (`true` or `false`, default
    `false`). Convex stores no relay token, so the snapshot's `relays` field is ignored. Two Nodes
    that are both behind NAT need a relay: the fleet's own ([Fleet relay](#fleet-relay)), n0's, or
    both. For the installed unit, add them with `systemctl edit erainfra-node` as `Environment=`
    lines, then `systemctl restart erainfra-node`. Wrap the whole assignment in single quotes, as in
    `Environment='ERAINFRA_MESH_RELAYS=["https://relay.example.com"]'`: systemd.syntax(7) defines
-   quotes only when they wrap a whole item, and the JSON array holds double quotes. The drop-in
+   quotes only when they wrap a whole item, and the JSON array holds double quotes. Those double
+   quotes must also survive the way you write the file. Write it with a quoted heredoc
+   (`<<'EOF'`), not with `printf` or `echo` inside an ssh command: on 2026-11-08 that lost them,
+   and the agent restart-looped with `ERAINFRA_MESH_RELAYS must be a JSON URL array`. The drop-in
    survives a re-install.
 
    In practice, give every Node a relay. With the defaults a Node publishes only its direct
@@ -473,6 +478,24 @@ another one answers in less than two thirds of the time. A Node publishes only i
 peers reach it through that one. So with `ERAINFRA_MESH_N0_FALLBACK=true`, a Node that measures
 n0's relay as faster than the fleet relay homes on n0's. The runbook says how to check which relay
 each Node took and when to turn the fallback off.
+
+iroh measures a relay with QUIC address discovery, on udp/7842 unless the relay entry names
+another port. When a cloud security list blocks udp/7842, iroh can time the relay only with an
+HTTPS request, whose time includes the TCP and TLS handshakes, and n0's relays win. That happened on 2026-11-08 with `oracle-singapore-1`, whose OCI security
+list blocked udp/7842 and allowed udp/443. The fix needs no cloud console change. Run `relay.sh`
+with `ERAINFRA_RELAY_QUIC_PORT=443`, which binds QUIC on udp/443 beside HTTPS on tcp/443, and list
+the relay on every Node with its port:
+
+```ini
+Environment='ERAINFRA_MESH_RELAYS=[{"url":"https://relay.on99.ai","quic_port":443}]'
+```
+
+An entry is a URL string, meaning udp/7842, or an object with `"url"` and either `"quic_port"`
+(1 to 65535) or `"quic":false` (no address discovery with that relay). The Infra Agent checks
+every entry at startup and names the bad one. It sends a plain URL to `erainfra-mesh` as a string,
+so an older sidecar still accepts a policy without objects. The object form needs an Infra Agent
+and `erainfra-mesh` from a release that has it. The steps are in
+[run-a-fleet-relay.md](runbooks/run-a-fleet-relay.md#2-firewall-the-host-and-the-cloud).
 
 ### Revoke or re-enroll a Node
 

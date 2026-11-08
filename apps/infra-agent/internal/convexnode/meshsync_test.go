@@ -58,7 +58,7 @@ func newMeshNode(t *testing.T, f *fakeConvex, name string) *meshNode {
 	t.Cleanup(func() { _ = n.manager.Close() })
 	n.loop = newMeshLoop(c, MeshOptions{
 		Sidecar: n.manager,
-		Relays:  meshclient.Relays{URLs: []string{"https://relay.example"}, AuthToken: "relay-secret"},
+		Relays:  meshclient.Relays{List: []meshclient.Relay{{URL: "https://relay.example", QUICPort: 443}}, AuthToken: "relay-secret"},
 		Poll:    time.Second, Settle: 3 * time.Second, MinPublishGap: 30 * time.Second, StatePoll: 10 * time.Second,
 		Logf: func(format string, args ...any) {
 			n.mu.Lock()
@@ -137,7 +137,7 @@ func TestConnectConvexPublishesWithProofThenAppliesSnapshot(t *testing.T) {
 		t.Fatalf("registered %s at %+v", registered, addr)
 	}
 	// The log names the home relay, which is how an operator checks a fleet relay took over.
-	if line := "published mesh endpoint " + a.sidecar.ID() + " (1 relay https://relay.example/, 2 direct addresses)"; a.logged(line) != 1 {
+	if line := "published mesh endpoint " + a.sidecar.ID() + " (1 relay https://relay.example/ quic_port=443, 2 direct addresses)"; a.logged(line) != 1 {
 		t.Fatalf("no %q in %q", line, a.logs)
 	}
 	exposures := a.sidecar.Exposures()
@@ -148,12 +148,57 @@ func TestConnectConvexPublishesWithProofThenAppliesSnapshot(t *testing.T) {
 		t.Fatalf("fleet %+v", fleet)
 	}
 	// The Node's relay policy, token included, reaches the sidecar but not the local record.
-	if r := a.sidecar.Relays(); r.AuthToken != "relay-secret" || len(r.URLs) != 1 {
+	if r := a.sidecar.Relays(); r.AuthToken != "relay-secret" || len(r.List) != 1 || r.List[0] != (meshclient.Relay{URL: "https://relay.example", QUICPort: 443}) {
 		t.Fatalf("relays %+v", r)
 	}
 	record, err := os.ReadFile(filepath.Join(a.client.cfg.StateDir, "desired.json"))
 	if err != nil || strings.Contains(string(record), "relay-secret") || !strings.Contains(string(record), idB) {
 		t.Fatalf("desired.json %s %v", record, err)
+	}
+	// The record keeps the relay's QUIC address discovery port and reads back as it was written.
+	var recorded meshclient.Desired
+	if err := json.Unmarshal(record, &recorded); err != nil || !strings.Contains(string(record), `"relays":[{"url":"https://relay.example","quic_port":443}]`) ||
+		len(recorded.Relays.List) != 1 || recorded.Relays.List[0] != (meshclient.Relay{URL: "https://relay.example", QUICPort: 443}) {
+		t.Fatalf("desired.json relays %s %+v %v", record, recorded.Relays, err)
+	}
+}
+
+// A desired.json written before relay entries could be objects holds plain URL strings.
+func TestOlderDesiredRecordStillDecodes(t *testing.T) {
+	var d meshclient.Desired
+	older := `{"v":1,"fleet":[],"relays":{"relays":["https://relay.example"],"n0_fallback":true},"exposures":[],"links":[]}`
+	if err := json.Unmarshal([]byte(older), &d); err != nil || len(d.Relays.List) != 1 || d.Relays.List[0] != (meshclient.Relay{URL: "https://relay.example"}) || !d.Relays.N0Fallback {
+		t.Fatalf("%+v %v", d.Relays, err)
+	}
+	if b, err := json.Marshal(d); err != nil || !strings.Contains(string(b), `"relays":{"relays":["https://relay.example"],"n0_fallback":true}`) {
+		t.Fatalf("a plain URL must stay a plain string: %s %v", b, err)
+	}
+}
+
+// The publication log names the home relay, and its QUIC address discovery setting when the
+// policy sets one other than the default. iroh writes the URL with a trailing slash.
+func TestNamedRelays(t *testing.T) {
+	policy := []meshclient.Relay{
+		{URL: "https://Relay.On99.ai", QUICPort: 443},
+		{URL: "https://default.example", QUICPort: meshclient.DefaultQUICPort},
+		{URL: "https://plain.example"},
+		{URL: "https://noqad.example/", NoQUIC: true},
+	}
+	for urls, want := range map[string]string{
+		"":                                    "",
+		"https://relay.on99.ai/":              " https://relay.on99.ai/ quic_port=443",
+		"https://default.example/":            " https://default.example/",
+		"https://plain.example/":              " https://plain.example/",
+		"https://noqad.example/":              " https://noqad.example/ quic=false",
+		"https://aps1-1.relay.n0.iroh.link./": " https://aps1-1.relay.n0.iroh.link./",
+	} {
+		var list []string
+		if urls != "" {
+			list = []string{urls}
+		}
+		if got := namedRelays(list, policy); got != want {
+			t.Errorf("namedRelays(%q) = %q, want %q", urls, got, want)
+		}
 	}
 }
 

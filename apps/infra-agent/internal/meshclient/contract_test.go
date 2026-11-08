@@ -80,3 +80,43 @@ func TestReconcilerAppliesTheConvexSnapshot(t *testing.T) {
 		t.Fatalf("link: %v", l)
 	}
 }
+
+// A relay entry with a QUIC address discovery port, as the Hub may now send it, decodes strictly
+// and reaches the sidecar as the same object. A plain URL still goes as a string, and an invalid
+// entry is refused before anything is sent.
+func TestReconcilerSendsRelayQUICPorts(t *testing.T) {
+	snapshot := `{"v":1,"fleet":[],"exposures":[],"links":[],
+	  "relays":{"relays":[{"url":"https://relay.on99.ai","quic_port":443},"https://relay.example.com",{"url":"https://noqad.example.com","quic":false}],"n0_fallback":false}}`
+	dec := json.NewDecoder(bytes.NewReader([]byte(snapshot)))
+	dec.DisallowUnknownFields()
+	var d Desired
+	if err := dec.Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var sent []byte
+	c := fakeClient(t, func(r map[string]any) any {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r["op"] {
+		case "status":
+			return testStatus()
+		case "set_relays":
+			sent, _ = json.Marshal(r["relays"])
+		}
+		return map[string]any{"changed": true}
+	})
+	if _, err := (&Reconciler{Client: c}).Apply(t.Context(), d, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"quic_port":443,"url":"https://relay.on99.ai"},"https://relay.example.com",{"quic":false,"url":"https://noqad.example.com"}]`
+	mu.Lock()
+	defer mu.Unlock()
+	if string(sent) != want {
+		t.Fatalf("set_relays relays\n got %s\nwant %s", sent, want)
+	}
+	d.Relays.List = []Relay{{URL: "https://r.example.com", NoQUIC: true, QUICPort: 443}}
+	if err := d.Validate(); err == nil {
+		t.Fatal("a relay with QUIC address discovery off and a port passed validation")
+	}
+}

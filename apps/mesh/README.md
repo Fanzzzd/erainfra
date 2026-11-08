@@ -235,6 +235,23 @@ development and hobby use only; they never receive the token.
 iroh keeps relays as a set and picks the home relay by measured latency, so list order is kept
 for `status` but does not rank relays. A token over plain `http` is refused.
 
+Each entry of `relays` is a URL string or an object:
+
+```json
+{"url":"https://relay.example.com","quic_port":443}
+{"url":"https://relay.example.com","quic":false}
+```
+
+`quic_port` is the UDP port of the relay's QUIC address discovery (QAD) server, 1 to 65535. A
+string means iroh's default, 7842. iroh measures a relay with QAD, so a relay whose QAD port is
+blocked loses the home-relay choice to any relay iroh can reach over QUIC. A cloud firewall that
+blocks udp/7842 often allows udp/443, which iroh-relay can share with HTTPS on tcp/443.
+`"quic":false` turns QAD off for that relay. Unknown fields, a port out of range, and `quic_port`
+together with `"quic":false` are refused, as is one URL listed twice with different settings.
+`status.relay.configured` and the state file write an entry without a port or `"quic":false` as a
+string and any other as an object. An older daemon can therefore still read a state file whose
+relays all use the default port.
+
 ### expose and unexpose
 
 ```json

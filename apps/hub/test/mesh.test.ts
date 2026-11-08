@@ -6,6 +6,7 @@ import { appStore } from "../src/runtime/apps.ts";
 import {
   describeLink,
   meshDesired,
+  parseMeshRelays,
   reconcileMesh,
   MESH_CAPABILITY,
   type MeshOptions,
@@ -466,4 +467,63 @@ test("a migration whose provider cannot be authorized leaves the consumer's dumb
     2,
     "only the first pass's share and connect",
   );
+});
+
+test("ERAINFRA_MESH_RELAYS takes a URL or an object with a QUIC address discovery port", () => {
+  assert.deepEqual(
+    parseMeshRelays(
+      '[{"url":"https://relay.on99.ai","quic_port":443},"https://relay.example",{"url":"https://noqad.example","quic":false},{"url":"https://explicit.example","quic":true}]',
+      false,
+    ),
+    [
+      { url: "https://relay.on99.ai", quic_port: 443 },
+      "https://relay.example",
+      { url: "https://noqad.example", quic: false },
+      "https://explicit.example",
+    ],
+  );
+  assert.deepEqual(parseMeshRelays("[]", false), []);
+  assert.deepEqual(parseMeshRelays('[{"url":"http://r.example","quic_port":443}]', false), [
+    { url: "http://r.example", quic_port: 443 },
+  ]);
+  const refusals: Array<[string, string, boolean?]> = [
+    ['{"url":"https://r.example"}', "ERAINFRA_MESH_RELAYS must be a JSON URL array, each entry"],
+    ["https://r.example", "ERAINFRA_MESH_RELAYS must be a JSON URL array"],
+    [
+      '[{"url":"https://r.example","quic_port":0}]',
+      'ERAINFRA_MESH_RELAYS entry 1: relay https://r.example: "quic_port" must be a port number from 1 to 65535, not 0',
+    ],
+    [
+      '["https://a.example",{"url":"https://r.example","quic_port":65536}]',
+      'entry 2: relay https://r.example: "quic_port" must be a port number from 1 to 65535, not 65536',
+    ],
+    ['[{"url":"https://r.example","quic_port":"443"}]', 'from 1 to 65535, not "443"'],
+    ['[{"url":"https://r.example","quic_port":443.5}]', "from 1 to 65535, not 443.5"],
+    [
+      '[{"url":"https://r.example","quic":false,"quic_port":443}]',
+      '"quic": false turns QUIC address discovery off, so drop "quic_port"',
+    ],
+    ['[{"url":"https://r.example","quic":"no"}]', '"quic" must be true or false, not "no"'],
+    ['[{"url":"https://r.example","qad_port":443}]', 'relay field "qad_port" is unknown'],
+    ['[{"quic_port":443}]', 'entry 1: a relay object needs "url", a string'],
+    ["[443]", "a relay is a URL string or an object like"],
+    ["[null]", "a relay is a URL string or an object like"],
+    [
+      '[{"url":"ftp://r.example","quic_port":443}]',
+      'relay ftp://r.example has scheme "ftp"; use https',
+    ],
+    ['["relay.example"]', 'relay relay.example has scheme ""; use https'],
+    [
+      '[{"url":"http://r.example","quic_port":443}]',
+      "relay http://r.example is plain http; refusing to send the relay auth token over it",
+      true,
+    ],
+  ];
+  for (const [raw, message, withToken] of refusals) {
+    assert.throws(
+      () => parseMeshRelays(raw, withToken ?? false),
+      (e: Error) => e.message.includes(message),
+      raw,
+    );
+  }
 });
