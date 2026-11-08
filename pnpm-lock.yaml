@@ -339,8 +339,8 @@ importers:
         specifier: 'catalog:'
         version: 22.20.5
       convex-test:
-        specifier: 0.0.66
-        version: 0.0.66(convex@1.49.0(react@19.3.1))
+        specifier: 0.0.55
+        version: 0.0.55(convex@1.49.0(react@19.3.1))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -2777,8 +2777,8 @@ packages:
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
-  convex-test@0.0.66:
-    resolution: {integrity: sha512-d70YxtlUqL6w37EmcxAYSQPRZ6lWF7PQ4q/KrbUrn6bfbxPG4eafLl5386UNrjCb8U1kX7mRCanrB4Bv8uB5Cg==}
+  convex-test@0.0.55:
+    resolution: {integrity: sha512-ablJ6vR3WUpyTaYrrRQf8yxInGrhHyqBEQsCFzloda3G0MDEu2RMKNGUkvlBXYWPiiEP0UIKPS7gZuLbqGnvQw==}
     peerDependencies:
       convex: ^1.43.0
 
@@ -6998,7 +6998,7 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
-  convex-test@0.0.66(convex@1.49.0(react@19.3.1)):
+  convex-test@0.0.55(convex@1.49.0(react@19.3.1)):
     dependencies:
       convex: 1.49.0(react@19.3.1)
 
