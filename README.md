@@ -375,13 +375,15 @@ Set these deployment variables before production use, from `packages/backend` wi
 `npx convex env set --prod NAME value`. Without `--prod` the command sets them on the deployment
 `.env.local` names, which is a dev deployment on a developer's checkout:
 
-| Variable                | Purpose                                                                                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SITE_URL`              | Canonical HTTPS dashboard origin.                                                                                                                 |
-| `BOOTSTRAP_SECRET`      | One-time first-admin bootstrap.                                                                                                                   |
-| `CONTROLLER_TOKEN`      | Long random bearer token shared only with scale-set controllers.                                                                                  |
-| `CONTROLLER_TOKEN_NEXT` | Optional second controller token, accepted beside `CONTROLLER_TOKEN` during a rotation ([runbook](docs/runbooks/operate-the-controller-host.md)). |
-| `ALLOWED_REPOS`         | Legacy webhook allowlist; omit when that path is unused.                                                                                          |
+| Variable                  | Purpose                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SITE_URL`                | Canonical HTTPS dashboard origin.                                                                                                                 |
+| `BOOTSTRAP_SECRET`        | One-time first-admin bootstrap.                                                                                                                   |
+| `CONTROLLER_TOKEN`        | Long random bearer token shared only with scale-set controllers.                                                                                  |
+| `CONTROLLER_TOKEN_NEXT`   | Optional second controller token, accepted beside `CONTROLLER_TOKEN` during a rotation ([runbook](docs/runbooks/operate-the-controller-host.md)). |
+| `ALLOWED_REPOS`           | Legacy webhook allowlist; omit when that path is unused.                                                                                          |
+| `RELAY_ACCESS_TOKEN`      | Secret a fleet relay sends to `/api/v1/relay/access`; omit without a fleet relay ([runbook](docs/runbooks/run-a-fleet-relay.md)).                 |
+| `RELAY_ACCESS_TOKEN_NEXT` | Optional second relay secret, accepted beside `RELAY_ACCESS_TOKEN` during a rotation.                                                             |
 
 The dashboard creates short-lived, single-use Worker enrollment commands. Machine credentials are
 stored in `~/.runner-center/agent/.env` with mode `600`; JIT configurations travel from Convex to the

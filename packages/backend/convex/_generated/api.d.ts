@@ -79,6 +79,7 @@ import type * as infra_operator from "../infra/operator.js";
 import type * as infra_operatorRoutes from "../infra/operatorRoutes.js";
 import type * as infra_operatorGit from "../infra/operatorGit.js";
 import type * as infra_operatorGitRoutes from "../infra/operatorGitRoutes.js";
+import type * as infra_relayAccess from "../infra/relayAccess.js";
 import type * as installScript from "../installScript.js";
 import type * as installScriptPowerShell from "../installScriptPowerShell.js";
 import type * as isolation from "../isolation.js";
@@ -186,6 +187,7 @@ declare const fullApi: ApiFromModules<{
   "infra/operatorRoutes": typeof infra_operatorRoutes;
   "infra/operatorGit": typeof infra_operatorGit;
   "infra/operatorGitRoutes": typeof infra_operatorGitRoutes;
+  "infra/relayAccess": typeof infra_relayAccess;
   installScript: typeof installScript;
   installScriptPowerShell: typeof installScriptPowerShell;
   isolation: typeof isolation;

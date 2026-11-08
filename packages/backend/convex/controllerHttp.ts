@@ -35,6 +35,18 @@ export function controllerAuthorization(
   configuredToken: string | undefined,
   nextToken?: string | undefined,
 ): ControllerAuth {
+  return sharedSecretAuthorization(authorization, configuredToken, nextToken);
+}
+
+/**
+ * The check behind controllerAuthorization, for any route that a shared secret with a current and
+ * a next value guards, such as the fleet relay's access check (infra/relayAccess.ts).
+ */
+export function sharedSecretAuthorization(
+  authorization: string | null,
+  configuredToken: string | undefined,
+  nextToken?: string | undefined,
+): ControllerAuth {
   const candidates: Array<{ slot: ControllerTokenSlot; token: string }> = [];
   const current = configuredToken?.trim() ?? "";
   const next = nextToken?.trim() ?? "";

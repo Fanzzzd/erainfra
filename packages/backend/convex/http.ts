@@ -42,6 +42,7 @@ import { registerDeployRoutes } from "./infra/deployHttp";
 import { parsePush, webhookSecretsFor } from "./infra/githubDeploy";
 import { registerNodeRoutes } from "./infra/nodeHttp";
 import { registerInfraRoutes } from "./infra/operatorRoutes";
+import { registerRelayRoutes } from "./infra/relayAccess";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
@@ -55,6 +56,9 @@ registerTestRoutes(http);
 registerDeployRoutes(http);
 registerInfraRoutes(http);
 registerNodeRoutes(http);
+// POST /api/v1/relay/access, asked by a fleet relay before it relays for a client
+// (infra/relayAccess.ts, deploy/infra/relay.sh).
+registerRelayRoutes(http);
 
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {

@@ -191,7 +191,9 @@ func (m *meshLoop) tick(ctx context.Context) {
 			} else {
 				// Taken after the publication finished: a heartbeat sent later reflects it.
 				m.published, m.publishedAt, m.stateDue = &addr, m.now(), true
-				m.o.Logf("connect-convex: published mesh endpoint %s (%d relay, %d direct addresses)", key, len(addr.RelayURLs), len(addr.DirectAddrs))
+				// iroh puts only the home relay in an address, so naming it shows an operator which
+				// relay peers reach this Node through (docs/runbooks/run-a-fleet-relay.md).
+				m.o.Logf("connect-convex: published mesh endpoint %s (%d relay%s, %d direct addresses)", key, len(addr.RelayURLs), namedRelays(addr.RelayURLs), len(addr.DirectAddrs))
 			}
 		}
 	}
@@ -494,6 +496,15 @@ func publishable(p meshclient.Peer) meshclient.Peer {
 		relays = []string{}
 	}
 	return meshclient.Peer{ID: p.ID, RelayURLs: relays, DirectAddrs: direct}
+}
+
+// namedRelays is the relay part of the publication log line: empty for none, otherwise a space and
+// the URLs. They come from the sidecar's own address and carry no token.
+func namedRelays(urls []string) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	return " " + strings.Join(urls, " ")
 }
 
 func samePeer(a, b meshclient.Peer) bool {
