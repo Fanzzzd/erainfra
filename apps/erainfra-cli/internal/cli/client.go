@@ -17,6 +17,8 @@ type apiError struct {
 	Status  int
 	Code    string
 	Message string
+	// RetryAfter is the answer's Retry-After header, or zero.
+	RetryAfter time.Duration
 }
 
 func (e *apiError) Error() string {
@@ -102,7 +104,9 @@ func (c *client) exchangeOnce(ctx context.Context, method, path string, query ur
 		return nil, 0, fmt.Errorf("read the answer from %s: %w", c.base, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, resp.StatusCode, failureOf(resp.StatusCode, reply)
+		failure := failureOf(resp.StatusCode, reply)
+		failure.RetryAfter = retryAfterHeader(resp.Header.Get("Retry-After"), time.Now())
+		return nil, resp.StatusCode, failure
 	}
 	return reply, resp.StatusCode, nil
 }
@@ -173,7 +177,10 @@ func (c *client) upload(ctx context.Context, uploadURL string, archive []byte) (
 		return "", fmt.Errorf("read the upload answer: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", &uploadStatusError{status: resp.StatusCode}
+		return "", &uploadStatusError{
+			status:     resp.StatusCode,
+			retryAfter: retryAfterHeader(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	var stored struct {
 		StorageID string `json:"storageId"`
