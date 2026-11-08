@@ -117,6 +117,26 @@ instead.
    tunnel that file names, whatever tunnel the command names (`hub.sh` pins its own routes the
    same way). The rollback's command runs on `work-remote` with the config `hub.sh` wrote there.
 
+   If the zone's origin cert is not `~/.cloudflared/cert.pem`, for example on a Node whose
+   `cert.pem` belongs to another zone, give `gateway.sh` its path in `TUNNEL_ORIGIN_CERT`. The
+   script then writes its config beside that file, as `config-erainfra-gateway.yml` in the same
+   directory, and prints the path. Every `cloudflared tunnel route dns` below then needs
+   `--origincert <that file>` as well as that `--config`. Without `--origincert`, cloudflared reads
+   `~/.cloudflared/cert.pem`, which belongs to the other zone.
+
+   If a gateway Node has no `cloudflared`, downloads from GitHub can be very slow: one host in China
+   got about 7 KB/s on 2026-11-08. If the box already has the official `cloudflare/cloudflared`
+   image (`docker images cloudflare/cloudflared`), copy the binary out of it:
+
+   ```sh
+   tmp=$(mktemp -d)
+   docker create --name cloudflared-copy cloudflare/cloudflared:<tag> >/dev/null
+   docker cp cloudflared-copy:/usr/local/bin/cloudflared "$tmp/"
+   docker rm cloudflared-copy >/dev/null
+   sudo install -m 755 "$tmp/cloudflared" /usr/local/bin/cloudflared && rm -r "$tmp"
+   cloudflared --version
+   ```
+
 5. **Leave Worker updates for another window.** `work-remote` is also the CI Worker. Re-running
    `/install --role worker-host` there refuses while any Firecracker VM runs, including the idle
    warm VMs the runtime keeps parked; drain it first as the refusal says
@@ -144,6 +164,31 @@ instead.
    [Recreate the Hub container](#recreate-the-hub-container) shows. Its last command prints `0`.
    Every App answers errors for the few seconds the Hub restarts, and the Hub-mode agents
    reconnect on their own. The rollback turns failover back on as its last step.
+
+8. **Give every Node a mesh relay.** With the defaults, `ERAINFRA_MESH_RELAYS=[]` and
+   `ERAINFRA_MESH_N0_FALLBACK=false`, a Node publishes no relay and only its direct addresses:
+   `journalctl -u erainfra-node` shows `published mesh endpoint … (0 relay, …)`. A Node whose NAT
+   rejects inbound UDP is then unreachable. On 2026-11-08 that was `oracle-singapore-1` (OCI,
+   1:1 NAT, inbound UDP rejected): its peer logged `timed out dialing <id>: deadline has elapsed`
+   and the gateway answered 502. Setting the relay on every Node fixed it. Each Node then published
+   `(1 relay, 5 direct addresses)`, and the paths still went direct, at about 4 ms.
+
+   [ADR 0016](../adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md) prefers a self-hosted
+   `iroh-relay` on a Node with a public address, listed in `ERAINFRA_MESH_RELAYS`. Nothing installs
+   one yet. Until then use n0's public relays. n0 describes them as for development and hobby use,
+   but the Hub's dumbpipe links already ran over them, so this adds no new dependency. Each Node
+   reads the setting from its own environment, through this systemd drop-in:
+
+   ```sh
+   sudo install -d -m 755 /etc/systemd/system/erainfra-node.service.d
+   printf '[Service]\nEnvironment=ERAINFRA_MESH_N0_FALLBACK=true\n' |
+     sudo tee /etc/systemd/system/erainfra-node.service.d/20-mesh-relay.conf >/dev/null
+   ```
+
+   Write it before the install: the installer reloads systemd and starts `erainfra-node` with it.
+   Written after the install, it takes effect on
+   `sudo systemctl daemon-reload && sudo systemctl restart erainfra-node`. Step 2 writes it on each
+   Node that runs no Apps, and step 5 on `work-remote` before the window. A re-install keeps it.
 
 ## 1. Copy the Hub into Convex
 
@@ -176,7 +221,13 @@ The Hub keeps its database in SQLite WAL mode (`apps/hub/src/db.ts`): recent wri
 `-wal` file beside the `.db` file until a checkpoint. A copy of the `.db` file alone misses them.
 While the Hub runs, take a consistent snapshot with `VACUUM INTO` through the Hub's own Node.js,
 then copy it and the secrets key out. The snapshot holds every account's password hash and every
-secret, so each copy is created mode 0600, in a directory only you can enter:
+secret, so each copy is created mode 0600, in a directory only you can enter.
+
+Almost all of the database is the AI chat transcripts: on 2026-11-08 the full snapshot was 2.8 GB,
+nearly all of it `chat_messages` and the `chat_fts` search index. The importer reads neither; of
+the chat tables it only counts the rows of `chat_sessions`. So the snapshot drops those two tables
+before it leaves the volume, and the copy you import is small. The volume needs free space for the
+full snapshot while it is made. Step 7 keeps the complete database, transcripts included.
 
 ```sh
 mkdir -p -m 700 ~/hub-import && cd ~/hub-import
@@ -186,13 +237,18 @@ docker exec portless-hub sh -c 'rm -f /data/hub-import.db'
 docker exec portless-hub node -e '
   process.umask(0o077);
   const { DatabaseSync } = require("node:sqlite");
-  new DatabaseSync(process.argv[1]).exec("VACUUM INTO \x27/data/hub-import.db\x27");' "$DB"
+  new DatabaseSync(process.argv[1]).exec("VACUUM INTO \x27/data/hub-import.db\x27");
+  const copy = new DatabaseSync("/data/hub-import.db");
+  copy.exec("DROP TABLE IF EXISTS chat_fts; DROP TABLE IF EXISTS chat_messages; VACUUM");
+  copy.close();' "$DB"
 docker run --rm -v portless-data:/data -v "$PWD":/out alpine sh -c \
   'umask 077 && cp /data/hub-import.db "$1" /out/ && chmod 600 /out/hub-import.db /out/secret.key &&
-   rm /data/hub-import.db' _ "$(dirname "$DB")/secret.key"
-sudo chown "$(id -u):$(id -g)" hub-import.db secret.key   # Docker wrote them as root
-ls -l hub-import.db secret.key                            # -rw------- you, for both
+   chown "$2" /out/hub-import.db /out/secret.key && rm /data/hub-import.db' \
+  _ "$(dirname "$DB")/secret.key" "$(id -u):$(id -g)"
+ls -l hub-import.db secret.key   # -rw------- you, for both
 ```
+
+The container runs as root, so it can hand both files to you itself, and the step needs no `sudo`.
 
 Run the importer from the release checkout ([State in Convex](../infra-management.md#state-in-convex)).
 Start with `--dry-run`; it writes nothing and lists every row the import would create, update, skip
@@ -281,7 +337,11 @@ one gateway is enough for the canary in step 4.
    rm oracle-singapore-1.credential
    ```
 
-2. On the Node, install the `connect-convex` agent and its sidecar. `--replace-hub-agent` stops and
+2. On the Node, write the relay drop-in from
+   [Before you start](#before-you-start), item 8, before you install. Without it the other Nodes
+   may not reach this one at all.
+
+3. On the Node, install the `connect-convex` agent and its sidecar. `--replace-hub-agent` stops and
    disables the Hub-mode `portless-agent.service` once the downloads verify, and keeps its unit
    file and its binary for a rollback. The new agent goes to
    `/usr/local/lib/erainfra/erainfra-node`. If the install fails after it stopped the Hub-mode
@@ -296,8 +356,16 @@ one gateway is enough for the canary in step 4.
    The CI controllers on `oracle-singapore-1` are separate units; the installer does not touch
    them.
 
-3. Within a minute `erainfra nodes list` shows the Node with transport `convex`, `online` and
-   `MESH proven`. If not, `journalctl -u erainfra-node -n 50` says why.
+4. Within a minute `erainfra nodes list` shows the Node with transport `convex`, `online` and
+   `MESH proven`. If not, `journalctl -u erainfra-node -n 50` says why. Then check that the Node
+   publishes a relay:
+
+   ```sh
+   journalctl -u erainfra-node | grep 'published mesh endpoint' | tail -1   # … (1 relay, …)
+   ```
+
+   `(0 relay, …)` means the drop-in is missing or was written after the install without a
+   restart.
 
 Rolling one Node back is [Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode).
 
@@ -320,6 +388,12 @@ sudo systemctl edit erainfra-node
 sudo systemctl restart erainfra-node
 erainfra nodes set-roles <name> gateway
 ```
+
+On a Node where the zone's origin cert is another file, run
+`TUNNEL_ORIGIN_CERT=<that file> ERAINFRA_ZONE=<zone> sh gateway.sh` instead, and add
+`--origincert <that file>` to every DNS command in steps 4 and 5, with the `--config` path the
+script printed
+([Before you start](#before-you-start), item 4).
 
 Then on each gateway Node:
 
@@ -354,6 +428,9 @@ cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml \
   route dns erainfra-gateway hello-retire.<zone>
 curl -fsS https://hello-retire.<zone>/
 ```
+
+If the gateway Node ran `gateway.sh` with `TUNNEL_ORIGIN_CERT`, this command and the two in step 5
+also need `--origincert <that file>`, as step 3 says.
 
 An explicit DNS record beats the `*.<zone>` wildcard, so only this name goes to the gateways. Also
 request it on the other gateway Node, which reaches the App over the mesh:
@@ -400,7 +477,10 @@ Get everything ready first, so the window holds only the commands that must be i
    deploys every bound branch from its head, so no push is missed.
 3. Repeat step 1 (snapshot, copy, import), so Convex holds the Hub's last routes, ports and Apps.
 4. Enroll `work-remote` and put its credential on it, as in step 2.1.
-5. On a gateway Node, have this command typed and ready:
+5. On `work-remote`, write the relay drop-in from [Before you start](#before-you-start), item 8.
+   The Hub-mode agent ignores it, so nothing changes until the install starts `erainfra-node`.
+   Without it the gateways cannot reach `work-remote`'s Apps and the window stays open.
+6. On a gateway Node, have this command typed and ready, with `--origincert` if step 3 needed it:
    `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns --overwrite-dns erainfra-gateway '*.<zone>'`.
 
 The window starts at the next command. On `work-remote`:
@@ -413,7 +493,8 @@ curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- \
 The installer downloads and verifies everything before it stops `portless-agent.service`; from
 that moment the Hub answers errors for every App on `work-remote`. When it returns:
 
-1. `erainfra nodes list` shows `work-remote` with transport `convex`, `online`, `MESH proven`.
+1. `erainfra nodes list` shows `work-remote` with transport `convex`, `online`, `MESH proven`,
+   and its journal shows `published mesh endpoint … (1 relay, …)`.
 2. On a gateway Node, each App answers through the proxy:
 
    ```sh
@@ -430,16 +511,19 @@ that moment the Hub answers errors for every App on `work-remote`. When it retur
    ```
 
 Cloudflare answers visitors with its own addresses either way, so no client DNS cache has to
-expire. Single-container Apps the Hub deployed are served without a redeploy, the same as Apps
-with services.
+expire. The switch neither redeploys nor restarts an App: the gateways serve every Hub-era App
+from the containers the Hub started, single-container Apps and Apps with services alike. On
+2026-11-08 they kept serving that way after the window, before any redeploy.
 
 Then check each App from outside, delete the `hello-retire` DNS record in the Cloudflare dashboard,
 and watch `journalctl -u erainfra-gateway` and `/healthz` on both gateway Nodes for the next hour.
 `portless.<zone>` keeps its own record and still reaches the Hub.
 
 If an App answers 503 at a gateway in item 2, `erainfra apps view <app>` and the gateway's
-`/healthz` route count show which route is missing. Roll back (below) rather than leave the window
-open while you investigate.
+`/healthz` route count show which route is missing. A 502 usually means the gateway cannot reach
+`work-remote` over the mesh: look for `timed out dialing` in the gateway Node's
+`journalctl -u erainfra-mesh -u erainfra-node`, and for `(0 relay, …)` on `work-remote` (item 1). Roll back (below) rather than leave
+the window open while you investigate.
 
 Now that `work-remote` is on the mesh, name it as the registry Node, so builds on it push to its
 registry and other Nodes pull from it over `registry-<node>` links:
@@ -523,8 +607,8 @@ sudo systemctl disable --now portless-tunnel
 
 mkdir -m 700 hub-final            # the copy holds every password hash
 docker run --rm -v portless-data:/data:ro -v "$PWD/hub-final":/out alpine \
-  sh -c 'cp -a /data/*-runtime/*.db* /out/'
-sudo chown -R "$(id -u):$(id -g)" hub-final
+  sh -c 'cp -a /data/*-runtime/*.db* /out/ && chown "$1" /out/*' _ "$(id -u):$(id -g)"
+ls -l hub-final                   # every file yours
 ```
 
 `sqlite3 hub-final/portless.db` (or `erainfra.db`) opens it with the WAL applied. Do not delete
@@ -614,40 +698,96 @@ Node goes back before DNS moves back. Between the two commands its Apps are down
 ## Recreate the Hub container
 
 Docker reads `--env-file` only when it creates a container, so a change to the Hub's env file
-takes effect only in a new container. This recreates `portless-hub` with the same image ID, mounts,
-port, working directory and command it runs with now, and the env file as it is now. Run it on the
-Hub's host, at a quiet moment: every App served through the Hub answers errors for the few seconds
-it takes.
+takes effect only in a new container. This recreates `portless-hub` from what `docker inspect`
+saves about it: the same image ID, port, mounts (read-only or not), working directory, command and
+log settings, every environment variable passed with `-e`, and the env file as it is now. Run it on
+the Hub's host, at a quiet moment: every App served through the Hub answers errors for the few
+seconds it takes.
+
+Do not assume the Hub runs as `hub.sh` would start it. On 2026-11-08 the live Hub ran
+`apps/api/src/server.ts` with a read-write mount of `/home/klaus/portless`, and it had five
+variables passed with `-e` (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+`NODE_OPTIONS`) and `--log-opt max-size=10m --log-opt max-file=3`. None of those is in the image or
+the env file, so a recreate that rebuilt only the mounts and the command from a template would
+have dropped them.
+
+First create the new container beside the old one, as `portless-hub-new`, and compare the two.
+The old Hub keeps running throughout this part:
 
 ```sh
-ENVFILE=$(ls ~/erainfra-env/hub.env ~/portless-env/hub.env 2>/dev/null | head -1)
-rm -f ~/portless-hub.inspect.json                                  # a new file, so umask sets its mode
-(umask 077 && docker inspect portless-hub > ~/portless-hub.inspect.json)  # 0600: it holds the Hub's secrets
-IMAGE=$(docker inspect -f '{{.Image}}' portless-hub)
-WORKDIR=$(docker inspect -f '{{.Config.WorkingDir}}' portless-hub)
-PORT=$(docker inspect -f '{{with index .HostConfig.PortBindings "8787/tcp"}}{{(index . 0).HostIp}}:{{(index . 0).HostPort}}{{end}}' portless-hub)
-MOUNTS=$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}-v {{.Name}}:{{.Destination}} {{else}}-v {{.Source}}:{{.Destination}}{{if not .RW}}:ro{{end}} {{end}}{{end}}' portless-hub)
-CMD=$(docker inspect -f '{{join .Config.Cmd " "}}' portless-hub)
-printf '%s\n' "$ENVFILE" "$IMAGE" "$WORKDIR" "$PORT" "$MOUNTS" "$CMD"
+bash <<'EOF'
+set -euo pipefail
+umask 077   # the files below hold the Hub's secrets
+ENVFILE=
+for f in ~/erainfra-env/hub.env ~/portless-env/hub.env; do [ -f "$f" ] && { ENVFILE=$f; break; }; done
+[ -n "$ENVFILE" ] || { echo 'no Hub env file found' >&2; exit 1; }
+rm -f ~/portless-hub.inspect.json ~/portless-hub.args
+docker inspect portless-hub > ~/portless-hub.inspect.json
+IMAGE_ENV=$(docker image inspect -f '{{json .Config.Env}}' \
+  "$(jq -r '.[0].Image' ~/portless-hub.inspect.json)")
+FILE_KEYS=$(grep -Ev '^[[:space:]]*(#|$)' "$ENVFILE" | cut -d= -f1 | jq -R . | jq -cs .)
+# One argument per NUL-terminated string: no shell ever splits them.
+jq -j --argjson image_env "$IMAGE_ENV" --argjson file_keys "$FILE_KEYS" '
+  .[0] as $c
+  | ($c.HostConfig.PortBindings["8787/tcp"][0] // error("no port binding for 8787/tcp")) as $p
+  | ( "-p", "\($p.HostIp):\($p.HostPort):8787",
+      ($c.Mounts[] | "-v",
+        "\(if .Type == "volume" then .Name else .Source end):\(.Destination)\(if .RW then "" else ":ro" end)"),
+      ($c.Config.Env[]
+        | select(IN($image_env[]) | not)
+        | select(split("=")[0] | IN($file_keys[], "PORTLESS_FAILOVER") | not)
+        | "-e", .),
+      "--log-driver", $c.HostConfig.LogConfig.Type,
+      (($c.HostConfig.LogConfig.Config // {}) | to_entries[] | "--log-opt", "\(.key)=\(.value)"),
+      "-w", $c.Config.WorkingDir,
+      $c.Image,
+      $c.Config.Cmd[] )
+  | . + "\u0000"' ~/portless-hub.inspect.json > ~/portless-hub.args
+ARGS=()
+while IFS= read -r -d '' arg; do ARGS+=("$arg"); done < ~/portless-hub.args
+docker rm portless-hub-new >/dev/null 2>&1 || true
+docker create --name portless-hub-new --restart unless-stopped --env-file "$ENVFILE" "${ARGS[@]}" >/dev/null
+# Compare everything but values: Env shows names only, since values are secrets.
+SHAPE='.[0] | {Image, Entrypoint: .Config.Entrypoint, Cmd: .Config.Cmd, WorkingDir: .Config.WorkingDir,
+  User: .Config.User, Env: (.Config.Env | map(split("=")[0]) | sort),
+  Mounts: (.Mounts | map({Type, Name, Source, Destination, RW}) | sort_by(.Destination)),
+  Ports: .HostConfig.PortBindings, Log: .HostConfig.LogConfig, Network: .HostConfig.NetworkMode}'
+if diff <(jq -S "$SHAPE" ~/portless-hub.inspect.json) <(docker inspect portless-hub-new | jq -S "$SHAPE"); then
+  echo 'portless-hub-new matches portless-hub'
+fi
+EOF
 ```
 
-Read the six lines before going on. With a Hub that `hub.sh` started they are the env file, an
-image ID (`sha256:…`), `/srv/portless`, `127.0.0.1:61080`, three mounts (the bundle at
-`/srv/portless:ro`, `/srv/agent-bin:ro` and `portless-data:/data`), and
-`node --experimental-strip-types apps/hub/src/server.ts`. If any is empty, stop: this Hub was
-started differently, and the command below would not reproduce it. Then:
+It runs under bash whatever your login shell is, and the same way over ssh
+(`ssh <hub host> bash -s <<'EOF'`). Each argument goes to `docker` as its own array element, so no
+shell splits a mount or a command on spaces. An earlier version of this section passed `$MOUNTS`
+and `$CMD` unquoted and relied on word splitting. zsh does not split unquoted variables, so on
+2026-11-08 `docker run` failed with `invalid spec … too many colons` after `docker rm -f` had
+already removed the Hub, and the Hub was down for about a minute.
+
+A variable the container has is passed again with `-e` unless the image sets it to the same value,
+or the env file names it. `PORTLESS_FAILOVER` always comes from the env file, so deleting that line
+turns failover back on.
+
+Read the output before going on. It ends `portless-hub-new matches portless-hub`, or prints the
+differences. The only expected difference is an `Env` name you just added to or removed from the
+env file, such as `PORTLESS_FAILOVER`. Any other difference, or an error, means this Hub has a
+setting the command does not carry: stop, remove the new container with
+`docker rm portless-hub-new`, and start it by hand from `~/portless-hub.inspect.json`. Nothing has
+touched the running Hub yet.
+
+Then swap them. These commands split nothing, so any shell runs them:
 
 ```sh
-docker rm -f portless-hub
-docker run -d --name portless-hub --restart unless-stopped -p "$PORT:8787" $MOUNTS \
-  -w "$WORKDIR" --env-file "$ENVFILE" "$IMAGE" $CMD
+docker rm -f portless-hub && docker rename portless-hub-new portless-hub && docker start portless-hub
 sleep 3
-curl -fsS "http://$PORT/health" && echo && rm ~/portless-hub.inspect.json
+curl -fsS "http://$(docker port portless-hub 8787/tcp | head -1)/health" && echo &&
+  rm ~/portless-hub.inspect.json ~/portless-hub.args
 docker exec portless-hub printenv PORTLESS_FAILOVER
 ```
 
-`$MOUNTS` and `$CMD` are unquoted on purpose, so the shell splits them into separate arguments.
-The Hub-mode agents reconnect within seconds. `~/portless-hub.inspect.json` holds the old
-container's settings, including every secret in its environment, so it is created mode 0600 and
-deleted once `/health` answers. If `/health` does not answer, `docker logs portless-hub` says why
-and the file is kept for reference. Delete it once the Hub is back.
+The Hub-mode agents reconnect within seconds. `~/portless-hub.inspect.json` and
+`~/portless-hub.args` hold the old container's settings, including every secret in its
+environment, so they are created mode 0600 and deleted once `/health` answers. If `/health` does
+not answer, `docker logs portless-hub` says why and the files are kept for reference. Delete them
+once the Hub is back.
