@@ -307,9 +307,12 @@ type MeshAddress = NonNullable<Doc<"nodes">["meshAddress"]>;
  * A Node's mesh address, if it may be granted anything: its endpoint key is proven and it still
  * holds a live credential. Revoking the last credential also clears the endpoint
  * (nodes.revokeCredential); the credential check keeps a revoked Node out even if a row predates
- * that rule.
+ * that rule. The fleet relay admits exactly these Nodes (infra/relayAccess.ts).
  */
-async function grantable(ctx: QueryCtx, node: Doc<"nodes"> | null): Promise<MeshAddress | null> {
+export async function grantable(
+  ctx: QueryCtx,
+  node: Doc<"nodes"> | null,
+): Promise<MeshAddress | null> {
   if (
     !node?.meshAddress ||
     node.endpointProvenAt === undefined ||

@@ -341,9 +341,12 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    uses: `ERAINFRA_MESH_RELAYS` (a JSON array of `https` relay URLs, default `[]`),
    `ERAINFRA_MESH_RELAY_TOKEN` and `ERAINFRA_MESH_N0_FALLBACK` (`true` or `false`, default
    `false`). Convex stores no relay token, so the snapshot's `relays` field is ignored. Two Nodes
-   that are both behind NAT need a relay. For the installed unit, add them with
-   `systemctl edit erainfra-node` as `Environment=` lines, then `systemctl restart erainfra-node`.
-   The drop-in survives a re-install.
+   that are both behind NAT need a relay: the fleet's own ([Fleet relay](#fleet-relay)), n0's, or
+   both. For the installed unit, add them with `systemctl edit erainfra-node` as `Environment=`
+   lines, then `systemctl restart erainfra-node`. Wrap the whole assignment in single quotes, as in
+   `Environment='ERAINFRA_MESH_RELAYS=["https://relay.example.com"]'`: systemd.syntax(7) defines
+   quotes only when they wrap a whole item, and the JSON array holds double quotes. The drop-in
+   survives a re-install.
 
    In practice, give every Node a relay. With the defaults a Node publishes only its direct
    addresses (`published mesh endpoint … (0 relay, …)` in its journal), and a Node whose NAT
@@ -389,7 +392,8 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    requires private POSIX permissions and directory fsync. This command does not install a service.
 
    Either way, within a few seconds the log (`journalctl -u erainfra-node -f` for the installed
-   unit) shows `published mesh endpoint <EndpointId>`, then
+   unit) shows `published mesh endpoint <EndpointId> (<n> relay <home relay URL>, <n> direct addresses)`,
+   then
    `applied mesh snapshot <revision> (<n> peers, <n> exposures, <n> links)`. The applied snapshot,
    without any relay token, is also written to `desired.json` in the state directory.
    `erainfra nodes list` shows the Node with transport `convex`, `online` and `MESH proven`.
@@ -436,6 +440,39 @@ agent sees the
 reset in its next heartbeat and publishes the new key; peers pick it up on their next snapshot. A
 key already registered to another Node is refused with `endpoint_in_use`; give the Node its own key
 (a copied key file is the usual cause) and restart the agent.
+
+### Fleet relay
+
+Two Nodes that cannot reach each other's direct addresses talk through a relay. Any Node with a
+public address can run one for the fleet ([ADR 0016](adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md),
+item 5): `deploy/infra/relay.sh` installs n0's own iroh-relay build, pinned by version and
+SHA-256, as `erainfra-relay.service`. The procedure is
+[run-a-fleet-relay.md](runbooks/run-a-fleet-relay.md).
+
+The relay keeps no list of Nodes. For each client, after the client has proven its EndpointId in
+the relay handshake, iroh-relay asks Convex with `POST /api/v1/relay/access`
+(`infra/relayAccess.ts`), and relays only on `200 true`. Convex answers `true` for exactly the
+Nodes a mesh snapshot may name: a proven endpoint key and a live credential. Enrolling, proving,
+`reset-endpoint` and `revoke` therefore reach the relay at the client's next connection. The
+route needs the Convex env var `RELAY_ACCESS_TOKEN`, the secret the relay sends as its bearer
+token, with `RELAY_ACCESS_TOKEN_NEXT` accepted beside it during a rotation. A request without it
+gets `401` whatever EndpointId it names, so the route tells a stranger nothing about the fleet.
+With the variable unset, it answers `503` and the relay admits nobody.
+
+| Answer      | Meaning                                                                   |
+| ----------- | ------------------------------------------------------------------------- |
+| 200 `true`  | a Node with a proven endpoint and a live credential: relay for it         |
+| 403 `false` | no such Node, an unproven key, a reset endpoint or no live credential     |
+| 400 `false` | `X-Iroh-Endpoint-Id` is missing or not 64 lowercase hex characters        |
+| 401 `false` | the bearer token is not `RELAY_ACCESS_TOKEN` or `RELAY_ACCESS_TOKEN_NEXT` |
+| 503 `false` | `RELAY_ACCESS_TOKEN` is not set                                           |
+
+Nodes list the relay in `ERAINFRA_MESH_RELAYS`. The order of that list does not matter: iroh
+measures every relay in it and takes the fastest as the Node's home relay, and moves only when
+another one answers in less than two thirds of the time. A Node publishes only its home relay, and
+peers reach it through that one. So with `ERAINFRA_MESH_N0_FALLBACK=true`, a Node that measures
+n0's relay as faster than the fleet relay homes on n0's. The runbook says how to check which relay
+each Node took and when to turn the fallback off.
 
 ### Revoke or re-enroll a Node
 

@@ -143,6 +143,10 @@ Nodes that are both behind NAT need a relay, so set `ERAINFRA_MESH_RELAYS` or
 sidecar and closes its open streams; the Hub then publishes each Node's new address before
 reopening links.
 
+A relay of the fleet's own is set up by [run-a-fleet-relay.md](run-a-fleet-relay.md). It checks
+each client with Convex rather than with a token, so leave `ERAINFRA_MESH_RELAY_TOKEN` unset for
+it. The token is for a relay run with iroh-relay's `access.shared_token`.
+
 ## Roll back
 
 Rolling one Node back takes its links off the mesh but not onto dumbpipe: a link recorded as mesh

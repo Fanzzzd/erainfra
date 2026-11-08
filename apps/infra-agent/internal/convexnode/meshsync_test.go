@@ -136,6 +136,10 @@ func TestConnectConvexPublishesWithProofThenAppliesSnapshot(t *testing.T) {
 	if registered != a.sidecar.ID() || addr == nil || !samePeer(*addr, want) {
 		t.Fatalf("registered %s at %+v", registered, addr)
 	}
+	// The log names the home relay, which is how an operator checks a fleet relay took over.
+	if line := "published mesh endpoint " + a.sidecar.ID() + " (1 relay https://relay.example/, 2 direct addresses)"; a.logged(line) != 1 {
+		t.Fatalf("no %q in %q", line, a.logs)
+	}
 	exposures := a.sidecar.Exposures()
 	if len(exposures) != 1 || exposures["db"].Target != "127.0.0.1:5432" || !sameSet(exposures["db"].AllowedPeers, []string{idB}) {
 		t.Fatalf("exposures %+v", exposures)

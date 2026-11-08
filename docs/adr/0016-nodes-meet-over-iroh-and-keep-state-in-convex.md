@@ -74,6 +74,10 @@ dials Convex, as the Action Runner Agent does, and claims commands addressed to 
    with an access allowlist of fleet EndpointIds, and is listed first. n0's public relays stay in the
    list as a fallback with their limits documented, and a paid Iroh Services relay can be listed
    instead. A fleet with no public Node relies on the fallback and says so in the dashboard.
+   (Implemented as iroh-relay's HTTP access check against Convex, so the allowlist is the set of
+   proven, unrevoked Nodes and nobody maintains it: [run-a-fleet-relay.md](../runbooks/run-a-fleet-relay.md).
+   iroh homes each Node on its fastest listed relay, so "listed first" holds only when the fleet
+   relay is also the fastest or the fallback is off.)
 
 **Public traffic enters at gateway Nodes.** A Node with the `gateway` placement role runs the
 Cloudflare tunnel connector and an ingress proxy that routes `<app>.<zone>` by the `routes` table
