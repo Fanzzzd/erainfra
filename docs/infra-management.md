@@ -214,7 +214,10 @@ secret values themselves need not change.
 Run the importer on the Hub's host, where `portless.db` and `secret.key` are (the state directory
 inside the `portless-data` volume). The Hub runs SQLite in WAL mode, so its latest writes may sit
 in `portless.db-wal`: give the importer a `VACUUM INTO` snapshot taken while the Hub runs, or copy
-the `.db` file with its `-wal` and `-shm` files once the Hub is stopped.
+the `.db` file with its `-wal` and `-shm` files once the Hub is stopped. The importer reads no
+transcript text, only the row count of `chat_sessions`, so a snapshot without `chat_messages` and
+`chat_fts` imports the same and is far smaller: on 2026-11-08 those two tables were nearly all of a
+2.8 GB snapshot.
 [retire-the-hub.md](runbooks/retire-the-hub.md#1-copy-the-hub-into-convex) has the commands. Start
 with `--dry-run`, which reads everything, asks the deployment what the import would do, and writes
 nothing:
@@ -341,6 +344,22 @@ never publishes an endpoint to Convex, so Convex never names it as a peer.
    that are both behind NAT need a relay. For the installed unit, add them with
    `systemctl edit erainfra-node` as `Environment=` lines, then `systemctl restart erainfra-node`.
    The drop-in survives a re-install.
+
+   In practice, give every Node a relay. With the defaults a Node publishes only its direct
+   addresses (`published mesh endpoint … (0 relay, …)` in its journal), and a Node whose NAT
+   rejects inbound UDP cannot be dialed at all. On 2026-11-08 `oracle-singapore-1` (OCI, 1:1 NAT)
+   was unreachable that way: its peer logged `timed out dialing <id>: deadline has elapsed` and the
+   gateway answered 502. `ERAINFRA_MESH_N0_FALLBACK=true` on every Node fixed it, and paths still
+   went direct. ADR 0016 prefers a self-hosted `iroh-relay` on a Node with a public address,
+   listed in `ERAINFRA_MESH_RELAYS`, but nothing installs one yet. n0's relays are what the Hub's
+   dumbpipe links already used. A drop-in written before the install takes effect at its first
+   start:
+
+   ```sh
+   sudo install -d -m 755 /etc/systemd/system/erainfra-node.service.d
+   printf '[Service]\nEnvironment=ERAINFRA_MESH_N0_FALLBACK=true\n' |
+     sudo tee /etc/systemd/system/erainfra-node.service.d/20-mesh-relay.conf >/dev/null
+   ```
 
 5. **Without systemd** (macOS, or Linux without systemd), start the agent by hand. Build
    `erainfra-mesh` (`cargo build --release` in `apps/mesh`) or take it from a release that ships
@@ -1194,6 +1213,19 @@ root unless given `--allow-root`.
    `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns …`. Without
    `--config`, cloudflared reads a default config (`~/.cloudflared/config.yml`,
    `/etc/cloudflared/config.yml`) and routes to the tunnel that file names, as `hub.sh` notes.
+
+   If the zone's origin cert is not `~/.cloudflared/cert.pem`, for example because that file
+   belongs to another zone, set `TUNNEL_ORIGIN_CERT=<path>` for the script. It then writes
+   `config-erainfra-gateway.yml` in the cert's directory and prints the full DNS command. Add
+   `--origincert <path>` to every `cloudflared tunnel route dns` for this tunnel as well: without
+   it cloudflared reads `~/.cloudflared/cert.pem`.
+
+   If the Node has no `cloudflared` and downloads from GitHub are slow (one host in China got
+   about 7 KB/s), take the binary from the official `cloudflare/cloudflared` image if the box
+   already has it. It sits at `/usr/local/bin/cloudflared` in the image:
+   `docker create --name cloudflared-copy cloudflare/cloudflared:<tag>`, then
+   `docker cp cloudflared-copy:/usr/local/bin/cloudflared <dir>/`, `docker rm cloudflared-copy`
+   and `sudo install -m 755 <dir>/cloudflared /usr/local/bin/cloudflared`.
 
    The script does not touch DNS. Without systemd, run the proxy as an ordinary user:
    `infra-agent gateway --zone example.com --routes-file <path> [--listen 127.0.0.1:61090]`, and
