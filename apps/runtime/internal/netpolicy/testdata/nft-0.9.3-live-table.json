@@ -1,0 +1,288 @@
+{
+  "nftables": [
+    {
+      "metainfo": {
+        "version": "0.9.3",
+        "release_name": "Topsy",
+        "json_schema_version": 1
+      }
+    },
+    {
+      "table": {
+        "family": "inet",
+        "name": "runner-center",
+        "handle": 69
+      }
+    },
+    {
+      "set": {
+        "family": "inet",
+        "name": "rc_guests",
+        "table": "runner-center",
+        "type": "ipv4_addr",
+        "handle": 3,
+        "flags": ["interval"],
+        "elem": [
+          {
+            "prefix": {
+              "addr": "10.241.0.0",
+              "len": 16
+            }
+          }
+        ]
+      }
+    },
+    {
+      "set": {
+        "family": "inet",
+        "name": "rc_egress_allow",
+        "table": "runner-center",
+        "type": "ipv4_addr",
+        "handle": 4,
+        "flags": ["interval"]
+      }
+    },
+    {
+      "chain": {
+        "family": "inet",
+        "table": "runner-center",
+        "name": "forward",
+        "handle": 1,
+        "type": "filter",
+        "hook": "forward",
+        "prio": -10,
+        "policy": "accept"
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "runner-center",
+        "chain": "forward",
+        "handle": 6,
+        "comment": "rc:deny-east-west",
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "saddr"
+                }
+              },
+              "right": "@rc_guests"
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "daddr"
+                }
+              },
+              "right": "@rc_guests"
+            }
+          },
+          {
+            "drop": null
+          }
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "runner-center",
+        "chain": "forward",
+        "handle": 7,
+        "comment": "rc:allow-destinations",
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "saddr"
+                }
+              },
+              "right": "@rc_guests"
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "daddr"
+                }
+              },
+              "right": "@rc_egress_allow"
+            }
+          },
+          {
+            "accept": null
+          }
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "runner-center",
+        "chain": "forward",
+        "handle": 8,
+        "comment": "rc:deny-private",
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "saddr"
+                }
+              },
+              "right": "@rc_guests"
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "daddr"
+                }
+              },
+              "right": {
+                "set": [
+                  {
+                    "prefix": {
+                      "addr": "0.0.0.0",
+                      "len": 8
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "10.0.0.0",
+                      "len": 8
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "100.64.0.0",
+                      "len": 10
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "127.0.0.0",
+                      "len": 8
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "169.254.0.0",
+                      "len": 16
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "172.16.0.0",
+                      "len": 12
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "192.0.0.0",
+                      "len": 24
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "192.0.2.0",
+                      "len": 24
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "192.168.0.0",
+                      "len": 16
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "198.18.0.0",
+                      "len": 15
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "198.51.100.0",
+                      "len": 24
+                    }
+                  },
+                  {
+                    "prefix": {
+                      "addr": "203.0.113.0",
+                      "len": 24
+                    }
+                  },
+                  {
+                    "range": ["224.0.0.0", "255.255.255.255"]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "drop": null
+          }
+        ]
+      }
+    },
+    {
+      "chain": {
+        "family": "inet",
+        "table": "runner-center",
+        "name": "input",
+        "handle": 2,
+        "type": "filter",
+        "hook": "input",
+        "prio": -10,
+        "policy": "accept"
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "runner-center",
+        "chain": "input",
+        "handle": 9,
+        "comment": "rc:deny-host-input",
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "ip",
+                  "field": "saddr"
+                }
+              },
+              "right": "@rc_guests"
+            }
+          },
+          {
+            "drop": null
+          }
+        ]
+      }
+    }
+  ]
+}

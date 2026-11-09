@@ -82,7 +82,7 @@ func normalizeExpression(value any) any {
 			result[key] = normalizeExpression(child)
 		}
 		if members, ok := result["set"].([]any); ok {
-			if intervals, ok := prefixIntervals(members); ok {
+			if intervals, ok := ipv4Intervals(members); ok {
 				result["set"] = intervals
 			} else {
 				sortJSONValues(members)
@@ -103,13 +103,26 @@ func normalizeExpression(value any) any {
 }
 
 // nft merges adjacent anonymous IP prefixes (224/4 + 240/4 becomes
-// 224/3). Compare their address unions, without discarding unknown members.
-func prefixIntervals(members []any) ([][2]uint64, bool) {
+// 224/3). nft 0.9.3 instead prints the inclusive range 224.0.0.0 to
+// 255.255.255.255. Compare their address unions, without discarding unknown members.
+func ipv4Intervals(members []any) ([][2]uint64, bool) {
 	intervals := make([][2]uint64, 0, len(members))
 	for _, member := range members {
 		object, ok := member.(map[string]any)
 		if !ok || len(object) != 1 {
 			return nil, false
+		}
+		if bounds, ok := object["range"].([]any); ok {
+			if len(bounds) != 2 {
+				return nil, false
+			}
+			first, firstOK := ipv4Number(bounds[0])
+			last, lastOK := ipv4Number(bounds[1])
+			if !firstOK || !lastOK || first > last {
+				return nil, false
+			}
+			intervals = append(intervals, [2]uint64{first, last})
+			continue
 		}
 		value, ok := object["prefix"].(map[string]any)
 		if !ok || len(value) != 2 {
@@ -147,6 +160,19 @@ func prefixIntervals(members []any) ([][2]uint64, bool) {
 		}
 	}
 	return merged, true
+}
+
+func ipv4Number(value any) (uint64, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return 0, false
+	}
+	address, err := netip.ParseAddr(text)
+	if err != nil || !address.Is4() {
+		return 0, false
+	}
+	octets := address.As4()
+	return uint64(binary.BigEndian.Uint32(octets[:])), true
 }
 
 func sortJSONValues(values []any) {
