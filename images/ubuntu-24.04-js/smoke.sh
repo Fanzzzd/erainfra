@@ -71,6 +71,15 @@ pip3 --version >/dev/null
 zstd --version >/dev/null
 rsync --version >/dev/null
 ldconfig -p | grep -F 'libatomic.so.1' >/dev/null
+# Playwright Chromium's system dependencies (Dockerfile), so `playwright install
+# chromium` needs no apt step. Read the cache once rather than pipe it per name.
+shared_libs=$(ldconfig -p)
+for lib in libnss3.so libnspr4.so libgbm.so.1 libasound.so.2 libatk-bridge-2.0.so.0 \
+  libxkbcommon.so.0 libXcomposite.so.1 libXdamage.so.1 libXrandr.so.2 libcups.so.2 \
+  libpango-1.0.so.0 libcairo.so.2; do
+  grep -qF "$lib" <<<"$shared_libs" || { echo "missing $lib" >&2; exit 1; }
+done
+command -v Xvfb >/dev/null
 out_matches -Fx 'v22.23.2' node --version
 # The second Node is in the tool cache for setup-node, not on PATH: the default
 # above must stay 22, and setup-node only takes 24 without a download if the

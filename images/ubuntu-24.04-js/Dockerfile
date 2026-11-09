@@ -63,6 +63,52 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+# The system libraries and fonts `playwright install --with-deps chromium` adds on
+# Ubuntu 24.04, which GitHub's hosted image already carries. Without them every
+# browser job spent about 80 s in apt (Plany canary 42654036610: 104 s against
+# hosted's 24 s for the same step). The browser itself is not installed: each
+# repository pins its own Playwright version and downloads the matching build.
+# The list is Playwright's own, `ubuntu24.04-x64` chromium plus tools, from
+# packages/playwright-core/src/server/registry/nativeDeps.ts at
+# microsoft/playwright@ac65100a5ffe1fba641c288d920ed87fd3e2f860 (v1.65.0 era).
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends \
+    fonts-freefont-ttf \
+    fonts-ipafont-gothic \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    fonts-tlwg-loma-otf \
+    fonts-unifont \
+    fonts-wqy-zenhei \
+    libasound2t64 \
+    libatk-bridge2.0-0t64 \
+    libatk1.0-0t64 \
+    libatspi2.0-0t64 \
+    libcairo2 \
+    libcups2t64 \
+    libdbus-1-3 \
+    libdrm2 \
+    libfontconfig1 \
+    libfreetype6 \
+    libgbm1 \
+    libglib2.0-0t64 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    xfonts-cyrillic \
+    xfonts-scalable \
+    xvfb \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
 # Without this the image had no locale and no timezone database at all, so the C
 # library fell back to ANSI_X3.4-1968 -- ASCII -- and a named zone did not
 # resolve because neither /etc/timezone nor /etc/localtime existed. ubuntu-latest
