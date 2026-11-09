@@ -22,9 +22,10 @@ import {
   boundedEgressRecord,
   profileEgressValidator,
 } from "./egress";
-import { carriesHostLabels, missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
+import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 import { runnerVersionOf } from "./runnerReleaseModel";
+import { largestServedProfileMemoryMiB, servedProfiles } from "./workerPolicy";
 
 const completedExecutorDrainMs = 30_000;
 const liveAttemptStates = ["pending", "preparing", "ready", "running"] as const;
@@ -75,35 +76,17 @@ export const profiles = query({
   returns: v.array(profileSpecValidator),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    const compatibleExecutors =
-      machine.os === "linux"
-        ? new Set(["docker", "firecracker"])
-        : new Set([machine.os === "mac" ? "tart" : "hyperv"]);
-    return (
-      (
-        await ctx.db
-          .query("profiles")
-          .withIndex("by_state", (q) => q.eq("state", "active"))
-          .collect()
-      )
-        // A pinned Profile is invisible to a Worker without its labels, so that Worker never
-        // prepares its image, parks warm guests for it or reports readiness for it (ADR 0017).
-        .filter(
-          (profile) =>
-            compatibleExecutors.has(profile.executor) &&
-            carriesHostLabels(profile.workerLabels, machine.labels),
-        )
-        .toSorted((left, right) => left.name.localeCompare(right.name))
-        .map((profile) => ({
-          profile: profile.name,
-          executor: profile.executor,
-          imageRelease: profile.imageRelease,
-          vcpus: profile.vcpus,
-          memoryMiB: profile.memoryMiB,
-          warmPool: profile.warmPool ?? 0,
-          egress: profileEgressOf(profile),
-        }))
-    );
+    // A pinned Profile is invisible to a Worker without its labels, so that Worker never
+    // prepares its image, parks warm guests for it or reports readiness for it (ADR 0017).
+    return (await servedProfiles(ctx, machine)).map((profile) => ({
+      profile: profile.name,
+      executor: profile.executor,
+      imageRelease: profile.imageRelease,
+      vcpus: profile.vcpus,
+      memoryMiB: profile.memoryMiB,
+      warmPool: profile.warmPool ?? 0,
+      egress: profileEgressOf(profile),
+    }));
   },
 });
 
@@ -127,7 +110,12 @@ export const reportHostFacts = mutation({
     }
     const machine = await machineForToken(ctx, args.token);
     const now = Date.now();
-    const resourceSlots = resourceRecommendedSlots(machine.os, args.cpus, args.memoryMiB);
+    const resourceSlots = resourceRecommendedSlots(
+      machine.os,
+      args.cpus,
+      args.memoryMiB,
+      await largestServedProfileMemoryMiB(ctx, machine),
+    );
     const evidence = await ctx.db
       .query("benchmarkEvidence")
       .withIndex("by_machine", (q) => q.eq("machineId", machine._id))
@@ -178,7 +166,12 @@ export const reportBenchmark = mutation({
     const benchmark = normalizeBenchmark(args.report, now);
     const resourceSlots =
       machine.cpus !== undefined && machine.memoryMiB !== undefined
-        ? resourceRecommendedSlots(machine.os, machine.cpus, machine.memoryMiB)
+        ? resourceRecommendedSlots(
+            machine.os,
+            machine.cpus,
+            machine.memoryMiB,
+            await largestServedProfileMemoryMiB(ctx, machine),
+          )
         : (machine.resourceRecommendedSlots ?? machine.recommendedSlots ?? machine.maxSlots);
     const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, benchmark, now);
     const slotPolicy = machine.slotPolicy === "fixed" ? "fixed" : "auto";

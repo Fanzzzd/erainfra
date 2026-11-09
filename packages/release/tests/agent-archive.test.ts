@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+import { AGENT_RELEASE } from "../../backend/convex/agentRelease.ts";
+import { renderInstallScript } from "../../backend/convex/installScript.ts";
+import { renderWindowsInstallScript } from "../../backend/convex/installScriptPowerShell.ts";
 import {
+  AGENT_ENTRY_POINTS,
   archiveName,
   buildAgentArchive,
   checksumLine,
@@ -37,6 +41,7 @@ function agentFixture(overrides: Record<string, string | null> = {}) {
     "index.ts": "// source, not shipped\n",
     "dist/index.js": "console.log('agent');\n",
     "dist/index.js.map": '{"version":3}\n',
+    "dist/benchmark-cli.js": "console.log('benchmark');\n",
     "dist/config.js": "export const config = {};\n",
     "provisioners/provision-linux.sh": "#!/usr/bin/env bash\n",
     "provisioners/provision-win.ps1": "Write-Output 'hi'\n",
@@ -70,6 +75,7 @@ describe("collectAgentFiles", () => {
     const files = entries.filter((entry) => !entry.path.endsWith("/")).map((entry) => entry.path);
 
     assert.deepEqual(files, [
+      "agent/dist/benchmark-cli.js",
       "agent/dist/config.js",
       "agent/dist/index.js",
       "agent/package-lock.json",
@@ -97,6 +103,13 @@ describe("collectAgentFiles", () => {
   it("refuses to package an agent that has not been built", () => {
     const root = agentFixture({ "dist/index.js": null });
     assert.throws(() => collectAgentFiles(root), /dist\/index\.js is missing/);
+  });
+
+  // `rc benchmark` execs dist/benchmark-cli.js. The agent build never emitted it, so the released
+  // archive shipped a command that failed on every machine, and packaging said nothing.
+  it("refuses to package an agent without the benchmark entry point", () => {
+    const root = agentFixture({ "dist/benchmark-cli.js": null });
+    assert.throws(() => collectAgentFiles(root), /dist\/benchmark-cli\.js is missing/);
   });
 
   // Both root files are packed verbatim, so an archive can describe its own version two ways.
@@ -224,5 +237,49 @@ describe("readProductVersion", () => {
   it("keeps the real repository in sync", () => {
     const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
     assert.match(readProductVersion(repoRoot), /^\d+\.\d+\.\d+/);
+  });
+});
+
+describe("agent entry points", () => {
+  const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
+
+  /** Every compiled agent file an installed machine runs by path. */
+  function filesTheInstallersExec() {
+    const site = "https://erainfra.example.test";
+    const unix = renderInstallScript(site, AGENT_RELEASE);
+    const windows = renderWindowsInstallScript(site, AGENT_RELEASE);
+    return new Set([
+      ...[...unix.matchAll(/\$(?:AGENT|STAGE)_DIR\/dist\/([\w.-]+\.js)/g)].map(
+        (match) => `dist/${match[1]}`,
+      ),
+      ...[...windows.matchAll(/"dist\\([\w.-]+\.js)"/g)].map((match) => `dist/${match[1]}`),
+    ]);
+  }
+
+  it("requires every agent file the installed wrappers exec", () => {
+    const referenced = filesTheInstallersExec();
+    // Guards the scan itself: a pattern that matched nothing would pass every check below.
+    assert.ok(referenced.has("dist/index.js"));
+    assert.ok(referenced.has("dist/benchmark-cli.js"));
+    for (const file of referenced) {
+      assert.ok(
+        (AGENT_ENTRY_POINTS as readonly string[]).includes(file),
+        `the installer runs ${file}, but packaging does not require it`,
+      );
+    }
+  });
+
+  it("builds every required entry point from the agent's tsconfig", () => {
+    const tsconfig = JSON.parse(
+      readFileSync(path.join(repoRoot, "apps", "action-runner-agent", "tsconfig.json"), "utf8"),
+    ) as { compilerOptions: { outDir: string }; include: string[] };
+    assert.equal(tsconfig.compilerOptions.outDir, "dist");
+    for (const entryPoint of AGENT_ENTRY_POINTS) {
+      const source = entryPoint.replace(/^dist\//, "").replace(/\.js$/, ".ts");
+      assert.ok(
+        tsconfig.include.includes(source),
+        `${entryPoint} ships only if tsc emits it; add ${source} to the agent tsconfig include`,
+      );
+    }
   });
 });

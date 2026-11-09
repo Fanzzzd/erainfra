@@ -263,14 +263,28 @@ export function benchmarkScore(
   return { score, source: "fresh" as const };
 }
 
+/** One slot's vCPUs, and its memory when the Worker serves no Profile to size by. */
+export const SLOT_VCPUS = 4;
+export const FALLBACK_SLOT_MEMORY_MIB = 8_192;
+
+/**
+ * The hard slot envelope from host size alone. Memory is divided by the
+ * largest Profile the Worker serves, because that is what one slot can be
+ * asked to hold: at a flat 8 GiB a 251 GiB host serving 16 GiB Profiles was
+ * offered 16 slots, which is 256 GiB of guests. CPU stays at four vCPUs a
+ * slot. The scheduler still checks each Attempt's exact vCPUs and memory
+ * against the host, so this envelope bounds fan-out and is not the only
+ * guard against overcommit.
+ */
 export function resourceRecommendedSlots(
   os: "linux" | "mac" | "win",
   cpus: number,
   memoryMiB?: number,
+  slotMemoryMiB: number = FALLBACK_SLOT_MEMORY_MIB,
 ) {
-  const cpuSlots = Math.max(1, Math.floor(cpus / 4));
+  const cpuSlots = Math.max(1, Math.floor(cpus / SLOT_VCPUS));
   const memorySlots =
-    memoryMiB === undefined ? cpuSlots : Math.max(1, Math.floor(memoryMiB / 8_192));
+    memoryMiB === undefined ? cpuSlots : Math.max(1, Math.floor(memoryMiB / slotMemoryMiB));
   return os === "linux"
     ? Math.min(16, cpuSlots, memorySlots)
     : os === "mac"
@@ -288,7 +302,16 @@ export function benchmarkRecommendedSlots(
   }
   const measuredScores: number[] = [];
   if (benchmark.cpuSha256MiBps !== undefined) measuredScores.push(benchmark.scores.cpu);
-  if (benchmark.memoryCopyMiBps !== undefined) measuredScores.push(benchmark.scores.memory);
+  // Memory is deliberately not a capacity input. The probe is one thread copying one
+  // buffer, so it measures a single core's path to DRAM. Each slot is a 4-vCPU
+  // guest, and how many of those a host can carry depends on its total memory
+  // bandwidth across all channels, which a single thread cannot saturate.
+  // Many-core server parts score lower on it than desktops: ubuntu0, a 64-core
+  // Xeon Gold 6444Y with 251 GiB, scored 12 and was cut from 16 slots to 5.
+  // The signal runs the wrong way for exactly the hosts that carry the most
+  // jobs. The memory size is already in the envelope through
+  // resourceRecommendedSlots, and the memory score still feeds the balanced
+  // score that ranks candidates.
   if (
     benchmark.diskWriteMiBps !== undefined ||
     benchmark.diskReadMiBps !== undefined ||

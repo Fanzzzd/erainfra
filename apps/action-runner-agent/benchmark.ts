@@ -78,9 +78,23 @@ function measureCPU(bytes: number) {
   return throughputMiBPerSecond(bytes, elapsedMs(startedAt));
 }
 
+/**
+ * The memory probe copies a buffer several times larger than a server
+ * part's last-level cache, so the copy streams from DRAM. The old 64 MiB
+ * buffer was close to the L3 size of ubuntu0's Xeon Gold 6444Y, so part of
+ * each copy was served from cache. Four copies of 256 MiB move 1 GiB, about
+ * one second at the 1,000 MiB/s floor of the memory score, and hold 512 MiB
+ * for that long.
+ */
+export const MEMORY_PROBE_BYTES = 256 * MEBIBYTE;
+export const MEMORY_PROBE_COPIES = 4;
+
 function measureMemory(bytes: number, copies: number) {
   const source = Buffer.alloc(bytes, 0xa5);
   const target = Buffer.allocUnsafe(bytes);
+  // Touch every target page before the clock starts. Otherwise the first copy
+  // pays a page fault per page and the score measures the kernel's fault path.
+  target.fill(0);
   const startedAt = process.hrtime.bigint();
   for (let index = 0; index < copies; index += 1) source.copy(target);
   return throughputMiBPerSecond(bytes * copies, elapsedMs(startedAt));
@@ -219,8 +233,8 @@ export async function runWorkerBenchmark(options: BenchmarkOptions = {}): Promis
   }
   try {
     report.memoryCopyMiBps = measureMemory(
-      options.memoryBytes ?? 64 * MEBIBYTE,
-      options.memoryCopies ?? 4,
+      options.memoryBytes ?? MEMORY_PROBE_BYTES,
+      options.memoryCopies ?? MEMORY_PROBE_COPIES,
     );
   } catch (error) {
     report.errors.push(`memory: ${errorMessage(error)}`);

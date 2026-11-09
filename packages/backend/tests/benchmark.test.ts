@@ -99,10 +99,47 @@ describe("worker benchmark policy", () => {
     expect(benchmarkScore(farFromGitHub, "network", NOW).score).toBe(farFromGitHub.scores.network);
   });
 
+  // ubuntu0 on 2026-11-09: a 64-core Xeon Gold 6444Y scored cpu 100, disk 46, memory 12 and
+  // was cut from 16 slots to 5. The memory probe is one thread copying one buffer, which says
+  // nothing about how many 4-vCPU guests a many-core host can carry.
+  it("never lets the single-thread memory score shrink a Worker's slot envelope", () => {
+    const serverPart = normalizeBenchmark(
+      report({ cpuSha256MiBps: 1_500, memoryCopyMiBps: 3_280, diskWriteMiBps: 400 }),
+      NOW,
+    );
+    const desktopPart = normalizeBenchmark(
+      report({ cpuSha256MiBps: 1_500, memoryCopyMiBps: 20_000, diskWriteMiBps: 400 }),
+      NOW,
+    );
+    expect(serverPart.scores.memory).toBe(12);
+    expect(serverPart.scores.disk).toBe(desktopPart.scores.disk);
+    expect(serverPart.scores.disk).toBeLessThan(serverPart.scores.cpu);
+    expect(benchmarkRecommendedSlots(16, serverPart, NOW)).toBe(
+      benchmarkRecommendedSlots(16, desktopPart, NOW),
+    );
+    // The weakest remaining dimension, disk, still sets the factor.
+    expect(benchmarkRecommendedSlots(16, serverPart, NOW)).toBe(
+      Math.floor(16 * (0.25 + (serverPart.scores.disk / 100) * 0.75)),
+    );
+    // The memory score still ranks candidates through the balanced score.
+    expect(benchmarkScore(serverPart, "balanced", NOW).score).toBeLessThan(
+      benchmarkScore(desktopPart, "balanced", NOW).score,
+    );
+  });
+
   it("uses the shared resource policy with and without memory discovery", () => {
     expect(resourceRecommendedSlots("linux", 64, 256 * 1_024)).toBe(16);
     expect(resourceRecommendedSlots("linux", 32, undefined)).toBe(8);
     expect(resourceRecommendedSlots("mac", 32, undefined)).toBe(2);
     expect(resourceRecommendedSlots("win", 32, undefined)).toBe(1);
+  });
+
+  // At a flat 8 GiB a slot, a 251 GiB host serving 16 GiB Profiles was offered 16 slots, which
+  // is 256 GiB of guests.
+  it("sizes the memory envelope by the largest Profile the Worker serves", () => {
+    expect(resourceRecommendedSlots("linux", 64, 251 * 1_024)).toBe(16);
+    expect(resourceRecommendedSlots("linux", 64, 251 * 1_024, 16 * 1_024)).toBe(15);
+    expect(resourceRecommendedSlots("linux", 64, 251 * 1_024, 32 * 1_024)).toBe(7);
+    expect(resourceRecommendedSlots("mac", 16, 48 * 1_024, 32 * 1_024)).toBe(1);
   });
 });
