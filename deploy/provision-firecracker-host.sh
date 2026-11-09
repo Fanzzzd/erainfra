@@ -134,10 +134,11 @@ Usage:
 
   --runtime-binary     runner-center-runtime for this host's architecture,
                        already verified against its published .sha256 sidecar.
-  --data-device        Dedicated block device for thin-pool data. Its contents
-                       are destroyed.
-  --meta-device        Dedicated block device for thin-pool metadata. Its
-                       contents are destroyed. 1 GiB is ample.
+  --data-device        Dedicated block device for thin-pool data.
+  --meta-device        Dedicated block device for thin-pool metadata. 1 GiB
+                       is ample. Reuse the original pair for an existing pool.
+                       A new pair must be entirely zero-filled; setup checks
+                       both devices in full and never erases existing contents.
   --file-backed-pool   Evaluation only: back the thin-pool with sparse files
                        instead of dedicated devices. Never use this in
                        production; a full backing filesystem then fails every
@@ -342,7 +343,8 @@ else
 fi
 
 step 'Checking host prerequisites'
-for tool in curl tar sha256sum dmsetup nft systemctl blockdev pgrep; do
+# thin_check is provided by thin-provisioning-tools.
+for tool in curl tar sha256sum dmsetup nft systemctl blockdev pgrep thin_check cmp; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool is required; install it first"
 done
 CONTAINERD_BIN=$(command -v containerd || true)
@@ -499,28 +501,60 @@ if dmsetup info "$RC_THIN_POOL" >/dev/null 2>&1; then
   exit 0
 fi
 
+fail() {
+  printf 'error: %s\n' "$1" >&2
+  exit 1
+}
+
+command -v thin_check >/dev/null 2>&1 || fail 'install thin-provisioning-tools (thin_check) first'
+command -v cmp >/dev/null 2>&1 || fail 'cmp is required to verify empty backing'
+
+new_files=0
 if [ "$RC_POOL_BACKING" = 'file' ]; then
-  install -d -m 0700 "$(dirname "$RC_POOL_DATA_IMAGE")" "$(dirname "$RC_POOL_META_IMAGE")"
-  if [ ! -f "$RC_POOL_DATA_IMAGE" ]; then
+  # Never replace half of an existing pool, follow a symlink, or resize files
+  # during boot/reprovisioning. Only an exclusively created pair is known empty.
+  for image in "$RC_POOL_DATA_IMAGE" "$RC_POOL_META_IMAGE"; do
+    [ ! -L "$image" ] || fail "refusing symlink backing: $image"
+  done
+  if [ -e "$RC_POOL_DATA_IMAGE" ] || [ -e "$RC_POOL_META_IMAGE" ]; then
+    [ -f "$RC_POOL_DATA_IMAGE" ] && [ -f "$RC_POOL_META_IMAGE" ] ||
+      fail 'incomplete or non-regular thin-pool backing; restore the original file pair'
+  else
+    install -d -m 0700 "$(dirname "$RC_POOL_DATA_IMAGE")" "$(dirname "$RC_POOL_META_IMAGE")"
+    (umask 077; set -o noclobber; : > "$RC_POOL_DATA_IMAGE"; : > "$RC_POOL_META_IMAGE")
     truncate -s "${RC_POOL_DATA_GIB}G" "$RC_POOL_DATA_IMAGE"
-  fi
-  if [ ! -f "$RC_POOL_META_IMAGE" ]; then
     truncate -s 2G "$RC_POOL_META_IMAGE"
+    new_files=1
   fi
+  [ ! "$RC_POOL_DATA_IMAGE" -ef "$RC_POOL_META_IMAGE" ] || fail 'data and metadata must be distinct'
   chmod 600 "$RC_POOL_DATA_IMAGE" "$RC_POOL_META_IMAGE"
   data_device=$(losetup -j "$RC_POOL_DATA_IMAGE" | cut -d: -f1 | head -n 1)
   [ -n "$data_device" ] || data_device=$(losetup --find --show "$RC_POOL_DATA_IMAGE")
   meta_device=$(losetup -j "$RC_POOL_META_IMAGE" | cut -d: -f1 | head -n 1)
   [ -n "$meta_device" ] || meta_device=$(losetup --find --show "$RC_POOL_META_IMAGE")
-else
+elif [ "$RC_POOL_BACKING" = 'device' ]; then
   data_device=$RC_POOL_DATA_DEVICE
   meta_device=$RC_POOL_META_DEVICE
+else
+  fail "unknown thin-pool backing: $RC_POOL_BACKING"
 fi
+[ ! "$data_device" -ef "$meta_device" ] || fail 'data and metadata must be distinct'
 
-# A thin-pool refuses to start against metadata from another pool, so wipe the
-# first sectors of a metadata device that has never held this pool.
-if ! dmsetup table 2>/dev/null | grep -q "$RC_THIN_POOL"; then
-  dd if=/dev/zero of="$meta_device" bs=4096 count=1 conv=notrunc status=none || true
+is_zero_device() {
+  local bytes
+  bytes=$(blockdev --getsize64 "$1") || return 1
+  [ "$bytes" -gt 0 ] && cmp -s -n "$bytes" "$1" /dev/zero
+}
+
+# The device-mapper table disappears on every reboot; it says nothing about
+# persisted metadata. Validate it read-only and let the kernel reopen it as-is.
+# The kernel also initializes zero metadata itself. Only permit that for a new
+# file pair or a pair verified empty in FULL: a blank header/signature alone
+# could belong to a damaged pool or an unrelated disk with data further in.
+if [ "$new_files" -ne 1 ] && ! thin_check -q "$meta_device"; then
+  if ! is_zero_device "$meta_device" || ! is_zero_device "$data_device"; then
+    fail 'invalid thin-pool metadata or nonempty backing; refusing to initialize. Restore the original pool or explicitly prepare a new zero-filled pair.'
+  fi
 fi
 
 sectors=$(blockdev --getsz "$data_device")

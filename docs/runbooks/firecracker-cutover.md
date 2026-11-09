@@ -7,7 +7,8 @@ section rolls the whole thing back.
 Roles:
 
 - **Worker host** — the machine that runs jobs. Needs `/dev/kvm`, root, containerd 1.7+, `nft`,
-  `dmsetup`, and two dedicated block devices for the thin-pool.
+  `dmsetup`, `thin_check` from thin-provisioning-tools, and two dedicated block devices for the
+  thin-pool.
 - **Controller host** — the small always-on machine running
   `runner-center-controller@rc-linux-js`. Needs no KVM.
 
@@ -20,7 +21,7 @@ ls -l /dev/kvm                     # must exist
 grep -oE 'vmx|svm' /proc/cpuinfo | head -n 1   # must print vmx or svm
 systemd-detect-virt                # bare metal prints "none"; a nested guest may still work
 containerd --version               # 1.7 or newer
-command -v nft dmsetup             # both required
+command -v nft dmsetup thin_check  # all required
 lsblk                              # pick two devices for the thin-pool
 ```
 
@@ -71,8 +72,10 @@ sha256sum -c "runner-center-runtime-linux-$arch.sha256"
 chmod +x "runner-center-runtime-linux-$arch"
 ```
 
-Then provision. `--data-device` and `--meta-device` are **destroyed**; name the devices you chose in
-step 1, not a partition holding data.
+Then provision. `--data-device` and `--meta-device` belong to the thin-pool from then on; name the
+devices you chose in step 1, not a partition holding data. A new pair must be zero-filled in full
+before the first provision. Thin-pool setup never erases either device: it reopens valid metadata,
+initializes a pair it has read back as entirely zero, and refuses anything else.
 
 ```bash
 sudo deploy/provision-firecracker-host.sh \
