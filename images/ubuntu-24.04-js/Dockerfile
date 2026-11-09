@@ -178,6 +178,32 @@ RUN case "$TARGETARCH" in \
   && /opt/runner/bin/installdependencies.sh \
   && chown -R runner:docker /opt/runner /opt/hostedtoolcache
 
+# Rust the way ubuntu-latest has it: rustup and the stable toolchain under the
+# runner's home, CARGO_HOME and RUSTUP_HOME pointing there and ~/.cargo/bin on
+# PATH (runner-center-guest's runnerEnv hands jobs the same three). Without it
+# dtolnay/rust-toolchain first ran rustup-init and downloaded the whole
+# toolchain on every job: 11 s against 3 s hosted in Plany canary 42655403683.
+# Minimal profile plus the wasm32 target; an action that wants another channel
+# or component adds only that. The installer is pinned by hash; the toolchain
+# is whatever `stable` is when the image is built, as on the hosted image, and
+# rustup verifies it.
+ARG RUSTUP_VERSION=1.29.3
+ENV CARGO_HOME=/home/runner/.cargo RUSTUP_HOME=/home/runner/.rustup
+RUN case "$TARGETARCH" in \
+      amd64) rust_target=x86_64-unknown-linux-gnu; rustup_sha=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
+      arm64) rust_target=aarch64-unknown-linux-gnu; rustup_sha=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl --fail --location --retry 5 --output /tmp/rustup-init \
+    "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rust_target}/rustup-init" \
+  && echo "${rustup_sha}  /tmp/rustup-init" | sha256sum --check --strict \
+  && chmod 0755 /tmp/rustup-init \
+  && runuser -u runner -- env HOME=/home/runner CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" \
+    /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain stable \
+    --target wasm32-unknown-unknown \
+  && rm /tmp/rustup-init
+ENV PATH=/home/runner/.cargo/bin:$PATH
+
 # The runner has an official read-only action archive cache. Seed the Actions
 # used by this product and Payable at their workflow-pinned commits; every
 # archive is independently hashed so a changed GitHub source archive fails the

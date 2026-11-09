@@ -65,6 +65,13 @@ command -v zstd >/dev/null
 command -v rsync >/dev/null
 command -v gh >/dev/null
 command -v go >/dev/null
+# Rust where ubuntu-latest has it, owned by the runner so rustup can add to it.
+command -v rustup >/dev/null
+command -v cargo >/dev/null
+rustc --version >/dev/null
+rust_targets=$(rustup target list --installed)
+grep -qx 'wasm32-unknown-unknown' <<<"$rust_targets"
+[ "$(stat -c %U /home/runner/.cargo /home/runner/.rustup | sort -u)" = runner ]
 ssh -V >/dev/null 2>&1
 python3 --version >/dev/null
 pip3 --version >/dev/null
