@@ -12,6 +12,12 @@
         "$TURBO_ROOT$/apps/mesh/Cargo.lock",
         "$TURBO_ROOT$/apps/mesh/rust-toolchain.toml",
         "$TURBO_ROOT$/packages/backend/convex/agentRelease.ts",
+        "$TURBO_ROOT$/packages/backend/convex/installScript.ts",
+        "$TURBO_ROOT$/packages/backend/convex/installScriptPowerShell.ts",
+        "$TURBO_ROOT$/packages/backend/convex/meshInstallScript.ts",
+        "$TURBO_ROOT$/packages/backend/convex/provisionerFirecrackerHost.generated.ts",
+        "$TURBO_ROOT$/packages/backend/convex/controllerUnit.generated.ts",
+        "$TURBO_ROOT$/apps/action-runner-agent/tsconfig.json",
         "$TURBO_ROOT$/apps/runtime/cmd/runner-center-guest/main_linux.go",
         "$TURBO_ROOT$/images/ubuntu-24.04-js/**"
       ]

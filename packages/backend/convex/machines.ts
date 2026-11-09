@@ -7,7 +7,7 @@ import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
 import { normalizeHostLabels, pinDetail } from "./hostLabels";
 import { readinessAdmissionError } from "./isolation";
 import { retireOffPinOnWorker } from "./pinnedAttempts";
-import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
+import { largestServedProfileMemoryMiB, WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import {
   internalMutation,
   internalQuery,
@@ -390,7 +390,12 @@ export const registerAgent = internalMutation({
       suffix += 1;
     }
 
-    const defaultSlots = resourceRecommendedSlots(args.os, args.cpus, args.memoryMiB);
+    const defaultSlots = resourceRecommendedSlots(
+      args.os,
+      args.cpus,
+      args.memoryMiB,
+      await largestServedProfileMemoryMiB(ctx, { os: args.os, labels: labels.labels }),
+    );
     const maxSlots = args.maxSlots ?? defaultSlots;
 
     let machineToken = "";

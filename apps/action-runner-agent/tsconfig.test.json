@@ -5,5 +5,12 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "config.ts", "orphan-recovery.ts", "provision.ts", "tests/**/*.ts"]
+  "include": [
+    "index.ts",
+    "benchmark-cli.ts",
+    "config.ts",
+    "orphan-recovery.ts",
+    "provision.ts",
+    "tests/**/*.ts"
+  ]
 }

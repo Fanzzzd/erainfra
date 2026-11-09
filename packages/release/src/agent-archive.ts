@@ -26,6 +26,16 @@ const FILE_MODE = 0o644;
 
 const ROOT_FILES = ["package.json", "package-lock.json"];
 
+/**
+ * Compiled files that installed machines run by path: the service launcher
+ * execs `dist/index.js` and `rc benchmark` execs `dist/benchmark-cli.js`.
+ * Each must be a root in the agent's tsconfig `include`, because `tsc` emits
+ * only what it reaches from there. `benchmark-cli.ts` was not, so released
+ * agents up to 0.2.0-rc.12 shipped an `rc benchmark` that exec'd a file the
+ * archive did not contain.
+ */
+export const AGENT_ENTRY_POINTS = ["dist/index.js", "dist/benchmark-cli.js"] as const;
+
 function byPath(a: string, b: string) {
   if (a === b) {
     return 0;
@@ -128,8 +138,10 @@ export function collectAgentFiles(agentDir: string, runtimeDir?: string): TarEnt
     ...listFiles(path.join(agentDir, "provisioners"), "provisioners", () => true),
   ].toSorted(byPath);
 
-  if (!relativePaths.includes("dist/index.js")) {
-    throw new Error(`${agentDir}/dist/index.js is missing; build the agent first`);
+  for (const entryPoint of AGENT_ENTRY_POINTS) {
+    if (!relativePaths.includes(entryPoint)) {
+      throw new Error(`${agentDir}/${entryPoint} is missing; build the agent first`);
+    }
   }
 
   assertLockfileDeclaresTheSameVersion(agentDir);

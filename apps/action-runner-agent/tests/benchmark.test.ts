@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { runWorkerBenchmark } from "../benchmark.ts";
+import { MEMORY_PROBE_BYTES, MEMORY_PROBE_COPIES, runWorkerBenchmark } from "../benchmark.ts";
 
 describe("Worker benchmark", () => {
   it("measures bounded local resources and unauthenticated network targets", async () => {
@@ -72,5 +72,12 @@ describe("Worker benchmark", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  // A 64 MiB buffer sat near a server part's L3 size, so the copy partly measured cache.
+  it("sizes the default memory probe past last-level caches and bounds its volume", () => {
+    const mebibyte = 1024 * 1024;
+    assert.ok(MEMORY_PROBE_BYTES >= 256 * mebibyte);
+    assert.ok(MEMORY_PROBE_BYTES * MEMORY_PROBE_COPIES <= 1024 * mebibyte);
   });
 });

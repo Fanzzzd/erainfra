@@ -363,6 +363,58 @@ describe("readiness-gated Attempt scheduling", () => {
     ).toEqual({ maxSlots: 16, recommendedSlots: 16 });
   });
 
+  it("sizes automatic capacity by the largest Profile memory the Worker serves", async () => {
+    const t = convexTest(schema, modules);
+    for (const [name, memoryMiB, workerLabels] of [
+      ["linux-16g", 16 * 1_024, undefined],
+      ["linux-4g", 4 * 1_024, undefined],
+      // Pinned to a label this Worker lacks, so it is not one of the Profiles it serves.
+      ["gpu-64g", 64 * 1_024, ["gpu"]],
+    ] as const) {
+      await t.mutation(internal.controllerApi.registerProfile, {
+        name,
+        scaleSetName: name,
+        executor: "firecracker",
+        imageRelease: CONTRACT.imageRelease,
+        vcpus: 4,
+        memoryMiB,
+        minRunners: 0,
+        maxRunners: 4,
+        workerLabels: workerLabels === undefined ? undefined : [...workerLabels],
+      });
+    }
+    const machineId = await t.run(async (ctx) =>
+      ctx.db.insert("machines", {
+        name: "ubuntu0",
+        os: "linux",
+        labels: [],
+        slotPolicy: "auto",
+        maxSlots: 1,
+        usedSlots: 0,
+        lastSeen: Date.now(),
+        token: "token-ubuntu0",
+      }),
+    );
+
+    expect(
+      await t.mutation(api.workerApi.reportHostFacts, {
+        token: "token-ubuntu0",
+        arch: "x64",
+        cpus: 64,
+        memoryMiB: 251 * 1_024,
+      }),
+    ).toEqual({ maxSlots: 15, recommendedSlots: 15 });
+    expect(await t.run(async (ctx) => ctx.db.get(machineId))).toMatchObject({
+      resourceRecommendedSlots: 15,
+    });
+
+    const reported = await publishBenchmark(t, "ubuntu0", { cpu: 1_500, network: 100 });
+    expect(await t.run(async (ctx) => ctx.db.get(machineId))).toMatchObject({
+      resourceRecommendedSlots: 15,
+      recommendedSlots: reported.recommendedSlots,
+    });
+  });
+
   it("migrates legacy machines without a slot policy to automatic capacity", async () => {
     const t = convexTest(schema, modules);
     const machineId = await t.run(async (ctx) =>

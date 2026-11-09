@@ -13,5 +13,5 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["index.ts", "config.ts", "orphan-recovery.ts", "provision.ts"]
+  "include": ["index.ts", "benchmark-cli.ts", "config.ts", "orphan-recovery.ts", "provision.ts"]
 }
