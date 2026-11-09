@@ -1,0 +1,74 @@
+name: EraInfra full Ubuntu 24.04 image
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/image-ubuntu-2404-hosted]
+    paths:
+      - images/ubuntu-24.04-full/**
+      - .github/workflows/images-full.yml
+permissions: {}
+concurrency:
+  group: full-image-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile the guest and cache helper
+        env:
+          GOTOOLCHAIN: go1.27.3
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p build/full-image
+          go build -trimpath -ldflags='-s -w' -o build/full-image/runner-center-guest ./apps/runtime/cmd/runner-center-guest
+          go build -trimpath -ldflags='-s -w' -o build/full-image/erainfra-gocacheprog ./apps/runtime/cmd/erainfra-gocacheprog
+      - name: Free disk on this disposable hosted runner
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache /usr/local/share/powershell /usr/share/swift /opt/microsoft \
+            /usr/local/share/chromium /usr/lib/jvm /opt/az /usr/lib/google-cloud-sdk
+          docker system prune -af
+          sudo apt-get update
+          sudo apt-get install -y systemd-container skopeo
+          df -h /
+          free_kib=$(df -Pk / | awk 'NR==2 {print $4}')
+          [ "$free_kib" -ge $((105 * 1024 * 1024)) ] || { echo 'Need 105 GiB free for the full build'; exit 1; }
+      - name: Build every upstream software installer in order
+        run: |
+          sudo env FULL_IMAGE_WORKDIR="$RUNNER_TEMP/full-image" bash images/ubuntu-24.04-full/build.sh
+      - name: Boot on the pinned Firecracker kernel
+        run: |
+          sudo env FULL_IMAGE_WORKDIR="$RUNNER_TEMP/full-image" bash images/ubuntu-24.04-full/validate.sh
+      - name: Publish the candidate without changing any Profile
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/runner-center-ubuntu-24.04-full"
+          printf '%s' "$REGISTRY_TOKEN" | sudo skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          sudo skopeo copy "oci:$RUNNER_TEMP/full-image/oci:candidate" "docker://$image:pr-${GITHUB_SHA}"
+          sudo skopeo logout ghcr.io
+          sudo cat "$RUNNER_TEMP/full-image/evidence/measurements.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain build evidence even on failure
+        if: always()
+        run: |
+          sudo journalctl -u erainfra-image-container.service --no-pager > "$RUNNER_TEMP/nspawn.log"
+          sudo chmod -R a+rX "$RUNNER_TEMP/full-image/evidence" || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: full-image-evidence
+          path: |
+            ${{ runner.temp }}/full-image/evidence
+            ${{ runner.temp }}/nspawn.log
+          if-no-files-found: error
+          retention-days: 14

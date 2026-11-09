@@ -3,8 +3,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,9 +68,190 @@ func TestResolverConfigRejectsAnEmptyPublication(t *testing.T) {
 	}
 }
 
+func TestLoadRunnerEnvironmentMissingIsOptional(t *testing.T) {
+	env, err := loadRunnerEnvironment(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil || len(env) != 0 {
+		t.Fatalf("missing image environment = %v, %v; want empty environment without error", env, err)
+	}
+	metadata := guest.Metadata{Kind: "ci", JITConfig: "runtime-secret"}
+	got := runnerEnv(metadata, "/home/runner", "runner", "", nil, env)
+	if want := runnerEnv(metadata, "/home/runner", "runner", "", nil, nil); !slices.Equal(got, want) {
+		t.Fatalf("missing image environment changed runtime defaults: %q", got)
+	}
+}
+
+func TestLoadRunnerEnvironmentRejectsInvalidInput(t *testing.T) {
+	for name, data := range map[string]string{
+		"empty file":            "",
+		"malformed JSON":        `{"PATH":`,
+		"null object":           `null`,
+		"array":                 `[]`,
+		"scalar":                `"PATH=/bin"`,
+		"trailing JSON":         `{} {}`,
+		"trailing garbage":      `{} trailing`,
+		"number":                `{"JAVA_HOME":21}`,
+		"boolean":               `{"JAVA_HOME":true}`,
+		"null value":            `{"JAVA_HOME":null}`,
+		"array value":           `{"JAVA_HOME":[]}`,
+		"object value":          `{"JAVA_HOME":{}}`,
+		"duplicate key":         `{"PATH":"/bin","PATH":"/other"}`,
+		"NUL value":             `{"JAVA_HOME":"/jdk\u0000"}`,
+		"newline value":         `{"JAVA_HOME":"/jdk\nLD_PRELOAD=/evil"}`,
+		"carriage return value": `{"JAVA_HOME":"/jdk\r"}`,
+		"empty PATH":            `{"PATH":""}`,
+		"invalid UTF8":          "{\"JAVA_HOME\":\"\xff\"}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "runner-environment.json")
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if env, err := loadRunnerEnvironment(path); err == nil || env != nil {
+				t.Fatalf("invalid image environment accepted: %v, %v", env, err)
+			}
+		})
+	}
+	// Missing is optional. Other read failures must not silently use defaults.
+	if env, err := loadRunnerEnvironment(t.TempDir()); err == nil || env != nil {
+		t.Fatalf("directory accepted as image environment: %v, %v", env, err)
+	}
+}
+
+func TestLoadRunnerEnvironmentRejectsUnknownAndRuntimeKeys(t *testing.T) {
+	for _, key := range []string{
+		"UNKNOWN", "", "PATH=OTHER", "PATH\nOTHER", "path",
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "NODE_OPTIONS", "PYTHONPATH",
+		"HOME", "USER", "LOGNAME", "LANG", "CARGO_HOME", "RUSTUP_HOME",
+		"ACTIONS_RUNNER_INPUT_JITCONFIG", "ACTIONS_RUNNER_HOOK_JOB_STARTED",
+		"ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RESULTS_URL",
+		"NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE",
+		"TURBO_API", "TURBO_TOKEN", "TURBO_TEAM", "ERAINFRA_BUILD_CACHE_URL", "GOCACHEPROG",
+		"JAVA_HOME_EVIL_X64", "JAVA_HOME_21_X64_EXTRA", "GOROOT_1_BAD_X64",
+		"ANDROID_UNKNOWN", "PIPX_UNKNOWN", "DOTNET_STARTUP_HOOKS", "CHROME_UNKNOWN",
+		"CHROMIUM_UNKNOWN", "EDGE_UNKNOWN", "HOMEBREW_UNKNOWN",
+	} {
+		t.Run(key, func(t *testing.T) {
+			data, err := json.Marshal(map[string]string{key: "must-not-leak"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "runner-environment.json")
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if env, err := loadRunnerEnvironment(path); err == nil || env != nil {
+				t.Fatalf("forbidden image key accepted: %v, %v", env, err)
+			} else if strings.Contains(err.Error(), "must-not-leak") {
+				t.Fatal("error disclosed an environment value")
+			}
+		})
+	}
+}
+
+func TestRunnerEnvLoadsHostedImageEnvironment(t *testing.T) {
+	t.Setenv("ERAINFRA_PARENT_SECRET", "must-not-leak")
+	path := filepath.Join(t.TempDir(), "runner-environment.json")
+	image := map[string]string{
+		"PATH":                    "/home/runner/.cargo/bin:/opt/tools/bin:/usr/bin:/bin",
+		"JAVA_HOME":               "/usr/lib/jvm/temurin-21-jdk-amd64",
+		"JAVA_HOME_21_X64":        "/usr/lib/jvm/temurin-21-jdk-amd64",
+		"GOROOT_1_27_X64":         "/opt/hostedtoolcache/go/1.27.3/x64",
+		"NVM_DIR":                 "/home/runner/.nvm",
+		"XDG_CONFIG_HOME":         "/home/runner/.config",
+		"ImageOS":                 "ubuntu24",
+		"ImageVersion":            "20261109.1",
+		"ANDROID_HOME":            "/usr/local/lib/android/sdk",
+		"ANDROID_SDK_ROOT":        "/usr/local/lib/android/sdk",
+		"ANDROID_NDK":             "/usr/local/lib/android/sdk/ndk/27.3.13750724",
+		"ANDROID_NDK_HOME":        "/usr/local/lib/android/sdk/ndk/27.3.13750724",
+		"ANDROID_NDK_ROOT":        "/usr/local/lib/android/sdk/ndk/27.3.13750724",
+		"ANDROID_NDK_LATEST_HOME": "/usr/local/lib/android/sdk/ndk/30.0.16248370",
+		"PIPX_BIN_DIR":            "/opt/pipx_bin", "PIPX_HOME": "/opt/pipx",
+		"DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_NOLOGO": "1", "DOTNET_MULTILEVEL_LOOKUP": "0",
+		"CHROME_BIN": "/usr/bin/google-chrome", "CHROMEWEBDRIVER": "/usr/local/share/chromedriver-linux64",
+		"EDGEWEBDRIVER": "/usr/local/share/edge_driver", "GECKOWEBDRIVER": "/usr/local/share/gecko_driver",
+		"SELENIUM_JAR_PATH":       "/usr/share/java/selenium-server.jar",
+		"VCPKG_INSTALLATION_ROOT": "/usr/local/share/vcpkg", "VCPKG_FORCE_SYSTEM_BINARIES": "1",
+		"SWIFT_PATH": "/usr/share/swift/usr/bin", "GRADLE_HOME": "/usr/share/gradle-9.8.2", "ANT_HOME": "/usr/share/ant",
+		"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_CLEANUP_PERIODIC_FULL_DAYS": "3650",
+		"ACCEPT_EULA": "Y", "DEBIAN_FRONTEND": "noninteractive",
+		"PSModulePath":                     "/root/.local/share/powershell/Modules:/usr/share/az_15.6.1",
+		"AZURE_EXTENSION_DIR":              "/opt/az/azcliextensions",
+		"BOOTSTRAP_HASKELL_NONINTERACTIVE": "1", "GHCUP_INSTALL_BASE_PREFIX": "/usr/local",
+		"CONDA": "/usr/share/miniconda", "USE_BAZEL_FALLBACK_VERSION": "silent:",
+		"LEIN_JAR": "/usr/local/lib/lein.jar", "LEIN_HOME": "/usr/local/lib/lein",
+		"RUNNER_TOOL_CACHE":                   "/image/toolcache",
+		"AGENT_TOOLSDIRECTORY":                "/image/toolcache",
+		"ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE": "/image/actions",
+	}
+	data, err := json.Marshal(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadRunnerEnvironment(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Startup owns the read. Constructing a command must not reread the file.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	metadata := guest.Metadata{Kind: "ci", JITConfig: "runtime-secret", CacheURL: "https://cache.internal", CacheServiceV2: "true"}
+	env := runnerEnv(metadata, "/home/runner", "runner", "/runtime/cache.crt", []string{"TURBO_TOKEN=runtime-token"}, loaded)
+	if !slices.IsSorted(env) {
+		t.Fatalf("environment is not sorted: %q", env)
+	}
+	if again := runnerEnv(metadata, "/home/runner", "runner", "/runtime/cache.crt", []string{"TURBO_TOKEN=runtime-token"}, loaded); !slices.Equal(env, again) {
+		t.Fatal("environment is not deterministic")
+	}
+	command := exec.CommandContext(t.Context(), "/usr/bin/env")
+	command.Env = env
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, entry := range strings.Split(strings.TrimSuffix(string(output), "\n"), "\n") {
+		key, value, ok := strings.Cut(entry, "=")
+		if _, duplicate := got[key]; !ok || duplicate {
+			t.Fatalf("malformed or duplicate environment entry %q", entry)
+		}
+		got[key] = value
+	}
+	want := map[string]string{
+		"HOME": "/home/runner", "USER": "runner", "LOGNAME": "runner", "LANG": "C.UTF-8",
+		"RUNNER_TOOL_CACHE": "/opt/hostedtoolcache", "AGENT_TOOLSDIRECTORY": "/opt/hostedtoolcache",
+		"ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE": "/opt/action-cache",
+		"ACTIONS_RUNNER_INPUT_JITCONFIG":      "runtime-secret",
+		"ACTIONS_CACHE_URL":                   "https://cache.internal", "ACTIONS_CACHE_SERVICE_V2": "true",
+		"NODE_EXTRA_CA_CERTS": "/runtime/cache.crt", "TURBO_TOKEN": "runtime-token",
+	}
+	for key, value := range image {
+		if _, runtimeControlled := want[key]; !runtimeControlled {
+			want[key] = value
+		}
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("child environment %s = %q, want %q", key, got[key], value)
+		}
+	}
+	for _, key := range []string{"ERAINFRA_PARENT_SECRET", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RESULTS_URL"} {
+		if _, exists := got[key]; exists {
+			t.Errorf("child inherited forbidden key %s", key)
+		}
+	}
+	if loaded["RUNNER_TOOL_CACHE"] != "/image/toolcache" {
+		t.Fatal("runnerEnv mutated the loaded image environment")
+	}
+}
+
 func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
-	env := runnerEnv(metadata, "/home/runner", "runner", "", nil)
+	env := runnerEnv(metadata, "/home/runner", "runner", "", nil, nil)
 
 	want := map[string]string{
 		"LANG":                           "C.UTF-8",
@@ -98,7 +283,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 
 	metadata.CacheURL = "https://cache.internal:8080"
 	metadata.CacheServiceV2 = "false"
-	env = runnerEnv(metadata, "/home/runner", "runner", "", nil)
+	env = runnerEnv(metadata, "/home/runner", "runner", "", nil, nil)
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "ACTIONS_CACHE_URL=https://cache.internal:8080") ||
 		!strings.Contains(joined, "ACTIONS_CACHE_SERVICE_V2=false") {
@@ -116,7 +301,7 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 func TestRunnerEnvCarriesTheCacheTrustAnchorWhenRedirected(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
 
-	env := runnerEnv(metadata, "/home/runner", "runner", "/usr/local/share/ca-certificates/erainfra-cache.crt", nil)
+	env := runnerEnv(metadata, "/home/runner", "runner", "/usr/local/share/ca-certificates/erainfra-cache.crt", nil, nil)
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
 		"NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/erainfra-cache.crt",
@@ -143,7 +328,7 @@ func TestRunnerEnvCarriesTheBuildCacheProxy(t *testing.T) {
 		"TURBO_TEAM=erainfra",
 		"ERAINFRA_BUILD_CACHE_URL=http://" + buildCacheAddr,
 	}
-	joined := strings.Join(runnerEnv(metadata, "/home/runner", "runner", "", build), "\n")
+	joined := strings.Join(runnerEnv(metadata, "/home/runner", "runner", "", build, nil), "\n")
 	for _, want := range build {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("runner env missing %s: %q", want, joined)
