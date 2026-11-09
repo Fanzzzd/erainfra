@@ -145,10 +145,19 @@ func NewIssuer(client Client, scaleSetID int) (*Issuer, error) {
 	return &Issuer{client: client, scaleSetID: scaleSetID}, nil
 }
 
+// WorkFolder is the runner's work folder, the one GitHub-hosted Ubuntu runners use, so every
+// workspace is /home/runner/work/<repository>/<repository> on both. actions/cache archives paths
+// relative to the workspace (`tar -P -C $GITHUB_WORKSPACE`), so a cache of a path outside it, such
+// as pnpm's store under /home/runner, lands in the same place only when the workspace does. With
+// the runner's default `_work` under /opt/runner, a cache saved on a hosted runner restored to
+// /opt/runner/... and every job downloaded its dependencies again. The guest's test-report
+// collector reads the same directory (runner-center-guest's runnerWorkDir).
+const WorkFolder = "/home/runner/work"
+
 func (i *Issuer) GenerateJIT(ctx context.Context, runnerName string) (rccontroller.JITConfig, error) {
 	jit, err := i.client.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{
 		Name:       runnerName,
-		WorkFolder: "_work",
+		WorkFolder: WorkFolder,
 	}, i.scaleSetID)
 	if err != nil {
 		return rccontroller.JITConfig{}, err

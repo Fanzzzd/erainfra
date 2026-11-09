@@ -1378,7 +1378,8 @@ Each Attempt page lists that run's failed, errored and flaky tests and its slowe
 `erainfra tests list` and `erainfra tests flaky` read the same data. Nothing in the workflow
 changes; the job only has to write the file.
 
-The collector looks in each workspace (`_work/<repository>/<repository>`) for these paths, which
+The collector looks in each workspace (`/home/runner/work/<repository>/<repository>`, the
+GitHub-hosted runner's layout) for these paths, which
 cover jest-junit, Vitest's `junit` reporter, pytest's `--junitxml`, gotestsum's `--junitfile`,
 Maven Surefire and Failsafe, and Gradle:
 

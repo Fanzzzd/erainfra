@@ -26,8 +26,14 @@ const (
 	mmdsURL   = "http://169.254.169.254"
 	runnerDir = "/opt/runner"
 	// runnerWorkDir is the runner's work folder: the controller asks GitHub
-	// for JIT configurations with WorkFolder "_work" (githubscale.go).
-	runnerWorkDir = runnerDir + "/_work"
+	// for JIT configurations with the GitHub-hosted runner's work folder
+	// (githubscale.WorkFolder), so workspaces and actions/cache paths match a
+	// hosted runner's.
+	runnerWorkDir = "/home/runner/work"
+	// legacyRunnerWorkDir is where a controller from before that change still
+	// puts workspaces (WorkFolder "_work", relative to runnerDir). The
+	// collector falls back to it so a mixed-version fleet keeps its reports.
+	legacyRunnerWorkDir = runnerDir + "/_work"
 	// runnerDiagDir is where the runner writes its Runner_*.log and, for each
 	// job, a Worker_*.log.
 	runnerDiagDir  = runnerDir + "/_diag"
@@ -168,7 +174,7 @@ func reportResult(token string, exitCode int) error {
 // and the Attempt reports no test results, exactly as a job without JUnit
 // files does.
 func reportTests(ctx context.Context) {
-	report, err := testreport.Collector{WorkDir: runnerWorkDir}.Collect(ctx)
+	report, err := testreport.Collector{WorkDir: testreport.FirstExistingDir(runnerWorkDir, legacyRunnerWorkDir)}.Collect(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "test results not collected: %v\n", err)
 		return
