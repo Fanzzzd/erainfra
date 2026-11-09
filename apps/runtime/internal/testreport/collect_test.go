@@ -259,3 +259,32 @@ func TestValidateRefusesMalformedReports(t *testing.T) {
 		}
 	}
 }
+
+// A guest from after the work-folder change still runs under controllers that
+// issue the old `_work` folder until they are upgraded, so collection follows
+// whichever folder the runner actually used.
+func TestFirstExistingDirPrefersTheHostedLayoutAndFallsBack(t *testing.T) {
+	root := t.TempDir()
+	hosted := filepath.Join(root, "home", "runner", "work")
+	legacy := filepath.Join(root, "opt", "runner", "_work")
+	if got := FirstExistingDir(hosted, legacy); got != hosted {
+		t.Fatalf("neither exists: got %q, want the preferred %q", got, hosted)
+	}
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FirstExistingDir(hosted, legacy); got != legacy {
+		t.Fatalf("only legacy exists: got %q, want %q", got, legacy)
+	}
+	if err := os.MkdirAll(hosted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FirstExistingDir(hosted, legacy); got != hosted {
+		t.Fatalf("both exist: got %q, want %q", got, hosted)
+	}
+	file := filepath.Join(root, "file")
+	writeFile(t, file, "")
+	if got := FirstExistingDir(file, legacy); got != legacy {
+		t.Fatalf("a regular file is not a work folder: got %q", got)
+	}
+}

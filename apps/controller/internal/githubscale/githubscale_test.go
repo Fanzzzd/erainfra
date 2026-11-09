@@ -12,11 +12,12 @@ import (
 )
 
 type fakeClient struct {
-	existing  *scaleset.RunnerScaleSet
-	created   *scaleset.RunnerScaleSet
-	updated   *scaleset.RunnerScaleSet
-	updateID  int
-	removeErr error
+	existing   *scaleset.RunnerScaleSet
+	created    *scaleset.RunnerScaleSet
+	updated    *scaleset.RunnerScaleSet
+	updateID   int
+	removeErr  error
+	jitSetting *scaleset.RunnerScaleSetJitRunnerSetting
 }
 
 func (f *fakeClient) GetRunnerGroupByName(context.Context, string) (*scaleset.RunnerGroup, error) {
@@ -38,7 +39,8 @@ func (f *fakeClient) UpdateRunnerScaleSet(_ context.Context, id int, value *scal
 	copy.ID = id
 	return &copy, nil
 }
-func (f *fakeClient) GenerateJitRunnerConfig(context.Context, *scaleset.RunnerScaleSetJitRunnerSetting, int) (*scaleset.RunnerScaleSetJitRunnerConfig, error) {
+func (f *fakeClient) GenerateJitRunnerConfig(_ context.Context, setting *scaleset.RunnerScaleSetJitRunnerSetting, _ int) (*scaleset.RunnerScaleSetJitRunnerConfig, error) {
+	f.jitSetting = setting
 	return &scaleset.RunnerScaleSetJitRunnerConfig{
 		Runner:           &scaleset.RunnerReference{ID: 12},
 		EncodedJITConfig: "secret",
@@ -104,6 +106,22 @@ func TestIssuerMapsGitHubJITWithoutLoggingIt(t *testing.T) {
 	}
 	if jit.RunnerID != 12 || jit.EncodedJITConfig != "secret" {
 		t.Fatalf("jit = %#v", jit)
+	}
+}
+
+// A cache of a path outside the workspace restores to the same absolute path only when the
+// workspace sits where GitHub-hosted Ubuntu runners put it (actions/cache tars relative to it).
+func TestIssuerUsesTheHostedRunnerWorkFolder(t *testing.T) {
+	client := &fakeClient{}
+	issuer, err := NewIssuer(client, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := issuer.GenerateJIT(t.Context(), "runner-a"); err != nil {
+		t.Fatal(err)
+	}
+	if client.jitSetting == nil || client.jitSetting.WorkFolder != "/home/runner/work" {
+		t.Fatalf("JIT setting = %#v, want WorkFolder /home/runner/work", client.jitSetting)
 	}
 }
 

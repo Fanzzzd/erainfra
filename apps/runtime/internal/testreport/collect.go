@@ -74,8 +74,8 @@ var skippedDirectories = map[string]bool{
 
 // Collector builds an Attempt's report from the runner's work directory.
 type Collector struct {
-	// WorkDir is the runner's _work directory. Every workspace is two levels
-	// below it (_work/<repository>/<repository>); the runner's own
+	// WorkDir is the runner's work folder. Every workspace is two levels
+	// below it (<work>/<repository>/<repository>); the runner's own
 	// directories start with an underscore and are not searched.
 	WorkDir string
 	// Budget bounds the whole collection; zero means DefaultBudget.
@@ -135,6 +135,20 @@ func (c Collector) Collect(ctx context.Context) (*Report, error) {
 	report.Files = parsedFiles
 	report.Truncated = report.Truncated || state.truncated
 	return report, nil
+}
+
+// FirstExistingDir returns the first of candidates that is a directory, or the
+// first candidate when none is, so the caller's error names the preferred path.
+func FirstExistingDir(candidates ...string) string {
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
 }
 
 func workspaces(workDir string) ([]string, error) {

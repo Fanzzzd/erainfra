@@ -122,7 +122,7 @@ RUN case "$TARGETARCH" in \
       arm64) runner_arch=arm64; runner_sha=670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-  && install -d -o runner -g docker /opt/runner /opt/hostedtoolcache \
+  && install -d -o runner -g docker /opt/runner /opt/hostedtoolcache /home/runner/work \
   && curl --fail --location --retry 5 \
     --output /tmp/actions-runner.tar.gz \
     "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz" \
