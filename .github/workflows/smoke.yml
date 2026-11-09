@@ -42,11 +42,13 @@ jobs:
           [ -z "$unexpected" ] || { echo "unexpected host mounts: $unexpected"; exit 1; }
           # Scratch space is writable.
           probe=$(mktemp -d) && touch "$probe/ok" && rm -rf "$probe"
-          # localhost resolves on both families. A Firecracker rootfs comes from
-          # a container image whose /etc/hosts is empty, and test runners that
-          # bind or dial localhost fail at startup without it.
+          # localhost resolves. A Firecracker rootfs comes from a container image
+          # whose /etc/hosts is empty, and test runners that bind or dial
+          # localhost fail at startup without it. The IPv6 entry is checked in
+          # the hosts database, not with ahostsv6: guests run with IPv6
+          # disabled, and getaddrinfo's AI_ADDRCONFIG then drops ::1.
           getent ahostsv4 localhost | grep -q '^127\.0\.0\.1 '
-          getent ahostsv6 localhost | grep -q '^::1 '
+          getent hosts localhost | grep -q '^::1 '
           # Egress works; actions/checkout and tool downloads depend on it.
           curl -fsS -o /dev/null https://api.github.com
           echo "smoke OK"
