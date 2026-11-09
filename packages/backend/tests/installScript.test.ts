@@ -2837,6 +2837,157 @@ exec /bin/cp "$@"
     );
   });
 
+  describe("the generated thinpool setup helper", () => {
+    const provisioner = repoFile("deploy", "provision-firecracker-host.sh").toString("utf8");
+    const helper = provisioner.match(/<<'THINPOOL'\n([\s\S]*?)\nTHINPOOL\n/)?.[1];
+    const metadata = Buffer.concat([Buffer.from("THIN_METADATA"), Buffer.alloc(8192, 0x5a)]);
+
+    function poolSandbox(backing: "file" | "device") {
+      expect(helper).toBeDefined();
+      const root = mkdtempSync(path.join(tmpdir(), "rc-thinpool-"));
+      sandboxes.push(root);
+      const bin = path.join(root, "bin");
+      mkdirSync(bin);
+      const data = path.join(root, "data.img");
+      const meta = path.join(root, "meta.img");
+      const log = path.join(root, "commands.log");
+      const active = path.join(root, "active");
+      const envFile = path.join(root, "thinpool.env");
+      writeFileSync(
+        envFile,
+        [
+          "RC_THIN_POOL=runner-center-thinpool",
+          `RC_POOL_BACKING=${backing}`,
+          `RC_POOL_DATA_IMAGE='${data}'`,
+          `RC_POOL_META_IMAGE='${meta}'`,
+          `RC_POOL_DATA_DEVICE='${data}'`,
+          `RC_POOL_META_DEVICE='${meta}'`,
+          "RC_POOL_DATA_GIB=32",
+        ].join("\n"),
+      );
+      const script = path.join(root, "thinpool-setup.sh");
+      writeFileSync(script, helper!.replace(". /etc/runner-center/thinpool.env", `. '${envFile}'`));
+      // All device commands operate only on regular files in this sandbox. In particular,
+      // the dd stub reproduces the old first-block wipe, rather than hiding it with a no-op.
+      const stub = `#!${process.execPath}
+import fs from "node:fs";
+import path from "node:path";
+const command = path.basename(process.argv[1]);
+const args = process.argv.slice(2);
+const root = process.env.RC_TEST_POOL_ROOT;
+fs.appendFileSync(path.join(root, "commands.log"), command + " " + args.join(" ") + "\\n");
+switch (command) {
+  case "dmsetup":
+    if (args[0] === "info") process.exit(fs.existsSync(path.join(root, "active")) ? 0 : 1);
+    if (args[0] === "table") process.exit(0); // A reboot loses the in-memory table.
+    if (args[0] !== "create") process.exit(2);
+    if (fs.existsSync(path.join(root, "fail-create"))) process.exit(1);
+    fs.writeFileSync(path.join(root, "active"), "");
+    break;
+  case "losetup":
+    if (args[0] === "-j") process.exit(0);
+    if (args[0] !== "--find" || args[1] !== "--show") process.exit(2);
+    console.log(args[2]); // The regular file stands in for its loop device.
+    break;
+  case "blockdev":
+    if (args[0] === "--getsz") console.log(64);
+    else if (args[0] === "--getsize64") console.log(fs.statSync(args[1]).size);
+    else process.exit(2);
+    break;
+  case "thin_check":
+    process.exit(fs.readFileSync(args.at(-1)).subarray(0, 13).toString() === "THIN_METADATA" ? 0 : 1);
+  case "truncate":
+    fs.writeFileSync(args.at(-1), Buffer.alloc(16384));
+    break;
+  case "dd": {
+    const target = args.find(arg => arg.startsWith("of="))?.slice(3);
+    if (!target || !target.startsWith(root + path.sep)) process.exit(2);
+    const fd = fs.openSync(target, "r+");
+    fs.writeSync(fd, Buffer.alloc(4096), 0, 4096, 0);
+    fs.closeSync(fd);
+    break;
+  }
+  default: process.exit(2);
+}
+`;
+      for (const command of ["dmsetup", "losetup", "blockdev", "thin_check", "truncate", "dd"]) {
+        writeExecutable(path.join(bin, command), stub);
+      }
+      return {
+        data,
+        meta,
+        active,
+        root,
+        log: () => readLog(log),
+        run: () =>
+          spawnSync("bash", [script], {
+            encoding: "utf8",
+            env: { PATH: `${bin}:/usr/bin:/bin`, RC_TEST_POOL_ROOT: root },
+          }),
+      };
+    }
+
+    for (const backing of ["file", "device"] as const) {
+      it(`preserves ${backing}-backed metadata across reboot and repeated setup`, () => {
+        const pool = poolSandbox(backing);
+        writeFileSync(pool.data, "existing snapshot data");
+        writeFileSync(pool.meta, metadata);
+        for (let boot = 0; boot < 2; boot++) {
+          rmSync(pool.active, { force: true });
+          const result = pool.run();
+          expect(result.status, result.stderr).toBe(0);
+          expect(readFileSync(pool.meta)).toEqual(metadata);
+          expect(readFileSync(pool.data, "utf8")).toBe("existing snapshot data");
+          const repeat = pool.run();
+          expect(repeat.status, repeat.stderr).toBe(0);
+          expect(readFileSync(pool.meta)).toEqual(metadata);
+        }
+        expect(pool.log().match(/dmsetup create/g)).toHaveLength(2);
+        expect(pool.log()).not.toMatch(/\bdd |\btruncate /);
+      });
+    }
+
+    it("initializes a newly created file pair without wiping it", () => {
+      const pool = poolSandbox("file");
+      const result = pool.run();
+      expect(result.status, result.stderr).toBe(0);
+      expect(pool.log()).toContain("dmsetup create runner-center-thinpool");
+      expect(pool.log()).not.toMatch(/\bdd |\bthin_check /);
+    });
+
+    it("initializes a fully zero dedicated pair after checking it", () => {
+      const pool = poolSandbox("device");
+      writeFileSync(pool.data, Buffer.alloc(8192));
+      writeFileSync(pool.meta, Buffer.alloc(8192));
+      const result = pool.run();
+      expect(result.status, result.stderr).toBe(0);
+      expect(pool.log()).toContain("thin_check -q");
+      expect(pool.log()).toContain("dmsetup create runner-center-thinpool");
+    });
+
+    it("refuses a nonzero dedicated pair without valid metadata", () => {
+      const pool = poolSandbox("device");
+      const unrelated = Buffer.concat([Buffer.alloc(4096), Buffer.from("other filesystem")]);
+      writeFileSync(pool.data, "existing data");
+      writeFileSync(pool.meta, unrelated);
+      const result = pool.run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("refusing to initialize");
+      expect(readFileSync(pool.meta)).toEqual(unrelated);
+      expect(pool.log()).not.toMatch(/dmsetup create|\bdd /);
+    });
+
+    it("refuses to replace one missing half of a file pair", () => {
+      const pool = poolSandbox("file");
+      writeFileSync(pool.data, "existing data");
+      const result = pool.run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("incomplete or non-regular");
+      expect(existsSync(pool.meta)).toBe(false);
+      expect(pool.log()).not.toMatch(/dmsetup create|\btruncate /);
+    });
+  });
+
   // Loading the table file starts with `delete table`, which strips every running guest's
   // per-guest sets, so the provisioner refuses while Firecracker VMs run and says how to drain.
   describe("the Firecracker provisioner with guests running", () => {
