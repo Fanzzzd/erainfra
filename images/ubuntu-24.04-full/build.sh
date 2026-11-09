@@ -51,6 +51,8 @@ cp "$work/upstream/$(jq -r .toolset "$lock")" "$root/imagegeneration/installers/
 cp "$here"/{install.sh,finish.sh,recipe.py,scripts.txt,upstream.json} "$root/erainfra-build/"
 # Disable cloud provisioning; nspawn supplies a private network and DNS at build time.
 touch "$root/etc/cloud/cloud-init.disabled"
+printf 'erainfra-image-build\n' > "$root/etc/hostname"
+printf '127.0.0.1 localhost\n127.0.1.1 erainfra-image-build\n::1 ip6-localhost ip6-loopback\n' > "$root/etc/hosts"
 rm -f "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
 printf 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"\n' > "$root/etc/environment"
 # Install scripts expect Packer's non-root account and passwordless sudo.

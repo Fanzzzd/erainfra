@@ -9,6 +9,7 @@ export IMAGEDATA_FILE=/imagegeneration/imagedata.json
 export IMAGE_OS=ubuntu24
 export IMAGE_VERSION
 IMAGE_VERSION=$(python3 -I -c 'import json; print(json.load(open("/erainfra-build/upstream.json"))["image_version"])')
+export HOME=/root USER=root LOGNAME=root
 export SUDO_USER=packer DEBIAN_FRONTEND=noninteractive
 # Keep downloads outside both source and /tmp, which cleanup.sh empties.
 mkdir -p /var/tmp/erainfra-install

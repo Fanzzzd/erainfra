@@ -21,6 +21,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Record the ubuntu-24.04 baseline before cleanup
+        run: |
+          mkdir -p "$RUNNER_TEMP/hosted-baseline"
+          cp /imagegeneration/software-report.json /imagegeneration/software-report.md "$RUNNER_TEMP/hosted-baseline/"
+          cp /etc/environment "$RUNNER_TEMP/hosted-baseline/environment"
+          sh .github/conformance/fingerprint.sh "$RUNNER_TEMP/hosted-baseline/fingerprint.txt"
       - name: Compile the guest and cache helper
         env:
           GOTOOLCHAIN: go1.27.3
@@ -70,5 +76,6 @@ jobs:
           path: |
             ${{ runner.temp }}/full-image/evidence
             ${{ runner.temp }}/nspawn.log
+            ${{ runner.temp }}/hosted-baseline
           if-no-files-found: error
           retention-days: 14
