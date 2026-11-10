@@ -65,12 +65,28 @@ command -v zstd >/dev/null
 command -v rsync >/dev/null
 command -v gh >/dev/null
 command -v go >/dev/null
+# Rust where ubuntu-latest has it, owned by the runner so rustup can add to it.
+command -v rustup >/dev/null
+command -v cargo >/dev/null
+rustc --version >/dev/null
+rust_targets=$(rustup target list --installed)
+grep -qx 'wasm32-unknown-unknown' <<<"$rust_targets"
+[ "$(stat -c %U /home/runner/.cargo /home/runner/.rustup | sort -u)" = runner ]
 ssh -V >/dev/null 2>&1
 python3 --version >/dev/null
 pip3 --version >/dev/null
 zstd --version >/dev/null
 rsync --version >/dev/null
 ldconfig -p | grep -F 'libatomic.so.1' >/dev/null
+# Playwright Chromium's system dependencies (Dockerfile), so `playwright install
+# chromium` needs no apt step. Read the cache once rather than pipe it per name.
+shared_libs=$(ldconfig -p)
+for lib in libnss3.so libnspr4.so libgbm.so.1 libasound.so.2 libatk-bridge-2.0.so.0 \
+  libxkbcommon.so.0 libXcomposite.so.1 libXdamage.so.1 libXrandr.so.2 libcups.so.2 \
+  libpango-1.0.so.0 libcairo.so.2; do
+  grep -qF "$lib" <<<"$shared_libs" || { echo "missing $lib" >&2; exit 1; }
+done
+command -v Xvfb >/dev/null
 out_matches -Fx 'v22.23.2' node --version
 # The second Node is in the tool cache for setup-node, not on PATH: the default
 # above must stay 22, and setup-node only takes 24 without a download if the

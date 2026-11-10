@@ -297,7 +297,12 @@ func reportWarmReady() error {
 // ANSI_X3.4-1968 while the image's /etc/default/locale said C.UTF-8).
 func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string, buildCacheEnv []string) []string {
 	env := []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		// Hosted parity for Rust: ubuntu-latest puts rustup's stable toolchain
+		// under the runner's home and hands jobs these three (the image
+		// installs it there).
+		"PATH=" + home + "/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"CARGO_HOME=" + home + "/.cargo",
+		"RUSTUP_HOME=" + home + "/.rustup",
 		"HOME=" + home,
 		"USER=" + username,
 		"LOGNAME=" + username,

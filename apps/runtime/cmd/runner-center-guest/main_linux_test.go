@@ -72,6 +72,10 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 		"LANG":                           "C.UTF-8",
 		"HOME":                           "/home/runner",
 		"ACTIONS_RUNNER_INPUT_JITCONFIG": "secret",
+		// The image's rustup, where ubuntu-latest keeps it.
+		"CARGO_HOME":  "/home/runner/.cargo",
+		"RUSTUP_HOME": "/home/runner/.rustup",
+		"PATH":        "/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
 	got := map[string]string{}
 	for _, entry := range env {

@@ -63,6 +63,52 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+# The system libraries and fonts `playwright install --with-deps chromium` adds on
+# Ubuntu 24.04, which GitHub's hosted image already carries. Without them every
+# browser job spent about 80 s in apt (Plany canary 42654036610: 104 s against
+# hosted's 24 s for the same step). The browser itself is not installed: each
+# repository pins its own Playwright version and downloads the matching build.
+# The list is Playwright's own, `ubuntu24.04-x64` chromium plus tools, from
+# packages/playwright-core/src/server/registry/nativeDeps.ts at
+# microsoft/playwright@ac65100a5ffe1fba641c288d920ed87fd3e2f860 (v1.65.0 era).
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends \
+    fonts-freefont-ttf \
+    fonts-ipafont-gothic \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    fonts-tlwg-loma-otf \
+    fonts-unifont \
+    fonts-wqy-zenhei \
+    libasound2t64 \
+    libatk-bridge2.0-0t64 \
+    libatk1.0-0t64 \
+    libatspi2.0-0t64 \
+    libcairo2 \
+    libcups2t64 \
+    libdbus-1-3 \
+    libdrm2 \
+    libfontconfig1 \
+    libfreetype6 \
+    libgbm1 \
+    libglib2.0-0t64 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    xfonts-cyrillic \
+    xfonts-scalable \
+    xvfb \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
 # Without this the image had no locale and no timezone database at all, so the C
 # library fell back to ANSI_X3.4-1968 -- ASCII -- and a named zone did not
 # resolve because neither /etc/timezone nor /etc/localtime existed. ubuntu-latest
@@ -131,6 +177,32 @@ RUN case "$TARGETARCH" in \
   && rm /tmp/actions-runner.tar.gz \
   && /opt/runner/bin/installdependencies.sh \
   && chown -R runner:docker /opt/runner /opt/hostedtoolcache
+
+# Rust the way ubuntu-latest has it: rustup and the stable toolchain under the
+# runner's home, CARGO_HOME and RUSTUP_HOME pointing there and ~/.cargo/bin on
+# PATH (runner-center-guest's runnerEnv hands jobs the same three). Without it
+# dtolnay/rust-toolchain first ran rustup-init and downloaded the whole
+# toolchain on every job: 11 s against 3 s hosted in Plany canary 42655403683.
+# Minimal profile plus the wasm32 target; an action that wants another channel
+# or component adds only that. The installer is pinned by hash; the toolchain
+# is whatever `stable` is when the image is built, as on the hosted image, and
+# rustup verifies it.
+ARG RUSTUP_VERSION=1.29.3
+ENV CARGO_HOME=/home/runner/.cargo RUSTUP_HOME=/home/runner/.rustup
+RUN case "$TARGETARCH" in \
+      amd64) rust_target=x86_64-unknown-linux-gnu; rustup_sha=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
+      arm64) rust_target=aarch64-unknown-linux-gnu; rustup_sha=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl --fail --location --retry 5 --output /tmp/rustup-init \
+    "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rust_target}/rustup-init" \
+  && echo "${rustup_sha}  /tmp/rustup-init" | sha256sum --check --strict \
+  && chmod 0755 /tmp/rustup-init \
+  && runuser -u runner -- env HOME=/home/runner CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" \
+    /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain stable \
+    --target wasm32-unknown-unknown \
+  && rm /tmp/rustup-init
+ENV PATH=/home/runner/.cargo/bin:$PATH
 
 # The runner has an official read-only action archive cache. Seed the Actions
 # used by this product and Payable at their workflow-pinned commits; every
