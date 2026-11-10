@@ -56,7 +56,13 @@ type Config struct {
 	//   TransferTimeout— a body: a v1 PATCH chunk, a v2 block, a proxied
 	//                    download, and the store write each one drives. It is
 	//                    a ceiling on one request, not on an upload.
-	LookupTimeout   time.Duration
+	LookupTimeout time.Duration
+	// FactsWait is how long a request from a runner the service has no job
+	// facts for waits for the controller's push before it is refused. The
+	// push follows the JobStarted message and lands some seconds into the
+	// job, so a cache step at the top of a job would otherwise be refused.
+	// Zero refuses at once.
+	FactsWait       time.Duration
 	ReserveTimeout  time.Duration
 	TransferTimeout time.Duration
 
@@ -99,6 +105,7 @@ func Load() (Config, error) {
 		DownloadTTL:      5 * time.Minute,
 		UploadTTL:        time.Hour,
 		LookupTimeout:    5 * time.Second,
+		FactsWait:        15 * time.Second,
 		ReserveTimeout:   10 * time.Second,
 		TransferTimeout:  30 * time.Minute,
 		MaxEntryBytes:    10 << 30,
@@ -152,6 +159,13 @@ func Load() (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("ERAINFRA_CACHE_S3_PATH_STYLE must be a boolean: %w", err)
 		}
+	}
+	if value := strings.TrimSpace(os.Getenv("ERAINFRA_CACHE_FACTS_WAIT")); value != "" {
+		wait, err := ParseDuration(value)
+		if err != nil || wait < 0 {
+			return Config{}, fmt.Errorf("ERAINFRA_CACHE_FACTS_WAIT must be a duration such as 15s, or 0 to refuse at once")
+		}
+		config.FactsWait = wait
 	}
 	for name, target := range map[string]*time.Duration{
 		"ERAINFRA_CACHE_DOWNLOAD_TTL":      &config.DownloadTTL,
