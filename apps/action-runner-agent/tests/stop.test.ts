@@ -30,9 +30,10 @@ describe("Worker stop sequence (#284)", () => {
     counter.start();
     counter.start();
     let stopped = false;
-    const stopping = stop("SIGTERM").then(() => {
+    const stopping = (async () => {
+      await stop("SIGTERM");
       stopped = true;
-    });
+    })();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(events, ["stopClaiming"]);
     counter.finish();
