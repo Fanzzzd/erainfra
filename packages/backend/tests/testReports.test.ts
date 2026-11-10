@@ -699,7 +699,9 @@ describe("test result retention", () => {
     const fresh = await attempt(t, machineId, { workflowRunId: 900 });
     await send(t, fresh, await report([failed("s::z")], [], { commitSha: COMMIT_B }));
 
-    vi.setSystemTime(T0 + TEST_RETENTION_MS + 1);
+    // A second past the window. The first reports are stored a millisecond or so after T0,
+    // because convex-test keeps each commit's time after the previous one on a frozen clock.
+    vi.setSystemTime(T0 + TEST_RETENTION_MS + 1_000);
     await t.mutation(internal.testReports.purgeExpired, {});
     const { reports, cases, flaky } = await tables(t);
     expect(reports.map((row) => row.attemptId)).toEqual([fresh]);

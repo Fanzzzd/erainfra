@@ -4,6 +4,7 @@ import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { LOG_TTL_MS, MAX_LOG_BYTES } from "../convex/infra/logs";
 import schema from "../convex/schema";
+import { setUpBefore } from "./support/clock.ts";
 
 // The infrastructure routes of the operator API (infra/operatorRoutes.ts): scopes, audit, and the
 // log-tail lifecycle, end to end through t.fetch as the `erainfra` CLI calls them.
@@ -194,15 +195,22 @@ describe("Nodes", () => {
     // The credential is never listed, only its hint.
     expect(list.text).not.toContain(created.body.credential);
 
+    // Each step on its own instant, so no two commits share one.
+    vi.setSystemTime(T0 + 1_000);
     await f.node("heartbeat", created.body.credential, { version: "1.2.3" });
+    vi.setSystemTime(T0 + 2_000);
     await prove(f, created.body.node.id, "ab".repeat(32));
     list = await f.call("GET", "/nodes", f.read);
     expect(list.body.nodes[0]).toMatchObject({
       transport: "convex",
       online: true,
       infraAgentVersion: "1.2.3",
-      lastSeenAt: new Date(T0).toISOString(),
-      endpoint: { id: "ab".repeat(32), proven: true, provenAt: new Date(T0).toISOString() },
+      lastSeenAt: new Date(T0 + 1_000).toISOString(),
+      endpoint: {
+        id: "ab".repeat(32),
+        proven: true,
+        provenAt: new Date(T0 + 2_000).toISOString(),
+      },
     });
 
     const revoked = await f.call("POST", "/nodes/edge-1/revoke", f.admin, {});
@@ -564,9 +572,12 @@ async function runOnNode(f: Fixture, credential: string, report: Record<string, 
 
 describe("log tails", () => {
   it("delivers a bounded tail once, to the requesting token only", async () => {
-    const f = await fixture();
-    const a = await liveNode(f, "node-a");
-    await seedApp(f, a.id);
+    const { f, a } = await setUpBefore(T0, async () => {
+      const seeded = await fixture();
+      const node = await liveNode(seeded, "node-a");
+      await seedApp(seeded, node.id);
+      return { f: seeded, a: node };
+    });
     const asked = await request(f, { app: "shop", service: "worker", lines: 50 });
     expect(asked.status).toBe(202);
     const id = asked.body.logs.id;
@@ -673,8 +684,10 @@ describe("log tails", () => {
   });
 
   it("expires an unread tail and cancels a command that never ran", async () => {
-    const f = await fixture();
-    await liveNode(f, "node-a");
+    const { f, a } = await setUpBefore(T0, async () => {
+      const seeded = await fixture();
+      return { f: seeded, a: await liveNode(seeded, "node-a") };
+    });
     const asked = await request(f, { node: "node-a", unit: "portless-agent" });
     const id = asked.body.logs.id as Id<"logTails">;
     vi.setSystemTime(T0 + LOG_TTL_MS);
@@ -683,8 +696,9 @@ describe("log tails", () => {
     const [command] = await f.t.run((ctx) => ctx.db.query("nodeCommands").collect());
     expect(command.status).toBe("cancelled");
 
-    // The scheduled expiry does the same for a tail nobody asks about again.
-    vi.setSystemTime(T0);
+    // The scheduled expiry does the same for a tail nobody asks about again. The clock cannot run
+    // back, so the Node reports in again to stay online.
+    expect((await f.node("heartbeat", a.credential, { version: "test" })).status).toBe(200);
     const second = await request(f, { node: "node-a", unit: "portless-agent" });
     await f.t.mutation(internal.infra.logs.expire, { id: second.body.logs.id });
     expect(await f.t.run((ctx) => ctx.db.query("logTails").collect())).toEqual([]);

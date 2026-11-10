@@ -5,6 +5,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
 import { attemptOutcome } from "../convex/fleetObservation";
 import { formatSampleValue, quantile, renderExposition } from "../convex/metricsFormat";
+import { setUpBefore } from "./support/clock.ts";
 import { CONTRACT, MINUTE, NOW, operator, seedFleet } from "./support/fleetFixture.ts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -202,9 +203,11 @@ describe("GET /metrics authentication", () => {
 
 describe("GET /metrics exposition", () => {
   async function scrapeFixture() {
-    const t = convexTest(schema, modules);
-    await seedFleet(t);
-    const { token } = await mint(t);
+    const { t, token } = await setUpBefore(NOW, async () => {
+      const harness = convexTest(schema, modules);
+      await seedFleet(harness);
+      return { t: harness, ...(await mint(harness)) };
+    });
     const response = await scrape(t, `Bearer ${token}`);
     expect(response.status).toBe(200);
     const text = await response.text();
@@ -374,6 +377,8 @@ describe("GET /metrics exposition", () => {
 
   it("reports each Convex-transport Node's command health and journal", async () => {
     const t = convexTest(schema, modules);
+    // Seed before NOW so the scrape reads the clock at exactly NOW (see support/clock.ts).
+    vi.setSystemTime(NOW - MINUTE);
     await t.run(async (ctx) => {
       const base = { createdAt: NOW - 60 * MINUTE, source: "enrolled" as const };
       const credential = async (nodeId: Id<"nodes">, revokedAt?: number) =>
@@ -417,6 +422,7 @@ describe("GET /metrics exposition", () => {
       await ctx.db.insert("nodes", { ...base, name: "hub-box" });
     });
     const { token } = await mint(t);
+    vi.setSystemTime(NOW);
     const parsed = parseExposition(await (await scrape(t, `Bearer ${token}`)).text());
     expect(valueOf(parsed, "erainfra_node_online", { node: "edge-1" })).toBe(1);
     expect(

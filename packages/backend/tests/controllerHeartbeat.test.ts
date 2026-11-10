@@ -2,6 +2,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api";
 import schema from "../convex/schema";
+import { setUpBefore } from "./support/clock.ts";
 import {
   CONTRACT,
   MINUTE,
@@ -270,9 +271,12 @@ async function evaluate(t: Harness) {
 
 describe("the controller-silent alert", () => {
   it("fires when the controller has been silent for the threshold, and resolves when it listens again", async () => {
-    const t = convexTest(schema, modules);
-    await insertProfile(t);
-    await silentRule(t);
+    const t = await setUpBefore(NOW, async () => {
+      const harness = convexTest(schema, modules);
+      await insertProfile(harness);
+      await silentRule(harness);
+      return harness;
+    });
     expect((await send(t, report())).status).toBe(204);
 
     at(2);
@@ -290,10 +294,12 @@ describe("the controller-silent alert", () => {
 
     at(5);
     expect((await send(t, report())).status).toBe(204);
+    // A later evaluation, so it does not share the report's instant.
+    at(6);
     await evaluate(t);
     open = await incidents(t);
     expect(open).toHaveLength(1);
-    expect(open[0]).toMatchObject({ status: "resolved", resolvedAt: NOW + 5 * MINUTE });
+    expect(open[0]).toMatchObject({ status: "resolved", resolvedAt: NOW + 6 * MINUTE });
   });
 
   it("never fires for a Profile whose controller predates the heartbeat", async () => {

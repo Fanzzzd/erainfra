@@ -11,6 +11,7 @@ import {
 } from "../convex/apiTokenPolicy";
 import { parseAttemptQuery, parseSince } from "../convex/operatorHttp";
 import schema from "../convex/schema";
+import { setUpBefore } from "./support/clock.ts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 type Harness = TestConvex<typeof schema>;
@@ -171,8 +172,10 @@ describe("operator API authentication", () => {
   });
 
   it("lets an admin token mint a Worker registration token, as the dashboard does", async () => {
-    const { t, operator } = await harness();
-    const { token } = await mint(operator, "admin");
+    const { t, token } = await setUpBefore(T0, async () => {
+      const setup = await harness();
+      return { t: setup.t, ...(await mint(setup.operator, "admin")) };
+    });
     const response = await t.fetch("/api/v1/workers/registration-tokens", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
