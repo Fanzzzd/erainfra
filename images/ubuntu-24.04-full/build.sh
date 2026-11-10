@@ -117,6 +117,10 @@ iptables -t nat -D POSTROUTING -s 192.0.2.2/32 -j MASQUERADE
 rm -rf "$root/erainfra-build" "$root/erainfra-src" "$root/tmp/"* "$root/var/tmp/"* "$root/root/.cache"
 find "$root/var/log" -type f -exec truncate -s 0 {} +
 truncate -s 0 "$root/etc/machine-id"
+# Drop the build container's name. runner-center-guest writes the loopback
+# and per-VM hostname entries at boot, as it does for the small image.
+: > "$root/etc/hosts"
+: > "$root/etc/hostname"
 rm -f "$root/var/lib/dbus/machine-id"
 python3 -I "$here/recipe.py" pack "$root" "$work/oci" "$work/evidence" "$repo"
 printf '%s\n' "$(( $(date +%s) - started ))" > "$work/evidence/build-seconds.txt"

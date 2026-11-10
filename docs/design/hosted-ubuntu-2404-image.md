@@ -49,9 +49,12 @@ systemd. The container gets loop devices, so snapd can mount squashfs as
 The builder does not substitute successful no-op commands for `systemctl`, Docker, or tests.
 
 The filesystem is shut down before packaging. GNU tar preserves owners, links, capabilities,
-and device nodes. `recipe.py` writes one gzip-compressed OCI layer, its uncompressed digest,
-the image config, and the manifest. The config retains the runtime's runner-version label.
-A single layer avoids retaining deleted installer archives in intermediate image layers.
+and device nodes. `recipe.py` writes disjoint gzip-compressed OCI layers, their uncompressed
+digests, the image config, and the manifest. The config retains the runtime's runner-version label.
+The first layer holds every directory. The rest hold files in path order, about 4 GiB each before
+compression. All hard links to one file stay in one layer. No file appears in two layers, and no
+deleted installer archive is retained. GHCR rejects layers over 10 GB and uploads that take over
+10 minutes, so a single layer of the full image cannot be pushed.
 
 The same ext4 filesystem then boots on the provisioner's pinned Firecracker kernel.
 Only the boot-test unit and its BusyBox archive are added after packaging.
@@ -116,13 +119,13 @@ It had 86 GiB free before cleanup and 124 GiB free after removing the build host
 Probe run: `42660416876`. These deletions affect only the disposable hosted builder.
 The build requires at least 105 GiB free and stops otherwise.
 
-The working set is one guest filesystem plus one compressed OCI layer. There is no second
+The working set is one guest filesystem plus its compressed OCI layers. There is no second
 Docker image store or exported filesystem copy. The build has a six-hour timeout.
 Standard hosted Actions minutes for this public repository have no runner charge.
 Registry storage and transfer remain subject to GitHub's package policy and account limits.
 No larger runner or paid cloud VM is provisioned.
 
-The build artifact records compressed layer bytes, unpacked tar bytes, per-script timings,
+The build artifact records compressed and per-layer bytes, unpacked tar bytes, per-script timings,
 wall-clock build seconds, source revision, upstream patch, tool environment, software report,
 and boot console. These values must come from a completed build, not from the 60 GB estimate.
 

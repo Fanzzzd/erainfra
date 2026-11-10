@@ -61,13 +61,20 @@ jobs:
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/runner-center-ubuntu-24.04-full"
           printf '%s' "$REGISTRY_TOKEN" | sudo skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
-          sudo skopeo copy "oci:$RUNNER_TEMP/full-image/oci:candidate" "docker://$image:pr-${GITHUB_SHA}"
+          evidence="$RUNNER_TEMP/full-image/evidence"
+          sudo skopeo copy --digestfile "$evidence/pushed-digest.txt" \
+            "oci:$RUNNER_TEMP/full-image/oci:candidate" "docker://$image:pr-${GITHUB_SHA}"
           sudo skopeo logout ghcr.io
-          sudo cat "$RUNNER_TEMP/full-image/evidence/measurements.json" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Pushed \`$image@$(sudo cat "$evidence/pushed-digest.txt")\`"
+            echo '```json'
+            sudo jq 'del(.layers)' "$evidence/measurements.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Retain build evidence even on failure
         if: always()
         run: |
-          sudo journalctl -u erainfra-image-container.service --no-pager > "$RUNNER_TEMP/nspawn.log"
+          sudo journalctl -u erainfra-image-container.service --no-pager | tee "$RUNNER_TEMP/nspawn.log" >/dev/null
           sudo chmod -R a+rX "$RUNNER_TEMP/full-image/evidence" || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

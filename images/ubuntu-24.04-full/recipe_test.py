@@ -2,6 +2,7 @@
 """Host-independent contract tests; the actual image build runs on Linux."""
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
 import unittest
@@ -56,6 +57,27 @@ class RecipeTest(unittest.TestCase):
             changed.write_text(dockerfile.read_text().replace("runner_arch=x64", "runner_arch=changed"))
             with self.assertRaises(ValueError):
                 recipe.overlay(changed, output)
+
+    def test_layers_are_disjoint_and_keep_hard_links_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "a/b").mkdir(parents=True)
+            (root / "c").mkdir()
+            for name, size in (("a/b/one", 300), ("a/b/two", 300), ("a/three", 300), ("c/four", 300)):
+                (root / name).write_bytes(b"x" * size)
+            os.link(root / "a/b/one", root / "c/one-link")
+            (root / "c/to-a").symlink_to("../a")
+            directories, groups = recipe.plan_layers(root, target=500)
+            self.assertEqual(sorted(directories), [".", "./a", "./a/b", "./c"])
+            for index, path in enumerate(directories[1:], 1):
+                self.assertIn(path.rsplit("/", 1)[0], directories[:index], "parent before child")
+            files = [path for group in groups for path in group]
+            self.assertEqual(sorted(files), sorted(["./a/b/one", "./a/b/two", "./a/three", "./c/four", "./c/one-link", "./c/to-a"]))
+            self.assertEqual(len(files), len(set(files)))
+            self.assertGreater(len(groups), 1)
+            together = [group for group in groups if "./a/b/one" in group][0]
+            self.assertIn("./c/one-link", together)
+            self.assertLess(together.index("./a/b/one"), together.index("./c/one-link"))
 
 
 if __name__ == "__main__":
