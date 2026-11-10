@@ -79,6 +79,15 @@ iptables -I FORWARD -o erainfra-host -m conntrack --ctstate ESTABLISHED,RELATED 
 chroot "$root" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-resolved.service
 rm -f "$root/etc/resolv.conf"
 cp /run/systemd/resolve/resolv.conf "$root/etc/resolv.conf"
+# snapd refuses to start unless it can mount a squashfs through a loop device,
+# as configure-snap.sh requires. nspawn's private /dev has no loop nodes.
+modprobe loop
+modprobe squashfs
+loop_binds=(--bind=/dev/loop-control --property=DeviceAllow='/dev/loop-control rwm' --property=DeviceAllow='block-loop rwm')
+for n in $(seq 0 63); do
+  [ -b "/dev/loop$n" ] || mknod -m 0660 "/dev/loop$n" b 7 "$n"
+  loop_binds+=("--bind=/dev/loop$n")
+done
 # nspawn mounts a small tmpfs on /tmp by default. Hosted keeps /tmp on the root
 # disk, and installers download multi-GB archives there (CodeQL, Android).
 systemd-run --unit=erainfra-image-container --collect --service-type=notify \
@@ -86,7 +95,7 @@ systemd-run --unit=erainfra-image-container --collect --service-type=notify \
   systemd-nspawn --quiet --boot --notify-ready=yes --directory="$root" --machine="$machine" \
   --network-namespace-path=/run/netns/erainfra-image --resolv-conf=off \
   --capability=all --system-call-filter='add_key keyctl bpf' \
-  --bind-ro="$repo:/erainfra-src"
+  --bind-ro="$repo:/erainfra-src" "${loop_binds[@]}"
 # machinectl shell does not propagate the command's exit status. systemd-run does.
 # systemctl --wait blocks on startup rather than polling the container.
 systemctl --machine="$machine" is-system-running --wait || true

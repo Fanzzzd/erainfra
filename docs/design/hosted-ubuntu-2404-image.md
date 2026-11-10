@@ -44,7 +44,8 @@ as its Packer provisioner requires. All other scripts run as root.
 
 A disposable GitHub-hosted `ubuntu-24.04` runner builds one sparse 96 GiB ext4 filesystem.
 `systemd-nspawn` boots that filesystem with a separate network namespace and a running
-systemd. Docker runs inside that namespace. Its image cache stays inside the guest filesystem.
+systemd. The container gets loop devices, so snapd can mount squashfs as
+`configure-snap.sh` requires. Its `/tmp` stays on the build disk, as hosted's does. Docker runs inside that namespace. Its image cache stays inside the guest filesystem.
 The builder does not substitute successful no-op commands for `systemctl`, Docker, or tests.
 
 The filesystem is shut down before packaging. GNU tar preserves owners, links, capabilities,
