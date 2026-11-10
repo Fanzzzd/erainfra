@@ -1,15 +1,15 @@
-# Connection prototypes — what was tried & measured (2026-06-25)
+# Connection prototypes: what was tried & measured (2026-06-25)
 
 Goal: with **no public IP, no IPv6, only a Cloudflare tunnel reachable**, get
 backend↔DB (both NAT'd) talking, and find the best link method. Tested on this Mac
 using **disposable loopback processes as the "machines"** (Docker hangs here; touching the
-host TUN would risk the user's VPN — so everything ran as plain processes, killed after each
+host TUN would risk the user's VPN, so everything ran as plain processes, killed after each
 run, host networking untouched).
 
 `main.go` = Direction A (own TCP relay) + echo "DB" + probe. `ws.go` = Direction C
 (WebSocket relay that can ride a Cloudflare tunnel). Build: `go build -o plp .`
 
-## Direction A — our own relay, peers outbound-only (the core thesis)
+## Direction A: our own relay, peers outbound-only (the core thesis)
 
 Topology: `backend-agent → relay ← db-agent → DB`. Backend and DB **never connect directly**;
 both dial OUT to the relay, which bridges them by key/session.
@@ -21,10 +21,10 @@ both dial OUT to the relay, which bridges them by key/session.
 
 ✅ Proves the model: two outbound-only peers, bridged by a reachable relay, **byte-for-byte
 transparent TCP** (any protocol). Software overhead ≈ +60–115 µs, keeps ~60–70% throughput.
-NOTE: this latency is **loopback only** — the relay was local. In production the relay sits
+NOTE: this latency is **loopback only**: the relay was local. In production the relay sits
 behind the CF tunnel, so the real cost is the CF-edge round-trip, not this.
 
-## Direction B — iroh (`dumbpipe` v0.39), dial-by-key
+## Direction B: iroh (`dumbpipe` v0.39), dial-by-key
 
 Topology: `dumbpipe connect-tcp ← (iroh, by endpoint-id) → dumbpipe listen-tcp → DB`.
 
@@ -35,17 +35,17 @@ Topology: `dumbpipe connect-tcp ← (iroh, by endpoint-id) → dumbpipe listen-t
 ✅ Dial-by-key works with **no IP** (the model the user wants). BUT:
 
 - ~90 ms on a _loopback_ test ⇒ it **fell back to a remote relay** (a direct same-machine path
-  would be <1 ms). This Mac's VPN breaks UDP P2P, so iroh couldn't hole-punch — the same thing
+  would be <1 ms). This Mac's VPN breaks UDP P2P, so iroh couldn't hole-punch. That is the same thing
   that will happen on fully-NAT'd boxes.
 - iroh's **default relay is n0's public servers = third-party** (violates "self-hosted only").
   Would require self-hosting an iroh relay.
 - Rust, no official Go (our agent is Go) → embed via FFI or run as a sidecar.
 
-## Direction C — relay behind a REAL Cloudflare tunnel (the user's exact constraint)
+## Direction C: relay behind a REAL Cloudflare tunnel (the user's exact constraint)
 
 WS relay (`ws.go`) exposed via `cloudflared tunnel --url`; both agents connect outbound over
 `wss://…trycloudflare.com`. **Code built + correct, but end-to-end blocked on this Mac**: curl
-to the trycloudflare URL returned `000` for 80 s — the same VPN/fake-IP interference that broke
+to the trycloudflare URL returned `000` for 80 s, from the same VPN/fake-IP interference that broke
 every Cloudflare path this session (`api.cloudflare.com` → `198.18.x`). Not an architecture
 failure; needs the user's real boxes (or VPN off) to validate. The earlier `local.publish` test
 _did_ get a working public trycloudflare fetch once, so the CF path itself is sound.

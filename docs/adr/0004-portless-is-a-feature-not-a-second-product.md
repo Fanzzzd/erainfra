@@ -6,7 +6,7 @@
 
 ## Context
 
-`feat: absorb portless — infra management joins the CI platform (#35)` moved Portless
+The commit of #35, titled to say that infra management joins the CI platform, moved Portless
 into this repository. The title states the intent: Portless _joins_ the platform. The
 execution did not match it. Portless was moved in as a directory, not adopted as a
 member of the workspace.
@@ -16,7 +16,7 @@ independent history came with it intact." That is false, and it was measured aft
 fact: `cf00260` (#35) is a **single-parent** commit whose parent is `3025eeb`, so it is a
 squash. None of Portless's own commits are in this repository. `git log --follow` from any
 file that arrived with it reaches #35 and stops. The eleven months of divergence is real
-and is what the list below measures — but it is divergence in the _files_, not history in
+and is what the list below measures, but it is divergence in the _files_, not history in
 the _repository_.
 
 The evidence that Portless is currently a separate product sharing a repository:
@@ -27,19 +27,19 @@ The evidence that Portless is currently a separate product sharing a repository:
 - The toolchains have diverged: root pins pnpm 11.21.0, turbo 2.10.9 and TypeScript
   7.0.2; Portless pins pnpm 9.15.0, turbo 2.9.18 and TypeScript 6.0.3.
 - Portless has no `lint` script, and CI invokes `pnpm run --if-present lint`, so the
-  Portless tree — including the hub side of the privilege boundary added in #45 — has
+  Portless tree, including the hub side of the privilege boundary added in #45, has
   never been linted.
 - `.github/workflows/release.yml` carries a workaround for the fork: a second
   `pnpm/action-setup` with its own `dest`, and the comment "Portless pins pnpm
   independently from the EraInfra root."
 - Portless ships nothing. The `v0.2.0-rc.5` release contains seventeen assets and not
-  one of them is a Portless artifact — yet `release.yml` tests, vets and cross-compiles
+  one of them is a Portless artifact, yet `release.yml` tests, vets and cross-compiles
   two Portless Go modules on every release. **The release is gated on something it does
   not publish.**
 - Portless has no version. Neither the Portless root nor `apps/api` declares one, while
   EraInfra's rule is that root, Agent, Controller and Runtime versions move together.
-- `deploy/` contains a complete independent install and deploy path — `agent.sh`,
-  `agent.ps1`, `hub.sh`, `cli.sh`, `image.sh`, `registry.sh` — that bypasses the
+- `deploy/` contains a complete independent install and deploy path (`agent.sh`,
+  `agent.ps1`, `hub.sh`, `cli.sh`, `image.sh`, `registry.sh`) that bypasses the
   `AGENT_RELEASE` pin-and-verify supply chain entirely.
 
 ## Decision
@@ -61,7 +61,7 @@ lockfile, and a release that ships what it gates on.
   What #61 deliberately did not do is retire the frozen runtime identifiers; that is still
   ahead, per rule 4 in [CONTEXT.md](../../CONTEXT.md).
 - A Go module merge becomes admissible. `portless-agent` requires
-  `github.com/gorilla/websocket v1.5.3` — it is not, and never was, standard-library only,
+  `github.com/gorilla/websocket v1.5.3`. It is not, and never was, standard-library only,
   so the module boundary was not protecting a zero-dependency guarantee. What that boundary
   did provide is replaced by an explicit `go version -m` assertion on the shipped bytes.
   That assertion was later dropped in favour of govulncheck in CI and in the release
@@ -69,7 +69,7 @@ lockfile, and a release that ships what it gates on.
 - The naming collision must be resolved, because two things called "agent" cannot live in
   one `apps/`. See [CONTEXT.md](../../CONTEXT.md) for the resolved vocabulary.
 - **The name "Portless" is retired** as a user-facing surface name. This does not follow
-  automatically from the decision above — AWS keeps `ecs-agent` and Azure keeps
+  automatically from the decision above: AWS keeps `ecs-agent` and Azure keeps
   `azure-pipelines-agent` precisely because an absorbed service may retain its own name, and
   an earlier draft of this ADR wrongly asserted that `portless-agent` was merely a vestige.
   Retirement is a separate, deliberate product choice: the infrastructure-management surface
@@ -80,17 +80,17 @@ lockfile, and a release that ships what it gates on.
   becomes materially more dangerous under this decision. Today `$REPO` is Portless; after the
   merge `$REPO` is the entire CI platform, mounted into a container on a customer's hub box.
   The mount is **read-write**, and the container runs continuously behind a public Cloudflare
-  tunnel, so a compromised Hub could write to the host checkout — including
+  tunnel, so a compromised Hub could write to the host checkout, including
   `packages/backend/convex` and its GitHub App configuration. Merging without addressing this
   would use the merge to enlarge a customer-facing exposure.
 
   Two containment steps follow, and they are ordered because only one of them is cheap. The
   merge itself must scope the install with `--filter "@erainfra/hub..."`, measured at 183
-  packages against today's 495 — a one-line change that leaves a customer's hub box smaller
+  packages against today's 495. That is a one-line change that leaves a customer's hub box smaller
   than it is now rather than larger. Closing the mount itself requires packaging the Hub as a
   self-contained bundle, because `hub.sh:71-74` runs the Hub _from_ the mounted tree
   (`-w /srv/portless … node --experimental-strip-types apps/api/src/server.ts`). That is a
-  separate PR, and it is a prerequisite for the read-only or bundle-only form — not something
+  separate PR, and it is a prerequisite for the read-only or bundle-only form, not something
   the merge can assert by rewriting a path.
 
 - Whether the infrastructure surface remains independently installable is **settled by
@@ -105,7 +105,7 @@ lockfile, and a release that ships what it gates on.
 version, remove it from the release gate, and possibly its own workflow. This is the
 cheaper and lower-risk change, and it would also fix the release-gates-what-it-does-not-ship
 asymmetry. It was rejected because it contradicts #35's stated intent and forecloses sharing
-between the two halves — for example the two independent `dockerargs` validators, which today
+between the two halves, for example the two independent `dockerargs` validators, which today
 disagree on nine of ten probed inputs.
 
 **Do the directory flatten without merging the supply chains.** Rejected as the worst

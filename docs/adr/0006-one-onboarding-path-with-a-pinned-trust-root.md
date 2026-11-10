@@ -18,14 +18,14 @@ deployment-pinned value and refuses to install on mismatch.
 
 **Node onboarding today.** `curl https://<hub>/agent.sh | sudo sh` downloads
 `$HOSTBASE/agent-bin/portless-agent-<target>` from the customer's own hub, then `chmod +x` and runs
-it. There is **no integrity check of any kind** — grepping `deploy/agent.sh` for
+it. There is **no integrity check of any kind**: grepping `deploy/agent.sh` for
 `sha256`/`shasum`/`checksum` returns nothing. The binary is cross-compiled ad hoc on the hub box by
 `deploy/build-agents.sh`, so it is not reproducible, not attested, and has no rollback. The systemd
 unit it installs has no `User=`, so this unverified binary runs as root.
 
-`deploy/build-agents.sh` states an intentional design goal that must be preserved: "Self-hosted: the
-hub serves these — no Docker Hub, no third-party release host." Air-gapped and self-contained
-installs are a feature, not an accident.
+`deploy/build-agents.sh` states an intentional design goal that must be preserved: the hub is
+self-hosted and serves these binaries itself, with no Docker Hub and no third-party release host.
+Air-gapped and self-contained installs are a feature, not an accident.
 
 ## Decision
 
@@ -37,7 +37,7 @@ not in conflict.
 **That claim covers the payload only, and the scope matters.** The digest cannot protect the
 `/install` script itself, because the script is what carries the digest and runs the verification.
 A tampered script can drop the check, or execute anything at all, before a single byte of the
-archive is fetched — and it runs under `sudo`. So the bootstrap has a second trust root that has to
+archive is fetched, and it runs under `sudo`. So the bootstrap has a second trust root that has to
 be named rather than implied:
 
 - **TLS to the control plane's own origin is a requirement, not a detail.** `/install` is served
@@ -49,7 +49,7 @@ be named rather than implied:
   `--source` at a hub mirror or a local file is safe precisely because the verification logic
   arrived by the trusted path and the expected digest is baked into it.
 - **This asymmetry is the same one the Worker path already lives with**, so it is not a regression
-  introduced here — but the Worker path never wrote it down either. Signing the installer, or
+  introduced here, but the Worker path never wrote it down either. Signing the installer, or
   publishing a separately pinned verifier that the one-liner fetches first, is the way to remove the
   asymmetry rather than document it. That is deliberately out of scope here and worth its own ADR;
   what is in scope is not overstating what the digest buys.
@@ -66,21 +66,21 @@ One onboarding path:
   **Per-role artifacts, not one combined archive.** The two agents are shaped differently and
   combining them would be worse for both: the Action Runner Agent is one
   `erainfra-agent-<version>.tar.gz` that every Worker installs identically with `npm install`, while
-  the Infra Agent is a single static Go binary that must be selected per platform —
+  the Infra Agent is a single static Go binary that must be selected per platform:
   `infra-agent-<os>-<arch>[.exe]`, five targets including `windows/amd64`, which the existing
   `agent.ps1` path already requires. One combined archive would make every Node download four
   binaries it cannot run.
 
   So `AgentRelease` keeps its existing scalar `sha256` for the archive and gains a **map** keyed by
-  target for the binaries. The extension is additive, which is what lets the entire Worker path —
-  `release.yml`'s verification block, `http.ts`, `installScript.ts` and its tests — keep working
+  target for the binaries. The extension is additive, which is what lets the entire Worker path
+  (`release.yml`'s verification block, `http.ts`, `installScript.ts` and its tests) keep working
   untouched:
 
   ```ts
   export type AgentRelease = {
     repo: string;
     version: string;
-    /** SHA-256 of `erainfra-agent-<version>.tar.gz` — the Action Runner Agent. */
+    /** SHA-256 of `erainfra-agent-<version>.tar.gz`, the Action Runner Agent. */
     sha256: string;
     /** SHA-256 of `infra-agent-<os>-<arch>[.exe]`, keyed by target. */
     infraAgent: Record<string, string>;
@@ -89,7 +89,7 @@ One onboarding path:
 
   `--role worker` selects the archive and verifies against `sha256`; `--role node` resolves the
   host's target, selects that binary, and verifies against `infraAgent[target]`. Both paths must be
-  covered by tests, including the refusal case — a verification path whose failure branch is untested
+  covered by tests, including the refusal case. A verification path whose failure branch is untested
   is a verification path nobody has seen work.
 
 - **Pluggable bytes.** GitHub Release by default; a hub mirror or a local file via an explicit
@@ -129,7 +129,7 @@ Preserved: the one-command `curl … | sh` experience, and the hub's ability to 
 
 **Keep the hub as the sole distributor and just add a checksum.** Smaller change, and it preserves
 air-gap trivially. Rejected as the end state because the checksum would attest a binary the hub
-compiled itself, which proves integrity of transport but not provenance of the build — the Worker
+compiled itself, which proves integrity of transport but not provenance of the build; the Worker
 path's reproducible double-build and attestation are the property worth extending.
 
 **Proxy binaries through the control plane so there is literally one host.** Rejected on the

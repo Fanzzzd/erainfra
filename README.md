@@ -1,6 +1,6 @@
 # EraInfra
 
-Run GitHub Actions on your own machines — each job in its own microVM, scheduled by a control
+Run GitHub Actions on your own machines. Each job runs in its own microVM, scheduled by a control
 plane that needs no public IP anywhere.
 
 EraInfra turns Linux and Apple Silicon machines you already own into a self-hosted CI fleet.
@@ -9,11 +9,11 @@ decides which Worker runs each job, prepares an isolated environment for exactly
 destroys it afterwards. Machines dial out to the control plane, so a Worker behind NAT, a home
 router, or a corporate firewall participates like any other.
 
-**Why it holds up:**
+What it provides:
 
-- **A hardware boundary per job.** Untrusted Linux jobs get a fresh Firecracker microVM — its
-  own guest kernel, copy-on-write root, point-to-point network, and single-use credentials —
-  torn down on every exit path, including Worker crashes.
+- **A hardware boundary per job.** Untrusted Linux jobs get a fresh Firecracker microVM with its
+  own guest kernel, copy-on-write root, point-to-point network, and single-use credentials.
+  EraInfra tears it down on every exit path, including Worker crashes.
 - **Verified, not assumed.** The isolation boundary is checked by the runtime itself: a Worker
   whose live nftables table drifts from the policy its runtime rendered stops being ready, and a
   daily canary exercises scheduling through the executor's in-job isolation probes. The fleet has
@@ -129,17 +129,17 @@ follows.
 
 A cpuset does not fix every CPU-count interface, so **`RC_VCPUS` in the job environment is the
 authoritative limit.** `/proc/cpuinfo` is not filtered and still lists every host CPU, which leaves
-Node's `os.cpus().length` reporting the Worker. Python's `os.cpu_count()` depends on the C library —
-musl answers it from the affinity mask, glibc from the online-CPU count — and the Linux Image
+Node's `os.cpus().length` reporting the Worker. Python's `os.cpu_count()` depends on the C library:
+musl answers it from the affinity mask, glibc from the online-CPU count. The Linux Image
 Release is glibc, so Python jobs need `len(os.sched_getaffinity(0))`, `os.process_cpu_count()` on
 3.13+, or `RC_VCPUS`.
 
 **Memory is not made honest by that, and the container is told so explicitly.** `free`,
 `/proc/meminfo` and `os.totalmem()` still report the host's RAM, because the cgroup limit is not
-reflected there without LXCFS — which needs a host daemon, its own readiness evidence, and a bind
+reflected there without LXCFS, which needs a host daemon, its own readiness evidence, and a bind
 mount into a container whose contract forbids one. Every Docker job therefore receives `RC_VCPUS`
 and `RC_MEMORY_MIB` in its environment, holding the limits actually enforced on it. Anything that
-sizes a heap or a worker pool from total RAM — `--max-old-space-size` is the usual one — should read
+sizes a heap or a worker pool from total RAM (`--max-old-space-size` is the usual one) should read
 `RC_MEMORY_MIB` rather than believe `free`.
 
 Nothing writable survives a job on either Linux executor, so the only warm state on a Worker is
@@ -263,9 +263,9 @@ Blacksmith's cache paths, and what serves each one here on a Firecracker Profile
 | Container image caching                                  | Docker Hub pull-through registry mirror                                                                                                            | none                          |
 | Turborepo build cache                                    | Turborepo Remote Cache API through the guest's build proxy                                                                                         | none                          |
 | Go build cache (`GOCACHEPROG`)                           | `erainfra-gocacheprog`, local disk first, then the service                                                                                         | one `env` line                |
-| Bazel and Buck2 remote cache                             | not served                                                                                                                                         | —                             |
+| Bazel and Buck2 remote cache                             | not served                                                                                                                                         | n/a                           |
 | Git checkout cache (`useblacksmith/checkout`, git proxy) | git checkout mirror with `RC_GIT_MIRROR=on`: the job's own repository over HTTPS, seeded from the service                                          | none                          |
-| Sticky disks (`useblacksmith/stickydisk`)                | not served: a writable disk that outlives the job breaks the per-Attempt boundary ([ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md)) | —                             |
+| Sticky disks (`useblacksmith/stickydisk`)                | not served: a writable disk that outlives the job breaks the per-Attempt boundary ([ADR 0002](docs/adr/0002-verify-the-job-isolation-boundary.md)) | n/a                           |
 
 ### Egress policy
 
@@ -441,13 +441,13 @@ runs one fingerprint script on `ubuntu-latest` and on every Profile declared in
 [`.github/conformance/profiles.txt`](.github/conformance/profiles.txt), then diffs the two and
 fails on any difference that is not on [an explicit, commented
 allowlist](.github/conformance/allowlist.txt). The allowlist is the written record of every way
-this environment is deliberately not GitHub's, and everything not on it is a bug — a job that reads
+this environment is deliberately not GitHub's, and everything not on it is a bug: a job that reads
 a different CPU count from the one it may use, a tool present there and missing here, a scratch
 directory mounted `noexec`. It runs daily and on every change to the provisioners, the images or
 the readiness code, because those are the three inputs that can move it.
 
 A Profile is declarable only once a Worker serves it on _this_ repository. Scale sets are registered
-per repository, so a leg for a Profile nobody serves here does not fail — it queues until the
+per repository, so a leg for a Profile nobody serves here does not fail. It queues until the
 timeout, and a timeout reads exactly like a runner that died. `rc-linux-js` is deliberately not
 declared today for that reason, and is therefore not among what the job proves.
 
@@ -598,8 +598,8 @@ Each of these is also read under its `RC_` name, which is what the installer wri
 
 Name a new Profile `erainfra-<N>vcpu-<os><version>[-arm]`, for example `erainfra-4vcpu-ubuntu-2404`
 ([ADR 0010](docs/adr/0010-name-profiles-the-way-runner-vendors-name-labels.md)). The controller
-refuses a name GitHub would misread — uppercase, longer than 45 characters, or a GitHub-hosted label
-such as `ubuntu-latest` — and warns about a legal name outside the scheme. `rc-linux-js` and `rc-e2e`
+refuses a name GitHub would misread (uppercase, longer than 45 characters, or a GitHub-hosted label
+such as `ubuntu-latest`) and warns about a legal name outside the scheme. `rc-linux-js` and `rc-e2e`
 predate it and keep working; a Profile is renamed by registering the new name beside the old one,
 never in place, because GitHub holds the scale-set name.
 
@@ -854,7 +854,7 @@ A Docker Attempt is also given explicit resource limits and an explicit resolver
 Docker daemon's inherited ones: no core dumps into a writable layer the Worker's other Attempts share
 a filesystem with, a 16 MiB stack, a 65536 soft descriptor limit with the daemon's million left as
 the ceiling a job may raise itself to, an 8 MiB lock limit so a library holding key material in
-unswappable pages works, and a process bound of four per MiB of the Profile's memory — which is the
+unswappable pages works, and a process bound of four per MiB of the Profile's memory, which is the
 kernel's own RLIMIT_NPROC rule applied to what the job was sold instead of to the Worker's RAM
 (#96). The container's nameservers are named on the command line and `edns0` is asked for; no search
 domain is set, so a bare name in a workflow cannot resolve through whatever suffix a Worker's network
@@ -863,8 +863,8 @@ systemd-resolved or `/etc/resolv.conf`; a host where neither yields an address a
 refuses the Attempt rather than letting the daemon guess one.
 
 **Kernel settings a Docker Profile needs.** A container shares the Worker's kernel, and not one of
-the sysctls a CI job cares about is namespaced — `docker run --sysctl vm.max_map_count=262144` is
-refused by the daemon outright — so what a job reads is what the host holds. Readiness measures them
+the sysctls a CI job cares about is namespaced (the daemon refuses
+`docker run --sysctl vm.max_map_count=262144` outright), so what a job reads is what the host holds. Readiness measures them
 per Profile as the `host-sysctls` check, publishes every number as evidence, and refuses to advertise
 a Docker Profile on a host below what a job needs. Apply them once:
 
@@ -969,13 +969,13 @@ dashboard's OS toggle renders it; run it on an x64 Windows Server host:
 
 `-Role worker` is explicit because that URL also serves the Node installer and defaults to it. The
 supply chain is the bash installer's, unchanged: the pinned `erainfra-agent-<version>.tar.gz`, its
-published SHA-256, and this deployment's own pin as the trust root — an archive that matches the
+published SHA-256, and this deployment's own pin as the trust root. An archive that matches the
 release but not the pin is refused and nothing is installed. `npm ci` runs against the lockfile the
 release shipped; nothing is compiled on the machine.
 
 A fresh Windows Server has no Node.js, so the installer fetches the official Node 22 `win-x64`
-build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before running it —
-the same source and the same check the POSIX installer already uses when a host has no runtime.
+build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before running it.
+This is the same source and the same check the POSIX installer already uses when a host has no runtime.
 Everything lands under `%USERPROFILE%\.runner-center`, which is the `ERAINFRA_HOME` (or `RC_HOME`) the Hyper-V
 provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-Sha256`, and rollback
 through `agent.previous` work exactly as they do on POSIX, and `rc.ps1` under
@@ -1768,8 +1768,8 @@ the artifacts, and publishes:
 - Runtime binaries and SHA-256 sidecars for Linux x64/ARM64, plus the runtime and controller
   systemd units;
 - `infra-agent-<os>-<arch>` binaries and SHA-256 sidecars for Linux and macOS x64/ARM64 and
-  Windows x64 — the five targets a Node can be;
-- `erainfra-cache-service-linux-x86_64` and its SHA-256 sidecar — the cache service (ADR 0009),
+  Windows x64, the five targets a Node can be;
+- `erainfra-cache-service-linux-x86_64` and its SHA-256 sidecar: the cache service (ADR 0009),
   one Linux target because it is a server an operator deploys, not a binary every Node runs;
 - `erainfra-<os>-<arch>` binaries and SHA-256 sidecars, the operator CLI, for the same five targets
   as the Infra Agent;

@@ -1,8 +1,8 @@
-# Build/deploy split — build on a strong box, deploy on a weak one
+# Build/deploy split: build on a strong box, deploy on a weak one
 
-Some boxes can't build (low memory/CPU) — they can only run. So split the two: **build once on a
+Some boxes can't build (low memory/CPU). They can only run. So split the two: **build once on a
 capable box, store the image on infra you own, pull + run on the weak boxes.** No Docker Hub, no
-third-party — the store is your own VPS/fixed box (and your S3 when you wire it).
+third-party. The store is your own VPS/fixed box (and your S3 when you wire it).
 
 ```
   BUILD box (capable)        STORE (your VPS/box; S3 later)        DEPLOY box (weak)
@@ -11,7 +11,7 @@ third-party — the store is your own VPS/fixed box (and your S3 when you wire i
             └──────────── reached over the mesh (127.0.0.1, no public IP) ──────────┘
 ```
 
-The store is just an HTTP blob store, so it needs **no Docker to run** — a single `zot` binary. It's
+The store is just an HTTP blob store, so it needs **no Docker to run**: a single `zot` binary. It's
 reachable over the mesh (the same iroh links as everything else), so no box needs a public IP, and
 because Docker treats `127.0.0.1:*` as an insecure registry automatically, the mesh path needs **no
 daemon config**.
@@ -22,7 +22,7 @@ daemon config**.
 curl -fsSL https://<hub>/registry.sh | sh -s -- up 5000     # downloads zot, runs it on 127.0.0.1:5000
 ```
 
-**Enrolled nodes need no tickets** — the platform wires the store over the mesh for you:
+**Enrolled nodes need no tickets**. The platform wires the store over the mesh for you:
 
 ```bash
 portless link <store-node>:5000 <build-node>    # surface the store at 127.0.0.1:5000 there
@@ -51,7 +51,7 @@ curl -fsSL https://<hub>/image.sh     | sh -s -- ship ./myapp myapp:v1
 
 - a `Dockerfile` in the context → `docker build`;
 - no Dockerfile → **Nixpacks** (a single prebuilt binary that detects Node/Python/Go/Rust/… and
-  generates the build itself — the "drag in source, no Dockerfile needed" Railway trick).
+  generates the build itself, the "drag in source, no Dockerfile needed" Railway trick).
 
 The build box needs Docker or podman (Nixpacks shells `docker` specifically; for podman, provide a
 Dockerfile). Building is the heavy step that's fine on a capable box.
@@ -64,7 +64,7 @@ curl -fsSL https://<hub>/image.sh     | sh -s -- run myapp:v1 -d --name myapp -p
 ```
 
 `run` = `docker pull 127.0.0.1:5000/myapp:v1` then `docker run …`. The weak box only **runs** a
-container — far lighter than building one — so it doesn't need the build toolchain.
+container, far lighter than building one, so it doesn't need the build toolchain.
 
 ## Notes
 
@@ -74,14 +74,14 @@ container — far lighter than building one — so it doesn't need the build too
   at it (`export PORTLESS_REGISTRY=registry.example.com`) and give zot TLS, or add it to the
   daemon's `insecure-registries`. The mesh path avoids all of that.
 - **macOS / Docker Desktop build box (gotchas, Linux build boxes are unaffected):**
-  - Port **5000 is taken by AirPlay Receiver** (ControlCenter) on macOS — it'll silently intercept the
+  - Port **5000 is taken by AirPlay Receiver** (ControlCenter) on macOS. It'll silently intercept the
     registry. Use another port: `registry.sh up 5005` and `PORTLESS_REGISTRY=127.0.0.1:5005`.
   - Docker Desktop runs the daemon **in a VM**, so a _host-binary_ zot on `127.0.0.1` isn't reachable
     from the daemon for push/pull. Either run the store **as a container** (`docker run -d -p
-    5005:5000 registry:2` — its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
+    5005:5000 registry:2`; its published port lives in the VM's netns, so `127.0.0.1:5005` resolves
     for both push and pull and stays auto-insecure/HTTP), or push to `host.docker.internal:5005` after
     adding it to the daemon's `insecure-registries`. On a native Linux build box the host-binary zot on
-    `127.0.0.1:5000` just works — dockerd shares the host loopback.
+    `127.0.0.1:5000` just works: dockerd shares the host loopback.
 - **Verified end-to-end (with Docker):** Nixpacks build of a no-Dockerfile app → push → registry
   catalog → `agents.deploy` over the spine → agent `docker pull`+`run` → the container served HTTP.
   Separately, the store + mesh transport are proven byte-for-byte (zot ← oras over a real mesh link).
