@@ -89,7 +89,10 @@ EGRESS_ALLOW=''
 NAMESERVERS=''
 NETWORK_SUBNET=''
 MIN_POOL_FREE_MIB=''
-BASE_IMAGE_SIZE='24GB'
+# Full hosted software needs about 60 GiB plus job workspace. containerd parses
+# GB with RAMInBytes, so 96GB is 96 GiB. This only sizes NEW base snapshots;
+# reprovisioning never resizes an existing thin device or its filesystem.
+BASE_IMAGE_SIZE='96GB'
 RUNTIME_UNIT_FILE=''
 FORCE_NETWORK_RELOAD=0
 UNINSTALL=0

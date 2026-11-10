@@ -1,0 +1,82 @@
+name: EraInfra full image guest refresh
+
+# A guest-only change does not need the two-hour full image build. This job
+# appends one layer to an existing full image. The layer holds the guest and
+# the Go cache helper, built from this commit. crane uploads only that layer
+# and a new manifest, so the run takes minutes. It publishes a candidate tag
+# and changes no Profile; pin it on rc-e2e first, as with a full build.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Full image to refresh, by digest (sha256:...)
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: full-image-guest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CRANE_VERSION: v0.22.1
+      BASE_DIGEST: ${{ inputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the base digest
+        run: |
+          [[ "$BASE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "base must be sha256:<64 hex>"; exit 1; }
+      - name: Compile the guest and cache helper
+        env:
+          GOTOOLCHAIN: go1.27.3
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/layer/usr/local/bin"
+          go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/layer/usr/local/bin/runner-center-guest" ./apps/runtime/cmd/runner-center-guest
+          go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/layer/usr/local/bin/erainfra-gocacheprog" ./apps/runtime/cmd/erainfra-gocacheprog
+          go install "github.com/google/go-containerregistry/cmd/crane@$CRANE_VERSION"
+      - name: Log in to the registry
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Check the new guest against the base image's runner environment
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/runner-center-ubuntu-24.04-full"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          [ "$(crane manifest "$image@$BASE_DIGEST" | jq -r .mediaType)" = application/vnd.oci.image.manifest.v1+json ]
+          mkdir -p "$RUNNER_TEMP/base"
+          crane export "$image@$BASE_DIGEST" - |
+            tar -x -C "$RUNNER_TEMP/base" --wildcards '*etc/erainfra/runner-environment.json'
+          env_file=$(find "$RUNNER_TEMP/base" -name runner-environment.json -print -quit)
+          [ -n "$env_file" ]
+          "$RUNNER_TEMP/layer/usr/local/bin/runner-center-guest" --check-runner-environment "$env_file"
+      - name: Append the guest layer and publish a candidate
+        run: |
+          set -euo pipefail
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=0755 \
+            -C "$RUNNER_TEMP/layer" -cf "$RUNNER_TEMP/guest-layer.tar" usr
+          tar -tvf "$RUNNER_TEMP/guest-layer.tar"
+          tag="guest-${GITHUB_SHA}"
+          crane append --base "$IMAGE@$BASE_DIGEST" --new_layer "$RUNNER_TEMP/guest-layer.tar" --new_tag "$IMAGE:$tag"
+          digest=$(crane digest "$IMAGE:$tag")
+          # Every layer must carry an OCI media type, like the base.
+          crane manifest "$IMAGE@$digest" |
+            jq -e '[.layers[].mediaType | startswith("application/vnd.oci.image.layer.")] | all' >/dev/null
+          {
+            echo "Base \`$IMAGE@$BASE_DIGEST\`"
+            echo
+            echo "Pushed \`$IMAGE@$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Log out
+        if: always()
+        run: crane auth logout ghcr.io || true
