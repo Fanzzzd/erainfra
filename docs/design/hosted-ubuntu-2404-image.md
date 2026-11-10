@@ -158,7 +158,11 @@ hosted rollout must be shown in the software report rather than called exact ver
 
 ## Production preparation and repin plan
 
-None of these operator steps has been executed.
+On 2026-11-10, ubuntu0 completed steps 3 to 5. Its devmapper `base_image_size` is `96GB`.
+Its file-backed data pool grew in place from 160 GiB to 400 GiB while no guest ran: the
+data file was extended, the loop device resized with `losetup -c`, and the thin-pool table
+reloaded with the new length. dm-thin supports this growth with the same metadata device,
+so no migration was needed. The host root had 612 GB free afterwards.
 
 1. Review the completed build evidence and candidate digest. Require a passing Firecracker
    boot test and all upstream software tests before calling the build usable.
@@ -186,3 +190,12 @@ None of these operator steps has been executed.
    Inspect differences before repinning `erainfra-4vcpu-ubuntu-2404` to the same digest.
 9. Roll back by restoring the previous digest. Retain its base until the new image has passed
    the canary window. Garbage-collect old bases only after rollback is no longer required.
+
+## Guest-only refresh
+
+A change to the guest or the Go cache helper does not need the full build.
+`.github/workflows/images-full-guest.yml` takes an existing full image digest, checks the new
+guest against that image's runner environment, and appends one layer holding the two
+binaries. crane uploads only that layer and a new manifest. The result is a new candidate
+digest that follows the same canary and repin steps as a full build. Run the full build again
+when anything else in the image changes, and at least weekly for Ubuntu security updates.
