@@ -31,6 +31,23 @@ if dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'linux-image-*' 'grub-*' 
   echo 'Azure base equivalence must not install a kernel or bootloader' >&2
   exit 1
 fi
+# Hosted builds ignore failed apt commands. Fail on any failure that has not
+# been reviewed as equivalent to the hosted result in apt-failures.allow. The
+# check runs after every script, so an unreviewed failure stops the build
+# there and not after the remaining installers.
+check_apt_failures() {
+  local unexpected=0 status command
+  [ -e "$apt_failures" ] || return 0
+  while IFS=$'\t' read -r status command; do
+    if grep -qxF "$command" <(grep -v '^#' /erainfra-build/apt-failures.allow); then
+      [ "${1:-}" != report ] || echo "ALLOWED apt failure (exit $status): $command"
+    else
+      echo "UNEXPECTED apt failure (exit $status): $command" >&2
+      unexpected=1
+    fi
+  done < "$apt_failures"
+  [ "$unexpected" = 0 ]
+}
 while IFS= read -r script; do
   case "$script" in
     configure-apt-mock.sh)
@@ -40,12 +57,27 @@ while IFS= read -r script; do
       # cleanup.sh removes these wrappers at the same point it removes upstream's.
       : > "$apt_failures"
       chmod 0666 "$apt_failures"
+      # A mirror can list a package a moment before it serves it, which fails
+      # a fetch with 404. Refresh the index and retry before recording, except
+      # for a failure already reviewed as permanent.
       for tool in apt apt-get apt-key; do
+        attempts=3
+        [ "$tool" = apt-key ] && attempts=1
         cat > "/usr/local/bin/$tool" <<WRAPPER
 #!/bin/sh
-/usr/bin/$tool "\$@"
-status=\$?
-[ "\$status" -eq 0 ] || printf '%s\\t%s\\n' "\$status" "$tool \$*" >> $apt_failures
+attempt=1
+while :; do
+  /usr/bin/$tool "\$@"
+  status=\$?
+  [ "\$status" -eq 0 ] && exit 0
+  [ "\$attempt" -ge $attempts ] && break
+  grep -qxF "$tool \$*" /erainfra-build/apt-failures.allow && break
+  echo "RETRY $tool \$* (exit \$status, attempt \$attempt of $attempts)" >&2
+  sleep \$((attempt * 30))
+  /usr/bin/apt-get update || true
+  attempt=\$((attempt + 1))
+done
+printf '%s\\t%s\\n' "\$status" "$tool \$*" >> $apt_failures
 exit 0
 WRAPPER
         chmod 0755 "/usr/local/bin/$tool"
@@ -90,16 +122,6 @@ WRAPPER
   )
   printf '%s\t%s\n' "$script" "$(( $(date +%s) - start ))" >> /erainfra-build/timings.tsv
   echo "END $script $(date -u +%FT%TZ)"
+  check_apt_failures
 done < /erainfra-build/scripts.txt
-# Hosted builds ignore failed apt commands. Fail on any failure that has not
-# been reviewed as equivalent to the hosted result in apt-failures.allow.
-unexpected=0
-while IFS=$'\t' read -r status command; do
-  if grep -qxF "$command" <(grep -v '^#' /erainfra-build/apt-failures.allow); then
-    echo "ALLOWED apt failure (exit $status): $command"
-  else
-    echo "UNEXPECTED apt failure (exit $status): $command" >&2
-    unexpected=1
-  fi
-done < "$apt_failures"
-[ "$unexpected" = 0 ]
+check_apt_failures report
