@@ -22,10 +22,9 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strconv"
 	"regexp"
+	"strconv"
 	"strings"
-
 )
 
 // repositorySegment is the cache service's own rule for an owner or a name
