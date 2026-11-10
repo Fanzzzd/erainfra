@@ -44,11 +44,11 @@ func TestMissingGuestElementsReadsTheKernelListing(t *testing.T) {
 		t.Fatal("a public guest needs only its link binding")
 	}
 	for name, change := range map[string]func(*GuestEgressState){
-		"another link":       func(s *GuestEgressState) { s.Link = "veth00000002" },
-		"another address":    func(s *GuestEgressState) { s.Guest = netip.MustParseAddr("10.241.0.8") },
-		"another CIDR":       func(s *GuestEgressState) { s.CIDRs = append(s.CIDRs, netip.MustParsePrefix("1.1.1.0/24")) },
-		"a wider CIDR":       func(s *GuestEgressState) { s.CIDRs = []netip.Prefix{netip.MustParsePrefix("140.82.0.0/16")} },
-		"a /32 as a /24":     func(s *GuestEgressState) { s.CIDRs = []netip.Prefix{netip.MustParsePrefix("93.184.215.0/24")} },
+		"another link":    func(s *GuestEgressState) { s.Link = "veth00000002" },
+		"another address": func(s *GuestEgressState) { s.Guest = netip.MustParseAddr("10.241.0.8") },
+		"another CIDR":    func(s *GuestEgressState) { s.CIDRs = append(s.CIDRs, netip.MustParsePrefix("1.1.1.0/24")) },
+		"a wider CIDR":    func(s *GuestEgressState) { s.CIDRs = []netip.Prefix{netip.MustParsePrefix("140.82.0.0/16")} },
+		"a /32 as a /24":  func(s *GuestEgressState) { s.CIDRs = []netip.Prefix{netip.MustParsePrefix("93.184.215.0/24")} },
 	} {
 		state := listedGuest
 		state.CIDRs = append([]netip.Prefix(nil), listedGuest.CIDRs...)

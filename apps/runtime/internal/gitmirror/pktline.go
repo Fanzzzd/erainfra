@@ -34,7 +34,7 @@ type fetchRequest struct {
 // limit: whole history.
 const infiniteDepth = 1<<31 - 1
 
-var errMalformedRequest =errors.New("gitmirror: malformed pkt-line request")
+var errMalformedRequest = errors.New("gitmirror: malformed pkt-line request")
 
 // parseRequest reads a protocol v2 request body (gitprotocol-v2(5)): a
 // command, capabilities, a delimiter, arguments and a flush. It reads only as

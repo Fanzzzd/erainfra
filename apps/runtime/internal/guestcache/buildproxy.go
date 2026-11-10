@@ -98,7 +98,7 @@ type buildProxy struct {
 	// host is the proxy's own host:port as Env advertises it, the only Host
 	// header it answers.
 	host string
-	now       func() time.Time
+	now  func() time.Time
 
 	// readOnly is set by the first write the service refuses with 403: this
 	// job's facts do not grant write, and asking again changes nothing.
