@@ -96,6 +96,9 @@ type Scaler struct {
 	cacheScopeBudget time.Duration
 	cacheRetry       retryPolicy
 	publishing       sync.WaitGroup
+
+	// hintPoll paces RunHintPoller (earlyfacts.go); zero means the default.
+	hintPoll time.Duration
 }
 
 // Option configures optional Scaler behaviour without widening the constructor

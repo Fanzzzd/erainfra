@@ -83,6 +83,11 @@ type Server struct {
 	// whose facts never arrived costs the store one read per memo window rather
 	// than one per cache request.
 	unknown map[string]time.Time
+	// hints holds job hints whose facts have not arrived (jobhint.go).
+	hints map[string]jobHintEntry
+	// factsArrived is closed and replaced on every facts push, which wakes the
+	// requests waiting in awaitFacts.
+	factsArrived chan struct{}
 
 	metrics metrics
 
@@ -132,6 +137,8 @@ func New(cfg config.Config, store objectstore.Store, logger *slog.Logger) (*Serv
 		sessions:     map[string]*session{},
 		facts:        map[string]factsEntry{},
 		unknown:      map[string]time.Time{},
+		hints:        map[string]jobHintEntry{},
+		factsArrived: make(chan struct{}),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 		retained:     make(chan struct{}),
@@ -220,6 +227,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveMetrics(w, r)
 	case strings.Contains(path, adminEntriesMarker):
 		s.serveAdminEntries(w, r)
+	case strings.Contains(path, adminJobHintsMarker):
+		s.serveAdminJobHints(w, r)
+	case strings.Contains(path, jobHintMarker):
+		s.serveJobHint(w, r)
 	case strings.Contains(path, adminFactsMarker):
 		s.serveRegisterFacts(w, r)
 	case strings.Contains(path, buildMarker):
@@ -274,6 +285,9 @@ func (s *Server) authenticate(r *http.Request) (cachetoken.Claims, bool) {
 		return cachetoken.Claims{}, false
 	}
 	facts, lookup := s.lookupFacts(r.Context(), runner.Runner, s.now())
+	if lookup == factsUnknown {
+		facts, lookup = s.awaitFacts(r.Context(), runner.Runner)
+	}
 	switch lookup {
 	case factsFound:
 	case factsUnreadable:

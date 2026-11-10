@@ -136,6 +136,53 @@ func (s *Server) registerFacts(runner string, facts cachetoken.JobFacts, expires
 	defer s.mu.Unlock()
 	s.facts[runner] = factsEntry{facts: facts, expires: expires}
 	delete(s.unknown, runner)
+	delete(s.hints, runner)
+	close(s.factsArrived)
+	s.factsArrived = make(chan struct{})
+}
+
+// awaitFacts holds a request from a runner with no facts until the controller
+// pushes them, for at most FactsWait. The runner token was signed by the
+// runtime, so the runner is real and its facts are normally seconds away: the
+// controller pushes at JobStarted, which lands after the job's first steps.
+//
+// A push to this replica wakes the request at once. A push to another replica
+// is only in the bucket, so the bucket is read once more when the wait ends.
+// It waits on the wall clock, like a socket deadline: the injected clock
+// decides what "expired" means, not how long a connection is held.
+func (s *Server) awaitFacts(ctx context.Context, runner string) (cachetoken.JobFacts, factsLookup) {
+	if s.config.FactsWait <= 0 {
+		return cachetoken.JobFacts{}, factsUnknown
+	}
+	started := time.Now()
+	deadline := time.NewTimer(s.config.FactsWait)
+	defer deadline.Stop()
+	for {
+		s.mu.Lock()
+		arrived := s.factsArrived
+		_, known := s.facts[runner]
+		s.mu.Unlock()
+		if known {
+			// Either the push landed, or the facts were there and have
+			// expired, which no wait will change.
+			facts, lookup := s.lookupFacts(ctx, runner, s.now())
+			if lookup == factsFound && time.Since(started) > 100*time.Millisecond {
+				s.logger.Info("request waited for job facts", "runner", runner,
+					"waited", time.Since(started).Round(time.Millisecond).String())
+			}
+			return facts, lookup
+		}
+		select {
+		case <-arrived:
+		case <-ctx.Done():
+			return cachetoken.JobFacts{}, factsUnknown
+		case <-deadline.C:
+			s.mu.Lock()
+			delete(s.unknown, runner)
+			s.mu.Unlock()
+			return s.lookupFacts(ctx, runner, s.now())
+		}
+	}
 }
 
 // lookupFacts returns a runner's facts: from memory, or else from the bucket,

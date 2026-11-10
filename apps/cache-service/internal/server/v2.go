@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
@@ -257,7 +258,7 @@ func (s *Server) v2Finalize(w http.ResponseWriter, r *http.Request) {
 	s.dropSession(held.id)
 	s.logger.Info("cache entry saved", "generation", "v2", "repository", held.repository,
 		"ref", held.ref, "key", held.key, "bytes", size)
-	writeJSON(w, http.StatusOK, v2FinalizeResponse{OK: true, EntryID: held.id})
+	writeJSON(w, http.StatusOK, v2FinalizeResponse{OK: true, EntryID: v2EntryID(held.id)})
 }
 
 // downloadURL is what a job is given to fetch an entry's bytes with. Presigned
@@ -322,4 +323,20 @@ func (s *Server) dropSession(id string) {
 	if ok {
 		held.discard()
 	}
+}
+
+// v2EntryID turns a session id into the entry_id GitHub's proto declares as an
+// int64. proto3 JSON writes an int64 as a decimal string, and @actions/cache
+// refuses anything else with a "Failed to save" warning even though the entry
+// was saved. The first 15 hex digits are 60 random bits, so the result is
+// positive and unique enough for the only thing a client does with it: log it.
+func v2EntryID(sessionID string) string {
+	if len(sessionID) > 15 {
+		sessionID = sessionID[:15]
+	}
+	id, err := strconv.ParseUint(sessionID, 16, 63)
+	if err != nil || id == 0 {
+		return "1"
+	}
+	return strconv.FormatUint(id, 10)
 }

@@ -2886,8 +2886,13 @@ switch (command) {
     break;
   case "losetup":
     if (args[0] === "-j") process.exit(0);
+    if (args[0] === "--direct-io=on") {
+      // Record that the device was switched to direct I/O.
+      fs.writeFileSync(path.join(root, "direct-io-" + path.basename(args[1])), "");
+      break;
+    }
     if (args[0] !== "--find" || args[1] !== "--show") process.exit(2);
-    console.log(args[2]); // The regular file stands in for its loop device.
+    console.log(args.at(-1)); // The regular file stands in for its loop device.
     break;
   case "blockdev":
     if (args[0] === "--getsz") console.log(64);
@@ -2944,6 +2949,10 @@ switch (command) {
         }
         expect(pool.log().match(/dmsetup create/g)).toHaveLength(2);
         expect(pool.log()).not.toMatch(/\bdd |\btruncate /);
+        // A file-backed pool runs its loop devices with direct I/O.
+        if (backing === "file") {
+          expect(pool.log()).toMatch(/losetup --find --show --direct-io=on /);
+        }
       });
     }
 
