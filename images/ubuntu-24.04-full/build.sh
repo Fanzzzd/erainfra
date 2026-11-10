@@ -118,8 +118,11 @@ iptables -D FORWARD -o erainfra-host -m conntrack --ctstate ESTABLISHED,RELATED 
 iptables -t nat -D POSTROUTING -s 192.0.2.2/32 -j MASQUERADE
 # Remove build identity, logs, and temporary files after shutdown.
 rm -rf "$root/erainfra-build" "$root/erainfra-src" "$root/tmp/"* "$root/var/tmp/"* "$root/root/.cache"
-find "$root/var/log" -type f -exec truncate -s 0 {} +
-truncate -s 0 "$root/etc/machine-id"
+# --no-create: fs.protected_regular=2 refuses an O_CREAT open of another
+# user's file in a sticky group-writable directory (/var/log/postgresql), even
+# for root. Opening without O_CREAT is not subject to it.
+find "$root/var/log" -type f -exec truncate --no-create -s 0 {} +
+truncate --no-create -s 0 "$root/etc/machine-id"
 # Drop the build container's name. runner-center-guest writes the loopback
 # and per-VM hostname entries at boot, as it does for the small image.
 : > "$root/etc/hosts"
