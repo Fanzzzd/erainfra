@@ -8,11 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/oplog"
 )
 
 const maxJournalBytes = 16 * 1024 * 1024
@@ -102,7 +103,7 @@ type Journal struct {
 
 // journalLogf receives the journal's warnings: a torn record recovered at open. The Infra Agent
 // logs to stderr, which systemd keeps.
-var journalLogf = log.Printf
+var journalLogf = oplog.Printf
 
 // JournalEntry is one key as `infra-agent journal list` prints it.
 type JournalEntry struct {

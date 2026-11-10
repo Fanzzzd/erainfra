@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/agent"
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/oplog"
 )
 
 const maxWireBytes = 256 * 1024
@@ -463,7 +463,7 @@ func (c *Client) logf(format string, args ...any) {
 		c.Logf(format, args...)
 		return
 	}
-	log.Printf(format, args...)
+	oplog.Printf(format, args...)
 }
 
 func (c *Client) step(ctx context.Context) (bool, error) {

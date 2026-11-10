@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/oplog"
 )
 
 // Defaults for Config's zero values.
@@ -38,7 +40,7 @@ type Config struct {
 	// Cloudflare's 100-second proxy read timeout, so the edge's own 524 decides first. Bodies and
 	// upgraded connections have no deadline: they stream for as long as both ends keep them open.
 	ResponseHeaderTimeout time.Duration
-	// Logf receives operator-facing messages. Default log.Printf.
+	// Logf receives operator-facing messages. Default oplog.Printf, which logs through log/slog.
 	Logf func(format string, args ...any)
 }
 
@@ -72,7 +74,7 @@ func New(cfg Config) (*Proxy, error) {
 		cfg.ResponseHeaderTimeout = DefaultResponseHeaderTimeout
 	}
 	if cfg.Logf == nil {
-		cfg.Logf = log.Printf
+		cfg.Logf = oplog.Printf
 	}
 	p := &Proxy{cfg: cfg}
 	for _, z := range cfg.Zones {
@@ -295,6 +297,8 @@ func (p *Proxy) Server() *http.Server {
 	}
 }
 
+// logWriter feeds net/http's ErrorLog, which takes a *log.Logger, into Logf. It is the one use
+// of the standard log package left in the gateway: net/http accepts nothing else.
 type logWriter struct{ logf func(string, ...any) }
 
 func (l logWriter) Write(b []byte) (int, error) {
