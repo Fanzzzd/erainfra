@@ -2,7 +2,7 @@
 name = "erainfra-mesh"
 # Kept equal to the product version in the workspace root package.json; the release workflow
 # refuses a tag where they differ, exactly as it does for the Go and npm packages.
-version = "0.2.0-rc.13"
+version = "0.2.0-rc.14"
 edition = "2024"
 rust-version = "1.91"
 publish = false
