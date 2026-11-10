@@ -97,12 +97,8 @@ type Scaler struct {
 	cacheRetry       retryPolicy
 	publishing       sync.WaitGroup
 
-	// watches holds the workflow runs whose acquired jobs wait for GitHub to
-	// name their runner (earlyfacts.go); earlyFactsPoll and earlyFactsWindow
-	// pace that watch, and zero means the default.
-	watches          map[string]*runWatch
-	earlyFactsPoll   time.Duration
-	earlyFactsWindow time.Duration
+	// hintPoll paces RunHintPoller (earlyfacts.go); zero means the default.
+	hintPoll time.Duration
 }
 
 // Option configures optional Scaler behaviour without widening the constructor

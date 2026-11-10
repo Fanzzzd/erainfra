@@ -2,7 +2,7 @@ package controller
 
 import (
 	"context"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,133 +18,112 @@ type RunRunners interface {
 	RunRunners(ctx context.Context, repository string, runID int64) ([]string, error)
 }
 
-// The watch finds the lister by a type assertion on the WorkflowRuns option, so
-// this keeps the controller's real client from silently losing it.
-var _ RunRunners = (*githubapi.Client)(nil)
-
-// Early facts. The scale set's JobStarted message reaches the controller late:
-// on 2026-11-10 it arrived 7 to 38 seconds after the job had started on its
-// runner, with the listener's long poll open the whole time. A job's first cache
-// request waited that long for its facts.
-//
-// GitHub names a job's runner in the run's job list the moment it assigns the
-// job. A job's facts depend only on its workflow run and its runner's name, so
-// once one of this fleet's runners appears in the list of a run the controller
-// acquired a job from, its facts are known. The runner is bound to the run by
-// GitHub's own record, so nothing the guest says is trusted. JobStarted still
-// publishes the same facts afterwards, as the fallback.
-const (
-	defaultEarlyFactsPoll   = 2 * time.Second
-	defaultEarlyFactsWindow = 3 * time.Minute
-	// fleetRunnerPrefix starts every runner name githubscale.RunnerName makes.
-	// It keeps GitHub-hosted runners in the same run out of the cache service.
-	fleetRunnerPrefix = "rc-"
-)
-
-// runWatch is one run being watched: how many acquired jobs still wait for a
-// runner, and which runners were already published.
-type runWatch struct {
-	pending   int
-	published map[string]bool
+// HintSource lists the job hints the cache service holds for runners whose
+// names start with one of prefixes. *cachefacts.Client implements it.
+type HintSource interface {
+	PendingHints(ctx context.Context, prefixes []string) ([]cachefacts.Hint, error)
 }
 
-// WatchAcquiredJobs starts publishing early facts for jobs the session just
-// acquired. It returns at once; the watches run in the background and are
-// counted in s.publishing.
-func (s *Scaler) WatchAcquiredJobs(ctx context.Context, jobs []*scaleset.JobAvailable) {
-	if s.cache == nil {
+// The poller finds both by type assertion on the Scaler's options, so these
+// keep the controller's real clients from silently losing them.
+var (
+	_ RunRunners = (*githubapi.Client)(nil)
+	_ HintSource = (*cachefacts.Client)(nil)
+)
+
+// Early facts. GitHub's JobStarted message reaches the controller 7 to 38
+// seconds after the job starts on its runner (measured 2026-11-10, with the
+// listener's long poll open the whole time), and the scale set gets no
+// JobAvailable for a job GitHub hands to an idle runner. So a job's first cache
+// request used to wait that long for its facts.
+//
+// The guest reads its run from the runner's job message the moment the job
+// starts and sends it to the cache service as a hint. The controller lists the
+// hints of its own runners, asks GitHub whether that runner is assigned to a job
+// of that run, and only then publishes the facts. The hint picks which GitHub
+// record to read; GitHub's record is what binds the runner to the run.
+// JobStarted still publishes the same facts afterwards, as the fallback.
+const (
+	defaultHintPoll = time.Second
+	// hintRetry is how soon a hint GitHub did not confirm is checked again.
+	// GitHub can list the job a moment after the runner starts it.
+	hintRetry = 5 * time.Second
+)
+
+// RunHintPoller polls the cache service for the hints of runners named with
+// runnerPrefix until ctx ends. It returns at once when the Scaler has no cache
+// publisher that lists hints or no GitHub client that lists a run's runners.
+func (s *Scaler) RunHintPoller(ctx context.Context, runnerPrefix string) {
+	source, ok := s.cache.(HintSource)
+	if !ok || runnerPrefix == "" {
 		return
 	}
 	lister, ok := s.runs.(RunRunners)
 	if !ok {
 		return
 	}
-	base := context.WithoutCancel(ctx)
-	for _, job := range jobs {
-		if job == nil || job.WorkflowRunID <= 0 {
-			continue
-		}
-		repository := repositorySlug(job.OwnerName, job.RepositoryName)
-		if repository == "" {
-			continue
-		}
-		key := strings.ToLower(repository) + "#" + strconv.FormatInt(job.WorkflowRunID, 10)
-		s.mu.Lock()
-		if s.watches == nil {
-			s.watches = map[string]*runWatch{}
-		}
-		watch, running := s.watches[key]
-		if !running {
-			watch = &runWatch{published: map[string]bool{}}
-			s.watches[key] = watch
-		}
-		watch.pending++
-		s.mu.Unlock()
-		if running {
-			continue
-		}
-		message := job.JobMessageBase
-		s.publishing.Add(1)
-		go func() {
-			defer s.publishing.Done()
-			s.watchRun(base, lister, key, repository, message)
-		}()
-	}
-}
-
-func (s *Scaler) watchRun(ctx context.Context, lister RunRunners, key, repository string, message scaleset.JobMessageBase) {
-	defer func() {
-		s.mu.Lock()
-		delete(s.watches, key)
-		s.mu.Unlock()
-	}()
-	poll, window := s.earlyFactsPoll, s.earlyFactsWindow
+	poll := s.hintPoll
 	if poll <= 0 {
-		poll = defaultEarlyFactsPoll
+		poll = defaultHintPoll
 	}
-	if window <= 0 {
-		window = defaultEarlyFactsWindow
-	}
-	deadline := time.Now().Add(window)
+	tried := map[string]time.Time{}
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
 	for {
-		runners, err := lister.RunRunners(ctx, repository, message.WorkflowRunID)
-		if err != nil {
-			s.logger.Debug("could not list the run's runners; JobStarted will publish its facts",
-				"workflowRunID", message.WorkflowRunID, "error", err)
+		hints, err := source.PendingHints(ctx, []string{runnerPrefix})
+		if err != nil && ctx.Err() == nil {
+			s.logger.Debug("could not list job hints", "error", err)
 		}
-		for _, runner := range runners {
-			if !strings.HasPrefix(runner, fleetRunnerPrefix) {
+		now := time.Now()
+		for _, hint := range hints {
+			if last, seen := tried[hint.Runner]; seen && now.Sub(last) < hintRetry {
 				continue
 			}
-			s.mu.Lock()
-			watch := s.watches[key]
-			fresh := !watch.published[runner]
-			if fresh {
-				watch.published[runner] = true
-				watch.pending--
-			}
-			s.mu.Unlock()
-			if fresh {
-				s.publishEarlyFacts(ctx, message, runner)
-			}
+			tried[hint.Runner] = now
+			s.publishing.Add(1)
+			go func() {
+				defer s.publishing.Done()
+				s.resolveHint(ctx, lister, hint)
+			}()
 		}
-		s.mu.Lock()
-		done := s.watches[key].pending <= 0
-		s.mu.Unlock()
-		if done || time.Now().Add(poll).After(deadline) {
-			return
+		for runner, last := range tried {
+			if now.Sub(last) > 15*time.Minute {
+				delete(tried, runner)
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(poll):
+		case <-ticker.C:
 		}
 	}
 }
 
+func (s *Scaler) resolveHint(ctx context.Context, lister RunRunners, hint cachefacts.Hint) {
+	owner, name, found := strings.Cut(hint.Repository, "/")
+	if !found || owner == "" || name == "" || hint.RunID <= 0 {
+		return
+	}
+	lookup, cancel := context.WithTimeout(ctx, s.cacheScopeBudget)
+	runners, err := lister.RunRunners(lookup, hint.Repository, hint.RunID)
+	cancel()
+	if err != nil {
+		s.logger.Debug("could not check a job hint with GitHub; JobStarted will publish the facts",
+			"runner", hint.Runner, "repository", hint.Repository, "runID", hint.RunID, "error", err)
+		return
+	}
+	if !slices.Contains(runners, hint.Runner) {
+		s.logger.Info("GitHub does not list this runner in the hinted run yet",
+			"runner", hint.Runner, "repository", hint.Repository, "runID", hint.RunID)
+		return
+	}
+	s.publishEarlyFacts(ctx, scaleset.JobMessageBase{
+		OwnerName: owner, RepositoryName: name, WorkflowRunID: hint.RunID,
+	}, hint.Runner)
+}
+
 // publishEarlyFacts publishes one runner's facts from its run. Facts it cannot
-// establish are left to JobStarted, which publishes cold facts in that case:
-// publishing them early would only add a second, identical push.
+// establish are left to JobStarted, which publishes cold facts in that case.
 func (s *Scaler) publishEarlyFacts(ctx context.Context, message scaleset.JobMessageBase, runner string) {
 	started := scaleset.JobStarted{RunnerName: runner, JobMessageBase: message}
 	lookup, cancel := context.WithTimeout(ctx, s.cacheScopeBudget)
