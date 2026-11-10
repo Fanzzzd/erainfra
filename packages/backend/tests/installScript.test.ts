@@ -639,6 +639,12 @@ describe("rendered script", () => {
     expect(script).toMatch(/StandardError=append:\$LOG_FILE/);
   });
 
+  it("lets a stopping systemd agent drain its running jobs (#284)", () => {
+    expect(script).toMatch(/^KillMode=mixed$/m);
+    expect(script).toMatch(/^TimeoutStopSec=infinity$/m);
+    expect(script).toMatch(/Waiting for jobs running on this Worker to finish/);
+  });
+
   it("waits for a fresh readiness signal from the exact installed version", () => {
     expect(script).toMatch(/rm -f "\$RC_HOME\/agent\.ready"/);
     expect(script).toMatch(/cat "\$RC_HOME\/agent\.ready"/);
@@ -1362,13 +1368,14 @@ describe("--role worker", () => {
   // Node half above it would otherwise hide an edit to the Worker half in a large diff; a
   // deliberate change to the Worker path updates this number and says so. The pinned version
   // string is embedded once, so a release whose version has a different length moves it too
-  // (rc.9 to rc.10 was 25 689 to 25 690).
+  // (rc.9 to rc.10 was 25 689 to 25 690). The drain-on-stop unit and its update notice (#284)
+  // took it to 26 103.
   it("keeps the Worker installer contiguous, below the dispatch and unentangled with it", () => {
     const script = renderInstallScript(SITE_URL, AGENT_RELEASE);
     const workerBody = script.slice(script.indexOf("SITE_URL='"));
     expect(workerBody).toMatch(/^SITE_URL='https:\/\/example\.convex\.site'\nAGENT_REPO=/);
     expect(workerBody).not.toMatch(/INSTALL_ROLE|node_install|node_pinned_digest|--role/);
-    expect(Buffer.byteLength(workerBody)).toBe(25_690);
+    expect(Buffer.byteLength(workerBody)).toBe(26_103);
   });
 });
 
@@ -1446,6 +1453,9 @@ describe("--role worker-host", () => {
     expect(createHash("sha256").update(repoScript).digest("hex")).toBe(
       FIRECRACKER_HOST_PROVISIONER_SHA256,
     );
+    // A whole-snapshot discard on teardown stalls the pool long enough to fail
+    // the next boot's root-drive attach (ubuntu0, 2026-11-10).
+    expect(repoScript.toString("utf8")).toMatch(/^\s*discard_blocks = false$/m);
   });
 
   // The provisioner refuses to install the runtime service without its unit file beside it, so a

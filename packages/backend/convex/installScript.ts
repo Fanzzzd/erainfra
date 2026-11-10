@@ -2263,6 +2263,8 @@ StandardOutput=append:$LOG_FILE
 StandardError=append:$LOG_FILE
 Restart=always
 RestartSec=5
+KillMode=mixed
+TimeoutStopSec=infinity
 
 [Install]
 WantedBy=default.target
@@ -2278,6 +2280,11 @@ UNIT
     ;;
 esac
 
+if [ "$UPDATE" -eq 1 ] && [ "$SERVICE_KIND" = systemd ]; then
+  # The unit drains on stop (KillMode=mixed, TimeoutStopSec=infinity, #284),
+  # so the restart below returns only after running jobs finish.
+  printf '%s\n' 'Waiting for jobs running on this Worker to finish before the agent restarts. Run "systemctl --user kill runner-center-agent" to cancel them instead.'
+fi
 : > "$LOG_FILE"
 rm -f "$RC_HOME/agent.ready"
 start_service

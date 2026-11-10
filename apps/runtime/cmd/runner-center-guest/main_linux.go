@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,10 +13,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"os/user"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
@@ -50,7 +55,19 @@ const (
 	warmReadyMarker    = "\x1eRUNNER_CENTER_WARM_READY\n"
 )
 
+// runnerEnvironmentPath is the hosted tool environment the full image writes.
+const runnerEnvironmentPath = "/etc/erainfra/runner-environment.json"
+
 func main() {
+	// The image build calls this so a key the loader would reject fails the
+	// build, not the first boot of a Worker. It starts nothing.
+	if len(os.Args) == 3 && os.Args[1] == "--check-runner-environment" {
+		if err := checkRunnerEnvironment(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx); err != nil {
@@ -289,13 +306,91 @@ func reportWarmReady() error {
 	return nil
 }
 
+var versionedToolEnvironmentKey = regexp.MustCompile(`^(JAVA_HOME_[1-9][0-9]*_X64|GOROOT_[1-9][0-9]*_[0-9]+_(X64|AARCH64))$`)
+
+// Keys emitted by actions/runner-images' Ubuntu build scripts. Do not allow
+// whole prefixes: DOTNET_STARTUP_HOOKS, for example, can execute arbitrary code.
+// Versioned Java and Go names are the only patterns the upstream scripts emit.
+func hostedToolEnvironmentKey(key string) bool {
+	switch key {
+	case "PATH", "JAVA_HOME", "GOROOT",
+		"ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_NDK", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK_LATEST_HOME",
+		"PIPX_BIN_DIR", "PIPX_HOME",
+		"DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "DOTNET_NOLOGO", "DOTNET_MULTILEVEL_LOOKUP",
+		"CHROME_BIN", "CHROMEWEBDRIVER", "EDGEWEBDRIVER", "GECKOWEBDRIVER", "SELENIUM_JAR_PATH",
+		"VCPKG_INSTALLATION_ROOT", "VCPKG_FORCE_SYSTEM_BINARIES", "SWIFT_PATH", "GRADLE_HOME", "ANT_HOME",
+		"HOMEBREW_NO_AUTO_UPDATE", "HOMEBREW_CLEANUP_PERIODIC_FULL_DAYS",
+		"NVM_DIR", "XDG_CONFIG_HOME", "ImageOS", "ImageVersion", "ACCEPT_EULA",
+		"PSModulePath", "AZURE_EXTENSION_DIR", "BOOTSTRAP_HASKELL_NONINTERACTIVE", "GHCUP_INSTALL_BASE_PREFIX",
+		"CONDA", "LEIN_JAR", "LEIN_HOME", "USE_BAZEL_FALLBACK_VERSION", "DEBIAN_FRONTEND",
+		// Upstream emits these, but runnerEnv always replaces them with the
+		// runtime's own cache locations.
+		"AGENT_TOOLSDIRECTORY", "RUNNER_TOOL_CACHE", "ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE":
+		return true
+	default:
+		return versionedToolEnvironmentKey.MatchString(key)
+	}
+}
+
+// loadRunnerEnvironment reads the optional hosted-image tool environment once
+// at startup. Small images omit it. Values are final strings, not shell syntax:
+// the image build has already substituted $HOME with /home/runner.
+func loadRunnerEnvironment(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read runner environment: %w", err)
+	}
+	if !utf8.Valid(data) {
+		return nil, errors.New("runner environment is not valid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, errors.New("runner environment must be a JSON object")
+	}
+	env := make(map[string]string)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode runner environment key: %w", err)
+		}
+		key, ok := token.(string)
+		if !ok || !hostedToolEnvironmentKey(key) {
+			return nil, fmt.Errorf("unknown runner environment key %q", key)
+		}
+		if _, duplicate := env[key]; duplicate {
+			return nil, fmt.Errorf("duplicate runner environment key %q", key)
+		}
+		var raw any
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("decode runner environment value for %q: %w", key, err)
+		}
+		value, ok := raw.(string)
+		if !ok || strings.ContainsAny(value, "\x00\r\n") || (key == "PATH" && value == "") {
+			return nil, fmt.Errorf("invalid runner environment value for %q", key)
+		}
+		env[key] = value
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("decode runner environment object: %w", err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("runner environment has trailing data")
+	}
+	return env, nil
+}
+
 // runnerEnv IS the runner's environment: built from nothing, so what a job is
 // handed is a decision this function makes and a test can read. Nothing from
 // the unit file or this process's own environment leaks through -- which is
 // also why an Environment= line on runner-center-guest.service can never reach
 // a job (#110 measured exactly that: LANG unset, glibc answering
 // ANSI_X3.4-1968 while the image's /etc/default/locale said C.UTF-8).
-func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string, buildCacheEnv []string) []string {
+// imageEnv is the allowlisted result of loadRunnerEnvironment, never os.Environ.
+func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string, buildCacheEnv []string, imageEnv map[string]string) []string {
 	env := []string{
 		// Hosted parity for Rust: ubuntu-latest puts rustup's stable toolchain
 		// under the runner's home and hands jobs these three (the image
@@ -339,10 +434,48 @@ func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath str
 	// so turbo uses the cache with no workflow change, and the address the
 	// opt-in Go helper reads. No credential among them (BuildProxy.Env).
 	env = append(env, buildCacheEnv...)
+	merged := make(map[string]string, len(imageEnv)+len(env))
+	for key, value := range imageEnv {
+		merged[key] = value
+	}
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		// PATH is the sole image override of a runtime default. Runtime
+		// identity, credentials and cache configuration remain authoritative.
+		if _, fromImage := imageEnv[key]; key == "PATH" && fromImage {
+			continue
+		}
+		merged[key] = value
+	}
+	env = make([]string, 0, len(merged))
+	for key, value := range merged {
+		env = append(env, key+"="+value)
+	}
+	sort.Strings(env)
 	return env
 }
 
+// checkRunnerEnvironment requires the file to exist, unlike startup, and to
+// pass the same validation startup applies.
+func checkRunnerEnvironment(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("runner environment: %w", err)
+	}
+	env, err := loadRunnerEnvironment(path)
+	if err != nil {
+		return err
+	}
+	if env["PATH"] == "" {
+		return errors.New("runner environment has no PATH")
+	}
+	return nil
+}
+
 func run(ctx context.Context) error {
+	imageEnv, err := loadRunnerEnvironment(runnerEnvironmentPath)
+	if err != nil {
+		return err
+	}
 	if err := configureResolver(); err != nil {
 		return err
 	}
@@ -436,7 +569,7 @@ func run(ctx context.Context) error {
 	command.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups},
 	}
-	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username, cacheTrustAnchorPath, buildCacheEnv)
+	command.Env = runnerEnv(metadata, runnerUser.HomeDir, runnerUser.Username, cacheTrustAnchorPath, buildCacheEnv, imageEnv)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start GitHub runner: %w", err)
 	}

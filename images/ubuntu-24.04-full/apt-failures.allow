@@ -1,0 +1,7 @@
+# apt commands that fail in the pinned upstream recipe and are hidden by its
+# apt wrapper on hosted runners. One exact command per line, after review.
+#
+# toolset-2404.json lists the virtual package netcat. apt refuses to choose
+# between its two providers. The base image already has netcat-openbsd
+# 1.226-1ubuntu2, which hosted reports as netcat and which the Apt test runs.
+apt-get install --no-install-recommends netcat

@@ -725,6 +725,7 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 	logger.SetOutput(io.Discard)
 	logger.SetLevel(logrus.PanicLevel)
 
+	ensureSDKRequestTimeout()
 	machine, err := fc.NewMachine(vmmContext, fc.Config{
 		VMID:            definition.id,
 		SocketPath:      filepath.Join(workDir, "firecracker.sock"),

@@ -22,6 +22,7 @@ import {
 } from "./cpuset.js";
 import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./job-metrics.js";
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
+import { createStopHandler, createWorkCounter } from "./stop.js";
 import {
   readEgressRecord,
   readRunnerExit,
@@ -188,7 +189,7 @@ const client = new ConvexClient(config.convexUrl);
 const queuedIds = new Set<string>();
 const queue: WorkItem[] = [];
 const running = new Map<string, ReturnType<typeof spawnProvisioner>>();
-let active = 0;
+const work = createWorkCounter();
 let maxSlots = 1;
 let shuttingDown = false;
 let acceptingWork = false;
@@ -252,7 +253,7 @@ async function refreshBenchmark() {
   if (shuttingDown || benchmarking) return;
   // Measurement never reserves a job slot. The automatic pass also waits for
   // an idle Worker so its own load cannot distort a live workload.
-  if (active > 0 || running.size > 0 || queue.length > 0) {
+  if (work.active > 0 || running.size > 0 || queue.length > 0) {
     scheduleBenchmark(BENCHMARK_RETRY_MS);
     return;
   }
@@ -660,12 +661,12 @@ function pump() {
   // size is only known after the claim — so admitting one here would claim it
   // and immediately refuse it. Waiting costs nothing: every release pumps
   // again, including the reconciler's.
-  while (active < maxSlots && cores.freeCores > 0 && queue.length > 0) {
+  while (work.active < maxSlots && cores.freeCores > 0 && queue.length > 0) {
     const item = queue.shift();
     if (item === undefined) break;
-    active += 1;
+    work.start();
     void runWork(item).finally(() => {
-      active -= 1;
+      work.finish();
       pump();
     });
   }
@@ -899,26 +900,34 @@ const unsubscribeProfiles = client.onUpdate(
 
 void refreshBenchmark();
 
-async function shutdown(signal: string) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`Received ${signal}; stopping Worker`);
-  clearInterval(heartbeatTimer);
-  if (readinessTimer !== undefined) clearTimeout(readinessTimer);
-  if (benchmarkTimer !== undefined) clearTimeout(benchmarkTimer);
-  if (recoveryRetryTimer !== undefined) clearTimeout(recoveryRetryTimer);
-  if (coreReconcileTimer !== undefined) clearTimeout(coreReconcileTimer);
-  unsubscribeCommands();
-  unsubscribeAttempts();
-  unsubscribeExperiments();
-  unsubscribeProfiles();
-  for (const child of running.values()) child.kill();
-  await Promise.allSettled(running.values());
-  // Each flush is already bounded; this only stops the client closing underneath them.
-  await Promise.allSettled(metricsFlushes);
-  await clearReadinessSignal(dualEnv("RC_READY_FILE"));
-  await client.close();
-}
+// Heartbeats and the Attempt subscription stay up while running work drains:
+// the control plane must keep seeing this Worker alive, and a cancelled
+// Attempt must still stop its executor through reconcileWithServer.
+const shutdown = createStopHandler({
+  activeWork: () => work.active,
+  waitForIdle: () => work.idle(),
+  stopClaiming: () => {
+    shuttingDown = true;
+    if (readinessTimer !== undefined) clearTimeout(readinessTimer);
+    if (benchmarkTimer !== undefined) clearTimeout(benchmarkTimer);
+    if (recoveryRetryTimer !== undefined) clearTimeout(recoveryRetryTimer);
+  },
+  cancelWork: () => {
+    for (const child of running.values()) child.kill();
+  },
+  finish: async () => {
+    clearInterval(heartbeatTimer);
+    if (coreReconcileTimer !== undefined) clearTimeout(coreReconcileTimer);
+    unsubscribeCommands();
+    unsubscribeAttempts();
+    unsubscribeExperiments();
+    unsubscribeProfiles();
+    // Each flush is already bounded; this only stops the client closing underneath them.
+    await Promise.allSettled(metricsFlushes);
+    await clearReadinessSignal(dualEnv("RC_READY_FILE"));
+    await client.close();
+  },
+});
 
-process.once("SIGINT", () => void shutdown("SIGINT"));
-process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));

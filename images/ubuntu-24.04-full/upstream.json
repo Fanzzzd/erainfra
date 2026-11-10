@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/actions/runner-images",
+  "commit": "add4380b0d6685806e9192c33c37359ee0aa4023",
+  "release": "ubuntu24/20261101.360",
+  "image_version": "20261101.360.1",
+  "toolset": "images/ubuntu/toolsets/toolset-2404.json",
+  "toolset_sha256": "72d25917a42635cf9be9105f7d6056b6d56ffcdf63ddc24f82fe6cdf526c6c84",
+  "rootfs_url": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64-root.tar.xz",
+  "rootfs_sha256": "ec6972af8ea2bd05c55299d204e5ae3f91769b84cfaec7395639d236a39f9a03"
+}

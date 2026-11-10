@@ -1,4 +1,4 @@
-# The Linux Profiles this job proves against `ubuntu-latest`. One name per line.
+# The Linux Profiles this job proves against `ubuntu-24.04`. One name per line.
 #
 # A Profile leg only proves anything in a repository whose scale set actually
 # serves that Profile. Scale sets are registered PER REPOSITORY: a listener
