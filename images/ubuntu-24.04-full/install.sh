@@ -53,20 +53,25 @@ WRAPPER
       echo "RECORD $script: apt failures go to $apt_failures"
       continue ;;
     configure-system.sh)
-      # Packer runs reports between cleanup.sh and configure-system.sh.
-      set -a
-      source /etc/environment
-      set +a
-      pwsh -File /imagegeneration/SoftwareReport/Generate-SoftwareReport.ps1 -OutputDirectory /imagegeneration
-      # The software tests run unchanged. From System.Tests.ps1, skip only the
-      # blocks about Azure disks, GRUB and the host kernel command line.
+      # Packer runs the report and RunAll-Tests.ps1 here, as its unprivileged
+      # SSH user. Homebrew refuses to run as root, so root would fail its test.
+      # sudo applies secure_path, so load /etc/environment in the user's shell,
+      # as the login session Packer opens would.
+      as_packer() {
+        sudo -H -u packer env IMAGE_VERSION="$IMAGE_VERSION" INSTALLER_SCRIPT_FOLDER="$INSTALLER_SCRIPT_FOLDER" \
+          bash -c 'set -a; . /etc/environment; set +a; cd "$HOME" && exec pwsh "$@"' as_packer "$@"
+      }
+      as_packer -File /imagegeneration/SoftwareReport/Generate-SoftwareReport.ps1 -OutputDirectory /imagegeneration
+      # Every test file runs unchanged except System.Tests.ps1. Its read-ahead
+      # and root mount option blocks inspect the builder's block devices, GRUB
+      # and kernel command line, which the Firecracker guest does not use.
       for test in /imagegeneration/tests/*.Tests.ps1; do
-        [ "$(basename "$test")" = System.Tests.ps1 ] && continue
         name=$(basename "$test" .Tests.ps1)
-        pwsh -Command "Import-Module '/imagegeneration/tests/Helpers.psm1'; Invoke-PesterTests '$name'"
+        [ "$name" = System ] && continue
+        as_packer -Command "Import-Module '/imagegeneration/tests/Helpers.psm1' -DisableNameChecking; Invoke-PesterTests '$name'"
       done
-      for block in 'Azure resource disk mount timeout' 'fwupd removed' '/tmp emptied at boot' 'Dpkg options'; do
-        pwsh -Command "Import-Module '/imagegeneration/tests/Helpers.psm1'; Invoke-PesterTests 'System' '$block*'"
+      for block in 'Disk free space' 'Azure resource disk mount timeout' 'fwupd removed' '/tmp emptied at boot' 'Dpkg options'; do
+        as_packer -Command "Import-Module '/imagegeneration/tests/Helpers.psm1' -DisableNameChecking; Invoke-PesterTests 'System' '$block*'"
       done ;;
   esac
   start=$(date +%s)

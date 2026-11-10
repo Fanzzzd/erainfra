@@ -42,12 +42,15 @@ for patch in "$here"/patches/*.patch; do
 done
 git -C "$work/upstream" diff > "$work/evidence/upstream.patch"
 cp "$lock" "$work/evidence/upstream.json"
-install -d "$root/imagegeneration" "$root/erainfra-build" "$root/erainfra-src"
+# Packer creates the image folder with mode 777; configure-system.sh restores 755.
+install -d -m 0777 "$root/imagegeneration"
+install -d "$root/erainfra-build" "$root/erainfra-src"
 cp -a "$work/upstream/images/ubuntu/scripts/helpers" "$root/imagegeneration/helpers"
 cp -a "$work/upstream/images/ubuntu/scripts/build" "$root/imagegeneration/installers"
 cp -a "$work/upstream/images/ubuntu/scripts/tests" "$root/imagegeneration/tests"
 cp -a "$work/upstream/images/ubuntu/scripts/docs-gen" "$root/imagegeneration/SoftwareReport"
-cp -a "$work/upstream/helpers/software-report-base/." "$root/imagegeneration/SoftwareReport/"
+# Packer copies the directory itself, so the report finds software-report-base/.
+cp -a "$work/upstream/helpers/software-report-base" "$root/imagegeneration/SoftwareReport/"
 cp -a "$work/upstream/images/ubuntu/assets/post-gen" "$root/imagegeneration/post-generation"
 cp "$work/upstream/$(jq -r .toolset "$lock")" "$root/imagegeneration/installers/toolset.json"
 cp "$here"/{install.sh,finish.sh,recipe.py,scripts.txt,upstream.json,apt-failures.allow,azure-base-packages.txt} "$root/erainfra-build/"
