@@ -23,10 +23,15 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"regexp"
 	"strings"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 )
+
+// repositorySegment is the cache service's own rule for an owner or a name
+// (cachetoken.ValidateRepository). It is copied, not imported: the guest image
+// builds from apps/runtime alone.
+var repositorySegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Hint is the claim the guest makes about its job. The JSON names are the
 // cache service's wire format.
@@ -38,8 +43,9 @@ type Hint struct {
 
 // Validate checks a Hint built from the job's own, untrusted, data.
 func (h Hint) Validate() error {
-	if err := cachetoken.ValidateRepository(h.Repository); err != nil {
-		return err
+	owner, name, found := strings.Cut(h.Repository, "/")
+	if !found || !repositorySegment.MatchString(owner) || !repositorySegment.MatchString(name) {
+		return fmt.Errorf("%q is not owner/name", h.Repository)
 	}
 	if h.RunID <= 0 {
 		return fmt.Errorf("run id %d is not a positive integer", h.RunID)
