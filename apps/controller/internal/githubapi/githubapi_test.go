@@ -379,3 +379,30 @@ func TestDynamicTokenClientRejectsRedirectWithoutChangingSharedClient(t *testing
 		t.Fatal("mutated caller-owned HTTP client")
 	}
 }
+
+func TestRunRunnersListsAssignedUnfinishedJobs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/actions/runs/7/jobs" || r.URL.Query().Get("filter") != "latest" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"total_count": 4, "jobs": [
+			{"status": "in_progress", "runner_name": "rc-linux-js-a"},
+			{"status": "queued", "runner_name": null},
+			{"status": "completed", "runner_name": "rc-linux-js-old"},
+			{"status": "queued", "runner_name": "rc-linux-js-b"}
+		]}`))
+	}))
+	defer server.Close()
+	client, err := New(Config{APIURL: server.URL, Token: "pat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runners, err := client.RunRunners(t.Context(), "o/r", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(runners, ",") != "rc-linux-js-a,rc-linux-js-b" {
+		t.Fatalf("runners = %q", runners)
+	}
+}
