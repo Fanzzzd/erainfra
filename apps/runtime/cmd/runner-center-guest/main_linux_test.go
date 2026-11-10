@@ -249,6 +249,52 @@ func TestRunnerEnvLoadsHostedImageEnvironment(t *testing.T) {
 	}
 }
 
+// The fixture is /etc/environment from a GitHub-hosted ubuntu-24.04 runner
+// (image 20261101.360.1), passed through recipe.py environment the way the
+// full image build does it. Every tool variable hosted gives a job must load
+// and reach the job; only runtime-owned cache locations may differ.
+func TestRunnerEnvHandsJobsEveryHostedToolVariable(t *testing.T) {
+	path := filepath.Join("testdata", "hosted-ubuntu-24.04-environment.json")
+	loaded, err := loadRunnerEnvironment(path)
+	if err != nil {
+		t.Fatalf("hosted ubuntu-24.04 environment rejected: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hosted map[string]string
+	if err := json.Unmarshal(data, &hosted); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != len(hosted) {
+		t.Fatalf("loaded %d of %d hosted keys", len(loaded), len(hosted))
+	}
+	for _, key := range []string{"JAVA_HOME_17_X64", "ANDROID_NDK_LATEST_HOME", "PIPX_HOME", "GOROOT_1_26_X64", "CHROMEWEBDRIVER", "PSModulePath"} {
+		if hosted[key] == "" {
+			t.Fatalf("fixture lost %s", key)
+		}
+	}
+	got := map[string]string{}
+	for _, entry := range runnerEnv(guest.Metadata{Kind: "ci", JITConfig: "secret"}, "/home/runner", "runner", "", nil, loaded) {
+		key, value, _ := strings.Cut(entry, "=")
+		got[key] = value
+	}
+	runtimeOwned := map[string]string{
+		"RUNNER_TOOL_CACHE": "/opt/hostedtoolcache", "AGENT_TOOLSDIRECTORY": "/opt/hostedtoolcache",
+		"ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE": "/opt/action-cache",
+	}
+	for key, value := range hosted {
+		want := value
+		if owned, ok := runtimeOwned[key]; ok {
+			want = owned
+		}
+		if got[key] != want {
+			t.Errorf("job %s = %q, want %q", key, got[key], want)
+		}
+	}
+}
+
 func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
 	env := runnerEnv(metadata, "/home/runner", "runner", "", nil, nil)
