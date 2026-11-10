@@ -218,6 +218,37 @@ func (c *Client) WorkflowRun(ctx context.Context, repository string, runID int64
 	})
 }
 
+// RunRunners lists the runners GitHub has assigned to the unfinished jobs of
+// one workflow run's latest attempt, from GET
+// /repos/{owner}/{repo}/actions/runs/{run_id}/jobs. A job gets its runner_name
+// the moment GitHub assigns it, well before the scale set's JobStarted message
+// reaches the controller. It is not memoized: callers poll it for a change.
+func (c *Client) RunRunners(ctx context.Context, repository string, runID int64) ([]string, error) {
+	path, err := repoPath(repository)
+	if err != nil {
+		return nil, err
+	}
+	if runID <= 0 {
+		return nil, fmt.Errorf("invalid workflow run ID %d", runID)
+	}
+	var body struct {
+		Jobs []struct {
+			Status     string `json:"status"`
+			RunnerName string `json:"runner_name"`
+		} `json:"jobs"`
+	}
+	if err := c.getJSON(ctx, path+"/actions/runs/"+strconv.FormatInt(runID, 10)+"/jobs?filter=latest&per_page=100", &body); err != nil {
+		return nil, fmt.Errorf("list jobs of workflow run %d: %w", runID, err)
+	}
+	var runners []string
+	for _, job := range body.Jobs {
+		if job.RunnerName != "" && job.Status != "completed" {
+			runners = append(runners, job.RunnerName)
+		}
+	}
+	return runners, nil
+}
+
 // DefaultBranch returns the repository's default branch name, for example "main".
 // The workflow run's repository object does not carry it.
 func (c *Client) DefaultBranch(ctx context.Context, repository string) (string, error) {

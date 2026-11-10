@@ -70,6 +70,17 @@ func (s *sessionScaler) Scale(ctx context.Context, message *scaleset.RunnerScale
 			return fmt.Errorf("acquire jobs: %w", err)
 		}
 		s.logger.Info("jobs acquired", "count", len(acquired))
+		won := make(map[int64]bool, len(acquired))
+		for _, id := range acquired {
+			won[id] = true
+		}
+		jobs := make([]*scaleset.JobAvailable, 0, len(acquired))
+		for _, job := range message.JobAvailableMessages {
+			if job != nil && won[job.RunnerRequestID] {
+				jobs = append(jobs, job)
+			}
+		}
+		s.scaler.WatchAcquiredJobs(ctx, jobs)
 	}
 	for _, job := range message.JobStartedMessages {
 		if err := s.scaler.HandleJobStarted(ctx, job); err != nil {
