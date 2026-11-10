@@ -115,32 +115,76 @@ func configureResolver() error {
 	return nil
 }
 
-// publishHostname makes the name this VM just took resolvable inside it.
+// publishHostname makes localhost and the name this VM just took resolvable
+// inside it.
 //
-// Setting the hostname without a matching /etc/hosts entry leaves every
-// name-resolving tool in the job looking the Attempt's own name up over the
-// network: sudo prints "unable to resolve host" on each invocation and waits
-// for a real DNS round trip first, on a machine whose whole point is to be
-// short-lived. 127.0.1.1 is the address Debian and Ubuntu reserve for exactly
-// this.
+// The rootfs comes from a container image, whose /etc/hosts is empty: Docker
+// writes the loopback entries at run time and Firecracker does not. Without
+// them Node's dns.lookup("localhost") fails with ENOTFOUND, so any test
+// runner that binds or dials localhost dies at startup.
+//
+// Setting the hostname without a matching entry leaves every name-resolving
+// tool in the job looking the Attempt's own name up over the network: sudo
+// prints "unable to resolve host" on each invocation and waits for a real DNS
+// round trip first. 127.0.1.1 is the address Debian and Ubuntu reserve for
+// exactly this.
 func publishHostname(name string) error {
 	hosts, err := os.ReadFile(hostsFile)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", hostsFile, err)
 	}
-	for _, line := range strings.Fields(string(hosts)) {
-		if line == name {
-			return nil
-		}
+	updated := hostsWithEntries(hosts, name)
+	if string(updated) == string(hosts) {
+		return nil
 	}
-	if len(hosts) > 0 && !strings.HasSuffix(string(hosts), "\n") {
-		hosts = append(hosts, '\n')
-	}
-	hosts = append(hosts, fmt.Sprintf("127.0.1.1\t%s\n", name)...)
-	if err := os.WriteFile(hostsFile, hosts, 0o644); err != nil {
+	if err := os.WriteFile(hostsFile, updated, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", hostsFile, err)
 	}
 	return nil
+}
+
+// hostsWithEntries returns hosts with the Ubuntu loopback entries and a
+// 127.0.1.1 line for name appended, each only when no live line already maps
+// that name for that address family. Existing lines are kept as they are.
+func hostsWithEntries(hosts []byte, name string) []byte {
+	var hasV4Localhost, hasV6Localhost, hasName bool
+	for _, line := range strings.Split(string(hosts), "\n") {
+		if comment := strings.IndexByte(line, '#'); comment >= 0 {
+			line = line[:comment]
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		v6 := strings.Contains(fields[0], ":")
+		for _, alias := range fields[1:] {
+			switch {
+			case alias == "localhost" && v6:
+				hasV6Localhost = true
+			case alias == "localhost":
+				hasV4Localhost = true
+			case alias == name:
+				hasName = true
+			}
+		}
+	}
+	out := append([]byte(nil), hosts...)
+	add := func(line string) {
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, '\n')
+		}
+		out = append(out, line...)
+	}
+	if !hasV4Localhost {
+		add("127.0.0.1\tlocalhost\n")
+	}
+	if !hasV6Localhost {
+		add("::1\tlocalhost ip6-localhost ip6-loopback\n")
+	}
+	if !hasName {
+		add(fmt.Sprintf("127.0.1.1\t%s\n", name))
+	}
+	return out
 }
 
 // reportResult hands an Experiment's exit code back to the host.
@@ -253,7 +297,12 @@ func reportWarmReady() error {
 // ANSI_X3.4-1968 while the image's /etc/default/locale said C.UTF-8).
 func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath string, buildCacheEnv []string) []string {
 	env := []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		// Hosted parity for Rust: ubuntu-latest puts rustup's stable toolchain
+		// under the runner's home and hands jobs these three (the image
+		// installs it there).
+		"PATH=" + home + "/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"CARGO_HOME=" + home + "/.cargo",
+		"RUSTUP_HOME=" + home + "/.rustup",
 		"HOME=" + home,
 		"USER=" + username,
 		"LOGNAME=" + username,

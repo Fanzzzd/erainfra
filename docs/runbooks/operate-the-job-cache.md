@@ -95,31 +95,33 @@ Use a bucket-scoped API token, not an account token.
 Every variable is new, so every variable is spelled `ERAINFRA_CACHE_*`. Nothing here is on
 [CONTEXT.md](../../CONTEXT.md) rule 4's frozen list.
 
-| variable                           | required | default                        | what it is                                             |
-| ---------------------------------- | -------- | ------------------------------ | ------------------------------------------------------ |
-| `ERAINFRA_CACHE_S3_ENDPOINT`       | yes      | —                              | `http(s)://host:port` of the store                     |
-| `ERAINFRA_CACHE_S3_BUCKET`         | yes      | —                              | bucket name                                            |
-| `ERAINFRA_CACHE_S3_ACCESS_KEY`     | yes      | —                              | access key id                                          |
-| `ERAINFRA_CACHE_S3_SECRET`         | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`     |
-| `ERAINFRA_CACHE_S3_REGION`         | no       | `us-east-1`                    | signing region; R2 wants `auto`                        |
-| `ERAINFRA_CACHE_S3_PREFIX`         | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache |
-| `ERAINFRA_CACHE_S3_PATH_STYLE`     | no       | `true`                         | address the bucket as a path segment                   |
-| `ERAINFRA_CACHE_SIGNING_KEY`       | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes    |
-| `ERAINFRA_CACHE_LISTEN`            | no       | `:8721`                        | listen address                                         |
-| `ERAINFRA_CACHE_PUBLIC_URL`        | no       | taken from the request         | base URL jobs reach this service at                    |
-| `ERAINFRA_CACHE_DOWNLOAD_MODE`     | no       | `presign`                      | `presign` or `proxy`; see below                        |
-| `ERAINFRA_CACHE_DOWNLOAD_TTL`      | no       | `5m`                           | lifetime of a download URL                             |
-| `ERAINFRA_CACHE_UPLOAD_TTL`        | no       | `1h`                           | lifetime of an upload URL and of a spooled upload      |
-| `ERAINFRA_CACHE_LOOKUP_TIMEOUT`    | no       | `5s`                           | restore budget; overrun answers a miss                 |
-| `ERAINFRA_CACHE_RESERVE_TIMEOUT`   | no       | `10s`                          | reserve/finalize budget; overrun refuses the save      |
-| `ERAINFRA_CACHE_TRANSFER_TIMEOUT`  | no       | `30m`                          | one request body, and the store write it drives        |
-| `ERAINFRA_CACHE_MAX_ENTRY_BYTES`   | no       | `10737418240` (10 GiB)         | per-entry ceiling                                      |
-| `ERAINFRA_CACHE_PART_BYTES`        | no       | `33554432` (32 MiB)            | multipart part size                                    |
-| `ERAINFRA_CACHE_SPOOL_DIR`         | no       | `$TMPDIR/erainfra-cache-spool` | where in-flight uploads land                           |
-| `ERAINFRA_CACHE_IDLE_TTL`          | no       | `7d`                           | evict an entry not restored for this long (§4)         |
-| `ERAINFRA_CACHE_REPO_QUOTA_BYTES`  | no       | `10737418240` (10 GiB)         | one repository's entries, at most; LRU over it (§4)    |
-| `ERAINFRA_CACHE_EVICTION_INTERVAL` | no       | `1h`                           | how often the whole bucket is swept (§4)               |
-| `ERAINFRA_CACHE_LOG_LEVEL`         | no       | `info`                         | `debug`, `info`, `warn`, `error`                       |
+| variable                                   | required | default                        | what it is                                                                            |
+| ------------------------------------------ | -------- | ------------------------------ | ------------------------------------------------------------------------------------- |
+| `ERAINFRA_CACHE_S3_ENDPOINT`               | yes      | —                              | `http(s)://host:port` of the store                                                    |
+| `ERAINFRA_CACHE_S3_BUCKET`                 | yes      | —                              | bucket name                                                                           |
+| `ERAINFRA_CACHE_S3_ACCESS_KEY`             | yes      | —                              | access key id                                                                         |
+| `ERAINFRA_CACHE_S3_SECRET`                 | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`                                    |
+| `ERAINFRA_CACHE_S3_REGION`                 | no       | `us-east-1`                    | signing region; R2 wants `auto`                                                       |
+| `ERAINFRA_CACHE_S3_PREFIX`                 | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache                                |
+| `ERAINFRA_CACHE_S3_PATH_STYLE`             | no       | `true`                         | address the bucket as a path segment                                                  |
+| `ERAINFRA_CACHE_SIGNING_KEY`               | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes                                   |
+| `ERAINFRA_CACHE_LISTEN`                    | no       | `:8721`                        | listen address                                                                        |
+| `ERAINFRA_CACHE_PUBLIC_URL`                | no       | taken from the request         | base URL jobs reach this service at                                                   |
+| `ERAINFRA_CACHE_DOWNLOAD_MODE`             | no       | `presign`                      | `presign` or `proxy`; see below                                                       |
+| `ERAINFRA_CACHE_DOWNLOAD_TTL`              | no       | `5m`                           | lifetime of a download URL                                                            |
+| `ERAINFRA_CACHE_UPLOAD_TTL`                | no       | `1h`                           | lifetime of an upload URL and of a spooled upload                                     |
+| `ERAINFRA_CACHE_LOOKUP_TIMEOUT`            | no       | `5s`                           | restore budget; overrun answers a miss                                                |
+| `ERAINFRA_CACHE_FACTS_WAIT`                | no       | `45s`                          | how long a request waits for a runner's job facts before a `401`; `0` refuses at once |
+| `ERAINFRA_CACHE_RESERVE_TIMEOUT`           | no       | `10s`                          | reserve/finalize budget; overrun refuses the save                                     |
+| `ERAINFRA_CACHE_TRANSFER_TIMEOUT`          | no       | `30m`                          | one request body, and the store write it drives                                       |
+| `ERAINFRA_CACHE_MAX_ENTRY_BYTES`           | no       | `10737418240` (10 GiB)         | per-entry ceiling                                                                     |
+| `ERAINFRA_CACHE_PART_BYTES`                | no       | `33554432` (32 MiB)            | multipart part size                                                                   |
+| `ERAINFRA_CACHE_SPOOL_DIR`                 | no       | `$TMPDIR/erainfra-cache-spool` | where in-flight uploads land                                                          |
+| `ERAINFRA_CACHE_IDLE_TTL`                  | no       | `7d`                           | evict an entry not restored for this long (§4)                                        |
+| `ERAINFRA_CACHE_REPO_QUOTA_BYTES`          | no       | `10737418240` (10 GiB)         | one repository's entries, at most; LRU over it (§4)                                   |
+| `ERAINFRA_CACHE_EVICTION_INTERVAL`         | no       | `1h`                           | how often the whole bucket is swept (§4)                                              |
+| `ERAINFRA_CACHE_LOG_LEVEL`                 | no       | `info`                         | `debug`, `info`, `warn`, `error`                                                      |
+| `ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES` | no       | empty                          | `owner/name` list whose build caches share the default branch's scope (§10)           |
 
 Every secret variable has a `_FILE` twin (`ERAINFRA_CACHE_SIGNING_KEY_FILE`,
 `ERAINFRA_CACHE_S3_SECRET_FILE`). Prefer them: a secret in an environment variable is readable by
@@ -439,30 +441,30 @@ contract. If you find yourself adding a cache check to readiness, re-read ADR 00
 journalctl -u erainfra-cache-service -f
 ```
 
-| line                                                              | means                                                                               |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `cache entry saved`                                               | a save completed; carries generation, repository, ref, key, bytes                   |
-| `v1 restore degraded to a miss` / `v2 restore degraded to a miss` | the store did not answer in budget — **investigate the store**                      |
-| `cache token rejected`                                            | signing key mismatch, or an expired token                                           |
-| `refused a cache write to a read-only token`                      | rule 2 working: a fork pull request tried to save                                   |
-| `cache key prefix has more entries than one listing page`         | a prefix has grown past one page; "newest wins" may be picking out of a partial set |
-| `cache entry metadata contradicts its own location`               | the bucket has been written to by something other than this service                 |
-| `cache entry evicted`                                             | one deletion; `reason` is `idle`, `quota` or `blob missing`                         |
-| `cache eviction sweep finished`                                   | the periodic sweep, with counts of what it evicted and deleted                      |
-| `cache eviction sweep failed`                                     | the store refused a listing or a delete; check `s3:DeleteObject` (§4)               |
-| `cache entry names a blob that is gone; answering a miss`         | an entry's bytes went outside the service, often the lifecycle rule; swept next     |
-| `cache entries deleted by an operator`                            | an `admin delete` or `admin clear` (§9)                                             |
-| `cache admin request rejected`                                    | a bad, stale or replayed admin signature                                            |
-| `no job facts for runner`                                         | the controller's push for this runner never landed, or its facts expired (§8)       |
-| `job facts loaded from the store`                                 | a restarted or second replica picked up a running job's facts from the bucket       |
-| `job facts could not be loaded from the store`                    | the bucket did not answer the facts read; the request was refused, the next retries |
-| `job facts not written to the store; ...`                         | a push was answered `503` and the controller retries it; **investigate the store**  |
-| `expired job facts deleted from the store`                        | the eviction sweep removed facts whose job window closed                            |
-| `build cache lookup degraded to a miss`                           | a Turborepo or Go lookup did not get an answer from the store in budget (§10)       |
-| `build cache save could not ...`                                  | a Turborepo or Go upload failed at the store; the build carries on (§10)            |
-| `refused a build cache write to a read-only token`                | rule 2 for build caches: a fork pull request's turbo or Go upload (§10)             |
-| `refused a save from a repository that gave this name up; ...`    | a job of a renamed-away repository saved after a newer one took the name (§9)       |
-| `left a newer repository's git seed in place; ...`                | the same, for the git seed's removal of older seeds in its scope (§9)               |
+| line                                                              | means                                                                                                            |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `cache entry saved`                                               | a save completed; carries generation, repository, ref, key, bytes                                                |
+| `v1 restore degraded to a miss` / `v2 restore degraded to a miss` | the store did not answer in budget — **investigate the store**                                                   |
+| `cache token rejected`                                            | signing key mismatch, or an expired token                                                                        |
+| `refused a cache write to a read-only token`                      | rule 2 working: a fork pull request tried to save                                                                |
+| `cache key prefix has more entries than one listing page`         | a prefix has grown past one page; "newest wins" may be picking out of a partial set                              |
+| `cache entry metadata contradicts its own location`               | the bucket has been written to by something other than this service                                              |
+| `cache entry evicted`                                             | one deletion; `reason` is `idle`, `quota` or `blob missing`                                                      |
+| `cache eviction sweep finished`                                   | the periodic sweep, with counts of what it evicted and deleted                                                   |
+| `cache eviction sweep failed`                                     | the store refused a listing or a delete; check `s3:DeleteObject` (§4)                                            |
+| `cache entry names a blob that is gone; answering a miss`         | an entry's bytes went outside the service, often the lifecycle rule; swept next                                  |
+| `cache entries deleted by an operator`                            | an `admin delete` or `admin clear` (§9)                                                                          |
+| `cache admin request rejected`                                    | a bad, stale or replayed admin signature                                                                         |
+| `no job facts for runner`                                         | the controller's push for this runner did not land within `ERAINFRA_CACHE_FACTS_WAIT`, or its facts expired (§8) |
+| `job facts loaded from the store`                                 | a restarted or second replica picked up a running job's facts from the bucket                                    |
+| `job facts could not be loaded from the store`                    | the bucket did not answer the facts read; the request was refused, the next retries                              |
+| `job facts not written to the store; ...`                         | a push was answered `503` and the controller retries it; **investigate the store**                               |
+| `expired job facts deleted from the store`                        | the eviction sweep removed facts whose job window closed                                                         |
+| `build cache lookup degraded to a miss`                           | a Turborepo or Go lookup did not get an answer from the store in budget (§10)                                    |
+| `build cache save could not ...`                                  | a Turborepo or Go upload failed at the store; the build carries on (§10)                                         |
+| `refused a build cache write to a read-only token`                | rule 2 for build caches: a fork pull request's turbo or Go upload (§10)                                          |
+| `refused a save from a repository that gave this name up; ...`    | a job of a renamed-away repository saved after a newer one took the name (§9)                                    |
+| `left a newer repository's git seed in place; ...`                | the same, for the git seed's removal of older seeds in its scope (§9)                                            |
 
 ### Metrics and the alert worth having
 
@@ -714,6 +716,20 @@ Each step is inert on its own; the cache serves its first byte only once all fou
    safe, but pointless. Grant the controller's GitHub App `Actions: Read` and `Contents: Read` first
    (see "One key, three holders"), or every job's lookup fails and reads cold the same way.
 
+### A cache step at the top of a job
+
+The controller pushes a job's facts when GitHub's `JobStarted` message reaches it. GitHub delivers
+that message late: on 2026-11-10 the push landed 7 to 38 seconds after the job had started on its
+runner, and the controller's long poll was idle the whole time, so the delay is GitHub's. A cache
+request inside that gap carries a valid runner token and no facts yet. The service holds it for up
+to `ERAINFRA_CACHE_FACTS_WAIT` (45s) and answers as soon as the push lands, so the job sees a slower
+first request and not a `401`. The service log says `request waited for job facts` with the time
+held. A request still without facts when the wait ends gets the `401` and the
+`no job facts for runner` line.
+
+The guest build proxy gives the service 30 seconds to answer a turbo read, so a turbo task in the
+first half minute of a job can still build uncached.
+
 ### Verify
 
 Dispatch one job that saves and restores a cache. In the service log (§5) a `cache entry saved`
@@ -939,6 +955,28 @@ an amd64 job's outputs. Everything else is the same as for `actions/cache` entri
   repository's `actions/cache` entries;
 - `admin list` and `admin delete` in §9. `cache delete --repo owner/name --prefix turbo/` clears
   one repository's Turborepo artifacts, `--prefix go/` its Go outputs.
+
+### Sharing build outputs with the default branch
+
+Under the scope rules above, a pull request's turbo and Go outputs stay on `refs/pull/<n>/merge`.
+After a squash merge the default branch computes the same hashes and finds nothing, so it rebuilds
+every task the pull request already built. A repository listed in
+`ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES` saves its `turbo/` and `go/` entries in the default
+branch's scope from every job that may write: pushes to any branch and same-repository pull
+requests. The default branch then hits on them, and so does every other branch, because the default
+branch is on every read list. `actions/cache` entries are unaffected and keep GitHub's per-ref rule.
+Fork pull requests still cannot write.
+
+The keys are content hashes of every input, so sharing cannot hand a job another build's output.
+What it changes is trust: a pull request's build output becomes something the default branch
+consumes. List a repository only when everyone who can open a pull request in it can already push
+to its default branch, for example a repository with no branch protection. Remove it when the
+default branch gains required reviews or status checks, then clear what it shared with
+`cache delete --repo owner/name --prefix turbo/` and `--prefix go/`.
+
+```bash
+ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES=acme/web,acme/api
+```
 
 A Go build saves one entry per compiled package, so a repository's entry count grows faster than
 its byte count. The quota is in bytes, and listing pages through all of them.

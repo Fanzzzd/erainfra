@@ -83,6 +83,9 @@ type Server struct {
 	// whose facts never arrived costs the store one read per memo window rather
 	// than one per cache request.
 	unknown map[string]time.Time
+	// factsArrived is closed and replaced on every facts push, which wakes the
+	// requests waiting in awaitFacts.
+	factsArrived chan struct{}
 
 	metrics metrics
 
@@ -132,6 +135,7 @@ func New(cfg config.Config, store objectstore.Store, logger *slog.Logger) (*Serv
 		sessions:     map[string]*session{},
 		facts:        map[string]factsEntry{},
 		unknown:      map[string]time.Time{},
+		factsArrived: make(chan struct{}),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 		retained:     make(chan struct{}),
@@ -274,6 +278,9 @@ func (s *Server) authenticate(r *http.Request) (cachetoken.Claims, bool) {
 		return cachetoken.Claims{}, false
 	}
 	facts, lookup := s.lookupFacts(r.Context(), runner.Runner, s.now())
+	if lookup == factsUnknown {
+		facts, lookup = s.awaitFacts(r.Context(), runner.Runner)
+	}
 	switch lookup {
 	case factsFound:
 	case factsUnreadable:

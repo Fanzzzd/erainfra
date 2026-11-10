@@ -72,6 +72,10 @@ func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 		"LANG":                           "C.UTF-8",
 		"HOME":                           "/home/runner",
 		"ACTIONS_RUNNER_INPUT_JITCONFIG": "secret",
+		// The image's rustup, where ubuntu-latest keeps it.
+		"CARGO_HOME":  "/home/runner/.cargo",
+		"RUSTUP_HOME": "/home/runner/.rustup",
+		"PATH":        "/home/runner/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
 	got := map[string]string{}
 	for _, entry := range env {
@@ -168,5 +172,37 @@ func TestRunnerExitCodeReadsStatusAndSignal(t *testing.T) {
 	}
 	if got := runnerExitCode(errors.New("copying output failed")); got != 1 {
 		t.Errorf("a Wait error that is no exit status: runnerExitCode = %d, want 1", got)
+	}
+}
+
+// A container image ships an empty /etc/hosts (Docker fills it at run time), so
+// a Firecracker guest built from one has no localhost entry unless the guest
+// writes it: Node's dns.lookup("localhost") then fails with ENOTFOUND, which is
+// what Plany's vitest hit on 2026-11-09.
+func TestHostsEntriesAddLoopbackNamesToAnEmptyImageFile(t *testing.T) {
+	got := hostsWithEntries(nil, "rc-erainfra-4vcpu-ubuntu-2404-be18f0a26c7f")
+	want := "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n127.0.1.1\trc-erainfra-4vcpu-ubuntu-2404-be18f0a26c7f\n"
+	if string(got) != want {
+		t.Fatalf("hosts = %q, want %q", got, want)
+	}
+}
+
+func TestHostsEntriesKeepAnImageThatAlreadyResolvesLocalhost(t *testing.T) {
+	existing := "127.0.0.1 localhost\n::1 localhost ip6-localhost\n127.0.1.1\trunner-a\n"
+	if got := hostsWithEntries([]byte(existing), "runner-a"); string(got) != existing {
+		t.Fatalf("hosts = %q, want unchanged %q", got, existing)
+	}
+	// IPv4 present but no IPv6 loopback name: add only what is missing.
+	got := string(hostsWithEntries([]byte("127.0.0.1 localhost"), "runner-b"))
+	want := "127.0.0.1 localhost\n::1\tlocalhost ip6-localhost ip6-loopback\n127.0.1.1\trunner-b\n"
+	if got != want {
+		t.Fatalf("hosts = %q, want %q", got, want)
+	}
+}
+
+func TestHostsEntriesIgnoreCommentsWhenLookingForLocalhost(t *testing.T) {
+	got := string(hostsWithEntries([]byte("# 127.0.0.1 localhost\n"), "runner-c"))
+	if !strings.Contains(got, "\n127.0.0.1\tlocalhost\n") || !strings.Contains(got, "\n::1\tlocalhost") {
+		t.Fatalf("a commented-out entry must not count: %q", got)
 	}
 }

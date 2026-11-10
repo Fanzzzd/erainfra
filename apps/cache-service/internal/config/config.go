@@ -56,7 +56,13 @@ type Config struct {
 	//   TransferTimeout— a body: a v1 PATCH chunk, a v2 block, a proxied
 	//                    download, and the store write each one drives. It is
 	//                    a ceiling on one request, not on an upload.
-	LookupTimeout   time.Duration
+	LookupTimeout time.Duration
+	// FactsWait is how long a request from a runner the service has no job
+	// facts for waits for the controller's push before it is refused. The
+	// push follows the JobStarted message and lands some seconds into the
+	// job, so a cache step at the top of a job would otherwise be refused.
+	// Zero refuses at once.
+	FactsWait       time.Duration
 	ReserveTimeout  time.Duration
 	TransferTimeout time.Duration
 
@@ -76,6 +82,15 @@ type Config struct {
 	IdleTTL          time.Duration
 	RepoQuotaBytes   int64
 	EvictionInterval time.Duration
+
+	// SharedBuildRepositories lists "owner/name" repositories whose jobs save
+	// build-system entries (turbo/ and go/) in the default branch's scope
+	// instead of their own ref, so a squash-merged pull request's outputs hit
+	// on the default branch. Fork pull requests still cannot write. List a
+	// repository only when everyone who can open a pull request in it can
+	// already push to its default branch: the switch gives a pull request's
+	// build outputs the default branch's trust.
+	SharedBuildRepositories []string
 }
 
 // Load reads the environment and refuses to start on anything missing. A cache
@@ -90,6 +105,7 @@ func Load() (Config, error) {
 		DownloadTTL:      5 * time.Minute,
 		UploadTTL:        time.Hour,
 		LookupTimeout:    5 * time.Second,
+		FactsWait:        45 * time.Second,
 		ReserveTimeout:   10 * time.Second,
 		TransferTimeout:  30 * time.Minute,
 		MaxEntryBytes:    10 << 30,
@@ -123,6 +139,17 @@ func Load() (Config, error) {
 	}
 	config.Store.Secret = string(secret)
 
+	for _, repository := range strings.Split(os.Getenv("ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES"), ",") {
+		repository = strings.TrimSpace(repository)
+		if repository == "" {
+			continue
+		}
+		if err := cachetoken.ValidateRepository(repository); err != nil {
+			return Config{}, fmt.Errorf("ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES: %w", err)
+		}
+		config.SharedBuildRepositories = append(config.SharedBuildRepositories, repository)
+	}
+
 	if config.DownloadMode != DownloadPresign && config.DownloadMode != DownloadProxy {
 		return Config{}, fmt.Errorf("ERAINFRA_CACHE_DOWNLOAD_MODE must be %q or %q, got %q",
 			DownloadPresign, DownloadProxy, config.DownloadMode)
@@ -132,6 +159,13 @@ func Load() (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("ERAINFRA_CACHE_S3_PATH_STYLE must be a boolean: %w", err)
 		}
+	}
+	if value := strings.TrimSpace(os.Getenv("ERAINFRA_CACHE_FACTS_WAIT")); value != "" {
+		wait, err := ParseDuration(value)
+		if err != nil || wait < 0 {
+			return Config{}, fmt.Errorf("ERAINFRA_CACHE_FACTS_WAIT must be a duration such as 45s, or 0 to refuse at once")
+		}
+		config.FactsWait = wait
 	}
 	for name, target := range map[string]*time.Duration{
 		"ERAINFRA_CACHE_DOWNLOAD_TTL":      &config.DownloadTTL,
