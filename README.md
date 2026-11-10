@@ -1842,3 +1842,4 @@ images                    immutable Profile image definitions
 
 Contributions are welcome. Keep platform lifecycle logic behind the executor boundary, preserve
 single-use secret handling, and run the JavaScript and Go gates before opening a pull request.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup, the checks and the commit rules.
