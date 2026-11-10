@@ -718,17 +718,22 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 
 ### A cache step at the top of a job
 
-The controller pushes a job's facts when GitHub's `JobStarted` message reaches it. GitHub delivers
-that message late: on 2026-11-10 the push landed 7 to 38 seconds after the job had started on its
-runner, and the controller's long poll was idle the whole time, so the delay is GitHub's. A cache
-request inside that gap carries a valid runner token and no facts yet. The service holds it for up
-to `ERAINFRA_CACHE_FACTS_WAIT` (45s) and answers as soon as the push lands, so the job sees a slower
-first request and not a `401`. The service log says `request waited for job facts` with the time
-held. A request still without facts when the wait ends gets the `401` and the
-`no job facts for runner` line.
+GitHub's `JobStarted` scale-set message reaches the controller late: on 2026-11-10 it arrived 7 to
+38 seconds after the job had started on its runner, with the controller's long poll open the whole
+time. The controller does not wait for it. When it acquires a job it polls the job list of that
+job's workflow run (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, every 2 seconds for at
+most 3 minutes). GitHub names a job's runner there as soon as it assigns the job, and a job's facts
+depend only on its run and its runner's name, so the controller publishes them then and logs
+`published cache facts early`. The binding comes from GitHub's record, never from the guest.
+`JobStarted` publishes the same facts again afterwards, as the fallback.
 
-The guest build proxy gives the service 30 seconds to answer a turbo read, so a turbo task in the
-first half minute of a job can still build uncached.
+A request that still arrives before its facts waits up to `ERAINFRA_CACHE_FACTS_WAIT` (45s) on the
+service and is answered as soon as the push lands. The service log says
+`request waited for job facts` with the time held. A request still without facts when the wait ends
+gets the `401` and the `no job facts for runner` line.
+
+The guest build proxy gives the service 30 seconds to answer a turbo read, so a turbo task that
+outlasts both paths builds uncached.
 
 ### Verify
 
