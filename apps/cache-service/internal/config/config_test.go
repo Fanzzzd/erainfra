@@ -117,13 +117,14 @@ func TestSecretsCanComeFromFiles(t *testing.T) {
 
 func TestLoadRefusesNonsense(t *testing.T) {
 	for name, env := range map[string]map[string]string{
-		"unknown download mode":  {"ERAINFRA_CACHE_DOWNLOAD_MODE": "magic"},
-		"unparseable duration":   {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "soon"},
-		"negative duration":      {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "-5s"},
-		"unparseable size":       {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "lots"},
-		"zero size":              {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "0"},
-		"unknown log level":      {"ERAINFRA_CACHE_LOG_LEVEL": "chatty"},
-		"non-boolean path style": {"ERAINFRA_CACHE_S3_PATH_STYLE": "sometimes"},
+		"unknown download mode":                    {"ERAINFRA_CACHE_DOWNLOAD_MODE": "magic"},
+		"unparseable duration":                     {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "soon"},
+		"negative duration":                        {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "-5s"},
+		"unparseable size":                         {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "lots"},
+		"zero size":                                {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "0"},
+		"unknown log level":                        {"ERAINFRA_CACHE_LOG_LEVEL": "chatty"},
+		"non-boolean path style":                   {"ERAINFRA_CACHE_S3_PATH_STYLE": "sometimes"},
+		"shared build repository without an owner": {"ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES": "acme/web,web"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setMinimum(t)
@@ -154,5 +155,23 @@ func TestBudgetsAndModeAreConfigurable(t *testing.T) {
 		config.ReserveTimeout != 3*time.Second || config.TransferTimeout != 4*time.Minute ||
 		config.MaxEntryBytes != 1<<20 || config.Store.PathStyle {
 		t.Fatalf("configuration = %+v", config)
+	}
+}
+
+func TestSharedBuildRepositoriesAreAListAndOffByDefault(t *testing.T) {
+	setMinimum(t)
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.SharedBuildRepositories) != 0 {
+		t.Fatalf("shared by default: %v", config.SharedBuildRepositories)
+	}
+	t.Setenv("ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES", " acme/web , ,acme/api")
+	if config, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(config.SharedBuildRepositories, "|") != "acme/web|acme/api" {
+		t.Fatalf("shared = %q", config.SharedBuildRepositories)
 	}
 }
