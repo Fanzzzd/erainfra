@@ -38,10 +38,11 @@ one behind NAT with no public IP.
 **Action Runner Agent** — the daemon on a Worker. Registers the machine's capacity contract,
 claims Attempts, and drives a provisioner that creates and destroys one isolation boundary per
 Attempt. It has three claim paths, not one: `workerApi:claimAttempt`, `workerApi:claimExperiment`,
-and the still-live `agentApi:claim` for legacy commands (`apps/agent/index.ts:216`). Machines
-install it with plain `npm install` from an archive pinned by SHA-256, which is why it deliberately
-does not use the `catalog:` or `workspace:` protocols. Read the name as "the agent that serves
-Action Runners" — **it is not itself a Runner.**
+and the still-live `agentApi:claim` for legacy commands
+(`apps/action-runner-agent/index.ts:93`). Machines install it with plain `npm install` from an
+archive pinned by SHA-256, which is why it deliberately does not use the `catalog:` or
+`workspace:` protocols. Read the name as "the agent that serves Action Runners" — **it is not
+itself a Runner.**
 
 **Runner** — an ephemeral GitHub Actions runner: an object in _GitHub's_ database with a
 `runner_id` that GitHub issues, created per Attempt through
