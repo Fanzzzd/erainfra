@@ -11,6 +11,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pull requests are squash-merged, so the title becomes the commit subject on main. The title
+  # reaches the script through an env var and never through ${{ }} in the script: a title is
+  # attacker-controlled text, and an interpolated one runs as shell. The pattern takes the types
+  # CONTRIBUTING.md lists. Dependabot writes its own titles and some exceed 72 characters, so its
+  # pull requests skip only the length check. The job reruns on a push or a reopen, not on a title
+  # edit, because a title edit would restart every other job in this workflow too.
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The pull request title is a Conventional Commit subject of at most 72 characters
+        shell: bash
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -eu
+          pattern='^(feat|fix|docs|refactor|test|perf|ci|build|chore)(\([a-z0-9-]+\))?!?: .+'
+          status=0
+          if ! [[ $TITLE =~ $pattern ]]; then
+            echo "::error::The title must look like 'type(scope): summary'." >&2
+            echo "Types: feat, fix, docs, refactor, test, perf, ci, build, chore. See CONTRIBUTING.md." >&2
+            status=1
+          fi
+          if [ "$AUTHOR" != "dependabot[bot]" ] && [ "${#TITLE}" -gt 72 ]; then
+            echo "::error::The title has ${#TITLE} characters; the limit is 72." >&2
+            status=1
+          fi
+          exit "$status"
+
   check:
     runs-on: ubuntu-latest
     steps:
