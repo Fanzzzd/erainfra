@@ -1,0 +1,47 @@
+name: EraInfra disk contention benchmark
+
+# Runs .github/bench/contention.sh once on a guest alone, then on eight guests
+# at the same time on the same Profile. If the crowd is much slower than the
+# solo run, the Worker's storage path (thin-pool, loop device, host disk) is
+# the shared bottleneck, not the guest. Triggers only when the benchmark
+# itself changes, or by hand once this file is on the default branch.
+on:
+  pull_request:
+    paths:
+      - .github/bench/contention.sh
+      - .github/workflows/bench-contention.yml
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: The EraInfra Profile to benchmark
+        default: rc-e2e
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  solo:
+    name: solo
+    runs-on: ${{ inputs.profile || 'rc-e2e' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh .github/bench/contention.sh solo
+
+  crowd:
+    name: crowd ${{ matrix.slot }}
+    needs: solo
+    runs-on: ${{ inputs.profile || 'rc-e2e' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh .github/bench/contention.sh "crowd-${{ matrix.slot }}"
