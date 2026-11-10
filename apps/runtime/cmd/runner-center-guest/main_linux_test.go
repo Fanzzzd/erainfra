@@ -295,6 +295,28 @@ func TestRunnerEnvHandsJobsEveryHostedToolVariable(t *testing.T) {
 	}
 }
 
+func TestCheckRunnerEnvironmentIsStrict(t *testing.T) {
+	if err := checkRunnerEnvironment(filepath.Join("testdata", "hosted-ubuntu-24.04-environment.json")); err != nil {
+		t.Fatalf("hosted ubuntu-24.04 environment failed the build check: %v", err)
+	}
+	dir := t.TempDir()
+	if err := checkRunnerEnvironment(filepath.Join(dir, "missing.json")); err == nil {
+		t.Fatal("build check accepted a missing file, which startup treats as the small image")
+	}
+	for name, data := range map[string]string{
+		"no PATH":     `{"JAVA_HOME":"/usr/lib/jvm/x"}`,
+		"unknown key": `{"PATH":"/usr/bin","XDG_RUNTIME_DIR":"/run/user/1001"}`,
+	} {
+		path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkRunnerEnvironment(path); err == nil {
+			t.Errorf("build check accepted %s", name)
+		}
+	}
+}
+
 func TestRunnerEnvIsADecisionATestCanRead(t *testing.T) {
 	metadata := guest.Metadata{Kind: "ci", RunnerName: "rc-a", JITConfig: "secret"}
 	env := runnerEnv(metadata, "/home/runner", "runner", "", nil, nil)

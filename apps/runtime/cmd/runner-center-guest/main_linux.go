@@ -55,7 +55,19 @@ const (
 	warmReadyMarker    = "\x1eRUNNER_CENTER_WARM_READY\n"
 )
 
+// runnerEnvironmentPath is the hosted tool environment the full image writes.
+const runnerEnvironmentPath = "/etc/erainfra/runner-environment.json"
+
 func main() {
+	// The image build calls this so a key the loader would reject fails the
+	// build, not the first boot of a Worker. It starts nothing.
+	if len(os.Args) == 3 && os.Args[1] == "--check-runner-environment" {
+		if err := checkRunnerEnvironment(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx); err != nil {
@@ -443,8 +455,24 @@ func runnerEnv(metadata guest.Metadata, home, username, cacheTrustAnchorPath str
 	return env
 }
 
+// checkRunnerEnvironment requires the file to exist, unlike startup, and to
+// pass the same validation startup applies.
+func checkRunnerEnvironment(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("runner environment: %w", err)
+	}
+	env, err := loadRunnerEnvironment(path)
+	if err != nil {
+		return err
+	}
+	if env["PATH"] == "" {
+		return errors.New("runner environment has no PATH")
+	}
+	return nil
+}
+
 func run(ctx context.Context) error {
-	imageEnv, err := loadRunnerEnvironment("/etc/erainfra/runner-environment.json")
+	imageEnv, err := loadRunnerEnvironment(runnerEnvironmentPath)
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,9 @@ chmod -R a-w /opt/action-cache
 chown -R runner:docker /home/runner /home/linuxbrew /opt/runner
 # Toolset installers assigned their cache to Packer. The job account replaces it.
 find /opt/hostedtoolcache -uid 1000 -exec chown runner:docker {} +
+# The report and tests ran as packer. userdel refuses while it owns a process.
+pkill -KILL -u packer || true
+timeout 30 sh -c 'while pgrep -u packer >/dev/null; do sleep 1; done'
 userdel --remove packer
 rm -f /etc/sudoers.d/packer
 # Finalize the same user-dependent variables as upstream's post-generation hook,
@@ -29,6 +32,9 @@ sed -i 's|\$HOME|/home/runner|g' /etc/environment
 mkdir -p /etc/erainfra
 python3 -I /erainfra-build/recipe.py environment /etc/environment /etc/erainfra/runner-environment.json
 chmod 0644 /etc/erainfra/runner-environment.json
+# The guest loads this file before it starts the runner. Apply the same
+# validation now, because the boot test does not start the guest service.
+"$repo/build/full-image/runner-center-guest" --check-runner-environment /etc/erainfra/runner-environment.json
 locale-gen en_US.UTF-8
 printf 'LANG=C.UTF-8\n' > /etc/locale.conf
 printf 'LANG=C.UTF-8\n' > /etc/default/locale
