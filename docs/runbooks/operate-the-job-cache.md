@@ -720,12 +720,18 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 
 GitHub's `JobStarted` scale-set message reaches the controller late: on 2026-11-10 it arrived 7 to
 38 seconds after the job had started on its runner, with the controller's long poll open the whole
-time. The controller does not wait for it. When it acquires a job it polls the job list of that
-job's workflow run (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, every 2 seconds for at
-most 3 minutes). GitHub names a job's runner there as soon as it assigns the job, and a job's facts
-depend only on its run and its runner's name, so the controller publishes them then and logs
-`published cache facts early`. The binding comes from GitHub's record, never from the guest.
-`JobStarted` publishes the same facts again afterwards, as the fallback.
+time. The scale set gets no `JobAvailable` for a job GitHub hands to an idle runner, so nothing
+earlier reaches the controller either.
+
+The guest closes the gap. When the runner writes its job message to `_diag/Worker_*.log`, the guest
+reads the run's repository and id from it and sends them to the service with its runner token
+(`POST /_erainfra-cache-job-hint`, logged as `job hint received`). Each controller polls the
+service every second for the hints of its own runners, by runner name prefix
+(`POST /_erainfra-cache-admin/job-hints`, signed with the facts key). It asks GitHub for the run's
+job list and publishes the facts only when GitHub lists that runner on one of the run's jobs, and
+logs `published cache facts early`. The hint chooses which GitHub record to read; GitHub's record is
+what binds the runner to the run. `JobStarted` publishes the same facts again afterwards, as the
+fallback.
 
 A request that still arrives before its facts waits up to `ERAINFRA_CACHE_FACTS_WAIT` (45s) on the
 service and is answered as soon as the push lands. The service log says

@@ -2,30 +2,54 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
-
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubapi"
 )
 
-// scriptedRunners answers RunRunners from a script, one entry per call, and
-// keeps answering the last entry once the script runs out.
-type scriptedRunners struct {
-	fakeRuns
-	mu     sync.Mutex
-	script [][]string
-	calls  int
+// hintingCache is a cache service that also holds job hints, and drops a
+// runner's hint once its facts are pushed, as the real one does.
+type hintingCache struct {
+	fakeCache
+	mu       sync.Mutex
+	hints    []cachefacts.Hint
+	prefixes []string
 }
 
-func (s *scriptedRunners) RunRunners(context.Context, string, int64) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	answer := s.script[min(s.calls, len(s.script)-1)]
-	s.calls++
-	return answer, nil
+func (c *hintingCache) PendingHints(_ context.Context, prefixes []string) ([]cachefacts.Hint, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.prefixes = prefixes
+	pushed := map[string]bool{}
+	for _, facts := range c.facts() {
+		pushed[facts.Runner] = true
+	}
+	var out []cachefacts.Hint
+	for _, hint := range c.hints {
+		if !pushed[hint.Runner] {
+			out = append(out, hint)
+		}
+	}
+	return out, nil
+}
+
+// assignedRuns is GitHub's view: which runners each run's jobs are assigned to.
+type assignedRuns struct {
+	fakeRuns
+	runners map[int64][]string
+}
+
+func (a assignedRuns) RunRunners(_ context.Context, _ string, runID int64) ([]string, error) {
+	return a.runners[runID], nil
+}
+
+// RefExists answers like a repository with branches and no tags.
+func (assignedRuns) RefExists(_ context.Context, _, ref string) (bool, error) {
+	return strings.HasPrefix(ref, "heads/"), nil
 }
 
 func pushRun() githubapi.WorkflowRun {
@@ -35,80 +59,62 @@ func pushRun() githubapi.WorkflowRun {
 	}
 }
 
-func availableJob(runID int64) *scaleset.JobAvailable {
-	return &scaleset.JobAvailable{JobMessageBase: scaleset.JobMessageBase{
-		RunnerRequestID: 11, RepositoryName: "EraInfra", OwnerName: "Fanzzzd",
-		WorkflowRunID: runID, EventName: "push",
-		JobWorkflowRef: "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
-	}}
-}
-
-// GitHub names a job's runner as soon as it assigns the job, and the scale
-// set's JobStarted message can follow tens of seconds later. The controller
-// publishes the facts from the first moment GitHub names one of its runners.
-func TestAcquiredJobFactsArePublishedOnceGitHubNamesTheRunner(t *testing.T) {
-	cache := &fakeCache{}
-	runs := &scriptedRunners{
-		fakeRuns: fakeRuns{run: pushRun()},
-		script:   [][]string{{}, {"GitHub Actions 3"}, {"GitHub Actions 3", "rc-linux-js-a"}},
-	}
+func runPoller(t *testing.T, cache *hintingCache, runs assignedRuns) {
+	t.Helper()
 	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
 		WithCachePublisher(cache, nil), WithWorkflowRuns(runs))
 	if err != nil {
 		t.Fatal(err)
 	}
-	scaler.earlyFactsPoll = time.Millisecond
-
-	scaler.WatchAcquiredJobs(t.Context(), []*scaleset.JobAvailable{availableJob(7)})
+	scaler.hintPoll = 5 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	scaler.RunHintPoller(ctx, "rc-linux-js-")
 	scaler.publishing.Wait()
+}
+
+// A hint GitHub confirms becomes the runner's facts, without JobStarted.
+func TestConfirmedJobHintPublishesTheRunnersFacts(t *testing.T) {
+	cache := &hintingCache{hints: []cachefacts.Hint{{
+		Runner: "rc-linux-js-a", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
+	}}}
+	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"rc-linux-js-a"}}})
 
 	pushed := cache.facts()
 	if len(pushed) != 1 || pushed[0].Runner != "rc-linux-js-a" || pushed[0].Repository != "Fanzzzd/EraInfra" ||
 		pushed[0].Ref != "refs/heads/main" {
-		t.Fatalf("pushed = %#v, want the facts of rc-linux-js-a for refs/heads/main", pushed)
+		t.Fatalf("pushed = %#v, want the facts of rc-linux-js-a on refs/heads/main", pushed)
+	}
+	if len(cache.prefixes) != 1 || cache.prefixes[0] != "rc-linux-js-" {
+		t.Fatalf("listed prefixes %q, want only this controller's", cache.prefixes)
 	}
 }
 
-// A runner GitHub never names is left to the JobStarted path: the watch ends
-// at its window and publishes nothing.
-func TestAcquiredJobWatchEndsAtItsWindow(t *testing.T) {
-	cache := &fakeCache{}
-	runs := &scriptedRunners{fakeRuns: fakeRuns{run: pushRun()}, script: [][]string{{}}}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
-		WithCachePublisher(cache, nil), WithWorkflowRuns(runs))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scaler.earlyFactsPoll = time.Millisecond
-	scaler.earlyFactsWindow = 20 * time.Millisecond
-
-	scaler.WatchAcquiredJobs(t.Context(), []*scaleset.JobAvailable{availableJob(7)})
-	scaler.publishing.Wait()
+// A guest that names a run it is not assigned to gets nothing: GitHub's record
+// decides, not the hint.
+func TestJobHintGitHubDoesNotConfirmIsIgnored(t *testing.T) {
+	cache := &hintingCache{hints: []cachefacts.Hint{{
+		Runner: "rc-linux-js-liar", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
+	}}}
+	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"rc-linux-js-a"}}})
 
 	if pushed := cache.facts(); len(pushed) != 0 {
-		t.Fatalf("pushed = %#v, want nothing", pushed)
+		t.Fatalf("pushed %#v for a runner GitHub does not assign to the run", pushed)
 	}
 }
 
-// Two jobs of one run share one watch, and each runner is published once.
-func TestOneWatchPerRunPublishesEachRunnerOnce(t *testing.T) {
-	cache := &fakeCache{}
-	runs := &scriptedRunners{
-		fakeRuns: fakeRuns{run: pushRun()},
-		script:   [][]string{{"rc-linux-js-a"}, {"rc-linux-js-a", "rc-linux-js-b"}},
-	}
+// Without a cache that lists hints the poller does nothing and returns.
+func TestHintPollerNeedsAHintSource(t *testing.T) {
 	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
-		WithCachePublisher(cache, nil), WithWorkflowRuns(runs))
+		WithCachePublisher(&fakeCache{}, nil), WithWorkflowRuns(assignedRuns{}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	scaler.earlyFactsPoll = time.Millisecond
-
-	scaler.WatchAcquiredJobs(t.Context(), []*scaleset.JobAvailable{availableJob(7), availableJob(7)})
-	scaler.publishing.Wait()
-
-	pushed := cache.facts()
-	if len(pushed) != 2 || pushed[0].Runner != "rc-linux-js-a" || pushed[1].Runner != "rc-linux-js-b" {
-		t.Fatalf("pushed = %#v, want rc-linux-js-a then rc-linux-js-b once each", pushed)
+	done := make(chan struct{})
+	go func() { scaler.RunHintPoller(t.Context(), "rc-linux-js-"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the poller ran without a hint source")
 	}
 }
