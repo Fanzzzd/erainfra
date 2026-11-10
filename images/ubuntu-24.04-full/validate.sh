@@ -46,3 +46,10 @@ jq -n --arg kernel "$work/vmlinux" --arg args "$kernel_args" --arg disk "$work/r
 timeout 600 "$work/download/release-$version-x86_64/firecracker-$version-x86_64" --no-api --config-file "$work/vm.json" > "$work/evidence/boot-console.log" 2>&1
 cat "$work/evidence/boot-console.log"
 grep -aq 'ERAINFRA-BOOT-TEST PASS' "$work/evidence/boot-console.log"
+# A failed unit leaves `systemctl is-system-running` at "degraded", where a
+# GitHub-hosted runner reports "running". Jobs that gate on it would fail here.
+if grep -aq 'Failed to start' "$work/evidence/boot-console.log"; then
+  grep -a 'Failed to start' "$work/evidence/boot-console.log" >&2
+  echo 'a unit failed to start on the Firecracker boot' >&2
+  exit 1
+fi

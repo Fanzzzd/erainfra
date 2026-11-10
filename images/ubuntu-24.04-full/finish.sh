@@ -51,6 +51,10 @@ install -m 0644 "$small/docker-raw-table.conf" /etc/systemd/system/docker.servic
 install -m 0644 "$small/sysctl-hosted-parity.conf" /etc/sysctl.d/90-runner-center-hosted-parity.conf
 # Preserve installed software. Disable only services that configure cloud hardware.
 systemctl disable ssh.service ssh.socket systemd-networkd-wait-online.service || true
+# These fail on every Firecracker boot and leave the system "degraded": the
+# guest kernel has no nf_tables (Docker and the guest use iptables-legacy),
+# and a microVM has no multipath or NVMe-over-Fabrics devices.
+systemctl disable nftables.service multipathd.service multipathd.socket nvmf-autoconnect.service || true
 systemctl enable docker.service haveged.service runner-center-guest.service
 # Canonical's cloud archive names cloudimg-rootfs. containerd does not preserve
 # filesystem labels when unpacking OCI, so use Firecracker's root block device.
