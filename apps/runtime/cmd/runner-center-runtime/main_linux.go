@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -31,6 +32,9 @@ const maxRecoveryBytes = 2 << 20
 var version = "dev"
 
 func main() {
+	// One key=value line per record on stderr, the layout and stream logrus used here before; stdout
+	// carries the JSON reports the Action Runner Agent parses.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	exitCode, err := run(ctx, os.Args[1:])
