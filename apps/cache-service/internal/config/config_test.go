@@ -32,7 +32,7 @@ func TestLoadDefaults(t *testing.T) {
 	if config.LookupTimeout != 5*time.Second {
 		t.Errorf("lookup budget = %s", config.LookupTimeout)
 	}
-	if config.FactsWait != 15*time.Second {
+	if config.FactsWait != 45*time.Second {
 		t.Errorf("facts wait = %s", config.FactsWait)
 	}
 	if config.ReserveTimeout != 10*time.Second {
