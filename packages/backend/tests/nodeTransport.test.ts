@@ -267,6 +267,9 @@ describe("scoped Node HTTP API", () => {
       journalKeys: null,
       journalKeyLimit: null,
     });
+    // The block begins on its own instant, after the fixture's commits.
+    const blockedAt = T0 + 1_000;
+    vi.setSystemTime(blockedAt);
     expect(
       (
         await heartbeat({
@@ -285,7 +288,7 @@ describe("scoped Node HTTP API", () => {
     });
     expect(await view()).toEqual({
       blocked: "journal_error",
-      blockedSince: T0,
+      blockedSince: blockedAt,
       journalKeys: 10000,
       journalKeyLimit: 10000,
     });

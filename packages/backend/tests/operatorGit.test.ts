@@ -109,6 +109,8 @@ describe("bind, list and unbind", () => {
     await f.node("builder");
     await f.node("web-1");
 
+    // Bind on its own instant, after the fixture's commits.
+    vi.setSystemTime(T0 + 1_000);
     const bound = await f.call("POST", "/git/bindings", f.admin, {
       repo: "Acme/Shop",
       branch: "release/1.2",
@@ -126,11 +128,12 @@ describe("bind, list and unbind", () => {
       buildNode: "builder",
       deployNode: "web-1",
       port: 3000,
-      createdAt: "2026-11-06T00:00:00.000Z",
+      createdAt: "2026-11-06T00:00:01.000Z",
       lastStatus: null,
     };
     expect(bound.body).toEqual({ binding: expected });
 
+    vi.setSystemTime(T0 + 2_000);
     await f.call("POST", "/git/bindings", f.admin, {
       repo: "acme/api",
       branch: "main",
@@ -142,6 +145,7 @@ describe("bind, list and unbind", () => {
     expect(listed.body.bindings).toEqual([
       {
         ...expected,
+        createdAt: "2026-11-06T00:00:02.000Z",
         repo: "acme/api",
         branch: "main",
         app: "api",
@@ -338,6 +342,8 @@ describe("dashboard functions", () => {
         app: "shop",
       }),
     ).rejects.toThrow(/without refs\/heads/);
+    // Bind on its own instant, after the fixture's commits.
+    vi.setSystemTime(T0 + 1_000);
     const id = await f.human.mutation(api.infra.git.bind, {
       repo: "acme/shop",
       branch: "main",
@@ -353,7 +359,7 @@ describe("dashboard functions", () => {
         buildNodeId: builder,
         buildNode: "builder",
         deployNode: null,
-        createdAt: T0,
+        createdAt: T0 + 1_000,
         lastStatus: null,
       },
     ]);

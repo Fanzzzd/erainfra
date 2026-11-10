@@ -20,6 +20,7 @@ import {
   type RightsizeSample,
 } from "../convex/rightsizeModel";
 import schema from "../convex/schema";
+import { setUpBefore } from "./support/clock.ts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const GIB = 1024 ** 3;
@@ -612,13 +613,18 @@ describe("right-sizing over stored metrics", () => {
   });
 
   it("answers /api/v1/rightsize with a read token, including the runs-on map", async () => {
-    const t = convexTest(schema, modules);
-    await seed(t);
-    const userId = await t.run(async (ctx) => ctx.db.insert("users", { email: "op@example.test" }));
-    const operator = t.withIdentity({ subject: `${userId}|session` });
-    const { token } = await operator.mutation(api.apiTokens.create, {
-      name: "read",
-      scope: "read",
+    const { t, token } = await setUpBefore(T0, async () => {
+      const harness = convexTest(schema, modules);
+      await seed(harness);
+      const userId = await harness.run(async (ctx) =>
+        ctx.db.insert("users", { email: "op@example.test" }),
+      );
+      const operator = harness.withIdentity({ subject: `${userId}|session` });
+      const minted = await operator.mutation(api.apiTokens.create, {
+        name: "read",
+        scope: "read",
+      });
+      return { t: harness, token: minted.token };
     });
 
     expect((await t.fetch("/api/v1/rightsize", { method: "GET" })).status).toBe(401);

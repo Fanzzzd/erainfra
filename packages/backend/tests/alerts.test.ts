@@ -5,6 +5,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
 import { MAX_DELIVERY_ATTEMPTS } from "../convex/alertNotify";
 import type { AlertCondition } from "../convex/alertRules";
+import { setUpBefore } from "./support/clock.ts";
 import { CONTRACT, MINUTE, NOW, operator, seedFleet } from "./support/fleetFixture.ts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -40,15 +41,17 @@ afterEach(() => {
 });
 
 async function setup() {
-  const t = convexTest(schema, modules);
-  await seedFleet(t);
-  const ops = await operator(t);
-  const webhook = await ops.mutation(api.alerts.createDestination, {
-    name: "pager",
-    kind: "webhook",
-    url: "https://alerts.example.test/hook/s3cr3t-path",
+  return setUpBefore(NOW, async () => {
+    const t = convexTest(schema, modules);
+    await seedFleet(t);
+    const ops = await operator(t);
+    const webhook = await ops.mutation(api.alerts.createDestination, {
+      name: "pager",
+      kind: "webhook",
+      url: "https://alerts.example.test/hook/s3cr3t-path",
+    });
+    return { t, ops, webhookId: webhook.id, signingSecret: webhook.signingSecret ?? "" };
   });
-  return { t, ops, webhookId: webhook.id, signingSecret: webhook.signingSecret ?? "" };
 }
 
 async function backlogRule(

@@ -1,6 +1,7 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import schema from "../convex/schema";
+import { setUpBefore } from "./support/clock.ts";
 import {
   LEASE_RENEW_INTERVAL_MS,
   LEASE_TTL_MS,
@@ -125,10 +126,13 @@ async function worker(t: Harness, token: string, networkScore = 80) {
   return machineId;
 }
 
-async function setup() {
-  const t = convexTest(schema, modules);
-  await insertProfile(t, { githubConfigUrl: REPOSITORY_URL, labels: [CONTRACT.profile] });
-  return t;
+async function setup(seed: (t: Harness) => Promise<void> = async () => {}) {
+  return setUpBefore(NOW, async () => {
+    const t = convexTest(schema, modules);
+    await insertProfile(t, { githubConfigUrl: REPOSITORY_URL, labels: [CONTRACT.profile] });
+    await seed(t);
+    return t;
+  });
 }
 
 describe("acquire, renew and release", () => {
@@ -624,9 +628,10 @@ describe("a Worker's machine token", () => {
 
 describe("the network head start", () => {
   it("lets a well-connected Worker take a freed lease first, and a lone poor one take it later", async () => {
-    const t = await setup();
-    await worker(t, POOR_WORKER, 20);
-    await worker(t, GOOD_WORKER, 90);
+    const t = await setup(async (harness) => {
+      await worker(harness, POOR_WORKER, 20);
+      await worker(harness, GOOD_WORKER, 90);
+    });
 
     // Nobody has held it yet: the poor Worker is told to wait out the head start.
     const poorFirst = await acquire(t, "instance-poor", { bearer: POOR_WORKER });
@@ -641,15 +646,16 @@ describe("the network head start", () => {
     expect(good.networkPoor).toBe(false);
 
     // While it is held, the poor Worker is told to come back the head start after it expires.
+    advance(1_000);
     const held = await acquire(t, "instance-poor", { bearer: POOR_WORKER });
     expect(held).toMatchObject({
       granted: false,
       reason: "held",
-      retryAfterMs: LEASE_TTL_MS + POOR_NETWORK_HEAD_START_MS,
+      retryAfterMs: LEASE_TTL_MS - 1_000 + POOR_NETWORK_HEAD_START_MS,
     });
 
     // The good Worker dies. Right at expiry the poor one is still held back...
-    advance(LEASE_TTL_MS);
+    advance(LEASE_TTL_MS - 1_000);
     expect(await acquire(t, "instance-poor", { bearer: POOR_WORKER })).toMatchObject({
       granted: false,
       reason: "headStart",
