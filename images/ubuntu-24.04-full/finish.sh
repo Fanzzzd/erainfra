@@ -46,6 +46,9 @@ install -m 0644 "$small/sysctl-hosted-parity.conf" /etc/sysctl.d/90-runner-cente
 # Preserve installed software. Disable only services that configure cloud hardware.
 systemctl disable ssh.service ssh.socket systemd-networkd-wait-online.service || true
 systemctl enable docker.service haveged.service runner-center-guest.service
+# Canonical's cloud archive names cloudimg-rootfs. containerd does not preserve
+# filesystem labels when unpacking OCI, so use Firecracker's root block device.
+printf '/dev/vda / ext4 defaults 0 1\n' > /etc/fstab
 # Firecracker has no cloud-init and no systemd-resolved stub. The guest writes DNS.
 rm -f /etc/resolv.conf
 : > /etc/resolv.conf

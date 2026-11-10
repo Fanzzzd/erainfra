@@ -10,7 +10,7 @@ Package the result as an amd64 OCI image for the existing Firecracker executor.
 The Profile keeps its name, `erainfra-4vcpu-ubuntu-2404`, under ADR 0010.
 Changing its image digest is a separate operator action.
 
-This branch includes the open `feat/image-playwright-deps` branch from PR #268.
+The Playwright dependencies and rustup from PR #268 are already on main.
 The small image remains available. Its publish workflow and deployed digest do not change.
 
 ## Upstream source and scope
@@ -58,17 +58,18 @@ pin the separate upstream ARM Packer template and toolset rather than emulate th
 
 The checked-in patch applies with `git apply --check`. These are the complete recipe changes:
 
-| Script or Packer step | Treatment | Reason |
-| --- | --- | --- |
-| `configure-apt-mock.sh` | Skip | It works around Azure extension races. Its wrapper also hides apt failures. No Azure extension runs in the build container. Real apt failures must stop the build. |
-| `configure-environment.sh` | Patch three waagent configuration edits | Firecracker has no Azure resource disk or waagent swap management. No swap file is created. |
-| `configure-environment.sh` | Remove the GRUB rootflags block | Firecracker loads a separately pinned kernel directly. Its kernel command line remains the runtime's responsibility. No durability flags are silently changed. |
-| Packer file provisioners | Copy the same helpers, installers, tests, report modules, post-generation scripts, and toolset | The build root uses the same `/imagegeneration` layout. |
-| Packer reboot before cleanup | Defer the reboot to the final Firecracker test | Restarting the container would test the builder's kernel again. Software tests run before packaging; the final boot exercises the actual guest kernel. |
-| Packer report and full test inline step | Run report generation and all software test files in the same position | `System.Tests.ps1` is excluded because it asserts Azure disks, GRUB, and host kernel mount flags. The Firecracker boot test covers guest service startup separately. |
-| Packer `waagent -deprovision+user` inline step | Replace with explicit account and machine-identity cleanup | No Azure agent exists. The final user is EraInfra's runner. |
-| Post-generation environment expansion | Replace last-passwd-entry lookup with explicit `/home/runner` substitution | A later package account must not redirect tool variables to another user's home. |
-| Post-generation systemd linger | Not applied | The runner is launched by its system service, without a login session. User-session services are not yet a parity claim. |
+| Script or Packer step                          | Treatment                                                                                      | Reason                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `configure-apt-mock.sh`                        | Replace with a recording wrapper                                                               | Upstream's wrapper always exits 0, and the recipe depends on that: `toolset-2404.json` asks apt for the virtual package `netcat`, which fails. The replacement also exits 0, at the same point in the order, and records every failed apt command. The build fails unless each failure is listed with a reason in `apt-failures.allow`. |
+| `configure-environment.sh`                     | Patch three waagent configuration edits                                                        | Firecracker has no Azure resource disk or waagent swap management. No swap file is created.                                                                                                                                                                                                                                             |
+| `configure-environment.sh`                     | Remove the GRUB rootflags block                                                                | Firecracker loads a separately pinned kernel directly. Its kernel command line remains the runtime's responsibility. No durability flags are silently changed.                                                                                                                                                                          |
+| Packer file provisioners                       | Copy the same helpers, installers, tests, report modules, post-generation scripts, and toolset | The build root uses the same `/imagegeneration` layout.                                                                                                                                                                                                                                                                                 |
+| Packer reboot before cleanup                   | Defer the reboot to the final Firecracker test                                                 | Restarting the container would test the builder's kernel again. Software tests run before packaging; the final boot exercises the actual guest kernel.                                                                                                                                                                                  |
+| Packer report and full test inline step        | Run report generation and all software test files in the same position                         | `System.Tests.ps1` is excluded because it asserts Azure disks, GRUB, and host kernel mount flags. The Firecracker boot test covers guest service startup separately.                                                                                                                                                                    |
+| Packer `waagent -deprovision+user` inline step | Replace with explicit account and machine-identity cleanup                                     | No Azure agent exists. The final user is EraInfra's runner.                                                                                                                                                                                                                                                                             |
+| Post-generation environment expansion          | Replace last-passwd-entry lookup with explicit `/home/runner` substitution                     | A later package account must not redirect tool variables to another user's home.                                                                                                                                                                                                                                                        |
+| Post-generation systemd linger                 | Not applied                                                                                    | The runner is launched by its system service, without a login session. User-session services are not yet a parity claim.                                                                                                                                                                                                                |
+| Root filesystem table                          | `/dev/vda` instead of `LABEL=cloudimg-rootfs`                                                  | containerd does not keep the filesystem label when it unpacks the OCI layer.                                                                                                                                                                                                                                                            |
 
 `configure-snap.sh`, `install-docker.sh`, `cleanup.sh`, `configure-system.sh`, and
 `post-build-validation.sh` are not skipped. Installer-local tests are not disabled.
@@ -139,7 +140,10 @@ repin. No allowlist entry is added to hide missing candidate software.
 
 Expected residual differences include the Firecracker kernel, virtual devices, IPv6 policy,
 DNS policy, self-hosted runner identity, EraInfra cache helpers, primary Docker group, no swap,
-and service-session behavior. Version drift between the pinned upstream recipe and a later
+and service-session behavior. Hosted `/etc/environment` also has `XDG_RUNTIME_DIR=/run/user/1001`
+and `POWERSHELL_DISTRIBUTION_CHANNEL=GitHub-Actions-Linux`. No public build script writes them.
+GitHub's private provisioning adds them. The image omits both: there is no user session behind
+the first, and the second labels PowerShell telemetry as GitHub's. Version drift between the pinned upstream recipe and a later
 hosted rollout must be shown in the software report rather than called exact version parity.
 
 ## Production preparation and repin plan
@@ -155,8 +159,8 @@ None of these operator steps has been executed.
    new 96 GiB base snapshot after containerd restarts.
 4. Plan a 320 GiB data thin-pool with the existing 2 GiB metadata backing. The current 160 GiB
    pool cannot safely hold two roughly 60 GiB full bases and concurrent job writes. Reserve
-   compressed content-store space outside the pool too. Check actual free bytes first;
-   approximately 420 GB freed is not a measurement of usable thin-pool backing capacity.
+   compressed content-store space outside the pool too. ubuntu0's SSD root had about 651 GB
+   free on 2026-11-10. Measure again before the migration.
 5. Do not expect `--file-backed-pool 320` to resize an existing pool. The provisioner explicitly
    refuses that behavior. Use a separate drained storage migration with backed-up metadata,
    or dedicated new devices. Keep the original data and metadata pair together for rollback.

@@ -13,14 +13,30 @@ export HOME=/root USER=root LOGNAME=root
 export SUDO_USER=packer DEBIAN_FRONTEND=noninteractive
 # Keep downloads outside both source and /tmp, which cleanup.sh empties.
 mkdir -p /var/tmp/erainfra-install
+apt_failures=/erainfra-build/apt-failures.tsv
 cd /var/tmp/erainfra-install
 systemctl stop apt-daily.timer apt-daily-upgrade.timer
 apt-get update
 while IFS= read -r script; do
   case "$script" in
     configure-apt-mock.sh)
-      # Azure extension workaround. Its wrapper hides apt's nonzero exit code.
-      echo "SKIP $script: no Azure extension; keep real apt exit status"
+      # Upstream's wrapper retries Azure extension lock races and always exits 0,
+      # so hosted builds continue past failed apt commands. Keep that exit
+      # behavior, which later scripts depend on, but record every failure.
+      # cleanup.sh removes these wrappers at the same point it removes upstream's.
+      : > "$apt_failures"
+      chmod 0666 "$apt_failures"
+      for tool in apt apt-get apt-key; do
+        cat > "/usr/local/bin/$tool" <<WRAPPER
+#!/bin/sh
+/usr/bin/$tool "\$@"
+status=\$?
+[ "\$status" -eq 0 ] || printf '%s\\t%s\\n' "\$status" "$tool \$*" >> $apt_failures
+exit 0
+WRAPPER
+        chmod 0755 "/usr/local/bin/$tool"
+      done
+      echo "RECORD $script: apt failures go to $apt_failures"
       continue ;;
     configure-system.sh)
       # Packer runs reports between cleanup.sh and configure-system.sh.
@@ -53,3 +69,15 @@ while IFS= read -r script; do
   printf '%s\t%s\n' "$script" "$(( $(date +%s) - start ))" >> /erainfra-build/timings.tsv
   echo "END $script $(date -u +%FT%TZ)"
 done < /erainfra-build/scripts.txt
+# Hosted builds ignore failed apt commands. Fail on any failure that has not
+# been reviewed as equivalent to the hosted result in apt-failures.allow.
+unexpected=0
+while IFS=$'\t' read -r status command; do
+  if grep -qxF "$command" <(grep -v '^#' /erainfra-build/apt-failures.allow); then
+    echo "ALLOWED apt failure (exit $status): $command"
+  else
+    echo "UNEXPECTED apt failure (exit $status): $command" >&2
+    unexpected=1
+  fi
+done < "$apt_failures"
+[ "$unexpected" = 0 ]

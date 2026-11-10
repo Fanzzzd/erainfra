@@ -15,6 +15,8 @@ commit=$(jq -r .commit "$lock")
 root=$work/root
 machine=erainfra-image-build
 cleanup() {
+  # Keep per-script timings and the apt failure ledger when a build fails.
+  cp "$root/erainfra-build/timings.tsv" "$root/erainfra-build/apt-failures.tsv" "$work/evidence/" 2>/dev/null || true
   machinectl terminate "$machine" 2>/dev/null || true
   mountpoint -q "$root" && umount --recursive "$root" || true
 }
@@ -48,7 +50,7 @@ cp -a "$work/upstream/images/ubuntu/scripts/docs-gen" "$root/imagegeneration/Sof
 cp -a "$work/upstream/helpers/software-report-base/." "$root/imagegeneration/SoftwareReport/"
 cp -a "$work/upstream/images/ubuntu/assets/post-gen" "$root/imagegeneration/post-generation"
 cp "$work/upstream/$(jq -r .toolset "$lock")" "$root/imagegeneration/installers/toolset.json"
-cp "$here"/{install.sh,finish.sh,recipe.py,scripts.txt,upstream.json} "$root/erainfra-build/"
+cp "$here"/{install.sh,finish.sh,recipe.py,scripts.txt,upstream.json,apt-failures.allow} "$root/erainfra-build/"
 # Disable cloud provisioning; nspawn supplies a private network and DNS at build time.
 touch "$root/etc/cloud/cloud-init.disabled"
 printf 'erainfra-image-build\n' > "$root/etc/hostname"
@@ -92,7 +94,7 @@ systemd-run --machine="$machine" --pipe --wait --collect --service-type=exec \
   /bin/bash /erainfra-build/finish.sh 2>&1 | tee "$work/evidence/finish.log"
 cp -a "$root/imagegeneration/software-report."* "$work/evidence/"
 cp "$root/etc/erainfra/runner-environment.json" "$work/evidence/"
-cp "$root/erainfra-build/timings.tsv" "$work/evidence/"
+cp "$root/erainfra-build/timings.tsv" "$root/erainfra-build/apt-failures.tsv" "$work/evidence/"
 systemctl --machine="$machine" poweroff
 # Wait for nspawn to exit before packing a filesystem its services can mutate.
 systemctl stop erainfra-image-container.service
