@@ -25,9 +25,13 @@ def overlay(dockerfile, output):
     text = pathlib.Path(dockerfile).read_text()
     version = re.search(r"^ARG RUNNER_VERSION=(\S+)$", text, re.M).group(1)
     blocks = re.findall(r"^RUN .*?(?=\n\n|\Z)", text, re.M | re.S)
-    selected = [b for b in blocks if "runner_arch=x64" in b or "/opt/action-cache/actions_checkout" in b]
-    if len(selected) != 2:
-        raise ValueError("runner/action-cache Dockerfile blocks changed; review extraction")
+    # The runner, the seeded Actions, and Playwright Chromium's system packages. Hosted does
+    # not carry all of the last, so without it `playwright install --with-deps` spends time in
+    # apt on every browser job (freight-optimizer run 42863598035: 8 s against 3 s on js).
+    markers = ("runner_arch=x64", "/opt/action-cache/actions_checkout", "fonts-freefont-ttf")
+    selected = [b for b in blocks if any(marker in b for marker in markers)]
+    if len(selected) != len(markers):
+        raise ValueError("runner/action-cache/Playwright Dockerfile blocks changed; review extraction")
     pathlib.Path(output).write_text(
         f"#!/bin/bash\nset -euo pipefail\nexport RUNNER_VERSION={version} TARGETARCH=amd64\n"
         + "\n".join(b.removeprefix("RUN ") for b in selected) + "\n"

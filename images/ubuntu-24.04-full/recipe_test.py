@@ -51,6 +51,7 @@ class RecipeTest(unittest.TestCase):
             self.assertIn("runner_arch=x64", shell)
             self.assertIn("sha256sum --check --strict", shell)
             self.assertIn("/opt/action-cache/actions_checkout", shell)
+            self.assertIn("libnss3", shell)
             self.assertNotIn("node_dir=", shell)
             self.assertNotIn("rustup-init", shell)
             changed = pathlib.Path(directory) / "Dockerfile"
