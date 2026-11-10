@@ -105,7 +105,7 @@ func Load() (Config, error) {
 		DownloadTTL:      5 * time.Minute,
 		UploadTTL:        time.Hour,
 		LookupTimeout:    5 * time.Second,
-		FactsWait:        15 * time.Second,
+		FactsWait:        45 * time.Second,
 		ReserveTimeout:   10 * time.Second,
 		TransferTimeout:  30 * time.Minute,
 		MaxEntryBytes:    10 << 30,
@@ -163,7 +163,7 @@ func Load() (Config, error) {
 	if value := strings.TrimSpace(os.Getenv("ERAINFRA_CACHE_FACTS_WAIT")); value != "" {
 		wait, err := ParseDuration(value)
 		if err != nil || wait < 0 {
-			return Config{}, fmt.Errorf("ERAINFRA_CACHE_FACTS_WAIT must be a duration such as 15s, or 0 to refuse at once")
+			return Config{}, fmt.Errorf("ERAINFRA_CACHE_FACTS_WAIT must be a duration such as 45s, or 0 to refuse at once")
 		}
 		config.FactsWait = wait
 	}
