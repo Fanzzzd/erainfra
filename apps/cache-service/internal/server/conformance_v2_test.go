@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -158,6 +159,12 @@ func TestV2RoundTripFollowsTheA2Capture(t *testing.T) {
 	finalized := h.finalizeV2(token, "key-A2", versionA, "8010403")
 	if !finalized.OK || finalized.EntryID == "" {
 		t.Fatalf("FinalizeCacheEntryUpload = %+v", finalized)
+	}
+	// entry_id is an int64 in GitHub's proto, which proto3 JSON writes as a
+	// decimal string. @actions/cache parses it and warns "Failed to save" on
+	// anything else, after the entry was in fact saved.
+	if id, err := strconv.ParseInt(finalized.EntryID, 10, 64); err != nil || id <= 0 {
+		t.Fatalf("entry_id = %q is not a positive int64: %v", finalized.EntryID, err)
 	}
 
 	response := h.postJSON(v2Path("GetCacheEntryDownloadURL"), token,

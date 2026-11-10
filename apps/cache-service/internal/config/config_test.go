@@ -32,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	if config.LookupTimeout != 5*time.Second {
 		t.Errorf("lookup budget = %s", config.LookupTimeout)
 	}
+	if config.FactsWait != 45*time.Second {
+		t.Errorf("facts wait = %s", config.FactsWait)
+	}
 	if config.ReserveTimeout != 10*time.Second {
 		t.Errorf("reserve budget = %s", config.ReserveTimeout)
 	}
@@ -117,13 +120,16 @@ func TestSecretsCanComeFromFiles(t *testing.T) {
 
 func TestLoadRefusesNonsense(t *testing.T) {
 	for name, env := range map[string]map[string]string{
-		"unknown download mode":  {"ERAINFRA_CACHE_DOWNLOAD_MODE": "magic"},
-		"unparseable duration":   {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "soon"},
-		"negative duration":      {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "-5s"},
-		"unparseable size":       {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "lots"},
-		"zero size":              {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "0"},
-		"unknown log level":      {"ERAINFRA_CACHE_LOG_LEVEL": "chatty"},
-		"non-boolean path style": {"ERAINFRA_CACHE_S3_PATH_STYLE": "sometimes"},
+		"unknown download mode":                    {"ERAINFRA_CACHE_DOWNLOAD_MODE": "magic"},
+		"unparseable duration":                     {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "soon"},
+		"negative duration":                        {"ERAINFRA_CACHE_LOOKUP_TIMEOUT": "-5s"},
+		"negative facts wait":                      {"ERAINFRA_CACHE_FACTS_WAIT": "-1s"},
+		"unparseable facts wait":                   {"ERAINFRA_CACHE_FACTS_WAIT": "a while"},
+		"unparseable size":                         {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "lots"},
+		"zero size":                                {"ERAINFRA_CACHE_MAX_ENTRY_BYTES": "0"},
+		"unknown log level":                        {"ERAINFRA_CACHE_LOG_LEVEL": "chatty"},
+		"non-boolean path style":                   {"ERAINFRA_CACHE_S3_PATH_STYLE": "sometimes"},
+		"shared build repository without an owner": {"ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES": "acme/web,web"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setMinimum(t)
@@ -154,5 +160,40 @@ func TestBudgetsAndModeAreConfigurable(t *testing.T) {
 		config.ReserveTimeout != 3*time.Second || config.TransferTimeout != 4*time.Minute ||
 		config.MaxEntryBytes != 1<<20 || config.Store.PathStyle {
 		t.Fatalf("configuration = %+v", config)
+	}
+}
+
+func TestSharedBuildRepositoriesAreAListAndOffByDefault(t *testing.T) {
+	setMinimum(t)
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.SharedBuildRepositories) != 0 {
+		t.Fatalf("shared by default: %v", config.SharedBuildRepositories)
+	}
+	t.Setenv("ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES", " acme/web , ,acme/api")
+	if config, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(config.SharedBuildRepositories, "|") != "acme/web|acme/api" {
+		t.Fatalf("shared = %q", config.SharedBuildRepositories)
+	}
+}
+
+// Zero is a real setting: it restores the refusal with no wait.
+func TestFactsWaitCanBeTurnedOff(t *testing.T) {
+	setMinimum(t)
+	t.Setenv("ERAINFRA_CACHE_FACTS_WAIT", "0s")
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.FactsWait != 0 {
+		t.Fatalf("facts wait = %s, want 0", config.FactsWait)
+	}
+	t.Setenv("ERAINFRA_CACHE_FACTS_WAIT", "40s")
+	if config, err = Load(); err != nil || config.FactsWait != 40*time.Second {
+		t.Fatalf("facts wait = %s, %v", config.FactsWait, err)
 	}
 }

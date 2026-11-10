@@ -142,3 +142,37 @@ func TestPushErrorsWhenUnreachable(t *testing.T) {
 		t.Fatalf("a refused connection is not retryable: %v", err)
 	}
 }
+
+// The hints listing is signed like the facts push and carries the caller's
+// clock and prefixes, which the service checks.
+func TestPendingHintsSignsAndDecodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || r.URL.Path != hintsPath || r.Header.Get(adminHeader) != sign(body) {
+			http.Error(w, "refused", http.StatusUnauthorized)
+			return
+		}
+		var request struct {
+			NowUnix        int64    `json:"nowUnix"`
+			RunnerPrefixes []string `json:"runnerPrefixes"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil || request.NowUnix == 0 ||
+			len(request.RunnerPrefixes) != 1 || request.RunnerPrefixes[0] != "rc-p-" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"hints":[{"runner":"rc-p-1","repository":"o/r","runID":7,"runAttempt":2}]}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, testKey, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := client.PendingHints(t.Context(), []string{"rc-p-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints) != 1 || hints[0] != (Hint{Runner: "rc-p-1", Repository: "o/r", RunID: 7, RunAttempt: 2}) {
+		t.Fatalf("hints = %#v", hints)
+	}
+}

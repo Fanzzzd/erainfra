@@ -185,7 +185,10 @@ func (i *Issuer) RemoveRunner(ctx context.Context, runnerID int64) error {
 	return err
 }
 
-func RunnerName(profile string) (string, error) {
+// RunnerPrefix is the start of every runner name RunnerName makes for profile.
+// The cache's job hints are listed by it, so a controller only ever sees the
+// hints of its own runners.
+func RunnerPrefix(profile string) string {
 	prefix := strings.Trim(strings.Map(func(character rune) rune {
 		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' {
 			return character
@@ -201,11 +204,15 @@ func RunnerName(profile string) (string, error) {
 	if len(prefix) > 40 {
 		prefix = prefix[:40]
 	}
+	return "rc-" + prefix + "-"
+}
+
+func RunnerName(profile string) (string, error) {
 	random := make([]byte, 6)
 	if _, err := rand.Read(random); err != nil {
 		return "", fmt.Errorf("generate runner name: %w", err)
 	}
-	return "rc-" + prefix + "-" + hex.EncodeToString(random), nil
+	return RunnerPrefix(profile) + hex.EncodeToString(random), nil
 }
 
 var _ rccontroller.JITIssuer = (*Issuer)(nil)

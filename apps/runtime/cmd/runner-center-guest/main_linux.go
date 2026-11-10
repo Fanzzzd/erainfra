@@ -443,7 +443,9 @@ func run(ctx context.Context) error {
 	// Drop our copy as soon as the runner has inherited it. The value is never
 	// written to disk, argv, a host environment, or logs.
 	metadata.JITConfig = ""
+	stopJobHint := startJobHint(ctx, metadata)
 	err = command.Wait()
+	stopJobHint()
 	// Before the reset below: a seed save started during the job gets its
 	// grace period to finish, and the VM is not torn down under it.
 	stopGitMirror()
