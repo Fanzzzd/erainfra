@@ -79,8 +79,10 @@ iptables -I FORWARD -o erainfra-host -m conntrack --ctstate ESTABLISHED,RELATED 
 chroot "$root" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-resolved.service
 rm -f "$root/etc/resolv.conf"
 cp /run/systemd/resolve/resolv.conf "$root/etc/resolv.conf"
+# nspawn mounts a small tmpfs on /tmp by default. Hosted keeps /tmp on the root
+# disk, and installers download multi-GB archives there (CodeQL, Android).
 systemd-run --unit=erainfra-image-container --collect --service-type=notify \
-  --property=NotifyAccess=all \
+  --property=NotifyAccess=all --setenv=SYSTEMD_NSPAWN_TMPFS_TMP=0 \
   systemd-nspawn --quiet --boot --notify-ready=yes --directory="$root" --machine="$machine" \
   --network-namespace-path=/run/netns/erainfra-image --resolv-conf=off \
   --capability=all --system-call-filter='add_key keyctl bpf' \

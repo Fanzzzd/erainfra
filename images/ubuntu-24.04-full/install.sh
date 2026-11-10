@@ -15,6 +15,8 @@ export SUDO_USER=packer DEBIAN_FRONTEND=noninteractive
 mkdir -p /var/tmp/erainfra-install
 apt_failures=/erainfra-build/apt-failures.tsv
 cd /var/tmp/erainfra-install
+# Hosted /tmp is on the root disk. Large downloads fail on a small tmpfs.
+[ "$(findmnt --noheadings --output FSTYPE --target /tmp)" = ext4 ]
 systemctl stop apt-daily.timer apt-daily-upgrade.timer
 # Packer starts from Canonical's Azure image, not the generic root archive.
 # Match its apt sources, which configure-apt-sources.sh rewrites to a mirror
