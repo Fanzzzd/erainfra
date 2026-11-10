@@ -32,6 +32,7 @@ import (
 // cannot reach.
 const (
 	factsPath   = "/_erainfra-cache-admin/facts"
+	hintsPath   = "/_erainfra-cache-admin/job-hints"
 	adminHeader = "X-Erainfra-Cache-Admin"
 )
 
@@ -179,4 +180,48 @@ func (c *Client) sign(body []byte) string {
 	mac := hmac.New(sha256.New, c.signingKey)
 	mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// Hint is a runner's own claim about the workflow run it executes, as the cache
+// service received it from the guest. It is untrusted: it only says which run
+// to check with GitHub.
+type Hint struct {
+	Runner     string `json:"runner"`
+	Repository string `json:"repository"`
+	RunID      int64  `json:"runID"`
+	RunAttempt int64  `json:"runAttempt"`
+}
+
+// PendingHints lists the hints of runners whose names start with one of
+// prefixes and whose facts the service does not have yet.
+func (c *Client) PendingHints(ctx context.Context, prefixes []string) ([]Hint, error) {
+	body, err := json.Marshal(struct {
+		NowUnix        int64    `json:"nowUnix"`
+		RunnerPrefixes []string `json:"runnerPrefixes"`
+	}{NowUnix: c.now().Unix(), RunnerPrefixes: prefixes})
+	if err != nil {
+		return nil, fmt.Errorf("encode job hints request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+hintsPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build job hints request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(adminHeader, c.sign(body))
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list job hints: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return nil, &StatusError{Code: resp.StatusCode}
+	}
+	var out struct {
+		Hints []Hint `json:"hints"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode job hints: %w", err)
+	}
+	return out.Hints, nil
 }

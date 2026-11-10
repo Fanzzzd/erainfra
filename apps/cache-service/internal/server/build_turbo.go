@@ -213,4 +213,3 @@ func turboInfoOf(entry *cacheindex.Entry) turboInfo {
 	duration, _ := strconv.ParseInt(entry.Attributes["duration"], 10, 64)
 	return turboInfo{Size: entry.Size, TaskDurationMs: duration, Tag: entry.Attributes["tag"]}
 }
-

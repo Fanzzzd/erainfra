@@ -151,6 +151,11 @@ func runHolder(ctx context.Context, cfg config.Config, store *convexstore.Store,
 				return err
 			}
 			logger.Info("runner scale-set controller started", "profile", cfg.Profile, "scaleSetID", scaleSet.ID, "epoch", epoch)
+			// Job hints are read only while this controller holds the session,
+			// so two instances of one Profile never publish for the same runner.
+			hints, stopHints := context.WithCancel(ctx)
+			defer stopHints()
+			go scaler.RunHintPoller(hints, githubscale.RunnerPrefix(cfg.Profile))
 			return scaleSetListener.Run(ctx, scaler.ForSession(observed, listenerLogger))
 		}, Observer: reporter, Logger: logger.WithGroup("session"),
 	}

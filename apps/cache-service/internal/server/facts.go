@@ -136,6 +136,7 @@ func (s *Server) registerFacts(runner string, facts cachetoken.JobFacts, expires
 	defer s.mu.Unlock()
 	s.facts[runner] = factsEntry{facts: facts, expires: expires}
 	delete(s.unknown, runner)
+	delete(s.hints, runner)
 	close(s.factsArrived)
 	s.factsArrived = make(chan struct{})
 }
