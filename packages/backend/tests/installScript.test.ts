@@ -1453,6 +1453,9 @@ describe("--role worker-host", () => {
     expect(createHash("sha256").update(repoScript).digest("hex")).toBe(
       FIRECRACKER_HOST_PROVISIONER_SHA256,
     );
+    // A whole-snapshot discard on teardown stalls the pool long enough to fail
+    // the next boot's root-drive attach (ubuntu0, 2026-11-10).
+    expect(repoScript.toString("utf8")).toMatch(/^\s*discard_blocks = false$/m);
   });
 
   // The provisioner refuses to install the runtime service without its unit file beside it, so a

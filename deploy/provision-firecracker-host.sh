@@ -603,6 +603,11 @@ step 'Configuring the dedicated containerd instance'
 # A separate containerd keeps the devmapper snapshotter, the image content store
 # and the namespace away from whatever else this host runs. Nothing here touches
 # /etc/containerd/config.toml, so Docker on the same machine is unaffected.
+# discard_blocks stays off. Deleting a thin device already frees its blocks for
+# the pool to reuse; a discard first only shrinks the sparse backing file. On a
+# 96 GiB snapshot that blkdiscard ran long enough to stall the pool, and every
+# Firecracker boot behind it failed to attach its root drive (ubuntu0,
+# 2026-11-10, 17:31 to 18:33 UTC).
 cat > "$RC_ETC_DIR/containerd.toml" <<CONTAINERD
 version = 2
 root = "$CONTAINERD_ROOT"
@@ -616,7 +621,7 @@ disabled_plugins = ["io.containerd.grpc.v1.cri"]
   pool_name = "$THIN_POOL"
   root_path = "$CONTAINERD_ROOT/devmapper"
   base_image_size = "$BASE_IMAGE_SIZE"
-  discard_blocks = true
+  discard_blocks = false
 CONTAINERD
 chmod 0600 "$RC_ETC_DIR/containerd.toml"
 
