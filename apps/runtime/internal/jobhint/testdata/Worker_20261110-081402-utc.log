@@ -1,0 +1,208 @@
+[2026-11-10 08:14:02Z INFO HostContext] No proxy settings were found based on environmental variables (http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY)
+[2026-11-10 08:14:02Z INFO Worker] Version: 2.330.0
+[2026-11-10 08:14:02Z INFO Worker] Commit: 3a1c8970f1ad3e4e1a7b2f6f0d64c1a4bb1b6b4e
+[2026-11-10 08:14:02Z INFO Worker] Culture:
+[2026-11-10 08:14:02Z INFO Worker] UI Culture:
+[2026-11-10 08:14:02Z INFO ProcessChannel] Create process channel with in pipe 'pipe:in' and out pipe 'pipe:out'.
+[2026-11-10 08:14:02Z INFO Worker] Waiting to receive the job message from the channel.
+[2026-11-10 08:14:02Z INFO ProcessChannel] Receiving message of length 41234, with hash 'b1946ac92492d2347c6235b4d2611184'
+[2026-11-10 08:14:02Z INFO Worker] Message received.
+[2026-11-10 08:14:02Z INFO Worker] Job message:
+ {
+  "fileTable": [
+    ".github/workflows/ci.yml"
+  ],
+  "mask": [
+    {
+      "type": "regex",
+      "value": "***"
+    }
+  ],
+  "steps": [
+    {
+      "type": "action",
+      "reference": {
+        "type": "repository",
+        "name": "actions/checkout",
+        "ref": "v4",
+        "repositoryType": "GitHub"
+      },
+      "contextName": "__actions_checkout",
+      "inputs": {
+        "type": 2,
+        "map": [
+          {
+            "Key": "repository",
+            "Value": "someone-else/decoy"
+          }
+        ]
+      },
+      "id": "5f2ea2a3-0c4d-4d2b-9a1a-0c6b9b2f8f11",
+      "name": "__actions_checkout"
+    }
+  ],
+  "variables": {
+    "system.github.job": {
+      "value": "build"
+    },
+    "system.github.token": {
+      "value": "***",
+      "isSecret": true
+    }
+  },
+  "messageType": "PipelineAgentJobRequest",
+  "plan": {
+    "scopeIdentifier": "00000000-0000-0000-0000-000000000000",
+    "planType": "actions",
+    "version": 0,
+    "planId": "8c3b3c5e-6b1f-4d43-8a8b-9a4c1c0d1e21",
+    "planGroup": null,
+    "artifactUri": "",
+    "artifactLocation": null,
+    "definition": {
+      "id": 0
+    },
+    "owner": {
+      "id": 0,
+      "name": "CI"
+    }
+  },
+  "timeline": {
+    "id": "8c3b3c5e-6b1f-4d43-8a8b-9a4c1c0d1e21",
+    "changeId": 0,
+    "location": null
+  },
+  "jobId": "2b4dbe8e-3d6b-5b3f-8d8e-6f0a2c7a9c55",
+  "jobDisplayName": "build",
+  "jobName": "__default",
+  "requestId": 0,
+  "lockedUntil": "0001-01-01T00:00:00",
+  "resources": {
+    "endpoints": [
+      {
+        "data": {
+          "CacheServerUrl": "https://acghubeus1.actions.githubusercontent.com/abc/"
+        },
+        "name": "SystemVssConnection",
+        "url": "https://pipelinesghubeus1.actions.githubusercontent.com/abc/",
+        "authorization": {
+          "parameters": {
+            "AccessToken": "***"
+          },
+          "scheme": "OAuth"
+        },
+        "isShared": false,
+        "isReady": true
+      }
+    ]
+  },
+  "contextData": {
+    "inputs": {
+      "t": 2
+    },
+    "github": {
+      "t": 2,
+      "d": [
+        {
+          "k": "token",
+          "v": "***"
+        },
+        {
+          "k": "job",
+          "v": "build"
+        },
+        {
+          "k": "ref",
+          "v": "refs/heads/main"
+        },
+        {
+          "k": "sha",
+          "v": "a6f1c1e0b8d2f4f3a1c9b0e7d6c5b4a3f2e1d0c9"
+        },
+        {
+          "k": "event",
+          "v": {
+            "t": 2,
+            "d": [
+              {
+                "k": "repository",
+                "v": {
+                  "t": 2,
+                  "d": [
+                    {
+                      "k": "full_name",
+                      "v": "someone-else/decoy"
+                    },
+                    {
+                      "k": "id",
+                      "v": {
+                        "t": 4,
+                        "n": 123456.0
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "k": "run_id",
+                "v": "1"
+              }
+            ]
+          }
+        },
+        {
+          "k": "repository",
+          "v": "octo-org/octo-repo"
+        },
+        {
+          "k": "repository_id",
+          "v": "812345678"
+        },
+        {
+          "k": "repository_owner",
+          "v": "octo-org"
+        },
+        {
+          "k": "run_id",
+          "v": "42820231088"
+        },
+        {
+          "k": "run_number",
+          "v": "981"
+        },
+        {
+          "k": "run_attempt",
+          "v": "1"
+        },
+        {
+          "k": "server_url",
+          "v": "https://github.com"
+        }
+      ]
+    },
+    "matrix": null,
+    "needs": {
+      "t": 2
+    },
+    "strategy": {
+      "t": 2,
+      "d": [
+        {
+          "k": "fail-fast",
+          "v": true
+        }
+      ]
+    },
+    "vars": {
+      "t": 2
+    }
+  },
+  "workspace": {
+    "clean": null
+  }
+}
+[2026-11-10 08:14:02Z INFO JobRunner] Job ID 2b4dbe8e-3d6b-5b3f-8d8e-6f0a2c7a9c55
+[2026-11-10 08:14:02Z INFO JobRunner] Starting the job execution context.
+[2026-11-10 08:14:03Z INFO ExecutionContext] Publish step telemetry for current step {
+  "action": "Pre Job Hook"
+}

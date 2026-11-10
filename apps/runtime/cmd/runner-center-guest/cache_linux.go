@@ -16,6 +16,7 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestdocker"
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobhint"
 )
 
 const (
@@ -124,6 +125,25 @@ func closeBuildCacheProxy(proxy *guestcache.BuildProxy) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = proxy.Close(ctx)
+}
+
+// startJobHint tells the cache service which run this runner executes the
+// moment the job starts (package jobhint), so the first cache request does not
+// wait for the controller's JobStarted facts. It runs beside the runner and
+// never blocks or fails the job; stop ends it once the runner has exited,
+// sent or not. An Experiment runs no GitHub job, so it has nothing to claim.
+func startJobHint(ctx context.Context, md guest.Metadata) (stop func()) {
+	if md.Kind == "experiment" || md.CacheServiceURL == "" || md.CacheRunnerToken == "" {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	go jobhint.Run(ctx, jobhint.Config{
+		DiagDir:         runnerDiagDir,
+		CacheServiceURL: md.CacheServiceURL,
+		RunnerToken:     md.CacheRunnerToken,
+		Logf:            logf,
+	})
+	return cancel
 }
 
 // installTrustAnchor writes the interceptor's per-guest CA and folds it into the
