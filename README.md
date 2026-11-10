@@ -327,9 +327,10 @@ GOOS=linux govulncheck ./...
 
 `pnpm check` is the JavaScript gate for the whole workspace: lint, formatting, type checking, and
 tests. The golangci-lint line needs golangci-lint v2.15.0, the version CI pins. It reads
-`.golangci.yml`, which adds `noctx` and `nolintlint` to the default linters. `GOOS=linux` lints the
-code that ships; the module also lints clean with `GOOS=darwin`. A `//nolint` must name its linter
-and give a reason: `//nolint:errcheck // read-only body; a close error loses nothing`.
+`.golangci.yml`, which adds `noctx` and `nolintlint` to the default linters and fails on any file
+`gofmt` or `goimports` would change. `GOOS=linux` lints the code that ships; the module also lints
+clean with `GOOS=darwin`. A `//nolint` must name its linter and give a reason:
+`//nolint:errcheck // read-only body; a close error loses nothing`.
 
 govulncheck fails when shipped code calls a function with a known vulnerability, in a dependency or
 in the Go standard library of the `go` on your PATH. An advisory in a package the code imports but
