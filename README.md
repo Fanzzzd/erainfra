@@ -307,7 +307,7 @@ records the design.
 
 ## Develop locally
 
-Requirements: Node.js 22.13+ (`.nvmrc` pins the version CI uses), pnpm 11, Go 1.27.4+, and
+Requirements: Node.js 22.13+ (`.nvmrc` pins the version CI uses), pnpm 12, Go 1.27.4+, and
 a Convex account or local deployment.
 
 ```bash

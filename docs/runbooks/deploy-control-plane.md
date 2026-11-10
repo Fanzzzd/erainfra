@@ -112,7 +112,7 @@ release you deploy):
 4. Add each module you took to `packages/backend/convex/_generated/api.d.ts`, in the order
    `convex codegen` uses (byte order of the path). Codegen itself needs a deployment.
 5. In the root `package.json`, `deploy:control-plane` must be
-   `pnpm --filter @erainfra/backend run deploy`. Without `run`, pnpm 11 runs its own `deploy`.
+   `pnpm --filter @erainfra/backend run deploy`. Without `run`, pnpm runs its own `deploy`.
 6. `pnpm install --frozen-lockfile && pnpm check`, build the dashboard as above, commit, and
    `git push origin "rollback/v$old-on-v$new-schema"`. Never merge it into `main`.
 
@@ -230,7 +230,7 @@ npx convex deploy -y
 pnpm run deploy --skip-convex
 ```
 
-Run the backend's `deploy` script through `pnpm run`: pnpm 11 treats a bare `pnpm deploy` as its
+Run the backend's `deploy` script through `pnpm run`: pnpm treats a bare `pnpm deploy` as its
 own built-in command. `-y` skips the confirmation `convex deploy` asks for when `CONVEX_DEPLOYMENT`
 names a dev deployment, which would fail in a shell that cannot prompt.
 
