@@ -58,12 +58,15 @@ WRAPPER
       source /etc/environment
       set +a
       pwsh -File /imagegeneration/SoftwareReport/Generate-SoftwareReport.ps1 -OutputDirectory /imagegeneration
-      # The software tests run unchanged. System.Tests.ps1 asserts Azure disks,
-      # GRUB and the host kernel command line, not installed software.
+      # The software tests run unchanged. From System.Tests.ps1, skip only the
+      # blocks about Azure disks, GRUB and the host kernel command line.
       for test in /imagegeneration/tests/*.Tests.ps1; do
         [ "$(basename "$test")" = System.Tests.ps1 ] && continue
         name=$(basename "$test" .Tests.ps1)
         pwsh -Command "Import-Module '/imagegeneration/tests/Helpers.psm1'; Invoke-PesterTests '$name'"
+      done
+      for block in 'Azure resource disk mount timeout' 'fwupd removed' '/tmp emptied at boot' 'Dpkg options'; do
+        pwsh -Command "Import-Module '/imagegeneration/tests/Helpers.psm1'; Invoke-PesterTests 'System' '$block*'"
       done ;;
   esac
   start=$(date +%s)
