@@ -273,7 +273,6 @@ allow sysctl_user_max_user_namespaces  # 64053 against 63838 hosted, same run, s
 allow pids_cgroup_max  # 19215 against 19151 hosted, same run. The Docker-era --pids-limit 4096 is gone and the guest's bound is now the kernel's RAM-derived one, which at 16 GiB is the number hosted has
 allow rlimit_max_processes_soft  # 64053 against 63838 hosted, same run: a real blast-radius bound at hosted's size, no longer the 7949 a fork-heavy suite could reach
 allow rlimit_max_processes_hard  # as above, hard limit
-pending rlimit_max_stack_size_soft=8388608 2026-12-05  # #96: decided and fixed at the source. LimitSTACK=16777216:infinity on images/ubuntu-24.04-js/runner-center-guest.service gives every job hosted's 16 MiB soft stack, the same pair the Docker executor passes as --ulimit stack=16777216:-1, and smoke.sh asserts the line at image build. This is a transition pending: the fleet keeps measuring the image it is pinned to, so the line covers nothing once the Profiles are repinned to an image built from that change, and goes red if the repin never happens
 allow rlimit_max_pending_signals_soft  # 64053 against 63838 hosted, same run, same derivation
 allow rlimit_max_pending_signals_hard  # as above, hard limit
 allow net_ipv6_disabled  # the isolation contract forbids hosted parity here. Guests boot with ipv6.disable=1 because the job network policy is IPv4 nftables and a dual-stack guest could route around it (apps/runtime/internal/firecracker/config.go, ADR 0002); netpolicy.RequiredKernelArgs puts the argument in the policy identity and readiness refuses a kernel command line without it. So /proc/sys/net/ipv6 does not exist (unavailable) against 0 on hosted. Hosted offers less than `0` suggests: GitHub-hosted runners have no IPv6 egress (actions/runner-images#668), so the reachable difference is ::1 on loopback. A job that binds or dials ::1 fails here and must use 127.0.0.1. Revisit only together with an IPv6 job network policy
@@ -283,10 +282,3 @@ allow dns_nameserver_loopback  # same decision: no stub resolver runs in the gue
 allow dns_options  # edns0 is asked for, as on hosted: resolverConfig in runner-center-guest writes `options edns0` (and provision-docker.sh passes --dns-option edns0), so a large answer is not truncated and retried over TCP. Measured unavailable until the Profiles are repinned to a guest carrying that change, edns0 after. trust-ad is deliberately left out against hosted's edns0,trust-ad: it makes glibc believe the AD bit, which is only sound for a trusted resolver on a trusted path, and hosted's is systemd-resolved on loopback while the guest's are across the network
 allow dns_search_domain_count  # no search domain, by decision: netpolicy.Policy has no search field, so a guest gets none, and provision-docker.sh passes --dns-search . for the same reason. A search domain makes a bare name in a workflow resolve through a suffix the Worker's network supplies, so `registry` would reach an operator's internal host on one Worker and NXDOMAIN on the next. Hosted's one search domain is its Azure-internal suffix, which means nothing outside Azure
 
-# Transition pendings for the Docker CLI plugins. This branch adds docker-compose-v2 and
-# docker-buildx to the Image Release, but the fleet keeps measuring the image it is pinned to until
-# the Profiles are repinned, so the live Profile still reports both absent. Pinned at the measured
-# value: the line dies the moment a repinned Profile reports `yes`, and goes red if the repin never
-# happens.
-pending tool_docker_compose_present=no 2026-12-05  # #151: until the Profiles are repinned to an image built from this change
-pending tool_docker_buildx_present=no 2026-12-05  # #151: same

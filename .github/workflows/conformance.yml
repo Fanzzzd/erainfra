@@ -10,7 +10,10 @@ on:
     # at 8 CPUs and 8 GiB while every interface it could read said 64 and
     # 251 GiB) reached a production repository because nothing here had ever
     # compared our fleet against the environment every workflow in the world is
-    # written against.
+    # written against. The baseline is `ubuntu-24.04`, not `ubuntu-latest`:
+    # every Linux Profile promises Ubuntu 24.04, and GitHub began moving
+    # `ubuntu-latest` to 26.04 in November 2026 (run 42820344702 compared 26.04
+    # against our 24.04 and failed on the OS version and four kernel defaults).
     - cron: "41 4 * * *"
   pull_request:
     paths:
