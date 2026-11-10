@@ -76,6 +76,15 @@ type Config struct {
 	IdleTTL          time.Duration
 	RepoQuotaBytes   int64
 	EvictionInterval time.Duration
+
+	// SharedBuildRepositories lists "owner/name" repositories whose jobs save
+	// build-system entries (turbo/ and go/) in the default branch's scope
+	// instead of their own ref, so a squash-merged pull request's outputs hit
+	// on the default branch. Fork pull requests still cannot write. List a
+	// repository only when everyone who can open a pull request in it can
+	// already push to its default branch: the switch gives a pull request's
+	// build outputs the default branch's trust.
+	SharedBuildRepositories []string
 }
 
 // Load reads the environment and refuses to start on anything missing. A cache
@@ -122,6 +131,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	config.Store.Secret = string(secret)
+
+	for _, repository := range strings.Split(os.Getenv("ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES"), ",") {
+		repository = strings.TrimSpace(repository)
+		if repository == "" {
+			continue
+		}
+		if err := cachetoken.ValidateRepository(repository); err != nil {
+			return Config{}, fmt.Errorf("ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES: %w", err)
+		}
+		config.SharedBuildRepositories = append(config.SharedBuildRepositories, repository)
+	}
 
 	if config.DownloadMode != DownloadPresign && config.DownloadMode != DownloadProxy {
 		return Config{}, fmt.Errorf("ERAINFRA_CACHE_DOWNLOAD_MODE must be %q or %q, got %q",

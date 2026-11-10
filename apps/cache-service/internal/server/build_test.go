@@ -426,6 +426,67 @@ func TestBuildCacheFollowsBranchScoping(t *testing.T) {
 	}
 }
 
+// A repository the operator lists in SharedBuildRepositories saves its
+// build-system entries in the default branch's scope from every job that may
+// write, so a squash-merged pull request's turbo and Go outputs hit on main.
+// Only build entries move: actions/cache entries keep GitHub's per-ref rule,
+// a listed repository's fork pull requests still cannot write, and a
+// repository that is not listed keeps the per-ref rule for everything.
+func TestSharedBuildRepositoryWritesBuildEntriesToTheDefaultBranch(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.SharedBuildRepositories = []string{"acme/web"} })
+	pullRequest := func(repository, head string, number int) string {
+		return h.token(cachetoken.JobFacts{
+			Repository: repository, HeadRepository: head, Event: "pull_request",
+			Ref: fmt.Sprintf("refs/pull/%d/merge", number), BaseRef: "refs/heads/main", DefaultBranch: "refs/heads/main",
+		})
+	}
+	main := h.pushToken("acme/web", "refs/heads/main")
+	feature := h.pushToken("acme/web", "refs/heads/feature")
+	sibling := h.pushToken("acme/web", "refs/heads/sibling")
+	otherMain := h.pushToken("acme/api", "refs/heads/main")
+
+	for _, upload := range []struct{ token, hash string }{
+		{pullRequest("acme/web", "acme/web", 41), "a101"},
+		{feature, "a102"},
+		{pullRequest("acme/api", "acme/api", 5), "a103"},
+	} {
+		response := h.turboPut(upload.token, upload.hash, []byte(upload.hash), nil)
+		_ = readAll(t, response)
+		if response.StatusCode != http.StatusAccepted {
+			t.Fatalf("upload %s = %d", upload.hash, response.StatusCode)
+		}
+	}
+	if status := h.goPut(pullRequest("acme/web", "acme/web", 41), goID("pr"), []byte("pr go output"), nil); status != http.StatusNoContent {
+		t.Fatalf("go put = %d", status)
+	}
+	refused := h.turboPut(pullRequest("acme/web", "stranger/web", 42), "a104", []byte("poison"), nil)
+	_ = readAll(t, refused)
+	if refused.StatusCode != http.StatusForbidden {
+		t.Fatalf("fork upload = %d, want 403", refused.StatusCode)
+	}
+
+	cases := []struct {
+		name  string
+		token string
+		hash  string
+		want  int
+	}{
+		{"main reads a merged pull request's turbo output", main, "a101", http.StatusOK},
+		{"main reads a feature branch's turbo output", main, "a102", http.StatusOK},
+		{"a sibling branch reads it through the default branch", sibling, "a101", http.StatusOK},
+		{"a fork's refused upload is nowhere", main, "a104", http.StatusNotFound},
+		{"an unlisted repository keeps the per-ref rule", otherMain, "a103", http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		if status, _, _ := h.turboGet(tc.token, tc.hash, nil); status != tc.want {
+			t.Errorf("%s: %d, want %d", tc.name, status, tc.want)
+		}
+	}
+	if status, body, _ := h.goGet(main, goID("pr"), nil); status != http.StatusOK || string(body) != "pr go output" {
+		t.Errorf("main Go read of a pull request's output = %d %q", status, body)
+	}
+}
+
 // A fork's pull request runs code the repository does not control. It reads
 // the base branch's build outputs and cannot write any, the same rule 2 that
 // governs its actions/cache saves.

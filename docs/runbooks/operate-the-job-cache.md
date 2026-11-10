@@ -95,31 +95,32 @@ Use a bucket-scoped API token, not an account token.
 Every variable is new, so every variable is spelled `ERAINFRA_CACHE_*`. Nothing here is on
 [CONTEXT.md](../../CONTEXT.md) rule 4's frozen list.
 
-| variable                           | required | default                        | what it is                                             |
-| ---------------------------------- | -------- | ------------------------------ | ------------------------------------------------------ |
-| `ERAINFRA_CACHE_S3_ENDPOINT`       | yes      | —                              | `http(s)://host:port` of the store                     |
-| `ERAINFRA_CACHE_S3_BUCKET`         | yes      | —                              | bucket name                                            |
-| `ERAINFRA_CACHE_S3_ACCESS_KEY`     | yes      | —                              | access key id                                          |
-| `ERAINFRA_CACHE_S3_SECRET`         | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`     |
-| `ERAINFRA_CACHE_S3_REGION`         | no       | `us-east-1`                    | signing region; R2 wants `auto`                        |
-| `ERAINFRA_CACHE_S3_PREFIX`         | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache |
-| `ERAINFRA_CACHE_S3_PATH_STYLE`     | no       | `true`                         | address the bucket as a path segment                   |
-| `ERAINFRA_CACHE_SIGNING_KEY`       | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes    |
-| `ERAINFRA_CACHE_LISTEN`            | no       | `:8721`                        | listen address                                         |
-| `ERAINFRA_CACHE_PUBLIC_URL`        | no       | taken from the request         | base URL jobs reach this service at                    |
-| `ERAINFRA_CACHE_DOWNLOAD_MODE`     | no       | `presign`                      | `presign` or `proxy`; see below                        |
-| `ERAINFRA_CACHE_DOWNLOAD_TTL`      | no       | `5m`                           | lifetime of a download URL                             |
-| `ERAINFRA_CACHE_UPLOAD_TTL`        | no       | `1h`                           | lifetime of an upload URL and of a spooled upload      |
-| `ERAINFRA_CACHE_LOOKUP_TIMEOUT`    | no       | `5s`                           | restore budget; overrun answers a miss                 |
-| `ERAINFRA_CACHE_RESERVE_TIMEOUT`   | no       | `10s`                          | reserve/finalize budget; overrun refuses the save      |
-| `ERAINFRA_CACHE_TRANSFER_TIMEOUT`  | no       | `30m`                          | one request body, and the store write it drives        |
-| `ERAINFRA_CACHE_MAX_ENTRY_BYTES`   | no       | `10737418240` (10 GiB)         | per-entry ceiling                                      |
-| `ERAINFRA_CACHE_PART_BYTES`        | no       | `33554432` (32 MiB)            | multipart part size                                    |
-| `ERAINFRA_CACHE_SPOOL_DIR`         | no       | `$TMPDIR/erainfra-cache-spool` | where in-flight uploads land                           |
-| `ERAINFRA_CACHE_IDLE_TTL`          | no       | `7d`                           | evict an entry not restored for this long (§4)         |
-| `ERAINFRA_CACHE_REPO_QUOTA_BYTES`  | no       | `10737418240` (10 GiB)         | one repository's entries, at most; LRU over it (§4)    |
-| `ERAINFRA_CACHE_EVICTION_INTERVAL` | no       | `1h`                           | how often the whole bucket is swept (§4)               |
-| `ERAINFRA_CACHE_LOG_LEVEL`         | no       | `info`                         | `debug`, `info`, `warn`, `error`                       |
+| variable                                   | required | default                        | what it is                                                                  |
+| ------------------------------------------ | -------- | ------------------------------ | --------------------------------------------------------------------------- |
+| `ERAINFRA_CACHE_S3_ENDPOINT`               | yes      | —                              | `http(s)://host:port` of the store                                          |
+| `ERAINFRA_CACHE_S3_BUCKET`                 | yes      | —                              | bucket name                                                                 |
+| `ERAINFRA_CACHE_S3_ACCESS_KEY`             | yes      | —                              | access key id                                                               |
+| `ERAINFRA_CACHE_S3_SECRET`                 | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`                          |
+| `ERAINFRA_CACHE_S3_REGION`                 | no       | `us-east-1`                    | signing region; R2 wants `auto`                                             |
+| `ERAINFRA_CACHE_S3_PREFIX`                 | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache                      |
+| `ERAINFRA_CACHE_S3_PATH_STYLE`             | no       | `true`                         | address the bucket as a path segment                                        |
+| `ERAINFRA_CACHE_SIGNING_KEY`               | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes                         |
+| `ERAINFRA_CACHE_LISTEN`                    | no       | `:8721`                        | listen address                                                              |
+| `ERAINFRA_CACHE_PUBLIC_URL`                | no       | taken from the request         | base URL jobs reach this service at                                         |
+| `ERAINFRA_CACHE_DOWNLOAD_MODE`             | no       | `presign`                      | `presign` or `proxy`; see below                                             |
+| `ERAINFRA_CACHE_DOWNLOAD_TTL`              | no       | `5m`                           | lifetime of a download URL                                                  |
+| `ERAINFRA_CACHE_UPLOAD_TTL`                | no       | `1h`                           | lifetime of an upload URL and of a spooled upload                           |
+| `ERAINFRA_CACHE_LOOKUP_TIMEOUT`            | no       | `5s`                           | restore budget; overrun answers a miss                                      |
+| `ERAINFRA_CACHE_RESERVE_TIMEOUT`           | no       | `10s`                          | reserve/finalize budget; overrun refuses the save                           |
+| `ERAINFRA_CACHE_TRANSFER_TIMEOUT`          | no       | `30m`                          | one request body, and the store write it drives                             |
+| `ERAINFRA_CACHE_MAX_ENTRY_BYTES`           | no       | `10737418240` (10 GiB)         | per-entry ceiling                                                           |
+| `ERAINFRA_CACHE_PART_BYTES`                | no       | `33554432` (32 MiB)            | multipart part size                                                         |
+| `ERAINFRA_CACHE_SPOOL_DIR`                 | no       | `$TMPDIR/erainfra-cache-spool` | where in-flight uploads land                                                |
+| `ERAINFRA_CACHE_IDLE_TTL`                  | no       | `7d`                           | evict an entry not restored for this long (§4)                              |
+| `ERAINFRA_CACHE_REPO_QUOTA_BYTES`          | no       | `10737418240` (10 GiB)         | one repository's entries, at most; LRU over it (§4)                         |
+| `ERAINFRA_CACHE_EVICTION_INTERVAL`         | no       | `1h`                           | how often the whole bucket is swept (§4)                                    |
+| `ERAINFRA_CACHE_LOG_LEVEL`                 | no       | `info`                         | `debug`, `info`, `warn`, `error`                                            |
+| `ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES` | no       | empty                          | `owner/name` list whose build caches share the default branch's scope (§10) |
 
 Every secret variable has a `_FILE` twin (`ERAINFRA_CACHE_SIGNING_KEY_FILE`,
 `ERAINFRA_CACHE_S3_SECRET_FILE`). Prefer them: a secret in an environment variable is readable by
@@ -939,6 +940,28 @@ an amd64 job's outputs. Everything else is the same as for `actions/cache` entri
   repository's `actions/cache` entries;
 - `admin list` and `admin delete` in §9. `cache delete --repo owner/name --prefix turbo/` clears
   one repository's Turborepo artifacts, `--prefix go/` its Go outputs.
+
+### Sharing build outputs with the default branch
+
+Under the scope rules above, a pull request's turbo and Go outputs stay on `refs/pull/<n>/merge`.
+After a squash merge the default branch computes the same hashes and finds nothing, so it rebuilds
+every task the pull request already built. A repository listed in
+`ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES` saves its `turbo/` and `go/` entries in the default
+branch's scope from every job that may write: pushes to any branch and same-repository pull
+requests. The default branch then hits on them, and so does every other branch, because the default
+branch is on every read list. `actions/cache` entries are unaffected and keep GitHub's per-ref rule.
+Fork pull requests still cannot write.
+
+The keys are content hashes of every input, so sharing cannot hand a job another build's output.
+What it changes is trust: a pull request's build output becomes something the default branch
+consumes. List a repository only when everyone who can open a pull request in it can already push
+to its default branch, for example a repository with no branch protection. Remove it when the
+default branch gains required reviews or status checks, then clear what it shared with
+`cache delete --repo owner/name --prefix turbo/` and `--prefix go/`.
+
+```bash
+ERAINFRA_CACHE_SHARED_BUILD_REPOSITORIES=acme/web,acme/api
+```
 
 A Go build saves one entry per compiled package, so a repository's entry count grows faster than
 its byte count. The quota is in bytes, and listing pages through all of them.

@@ -187,6 +187,7 @@ func (s *Server) saveBuildEntry(w http.ResponseWriter, r *http.Request, claims c
 	}
 	ctx, cancel := s.deadline(w, r, s.config.TransferTimeout)
 	defer cancel()
+	claims = s.buildWriteClaims(claims)
 
 	exists, err := s.index.Exists(ctx, claims, key, version)
 	if err != nil {
@@ -253,6 +254,25 @@ func (s *Server) saveBuildEntry(w http.ResponseWriter, r *http.Request, claims c
 	s.logger.Debug("build cache entry saved", "repository", claims.Repository,
 		"ref", claims.WriteScope(), "key", key, "bytes", size)
 	return saveStored
+}
+
+// buildWriteClaims moves a build-system save into the default branch's scope
+// for a repository the operator listed in SharedBuildRepositories. Build keys
+// are content hashes of every input, so the move cannot hand the default branch
+// another build's output; what it changes is trust, which is why the operator
+// lists repositories one by one. A token that may not write is returned as is,
+// so a fork pull request stays refused.
+func (s *Server) buildWriteClaims(claims cachetoken.Claims) cachetoken.Claims {
+	if claims.DefaultBranch == "" || !claims.CanWrite() {
+		return claims
+	}
+	for _, repository := range s.config.SharedBuildRepositories {
+		if strings.EqualFold(repository, claims.Repository) {
+			claims.Ref = claims.DefaultBranch
+			return claims
+		}
+	}
+	return claims
 }
 
 // headerValue reads an optional metadata header a client asks to have stored
