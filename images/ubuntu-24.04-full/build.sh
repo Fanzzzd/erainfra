@@ -50,7 +50,7 @@ cp -a "$work/upstream/images/ubuntu/scripts/docs-gen" "$root/imagegeneration/Sof
 cp -a "$work/upstream/helpers/software-report-base/." "$root/imagegeneration/SoftwareReport/"
 cp -a "$work/upstream/images/ubuntu/assets/post-gen" "$root/imagegeneration/post-generation"
 cp "$work/upstream/$(jq -r .toolset "$lock")" "$root/imagegeneration/installers/toolset.json"
-cp "$here"/{install.sh,finish.sh,recipe.py,scripts.txt,upstream.json,apt-failures.allow} "$root/erainfra-build/"
+cp "$here"/{install.sh,finish.sh,recipe.py,scripts.txt,upstream.json,apt-failures.allow,azure-base-packages.txt} "$root/erainfra-build/"
 # Disable cloud provisioning; nspawn supplies a private network and DNS at build time.
 touch "$root/etc/cloud/cloud-init.disabled"
 printf 'erainfra-image-build\n' > "$root/etc/hostname"

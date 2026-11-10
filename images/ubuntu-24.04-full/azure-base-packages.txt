@@ -1,0 +1,24 @@
+# Userspace packages in Canonical's Azure image of the same release that the
+# generic root archive lacks. Packer starts from the Azure image, and hosted
+# runners keep these. Compare the two release manifests when bumping the root:
+#   ubuntu-24.04-server-cloudimg-amd64-azure.vhd.manifest
+#   ubuntu-24.04-server-cloudimg-amd64-root.manifest
+# Not installed: the Azure kernel, headers, modules and tools (Firecracker boots
+# a pinned kernel), GRUB, shim and EFI tools (no bootloader), walinuxagent and
+# azure-vm-utils (no Azure agent or Azure disks), and linux-base-sgx.
+bpfcc-tools
+bpftrace
+chrony
+cifs-utils
+hwdata
+ieee-data
+keyutils
+linux-cloud-tools-common
+linux-tools-common
+lsscsi
+nvme-cli
+python3-netaddr
+python3-parted
+python3-passlib
+tzdata-legacy
+ubuntu-kernel-accessories

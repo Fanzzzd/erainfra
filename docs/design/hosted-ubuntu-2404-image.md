@@ -25,6 +25,12 @@ The small image remains available. Its publish workflow and deployed digest do n
 
 The cloud root filesystem supplies the server packages that Packer's Azure base assumes.
 It is not a copy of a hosted runner and contains no hosted job credentials.
+Before the first upstream script, the build makes it match Canonical's Azure image of the
+same release in two ways. Apt sources point at `azure.archive.ubuntu.com`, which
+`configure-apt-sources.sh` then rewrites to a mirror list, as the Apt test requires.
+`azure-base-packages.txt` installs the userspace packages that only the Azure manifest lists,
+such as `bpftrace`, `chrony`, `cifs-utils`, and `nvme-cli`. It leaves out the Azure kernel,
+GRUB, EFI tools, and the Azure agent. The build fails if a kernel or bootloader appears.
 The build runs all software installers, including Android, browsers, Java, .NET, Swift,
 Haskell, databases, cloud command-line tools, PowerShell, Homebrew, tool caches, and Docker's
 preloaded images. The software set follows the pinned toolset, including its version patterns.

@@ -16,7 +16,19 @@ mkdir -p /var/tmp/erainfra-install
 apt_failures=/erainfra-build/apt-failures.tsv
 cd /var/tmp/erainfra-install
 systemctl stop apt-daily.timer apt-daily-upgrade.timer
+# Packer starts from Canonical's Azure image, not the generic root archive.
+# Match its apt sources, which configure-apt-sources.sh rewrites to a mirror
+# list, and its extra userspace packages. chrony replaces systemd-timesyncd.
+sed -i -e 's|http://archive\.ubuntu\.com/ubuntu/|http://azure.archive.ubuntu.com/ubuntu/|' \
+  -e 's|http://security\.ubuntu\.com/ubuntu/|http://azure.archive.ubuntu.com/ubuntu/|' \
+  /etc/apt/sources.list.d/ubuntu.sources
+! grep -qE 'URIs: http://(archive|security)\.ubuntu\.com/' /etc/apt/sources.list.d/ubuntu.sources
 apt-get update
+grep -v '^#' /erainfra-build/azure-base-packages.txt | xargs apt-get install -y --no-install-recommends
+if dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'linux-image-*' 'grub-*' 2>/dev/null | grep -q '^ii'; then
+  echo 'Azure base equivalence must not install a kernel or bootloader' >&2
+  exit 1
+fi
 while IFS= read -r script; do
   case "$script" in
     configure-apt-mock.sh)
