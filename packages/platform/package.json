@@ -1,0 +1,23 @@
+{
+  "name": "@erainfra/platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./store": "./src/store/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "convex": "catalog:"
+  },
+  "devDependencies": {
+    "@erainfra/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "convex-test": "0.0.69",
+    "typescript": "catalog:",
+    "vitest": "5.0.5"
+  }
+}
