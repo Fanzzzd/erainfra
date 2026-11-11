@@ -7,7 +7,7 @@ import { v, type Value } from "convex/values";
 import { describe, expect, test } from "vitest";
 
 import { schemaInfo, Store } from "../src/store/index.ts";
-import { nodeSql } from "./nodeSql.ts";
+import { nodeSql } from "../src/testing/nodeSql.ts";
 
 const schema = defineSchema({
   items: defineTable({

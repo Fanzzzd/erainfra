@@ -21,6 +21,7 @@
     "dev": "convex dev",
     "codegen": "convex codegen",
     "test": "vitest run",
+    "test:platform": "vitest run -c vitest.platform.config.ts",
     "typecheck": "tsc -p convex/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
     "deploy": "static-hosting deploy --dist ../../apps/dashboard/dist --build-command \"pnpm --filter @erainfra/dashboard build\"",
     "print-install-script": "node --experimental-strip-types scripts/print-install-script.ts",
@@ -45,6 +46,7 @@
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",
+    "@erainfra/platform": "workspace:*",
     "@erainfra/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "convex-test": "0.0.69",

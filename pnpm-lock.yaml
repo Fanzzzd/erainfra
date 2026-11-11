@@ -496,6 +496,9 @@ importers:
       '@edge-runtime/vm':
         specifier: 5.0.0
         version: 5.0.0
+      '@erainfra/platform':
+        specifier: workspace:*
+        version: link:../platform
       '@erainfra/typescript-config':
         specifier: workspace:*
         version: link:../typescript-config
