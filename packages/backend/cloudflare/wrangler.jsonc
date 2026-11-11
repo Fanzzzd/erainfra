@@ -1,0 +1,24 @@
+// The control plane on Cloudflare (ADR 0019). Deploy: `pnpm --filter @erainfra/backend run
+// deploy:cloudflare`. Secrets (JWT_PRIVATE_KEY, JWKS, GITHUB_APP_PRIVATE_KEY, ...) are set with
+// `wrangler secret put`, the same names the Convex deployment uses.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "erainfra-control-plane",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  // process.env carries the Worker's variables and secrets, as Convex's does.
+  "compatibility_flags": ["nodejs_compat", "nodejs_compat_populate_process_env"],
+  "durable_objects": {
+    "bindings": [{ "name": "CONTROL_PLANE", "class_name": "ControlPlane" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlPlane"] }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "erainfra-control-plane-files" }],
+  "assets": {
+    "directory": "../../../apps/dashboard/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // The Worker decides: API and backend routes go to the object, files to the assets.
+    "run_worker_first": true,
+  },
+  "observability": { "enabled": true },
+}

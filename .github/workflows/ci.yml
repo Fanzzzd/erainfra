@@ -328,6 +328,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: The backend's tests pass on the Cloudflare platform runtime
         run: pnpm --filter @erainfra/backend run test:platform
+      - name: The Cloudflare module list matches convex/
+        run: |
+          pnpm --filter @erainfra/backend run generate:cloudflare
+          git diff --exit-code -- packages/backend/cloudflare/modules.generated.ts
+      # Bundles the Worker without deploying, so an import workerd cannot load fails here. The
+      # dashboard build supplies the static assets wrangler.jsonc points at.
+      - name: The Cloudflare Worker bundles
+        run: |
+          pnpm --filter @erainfra/dashboard run build
+          pnpm --filter @erainfra/backend run build:cloudflare
 
   # erainfra-mesh (ADR 0016) is the only Rust in the tree, so it gets its own job rather than
   # lengthening `check`. The toolchain comes from apps/mesh/rust-toolchain.toml, so this job, the

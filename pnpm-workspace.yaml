@@ -25,6 +25,9 @@ catalogs:
 # entry fails every script in the repo, not just `pnpm install`.
 allowBuilds:
   esbuild: true
+  # workerd is the Workers runtime wrangler runs locally and bundles against (packages/backend,
+  # ADR 0019); its postinstall fetches the platform binary.
+  workerd: true
   # sharp arrives with apps/docs, whose Next.js lists it as an optional dependency, and powers
   # next/image optimisation. The docs site imports no next/image and ships no raster assets, so the
   # native binary is dead weight — denied explicitly rather than left silent, because silence is what

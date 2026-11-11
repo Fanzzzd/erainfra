@@ -39,6 +39,12 @@ export type RuntimeOptions = {
   /** Called with the time the next scheduled function or cron is due, or null when none is. */
   setAlarm?: (at: number | null) => void;
   now?: () => number;
+  /**
+   * Treat a match on the root prefix route ("/*") as no match. The backend registers that route
+   * only for Convex's static-hosting component; on Cloudflare, Workers Static Assets serves the
+   * dashboard instead.
+   */
+  staticCatchAll?: boolean;
 };
 
 type Invocation = {
@@ -117,6 +123,9 @@ function asFunctionError(err: unknown): FunctionError {
   return new FunctionError(e.message ?? String(err), data);
 }
 
+/** Set on the 404 for a path no HTTP route matches, so a host can fall back to static files. */
+export const NO_ROUTE = "X-EraInfra-No-Route";
+
 const SCHEDULED = "_scheduled_functions";
 
 /** System tables and the indexes the runtime needs on them. */
@@ -172,6 +181,11 @@ export class Runtime {
   /** Stores the body of a POST to an upload URL. Returns the storage ID, or null for a bad token. */
   upload(token: string, bytes: Uint8Array, contentType: string | undefined) {
     return this.files.upload(token, bytes, contentType);
+  }
+
+  /** A stored file's bytes, for serving `ctx.storage.getUrl` URLs. */
+  readFile(id: string) {
+    return this.files.bytes(null, id);
   }
 
   // ---- function lookup ----------------------------------------------------------------------
@@ -260,7 +274,12 @@ export class Runtime {
     if (!router) return new Response("No HTTP routes", { status: 404 });
     const url = new URL(request.url);
     const match = router.lookup(url.pathname, request.method as never);
-    if (!match) return new Response("No matching route", { status: 404 });
+    // With `staticCatchAll`, the root prefix route "/*" belongs to Convex's static-hosting
+    // component, whose job the host's static files do; treat it as no match.
+    const isStaticCatchAll = this.options.staticCatchAll === true && match?.[2] === "/*";
+    if (!match || isStaticCatchAll) {
+      return new Response("No matching route", { status: 404, headers: { [NO_ROUTE]: "1" } });
+    }
     const [handler] = match;
     const inv = this.invocation(
       "action",
@@ -743,6 +762,11 @@ export class Runtime {
 
   private armAlarm(): void {
     this.options.setAlarm?.(this.nextDue());
+  }
+
+  /** Arms the alarm for whatever is due next. A host calls this once when it starts. */
+  start(): void {
+    this.armAlarm();
   }
 
   /**
