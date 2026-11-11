@@ -307,7 +307,8 @@ records the design.
 
 ## Develop locally
 
-Requirements: Node.js 22+, pnpm 11, Go 1.27.4+, and a Convex account or local deployment.
+Requirements: Node.js 22.13+ (`.nvmrc` pins the version CI uses), pnpm 11, Go 1.27.4+, and
+a Convex account or local deployment.
 
 ```bash
 pnpm install
