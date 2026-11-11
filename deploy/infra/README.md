@@ -1,5 +1,10 @@
 # Deploying Portless on a server
 
+> Legacy. This guide installs the retired Hub with `./deploy/install.sh`, which this repository no
+> longer contains. It stays because it is the last record of `PORTLESS_HOSTNAME` and
+> `PORTLESS_TUNNEL`, and CONTEXT.md rule 4 freezes every `PORTLESS_*` name until a migration
+> retires it. To deploy the current control plane, read [Control plane](../../docs/control-plane.md).
+
 Stable, single-origin deploy behind **your domain** + a **dedicated Cloudflare named tunnel**,
 protected by **Cloudflare Access**. No quick tunnels, no open ports, no public IP needed.
 

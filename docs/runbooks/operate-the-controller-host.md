@@ -44,7 +44,7 @@ server-side environment variables in the Convex dashboard:
   newlines and escaped `\n` both work.
 
 Use the same controller App the dedicated host already uses, installed on the Profile's repository
-or organization with the [README permissions](../../README.md#github-permissions-the-controller-needs).
+or organization with the [permissions in Profile controllers](../controllers.md#github-permissions-the-controller-needs).
 The webhook App created by the dashboard's Manifest flow stays separate: its manifest lacks
 organization Self-hosted runners and Contents read. Reusing it would widen the webhook path's
 privileges. No key or App JWT is returned to a Worker.

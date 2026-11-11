@@ -39,4 +39,4 @@ Stopping or upgrading a Worker agent waits for its running jobs instead of killi
 
 ## Releasing
 
-The release branch runs `GITHUB_TOKEN=$(gh auth token) pnpm release:version`, which runs `changeset version` and then `packages/release/bin/sync-product-version.ts`. The token lets the changelog link each entry to its pull request. The release process in the README covers the rest.
+The release branch runs `GITHUB_TOKEN=$(gh auth token) pnpm release:version`, which runs `changeset version` and then `packages/release/bin/sync-product-version.ts`. The token lets the changelog link each entry to its pull request. [docs/releases.md](../docs/releases.md) covers the rest of the release process.

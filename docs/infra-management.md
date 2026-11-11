@@ -1,36 +1,56 @@
-# portless
+# Infrastructure management
 
-Deploy to **your own machines**: no public IP, no open ports, no third-party PaaS.
+EraInfra deploys and runs long-lived Apps on Nodes: machines you own, including ones behind NAT
+with no public IP. This surface started as a separate product called Portless
+([ADR 0004](adr/0004-portless-is-a-feature-not-a-second-product.md)). The `portless` names that
+remain, such as `portless.yaml`, the `portless` CLI and `PORTLESS_*` settings, are frozen
+identifiers ([CONTEXT.md](../CONTEXT.md), naming rule 4).
 
-A hub (control plane + dashboard) runs on one box behind a Cloudflare tunnel. Agents on your other
-machines dial **out** to it over WSS, so everything works behind NAT/firewalls. Apps get automatic
-`https://<app>.<your-domain>` URLs, served through the hub's single tunnel and reverse-proxied to
-whichever node runs them.
+A Node runs in one of two modes:
+
+- **Convex mode** (`connect-convex`), the current one. The Infra Agent dials the Convex control
+  plane that also runs CI. Convex holds the state and runs deploys, push-to-deploy and failover.
+  Gateway Nodes serve public traffic and reach Apps over `erainfra-mesh`. Operators use the
+  `erainfra` CLI and the dashboard's Nodes, Apps, Deployments and Links pages
+  ([ADR 0016](adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md)).
+- **Hub mode**, the legacy one. A Hub process behind a Cloudflare tunnel holds the state, proxies
+  public traffic to each Node, and serves the `portless` CLI and its own dashboard.
+  [Retire the Hub](runbooks/retire-the-hub.md) moves a Hub deployment to Convex mode.
 
 ```
-   browser ──https──▶ Cloudflare ──tunnel──▶ hub ──ws──▶ agent(node A) ──▶ containers
-   git push ─webhook─▶  hub: build → registry → deploy → route            │
-   portless deploy ──▶                                        mesh (iroh) ┴── agent(node B)
+   browser ──https──▶ Cloudflare ──tunnel──▶ gateway Node ──mesh──▶ Infra Agent (App Node) ──▶ containers
+   git push ─webhook─▶ Convex: build → registry → deploy → route
+   erainfra deploy ──▶ Convex
 ```
 
 Everything is self-hosted: your registry (`registry:2`), your S3 for backups, your GitHub App for
 push-to-deploy. Builds use your Dockerfile, or [Nixpacks](https://nixpacks.com) when there isn't one.
+Sections that name the Hub, `hub.sh` or a `portless` command apply to Hub mode only.
 
 ## Use it
+
+In Convex mode, sign in with a dashboard API token and drive everything from `erainfra`:
+
+```sh
+erainfra auth login --url https://<deployment>.convex.site --token -
+erainfra deploy ./my-app --port 3000          # pack, upload, deploy, follow each stage
+erainfra apps list                            # what's running, where, with URLs
+erainfra logs my-app --service web --lines 200
+erainfra env set my-app MODE=prod
+erainfra links add gpu-box:8080 web-box       # web-box reaches gpu-box's 8080 at 127.0.0.1:8080
+```
+
+[Operate from the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c) lists every command. In
+Hub mode the `portless` CLI does the same against the Hub:
 
 ```sh
 curl -fsSL https://<hub>/cli.sh | sh          # install the CLI (needs node >= 20)
 portless login https://<hub>                  # sign in with your hub account (email+password)
-
 portless deploy                               # deploy the current directory → live URL
-portless apps                                 # what's running, where, with URLs
-portless logs my-app                          # container logs
-portless env my-app set DATABASE_URL=...      # encrypted secrets
-portless link gpu-box:8080 web-box            # reach gpu-box:8080 from web-box at 127.0.0.1:8080
-                                              #   (P2P mesh, no tunnel; persisted + self-healing)
+portless link gpu-box:8080 web-box            # persisted, self-healing mesh link
 ```
 
-AI agents get the same capabilities, typed, over MCP: `claude mcp add portless -- portless mcp`.
+AI agents get the Hub's capabilities, typed, over MCP: `claude mcp add portless -- portless mcp`.
 
 ## portless.yaml
 
@@ -56,7 +76,10 @@ Same-node services reach each other by name (per-app docker network). Cross-node
 over an encrypted P2P mesh link (hole-punched when possible). The database never touches a public
 domain. If a node dies, its apps auto-redeploy onto a survivor and the routes flip (stateless only).
 
-## Stand up the infrastructure
+## Stand up a Hub (Hub mode)
+
+In Convex mode there is no Hub to stand up; set up each Node as
+[Set up a Node](#set-up-a-node) describes.
 
 **Hub** (a Linux box with docker + cloudflared + a CF origin cert):
 
@@ -282,8 +305,10 @@ publishes its `erainfra-mesh` endpoint to Convex with a proof that it holds the 
 other Nodes from the mesh snapshot Convex derives for it. Existing `connect` processes,
 `PORTLESS_*` settings, service units and installer defaults do not change. Use it on test Nodes
 first. Deploys and failover for these Nodes run from Convex
-([phase 3a](#deploy-and-failover-from-convex-phase-3a)); gateway ingress and the CLI and dashboard
-still need the Hub (see [What still needs the Hub](#what-still-needs-the-hub)).
+([phase 3a](#deploy-and-failover-from-convex-phase-3a)), their public traffic through
+[gateway Nodes](#gateway-ingress-phase-3b), and their operators use
+[the erainfra CLI](#operate-from-the-erainfra-cli-phase-3c). What a Hub still does is listed under
+[What still needs the Hub](#what-still-needs-the-hub).
 
 ### Set up a Node
 

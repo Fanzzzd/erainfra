@@ -10,7 +10,7 @@ frozen units, paths and `PORTLESS_*` values.
 
 The release owner must cut an authorized release that publishes all five `erainfra-mesh` targets,
 with `AGENT_RELEASE.mesh` populated on the release commit from the release workflow's own build.
-The steps are in the README's release section; they use `print-mesh-pin`, never a hand-typed
+The steps are in [Releases](../releases.md); they use `print-mesh-pin`, never a hand-typed
 digest.
 
 Until then, `/install --role node --mesh` and `--convex` refuse before downloading or replacing an
