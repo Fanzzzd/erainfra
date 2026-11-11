@@ -17,6 +17,7 @@ import {
 import { profileEgressValidator } from "./egress";
 import { retireOffPinForProfile } from "./pinnedAttempts";
 import { conflictsOf, type ScaleSetProfile } from "./scaleSetLabels";
+import { recordAcquiredJobs, settleScaleSetJob } from "./strandedJobs";
 
 // Every function below takes the caller its HTTP route resolved, and the lease check runs inside
 // the same transaction as the read or write it guards (controllerLease.ts). Every route passes a
@@ -520,6 +521,7 @@ export const markJobStarted = internalMutation({
     if (attempt === null || attempt.profile !== args.profile) {
       throw new ConvexError("Job started for an unknown Attempt");
     }
+    await settleScaleSetJob(ctx, args.runnerRequestId, "started");
     if (terminalStates.has(attempt.state)) {
       // A job that ran and settled before the controller's GitHub lookup came back may still
       // upload its test report, which reads the branch.
@@ -563,12 +565,39 @@ export const markJobStarted = internalMutation({
   },
 });
 
-// A JobCompleted for a job no Runner took: authorize the caller like any write, record nothing.
+// A JobCompleted for a job no Runner took: authorize the caller like any write. Only the acquired
+// job it names, if any, is settled.
 export const acknowledgeRunnerlessJobCompleted = internalMutation({
-  args: { profile: v.string(), caller: callerArg },
+  args: { profile: v.string(), runnerRequestId: v.optional(v.string()), caller: callerArg },
   returns: v.null(),
   handler: async (ctx, args) => {
     await authorize(ctx, args.profile, args.caller);
+    await settleScaleSetJob(ctx, args.runnerRequestId, "completed");
+    return null;
+  },
+});
+
+/** The jobs a controller acquired, kept for stranded job recovery (strandedJobs.ts). */
+export const recordJobsAcquired = internalMutation({
+  args: {
+    profile: v.string(),
+    jobs: v.array(
+      v.object({
+        runnerRequestId: v.string(),
+        repository: v.optional(v.string()),
+        owner: v.optional(v.string()),
+        jobId: v.optional(v.string()),
+        displayName: v.optional(v.string()),
+        workflowRunId: v.optional(v.number()),
+        queueTime: v.optional(v.number()),
+      }),
+    ),
+    caller: callerArg,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await authorize(ctx, args.profile, args.caller);
+    await recordAcquiredJobs(ctx, args.profile, args.jobs, Date.now());
     return null;
   },
 });
@@ -593,6 +622,7 @@ export const markJobCompleted = internalMutation({
     if (attempt === null || attempt.profile !== args.profile) {
       throw new ConvexError("Job completed for an unknown Attempt");
     }
+    await settleScaleSetJob(ctx, args.runnerRequestId, "completed");
     if (!terminalStates.has(attempt.state)) {
       await releaseAttemptSlot(ctx, attempt);
     }

@@ -8,6 +8,8 @@ import (
 
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
+
+	"github.com/Fanzzzd/erainfra/apps/controller/internal/fleet"
 )
 
 // JobAcquirer is the part of a message session that claims jobs for the scale
@@ -70,6 +72,7 @@ func (s *sessionScaler) Scale(ctx context.Context, message *scaleset.RunnerScale
 			return fmt.Errorf("acquire jobs: %w", err)
 		}
 		s.logger.Info("jobs acquired", "count", len(acquired))
+		s.scaler.recordAcquired(ctx, message.JobAvailableMessages, acquired, s.logger)
 	}
 	for _, job := range message.JobStartedMessages {
 		if err := s.scaler.HandleJobStarted(ctx, job); err != nil {
@@ -92,4 +95,50 @@ func (s *sessionScaler) converge(ctx context.Context) error {
 		return fmt.Errorf("handle desired runner count: %w", err)
 	}
 	return nil
+}
+
+// recordAcquired tells the control plane which jobs the scale set acquired, so
+// it can find a job's workflow run if every Worker for the Profile drops before
+// a Runner takes it. Best effort: a failure is logged and the message goes on.
+func (s *Scaler) recordAcquired(
+	ctx context.Context,
+	offered []*scaleset.JobAvailable,
+	acquired []int64,
+	logger *slog.Logger,
+) {
+	recorder, ok := s.store.(fleet.JobAcquisitionRecorder)
+	if !ok || len(acquired) == 0 {
+		return
+	}
+	jobs := acquiredJobs(offered, acquired)
+	if len(jobs) == 0 {
+		return
+	}
+	if err := recorder.RecordJobsAcquired(ctx, s.config.Profile, jobs); err != nil {
+		logger.Warn("record acquired jobs", "count", len(jobs), "error", err)
+	}
+}
+
+// acquiredJobs returns the offered jobs GitHub confirmed as acquired.
+func acquiredJobs(offered []*scaleset.JobAvailable, acquired []int64) []fleet.AcquiredJob {
+	confirmed := make(map[int64]bool, len(acquired))
+	for _, id := range acquired {
+		confirmed[id] = true
+	}
+	jobs := make([]fleet.AcquiredJob, 0, len(acquired))
+	for _, job := range offered {
+		if job == nil || !confirmed[job.RunnerRequestID] {
+			continue
+		}
+		jobs = append(jobs, fleet.AcquiredJob{
+			RunnerRequestID: job.RunnerRequestID,
+			Repository:      job.RepositoryName,
+			Owner:           job.OwnerName,
+			JobID:           job.JobID,
+			DisplayName:     job.JobDisplayName,
+			WorkflowRunID:   job.WorkflowRunID,
+			QueueTime:       job.QueueTime,
+		})
+	}
+	return jobs
 }

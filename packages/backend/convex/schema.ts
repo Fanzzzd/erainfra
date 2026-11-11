@@ -12,6 +12,7 @@ import {
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
+import { scaleSetJobFields } from "./strandedJobsModel";
 import {
   flakyTestFields,
   testCaseFields,
@@ -843,6 +844,13 @@ export default defineSchema({
     attempts: v.number(),
     lastError: v.optional(v.string()),
   }).index("by_createdAt", ["createdAt"]),
+
+  // Jobs a controller acquired that no Runner has taken yet, for stranded job recovery
+  // (strandedJobsModel.ts).
+  scaleSetJobs: defineTable(scaleSetJobFields)
+    .index("by_runnerRequestId", ["runnerRequestId"])
+    .index("by_state_acquiredAt", ["state", "acquiredAt"])
+    .index("by_workflowRunId", ["workflowRunId"]),
 
   // One row: GitHub's actions/runner releases, for the runner-release-expiring alert
   // (runnerReleases.ts). `fetchedAt` is the last successful fetch; a failed one sets only

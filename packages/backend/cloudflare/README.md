@@ -14,9 +14,9 @@ Action Runner Agent.
 
 - `worker.ts`: the Worker entry. It passes the backend's modules, schema and `auth.config.ts` to
   `createControlPlane`.
-- `modules.generated.ts`: one import per backend module. Workers cannot list files at run time.
-  Run `pnpm generate:cloudflare` after adding or removing a file in `convex/`. CI fails when the
-  list is stale.
+- `modules.generated.ts`: one import per backend module, because Workers cannot list files at
+  run time. It is not committed. `build:cloudflare`, `dev:cloudflare` and `deploy:cloudflare`
+  generate it from `convex/` first, so it always matches.
 - `wrangler.jsonc`: the Durable Object, the R2 bucket for `ctx.storage`, and the dashboard assets.
 
 ## Run it locally
@@ -36,8 +36,7 @@ Quote `JWKS` with single quotes. Wrangler does not unescape `\"` inside double q
 host then fails to parse the key set. Start the Worker:
 
 ```sh
-pnpm exec wrangler dev -c cloudflare/wrangler.jsonc --port 8799 --local \
-  --var CONVEX_SITE_URL:http://localhost:8799
+pnpm dev:cloudflare --port 8799 --var CONVEX_SITE_URL:http://localhost:8799
 ```
 
 `CONVEX_SITE_URL` is the JWT issuer, so it must match the URL clients use.

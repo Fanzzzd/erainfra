@@ -498,11 +498,53 @@ export function parseRunnerlessJobCompleted(payload: unknown) {
     !isRecord(payload) ||
     !nonEmptyString(payload.profile) ||
     (payload.runnerName !== undefined &&
-      (typeof payload.runnerName !== "string" || payload.runnerName.trim() !== ""))
+      (typeof payload.runnerName !== "string" || payload.runnerName.trim() !== "")) ||
+    !optionalInt64Decimal(payload.runnerRequestId)
   ) {
     return null;
   }
-  return { profile: payload.profile.trim() };
+  return { profile: payload.profile.trim(), runnerRequestId: payload.runnerRequestId };
+}
+
+/** Most jobs one acquired report may carry. A scale set acquires at most its maxRunners at once. */
+export const ACQUIRED_JOBS_MAX = 100;
+
+/** The controller's report of jobs it acquired (POST /controller/jobs/acquired). */
+export function parseJobsAcquired(payload: unknown) {
+  if (
+    !isRecord(payload) ||
+    !nonEmptyString(payload.profile) ||
+    !Array.isArray(payload.jobs) ||
+    payload.jobs.length > ACQUIRED_JOBS_MAX
+  ) {
+    return null;
+  }
+  const jobs = [];
+  for (const job of payload.jobs as unknown[]) {
+    if (
+      !isRecord(job) ||
+      !nonEmptyString(job.runnerRequestId) ||
+      !optionalInt64Decimal(job.runnerRequestId) ||
+      !optionalString(job.repository) ||
+      !optionalString(job.owner) ||
+      !optionalString(job.jobId) ||
+      !optionalString(job.displayName) ||
+      !optionalPositiveInteger(job.workflowRunId) ||
+      !optionalTimestamp(job.queueTime)
+    ) {
+      return null;
+    }
+    jobs.push({
+      runnerRequestId: job.runnerRequestId,
+      repository: job.repository?.trim() || undefined,
+      owner: job.owner?.trim() || undefined,
+      jobId: job.jobId?.trim() || undefined,
+      displayName: job.displayName?.trim() || undefined,
+      workflowRunId: job.workflowRunId,
+      queueTime: job.queueTime,
+    });
+  }
+  return { profile: payload.profile.trim(), jobs };
 }
 
 export function parseJobCompleted(payload: unknown) {

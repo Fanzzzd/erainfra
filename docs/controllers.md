@@ -242,6 +242,14 @@ inside reusable workflows on branch and tag events do. The controller logs
 `could not establish the job's cache scope; publishing read-only facts` with GitHub's status code in
 either case.
 
+Stranded job recovery ([docs/workflows.md](workflows.md#when-a-worker-drops-after-routing)) runs
+in the control plane, not the controller, with the same App. When the deployment sets
+`ERAINFRA_STRANDED_JOB_ACTION` to `cancel` or `rerun`, it calls
+`POST /repos/{owner}/{repo}/actions/runs/{run_id}/cancel`, `GET` on the run, and
+`POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun`. Those need Repository: Actions, Read and
+write. Grant it on the App's settings page. The dashboard's App manifest describes a different App
+and still asks for Actions read only.
+
 Sources, per endpoint: GitHub's
 [permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
 and

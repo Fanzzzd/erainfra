@@ -147,6 +147,45 @@ Agree on a queue limit with whoever operates the Profile. Before an operation ta
 only Worker away for longer than that limit, the operator follows
 [docs/runbooks/take-the-only-worker-away.md](runbooks/take-the-only-worker-away.md).
 
+### When a Worker drops after routing
+
+The router decides once, when the workflow starts. A job waiting for a Worker that stops reporting
+moves to another ready Worker of the same Profile. If the Profile has no ready Worker left, the job
+waits in GitHub's queue until GitHub cancels it after 24 hours. GitHub-hosted runners and Blacksmith
+do not strand a job this way.
+
+Stranded job recovery handles that case. A job is stranded when it has not started, has waited
+longer than `ERAINFRA_STRANDED_JOB_AFTER_MINUTES` (default 5, from 1 to 1440), and its Profile has
+no Worker that passes the router's readiness check. `ERAINFRA_STRANDED_JOB_ACTION` on the
+deployment chooses what happens:
+
+| value            | what the control plane does                                                           |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| `wait` (default) | nothing; the job waits as before                                                      |
+| `cancel`         | cancels the workflow run, so it fails within minutes                                  |
+| `rerun`          | cancels the run, waits up to 5 minutes for it to finish, then asks GitHub to rerun it |
+
+One waiting Attempt of the Profile records the cause, for example "No ready Worker for
+erainfra-4vcpu-ubuntu-2404 within 5 minutes; cancelled the run and asked GitHub to rerun it". The
+dashboard and `erainfra jobs view` show it with a link to GitHub's
+[re-run documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+
+Limits:
+
+- A rerun repeats the whole workflow, including jobs that had already passed. GitHub can rerun only
+  a completed run, and a cancelled run's failed jobs include every job the cancel stopped.
+- `rerun` helps only a workflow with a router job. The rerun asks the router again, which now
+  answers the fallback. A workflow that names the Profile label directly queues on it again.
+- The control plane reruns a run at most once. If the rerun's jobs strand again, it only cancels
+  the run.
+- Both actions need the controller's GitHub App to hold Repository: Actions, Read and write, on
+  every repository whose jobs the Profile serves. The App's key must be in the deployment
+  (`CONTROLLER_GITHUB_APP_CLIENT_ID` and `CONTROLLER_GITHUB_APP_PRIVATE_KEY`). Without the
+  permission, GitHub refuses the cancel, the deployment log says the App lacks Actions write, and
+  the job waits as it would under `wait`.
+- The controller reports each job it acquires so the control plane knows the job's workflow run.
+  A controller older than this release does not, and its jobs always wait.
+
 ## Experiments
 
 The **Experiments** page runs a shell command in the selected Linux Profile. An Experiment:
