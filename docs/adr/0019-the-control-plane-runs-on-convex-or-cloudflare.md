@@ -99,18 +99,21 @@ tests below run on every upgrade.
   invalidation re-runs more often but is correct, and the control plane's write rate is low.
 - **Scheduler and crons.** `ctx.scheduler.runAfter` and `runAt` write `_scheduled_functions`
   rows. The object keeps its single alarm at the earliest due row and runs due rows when it fires.
-  The 9 crons become Cron Triggers on the Worker, which call into the object.
+  Crons use the same alarm: each due cron becomes a `_scheduled_functions` row, and `_cron_state`
+  holds each cron's next run. Cron Triggers are not used, so there is one clock and one retry path.
+  Only interval schedules are supported; the backend's 9 crons are all intervals.
 - **HTTP.** A Worker in front routes the existing HTTP paths to `httpAction` handlers and serves
   the dashboard from Workers Static Assets with SPA fallback.
 - **Files.** `ctx.storage` maps to R2.
 - **Logs and metrics.** High-volume tables (logs, Attempt metrics) are the cost driver: every
   index entry and every retention delete is a billed row write. They move to a second object or
   to R2 before a production cutover. Measure first.
-- **Auth.** Convex Auth's Password provider is replaced by the same flows (sign-in, sign-up by
-  invitation, sessions as signed JWTs) behind the same `getAuthUserId` call. Password hashes must
-  stay verifiable after a migration; production Workers cap PBKDF2 at 100,000 iterations and cap
-  `node:crypto` scrypt cost at an unpublished value, so the hash parameters are checked on a
-  deployed Worker before the auth phase lands.
+- **Auth.** Convex Auth stays. Its functions run on the object like any other backend code, and
+  the host verifies the RS256 JWTs they issue the way the Convex server does: keys from the `JWKS`
+  variable, issuer and audience from `auth.config.ts`. Password hashes must stay verifiable after
+  a migration; production Workers cap PBKDF2 at 100,000 iterations and cap `node:crypto` scrypt
+  cost at an unpublished value, so the hash parameters are checked on a deployed Worker before a
+  cutover.
 
 ### Clients reach the control plane through a client port
 
@@ -139,10 +142,10 @@ there; Convex's value order puts null below every number.
 
 1. The store, with differential tests against convex-test. (This ADR's pull request.)
 2. The function runtime on Cloudflare: the syscall layer over the store, the Durable Object host,
-   nested calls, the scheduler and alarm, Cron Triggers, HTTP routing, R2 storage. The backend's
-   test suite runs on it.
+   nested calls, the scheduler, crons on the alarm, HTTP routing, R2 storage and JWT
+   verification. The backend's test suite runs on it.
 3. The client port, then the dashboard and the Action Runner Agent on it.
-4. Auth.
+4. Auth on a deployed Worker: the password hash parameters and the full sign-in flow.
 5. Deploy tooling (`wrangler`), export and import between platforms, and an end-to-end run of the
    rc-e2e Profile against a Cloudflare deployment.
 6. A staged cutover, if the owner chooses Cloudflare for production.
