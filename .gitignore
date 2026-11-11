@@ -25,3 +25,5 @@ apps/mesh/target/
 .dev.vars
 .wrangler/
 dist-cloudflare/
+# Generated from convex/ by the backend's build:cloudflare, dev:cloudflare and deploy:cloudflare.
+packages/backend/cloudflare/modules.generated.ts
