@@ -1,10 +1,10 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { join, dirname } from "node:path";
 // `portless` stays the Hub's CLI while the Hub is retired (ADR 0016 phase 3c); its help points an
 // operator whose Nodes run connect-convex at `erainfra`, which talks to Convex.
 import test from "node:test";
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "portless.mjs");
 

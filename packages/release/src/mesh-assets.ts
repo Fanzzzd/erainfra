@@ -1,4 +1,5 @@
 import path from "node:path";
+
 import { MESH_TARGETS, meshAssetName } from "../../backend/convex/agentRelease.ts";
 
 /**

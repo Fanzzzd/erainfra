@@ -1,17 +1,3 @@
-/**
- * Exercises the generated install script end to end in a sandbox.
- *
- * `HOME` points at a temporary directory and `PATH` starts with stubs for
- * `curl`, `npm`, and the service manager, so a test never reaches the network,
- * never installs a launchd or systemd service, and never touches the real
- * `~/.runner-center`.
- *
- * @vitest-environment node
- *
- * The suite spawns bash and reads the filesystem, so it needs the real Node
- * runtime rather than the edge-runtime default the convex-test suites use.
- */
-import { afterAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -28,6 +14,22 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+
+/**
+ * Exercises the generated install script end to end in a sandbox.
+ *
+ * `HOME` points at a temporary directory and `PATH` starts with stubs for
+ * `curl`, `npm`, and the service manager, so a test never reaches the network,
+ * never installs a launchd or systemd service, and never touches the real
+ * `~/.runner-center`.
+ *
+ * @vitest-environment node
+ *
+ * The suite spawns bash and reads the filesystem, so it needs the real Node
+ * runtime rather than the edge-runtime default the convex-test suites use.
+ */
+import { afterAll, describe, expect, it } from "vitest";
+
 import {
   AGENT_RELEASE,
   CONTROLLER_TARGETS,
@@ -36,6 +38,7 @@ import {
   infraAgentAssetName,
   type AgentRelease,
 } from "../convex/agentRelease.ts";
+import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "../convex/controllerUnit.generated.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
 import {
@@ -44,7 +47,6 @@ import {
   FIRECRACKER_RUNTIME_UNIT_B64,
   FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "../convex/provisionerFirecrackerHost.generated.ts";
-import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "../convex/controllerUnit.generated.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";

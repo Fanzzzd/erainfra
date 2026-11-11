@@ -1,10 +1,11 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { appRouter } from "../src/router.ts";
-import { createCallerFactory } from "../src/trpc.ts";
+import test from "node:test";
+
 import { InMemoryAuditLog } from "../src/audit.ts";
 import type { Principal } from "../src/auth.ts";
+import { appRouter } from "../src/router.ts";
 import { agentGateway } from "../src/runtime/agents.ts";
+import { createCallerFactory } from "../src/trpc.ts";
 
 const createCaller = createCallerFactory(appRouter);
 

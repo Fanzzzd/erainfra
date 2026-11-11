@@ -1,3 +1,8 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
 // Stage 1 of retiring the "Portless" name (ADR 0004; CONTEXT.md rule 4) for the CLI.
 //
 // The CLI is a single zero-dependency file a dev machine downloads from `<hub>/cli/portless.mjs`
@@ -7,12 +12,7 @@
 // Nothing here mocks the helper: it drives the real CLI as a subprocess, because the property under
 // test is what a dev machine with only PORTLESS_* set actually does.
 import test from "node:test";
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "portless.mjs");
 

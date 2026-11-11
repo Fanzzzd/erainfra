@@ -2,6 +2,7 @@
 // database must not be a bag of valid cookies). Sliding 30-day expiry, revocable per session.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;

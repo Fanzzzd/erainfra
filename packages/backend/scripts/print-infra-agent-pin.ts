@@ -10,6 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
+
 import { INFRA_AGENT_TARGETS, infraAgentAssetName } from "../convex/agentRelease.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");

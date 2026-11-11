@@ -5,11 +5,12 @@
 // /agent-bin serving end to end. Needs the binaries built (deploy/build-agents.sh) + Docker.
 // Run: node --experimental-strip-types apps/hub/scripts/verify/verify-install.ts
 import { spawn, execSync } from "node:child_process";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
+
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 
 const PORT = 8795,
   NODE = "pl-installed";

@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+
 import { PRODUCT_PACKAGES, syncProductVersion } from "../src/product-version.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");

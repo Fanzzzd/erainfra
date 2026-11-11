@@ -8,6 +8,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
 import {
   archiveName,
   buildAgentArchive,

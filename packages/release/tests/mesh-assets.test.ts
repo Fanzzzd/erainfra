@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
+
 import { INFRA_AGENT_TARGETS, infraAgentAssetName } from "../../backend/convex/agentRelease.ts";
 import {
   MESH_BUILDS,

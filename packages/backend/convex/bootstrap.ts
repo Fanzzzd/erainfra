@@ -1,10 +1,7 @@
-import { ConvexError, v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { ConvexError, v } from "convex/values";
+
 import { mutation, type MutationCtx } from "./_generated/server";
-import { requireDashboardAuth } from "./dashboardAuth";
-import { currentUser } from "./infra/access";
-import { effectiveRole, mayAssignRole, type PermissionRole } from "./infra/policy";
-import { permissionRoleValidator } from "./infra/tables";
 import {
   constantTimeEqual,
   GRANT_TTL_MS,
@@ -13,6 +10,10 @@ import {
   readBootstrapSecret,
   throttleState,
 } from "./bootstrapPolicy";
+import { requireDashboardAuth } from "./dashboardAuth";
+import { currentUser } from "./infra/access";
+import { effectiveRole, mayAssignRole, type PermissionRole } from "./infra/policy";
+import { permissionRoleValidator } from "./infra/tables";
 
 /**
  * One message for every reason a sign-up can be refused. An unauthenticated

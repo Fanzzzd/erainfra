@@ -1,7 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import test from "node:test";
+
 import { createApiServer } from "../src/server.ts";
 
 // server.ts anchors PORTLESS_DEPLOY_DIR / PORTLESS_CLI_FILE on its own directory, so mirror that

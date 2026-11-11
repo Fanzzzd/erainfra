@@ -1,12 +1,13 @@
 import { v } from "convex/values";
+
 import { internalQuery } from "./_generated/server";
-import { profileEgressOf } from "./egress";
 import {
   isSchedulableReadiness,
   loadSchedulerSnapshot,
   placeInOrder,
   unassignedQueue,
 } from "./attemptScheduler";
+import { profileEgressOf } from "./egress";
 
 const LIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 

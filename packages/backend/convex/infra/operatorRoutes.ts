@@ -25,6 +25,7 @@
 // are exact paths, which Convex matches before a prefix, and none of them is a path above; it
 // takes Node credentials only, and these routes take API tokens only.
 import type { HttpRouter } from "convex/server";
+
 import { internal } from "../_generated/api";
 import { httpAction, type ActionCtx } from "../_generated/server";
 import type { ApiTokenScope } from "../apiTokenPolicy";

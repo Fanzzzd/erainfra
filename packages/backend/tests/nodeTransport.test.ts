@@ -1,12 +1,14 @@
+import { readFileSync } from "node:fs";
+
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+
 import { api, internal } from "../convex/_generated/api";
-import schema from "../convex/schema";
 import { validateDockerArgs } from "../convex/infra/dockerArgs";
 import { validateOperation, COMMAND_TTL_MS } from "../convex/infra/nodeCommandModel";
 import { legacyEndpointAddress } from "../convex/infra/nodeState";
 import { listNodeViews } from "../convex/infra/operator";
+import schema from "../convex/schema";
 const modules = import.meta.glob("../convex/**/*.ts");
 const T0 = Date.parse("2026-11-05T00:00:00Z");
 beforeEach(() => {

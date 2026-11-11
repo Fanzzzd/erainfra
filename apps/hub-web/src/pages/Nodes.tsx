@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
 import { RefreshCw, Server } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+
 import { trpcQuery, type AgentInfo } from "@/api";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,

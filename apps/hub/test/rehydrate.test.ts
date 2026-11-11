@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 // Agent-restart amnesia: the agent's app->port registry is in-memory, so a restart turns every
 // route on that node into 502s while the containers still run. The hub must re-push registrations
 // on every agent hello.
 import test from "node:test";
-import assert from "node:assert/strict";
+
 import { installServeRehydrator } from "../src/runtime/appdeploy.ts";
 import { routeStore } from "../src/runtime/routes.ts";
 

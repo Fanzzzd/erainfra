@@ -1,4 +1,13 @@
 import { v } from "convex/values";
+
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { requireDashboardAuth } from "./dashboardAuth";
 import {
   DISCONNECT_CONFIRMATION,
@@ -9,14 +18,6 @@ import {
   canConnectApp,
   toAppSummary,
 } from "./githubAppConfig";
-import {
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-  type MutationCtx,
-  type QueryCtx,
-} from "./_generated/server";
 
 const sourceValidator = v.union(
   v.literal("manifest"),

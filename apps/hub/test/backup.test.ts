@@ -1,9 +1,10 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import test from "node:test";
+
 import { packState, backupConfig } from "../src/runtime/backup.ts";
 
 test("packState makes a gzip tar of state, excluding builds/ and logs", () => {

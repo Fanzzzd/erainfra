@@ -1,6 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, createVerify, generateKeyPairSync } from "node:crypto";
+import test from "node:test";
+
 import { appJwt, verifyWebhook, parsePush, cloneUrl } from "../src/runtime/github.ts";
 
 test("verifyWebhook accepts a correct HMAC and rejects tampering", () => {

@@ -1,6 +1,8 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
+import { PUBLIC_EGRESS } from "../convex/egress.ts";
 import {
   assertReadinessContract,
   EXECUTOR_BOUNDARY,
@@ -8,7 +10,6 @@ import {
   isTrustedOnly,
   SNAPSHOT_RESERVE_MIB,
 } from "../convex/isolation.ts";
-import { PUBLIC_EGRESS } from "../convex/egress.ts";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");

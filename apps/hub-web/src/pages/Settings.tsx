@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Copy, KeyRound, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
+
 import {
   trpcQuery,
   trpcMutation,

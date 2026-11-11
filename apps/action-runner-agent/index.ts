@@ -1,8 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { arch, cpus, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
+
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
+
 import {
   BENCHMARK_REFRESH_MS,
   BENCHMARK_RETRY_MS,
@@ -10,7 +12,6 @@ import {
   type BenchmarkReport,
 } from "./benchmark.js";
 import { config } from "./config.js";
-import { dualEnv } from "./dual-env.js";
 import {
   CoreAllocator,
   CoreExhaustedError,
@@ -20,9 +21,9 @@ import {
   RECONCILE_INTERVAL_MS,
   withCores,
 } from "./cpuset.js";
+import { dualEnv } from "./dual-env.js";
 import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./job-metrics.js";
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
-import { createStopHandler, createWorkCounter } from "./stop.js";
 import {
   readEgressRecord,
   readRunnerExit,
@@ -35,6 +36,7 @@ import {
   type ExperimentExecution,
   type MachineOs,
 } from "./provision.js";
+import { clearReadinessSignal, publishReadinessSignal } from "./readiness-signal.js";
 import {
   HEALTHY_READINESS_REFRESH_MS,
   readinessRefreshDelay,
@@ -47,7 +49,7 @@ import {
   type ReadinessFacts,
   type ProfileSpec,
 } from "./readiness.js";
-import { clearReadinessSignal, publishReadinessSignal } from "./readiness-signal.js";
+import { createStopHandler, createWorkCounter } from "./stop.js";
 
 type PendingCommand = { commandId: string; runnerName: string };
 type PendingCommandsResult = {

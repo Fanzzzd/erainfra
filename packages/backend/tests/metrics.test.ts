@@ -1,10 +1,11 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import schema from "../convex/schema";
 import { attemptOutcome } from "../convex/fleetObservation";
 import { formatSampleValue, quantile, renderExposition } from "../convex/metricsFormat";
+import schema from "../convex/schema";
 import { setUpBefore } from "./support/clock.ts";
 import { CONTRACT, MINUTE, NOW, operator, seedFleet } from "./support/fleetFixture.ts";
 

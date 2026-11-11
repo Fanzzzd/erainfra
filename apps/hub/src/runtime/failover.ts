@@ -1,3 +1,4 @@
+import { renamedEnv } from "../env.ts";
 // Stateless auto-failover: when a node's control channel drops and stays gone past a grace window,
 // redeploy every app it ran onto a surviving node and flip the route. No rebuild — the image is
 // already in the registry, so the survivor just pulls+runs it; secrets are re-injected from the store.
@@ -6,10 +7,9 @@
 // ponytail: redeploys stateless apps only (pull image + run). Stateful apps need volume replication
 // (not built); a redeployed DB starts empty. Single-shot per disconnect, first-fit node selection.
 import { agentGateway, type AgentGateway } from "./agents.ts";
-import { routeStore, type RouteStore } from "./routes.ts";
 import { appStore, type AppStore } from "./apps.ts";
+import { routeStore, type RouteStore } from "./routes.ts";
 import { secretStore, type SecretStore } from "./secrets.ts";
-import { renamedEnv } from "../env.ts";
 
 export interface FailoverDeps {
   gateway: Pick<AgentGateway, "get" | "list" | "send" | "onDisconnect">;

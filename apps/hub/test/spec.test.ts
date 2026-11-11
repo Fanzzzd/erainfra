@@ -1,9 +1,10 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { parseSpec, implicitSpec, envName } from "../src/runtime/spec.ts";
+import test from "node:test";
+
+import { createDb } from "../src/db.ts";
 import { planDeploy } from "../src/runtime/appdeploy.ts";
 import { PortAllocator } from "../src/runtime/ports.ts";
-import { createDb } from "../src/db.ts";
+import { parseSpec, implicitSpec, envName } from "../src/runtime/spec.ts";
 
 test("parseSpec: a full valid spec normalizes routes, env, needs", () => {
   const r = parseSpec(

@@ -1,7 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import type { Deployment } from "../src/runtime/deployments.ts";
+import test from "node:test";
+
 import { deployed, waitForDeploy } from "../scripts/verify/_wait-for-deploy.ts";
+import type { Deployment } from "../src/runtime/deployments.ts";
 
 // scripts/verify needs docker, a registry, nixpacks and real machines, so none of those harnesses
 // run in CI and none of them ran here. What CAN be tested without any of that is the piece this

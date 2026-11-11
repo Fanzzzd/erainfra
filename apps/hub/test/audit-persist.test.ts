@@ -1,8 +1,9 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
+
 import { SqliteAuditLog } from "../src/audit.ts";
 import { createDb } from "../src/db.ts";
 

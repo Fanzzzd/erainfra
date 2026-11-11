@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+
 import { AGENT_RELEASE } from "../../backend/convex/agentRelease.ts";
 import { renderInstallScript } from "../../backend/convex/installScript.ts";
 import { renderWindowsInstallScript } from "../../backend/convex/installScriptPowerShell.ts";

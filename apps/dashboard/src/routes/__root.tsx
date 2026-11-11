@@ -1,4 +1,3 @@
-import type { ComponentType } from "react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import {
   createRootRoute,
@@ -23,6 +22,8 @@ import {
   TestTubeDiagonal,
   UserRound,
 } from "lucide-react";
+import type { ComponentType } from "react";
+
 import {
   DropdownMenu,
   DropdownMenuContent,

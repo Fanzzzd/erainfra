@@ -1,14 +1,12 @@
 import { ConvexError, v } from "convex/values";
+
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
-import { retireOffPinForProfile } from "./pinnedAttempts";
 import { endIdleAttempt, finishRetirement, isRetiring, keepForJob } from "./attemptRetirement";
-import { conflictsOf, type ScaleSetProfile } from "./scaleSetLabels";
 import { releaseAttemptSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import { fitPolicyValidator } from "./benchmark";
-import { profileEgressValidator } from "./egress";
 import {
   authorizeController,
   authorizeStandbyReport,
@@ -16,6 +14,9 @@ import {
   requireControllerToken,
   type ControllerCaller,
 } from "./controllerLease";
+import { profileEgressValidator } from "./egress";
+import { retireOffPinForProfile } from "./pinnedAttempts";
+import { conflictsOf, type ScaleSetProfile } from "./scaleSetLabels";
 
 // Every function below takes the caller its HTTP route resolved, and the lease check runs inside
 // the same transaction as the read or write it guards (controllerLease.ts). Every route passes a

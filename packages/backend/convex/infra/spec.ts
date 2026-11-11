@@ -17,6 +17,7 @@
 //       volumes: [pgdata:/var/lib/postgresql/data]
 //       node: big-box              # optional placement (default: the deploy's default Node)
 import { parse as parseYaml } from "yaml";
+
 import { isRouteLabel } from "./ingress";
 
 const LABEL = /^[a-z0-9][a-z0-9-]{0,62}$/;

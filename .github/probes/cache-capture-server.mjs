@@ -15,8 +15,8 @@
 // is an instrument, it is never deployed, and no workflow other than
 // cache-env-probe.yml may use it.
 
-import { createServer } from "node:http";
 import { appendFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 
 const V1_MARKER = "/_apis/artifactcache/";
 const V2_MARKER = "/twirp/github.actions.results.api.v1.CacheService/";

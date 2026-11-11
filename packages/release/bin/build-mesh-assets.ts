@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+
 import { MESH_BUILDS, meshAssetName, meshBuild, meshRustflags } from "../src/mesh-assets.ts";
 
 /**

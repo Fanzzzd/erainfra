@@ -1,8 +1,9 @@
+import { api } from "@erainfra/backend/api";
+import type { Id } from "@erainfra/backend/dataModel";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { ArrowLeft, Gauge, OctagonAlert, TestTubeDiagonal } from "lucide-react";
-import { api } from "@erainfra/backend/api";
-import type { Id } from "@erainfra/backend/dataModel";
+
 import { EmptyState } from "@/components/empty-state";
 import { MetricChart } from "@/components/metric-chart";
 import { PageHeader } from "@/components/page-header";
@@ -11,7 +12,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatAbsoluteTime, formatDuration } from "@/lib/time";
 import {
   formatBytes,
   formatElapsed,
@@ -22,6 +22,7 @@ import {
   type MetricsRow,
   type MetricsSummary,
 } from "@/lib/metrics";
+import { formatAbsoluteTime, formatDuration } from "@/lib/time";
 
 export const Route = createFileRoute("/attempts_/$attemptId")({ component: AttemptPage });
 

@@ -4,13 +4,14 @@
 // Infra Agents simulated by the test. Nothing here reaches a network.
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import schema from "../convex/schema";
 import { upsertRoute } from "../convex/infra/apps";
 import { RENAME_LOSES_DATA } from "../convex/infra/namespace";
 import { insertNodeCommand } from "../convex/infra/nodeCommands";
 import { FAILOVER_GRACE_MS, NODE_SILENCE_MS } from "../convex/infra/policy";
+import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const T0 = Date.parse("2026-11-06T00:00:00Z");

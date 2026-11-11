@@ -1,8 +1,9 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { internal } from "../convex/_generated/api";
-import schema from "../convex/schema";
 import { parseWorkflowJob } from "../convex/http";
+import schema from "../convex/schema";
 import { DELIVERY_RETRY_AFTER_MS, MAX_DELIVERY_ATTEMPTS } from "../convex/webhooks";
 import { githubMock } from "./support/githubMock.ts";
 

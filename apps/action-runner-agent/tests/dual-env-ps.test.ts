@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+
 import { PROVISION_WIN } from "./helpers/harness.ts";
 
 const SOURCE = readFileSync(PROVISION_WIN, "utf8");

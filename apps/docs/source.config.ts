@@ -1,5 +1,5 @@
-import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
+import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 
 // Customize Zod schemas for frontmatter and `meta.json` here.
 // See https://fumadocs.dev/docs/mdx/collections

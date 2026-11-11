@@ -1,15 +1,16 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
+
+import { createDb } from "../src/db.ts";
 import {
   GitProjectStore,
   startGitDeploy,
   startUploadDeploy,
   type GitBinding,
 } from "../src/runtime/gitdeploy.ts";
-import { createDb } from "../src/db.ts";
 
 const sampleBind = {
   repo: "Owner/Repo",

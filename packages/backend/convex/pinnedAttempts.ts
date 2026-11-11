@@ -1,7 +1,7 @@
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { releaseAttemptSlot } from "./attemptScheduler";
 import { retireAttempt } from "./attemptRetirement";
+import { releaseAttemptSlot } from "./attemptScheduler";
 import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
 
 /** The states an Attempt is in on a Worker before GitHub has handed its Runner a job. */

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import {
   BENCHMARK_STALE_AFTER_MS,
   benchmarkRecommendedSlots,

@@ -1,13 +1,6 @@
 import { v } from "convex/values";
+
 import { internal } from "./_generated/api";
-import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
-import { selectImageForMachine } from "./catalog";
-import { requireDashboardAuth } from "./dashboardAuth";
-import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
-import { normalizeHostLabels, pinDetail } from "./hostLabels";
-import { readinessAdmissionError } from "./isolation";
-import { retireOffPinOnWorker } from "./pinnedAttempts";
-import { largestServedProfileMemoryMiB, WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 import {
   internalMutation,
   internalQuery,
@@ -16,6 +9,14 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
+import { selectImageForMachine } from "./catalog";
+import { requireDashboardAuth } from "./dashboardAuth";
+import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
+import { normalizeHostLabels, pinDetail } from "./hostLabels";
+import { readinessAdmissionError } from "./isolation";
+import { retireOffPinOnWorker } from "./pinnedAttempts";
+import { largestServedProfileMemoryMiB, WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
 const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;

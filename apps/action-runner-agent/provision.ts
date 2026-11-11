@@ -1,9 +1,11 @@
-import { execa } from "execa";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import type { ProfileEgress } from "./readiness.js";
+
+import { execa } from "execa";
+
 import { childEnvironment, runtimeBinary } from "./dual-env.ts";
+import type { ProfileEgress } from "./readiness.js";
 
 export type MachineOs = "linux" | "mac" | "win";
 

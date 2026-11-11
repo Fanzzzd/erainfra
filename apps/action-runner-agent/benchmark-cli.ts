@@ -1,5 +1,6 @@
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
+
 import { runWorkerBenchmark, type BenchmarkReport } from "./benchmark.js";
 import { config } from "./config.js";
 

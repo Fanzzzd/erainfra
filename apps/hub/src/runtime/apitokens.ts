@@ -2,6 +2,7 @@
 // ONCE at creation ("plt_" prefix), stored hashed, revocable individually.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 import type { Role } from "../rbac.ts";
 

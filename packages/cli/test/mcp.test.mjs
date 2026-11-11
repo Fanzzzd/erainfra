@@ -1,10 +1,10 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { join, dirname } from "node:path";
 // The one check that fails if the MCP bridge breaks: spawn `portless mcp`, run the initialize
 // handshake, list tools. No hub is contacted (both methods are served locally).
 import test from "node:test";
-import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "portless.mjs");
 

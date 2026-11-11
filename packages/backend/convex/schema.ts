@@ -1,14 +1,16 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+
+import { alertConditionValidator } from "./alertRules";
 import { attemptMetricSummaryFields, attemptMetricsFields } from "./attemptMetricsModel";
 import {
   benchmarkSummaryValidator,
   fitPolicyValidator,
   storedBenchmarkValidator,
 } from "./benchmark";
-import { alertConditionValidator } from "./alertRules";
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
+import { nodeTransportTables } from "./infra/nodeCommandModel";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
 import {
   flakyTestFields,
@@ -16,8 +18,6 @@ import {
   testReportFields,
   testReportHashFields,
 } from "./testReportsModel";
-
-import { nodeTransportTables } from "./infra/nodeCommandModel";
 
 export default defineSchema({
   ...authTables,

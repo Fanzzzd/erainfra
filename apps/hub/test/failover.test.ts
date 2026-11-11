@@ -1,9 +1,10 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createDb } from "../src/db.ts";
+import { AppStore } from "../src/runtime/apps.ts";
 import { failoverNode, type FailoverDeps } from "../src/runtime/failover.ts";
 import { RouteStore } from "../src/runtime/routes.ts";
-import { AppStore } from "../src/runtime/apps.ts";
-import { createDb } from "../src/db.ts";
 
 // A fake gateway: `present` is the set of connected agent ids; `sent` records deploy commands.
 function fakeDeps(present: string[], opts: { fail?: Set<string> } = {}) {

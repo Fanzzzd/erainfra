@@ -1,3 +1,4 @@
+import { mkdtempSync } from "node:fs";
 // Proof: portless deploys a MULTI-SERVICE ("compose-like") app — several containers brought up together
 // on a shared per-app docker network, talking to each other by service name, with the web service
 // exposed over the data plane. Runs fully locally against real docker:
@@ -11,7 +12,6 @@
 // image (nginx:alpine) is pulled by local docker — test scaffolding only.
 import os from "node:os";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 const scratch = mkdtempSync(join(os.tmpdir(), "pl-mc-"));
 process.env.PORTLESS_APP_DOMAIN = "apps.local";
 process.env.PORTLESS_BIND = "127.0.0.1";
@@ -19,14 +19,15 @@ process.env.PORTLESS_ROUTES_FILE = join(scratch, "routes.json");
 process.env.PORTLESS_APPS_FILE = join(scratch, "apps.json");
 process.env.PORTLESS_SECRETS_FILE = join(scratch, "secrets.json");
 process.env.PORTLESS_FAILOVER = "0";
-import http from "node:http";
 import { spawn, execSync } from "node:child_process";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
+import http from "node:http";
+
 import { InMemoryAuditLog } from "../../src/audit.ts";
-import { dataGateway } from "../../src/runtime/dataplane.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { dataGateway } from "../../src/runtime/dataplane.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 
 const PORT = 8788,
   AGENT = "localmc",

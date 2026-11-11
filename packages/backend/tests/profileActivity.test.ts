@@ -1,5 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
 import { ACTIVITY_SAMPLE, ACTIVITY_WINDOW_MS } from "../convex/profiles";
 import schema from "../convex/schema";

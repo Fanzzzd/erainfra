@@ -4,8 +4,10 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { parseCpuset } from "../cpuset.ts";
 import {
   attemptEnvironment,
   attemptInvocation,
@@ -18,7 +20,6 @@ import {
   readTestReport,
   reportAttemptWithRunnerExit,
 } from "../provision.ts";
-import { parseCpuset } from "../cpuset.ts";
 import { PIDS_LIMIT, probeInvocation } from "../readiness.ts";
 import { PROVISION_LINUX, PROVISION_MAC } from "./helpers/harness.ts";
 

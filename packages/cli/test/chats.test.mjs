@@ -1,12 +1,12 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // Transcript parsers against fixture lines in the REAL on-disk formats (captured 2026-07 from
 // ~/.claude/projects and ~/.codex/sessions). `portless chats parse <file>` is the same code path
 // sync uses, so this covers ingestion end to end minus the network.
 import test from "node:test";
-import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const CLI = fileURLToPath(new URL("../portless.mjs", import.meta.url));

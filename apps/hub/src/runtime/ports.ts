@@ -3,6 +3,7 @@
 // ports back on redeploy (its containers' env bakes them in). Keyed by node + purpose.
 // ponytail: linear scan in a fixed range — thousands of allocations before it matters.
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 
 const RANGE_START = 62000;

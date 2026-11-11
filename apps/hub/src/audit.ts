@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "./db.ts";
 
 export type AuditOutcome = "allow" | "deny" | "success" | "failure" | "attempt";

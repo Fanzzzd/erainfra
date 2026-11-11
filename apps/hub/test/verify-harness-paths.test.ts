@@ -1,7 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import test from "node:test";
 
 // The harnesses under scripts/verify are the only coverage the fresh-box, multi-node, WSL, Windows
 // and failover paths have, and they reach the Hub by relative path rather than by package name.

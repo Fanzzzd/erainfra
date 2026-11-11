@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ArrowLeft, MessageSquare, Search } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+
 import { trpcQuery, type ChatHit, type ChatMessage, type ChatSession } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

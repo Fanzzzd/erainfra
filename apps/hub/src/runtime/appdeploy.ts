@@ -1,3 +1,4 @@
+import { renamedEnv } from "../env.ts";
 // The deploy pipeline: source → portless.yaml → per-service builds → placed deployApp groups →
 // routes → mesh links. This is the whole "no judgment" contract: everything below is computed from
 // the spec + connected nodes; the caller (git webhook, CLI upload, redeploy) only names the source.
@@ -6,13 +7,8 @@
 // reports through the DeploymentStore, which the CLI/dashboard poll.
 import { agentGateway, type AgentGateway } from "./agents.ts";
 import { appStore, type AppLink, type ServiceDeploy } from "./apps.ts";
-import { linkStore, linkTransports, type MeshLink } from "./links.ts";
-import { routeStore } from "./routes.ts";
-import { secretStore } from "./secrets.ts";
-import { portAllocator } from "./ports.ts";
 import { deployments } from "./deployments.ts";
-import { parseSpec, implicitSpec, envName, type AppSpec } from "./spec.ts";
-import { renamedEnv } from "../env.ts";
+import { linkStore, linkTransports, type MeshLink } from "./links.ts";
 import {
   forgetLegacyLinks,
   parseMeshRelays,
@@ -22,6 +18,10 @@ import {
   type MeshOptions,
   type MeshReport,
 } from "./meshControl.ts";
+import { portAllocator } from "./ports.ts";
+import { routeStore } from "./routes.ts";
+import { secretStore } from "./secrets.ts";
+import { parseSpec, implicitSpec, envName, type AppSpec } from "./spec.ts";
 
 export interface DeploySource {
   repoUrl?: string; // git: clone url (may embed a short-lived token)

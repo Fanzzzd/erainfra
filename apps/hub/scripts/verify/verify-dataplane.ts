@@ -4,18 +4,18 @@
 // Run: node --experimental-strip-types apps/hub/scripts/verify/verify-dataplane.ts
 import { spawn, execSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import http from "node:http";
 process.env.PORTLESS_HUB_BASE = "http://127.0.0.1:8796";
 process.env.PORTLESS_REGISTRY = "127.0.0.1:5005";
 process.env.PORTLESS_APP_DOMAIN = "apps.local"; // enables the ingress hook
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
-import { dataGateway } from "../../src/runtime/dataplane.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { dataGateway } from "../../src/runtime/dataplane.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8796,

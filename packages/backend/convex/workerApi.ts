@@ -1,7 +1,10 @@
 import { ConvexError, v, type Infer } from "convex/values";
+
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { recordAttemptMetrics } from "./attemptMetrics";
+import { metricsSnapshotValidator } from "./attemptMetricsModel";
 import { releaseAttemptSlot, releaseMachineSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import {
@@ -12,10 +15,6 @@ import {
   normalizeBenchmark,
   resourceRecommendedSlots,
 } from "./benchmark";
-import { recordAttemptMetrics } from "./attemptMetrics";
-import { metricsSnapshotValidator } from "./attemptMetricsModel";
-import { recordAttemptTests } from "./testReports";
-import { testReportValidator } from "./testReportsModel";
 import {
   egressRecordValidator,
   profileEgressOf,
@@ -25,6 +24,8 @@ import {
 import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
 import { runnerVersionOf } from "./runnerReleaseModel";
+import { recordAttemptTests } from "./testReports";
+import { testReportValidator } from "./testReportsModel";
 import { largestServedProfileMemoryMiB, servedProfiles } from "./workerPolicy";
 
 const completedExecutorDrainMs = 30_000;

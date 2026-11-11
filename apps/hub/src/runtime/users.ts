@@ -5,6 +5,7 @@
 // control-plane SQLite DB (src/db.ts).
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 import type { Role } from "../rbac.ts";
 

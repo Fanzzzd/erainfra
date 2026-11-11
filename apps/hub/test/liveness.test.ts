@@ -1,5 +1,6 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
+
 import { AgentGateway } from "../src/runtime/agents.ts";
 import { DataGateway } from "../src/runtime/dataplane.ts";
 

@@ -7,6 +7,7 @@
 // table (access.ts requireTokenPermission); every change is audited in the transaction that makes
 // it, and so is every refusal of an admin request.
 import { ConvexError, v } from "convex/values";
+
 import type { Doc, Id } from "../_generated/dataModel";
 import {
   internalMutation,
@@ -19,8 +20,8 @@ import {
 import { apiCallerValidator, requirePermission, requireTokenPermission } from "./access";
 import { isSingleContainerRoute, loadRouteOwner, ownerOfRoute, upsertMeshLink } from "./apps";
 import { appendAudit } from "./auditLog";
-import { insertNodeCommand } from "./nodeCommands";
 import { INGRESS_PORT_END, INGRESS_PORT_START } from "./ingress";
+import { insertNodeCommand } from "./nodeCommands";
 import {
   enrollNode,
   hasLiveCredential,
@@ -31,8 +32,8 @@ import {
 
 /** CONTEXT.md, "Placement role". Mirrors tables.ts placementRoleValidator. */
 export const PLACEMENT_ROLES = ["gateway", "compute", "database", "relay"] as const;
-import { isNodeLive, isTerminalStage } from "./policy";
 import { recordTombstone } from "./hubProvenance";
+import { isNodeLive, isTerminalStage } from "./policy";
 import { releaseAppPorts } from "./ports";
 import { maskedSecrets, setSecrets, unsetSecret } from "./secrets";
 

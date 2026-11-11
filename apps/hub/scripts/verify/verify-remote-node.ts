@@ -5,11 +5,12 @@
 // machines" path that loopback can't prove. Needs Docker + the image already pushed to :5005.
 // Run: node --experimental-strip-types apps/hub/scripts/verify/verify-remote-node.ts
 import { spawn, execSync } from "node:child_process";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
+
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 
 const PORT = 8795;
 const REGISTRY = process.env.PORTLESS_REGISTRY ?? "127.0.0.1:5005";

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+
 import { validateDockerArgs } from "../src/runtime/dockerargs.ts";
 
 // The same fixture is read by apps/infra-agent/internal/agent/dockerargs_conformance_test.go.

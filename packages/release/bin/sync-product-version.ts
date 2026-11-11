@@ -1,4 +1,5 @@
 import path from "node:path";
+
 import { syncProductVersion } from "../src/product-version.ts";
 
 // Runs after `changeset version` (root script `release:version`). Changesets bumps the fixed

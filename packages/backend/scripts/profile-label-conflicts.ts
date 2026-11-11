@@ -24,6 +24,7 @@
  */
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
 import { labelConflicts, type ScaleSetProfile } from "../convex/scaleSetLabels.ts";
 
 type Row = ScaleSetProfile & { state?: string };

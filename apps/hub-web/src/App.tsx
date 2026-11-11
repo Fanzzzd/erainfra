@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   LogOut,
@@ -7,14 +6,16 @@ import {
   Rocket,
   Settings as SettingsIcon,
 } from "lucide-react";
+import { useEffect, useState } from "react";
+
 import { authMe, authStatus, logout, trpcQuery, type AuthUser } from "@/api";
 import { cn } from "@/lib/utils";
-import { Overview } from "@/pages/Overview";
-import { Nodes } from "@/pages/Nodes";
+import { Chats } from "@/pages/Chats";
 import { Deploy } from "@/pages/Deploy";
 import { Login } from "@/pages/Login";
+import { Nodes } from "@/pages/Nodes";
+import { Overview } from "@/pages/Overview";
 import { Settings } from "@/pages/Settings";
-import { Chats } from "@/pages/Chats";
 
 type View = "overview" | "deploy" | "nodes" | "chats" | "settings";
 

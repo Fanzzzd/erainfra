@@ -1,5 +1,7 @@
 import { stat } from "node:fs/promises";
+
 import { execa } from "execa";
+
 import { dualEnv, runtimeBinary } from "./dual-env.ts";
 import type { ProfileSpec } from "./readiness.js";
 

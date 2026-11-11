@@ -1,6 +1,7 @@
 // What the operator API's deployment routes (infra/deployHttp.ts) run. Internal: the HTTP layer
 // authenticates the API token and its scope, and passes the token's name as the audit actor.
 import { ConvexError, v } from "convex/values";
+
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, internalQuery, type QueryCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";

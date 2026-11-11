@@ -1,13 +1,13 @@
+import { InMemoryAuditLog } from "../../src/audit.ts";
+import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
 // Enroll the locked-down Windows box (.46) onto the mesh with the ONE command, over the HK LAN.
 // Chain: .46 → work-remote:18080 (lan-forward.py) → work-remote:127.0.0.1:18787 (reverse ssh tunnel)
 // → this hub on the Mac (127.0.0.1:8787). The hub serves agent.ps1 + the windows agent binary, accepts
 // the agent's WSS dial-in, then proves real control through an allowlisted hostname operation.
 // Run: node --experimental-strip-types apps/hub/scripts/verify/verify-winbox.ts
 import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
 import { createCallerFactory } from "../../src/trpc.ts";
-import { InMemoryAuditLog } from "../../src/audit.ts";
-import type { Principal } from "../../src/auth.ts";
 
 const PORT = 8787,
   AGENT = "winbox-46";

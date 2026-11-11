@@ -1,5 +1,6 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
 import { missingHostLabels, normalizeHostLabels } from "../convex/hostLabels";
 import schema from "../convex/schema";

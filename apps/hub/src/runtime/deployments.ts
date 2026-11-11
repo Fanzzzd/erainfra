@@ -5,6 +5,7 @@
 // 1000 records are kept. In-flight deploys die with the process — failStale() marks them at boot.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 
 export type DeployStage =

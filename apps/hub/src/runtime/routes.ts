@@ -4,6 +4,7 @@
 // truth — upload deploys have no GitBinding, so routes can't be derived from bindings.
 // ponytail: last-deploy-wins, single node per app. Multi-replica/round-robin is a list here later.
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 
 export interface Deployment {
