@@ -85,14 +85,14 @@ You need:
 
    ```bash
    chmod 600 controller-token github-token
-   sudo usermod -aG docker "$USER"      # the Worker runs docker as you; log out and back in after
-   sudo loginctl enable-linger "$USER"  # keeps the Worker's user service running without a login
+   sudo usermod -aG docker "$USER"   # the Worker runs docker as you
    printf 'vm.max_map_count = 262144\nfs.inotify.max_user_instances = 1280\n' |
      sudo tee /etc/sysctl.d/60-erainfra-worker.conf && sudo sysctl --system
    ```
 
    A Worker below these [two kernel settings](docs/workers.md#linux-worker-prerequisites) refuses
-   Docker jobs.
+   Docker jobs. Log out of every session and back in, so the docker group applies, then run
+   `sudo loginctl enable-linger "$USER"` so the Worker's user service runs without a login.
 
 5. Register the Profile. On the same machine, look up the digest of the newest published image,
    then install a controller for your repository:

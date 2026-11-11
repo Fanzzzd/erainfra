@@ -68,13 +68,12 @@ jobs:
 
    ```bash
    chmod 600 controller-token github-token
-   sudo usermod -aG docker "$USER"      # the Worker runs docker as you; log out and back in after
-   sudo loginctl enable-linger "$USER"  # keeps the Worker's user service running without a login
+   sudo usermod -aG docker "$USER"   # the Worker runs docker as you
    printf 'vm.max_map_count = 262144\nfs.inotify.max_user_instances = 1280\n' |
      sudo tee /etc/sysctl.d/60-erainfra-worker.conf && sudo sysctl --system
    ```
 
-   达不到这[两项内核参数](docs/workers.md#linux-worker-prerequisites)的 Worker 会拒绝 Docker job。
+   达不到这[两项内核参数](docs/workers.md#linux-worker-prerequisites)的 Worker 会拒绝 Docker job。退出所有会话再重新登录，让 docker 组生效，然后运行 `sudo loginctl enable-linger "$USER"`，这样不登录时 Worker 的用户服务也会运行。
 
 5. 注册 Profile。在同一台机器上查出最新发布镜像的 digest，然后为你的仓库安装一个 controller：
 
