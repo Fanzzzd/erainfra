@@ -198,7 +198,7 @@ export const get = query({
         workflowRunId: attempt.workflowRunId,
         result: attempt.result,
         lastError: attempt.lastError,
-        cause: runnerCause(attempt) ?? undefined,
+        cause: runnerCause(attempt, summaryRow) ?? undefined,
         createdAt: attempt.createdAt,
         startedAt: attempt.startedAt,
         finishedAt: attempt.finishedAt,
