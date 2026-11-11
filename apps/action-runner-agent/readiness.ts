@@ -435,7 +435,7 @@ export function jobResourceVisibility(
 
 /**
  * A stable identifier, on the same rule as CHECK_JOB_RESOURCE_VISIBILITY above:
- * the dashboard groups by it and README's sysctl.d section names it, so
+ * the dashboard groups by it and docs/workers.md's sysctl.d section names it, so
  * renaming it is a product change.
  */
 export const CHECK_HOST_SYSCTLS = "host-sysctls";
@@ -576,7 +576,7 @@ export function hostSysctlReadiness(
           )
           .join("; ") +
         `. These are host settings that no --sysctl flag can override per container; ` +
-        `set them in /etc/sysctl.d (README, Linux Worker prerequisites). Measured: ${evidence}`,
+        `set them in /etc/sysctl.d (docs/workers.md, Linux Worker prerequisites). Measured: ${evidence}`,
     };
   }
   return { name: CHECK_HOST_SYSCTLS, passed: true, detail: evidence };

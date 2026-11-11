@@ -672,7 +672,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
           <SecretOnce
             title={`Signing secret for ${revealed.name}`}
             value={revealed.secret}
-            note="Shown once. The receiver verifies X-EraInfra-Signature with it; see the README for the scheme."
+            note="Shown once. The receiver verifies X-EraInfra-Signature with it; docs/monitoring.md, Alerts, describes the scheme."
             onDismiss={() => setRevealed(undefined)}
           />
         </CardContent>
@@ -1061,7 +1061,7 @@ function MetricsSettings() {
         <CardTitle>Prometheus endpoint</CardTitle>
         <CardDescription>
           Fleet state in Prometheus text format: Workers by readiness, slots, queue depth and age,
-          recent queue wait and run time, benchmark scores. The README lists every metric.
+          recent queue wait and run time, benchmark scores. docs/monitoring.md lists every metric.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4 py-4 text-xs text-muted-foreground">

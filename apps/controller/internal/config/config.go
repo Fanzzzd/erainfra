@@ -432,7 +432,7 @@ func (e Egress) validate(executor string) error {
 
 // Scope is the level a scale set is registered at, read from
 // RC_GITHUB_CONFIG_URL. It decides which GitHub permission the controller's
-// credential needs (README, "GitHub permissions the controller needs").
+// credential needs (docs/controllers.md, "GitHub permissions the controller needs").
 type Scope string
 
 const (

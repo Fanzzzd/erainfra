@@ -3,7 +3,7 @@
 // The controller's GitHub App key lives in this deployment, in CONTROLLER_GITHUB_APP_CLIENT_ID and
 // CONTROLLER_GITHUB_APP_PRIVATE_KEY, and never leaves it. The holder asks for a token and gets a
 // one-hour installation token, narrowed to the Profile's repository (or organization) and to the
-// permissions the controller uses (README, "GitHub permissions the controller needs").
+// permissions the controller uses (docs/controllers.md, "GitHub permissions the controller needs").
 //
 // Why environment variables and not the `githubApp` table the dashboard's Manifest flow fills: that
 // App serves the legacy workflow_job webhook path. Its manifest asks for Repository Administration

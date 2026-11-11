@@ -89,8 +89,8 @@ func TestValidateWarmPool(t *testing.T) {
 	}
 }
 
-// RC_GITHUB_CONFIG_URL decides where the scale set is registered, and the
-// README promises a repository, organization or enterprise URL. Each of the
+// RC_GITHUB_CONFIG_URL decides where the scale set is registered, and
+// docs/controllers.md promises a repository, organization or enterprise URL. Each of the
 // three must pass validation and be read as the scope the scale-set client will
 // register against, with a credential that scope accepts.
 func TestValidateAcceptsEveryRegistrationScope(t *testing.T) {

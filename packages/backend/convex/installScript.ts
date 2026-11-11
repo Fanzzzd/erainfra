@@ -972,7 +972,7 @@ __CONTROLLER_DIGESTS__
     CTL_SUDO='sudo'
   fi
   $CTL_SUDO test -d /run/systemd/system ||
-    ctl_fail 'The controller role needs systemd as the init system; run runner-center-controller under your own supervisor instead (README, "Run a Profile controller")'
+    ctl_fail 'The controller role needs systemd as the init system; run runner-center-controller under your own supervisor instead (docs/controllers.md, "Install a controller")'
 
   CTL_TMP=$(mktemp -d)
   trap 'rm -rf "$CTL_TMP"' EXIT INT TERM

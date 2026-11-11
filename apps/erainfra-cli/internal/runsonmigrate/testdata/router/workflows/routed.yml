@@ -1,4 +1,4 @@
-# The README's router: ask the control plane, fall back to GitHub-hosted.
+# The router docs/workflows.md documents: ask the control plane, fall back to GitHub-hosted.
 on: push
 env:
   AWS_PROFILE: default

@@ -200,7 +200,7 @@ func TestRewriteRouterNeedsTheRouterForm(t *testing.T) {
 		name, job string
 		router    bool
 	}{
-		{"README form", "    outputs: { runs-on: \"${{ steps.r.outputs.runs-on }}\" }\n    steps:\n      - id: r\n        run: |\n          curl --get --data-urlencode \"profile=$PROFILE\" \"$CONTROL_PLANE/runs-on\"\n", true},
+		{"documented form", "    outputs: { runs-on: \"${{ steps.r.outputs.runs-on }}\" }\n    steps:\n      - id: r\n        run: |\n          curl --get --data-urlencode \"profile=$PROFILE\" \"$CONTROL_PLANE/runs-on\"\n", true},
 		{"literal query", "    outputs: { label: x }\n    steps:\n      - run: curl -fsS \"https://fleet.example/runs-on?profile=erainfra-4vcpu-ubuntu-2404\"\n", true},
 		{"older labels form", "    outputs: { label: x }\n    steps:\n      - run: curl -fsS https://fleet.example/runs-on?labels=rc-linux\n", true},
 		{"a file path", "    outputs: { label: x }\n    steps:\n      - run: cat .github/runs-on.yml profile=x\n", false},

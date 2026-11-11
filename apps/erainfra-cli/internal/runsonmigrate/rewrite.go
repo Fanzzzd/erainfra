@@ -624,7 +624,7 @@ func (w *workflow) rewriteInputDefaults(inputs map[string]inputUse) {
 // file path such as .github/runs-on.yml does not match.
 var routerCall = regexp.MustCompile(`/runs-on(?:[?"'\s]|$)`)
 
-// isRouterJob recognises the README's /runs-on router: a job that publishes
+// isRouterJob recognises the /runs-on router docs/workflows.md documents: a job that publishes
 // outputs for other jobs to run on, with a step whose script calls the
 // endpoint and names what it asks about (profile=, or the older labels=).
 func isRouterJob(job *yaml.Node) bool {

@@ -469,7 +469,8 @@ fi
 #   them is namespaced, so `docker run --sysctl` refuses all six outright
 #   ("sysctl '...' is not allowed", verified against Docker 27.5 and 28.1);
 #   they are Worker host settings. Readiness measures them per Profile
-#   (`host-sysctls`) and README carries the sysctl.d file that sets them.
+#   (`host-sysctls`), and docs/workers.md carries the sysctl.d file that sets
+#   them.
 docker run --rm --pull=never --init --name "$RUNNER_NAME" \
   --cpus "$RC_VCPUS" \
   --cpuset-cpus "$RC_CPUSET_CPUS" \
