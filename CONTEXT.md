@@ -96,8 +96,8 @@ reporting a boundary weaker than its executor promises is refused.
 the network policy identity hash and thin-pool identity. Admission is fail-closed against it.
 
 **Platform**: the service the control plane runs on: Convex (production today) or Cloudflare (a
-Durable Object, being built). The backend codes against the subset of Convex's server API both
-implement; `packages/platform` holds the Cloudflare implementation
+Durable Object, being built). Both answer the same Convex syscalls, so the backend runs unmodified
+on either; `packages/platform` holds the Cloudflare implementation
 ([ADR 0019](docs/adr/0019-the-control-plane-runs-on-convex-or-cloudflare.md)). Not the Executor
 and not a Worker's OS.
 

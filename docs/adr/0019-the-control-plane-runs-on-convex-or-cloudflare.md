@@ -47,24 +47,36 @@ Cloudflare facts that shape the design, from developers.cloudflare.com on 2026-1
 
 ## Decision
 
-### The port is the subset of Convex's server API the backend already uses
+### The port is Convex's syscall interface
 
-The backend keeps Convex's programming model: functions declared as `query`, `mutation`, `action`
-and `httpAction`, with `ctx.db`, `ctx.scheduler`, `ctx.storage`, `ctx.auth` and `ctx.run*`. That
-subset is the interface between the business logic and the platform. Each platform implements it:
+The backend keeps Convex's programming model unchanged: functions declared with the generated
+`query`, `mutation`, `action` and `httpAction` builders, using `ctx.db`, `ctx.scheduler`,
+`ctx.storage`, `ctx.auth` and `ctx.run*`.
 
-- **Convex platform**: the generated `_generated/server` functions, unchanged. No code runs
-  between the backend and Convex.
-- **Cloudflare platform**: `packages/platform` implements the same subset on a Durable Object.
+Under that model, Convex's own npm package turns every `ctx` call into a syscall on a global
+`Convex` object: `1.0/get`, `1.0/insert`, `1.0/shallowMerge`, `1.0/replace`, `1.0/remove`,
+`1.0/queryStream`, `1.0/queryStreamNext`, `1.0/queryPage`, `1.0/db/normalizeId`,
+`1.0/schedule`, `1.0/actions/query`, `1.0/actions/mutation`, `1.0/storage*` and a few metadata
+calls, about 30 in all. The Convex server answers them in production. convex-test answers them in
+tests, which is how it runs real backend code. That interface is the boundary:
 
-The alternative, a repository layer or ORM written for both, would rewrite all 456 data calls and
-lose Convex's live queries on the Convex side. Keeping the existing API costs one implementation of
-a fixed subset, which the conformance tests below pin down.
+- **Convex platform**: the Convex server answers the syscalls. No code of ours runs between the
+  backend and Convex.
+- **Cloudflare platform**: `packages/platform` answers the same syscalls from a Durable Object.
 
-The backend imports its function builders from one module (`convex/_platform.ts`) instead of
-`_generated/server`. On Convex that module re-exports the generated builders. A build for
-Cloudflare swaps in the Cloudflare builders. The backend's own code does not know which platform
-runs it.
+Argument validation, return validation, the query builder and the index-range rules stay in
+Convex's own client code on both platforms, so they behave identically. The Cloudflare side
+implements storage, transactions, scheduling and files, nothing else. The backend's modules load
+unmodified; the Cloudflare runtime calls each registered function's `invokeQuery`,
+`invokeMutation` or `invokeAction`, as convex-test does.
+
+The alternatives cost more. Reimplementing `ctx.db` would duplicate the query builder and
+validation, and drift from Convex. A repository layer or ORM written for both platforms would
+rewrite all 456 data calls and lose Convex's live queries on the Convex side.
+
+The syscall interface is internal to Convex. It is versioned (`1.0/...`) and convex-test depends
+on it, but a Convex upgrade can change it. The `convex` package stays pinned, and the conformance
+tests below run on every upgrade.
 
 ### The Cloudflare platform
 
@@ -126,9 +138,9 @@ there; Convex's value order puts null below every number.
 ## Phases
 
 1. The store, with differential tests against convex-test. (This ADR's pull request.)
-2. The function runtime on Cloudflare: `_platform.ts`, the Durable Object host, `ctx.run*`,
-   the scheduler and alarm, Cron Triggers, HTTP routing, R2 storage. The backend's test suite runs
-   on it.
+2. The function runtime on Cloudflare: the syscall layer over the store, the Durable Object host,
+   nested calls, the scheduler and alarm, Cron Triggers, HTTP routing, R2 storage. The backend's
+   test suite runs on it.
 3. The client port, then the dashboard and the Action Runner Agent on it.
 4. Auth.
 5. Deploy tooling (`wrangler`), export and import between platforms, and an end-to-end run of the
@@ -137,9 +149,9 @@ there; Convex's value order puts null below every number.
 
 ## Consequences
 
-- The backend may only use the Convex API subset the Cloudflare platform implements. A new Convex
-  feature (search indexes, vector search, components) needs a Cloudflare implementation or stays
-  out. Phase 2 adds a check that fails when the backend uses something outside the subset.
+- The backend may only use the syscalls the Cloudflare platform answers. A new Convex feature
+  (search indexes, vector search, components) needs a Cloudflare implementation or stays out. An
+  unanswered syscall fails loudly on Cloudflare, and the conformance tests catch it first.
 - Live queries on Cloudflare re-run more often than on Convex, because invalidation is per table.
 - On Cloudflare the whole control plane lives in one Durable Object. Its limits (about 1,000
   requests a second, 10 GB, 128 MB of memory) are far above today's load; the logs and metrics
