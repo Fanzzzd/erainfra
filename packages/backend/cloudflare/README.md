@@ -4,8 +4,11 @@ This directory runs the backend's unmodified Convex functions on Cloudflare (ADR
 Object holds the whole control plane in SQLite. A Worker in front serves the dashboard's static
 files and sends everything else to the object. `@erainfra/platform` holds the implementation.
 
-Production still runs on Convex. The Cloudflare platform has not run a real Profile yet, and the
-dashboard and the Action Runner Agent cannot use it until the client port (phase 3) lands.
+Production still runs on Convex. The Cloudflare platform has not run a real Profile yet.
+
+The dashboard and the Action Runner Agent connect with Convex's own clients. Point them at the
+Worker's URL: build the dashboard with `VITE_CONVEX_URL=<worker URL>`, and set `CONVEX_URL` for the
+Action Runner Agent.
 
 ## Files
 
@@ -18,7 +21,8 @@ dashboard and the Action Runner Agent cannot use it until the client port (phase
 
 ## Run it locally
 
-Build the dashboard first (`pnpm --filter @erainfra/dashboard run build`). Then put the secrets in
+Build the dashboard first, pointed at the local Worker
+(`VITE_CONVEX_URL=http://localhost:8799 pnpm --filter @erainfra/dashboard run build`). Then put the secrets in
 `cloudflare/.dev.vars`, which Git ignores:
 
 ```sh

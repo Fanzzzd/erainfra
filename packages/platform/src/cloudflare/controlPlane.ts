@@ -6,6 +6,7 @@
 //   POST /api/query | /api/mutation | /api/action   Convex's HTTP function API
 //   POST /api/storage/upload?token=...              an upload URL from generateUploadUrl
 //   GET  /api/storage/<id>                          a stored file (getUrl)
+//   GET  /api/<client version>/sync                 Convex's WebSocket sync protocol
 // Everything else goes to the backend's http.ts router.
 
 import { convexToJson, jsonToConvex, type JSONValue } from "convex/values";
@@ -20,6 +21,7 @@ import {
 } from "../runtime/runtime.ts";
 import type { Sql, SqlValue } from "../store/sql.ts";
 import { schemaInfo } from "../store/store.ts";
+import { SyncServer } from "../sync/session.ts";
 import { JwtVerifier, type AuthProvider } from "./jwt.ts";
 
 // The few Workers types the host needs, so the package does not depend on workers-types.
@@ -46,6 +48,22 @@ export interface R2Bucket {
   get(key: string): Promise<R2Object | null>;
   delete(key: string): Promise<void>;
 }
+// Workers' server-side WebSocket: accept() it, then listen for messages.
+interface ServerWebSocket {
+  accept(): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: "message", fn: (e: { data: string | ArrayBuffer }) => void): void;
+  addEventListener(type: "close" | "error", fn: () => void): void;
+}
+declare const WebSocketPair: { new (): { 0: ServerWebSocket; 1: ServerWebSocket } };
+
+// Convex's status for a function that threw; ConvexHttpClient reads the error body only for it.
+const UDF_FAILED = 560;
+
+const SYNC_PATH = /^\/api\/[^/]+\/sync$/;
+const PING_MS = 20_000;
+
 interface DurableObjectNamespace {
   idFromName(name: string): unknown;
   get(id: unknown): { fetch(request: Request): Promise<Response> };
@@ -98,6 +116,8 @@ export function createControlPlane(options: ControlPlaneOptions) {
   class ControlPlane {
     private readonly runtime: Runtime;
     private readonly verifier: JwtVerifier | null;
+    private readonly sync: SyncServer;
+    private pinger: ReturnType<typeof setInterval> | null = null;
 
     constructor(state: DurableObjectState, env: ControlPlaneEnv) {
       const storage = state.storage;
@@ -118,12 +138,17 @@ export function createControlPlane(options: ControlPlaneOptions) {
       });
       this.verifier =
         env.JWKS && options.auth ? new JwtVerifier(env.JWKS, options.auth.providers) : null;
+      const verifier = this.verifier;
+      this.sync = new SyncServer(this.runtime, verifier ? (token) => verifier.verify(token) : null);
       // A fresh object has no alarm yet; crons and anything scheduled before a restart need one.
       this.runtime.start();
     }
 
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
+      if (SYNC_PATH.test(url.pathname) && request.headers.get("Upgrade") === "websocket") {
+        return this.acceptSync();
+      }
       const kind = FUNCTION_ROUTES[url.pathname];
       if (kind && request.method === "POST") return this.callFunction(kind, request);
       if (url.pathname === "/api/storage/upload" && request.method === "POST") {
@@ -158,8 +183,10 @@ export function createControlPlane(options: ControlPlaneOptions) {
         return json({ status: "error", errorMessage: (err as Error).message }, 401);
       }
       const body = (await request.json()) as { path: string; args?: JSONValue };
+      // The documented API sends `args` as an object; ConvexHttpClient sends a one-element array.
+      const args = Array.isArray(body.args) ? (body.args[0] ?? {}) : (body.args ?? {});
       try {
-        const value = await this.runtime.run(body.path, jsonToConvex(body.args ?? {}), {
+        const value = await this.runtime.run(body.path, jsonToConvex(args), {
           identity,
           expect: kind,
           publicOnly: true,
@@ -175,9 +202,37 @@ export function createControlPlane(options: ControlPlaneOptions) {
             ...(e.data === undefined ? {} : { errorData: convexToJson(e.data) }),
             logLines: [],
           },
-          e.data === undefined ? 500 : 400,
+          UDF_FAILED,
         );
       }
+    }
+
+    // The object keeps open sockets in memory, so it stays resident while clients are connected.
+    // Hibernation would need the subscriptions in SQLite (ADR 0019); the control plane has a few
+    // dozen clients, which fit in the Paid plan's included duration.
+    private acceptSync(): Response {
+      const pair = new WebSocketPair();
+      const socket = pair[1];
+      socket.accept();
+      const session = this.sync.connect(socket);
+      socket.addEventListener("message", (e) => {
+        void session.receive(
+          typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data),
+        );
+      });
+      // Convex clients reconnect after 60 s without a message from the server. The timer runs only
+      // while a client is connected, so an idle object can still be evicted.
+      this.pinger ??= setInterval(() => this.sync.ping(), PING_MS);
+      const closed = () => {
+        session.close();
+        if (this.sync.size === 0 && this.pinger) {
+          clearInterval(this.pinger);
+          this.pinger = null;
+        }
+      };
+      socket.addEventListener("close", closed);
+      socket.addEventListener("error", closed);
+      return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
     }
 
     private async serveFile(id: string): Promise<Response> {

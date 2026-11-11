@@ -186,8 +186,22 @@ export class Store {
     for (const row of rows) yield { key: row.key as string, doc: deserialize(row.doc as string) };
   }
 
+  private readonly commitListeners = new Set<(tables: ReadonlySet<string>) => void>();
+
+  /** Calls `listener` with the tables each commit wrote. Returns a function that unsubscribes. */
+  onCommit(listener: (tables: ReadonlySet<string>) => void): () => void {
+    this.commitListeners.add(listener);
+    return () => this.commitListeners.delete(listener);
+  }
+
   apply(writes: Map<string, Write>): void {
     if (writes.size === 0) return;
+    this.write(writes);
+    const tables = new Set([...writes.values()].map((w) => w.table));
+    for (const listener of this.commitListeners) listener(tables);
+  }
+
+  private write(writes: Map<string, Write>): void {
     this.sql.transactionSync(() => {
       for (const [id, { table, doc }] of writes) {
         const stored = this.readDoc(id);
@@ -257,11 +271,15 @@ const clone = <T>(v: T): T => structuredClone(v);
 
 export class Transaction {
   readonly writes = new Map<string, Write>();
+  /** The tables this transaction read, for invalidating live queries. */
+  readonly reads = new Set<string>();
   private committed = false;
 
   constructor(private readonly store: Store) {}
 
   private lookup(id: string): { table: string; doc: Doc | null } | null {
+    const table = this.tableOf(id);
+    if (table) this.reads.add(table);
     const written = this.writes.get(id);
     if (written) return written;
     return this.store.readDoc(id);
@@ -390,6 +408,7 @@ export class Transaction {
     }
     const fields = this.store.indexesOf(plan.table)[plan.index];
     if (!fields) throw new Error(`Index "${plan.table}.${plan.index}" is not defined`);
+    this.reads.add(plan.table);
     const pending = this.pending(plan.table);
     const touched = new Set(pending.map(([id]) => id));
     const overlay: Row[] = [];
