@@ -5,12 +5,13 @@
 // Run: node --experimental-strip-types apps/hub/scripts/verify/deploy-workremote.ts
 process.env.PORTLESS_APP_DOMAIN = "apps.local";
 import http from "node:http";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
+
 import { InMemoryAuditLog } from "../../src/audit.ts";
-import { dataGateway } from "../../src/runtime/dataplane.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { dataGateway } from "../../src/runtime/dataplane.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 
 const PORT = 8787,
   APP = "pl-demo",

@@ -11,6 +11,7 @@
   "endOfLine": "lf",
   "objectWrap": "preserve",
   "proseWrap": "preserve",
+  "sortImports": true,
   "ignorePatterns": [
     "**/_generated/**",
     "**/routeTree.gen.ts",

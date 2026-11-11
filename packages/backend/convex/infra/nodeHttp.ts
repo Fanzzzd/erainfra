@@ -1,13 +1,14 @@
 import type { HttpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
+
 import { internal } from "../_generated/api";
-import { httpAction } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
+import { httpAction } from "../_generated/server";
 import { bearerToken } from "../apiTokenPolicy";
-import { isWellFormedNodeCredential } from "./policy";
+import { deployAppConfig, mintRepoReadToken } from "./githubDeploy";
 import { MAX_BODY_BYTES } from "./nodeCommandModel";
 import { ENDPOINT_REFUSALS } from "./nodeState";
-import { deployAppConfig, mintRepoReadToken } from "./githubDeploy";
+import { isWellFormedNodeCredential } from "./policy";
 
 /**
  * A spec or build payload from a repository gets a read-only token for that one repository, minted

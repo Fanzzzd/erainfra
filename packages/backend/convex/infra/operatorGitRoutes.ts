@@ -9,6 +9,7 @@
 // A branch may contain `/` (`release/1.2`), so a binding is named by query parameters, never by
 // path segments that a proxy or a client could re-split or normalise.
 import type { HttpRouter } from "convex/server";
+
 import { internal } from "../_generated/api";
 import { API_PREFIX, apiError, apiJson, operatorRoute } from "../operatorHttp";
 import type { BindingView } from "./git";

@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
+
 import type { Id } from "../convex/_generated/dataModel";
-import {
-  ALERT_CONDITION_KINDS,
-  conditionError,
-  evaluateCondition,
-  type AlertCondition,
-} from "../convex/alertRules";
 import {
   classifyResponse,
   deliveryBackoffMs,
@@ -16,6 +11,12 @@ import {
   webhookBody,
   type NotificationContent,
 } from "../convex/alertNotify";
+import {
+  ALERT_CONDITION_KINDS,
+  conditionError,
+  evaluateCondition,
+  type AlertCondition,
+} from "../convex/alertRules";
 import { controllerLiveness, type ControllerHeartbeatRow } from "../convex/controllerLiveness";
 import type {
   FinishedAttempt,

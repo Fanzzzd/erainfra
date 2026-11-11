@@ -1,9 +1,10 @@
 import { v } from "convex/values";
+
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
-import { carriesHostLabels } from "./hostLabels";
 import { profileEgressOf, type ProfileEgress } from "./egress";
+import { carriesHostLabels } from "./hostLabels";
 import { hasSnapshotHeadroomForGuests, readinessAdmissionError } from "./isolation";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 

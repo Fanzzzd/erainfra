@@ -1,4 +1,3 @@
-import { type FormEvent, useId, useState } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@erainfra/backend/api";
 import {
@@ -9,6 +8,8 @@ import {
 import { createFileRoute } from "@tanstack/react-router";
 import { useConvex } from "convex/react";
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { type FormEvent, useId, useState } from "react";
+
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

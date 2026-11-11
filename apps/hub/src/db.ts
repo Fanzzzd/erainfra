@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 // THE control-plane database: one SQLite file (node:sqlite — built into Node, zero deps) holding
 // users, sessions, tokens, routes, apps, ports, secrets, git bindings, deploy history, and the
 // audit trail. WAL mode; single hub process is the single writer. Chosen over per-store JSON files
@@ -9,9 +12,7 @@
 // createDb). On first boot against real state, the previous generation's JSON stores are imported
 // and the files renamed *.imported — a one-way, idempotent migration.
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { renamedEnv, renamedPath } from "./env.ts";
 
 const TEST = process.execArgv.includes("--test") || !!process.env.NODE_TEST_CONTEXT;

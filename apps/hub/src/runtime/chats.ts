@@ -3,6 +3,7 @@
 // session (transcript files are append-only and re-sent when they grow), which keeps the sync
 // protocol stateless on the hub side and the FTS index trivially consistent.
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 
 export interface ChatSessionMeta {

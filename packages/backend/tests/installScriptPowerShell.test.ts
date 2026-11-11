@@ -1,3 +1,17 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
+
 /**
  * The Windows installer contract, for both roles `/install.ps1` serves.
  *
@@ -19,19 +33,7 @@
  * @vitest-environment node
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import path from "node:path";
+
 import { AGENT_RELEASE, type AgentRelease } from "../convex/agentRelease.ts";
 import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderWindowsInstallScript } from "../convex/installScriptPowerShell.ts";

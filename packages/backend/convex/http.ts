@@ -1,9 +1,10 @@
 import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { httpRouter } from "convex/server";
-import { AGENT_RELEASE } from "./agentRelease";
-import { auth } from "./auth";
+
 import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import { AGENT_RELEASE } from "./agentRelease";
+import { auth } from "./auth";
 import { findImageLabel, IMAGE_CATALOG } from "./catalog";
 import { mintInstallationToken } from "./controllerGithubToken";
 import {
@@ -32,17 +33,16 @@ import {
   resolveSiteUrl,
   type SetupStateStatus,
 } from "./githubAppConfig";
-import { renderInstallScript } from "./installScript";
-import { METRICS_CONTENT_TYPE } from "./metricsFormat";
-import { renderWindowsInstallScript } from "./installScriptPowerShell";
-import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
-import { registerTestRoutes } from "./operatorTestsHttp";
-
 import { registerDeployRoutes } from "./infra/deployHttp";
 import { parsePush, webhookSecretsFor } from "./infra/githubDeploy";
 import { registerNodeRoutes } from "./infra/nodeHttp";
 import { registerInfraRoutes } from "./infra/operatorRoutes";
 import { registerRelayRoutes } from "./infra/relayAccess";
+import { renderInstallScript } from "./installScript";
+import { renderWindowsInstallScript } from "./installScriptPowerShell";
+import { METRICS_CONTENT_TYPE } from "./metricsFormat";
+import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
+import { registerTestRoutes } from "./operatorTestsHttp";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);

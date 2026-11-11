@@ -1,5 +1,6 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
+
 import { appFromHost, sanitizeRequestHeaders } from "../src/runtime/dataplane.ts";
 
 test("appFromHost: exact-suffix match, single label, port-stripped, case-insensitive", () => {

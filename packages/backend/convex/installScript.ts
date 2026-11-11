@@ -1,4 +1,5 @@
 import type { AgentRelease } from "./agentRelease";
+import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "./controllerUnit.generated.ts";
 import { MESH_INSTALL_FUNCTIONS } from "./meshInstallScript.ts";
 import {
   FIRECRACKER_HOST_PROVISIONER_B64,
@@ -6,7 +7,6 @@ import {
   FIRECRACKER_RUNTIME_UNIT_B64,
   FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "./provisionerFirecrackerHost.generated.ts";
-import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "./controllerUnit.generated.ts";
 
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail

@@ -9,6 +9,7 @@
 // allocatePort, secrets.ts putSecrets, git.ts insertBinding): with no Hub hash they record
 // `{ by: "convex" }`. A writer that patches a row directly records `convexWrite(now)` itself.
 import type { Infer } from "convex/values";
+
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { hubTombstoneKindValidator, provenanceValidator } from "./tables";

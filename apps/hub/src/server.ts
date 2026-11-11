@@ -1,16 +1,15 @@
 import "./boot-env.ts"; // MUST be first: sets persist-path env defaults before router.ts builds its singletons
-import Fastify, { type FastifyInstance } from "fastify";
-import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, createReadStream } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { join, resolve } from "node:path";
+
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 import { fastifyTRPCPlugin, type CreateFastifyContextOptions } from "@trpc/server/adapters/fastify";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, createReadStream } from "node:fs";
-import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
-import { appRouter } from "./router.ts";
-import { renamedEnv } from "./env.ts";
-import { stateDir } from "./db.ts";
-import type { Context } from "./trpc.ts";
+import Fastify, { type FastifyInstance } from "fastify";
+import { z } from "zod";
+
 import { InMemoryAuditLog, SqliteAuditLog, type AuditLog } from "./audit.ts";
 import {
   defaultTokenStore,
@@ -22,20 +21,23 @@ import {
   type TokenStore,
   type Principal,
 } from "./auth.ts";
-import { userStore } from "./runtime/users.ts";
-import { sessionStore } from "./runtime/sessions.ts";
-import { apiTokenStore } from "./runtime/apitokens.ts";
+import { stateDir } from "./db.ts";
+import { renamedEnv } from "./env.ts";
 import { can } from "./rbac.ts";
+import { appRouter } from "./router.ts";
 import { agentGateway } from "./runtime/agents.ts";
-import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from "./runtime/dataplane.ts";
-import { routeStore } from "./runtime/routes.ts";
-import { installFailover } from "./runtime/failover.ts";
-import { backupConfig, backupNow } from "./runtime/backup.ts";
-import { githubAppConfig, verifyWebhook, parsePush } from "./runtime/github.ts";
-import { gitProjects, startGitDeploy } from "./runtime/gitdeploy.ts";
+import { apiTokenStore } from "./runtime/apitokens.ts";
 import { installLinkHealer, installServeRehydrator } from "./runtime/appdeploy.ts";
+import { backupConfig, backupNow } from "./runtime/backup.ts";
+import { dataGateway, appFromHost, sanitizeRequestHeaders, MAX_BODY } from "./runtime/dataplane.ts";
 import { deployments } from "./runtime/deployments.ts";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { installFailover } from "./runtime/failover.ts";
+import { gitProjects, startGitDeploy } from "./runtime/gitdeploy.ts";
+import { githubAppConfig, verifyWebhook, parsePush } from "./runtime/github.ts";
+import { routeStore } from "./runtime/routes.ts";
+import { sessionStore } from "./runtime/sessions.ts";
+import { userStore } from "./runtime/users.ts";
+import type { Context } from "./trpc.ts";
 
 // Re-export so existing importers (and tests) keep working.
 export { appRouter, type AppRouter } from "./router.ts";

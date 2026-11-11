@@ -1,10 +1,11 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
+import { MAX_PROVISION_ATTEMPTS } from "../convex/retry";
 import schema from "../convex/schema";
 import { githubMock } from "./support/githubMock.ts";
-import { MAX_PROVISION_ATTEMPTS } from "../convex/retry";
 
 // The real `github` module is swapped out: convex-test executes scheduled
 // functions, so tryAssign/reconcile would otherwise drive Octokit at the

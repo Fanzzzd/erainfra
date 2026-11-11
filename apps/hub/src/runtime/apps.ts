@@ -7,6 +7,7 @@
 // Stored as one JSON doc per app (nested services/links), with the node lifted into a column for
 // filtering. ponytail: single node per app, last-deploy-wins.
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 
 export interface ServiceDeploy {

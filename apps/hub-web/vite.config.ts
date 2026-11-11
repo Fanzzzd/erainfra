@@ -1,7 +1,8 @@
 import path from "node:path";
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+
 import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 // Dev proxy so the dashboard reaches the control-plane API same-origin.
 export default defineConfig({

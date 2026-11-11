@@ -3,6 +3,7 @@
 // auto-links; app-declared `needs:` links stay in AppStore). Persisted so the link healer can
 // re-establish them across hub/agent restarts.
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 import type { LinkTransport, TransportStore } from "./meshControl.ts";
 

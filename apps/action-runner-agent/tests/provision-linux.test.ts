@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+
 import { FAKE_JIT, Harness, PROVISION_LINUX, waitFor } from "./helpers/harness.ts";
 
 const SENTINEL = "RC-FAKE-JIT-SENTINEL-DO-NOT-LEAK";

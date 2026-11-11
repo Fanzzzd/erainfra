@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
 import { Server, Globe, Boxes, ArrowRight } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+
 import { trpcQuery, type AgentInfo, type RouteInfo } from "@/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function Overview() {
   const [nodes, setNodes] = useState<AgentInfo[]>([]);

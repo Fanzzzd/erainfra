@@ -1,7 +1,7 @@
 import { v } from "convex/values";
+
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
-import { deleteAttemptSecret } from "./attemptSecrets";
 import {
   finishRetirement,
   keepForReturningWorker,
@@ -9,6 +9,7 @@ import {
   retirementBackstopDue,
   workerReports,
 } from "./attemptRetirement";
+import { deleteAttemptSecret } from "./attemptSecrets";
 import { deleteAttemptEgress } from "./egress";
 import { decideAttemptOutcome } from "./retry";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";

@@ -8,11 +8,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.PORTLESS_HUB_BASE = "http://127.0.0.1:8795";
 process.env.PORTLESS_REGISTRY = "127.0.0.1:5005";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8795,

@@ -1,9 +1,8 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { ConvexError, v } from "convex/values";
+
 import type { Id, Doc } from "../_generated/dataModel";
 import { internalMutation, internalQuery, type QueryCtx } from "../_generated/server";
-import { hasLiveCredential, requireNode } from "./nodes";
-import { meshAddress } from "./nodeCommandModel";
 import { hashApiToken } from "../apiTokenPolicy";
 import {
   INGRESS_MAX_CONNECTIONS,
@@ -15,6 +14,8 @@ import {
   isHostServicePort,
   isRouteLabel,
 } from "./ingress";
+import { meshAddress } from "./nodeCommandModel";
+import { hasLiveCredential, requireNode } from "./nodes";
 
 export const heartbeat = internalMutation({
   args: {

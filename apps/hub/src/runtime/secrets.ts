@@ -6,6 +6,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+
 import { db, stateDir } from "../db.ts";
 import { renamedEnv } from "../env.ts";
 

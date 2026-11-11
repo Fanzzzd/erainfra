@@ -1,6 +1,7 @@
 import { initTRPC, TRPCError } from "@trpc/server";
-import type { Principal } from "./auth.ts";
+
 import type { AuditLog } from "./audit.ts";
+import type { Principal } from "./auth.ts";
 import { can, type Permission } from "./rbac.ts";
 
 export interface Context {

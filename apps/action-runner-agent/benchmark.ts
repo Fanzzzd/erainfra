@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
 import { dualEnv } from "./dual-env.ts";
 
 export const BENCHMARK_VERSION = 1;

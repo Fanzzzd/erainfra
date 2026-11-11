@@ -1,12 +1,13 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import schema from "../convex/schema";
-import { setUpBefore } from "./support/clock.ts";
+
 import {
   LEASE_RENEW_INTERVAL_MS,
   LEASE_TTL_MS,
   POOR_NETWORK_HEAD_START_MS,
 } from "../convex/controllerLease";
+import schema from "../convex/schema";
+import { setUpBefore } from "./support/clock.ts";
 import {
   CONTRACT,
   NOW,

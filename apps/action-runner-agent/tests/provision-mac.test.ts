@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+
 import { FAKE_HOST_KEY, FAKE_JIT, Harness, PROVISION_MAC, waitFor } from "./helpers/harness.ts";
 
 const SENTINEL = "RC-FAKE-JIT-SENTINEL-DO-NOT-LEAK";

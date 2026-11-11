@@ -1,9 +1,10 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { api } from "../convex/_generated/api";
 import schema from "../convex/schema";
-import { githubMock } from "./support/githubMock.ts";
 import { RECENT_FAILURE_LIMIT } from "../convex/webhooks";
+import { githubMock } from "./support/githubMock.ts";
 
 const modules = {
   ...import.meta.glob("../convex/**/*.ts"),

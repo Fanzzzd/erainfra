@@ -1,8 +1,11 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import test from "node:test";
+
+import { createDb } from "../src/db.ts";
 import { establishLink, ensureAppLinks, ensureRegistryLinks } from "../src/runtime/appdeploy.ts";
 import { appStore } from "../src/runtime/apps.ts";
+import { LinkStore, LinkTransportStore, linkStore } from "../src/runtime/links.ts";
 import {
   describeLink,
   meshDesired,
@@ -11,8 +14,6 @@ import {
   MESH_CAPABILITY,
   type MeshOptions,
 } from "../src/runtime/meshControl.ts";
-import { LinkStore, LinkTransportStore, linkStore } from "../src/runtime/links.ts";
-import { createDb } from "../src/db.ts";
 
 function peer(id: string, port = 1000) {
   return {

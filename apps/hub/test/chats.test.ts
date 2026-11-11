@@ -1,11 +1,12 @@
+import assert from "node:assert/strict";
 // The AI-conversation archive: ingest (idempotent replace), listing, FTS5 search with snippets,
 // and the permission wall (operator/viewer tokens must see nothing — transcripts are sensitive).
 import test from "node:test";
-import assert from "node:assert/strict";
-import { ChatStore, ftsQuery } from "../src/runtime/chats.ts";
-import { createDb } from "../src/db.ts";
-import { createApiServer } from "../src/server.ts";
+
 import { StaticTokenStore } from "../src/auth.ts";
+import { createDb } from "../src/db.ts";
+import { ChatStore, ftsQuery } from "../src/runtime/chats.ts";
+import { createApiServer } from "../src/server.ts";
 
 const meta = (id: string, over: Record<string, unknown> = {}) => ({
   id,

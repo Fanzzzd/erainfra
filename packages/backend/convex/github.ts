@@ -1,7 +1,8 @@
 "use node";
 
-import { App, Octokit, RequestError } from "octokit";
 import { v } from "convex/values";
+import { App, Octokit, RequestError } from "octokit";
+
 import { internal } from "./_generated/api";
 import { internalAction, type ActionCtx } from "./_generated/server";
 import { resolveAppCredentials } from "./githubAppConfig";

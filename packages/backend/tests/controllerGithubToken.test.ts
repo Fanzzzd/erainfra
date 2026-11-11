@@ -1,12 +1,14 @@
+import { generateKeyPairSync, createPublicKey, verify } from "node:crypto";
+
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { generateKeyPairSync, createPublicKey, verify } from "node:crypto";
+
+import { internal } from "../convex/_generated/api";
 import {
   GITHUB_REQUEST_TIMEOUT_MS,
   appJwt,
   mintInstallationToken,
 } from "../convex/controllerGithubToken";
-import { internal } from "../convex/_generated/api";
 import schema from "../convex/schema";
 import {
   CONTRACT,

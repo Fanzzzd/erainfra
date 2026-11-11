@@ -4,11 +4,12 @@
 // to your registry, then deploy on the deploy node. Self-hosted end to end.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+
 import { db } from "../db.ts";
 import { agentGateway, type AgentGateway } from "./agents.ts";
-import { cloneUrl, installationToken } from "./github.ts";
-import { deployments } from "./deployments.ts";
 import { runDeploy, type PipelineResult } from "./appdeploy.ts";
+import { deployments } from "./deployments.ts";
+import { cloneUrl, installationToken } from "./github.ts";
 
 export interface GitBinding {
   id: string;

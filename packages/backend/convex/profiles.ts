@@ -1,5 +1,13 @@
 import { v } from "convex/values";
+
+import type { Doc } from "./_generated/dataModel";
+import { query, type QueryCtx } from "./_generated/server";
+import { isSchedulableReadiness } from "./attemptScheduler";
+import { fitPolicyValidator } from "./benchmark";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { egressEvidenceValidator, profileEgressOf, profileEgressValidator } from "./egress";
+import { effectiveReadinessState } from "./fleetObservation";
+import { pinDetail } from "./hostLabels";
 import {
   boundaryValidator,
   EXECUTOR_BOUNDARY,
@@ -7,13 +15,6 @@ import {
   readinessAdmissionError,
   readinessCheckValidator,
 } from "./isolation";
-import { query, type QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
-import { isSchedulableReadiness } from "./attemptScheduler";
-import { fitPolicyValidator } from "./benchmark";
-import { effectiveReadinessState } from "./fleetObservation";
-import { egressEvidenceValidator, profileEgressOf, profileEgressValidator } from "./egress";
-import { pinDetail } from "./hostLabels";
 import { conflictsOf } from "./scaleSetLabels";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 

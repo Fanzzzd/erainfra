@@ -1,4 +1,5 @@
 import { useId, useState, type PointerEvent } from "react";
+
 import { formatElapsed } from "@/lib/metrics";
 
 /**

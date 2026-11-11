@@ -5,22 +5,22 @@
 // Run: node --experimental-strip-types apps/hub/scripts/verify/verify-failover.ts
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import http from "node:http";
 process.env.PORTLESS_HUB_BASE = "http://127.0.0.1:8797";
 process.env.PORTLESS_REGISTRY = "127.0.0.1:5005";
 process.env.PORTLESS_APP_DOMAIN = "apps.local";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
 import { InMemoryAuditLog } from "../../src/audit.ts";
+import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
 import { agentGateway } from "../../src/runtime/agents.ts";
 import { dataGateway } from "../../src/runtime/dataplane.ts";
+import { installFailover } from "../../src/runtime/failover.ts";
 import { routeStore } from "../../src/runtime/routes.ts";
 import { secretStore } from "../../src/runtime/secrets.ts";
-import { installFailover } from "../../src/runtime/failover.ts";
-import type { Principal } from "../../src/auth.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 import { deployed } from "./_wait-for-deploy.ts";
 
 const PORT = 8797,

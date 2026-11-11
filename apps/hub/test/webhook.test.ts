@@ -1,6 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import test from "node:test";
+
 import { createApiServer } from "../src/server.ts";
 
 const SECRET = "hook-secret";

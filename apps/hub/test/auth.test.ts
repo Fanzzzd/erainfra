@@ -1,15 +1,16 @@
+import assert from "node:assert/strict";
 // The account-auth surface, end to end through fastify.inject: first-boot setup, password login
 // with rate limiting, cookie sessions driving tRPC, API tokens, logout. Hermetic — the singleton
 // stores are in-memory under the test runner.
 import test from "node:test";
-import assert from "node:assert/strict";
-import { createApiServer } from "../src/server.ts";
-import { hashPassword, verifyPassword, UserStore } from "../src/runtime/users.ts";
-import { SessionStore } from "../src/runtime/sessions.ts";
-import { ApiTokenStore } from "../src/runtime/apitokens.ts";
+
 import { LoginRateLimiter, StaticTokenStore } from "../src/auth.ts";
 import { createDb } from "../src/db.ts";
 import { agentGateway } from "../src/runtime/agents.ts";
+import { ApiTokenStore } from "../src/runtime/apitokens.ts";
+import { SessionStore } from "../src/runtime/sessions.ts";
+import { hashPassword, verifyPassword, UserStore } from "../src/runtime/users.ts";
+import { createApiServer } from "../src/server.ts";
 
 test("scrypt password hashing: roundtrip, reject wrong, params encoded in the hash", () => {
   const h = hashPassword("correct horse battery");

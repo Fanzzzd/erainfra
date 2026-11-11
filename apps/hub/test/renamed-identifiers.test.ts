@@ -1,10 +1,11 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renamedEnv, renamedPath, retiredName, resetRenameWarnings } from "../src/env.ts";
+import test from "node:test";
+
 import { readSessionCookie, SESSION_COOKIE, SESSION_COOKIE_NEXT } from "../src/auth.ts";
+import { renamedEnv, renamedPath, retiredName, resetRenameWarnings } from "../src/env.ts";
 import { createApiServer } from "../src/server.ts";
 
 // Stage 1 of retiring the "Portless" name (ADR 0004; CONTEXT.md rule 4). The property this whole

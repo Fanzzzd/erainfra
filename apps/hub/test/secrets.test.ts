@@ -1,7 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { SecretStore } from "../src/runtime/secrets.ts";
+import test from "node:test";
+
 import { createDb } from "../src/db.ts";
+import { SecretStore } from "../src/runtime/secrets.ts";
 
 test("secrets round-trip, mask, inject as -e args, and reject bad names", () => {
   const s = new SecretStore(createDb(":memory:")); // ephemeral key under test

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+
 import { clearReadinessSignal, publishReadinessSignal } from "../readiness-signal.ts";
 
 describe("Agent readiness signal", () => {

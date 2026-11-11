@@ -20,6 +20,7 @@
 // Not copied: sessions and API tokens (credentials for the Hub only; see docs/infra-management.md)
 // and the AI transcript archive, which is not control state.
 import { ConvexError, v, type Infer } from "convex/values";
+
 import { internal } from "../_generated/api";
 import {
   internalAction,
@@ -29,10 +30,10 @@ import {
   type QueryCtx,
 } from "../_generated/server";
 import { emailRefusal, insertUser, normalizeEmail } from "./access";
+import { routeRefusal, upsertApp, upsertMeshLink, upsertRoute } from "./apps";
 import { appendAudit, auditRefusal } from "./auditLog";
 import { readCounter, writeCounter } from "./counters";
 import { createDeployment } from "./deployments";
-import { routeRefusal, upsertApp, upsertMeshLink, upsertRoute } from "./apps";
 import { bindingKey, bindingRefusal, findBinding, insertBinding } from "./git";
 import {
   appOwnedByConvex,
@@ -53,8 +54,8 @@ import {
   roleFromHubRoles,
 } from "./policy";
 import { claimPort, claimPortRefusal } from "./ports";
-import { putSecrets, secretScope, storedSecret } from "./secrets";
 import { requireMasterKey, type MasterKey } from "./secretCrypto";
+import { putSecrets, secretScope, storedSecret } from "./secrets";
 import { auditOutcomeValidator, deployStageValidator } from "./tables";
 
 const hubService = v.object({

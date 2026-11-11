@@ -1,5 +1,6 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { withDurableAudit } from "../convex/infra/audit";
@@ -16,7 +17,6 @@ import {
   roleFromHubRoles,
   type PermissionRole,
 } from "../convex/infra/policy";
-import { MASK } from "../convex/infra/secrets";
 import {
   decryptValue,
   encryptValue,
@@ -26,6 +26,7 @@ import {
   unwrapDataKey,
   type SecretScope,
 } from "../convex/infra/secretCrypto";
+import { MASK } from "../convex/infra/secrets";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");

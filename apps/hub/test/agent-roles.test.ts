@@ -1,5 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
+
+import { resetRenameWarnings } from "../src/env.ts";
 import {
   AgentGateway,
   normalizeAgentRoles,
@@ -7,7 +9,6 @@ import {
   RETIRED_ROLE_WORKER,
   type AgentSocket,
 } from "../src/runtime/agents.ts";
-import { resetRenameWarnings } from "../src/env.ts";
 
 // Stage 1 of moving the Infra Agent's PLACEMENT role off CONTEXT.md's `worker` (#64). A role crosses
 // the WebSocket and the Hub holds it per connected agent, so the two sides move independently: the

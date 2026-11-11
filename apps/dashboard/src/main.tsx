@@ -1,9 +1,11 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { ConvexReactClient } from "convex/react";
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+
 import { routeTree } from "./routeTree.gen";
+
 import "./styles.css";
 
 const convexUrl = import.meta.env.VITE_CONVEX_URL;

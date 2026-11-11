@@ -1,4 +1,5 @@
 import { ConvexError, v, type Infer } from "convex/values";
+
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -10,14 +11,6 @@ import {
   type MutationCtx,
 } from "./_generated/server";
 import {
-  ALERT_HISTORY_WINDOW_MS,
-  alertConditionValidator,
-  conditionError,
-  describeCondition,
-  evaluateCondition,
-  type AlertCondition,
-} from "./alertRules";
-import {
   destinationUrlError,
   slackBody,
   urlHint,
@@ -25,6 +18,14 @@ import {
   type NotificationContent,
   type NotificationEvent,
 } from "./alertNotify";
+import {
+  ALERT_HISTORY_WINDOW_MS,
+  alertConditionValidator,
+  conditionError,
+  describeCondition,
+  evaluateCondition,
+  type AlertCondition,
+} from "./alertRules";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { loadFleetObservation } from "./fleetObservation";
 

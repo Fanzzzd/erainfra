@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+
 import { FAKE_JIT, Harness, PROVISION_DOCKER, waitFor } from "./helpers/harness.ts";
 
 const IMAGE = `ghcr.io/fanzzzd/runner-center-ubuntu-js@sha256:${"a".repeat(64)}`;

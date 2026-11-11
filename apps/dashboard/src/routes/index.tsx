@@ -1,4 +1,5 @@
-import { useId, useMemo, useState } from "react";
+import { api } from "@erainfra/backend/api";
+import { controllerLiveness, type ControllerLiveness } from "@erainfra/backend/controllerLiveness";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -13,9 +14,9 @@ import {
   ShieldCheck,
   UserPlus,
 } from "lucide-react";
+import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { api } from "@erainfra/backend/api";
-import { controllerLiveness, type ControllerLiveness } from "@erainfra/backend/controllerLiveness";
+
 import { EmptyState } from "@/components/empty-state";
 import { GithubAppSetup } from "@/components/github-app-setup";
 import { PageHeader } from "@/components/page-header";
@@ -55,9 +56,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
+import { describeProfileEgress, egressTooltip } from "@/lib/egress";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { describeProfileEgress, egressTooltip } from "@/lib/egress";
 
 export const Route = createFileRoute("/")({ component: MachinesPage });
 

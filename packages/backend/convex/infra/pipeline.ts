@@ -21,10 +21,10 @@
 // replay of the outcome it recorded instead of a second build or deploy. Image tags are derived
 // from the run (git sha or deployment id), so even a repeated push writes the same tag.
 import { ConvexError, v } from "convex/values";
+
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { internalMutation, type MutationCtx } from "../_generated/server";
-import { appendAudit } from "./auditLog";
 import {
   isSingleContainerRoute,
   loadRouteOwner,
@@ -32,15 +32,16 @@ import {
   upsertMeshLink,
   upsertRoute,
 } from "./apps";
+import { appendAudit } from "./auditLog";
 import { createDeployment } from "./deployments";
+import { convexWrite } from "./hubProvenance";
+import { isRouteLabel } from "./ingress";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
 import { namespaceRefusal } from "./namespace";
 import { insertNodeCommand, type NodeCommand } from "./nodeCommands";
 import { changedNodes, planDeploy } from "./plan";
 import { isNodeLive, isTerminalStage, leaseAdmits, type DeployStage } from "./policy";
-import { convexWrite } from "./hubProvenance";
 import { allocatePort } from "./ports";
-import { isRouteLabel } from "./ingress";
 import { implicitSpec, parseSpec, routeLabelError, type AppSpec } from "./spec";
 
 type Run = Doc<"appDeployments">;

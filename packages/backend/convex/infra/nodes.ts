@@ -5,6 +5,7 @@
 // name and gets a credential bound to that one Node; the Node later registers the iroh EndpointId
 // that phase 1 gives it, which ADR 0016 makes its identity.
 import { ConvexError, v, type Infer } from "convex/values";
+
 import type { Id } from "../_generated/dataModel";
 import {
   internalMutation,

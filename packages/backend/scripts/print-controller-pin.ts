@@ -10,6 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
+
 import { CONTROLLER_TARGETS, controllerAssetName } from "../convex/agentRelease.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");

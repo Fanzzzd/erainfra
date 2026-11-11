@@ -3,6 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+
 import { MEMORY_PROBE_BYTES, MEMORY_PROBE_COPIES, runWorkerBenchmark } from "../benchmark.ts";
 
 describe("Worker benchmark", () => {

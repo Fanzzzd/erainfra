@@ -1,3 +1,4 @@
+import { mkdtempSync } from "node:fs";
 // Proof: a multi-service app PLACED ACROSS NODES. Two agents (nodeA, nodeB) connect to one hub; an app
 // deploys web→nodeA and api→nodeB; the hub fans each service out to its assigned node and gives each
 // exposed service an ingress route FROM ITS OWN NODE. We then reach each over the data plane and assert
@@ -8,7 +9,6 @@
 //  service connectivity is the mesh, verified separately.)
 import os from "node:os";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 const scratch = mkdtempSync(join(os.tmpdir(), "pl-mn-"));
 process.env.PORTLESS_APP_DOMAIN = "apps.local";
 process.env.PORTLESS_BIND = "127.0.0.1";
@@ -16,14 +16,15 @@ process.env.PORTLESS_ROUTES_FILE = join(scratch, "routes.json");
 process.env.PORTLESS_APPS_FILE = join(scratch, "apps.json");
 process.env.PORTLESS_SECRETS_FILE = join(scratch, "secrets.json");
 process.env.PORTLESS_FAILOVER = "0";
-import http from "node:http";
 import { spawn, execSync } from "node:child_process";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
+import http from "node:http";
+
 import { InMemoryAuditLog } from "../../src/audit.ts";
-import { dataGateway } from "../../src/runtime/dataplane.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { dataGateway } from "../../src/runtime/dataplane.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 
 const PORT = 8789,
   APP = "mndemo",

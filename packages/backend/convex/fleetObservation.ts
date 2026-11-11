@@ -1,7 +1,7 @@
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
-import { isSchedulableReadiness } from "./attemptScheduler";
 import { queueWaitMs } from "./attempts";
+import { isSchedulableReadiness } from "./attemptScheduler";
 import { controllerLiveness, type ControllerLiveness } from "./controllerLiveness";
 import { profileEgressOf, type ProfileEgress } from "./egress";
 import { pinDetail } from "./hostLabels";

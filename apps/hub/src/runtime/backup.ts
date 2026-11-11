@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 // Control-plane backup: tar the hub's durable state (routes, secrets + key, git bindings, projects,
 // audit) and upload it to YOUR own S3-compatible storage (MinIO/etc.). Losing the hub means losing
 // every secret and route, so this is the backup that matters most for a PaaS control plane. App/DB
@@ -7,10 +8,10 @@
 // keys are yours. ponytail: path-style PutObject/Get/List only, buffered body — fine for state tarballs
 // (KBs–MBs); switch to multipart if a hub ever accumulates GB of audit log.
 import { createHash, createHmac } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { db } from "../db.ts";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { db } from "../db.ts";
 import { renamedEnv } from "../env.ts";
 
 export interface S3Config {

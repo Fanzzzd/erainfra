@@ -1,3 +1,4 @@
+import { mkdtempSync } from "node:fs";
 // Proof: cross-node service-to-service over OUR mesh (erainfra-mesh on iroh), not the public domain.
 // Two agents connect to one hub; a "db" (registry:2.8.2, internal — no route) is deployed on nodeB and
 // published only to nodeB's loopback. agents.linkService then has the Hub read both Nodes' mesh
@@ -12,7 +13,6 @@
 // carries the TCP. Run it as an ordinary user: the agent refuses to supervise a root sidecar.
 import os from "node:os";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 const scratch = mkdtempSync(join(os.tmpdir(), "pl-meshlink-"));
 process.env.PORTLESS_APP_DOMAIN = "apps.local";
 process.env.PORTLESS_BIND = "127.0.0.1";
@@ -20,14 +20,15 @@ process.env.PORTLESS_ROUTES_FILE = join(scratch, "routes.json");
 process.env.PORTLESS_APPS_FILE = join(scratch, "apps.json");
 process.env.PORTLESS_SECRETS_FILE = join(scratch, "secrets.json");
 process.env.PORTLESS_FAILOVER = "0";
-import http from "node:http";
 import { spawn, execSync } from "node:child_process";
-import { createApiServer } from "../../src/server.ts";
-import { appRouter } from "../../src/router.ts";
-import { createCallerFactory } from "../../src/trpc.ts";
+import http from "node:http";
+
 import { InMemoryAuditLog } from "../../src/audit.ts";
-import { dataGateway } from "../../src/runtime/dataplane.ts";
 import type { Principal } from "../../src/auth.ts";
+import { appRouter } from "../../src/router.ts";
+import { dataGateway } from "../../src/runtime/dataplane.ts";
+import { createApiServer } from "../../src/server.ts";
+import { createCallerFactory } from "../../src/trpc.ts";
 
 const PORT = 8790,
   APP = "meshdb",

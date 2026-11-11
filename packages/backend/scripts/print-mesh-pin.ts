@@ -11,6 +11,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
+
 import { MESH_TARGETS, meshAssetName } from "../convex/agentRelease.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");

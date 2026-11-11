@@ -1,4 +1,5 @@
 import { ConvexError, v, type Infer } from "convex/values";
+
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import {
@@ -10,9 +11,9 @@ import {
 } from "../_generated/server";
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
+import { validateDockerArgs } from "./dockerArgs";
 import { assertAppLease } from "./leases";
 import { recordLogOutput } from "./logOutput";
-import { requireNode } from "./nodes";
 import {
   COMMAND_TTL_MS,
   commandOutcome,
@@ -20,9 +21,9 @@ import {
   nodeCommand,
   validateOperation,
 } from "./nodeCommandModel";
-import { secretsForNodeDeploy } from "./secrets";
-import { validateDockerArgs } from "./dockerArgs";
+import { requireNode } from "./nodes";
 import { canonicalJson } from "./plan";
+import { secretsForNodeDeploy } from "./secrets";
 import { MAX_SPEC_BYTES } from "./spec";
 
 export type NodeCommand = Infer<typeof nodeCommand>;

@@ -3,8 +3,8 @@
 // exposure per route granted to exactly the gateways; every other Node gets nothing.
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { api, internal } from "../convex/_generated/api";
-import schema from "../convex/schema";
 import type { Id } from "../convex/_generated/dataModel";
 import {
   INGRESS_PORT_END,
@@ -12,6 +12,7 @@ import {
   ingressPorts,
   ingressServiceName,
 } from "../convex/infra/ingress";
+import schema from "../convex/schema";
 const modules = import.meta.glob("../convex/**/*.ts");
 const T0 = Date.parse("2026-11-06T00:00:00Z");
 beforeEach(() => {

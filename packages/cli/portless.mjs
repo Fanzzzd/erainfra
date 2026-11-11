@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync, spawnSync } from "node:child_process";
 // portless — the CLI for your private PaaS. Zero dependencies, Node >= 20.
 //
 //   portless login <hub-url>        sign in with your hub account (or --token for a pre-made token)
@@ -19,7 +20,6 @@
 //
 // Config lives in ~/.portless/config.json; PORTLESS_HUB / PORTLESS_TOKEN override it.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from "node:fs";
-import { execFileSync, spawnSync } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { join, resolve, basename, dirname } from "node:path";
 import { createInterface } from "node:readline";

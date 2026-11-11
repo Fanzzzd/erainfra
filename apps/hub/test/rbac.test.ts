@@ -1,5 +1,6 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
+
 import { can } from "../src/rbac.ts";
 
 test("owner can do everything", () => {
