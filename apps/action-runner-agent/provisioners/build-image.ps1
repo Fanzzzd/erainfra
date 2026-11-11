@@ -72,8 +72,8 @@ param(
     # v<GitVersion>.windows.<GitWindowsRevision> and the digest is per revision.
     [int] $GitWindowsRevision = 4,
     [string] $GitSha256 = '0cbc0b34a74b3aff3ace0910328549155a770e228331b19cb1498218a120e7ff',
-    [string] $NodeVersion = '24.19.0',
-    [string] $NodeSha256 = 'f0f66c2a80c08a30a5ab5179ee9ea9e45f9b46289436a8cc87ff833b852db351',
+    [string] $NodeVersion = '24.22.2',
+    [string] $NodeSha256 = '9231bf64d19bef391dd5ee8af65411d3799c3c44a842d2320849cc1da60b6b6d',
     [string] $PythonVersion = '3.13.15',
     [string] $PythonSha256 = 'edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403',
     [switch] $DisableDefenderRealtime

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.19
 
-FROM docker.io/library/golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS guest
+FROM docker.io/library/golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS guest
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -16,11 +16,11 @@ FROM docker.io/library/ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5
 
 ARG TARGETARCH
 ARG RUNNER_VERSION=2.338.2
-ARG NODE_VERSION=22.23.2
-ARG NODE_24_VERSION=24.22.1
+ARG NODE_VERSION=22.23.4
+ARG NODE_24_VERSION=24.22.2
 ARG PNPM_VERSION=11.21.0
-ARG GO_VERSION=1.27.3
-ARG GH_VERSION=2.97.0
+ARG GO_VERSION=1.27.4
+ARG GH_VERSION=2.103.3
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -248,8 +248,8 @@ RUN install -d \
 # hosted runner could never be restored here, and every job reinstalled from
 # the registry.
 RUN case "$TARGETARCH" in \
-      amd64) node_arch=x64; node_sha=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307 ;; \
-      arm64) node_arch=arm64; node_sha=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8 ;; \
+      amd64) node_arch=x64; node_sha=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce ;; \
+      arm64) node_arch=arm64; node_sha=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && node_dir="/opt/hostedtoolcache/node/${NODE_VERSION}/${node_arch}" \
@@ -276,8 +276,8 @@ RUN case "$TARGETARCH" in \
 # onto PATH: the default `node` stays the 22 this image was built and smoke-tested
 # around, and only a workflow that asks setup-node for 24 sees this one.
 RUN case "$TARGETARCH" in \
-      amd64) node_arch=x64; node_sha=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6 ;; \
-      arm64) node_arch=arm64; node_sha=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e ;; \
+      amd64) node_arch=x64; node_sha=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75 ;; \
+      arm64) node_arch=arm64; node_sha=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && node_dir="/opt/hostedtoolcache/node/${NODE_24_VERSION}/${node_arch}" \
@@ -298,8 +298,8 @@ RUN case "$TARGETARCH" in \
 # file, so the Go that compiles runner-center-guest and the Go a workflow gets
 # are one version rather than two that drift apart unwatched.
 RUN case "$TARGETARCH" in \
-      amd64) go_arch=x64; go_dist=amd64; go_sha=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;; \
-      arm64) go_arch=arm64; go_dist=arm64; go_sha=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;; \
+      amd64) go_arch=x64; go_dist=amd64; go_sha=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840 ;; \
+      arm64) go_arch=arm64; go_dist=arm64; go_sha=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && go_dir="/opt/hostedtoolcache/go/${GO_VERSION}/${go_arch}" \
@@ -321,8 +321,8 @@ RUN case "$TARGETARCH" in \
 # is extracted. Only the binary is taken -- the release also carries man pages
 # and completions this image has no reader for.
 RUN case "$TARGETARCH" in \
-      amd64) gh_arch=amd64; gh_sha=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112 ;; \
-      arm64) gh_arch=arm64; gh_sha=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 ;; \
+      amd64) gh_arch=amd64; gh_sha=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d ;; \
+      arm64) gh_arch=arm64; gh_sha=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && curl --fail --location --retry 5 \
