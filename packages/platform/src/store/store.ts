@@ -71,7 +71,7 @@ const deserialize = (text: string): Doc => jsonToConvex(JSON.parse(text)) as Doc
 
 type Write = { table: string; doc: Doc | null };
 
-type Row = { key: string; doc: Doc };
+export type Row = { key: string; doc: Doc };
 
 export class Store {
   private lastCreationTime = 0;
@@ -100,6 +100,12 @@ export class Store {
       this.exec(
         "CREATE TABLE IF NOT EXISTS _index (tbl TEXT NOT NULL, idx TEXT NOT NULL, key TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (tbl, idx, key)) WITHOUT ROWID",
       );
+      // Every ID ever issued and its table. A Convex ID encodes its table, so an ID stays valid
+      // for `v.id(table)` and `normalizeId` after its document is deleted; this keeps that true.
+      this.exec(
+        "CREATE TABLE IF NOT EXISTS _ids (id TEXT PRIMARY KEY, tbl TEXT NOT NULL) WITHOUT ROWID",
+      );
+      this.exec("INSERT OR IGNORE INTO _ids (id, tbl) SELECT id, tbl FROM _docs");
       this.exec(
         "CREATE TABLE IF NOT EXISTS _index_meta (tbl TEXT NOT NULL, idx TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY (tbl, idx)) WITHOUT ROWID",
       );
@@ -162,6 +168,12 @@ export class Store {
     return row ? { table: row.tbl as string, doc: deserialize(row.doc as string) } : null;
   }
 
+  /** The table an ID was issued for, even if its document has since been deleted. */
+  tableOfId(id: string): string | null {
+    const row = this.exec("SELECT tbl FROM _ids WHERE id = ?", id)[0];
+    return row ? (row.tbl as string) : null;
+  }
+
   *scan(table: string, index: string, lo: string, hi: string, desc: boolean): Generator<Row> {
     const rows = this.sql.exec(
       `SELECT i.key AS key, d.doc AS doc FROM _index i JOIN _docs d ON d.id = i.id
@@ -194,6 +206,7 @@ export class Store {
           this.exec("DELETE FROM _docs WHERE id = ?", id);
           continue;
         }
+        this.exec("INSERT OR IGNORE INTO _ids (id, tbl) VALUES (?, ?)", id, table);
         this.exec(
           "INSERT INTO _docs (id, tbl, ct, doc) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET doc = excluded.doc",
           id,
@@ -228,6 +241,14 @@ export class Store {
   }
 }
 
+/**
+ * The fields a range may name on an index: its own, then the implicit _creationTime every user
+ * index ends with (the key layout in indexKey already sorts by it).
+ */
+export function rangeFields(index: string, fields: readonly string[]): readonly string[] {
+  return index in SYSTEM_INDEXES ? fields : [...fields, "_creationTime"];
+}
+
 export function indexKey(doc: Doc, fields: readonly string[]): string {
   return encodeKey([...fields.map((f) => fieldValue(doc, f)), doc._creationTime, doc._id]);
 }
@@ -246,7 +267,8 @@ export class Transaction {
     return this.store.readDoc(id);
   }
 
-  private tableOf = (id: string): string | null => this.lookup(id)?.table ?? null;
+  private tableOf = (id: string): string | null =>
+    this.writes.get(id)?.table ?? this.store.tableOfId(id);
 
   private validate(table: string, doc: Doc): void {
     const info = this.store.schema.tables[table];
@@ -337,6 +359,11 @@ export class Transaction {
     this.writes.set(id, { table: current.table, doc: null });
   }
 
+  /** The table an ID belongs to, counting this transaction's inserts. */
+  tableOfId(id: string): string | null {
+    return this.tableOf(id);
+  }
+
   normalizeId(table: string, id: string): string | null {
     return this.tableOf(id) === table ? id : null;
   }
@@ -352,11 +379,105 @@ export class Transaction {
     return out;
   }
 
+  // Index order from SQL merged with this transaction's own writes: stored rows the transaction
+  // changed or deleted are skipped, and its new versions are merged in by key. With `after`, only
+  // rows past that key in the plan's order.
+  *scan(plan: ScanPlan, after?: string): Generator<Row> {
+    let { lo, hi } = plan;
+    if (after !== undefined) {
+      if (plan.desc) hi = after < hi ? after : hi;
+      else lo = `${after}0` > lo ? `${after}0` : lo;
+    }
+    const fields = this.store.indexesOf(plan.table)[plan.index];
+    if (!fields) throw new Error(`Index "${plan.table}.${plan.index}" is not defined`);
+    const pending = this.pending(plan.table);
+    const touched = new Set(pending.map(([id]) => id));
+    const overlay: Row[] = [];
+    for (const [, doc] of pending) {
+      if (!doc) continue;
+      const key = indexKey(doc, fields);
+      if (key >= lo && key < hi) overlay.push({ key, doc });
+    }
+    overlay.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) * (plan.desc ? -1 : 1));
+    let o = 0;
+    for (const row of this.store.scan(plan.table, plan.index, lo, hi, plan.desc)) {
+      if (touched.has(row.doc._id as string)) continue;
+      while (o < overlay.length && before(overlay[o] as Row, row, plan.desc)) {
+        const next = overlay[o++] as Row;
+        if (plan.matches(next.doc)) yield { key: next.key, doc: clone(next.doc) };
+      }
+      if (plan.matches(row.doc)) yield row;
+    }
+    while (o < overlay.length) {
+      const next = overlay[o++] as Row;
+      if (plan.matches(next.doc)) yield { key: next.key, doc: clone(next.doc) };
+    }
+  }
+
+  // A cursor is "<fingerprint>.<key>". The fingerprint binds it to the query that issued it, so
+  // a cursor from another query, or a made-up one, is refused, as Convex refuses it.
+  page(plan: ScanPlan, opts: PaginationOptions): PaginationResult {
+    const fp = fingerprint(plan);
+    const end = `${fp}.${END_CURSOR}`;
+    if (opts.cursor === end) return { page: [], isDone: true, continueCursor: end };
+    let after: string | undefined;
+    if (opts.cursor !== null) {
+      const dot = opts.cursor.indexOf(".");
+      const key = opts.cursor.slice(dot + 1);
+      if (dot < 0 || opts.cursor.slice(0, dot) !== fp || !/^[0-9a-f]+$/.test(key)) {
+        throw new Error("InvalidCursor: the cursor was not issued for this query");
+      }
+      after = key;
+    }
+    const page: Doc[] = [];
+    let last = after;
+    let isDone = true;
+    for (const row of this.scan(plan, after)) {
+      if (page.length >= opts.numItems) {
+        isDone = false;
+        break;
+      }
+      page.push(row.doc);
+      last = row.key;
+    }
+    return { page, isDone, continueCursor: isDone ? end : `${fp}.${last as string}` };
+  }
+
+  /** Inserts into a system table (`_scheduled_functions`, `_storage`); only the platform does. */
+  insertSystem(table: string, value: Doc): string {
+    if (!table.startsWith("_")) throw new Error(`insertSystem: "${table}" is not a system table`);
+    const id = newId();
+    const doc = stripUndefined({
+      ...clone(value),
+      _id: id,
+      _creationTime: this.store.nextCreationTime(),
+    });
+    this.writes.set(id, { table, doc });
+    return id;
+  }
+
+  /** Patches a system-table document without schema validation. */
+  patchSystem(id: string, value: Doc): void {
+    const current = this.existing(id, undefined, "patchSystem");
+    if (!current.table.startsWith("_")) throw new Error("patchSystem: not a system table");
+    this.writes.set(id, { table: current.table, doc: { ...current.doc, ...clone(value) } });
+  }
+
   commit(): void {
     if (this.committed) throw new Error("transaction already committed");
     this.committed = true;
     this.store.apply(this.writes);
   }
+}
+
+function fingerprint(plan: ScanPlan): string {
+  // FNV-1a over the parts that define the query's order and range.
+  let h = 0x811c9dc5;
+  for (const ch of `${plan.table}\u0000${plan.index}\u0000${plan.lo}\u0000${plan.hi}\u0000${plan.desc}`) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
 }
 
 function stripUndefined(doc: Doc): Doc {
@@ -368,6 +489,16 @@ export type PaginationOptions = { numItems: number; cursor: string | null };
 export type PaginationResult = { page: Doc[]; isDone: boolean; continueCursor: string };
 
 const END_CURSOR = "_end";
+
+/** A resolved query: one index range, an order and a document predicate. */
+export type ScanPlan = {
+  table: string;
+  index: string;
+  lo: string;
+  hi: string;
+  desc: boolean;
+  matches: (doc: Doc) => boolean;
+};
 
 export class Query {
   private index = "by_creation_time";
@@ -387,7 +518,7 @@ export class Query {
     const fields = this.store.indexesOf(this.table)[name];
     if (!fields) throw new Error(`Index "${this.table}.${name}" is not defined`);
     this.index = name;
-    this.range = new IndexRangeBuilder(name, fields);
+    this.range = new IndexRangeBuilder(name, rangeFields(name, fields));
     if (build) build(this.range);
     return this;
   }
@@ -406,46 +537,21 @@ export class Query {
     return this;
   }
 
-  private matches(doc: Doc): boolean {
-    return this.filters.every((f) => evaluate(f, doc) === true);
-  }
-
-  // Index order from SQL merged with this transaction's own writes: stored rows the transaction
-  // changed or deleted are skipped, and its new versions are merged in by key.
-  private *rows(after?: string): Generator<Row> {
-    let { lo, hi } = this.range.keyRange();
-    if (after !== undefined) {
-      if (this.desc) hi = after < hi ? after : hi;
-      else lo = `${after}0` > lo ? `${after}0` : lo;
-    }
-    const fields = this.store.indexesOf(this.table)[this.index] as readonly string[];
-    const pending = this.tx.pending(this.table);
-    const touched = new Set(pending.map(([id]) => id));
-    const overlay: Row[] = [];
-    for (const [, doc] of pending) {
-      if (!doc) continue;
-      const key = indexKey(doc, fields);
-      if (key >= lo && key < hi) overlay.push({ key, doc });
-    }
-    overlay.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) * (this.desc ? -1 : 1));
-    let o = 0;
-    for (const row of this.store.scan(this.table, this.index, lo, hi, this.desc)) {
-      if (touched.has(row.doc._id as string)) continue;
-      while (o < overlay.length && before(overlay[o] as Row, row, this.desc))
-        yield overlay[o++] as Row;
-      yield row;
-    }
-    while (o < overlay.length) yield overlay[o++] as Row;
-  }
-
-  private *matching(after?: string): Generator<Row> {
-    for (const row of this.rows(after)) if (this.matches(row.doc)) yield row;
+  plan(): ScanPlan {
+    const filters = this.filters;
+    return {
+      table: this.table,
+      index: this.index,
+      ...this.range.keyRange(),
+      desc: this.desc,
+      matches: (doc) => filters.every((f) => evaluate(f, doc) === true),
+    };
   }
 
   async take(n: number): Promise<Doc[]> {
     const out: Doc[] = [];
     if (n <= 0) return out;
-    for (const row of this.matching()) {
+    for (const row of this.tx.scan(this.plan())) {
       out.push(row.doc);
       if (out.length >= n) break;
     }
@@ -453,7 +559,7 @@ export class Query {
   }
 
   async collect(): Promise<Doc[]> {
-    return [...this.matching()].map((r) => r.doc);
+    return [...this.tx.scan(this.plan())].map((r) => r.doc);
   }
 
   async first(): Promise<Doc | null> {
@@ -467,23 +573,11 @@ export class Query {
   }
 
   async paginate(opts: PaginationOptions): Promise<PaginationResult> {
-    if (opts.cursor === END_CURSOR) return { page: [], isDone: true, continueCursor: END_CURSOR };
-    const page: Doc[] = [];
-    let last: string | undefined = opts.cursor ?? undefined;
-    let isDone = true;
-    for (const row of this.matching(opts.cursor ?? undefined)) {
-      if (page.length >= opts.numItems) {
-        isDone = false;
-        break;
-      }
-      page.push(row.doc);
-      last = row.key;
-    }
-    return { page, isDone, continueCursor: isDone ? END_CURSOR : (last as string) };
+    return this.tx.page(this.plan(), opts);
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<Doc> {
-    for (const row of this.matching()) yield row.doc;
+    for (const row of this.tx.scan(this.plan())) yield row.doc;
   }
 }
 

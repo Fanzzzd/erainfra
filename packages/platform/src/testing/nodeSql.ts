@@ -3,7 +3,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 
-import type { Sql, SqlValue } from "../src/store/sql.ts";
+import type { Sql, SqlValue } from "../store/sql.ts";
 
 export function nodeSql(path = ":memory:"): Sql & { db: DatabaseSync } {
   const db = new DatabaseSync(path);

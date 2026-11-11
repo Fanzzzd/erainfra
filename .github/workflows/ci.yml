@@ -311,6 +311,24 @@ jobs:
         working-directory: apps/action-runner-agent
         run: npm ci --omit=dev --no-audit --no-fund
 
+  # The backend's whole test suite again, on the Cloudflare platform runtime instead of convex-test
+  # (ADR 0019): the same tests must pass on both platforms. Its own job so it does not lengthen
+  # `check`.
+  platform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The backend's tests pass on the Cloudflare platform runtime
+        run: pnpm --filter @erainfra/backend run test:platform
+
   # erainfra-mesh (ADR 0016) is the only Rust in the tree, so it gets its own job rather than
   # lengthening `check`. The toolchain comes from apps/mesh/rust-toolchain.toml, so this job, the
   # release and a contributor's machine compile with the same rustc.

@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./store": "./src/store/index.ts"
+    "./store": "./src/store/index.ts",
+    "./runtime": "./src/runtime/runtime.ts",
+    "./testing": "./src/testing/convexTest.ts"
   },
   "scripts": {
     "test": "vitest run",
