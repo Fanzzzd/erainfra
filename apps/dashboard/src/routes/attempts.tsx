@@ -175,7 +175,7 @@ function AttemptsPage() {
                             "mt-0.5 max-w-[190px] truncate text-[10px]",
                             detail ? "text-destructive" : "text-subtle-foreground",
                           )}
-                          title={detail ?? attempt.displayName}
+                          title={attempt.cause?.summary ?? detail ?? attempt.displayName}
                         >
                           {detail ?? attempt.displayName ?? attempt.runnerName}
                         </p>

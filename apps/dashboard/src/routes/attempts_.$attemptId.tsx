@@ -7,6 +7,7 @@ import { ArrowLeft, Gauge, OctagonAlert, TestTubeDiagonal } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { MetricChart } from "@/components/metric-chart";
 import { PageHeader } from "@/components/page-header";
+import { RunnerCauseNote } from "@/components/runner-cause";
 import { TestCaseList, totalsLine } from "@/components/test-results";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -101,6 +102,7 @@ function AttemptPage() {
           <span className="text-destructive"> · {attempt.lastError}</span>
         )}
       </p>
+      {attempt.cause !== undefined && <RunnerCauseNote cause={attempt.cause} />}
 
       {summary === null || series === null ? (
         <Card>

@@ -28,6 +28,7 @@ import {
   MIN_MEASURED_MS,
   runsOnMap,
 } from "./rightsizeModel";
+import { runnerCause } from "./runnerCauses";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 // The operator API: what the `erainfra` CLI and anyone's scripts read the fleet
@@ -302,6 +303,8 @@ export function attemptJson(attempt: OperatorAttempt) {
         ? Math.max(0, attempt.finishedAt - attempt.startedAt)
         : null,
     error: attempt.lastError ?? attempt.cancelReason ?? null,
+    // Set when the runner, not the job's own steps, caused the failure.
+    cause: runnerCause(attempt),
   };
 }
 
