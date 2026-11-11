@@ -307,7 +307,7 @@ records the design.
 
 ## Develop locally
 
-Requirements: Node.js 22+, pnpm 11, Go 1.27.3+, and a Convex account or local deployment.
+Requirements: Node.js 22+, pnpm 11, Go 1.27.4+, and a Convex account or local deployment.
 
 ```bash
 pnpm install
@@ -396,9 +396,9 @@ HTTP request body. They never appear in argv or a host environment variable.
 
 - Ubuntu 24.04 and systemd;
 - actions/runner 2.338.2, checksum verified;
-- Node.js 22.23.2 (the default `node`) and 24.22.1, and Go 1.27.3, in the hosted-toolcache layout,
+- Node.js 22.23.4 (the default `node`) and 24.22.2, and Go 1.27.4, in the hosted-toolcache layout,
   each checksum verified, so `setup-node` and `setup-go` resolve them without a download;
-- GitHub CLI 2.97.0, checksum verified;
+- GitHub CLI 2.103.3, checksum verified;
 - an official runner action-archive cache seeded with the exact checkout, pnpm, setup-node, and
   setup-go commits used by the workflows;
 - pnpm 11.21.0, Git, Docker with the Compose v2 and Buildx plugins, build tools, `libatomic1`, and common archive tools including `zstd`,
@@ -1010,7 +1010,7 @@ jobs:
       - uses: pnpm/action-setup@<commit-sha>
       - uses: actions/setup-node@<commit-sha>
         with:
-          node-version: 22.23.2
+          node-version: 22.23.4
           cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
