@@ -12,3 +12,7 @@
 # repository squash-merges, so the reformat and this lint pass could not have been two commits
 # in one PR without collapsing into one commit that is the wrong thing to blame-ignore.
 5b026365e93ca5b4524e46f5b7f53d15977979a8
+
+# chore: sort imports with Oxfmt, as EraDB does (#298). 293 files, import statements and the
+# blank lines between import groups only, when sortImports was turned on in .oxfmtrc.json.
+fa1c0a7e02260fb3e0f81875cbdf03a5dd5432b8
