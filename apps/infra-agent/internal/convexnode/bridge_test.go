@@ -128,12 +128,16 @@ func TestDockerBridgeResolvesWhatHostGatewayResolvesTo(t *testing.T) {
 		"a daemon.json without host-gateway settings": {docker: "172.17.0.1 ", config: `{"log-driver":"local"}`, want: "172.17.0.1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			config := absent
 			if tc.config != "" {
 				config = daemonJSON(t, tc.config)
 			}
-			got, err := DockerBridge{Docker: fakeDockerCLI(t, tc.docker), DaemonConfig: config}.Resolve(ctx)
+			// Write the fake before t.Parallel: a sibling forking while the
+			// script is still open for writing makes exec fail with ETXTBSY
+			// (golang/go#22315).
+			docker := fakeDockerCLI(t, tc.docker)
+			t.Parallel()
+			got, err := DockerBridge{Docker: docker, DaemonConfig: config}.Resolve(ctx)
 			if err != nil || got.String() != tc.want {
 				t.Fatalf("got %v, %v; want %s", got, err, tc.want)
 			}
@@ -148,12 +152,13 @@ func TestDockerBridgeResolvesWhatHostGatewayResolvesTo(t *testing.T) {
 		"an unreadable daemon configuration": {docker: "172.17.0.1 ", config: `{not json`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			config := absent
 			if tc.config != "" {
 				config = daemonJSON(t, tc.config)
 			}
-			if got, err := (DockerBridge{Docker: fakeDockerCLI(t, tc.docker), DaemonConfig: config}).Resolve(ctx); err == nil {
+			docker := fakeDockerCLI(t, tc.docker)
+			t.Parallel()
+			if got, err := (DockerBridge{Docker: docker, DaemonConfig: config}).Resolve(ctx); err == nil {
 				t.Fatalf("resolved %v", got)
 			}
 		})
