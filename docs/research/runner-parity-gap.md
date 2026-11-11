@@ -113,14 +113,14 @@ local Convex backend, on x64.
 
 ## Timeouts and retries
 
-| Item              | GitHub hosted                                                                            | Blacksmith                                                                       | EraInfra                                                                                            | Gap                                   | Priority |
-| ----------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------- | -------- |
-| Job time limit    | 6 hours, then the job fails; self-hosted 5 days (G3)                                     | 12 h default, 72 h maximum per the scheduler blog (B10); not in docs, unverified | runtime refuses a job timeout over 21,600 s, so 6 hours (`apps/runtime/internal/runtimeapi/api.go`) | none for CI                           | low      |
-| `timeout-minutes` | job default 360; step maximum 360 (G5)                                                   | GitHub's                                                                         | GitHub's                                                                                            | none                                  | low      |
-| Queue             | hosted run dropped if not picked up in 45 min; self-hosted cancelled after 24 h (G3, G4) | "starts within seconds"; queueing only without the App installed (B1)            | 24 h self-hosted rule; `/runs-on` router sends the job to GitHub hosted when no Worker has room     | router is opt-in per workflow         | medium   |
-| Failover          | n/a                                                                                      | none documented; manual label revert in the Aug 13 outage (B11)                  | `/runs-on` fallback                                                                                 | ahead                                 | none     |
-| Infra retry       | none documented                                                                          | none documented; unverified                                                      | none found; an Attempt lost with its Worker fails                                                   | no re-run of a job lost to the Worker | medium   |
-| Cache outage      | n/a                                                                                      | jobs hung on cache calls on Aug 13; circuit breakers added after (B11)           | 3 s scope lookup then cold cache; failures turn into misses (`docs/job-cache.md`)                   | ahead                                 | none     |
+| Item              | GitHub hosted                                                                            | Blacksmith                                                                       | EraInfra                                                                                                                                                        | Gap                                   | Priority |
+| ----------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | -------- |
+| Job time limit    | 6 hours, then the job fails; self-hosted 5 days (G3)                                     | 12 h default, 72 h maximum per the scheduler blog (B10); not in docs, unverified | runtime refuses a job timeout over 21,600 s, so 6 hours (`apps/runtime/internal/runtimeapi/api.go`)                                                             | none for CI                           | low      |
+| `timeout-minutes` | job default 360; step maximum 360 (G5)                                                   | GitHub's                                                                         | GitHub's                                                                                                                                                        | none                                  | low      |
+| Queue             | hosted run dropped if not picked up in 45 min; self-hosted cancelled after 24 h (G3, G4) | "starts within seconds"; queueing only without the App installed (B1)            | the `/runs-on` router decides once, when the job is enqueued. A job routed to a Profile whose Workers all drop afterwards waits until GitHub cancels it at 24 h | a routed job can strand for 24 h      | high     |
+| Failover          | n/a                                                                                      | none documented; manual label revert in the Aug 13 outage (B11)                  | `/runs-on` fallback                                                                                                                                             | ahead                                 | none     |
+| Infra retry       | none documented                                                                          | none documented; unverified                                                      | none found; an Attempt lost with its Worker fails                                                                                                               | no re-run of a job lost to the Worker | medium   |
+| Cache outage      | n/a                                                                                      | jobs hung on cache calls on Aug 13; circuit breakers added after (B11)           | 3 s scope lookup then cold cache; failures turn into misses (`docs/job-cache.md`)                                                                               | ahead                                 | none     |
 
 ## Observability
 
@@ -152,26 +152,34 @@ local Convex backend, on x64.
    backend), ghcr.io and other OCI registries. This removes most uplink round trips that #149
    breaks, and covers what the Docker Hub mirror misses. The apt mirror, being built separately,
    is the apt part of this.
-2. **A second Worker, or a documented capacity floor.** One Worker means a hardware or uplink
+2. **Stranded job recovery.** Reported by payable on 2026-11-12. A job that the router sent to a
+   Profile stays queued for 24 hours if every Worker for that Profile drops before the job
+   starts. GitHub-hosted and Blacksmith runners do not strand a job that way. The control plane
+   already moves a waiting Attempt to another ready Worker. It cannot do that when no Worker is
+   ready. Planned: after a short deadline, the control plane cancels the workflow run and asks
+   GitHub to rerun it. The router job then answers with the fallback. Limits: the rerun repeats
+   the whole workflow, it helps only workflows that use the router, and the GitHub App needs
+   Actions write. Off by default.
+3. **A second Worker, or a documented capacity floor.** One Worker means a hardware or uplink
    fault takes every Profile down. Until a second exists, make the `/runs-on` router the default
    in `erainfra migrate runs-on` output so a job falls back instead of waiting 24 hours.
-3. **GitHub path resilience.** Send github.com and its object hosts through a second path when
+4. **GitHub path resilience.** Send github.com and its object hosts through a second path when
    connections stall, the way Blacksmith did (B9). The git checkout mirror already cuts bytes;
    this cuts the connection count that stalls.
-4. **Clear failure text in the job log.** On a runtime deadline, Worker loss or a stalled network
+5. **Clear failure text in the job log.** On a runtime deadline, Worker loss or a stalled network
    call, write one line the job log shows (through the guest before teardown) with the reason the
    dashboard already has.
-5. **Bake Playwright Chromium into the full image** at the version payable pins, or document an
+6. **Bake Playwright Chromium into the full image** at the version payable pins, or document an
    `actions/cache` step for `~/.cache/ms-playwright`. The system packages are already baked.
-6. **Ubuntu 26.04 image and Profile.** GitHub's `ubuntu-latest` is 26.04 by 2026-11-19. Build
+7. **Ubuntu 26.04 image and Profile.** GitHub's `ubuntu-latest` is 26.04 by 2026-11-19. Build
    `images/ubuntu-26.04-full` from the same recipe and teach `migrate runs-on` to map
    `ubuntu-latest` to it.
-7. **Conformance for the live Profiles.** Add `erainfra-4vcpu-ubuntu-2404` and
+8. **Conformance for the live Profiles.** Add `erainfra-4vcpu-ubuntu-2404` and
    `erainfra-16vcpu-ubuntu-2404` to `.github/conformance/profiles.txt`.
-8. **A caching DNS resolver** per Worker for guests, with the Profile's resolvers as upstreams.
-9. **Step timeline on the Attempt charts** from the runner's step timestamps, and a cross-run log
-   search. Lower value: GitHub's own logs work for one run.
-10. **Re-run an Attempt lost with its Worker**, when GitHub reports the job failed for runner loss.
+9. **A caching DNS resolver** per Worker for guests, with the Profile's resolvers as upstreams.
+10. **Step timeline on the Attempt charts** from the runner's step timestamps, and a cross-run log
+    search. Lower value: GitHub's own logs work for one run.
+11. **Re-run an Attempt lost with its Worker**, when GitHub reports the job failed for runner loss.
     Needs design: re-running is GitHub's call, not the Worker's.
 
 Not planned: sticky disks (ADR 0002), SSH into guests (`docs/workflows.md`), ARM until a consumer
