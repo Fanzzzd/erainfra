@@ -2,6 +2,8 @@ package gitmirror
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -189,4 +191,24 @@ func isObjectID(value string) bool {
 		}
 	}
 	return true
+}
+
+// readPktLine reads one pkt-line and returns its payload without the newline.
+func readPktLine(reader io.Reader) (string, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		return "", fmt.Errorf("read a pkt-line: %w", err)
+	}
+	length, err := strconv.ParseUint(string(header[:]), 16, 16)
+	if err != nil {
+		return "", fmt.Errorf("read a pkt-line: length %q", header[:])
+	}
+	if length < 4 {
+		return "", fmt.Errorf("GitHub answered the special packet %04x", length)
+	}
+	payload := make([]byte, length-4)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return "", fmt.Errorf("read a pkt-line: %w", err)
+	}
+	return strings.TrimSuffix(string(payload), "\n"), nil
 }

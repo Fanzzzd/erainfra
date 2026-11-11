@@ -180,6 +180,7 @@ jobs:
         run: pnpm exec changeset status --since="origin/$BASE_REF"
       - run: pnpm lint
       - run: pnpm format:check
+      - run: pnpm check:structure
       - run: pnpm typecheck
       # --continue: by default Turbo cancels every other package's tests at the first failure, so
       # one red suite shows up as "cancelled" siblings and hides whether they would have passed.

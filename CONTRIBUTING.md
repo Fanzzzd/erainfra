@@ -58,11 +58,12 @@ README.md, "Develop locally", lists what else CI checks.
   single-use JIT token.
 - Never rename an identifier a running system already holds. `CONTEXT.md` naming rule 4 lists
   them, and CI fails a pull request that removes a frozen `portless` identifier.
-- Keep a non-test source file under 900 lines. When a file nears the cap, split it where its
-  interface is small, not by moving its tail into a second file. Three files exceed the cap
-  today: `apps/runtime/internal/firecracker/runtime_linux.go`,
-  `apps/runtime/internal/gitmirror/gitmirror.go` and `apps/erainfra-cli/internal/cli/infra.go`.
-  CI does not check this yet.
+- Keep a non-test source file (`.go`, `.ts`, `.tsx`, `.rs`, `.mjs`) at 900 lines or fewer. When a
+  file nears the cap, split it where its interface is small, not by moving its tail into a second
+  file. `pnpm check:structure` (`scripts/check-structure.mjs`) enforces this in `pnpm check` and in
+  CI. It counts lines as EraDB does, so a file ending in a newline counts one more than `wc -l`.
+  The files over the cap today are listed in the script with a reason each; remove an entry when
+  its file is split.
 
 ## Commits and pull requests
 

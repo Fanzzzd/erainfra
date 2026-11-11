@@ -19,7 +19,8 @@
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "check:structure": "node scripts/check-structure.mjs",
+    "check": "pnpm lint && pnpm format:check && pnpm check:structure && pnpm typecheck && pnpm test",
     "changeset": "changeset",
     "release:version": "changeset version && node --experimental-strip-types packages/release/bin/sync-product-version.ts"
   },
