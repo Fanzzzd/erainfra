@@ -50,11 +50,16 @@ itself a Runner.**
 isolation boundary with only a single-use JIT token. One Agent creates many Runners over its
 lifetime. Never use "Runner" for either of our daemons.
 
-**Infra Agent**: the daemon on a Node. Holds an outbound WebSocket to the Hub and executes only
-allowlist-resolved operations; there is no raw-argv path. Also builds images and deploys Apps.
+**Infra Agent**: the daemon on a Node. In Convex mode (`connect-convex`, the current mode) it dials
+the Convex **control plane** with its Node credential; in Hub mode (`connect`, legacy) it holds an
+outbound WebSocket to the Hub. Either way it executes only allowlist-resolved operations; there is
+no raw-argv path. Also builds images and deploys Apps.
 
-**Hub**: the control plane an Infra Agent connects to. Distinct from the Convex **control plane**
-that Workers report to; the two have not been merged and the terms are not interchangeable.
+**Hub**: legacy. The separate control plane (`apps/hub`) that Infra Agents in Hub mode connect to.
+ADR 0016 moved its state, deploys, ingress and operator surface into Convex, and the owner's
+fleet retired its Hub on 2026-11-08 ([retire-the-hub.md](docs/runbooks/retire-the-hub.md)). The
+code remains for Hub-mode Nodes and rollback. Never use "Hub" for the Convex control plane; the
+terms are not interchangeable.
 
 **Profile**: the immutable contract a Worker advertises capacity against. Not just a size: it
 carries `executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`, `fitPolicy`, `minRunners` and
