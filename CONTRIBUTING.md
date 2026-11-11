@@ -5,8 +5,9 @@ that must never be renamed. [AGENTS.md](AGENTS.md) is the short version for codi
 
 ## Set up
 
-Requirements: Node.js 22+, pnpm 11, Go 1.27.4+, and a Convex account or local deployment. Rust work
-in `apps/mesh` also needs rustup, which installs the compiler `apps/mesh/rust-toolchain.toml` pins.
+Requirements: Node.js 22.13+ (`.nvmrc` pins the version CI uses), pnpm 12, Go 1.27.4+, and
+a Convex account or local deployment. Rust work in `apps/mesh` also needs rustup, which installs the
+compiler `apps/mesh/rust-toolchain.toml` pins.
 
 ```bash
 pnpm install

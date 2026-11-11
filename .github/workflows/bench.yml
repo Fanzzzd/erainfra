@@ -39,6 +39,8 @@ jobs:
       # No `cache:` on either action: a warm dependency cache on one leg would
       # measure actions/cache, not the machine.
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      # The major only, not .nvmrc: the Image Release's toolcache holds one Node 22 patch,
+      # and an exact pin it does not hold would add a download to one leg's measurement.
       - uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # v7
         with:
           node-version: 22

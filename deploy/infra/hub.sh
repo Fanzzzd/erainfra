@@ -192,7 +192,7 @@ log "assembling the hub bundle (inside $NODE_IMAGE)…"
 # ephemeral, holds no port and is gone before anything is published. The long-lived container
 # below is the one that must not have this.
 docker run --rm -v "$REPO":/srv/portless -w /srv/portless "$NODE_IMAGE" \
-  sh -c "corepack enable >/dev/null 2>&1; corepack prepare pnpm@11.21.0 --activate >/dev/null 2>&1; sh deploy/infra/build-hub-bundle.sh dist/hub"
+  sh -c "corepack enable >/dev/null 2>&1; corepack prepare pnpm@12.18.0 --activate >/dev/null 2>&1; sh deploy/infra/build-hub-bundle.sh dist/hub"
 [ -f "$BUNDLE/.hub-bundle" ] || die "bundle assembly produced nothing at $BUNDLE"
 # build-agents.sh cross-compiles the Infra Agent into deploy/infra/bin from Go source the bundle
 # does not carry, and /agent-bin/<target> is still the only way to onboard a Node (ADR 0006 retires
