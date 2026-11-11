@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"unicode/utf8"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/aptmirror"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guest"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/guestcache"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/runnerexit"
@@ -551,6 +552,13 @@ func run(ctx context.Context) error {
 		}
 	}
 	configureGuestDocker(ctx, metadata.RegistryMirrorURL, cacheTrustAnchorPath, runnerUser.HomeDir, int(uid), int(gid))
+	// Point apt at the Worker's apt mirror. Best-effort: without it, apt
+	// fetches from the sources the image names, as it always did.
+	if metadata.AptMirrorURL != "" {
+		if err := aptmirror.Apply("/", metadata.AptMirrorURL); err != nil {
+			fmt.Fprintf(os.Stderr, "apt mirror not used, apt fetches from its sources: %v\n", err)
+		}
+	}
 	// Point the job's git at the checkout mirror when the host turned it on.
 	// Best-effort like the cache: without it, git fetches from GitHub.
 	stopGitMirror := sync.OnceFunc(startGitMirrorIfEnabled(ctx, metadata))

@@ -93,6 +93,9 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
 - **Registry mirror.** Workers can also give guests a Docker Hub pull-through mirror
   ([runbook](runbooks/operate-the-registry-mirror.md)). dockerd and buildx builders use it
   with no workflow change, and fall back to Docker Hub when it is down.
+- **apt mirror.** With `RC_APT_MIRROR_URL`, guests send apt's `http://` fetches through an apt
+  proxy such as apt-cacher-ng ([runbook](runbooks/operate-the-apt-mirror.md)). A probe before each
+  apt run sends apt direct when the mirror does not answer. `https://` sources always go direct.
 - **Git checkout mirror.** With `RC_GIT_MIRROR=on`, a job's `actions/checkout` of its own
   repository fetches from GitHub only the objects missing from the repository's seed, a git bundle
   an earlier job saved in the cache service under the cache's own scope rules. The guest's git

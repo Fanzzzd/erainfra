@@ -79,6 +79,7 @@ func run(ctx context.Context, args []string) (int, error) {
 		config.CacheSigningKey = key
 		config.CacheServiceURL = strings.TrimSpace(dualenv.Value("RC_CACHE_SERVICE_URL"))
 		config.RegistryMirrorURL = strings.TrimSpace(dualenv.Value("RC_REGISTRY_MIRROR_URL"))
+		config.AptMirrorURL = strings.TrimSpace(dualenv.Value("RC_APT_MIRROR_URL"))
 		config.GitMirror, err = boolEnv("RC_GIT_MIRROR")
 		if err != nil {
 			return 2, err

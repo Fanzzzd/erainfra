@@ -220,7 +220,7 @@ func logRestoredGuests(restored []netpolicy.GuestEgressState) {
 }
 
 func (r *Runtime) effectiveEgress(profile netpolicy.ProfileEgress) (netpolicy.EffectiveEgress, error) {
-	return netpolicy.Effective(r.config.Network, profile, r.config.CacheServiceURL, r.config.RegistryMirrorURL)
+	return netpolicy.Effective(r.config.Network, profile, r.config.CacheServiceURL, r.config.RegistryMirrorURL, r.config.AptMirrorURL)
 }
 
 // mintCacheBearer mints the runner-auth bearer for a claim, or returns empty when
@@ -338,6 +338,9 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if spec.RegistryMirrorURL == "" {
 		spec.RegistryMirrorURL = r.config.RegistryMirrorURL
 	}
+	if spec.AptMirrorURL == "" {
+		spec.AptMirrorURL = r.config.AptMirrorURL
+	}
 	// And for the git checkout mirror, which needs the cache service the spec
 	// ended up with.
 	spec.GitMirror = spec.GitMirror || r.config.GitMirror
@@ -353,7 +356,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	}
 	// The cache endpoint the guest is handed is the one it must be able to
 	// reach, so the allowlist is computed from the spec's, not the daemon's.
-	effective, err := netpolicy.Effective(r.config.Network, spec.Egress, spec.CacheServiceURL, spec.RegistryMirrorURL)
+	effective, err := netpolicy.Effective(r.config.Network, spec.Egress, spec.CacheServiceURL, spec.RegistryMirrorURL, spec.AptMirrorURL)
 	if err != nil {
 		return nil, fmt.Errorf("egress: %w", err)
 	}

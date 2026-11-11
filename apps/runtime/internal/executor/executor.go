@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/aptmirror"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
@@ -55,6 +56,10 @@ type Spec struct {
 	// host fills in at claim, and empty composes exactly the guest a fleet
 	// without a mirror boots.
 	RegistryMirrorURL string
+	// AptMirrorURL is the Worker's apt HTTP proxy, or empty. Fleet-wide
+	// operator configuration the host fills in at claim, like
+	// RegistryMirrorURL; empty boots the guest a fleet without one boots.
+	AptMirrorURL string
 	// GitMirror turns on the in-guest git checkout mirror, which keeps its
 	// seeds in the cache service at CacheServiceURL. Fleet-wide operator
 	// configuration the host fills in at claim; false boots the guest a fleet
@@ -163,6 +168,11 @@ func (s Spec) Validate() error {
 	}
 	if s.RegistryMirrorURL != "" {
 		if err := registrymirror.Validate(s.RegistryMirrorURL); err != nil {
+			return err
+		}
+	}
+	if s.AptMirrorURL != "" {
+		if err := aptmirror.Validate(s.AptMirrorURL); err != nil {
 			return err
 		}
 	}
