@@ -34,8 +34,8 @@ PATH="$raw_probe_dir:$PATH" RC_DOCKER_RAW_TABLE_ENV="$raw_probe_dir/out/env" \
 test ! -s "$raw_probe_dir/out/env"
 rm -rf "$raw_probe_dir"
 test -r /opt/action-cache/actions_checkout/3d3c42e5aac5ba805825da76410c181273ba90b1.tar.gz
-test -r /opt/action-cache/pnpm_action-setup/0977fd99725f1db4007ccb2928dbb4e90d06cc86.tar.gz
-test -r /opt/action-cache/actions_setup-node/e51e5fe84fc33b4c73ebe40526b2694712b5b858.tar.gz
+test -r /opt/action-cache/pnpm_action-setup/73e46992e05b19abd31f2f3c20e0e7370d762115.tar.gz
+test -r /opt/action-cache/actions_setup-node/949feb2413d6458794dcd2491c4babbbce0c15c1.tar.gz
 test -r /opt/action-cache/actions_setup-go/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e.tar.gz
 test -c /dev/null
 command -v git >/dev/null
