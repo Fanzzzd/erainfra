@@ -14,7 +14,9 @@ export type RunnerCauseCode =
   | "executor-not-ready"
   | "runner-refused"
   | "executor-killed"
-  | "executor-failed";
+  | "executor-failed"
+  | "stranded-rerun"
+  | "stranded-cancelled";
 
 export type RunnerCause = {
   code: RunnerCauseCode;
@@ -47,6 +49,10 @@ const DOCS = {
     title: "Blacksmith: machine metrics",
     url: "https://docs.blacksmith.sh/blacksmith-observability/metrics",
   },
+  githubRerun: {
+    title: "GitHub: re-running workflows and jobs",
+    url: "https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs",
+  },
   routerFallback: {
     title: "EraInfra: fall back to GitHub-hosted runners",
     url: `${REPO_DOCS}/workflows.md#fall-back-to-github-hosted-runners`,
@@ -75,6 +81,26 @@ export function runnerCause(attempt: {
         "A router job with a GitHub-hosted fallback avoids the wait.",
       docs: [DOCS.githubLimits, DOCS.routerFallback, DOCS.workers],
     };
+  }
+  // strandedJobs.ts writes this reason when stranded job recovery acts on the job's run.
+  if (text.startsWith("No ready Worker for ")) {
+    return text.endsWith("asked GitHub to rerun it")
+      ? {
+          code: "stranded-rerun",
+          summary:
+            "Every Worker for this Profile dropped after the router chose it, so the control plane " +
+            "cancelled the workflow run and asked GitHub to rerun it. The rerun repeats the whole " +
+            "workflow, and its router job falls back to a GitHub-hosted runner.",
+          docs: [DOCS.githubRerun, DOCS.routerFallback],
+        }
+      : {
+          code: "stranded-cancelled",
+          summary:
+            "Every Worker for this Profile dropped after the router chose it, so the control plane " +
+            "cancelled the workflow run instead of letting it queue for 24 hours. Rerun it once a " +
+            "Worker is back, or let the router fall back.",
+          docs: [DOCS.githubRerun, DOCS.routerFallback],
+        };
   }
   if (text.startsWith("Worker stopped reporting")) {
     return {
@@ -132,6 +158,8 @@ export const runnerCauseValidator = v.object({
     v.literal("runner-refused"),
     v.literal("executor-killed"),
     v.literal("executor-failed"),
+    v.literal("stranded-rerun"),
+    v.literal("stranded-cancelled"),
   ),
   summary: v.string(),
   docs: v.array(v.object({ title: v.string(), url: v.string() })),

@@ -1,10 +1,12 @@
 import { v } from "convex/values";
 
+import type { Doc } from "./_generated/dataModel";
 import { internalQuery } from "./_generated/server";
 import {
   isSchedulableReadiness,
   loadSchedulerSnapshot,
   placeInOrder,
+  type SchedulerSnapshot,
   unassignedQueue,
 } from "./attemptScheduler";
 import { profileEgressOf } from "./egress";
@@ -24,6 +26,27 @@ export const fallbackReasonValidator = v.union(
   v.literal("no-ready-worker"),
   v.literal("saturated"),
 );
+
+/**
+ * The Workers that pass the scheduler's readiness predicate for this Profile now. This is what
+ * "a ready Worker" means to the router and to stranded job recovery (strandedJobs.ts).
+ */
+export function schedulableWorkers(
+  snapshot: SchedulerSnapshot,
+  profile: Doc<"profiles">,
+  now: number,
+) {
+  return (snapshot.readyByProfile.get(profile.name) ?? []).filter((readiness) =>
+    isSchedulableReadiness(
+      readiness,
+      snapshot.evidenceByMachineProfile.get(`${readiness.machineId}:${readiness.profile}`),
+      snapshot.machineById.get(readiness.machineId),
+      profile,
+      profileEgressOf(profile),
+      now,
+    ),
+  );
+}
 
 /**
  * Whether a job sent to this Profile now would start without waiting, for the `/runs-on` router.
@@ -66,17 +89,7 @@ export const profileRoute = internalQuery({
     }
 
     const snapshot = await loadSchedulerSnapshot(ctx, now);
-    const readyWorkers = (snapshot.readyByProfile.get(profile.name) ?? []).filter((readiness) =>
-      isSchedulableReadiness(
-        readiness,
-        snapshot.evidenceByMachineProfile.get(`${readiness.machineId}:${readiness.profile}`),
-        snapshot.machineById.get(readiness.machineId),
-        profile,
-        profileEgressOf(profile),
-        now,
-      ),
-    );
-    if (readyWorkers.length === 0) {
+    if (schedulableWorkers(snapshot, profile, now).length === 0) {
       return { route: "fallback" as const, reason: "no-ready-worker" as const, executor };
     }
 

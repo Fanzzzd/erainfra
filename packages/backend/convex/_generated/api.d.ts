@@ -103,6 +103,8 @@ import type * as runnerReleases from "../runnerReleases.js";
 import type * as runners from "../runners.js";
 import type * as scheduler from "../scheduler.js";
 import type * as settings from "../settings.js";
+import type * as strandedJobs from "../strandedJobs.js";
+import type * as strandedJobsModel from "../strandedJobsModel.js";
 import type * as testReports from "../testReports.js";
 import type * as testReportsModel from "../testReportsModel.js";
 import type * as webhooks from "../webhooks.js";
@@ -211,6 +213,8 @@ declare const fullApi: ApiFromModules<{
   runners: typeof runners;
   scheduler: typeof scheduler;
   settings: typeof settings;
+  strandedJobs: typeof strandedJobs;
+  strandedJobsModel: typeof strandedJobsModel;
   testReports: typeof testReports;
   testReportsModel: typeof testReportsModel;
   webhooks: typeof webhooks;
