@@ -155,6 +155,16 @@ type attemptDetail struct {
 	ExecutorExitCode   *int64  `json:"executorExitCode"`
 	CancelReason       *string `json:"cancelReason"`
 	LastError          *string `json:"lastError"`
+	// Cause is set when the runner, not the job's own steps, failed the Attempt.
+	// Absent from older control planes.
+	Cause *struct {
+		Code    string `json:"code"`
+		Summary string `json:"summary"`
+		Docs    []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		} `json:"docs"`
+	} `json:"cause"`
 	// Retiring is set while the control plane waits for GitHub to confirm the
 	// Runner is deleted before it ends the Attempt. Absent from older control planes.
 	Retiring *struct {
@@ -241,6 +251,12 @@ result and the run URL. The id is the first column of ` + "`erainfra jobs list`"
 			{"Last error", orDash(d.LastError)},
 		} {
 			row(tw, field[0]+":", field[1])
+		}
+		if d.Cause != nil {
+			row(tw, "Runner cause:", d.Cause.Code+": "+d.Cause.Summary)
+			for _, doc := range d.Cause.Docs {
+				row(tw, "See:", doc.Title+" "+doc.URL)
+			}
 		}
 		return tw.Flush()
 	},
