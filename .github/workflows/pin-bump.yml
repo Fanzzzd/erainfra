@@ -26,13 +26,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      # Pushing the branch and opening the pull request when PIN_BUMP_TOKEN
-      # is absent and the job falls back to GITHUB_TOKEN.
+      # Pushing the branch and opening the pull request when the pin-bump App
+      # is not configured and the job falls back to GITHUB_TOKEN.
       contents: write
       pull-requests: write
     env:
       BRANCH: automation/pin-bump
+      HAS_APP: ${{ vars.PIN_BUMP_APP_CLIENT_ID != '' }}
     steps:
+      # The pin-bump GitHub App (README, "How pins move") is installed on this
+      # repository only. Its installation token can push under
+      # .github/workflows, and the pull request it opens starts CI, which
+      # GITHUB_TOKEN can do neither of. The token lives one hour and is
+      # revoked when the job ends.
+      - name: Mint the pin-bump App token
+        id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.PIN_BUMP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PIN_BUMP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -45,14 +61,13 @@ jobs:
         env:
           # Read-only API calls; the token only lifts the rate limit.
           GITHUB_TOKEN: ${{ github.token }}
-          HAS_PIN_BUMP_TOKEN: ${{ secrets.PIN_BUMP_TOKEN != '' }}
         run: |
           # GITHUB_TOKEN can never push a change under .github/workflows (that
           # takes the `workflows` permission, which it cannot be granted), and
-          # moving a seeded Action edits the workflows. Without PIN_BUMP_TOKEN
-          # that group is left for a run that has one.
+          # moving a seeded Action edits the workflows. Without the App that
+          # group is left for a run that has it.
           skip=""
-          if [ "$HAS_PIN_BUMP_TOKEN" != true ]; then
+          if [ "$HAS_APP" != true ]; then
             skip=actions
           fi
           set +e
@@ -63,8 +78,8 @@ jobs:
           cat "$RUNNER_TEMP/pin-bump.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Open or update the pull request
         env:
-          GH_TOKEN: ${{ secrets.PIN_BUMP_TOKEN || github.token }}
-          HAS_PIN_BUMP_TOKEN: ${{ secrets.PIN_BUMP_TOKEN != '' }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
           BASE: ${{ github.event.repository.default_branch }}
         run: |
           if git diff --quiet; then
@@ -80,13 +95,20 @@ jobs:
             echo "Merging changes the provisioners and the Image Release source. The image itself still has to be published by the runner images workflow and its digest repinned in each Profile; see the README section \"Publish an Image Release\"."
             echo
             echo "The next scheduled run force-pushes \`$BRANCH\`, so put review fixes in a commit on top only if you merge before then."
-            if [ "$HAS_PIN_BUMP_TOKEN" != true ]; then
+            if [ "$HAS_APP" != true ]; then
               echo
-              echo "**CI has not run on this pull request.** It was opened with \`GITHUB_TOKEN\`, and GitHub does not start workflows for events that token causes. Close and reopen the pull request to run CI. Adding a \`PIN_BUMP_TOKEN\` secret (README, \"How pins move\") removes this step and lets the bump move the seeded Actions too."
+              echo "**CI has not run on this pull request.** It was opened with \`GITHUB_TOKEN\`, and GitHub does not start workflows for events that token causes. Close and reopen the pull request to run CI. Configuring the pin-bump App (README, \"How pins move\") removes this step and lets the bump move the seeded Actions too."
             fi
           } > "$body"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$HAS_APP" = true ]; then
+            # Commit as the App's bot account so the commit is attributed to it.
+            bot="${APP_SLUG}[bot]"
+            git config user.name "$bot"
+            git config user.email "$(gh api "/users/${bot}" --jq .id)+${bot}@users.noreply.github.com"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fi
           git switch --create "$BRANCH"
           git commit --all --quiet --message "chore(pins): move hand-pinned tools to upstream's newest releases"
           git push --force --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"

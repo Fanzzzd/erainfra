@@ -491,16 +491,26 @@ for 7 days after a release before it is proposed: Actions used by the workflows,
 pnpm workspace, and the Action Runner Agent's own npm lockfile. It skips the four seeded Actions,
 which only `scripts/pinbump` can move together with the image.
 
-The bump needs a `PIN_BUMP_TOKEN` repository secret to work fully. Without it the workflow uses
+The bump works fully only with the pin-bump GitHub App. Without it the workflow uses
 `GITHUB_TOKEN`, and two things change. GitHub does not start workflows for a pull request that
 token opens, so CI runs only after a maintainer closes and reopens the pull request; the pull
 request body says so. And that token cannot change files under `.github/workflows`, so the seeded
-Actions are left alone. To create the secret, make a fine-grained personal access token
-(**Settings → Developer settings → Fine-grained tokens**) with this repository as its only
-repository and these permissions: Contents read and write, Pull requests read and write, Workflows
-read and write. Save it under **Settings → Secrets and variables → Actions** as `PIN_BUMP_TOKEN`,
-and replace it before it expires. A GitHub App with the same three permissions also works, but the
-workflow would then need a step that mints its installation token.
+Actions are left alone.
+
+With the App configured, the workflow mints a one-hour installation token with
+`actions/create-github-app-token`, and the App's bot account pushes the branch and opens the pull
+request. To set it up for a fork or a new owner:
+
+1. Create a GitHub App under the repository owner (**Settings → Developer settings → GitHub Apps**).
+   Name it `EraInfra pin-bump <owner>`, turn off the webhook, and give it these repository
+   permissions: Contents read and write, Pull requests read and write, Workflows read and write.
+2. Generate a private key, then install the App on this repository only.
+3. Save the App's client ID as the repository variable `PIN_BUMP_APP_CLIENT_ID` and the private
+   key as the repository secret `PIN_BUMP_APP_PRIVATE_KEY`, under **Settings → Secrets and
+   variables → Actions**. Delete the downloaded key file afterwards.
+
+The App needs no renewal. Its key does not expire; rotate it by generating a new one, updating the
+secret, and deleting the old key on the App's page.
 
 GitHub pauses scheduled workflows in a public repository after 60 days without activity. If the
 Monday pull request stops arriving, re-enable **Toolchain pin bump** under the Actions tab.
