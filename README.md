@@ -40,7 +40,8 @@ host kernel, so use it only for a repository you trust, and see [Limits](#limits
 
 You need:
 
-- a workstation with Git, Node.js 22 or later, and pnpm 11.21.0 (run `corepack enable`);
+- a workstation with Git, Node.js 22 or later, and pnpm 11.21.0, the version `package.json` pins
+  (`corepack enable` installs it);
 - a [Convex](https://www.convex.dev/) account;
 - a Linux x64 or ARM64 machine with systemd, sudo, Docker Engine 28 or later, at least 2 CPUs and
   at least 9 GiB of memory (the scheduler leaves 10% of a machine free);
@@ -107,7 +108,8 @@ You need:
      --no-prompt
    ```
 
-   The dashboard's Profiles table now lists the Profile, with its controller listening.
+   The **Runner Profiles** table on the dashboard's **Machines** page now lists the Profile, and
+   its controller shows as listening.
 
 6. Add the machine as a Worker. In the dashboard, open **Machines**, choose **Add machine**, keep
    **Linux or macOS**, and run the command it shows on the machine as your own user, without
@@ -216,7 +218,7 @@ Runbooks for operators:
 
 ## Develop
 
-You need Node.js 22 or later, pnpm 11.21.0, Go 1.27.4 or later, and a Convex account or local
+You need Node.js 22 or later, pnpm 11.21.0, Go 1.27.4 or later (as `go.mod` names), and a Convex account or local
 deployment; `apps/mesh` also needs rustup. Run `pnpm install`, then `pnpm check`: it runs lint, the
 format check, type checks and every package's tests, including the Go tests.
 [CONTRIBUTING.md](CONTRIBUTING.md) lists the Go and Rust gates CI adds and the commit rules, and
