@@ -107,3 +107,9 @@ export function encodeKey(values: readonly (Value | undefined)[]): string {
 export function prefixEnd(prefix: string): string {
   return `${prefix}g`;
 }
+
+/** The key range of every index entry whose leading fields equal `values`. */
+export function prefixRange(values: readonly (Value | undefined)[]): { lo: string; hi: string } {
+  const prefix = encodeKey(values);
+  return { lo: prefix, hi: prefixEnd(prefix) };
+}

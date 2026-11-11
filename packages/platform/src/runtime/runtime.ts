@@ -11,11 +11,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { actionGeneric, mutationGeneric, queryGeneric } from "convex/server";
 import { convexToJson, jsonToConvex, type JSONValue, type Value } from "convex/values";
 
-import { encodeKey, prefixEnd } from "../store/keys.ts";
+import { prefixRange } from "../store/keys.ts";
 import { planFromSerialized, type SerializedQuery } from "../store/serialized.ts";
 import type { Sql } from "../store/sql.ts";
 import { Store, type Row, type SchemaInfo, type Transaction } from "../store/store.ts";
+import { CRON_STATE, cronSpecs, type CronSpec, enqueueDueCrons, nextCronDue } from "./crons.ts";
+import { Files, STORAGE, UPLOADS, type FileStore } from "./files.ts";
 import { checkJson, type JsonValidator } from "./validateJson.ts";
+
+export type { FileStore } from "./files.ts";
 
 export type Kind = "query" | "mutation" | "action";
 
@@ -24,13 +28,6 @@ export type Modules = Record<string, Record<string, unknown>>;
 
 /** The user identity `ctx.auth.getUserIdentity()` returns, or null when signed out. */
 export type Identity = Record<string, JSONValue> | null;
-
-/** Where `ctx.storage` keeps file bytes. R2 on Cloudflare, memory in tests. */
-export interface FileStore {
-  put(key: string, bytes: Uint8Array, contentType: string | undefined): Promise<void>;
-  get(key: string): Promise<{ bytes: Uint8Array; contentType: string | undefined } | null>;
-  delete(key: string): Promise<void>;
-}
 
 export type RuntimeOptions = {
   modules: Modules;
@@ -121,10 +118,6 @@ function asFunctionError(err: unknown): FunctionError {
 }
 
 const SCHEDULED = "_scheduled_functions";
-const STORAGE = "_storage";
-const CRON_STATE = "_cron_state";
-const UPLOADS = "_storage_uploads";
-const UPLOAD_TTL_MS = 60 * 60 * 1000;
 
 /** System tables and the indexes the runtime needs on them. */
 export function withSystemTables(schema: SchemaInfo): SchemaInfo {
@@ -159,11 +152,26 @@ export class Runtime {
   readonly store: Store;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly now: () => number;
+  private readonly files: Files;
+  private readonly crons: CronSpec[];
 
   constructor(private readonly options: RuntimeOptions) {
     installGlobalConvex();
     this.store = new Store(options.sql, withSystemTables(options.schema));
     this.now = options.now ?? Date.now;
+    this.crons = cronSpecs(options.modules);
+    this.files = new Files({
+      store: this.store,
+      serialized: (fn) => this.serialized(fn),
+      now: () => this.now(),
+      siteUrl: options.siteUrl,
+      files: options.files,
+    });
+  }
+
+  /** Stores the body of a POST to an upload URL. Returns the storage ID, or null for a bad token. */
+  upload(token: string, bytes: Uint8Array, contentType: string | undefined) {
+    return this.files.upload(token, bytes, contentType);
   }
 
   // ---- function lookup ----------------------------------------------------------------------
@@ -613,30 +621,22 @@ export class Runtime {
         return {};
 
       // -- files --
-      case "1.0/storageGenerateUploadUrl": {
-        // A one-time token, valid for an hour, as Convex's upload URLs are.
-        const token = crypto.randomUUID().replaceAll("-", "");
-        const record = (tx: Transaction) =>
-          tx.insertSystem(UPLOADS, { token, expiresAt: this.now() + UPLOAD_TTL_MS });
-        if (inv.tx) record(inv.tx);
-        else
-          await this.serialized(async () => {
-            const tx = this.store.begin();
-            record(tx);
-            tx.commit();
-          });
-        return `${this.options.siteUrl ?? ""}/api/storage/upload?token=${token}`;
-      }
+      case "1.0/storageGenerateUploadUrl":
+        return this.files.uploadUrl(inv.tx);
       case "1.0/storageStore":
-        return this.storageStore(inv, args);
+        return this.files.store(
+          inv.tx,
+          Uint8Array.from(atob(args.blob as string), (c) => c.charCodeAt(0)),
+          (args.contentType as string | undefined) || undefined,
+        );
       case "1.0/storageGet":
-        return this.storageGet(inv, args.storageId as string);
+        return this.files.getJson(inv.tx, args.storageId as string);
       case "1.0/storageGetUrl":
-        return this.storageUrl(inv, args.storageId as string);
+        return this.files.url(inv.tx, args.storageId as string);
       case "1.0/storageGetMetadata":
-        return this.storageMetadata(inv, args.storageId as string);
+        return this.files.metadata(inv.tx, args.storageId as string);
       case "1.0/storageDelete":
-        await this.storageDelete(inv, args.storageId as string);
+        await this.files.delete(inv.tx, args.storageId as string);
         return {};
       default:
         throw new Error(`Convex syscall ${op} is not supported on the Cloudflare platform`);
@@ -649,11 +649,10 @@ export class Runtime {
       case "storage/storeBlob": {
         const blob = args.blob as Blob;
         const bytes = new Uint8Array(await blob.arrayBuffer());
-        return this.storeBytes(inv, bytes, blob.type || undefined);
+        return this.files.store(inv.tx, bytes, blob.type || undefined);
       }
       case "storage/getBlob": {
-        if (!this.storageRow(inv, args.storageId as string)) return null;
-        const file = await this.files().get(args.storageId as string);
+        const file = await this.files.bytes(inv.tx, args.storageId as string);
         return file
           ? new Blob([file.bytes.slice().buffer], { type: file.contentType ?? "" })
           : null;
@@ -715,13 +714,13 @@ export class Runtime {
       .scan({
         table: SCHEDULED,
         index: "by_state_time",
-        ...pendingRange(),
+        ...prefixRange(["pending"]),
         desc: false,
         matches: () => true,
       })
       .next();
     const scheduled = next.done ? null : (next.value.doc.scheduledTime as number);
-    const cron = this.nextCronDue(tx);
+    const cron = nextCronDue(tx, this.crons, this.now());
     if (scheduled === null) return cron;
     if (cron === null) return scheduled;
     return Math.min(scheduled, cron);
@@ -734,7 +733,7 @@ export class Runtime {
       .scan({
         table: SCHEDULED,
         index: "by_state_time",
-        ...pendingRange(),
+        ...prefixRange(["pending"]),
         desc: false,
         matches: () => true,
       })
@@ -753,7 +752,13 @@ export class Runtime {
    */
   async runDue(opts: { ignoreTime?: boolean; crons?: boolean } = {}): Promise<number> {
     let ran = 0;
-    if (opts.crons !== false) await this.enqueueDueCrons();
+    if (opts.crons !== false) {
+      await this.serialized(async () => {
+        const tx = this.store.begin();
+        enqueueDueCrons(tx, this.crons, this.now(), SCHEDULED);
+        tx.commit();
+      });
+    }
     for (;;) {
       const due = await this.serialized(async () => {
         const tx = this.store.begin();
@@ -761,7 +766,7 @@ export class Runtime {
           .scan({
             table: SCHEDULED,
             index: "by_state_time",
-            ...pendingRange(),
+            ...prefixRange(["pending"]),
             desc: false,
             matches: () => true,
           })
@@ -819,186 +824,6 @@ export class Runtime {
       tx.commit();
     });
   }
-
-  // ---- crons --------------------------------------------------------------------------------
-
-  private cronSpecs(): { name: string; udfPath: string; args: Value; everyMs: number }[] {
-    const crons = this.options.modules.crons?.default as
-      | {
-          crons: Record<
-            string,
-            { name: string; args: JSONValue[]; schedule: Record<string, unknown> }
-          >;
-        }
-      | undefined;
-    if (!crons) return [];
-    return Object.entries(crons.crons).map(([name, spec]) => {
-      const s = spec.schedule;
-      if (s.type !== "interval") {
-        throw new Error(
-          `Cron "${name}": schedule type ${String(s.type)} is not supported on the Cloudflare platform yet`,
-        );
-      }
-      const everyMs =
-        ((s.seconds as number | undefined) ?? 0) * 1000 +
-        ((s.minutes as number | undefined) ?? 0) * 60_000 +
-        ((s.hours as number | undefined) ?? 0) * 3_600_000;
-      return { name, udfPath: spec.name, args: jsonToConvex(spec.args[0] as JSONValue), everyMs };
-    });
-  }
-
-  private nextCronDue(tx: Transaction): number | null {
-    let next: number | null = null;
-    for (const spec of this.cronSpecs()) {
-      const state = this.cronState(tx, spec.name);
-      const due = state ? (state.nextRun as number) : this.now();
-      next = next === null ? due : Math.min(next, due);
-    }
-    return next;
-  }
-
-  private cronState(tx: Transaction, name: string): Record<string, Value | undefined> | null {
-    const row = tx
-      .scan({
-        table: CRON_STATE,
-        index: "by_name",
-        ...rangeFor([name]),
-        desc: false,
-        matches: () => true,
-      })
-      .next();
-    return row.done ? null : row.value.doc;
-  }
-
-  // Each due cron becomes a scheduled function due now, and its next run moves one interval past
-  // now, so a long outage runs a cron once, not once per missed interval (as on Convex).
-  private enqueueDueCrons(): Promise<void> {
-    return this.serialized(async () => {
-      const tx = this.store.begin();
-      const now = this.now();
-      for (const spec of this.cronSpecs()) {
-        const state = this.cronState(tx, spec.name);
-        if (state && (state.nextRun as number) > now) continue;
-        tx.insertSystem(SCHEDULED, {
-          name: spec.udfPath,
-          args: [spec.args],
-          scheduledTime: now,
-          state: { kind: "pending" },
-        });
-        if (state) tx.patchSystem(state._id as string, { nextRun: now + spec.everyMs });
-        else tx.insertSystem(CRON_STATE, { name: spec.name, nextRun: now + spec.everyMs });
-      }
-      tx.commit();
-    });
-  }
-
-  // ---- files --------------------------------------------------------------------------------
-
-  /** Stores the body of a POST to an upload URL. Returns the storage ID, or null for a bad token. */
-  async upload(
-    token: string,
-    bytes: Uint8Array,
-    contentType: string | undefined,
-  ): Promise<string | null> {
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    const sha256 = btoa(String.fromCharCode(...digest));
-    return this.serialized(async () => {
-      const tx = this.store.begin();
-      const row = tx
-        .scan({
-          table: UPLOADS,
-          index: "by_token",
-          ...rangeFor([token]),
-          desc: false,
-          matches: () => true,
-        })
-        .next();
-      if (row.done || (row.value.doc.expiresAt as number) < this.now()) return null;
-      tx.writes.set(row.value.doc._id as string, { table: UPLOADS, doc: null });
-      const id = tx.insertSystem(STORAGE, { sha256, size: bytes.length, contentType });
-      await this.files().put(id, bytes, contentType);
-      tx.commit();
-      return id;
-    });
-  }
-
-  private files(): FileStore {
-    if (!this.options.files)
-      throw new Error("ctx.storage needs a file store (R2) on the Cloudflare platform");
-    return this.options.files;
-  }
-
-  private storageStore(inv: Invocation, args: Record<string, JSONValue>): Promise<string> {
-    const bytes = Uint8Array.from(atob(args.blob as string), (c) => c.charCodeAt(0));
-    return this.storeBytes(inv, bytes, (args.contentType as string | undefined) || undefined);
-  }
-
-  private async storeBytes(
-    inv: Invocation,
-    bytes: Uint8Array,
-    contentType: string | undefined,
-  ): Promise<string> {
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    const sha256 = btoa(String.fromCharCode(...digest));
-    const write = async (tx: Transaction) => {
-      const id = tx.insertSystem(STORAGE, { sha256, size: bytes.length, contentType });
-      await this.files().put(id, bytes, contentType);
-      return id;
-    };
-    if (inv.tx) return write(inv.tx);
-    return this.serialized(async () => {
-      const tx = this.store.begin();
-      const id = await write(tx);
-      tx.commit();
-      return id;
-    });
-  }
-
-  private storageRow(inv: Invocation, id: string): Record<string, Value | undefined> | null {
-    const found = inv.tx?.writes.get(id) ?? this.store.readDoc(id);
-    if (!found || found.table !== STORAGE || !found.doc) return null;
-    return found.doc;
-  }
-
-  private async storageGet(inv: Invocation, id: string): Promise<JSONValue> {
-    if (!this.storageRow(inv, id)) return null;
-    const file = await this.files().get(id);
-    if (!file) return null;
-    return {
-      blob: btoa(String.fromCharCode(...file.bytes)),
-      contentType: file.contentType ?? null,
-    };
-  }
-
-  private storageUrl(inv: Invocation, id: string): JSONValue {
-    if (!this.storageRow(inv, id)) return null;
-    return `${this.options.siteUrl ?? ""}/api/storage/${id}`;
-  }
-
-  private storageMetadata(inv: Invocation, id: string): JSONValue {
-    const row = this.storageRow(inv, id);
-    if (!row) return null;
-    return {
-      storageId: id,
-      sha256: row.sha256 as string,
-      size: row.size as number,
-      contentType: (row.contentType as string | undefined) ?? null,
-    };
-  }
-
-  private async storageDelete(inv: Invocation, id: string): Promise<void> {
-    if (!this.storageRow(inv, id)) return;
-    const remove = async (tx: Transaction) => {
-      tx.writes.set(id, { table: STORAGE, doc: null });
-      await this.files().delete(id);
-    };
-    if (inv.tx) return remove(inv.tx);
-    await this.serialized(async () => {
-      const tx = this.store.begin();
-      await remove(tx);
-      tx.commit();
-    });
-  }
 }
 
 // Convex encodes a patch's `undefined` fields as { $undefined: null } so they can travel as JSON.
@@ -1028,13 +853,4 @@ function* take<T>(it: Iterable<T>, n: number): Generator<T> {
     yield x;
     if (++i >= n) return;
   }
-}
-
-function rangeFor(eqs: Value[]): { lo: string; hi: string } {
-  const prefix = encodeKey(eqs);
-  return { lo: prefix, hi: prefixEnd(prefix) };
-}
-
-function pendingRange(): { lo: string; hi: string } {
-  return rangeFor(["pending"]);
 }
