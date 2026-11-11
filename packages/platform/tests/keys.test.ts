@@ -46,7 +46,9 @@ function randomValue(r: () => number, depth = 0): Value | undefined {
 
 const sign = (n: number) => (n < 0 ? -1 : n > 0 ? 1 : 0);
 
-describe("encodeKey", () => {
+// Thousands of random cases each. On a shared CI runner, under turbo's parallel tests, one took
+// 7 s against vitest's 5 s default (run for #307).
+describe("encodeKey", { timeout: 30_000 }, () => {
   test("orders single values exactly like compareValues", () => {
     const r = rng(1);
     for (let i = 0; i < 20_000; i++) {
