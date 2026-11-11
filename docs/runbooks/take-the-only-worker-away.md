@@ -62,8 +62,8 @@ provisioner to install the full policy before switching the daemon. Run the new 
    The command for biel-payable-system is `gh variable set RC_CI_RUNS_ON --body rc-linux-js`.
 4. Wait for the Worker to be idle if the operation loses Attempts.
 
-Steps 2 and 3 are not needed for a consumer whose workflow starts with the router job in the
-README ("Fall back to GitHub-hosted runners"). Once the Worker stops reporting ready, or two
+Steps 2 and 3 are not needed for a consumer whose workflow starts with the router job in
+[Fall back to GitHub-hosted runners](../workflows.md#fall-back-to-github-hosted-runners). Once the Worker stops reporting ready, or two
 minutes after its last heartbeat, `/runs-on` answers the fallback label and new runs go to hosted
 on their own, then come back when readiness returns. Jobs already queued on the Profile label still
 wait for it, so cancel those as in step 2.
