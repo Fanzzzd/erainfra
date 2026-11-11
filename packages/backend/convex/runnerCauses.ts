@@ -3,8 +3,9 @@
 // and links the upstream page that describes the same behaviour on GitHub-hosted or Blacksmith
 // runners, so an operator can tell a fleet problem from a known GitHub one.
 //
-// It classifies what the control plane already records (`lastError`, `cancelReason`). It returns
-// null for an Attempt whose job ran and failed on its own: that is the workflow's failure.
+// It classifies what the control plane already records (`lastError`, `cancelReason`), and the
+// guest's out-of-memory kill count when the caller has the Attempt's metrics. It returns null for
+// an Attempt whose job ran and failed on its own: that is the workflow's failure.
 
 import { v } from "convex/values";
 
@@ -15,6 +16,7 @@ export type RunnerCauseCode =
   | "runner-refused"
   | "executor-killed"
   | "executor-failed"
+  | "guest-oom"
   | "stranded-rerun"
   | "stranded-cancelled";
 
@@ -66,12 +68,12 @@ const DOCS = {
 } as const;
 
 /** The cause for an Attempt's recorded failure, or null when the runner is not to blame. */
-export function runnerCause(attempt: {
-  lastError?: string;
-  cancelReason?: string;
-}): RunnerCause | null {
+export function runnerCause(
+  attempt: { lastError?: string; cancelReason?: string; result?: string },
+  metrics?: { oomKills: number | null } | null,
+): RunnerCause | null {
   const text = attempt.lastError ?? attempt.cancelReason;
-  if (text === undefined) return null;
+  if (text === undefined) return oomCause(attempt, metrics);
 
   if (text.startsWith("No compatible Worker became ready")) {
     return {
@@ -147,7 +149,28 @@ export function runnerCause(attempt: {
       docs: [DOCS.githubRunnerLogs, DOCS.workers],
     };
   }
-  return null;
+  return oomCause(attempt, metrics);
+}
+
+/**
+ * A job that failed while the guest kernel killed a process for lack of memory. The job's own
+ * step reports the failure, often as a tool that exits with a bare or truncated error, so the
+ * workflow log alone does not show that the runner ran out of memory.
+ */
+function oomCause(
+  attempt: { result?: string },
+  metrics: { oomKills: number | null } | null | undefined,
+): RunnerCause | null {
+  const kills = metrics?.oomKills ?? 0;
+  if (kills === 0 || attempt.result?.toLowerCase() !== "failed") return null;
+  return {
+    code: "guest-oom",
+    summary:
+      `The guest's out-of-memory killer ended ${kills === 1 ? "a process" : `${kills} processes`} ` +
+      "during the job, and the job failed. A step that died this way can exit with a short or empty " +
+      "error. Compare the job's peak memory with the Profile's size, or pick a larger Profile.",
+    docs: [DOCS.githubHostedSpecs, DOCS.blacksmithMetrics],
+  };
 }
 
 export const runnerCauseValidator = v.object({
@@ -158,6 +181,7 @@ export const runnerCauseValidator = v.object({
     v.literal("runner-refused"),
     v.literal("executor-killed"),
     v.literal("executor-failed"),
+    v.literal("guest-oom"),
     v.literal("stranded-rerun"),
     v.literal("stranded-cancelled"),
   ),

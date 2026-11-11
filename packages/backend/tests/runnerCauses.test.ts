@@ -28,7 +28,29 @@ describe("runnerCause", () => {
 
   test("the validator accepts every cause code", () => {
     const accepted = runnerCauseValidator.fields.code.members.map((member) => member.value);
-    expect(new Set(accepted)).toEqual(new Set(CASES.map(([, code]) => code)));
+    expect(new Set(accepted)).toEqual(new Set([...CASES.map(([, code]) => code), "guest-oom"]));
+  });
+
+  test("a failed job whose guest saw an OOM kill names the kill", () => {
+    const cause = runnerCause({ result: "Failed" }, { oomKills: 2 });
+    expect(cause?.code).toBe("guest-oom");
+    expect(cause?.summary).toContain("2 processes");
+    expect(runnerCause({ result: "failed" }, { oomKills: 1 })?.summary).toContain("a process");
+  });
+
+  test("an OOM kill is no cause when the job passed or no kill was counted", () => {
+    expect(runnerCause({ result: "succeeded" }, { oomKills: 3 })).toBeNull();
+    expect(runnerCause({ result: "failed" }, { oomKills: 0 })).toBeNull();
+    expect(runnerCause({ result: "failed" }, { oomKills: null })).toBeNull();
+    expect(runnerCause({ result: "failed" }, null)).toBeNull();
+  });
+
+  test("a recorded runner error wins over the OOM count", () => {
+    const cause = runnerCause(
+      { result: "failed", lastError: "Executor exited with code 137" },
+      { oomKills: 1 },
+    );
+    expect(cause?.code).toBe("executor-killed");
   });
 
   test("the stranded reason uses the wording operators see", () => {
