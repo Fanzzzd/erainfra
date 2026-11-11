@@ -81,7 +81,7 @@ func (b DockerBridge) Resolve(ctx context.Context) (netip.Addr, error) {
 	}
 	out, err := exec.CommandContext(ctx, docker, "network", "inspect", "bridge", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}").Output()
 	if err != nil {
-		return netip.Addr{}, errors.New("docker network inspect bridge failed")
+		return netip.Addr{}, fmt.Errorf("docker network inspect bridge failed: %w", err)
 	}
 	return firstBridgeIPv4(strings.Fields(string(out)), "the default bridge's gateway")
 }
