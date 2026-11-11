@@ -26,6 +26,7 @@ import {
   internalQuery,
   type ActionCtx,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { cancelUnclaimedAttempt } from "./attemptRetirement";
 import { loadSchedulerSnapshot, type SchedulerSnapshot } from "./attemptScheduler";
@@ -214,6 +215,25 @@ async function purge(ctx: MutationCtx, now: number) {
 }
 
 /** The minute cron: find jobs stranded on a Profile with no ready Worker and act on them. */
+/**
+ * Whether a Worker that reports this Profile ready was heard from since `cutoff`. Stranded means
+ * no ready Worker for the whole threshold, not just at this instant: a Worker that went quiet
+ * after the cutoff dropped only recently (an agent restart, a short network blip), so its jobs
+ * wait for it a little longer. The scheduler snapshot holds only Workers heard from in the last
+ * few seconds, so this reads the rows itself.
+ */
+async function readyWorkerHeardSince(ctx: QueryCtx, profile: string, cutoff: number) {
+  const rows = await ctx.db
+    .query("workerReadiness")
+    .withIndex("by_profile_state", (query) => query.eq("profile", profile).eq("state", "ready"))
+    .take(100);
+  for (const row of rows) {
+    const machine = await ctx.db.get(row.machineId);
+    if (machine !== null && machine.lastSeen >= cutoff) return true;
+  }
+  return false;
+}
+
 export const scan = internalMutation({
   args: {},
   returns: v.null(),
@@ -248,7 +268,9 @@ export const scan = internalMutation({
           hasReadyWorker = true;
         } else {
           snapshot ??= await loadSchedulerSnapshot(ctx, now);
-          hasReadyWorker = schedulableWorkers(snapshot, profile, now).length > 0;
+          hasReadyWorker =
+            schedulableWorkers(snapshot, profile, now).length > 0 ||
+            (await readyWorkerHeardSince(ctx, profile.name, cutoff));
         }
         ready.set(row.profile, hasReadyWorker);
       }

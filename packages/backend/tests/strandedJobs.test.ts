@@ -152,6 +152,24 @@ describe("stranded job recovery", () => {
     expect(calls).toEqual([]);
   });
 
+  it("waits while the Profile's last ready Worker dropped within the threshold", async () => {
+    vi.stubEnv("ERAINFRA_STRANDED_JOB_ACTION", "cancel");
+    const t = convexTest(schema, modules);
+    await insertProfile(t, { githubConfigUrl: "https://github.com/acme" });
+    // Ready, but silent for 2 minutes: too stale to schedule on, too recent to give up on.
+    const machineId = await insertMachine(t, "worker-1", { lastSeen: NOW - 2 * MINUTE });
+    await insertReadiness(t, machineId);
+    await acquire(t, "1", NOW - 30 * MINUTE);
+    await scanAt(t, NOW);
+    expect((await jobRow(t, "1"))?.stranded).toBeUndefined();
+    expect(calls).toEqual([]);
+
+    // Silent for 10 minutes, past the 5-minute threshold: now the job is stranded.
+    await t.run((ctx) => ctx.db.patch(machineId, { lastSeen: NOW - 10 * MINUTE }));
+    await scanAt(t, NOW);
+    expect((await jobRow(t, "1"))?.stranded).toBeDefined();
+  });
+
   it("marks a stranded job, names the cause on an Attempt and cancels the run", async () => {
     vi.stubEnv("ERAINFRA_STRANDED_JOB_ACTION", "cancel");
     const t = convexTest(schema, modules);
