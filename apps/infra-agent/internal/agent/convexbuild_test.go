@@ -76,7 +76,8 @@ func TestConvexBuildFromUploadRunsDockerBuildThenPush(t *testing.T) {
 	if err != nil || spec != "services: {}\n" {
 		t.Fatalf("spec = %q, %v", spec, err)
 	}
-	if _, err := b.BuildConvexImage(context.Background(), r, src, "web", "127.0.0.1:5000/shop-web:abc"); err != nil {
+	image := fakeRegistry(t, http.StatusOK) + "/shop-web:abc"
+	if _, err := b.BuildConvexImage(context.Background(), r, src, "web", image); err != nil {
 		t.Fatal(err)
 	}
 	calls, err := os.ReadFile(log)
@@ -84,14 +85,73 @@ func TestConvexBuildFromUploadRunsDockerBuildThenPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], "build -t 127.0.0.1:5000/shop-web:abc /") ||
-		!strings.HasSuffix(lines[0], "/src/web") || lines[1] != "push 127.0.0.1:5000/shop-web:abc" {
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "build -t "+image+" /") ||
+		!strings.HasSuffix(lines[0], "/src/web") || lines[1] != "push "+image {
 		t.Fatalf("docker calls = %q", lines)
 	}
 	// The upload URL is a capability URL; no credential goes with it.
 	for _, h := range *headers {
 		if h.Get("Authorization") != "" {
 			t.Fatal("a credential was sent to the upload URL")
+		}
+	}
+}
+
+// fakeRegistry serves a registry's /v2/ with the given status and returns its host:port.
+func fakeRegistry(t *testing.T, status int) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(server.Close)
+	return strings.TrimPrefix(server.URL, "http://")
+}
+
+func TestConvexBuildChecksTheRegistryBeforeBuilding(t *testing.T) {
+	docker, log := fakeDocker(t)
+	server, _ := uploadServer(t, tarball(t, map[string]string{"Dockerfile": "FROM scratch\n"}))
+	b := ConvexBuilder{AllowLoopbackHTTP: true}
+	r := ShellRunner{Docker: docker, OutputLimit: 16 * 1024}
+	src := ConvexSource{Kind: "upload", URL: server.URL}
+
+	// Nothing listens where the image says the registry is, as when ERAINFRA_REGISTRY names a
+	// port no registry uses, or the registry's mesh link is down.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	gone := strings.TrimPrefix(closed.URL, "http://")
+	closed.Close()
+	_, err := b.BuildConvexImage(context.Background(), r, src, "", gone+"/shop-web:abc")
+	if err == nil || !strings.Contains(err.Error(), "registry "+gone+" is not reachable from this Node") ||
+		!strings.Contains(err.Error(), "ERAINFRA_REGISTRY") {
+		t.Fatalf("unreachable registry: %v", err)
+	}
+	// Something answers, but it is not a registry.
+	_, err = b.BuildConvexImage(context.Background(), r, src, "", fakeRegistry(t, http.StatusNotFound)+"/x:1")
+	if err == nil || !strings.Contains(err.Error(), "answered 404") {
+		t.Fatalf("not a registry: %v", err)
+	}
+	if calls, _ := os.ReadFile(log); len(calls) != 0 {
+		t.Fatalf("docker ran before the registry check: %q", calls)
+	}
+	// A registry that wants a login still answered.
+	if _, err := b.BuildConvexImage(context.Background(), r, src, "", fakeRegistry(t, http.StatusUnauthorized)+"/x:1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistryHostFollowsDockersRule(t *testing.T) {
+	for image, want := range map[string]string{
+		"127.0.0.1:61050/shop-web:abc":  "127.0.0.1:61050",
+		"localhost/x:1":                 "localhost",
+		"registry.example.com/acme/x:1": "registry.example.com",
+		"nginx:1":                       "",
+		"library/nginx:1":               "",
+	} {
+		if got := registryHost(image); got != want {
+			t.Errorf("registryHost(%q) = %q, want %q", image, got, want)
 		}
 	}
 }
