@@ -1753,7 +1753,11 @@ pull requests on machines that hold persistent credentials.
 ## Releases
 
 EraInfra is one product version: root, Agent, Controller, Runtime and `apps/mesh/Cargo.toml`
-versions must match. Tagging `v<version>` runs the release workflow, revalidates the JavaScript and
+versions must match. Nobody edits them by hand. Pull requests carry changesets
+([.changeset/README.md](.changeset/README.md)), and the release branch runs
+`GITHUB_TOKEN=$(gh auth token) pnpm release:version`. That runs `changeset version`, which bumps the
+fixed product group and writes the CHANGELOGs, then copies the version to the root `package.json`,
+the mesh crate, the agent lockfile and `AGENT_RELEASE.version`. Tagging `v<version>` runs the release workflow, revalidates the JavaScript and
 Go surfaces (including both Linux architectures), rebuilds the agent archive, the Infra Agent
 binaries and the `erainfra-mesh` binaries twice byte-for-byte, checks the deployment pin, attests
 the artifacts, and publishes:

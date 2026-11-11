@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "Fanzzzd/erainfra" }],
+  "commit": false,
+  "fixed": [
+    [
+      "@erainfra/agent",
+      "@erainfra/controller",
+      "@erainfra/runtime",
+      "@erainfra/backend",
+      "@erainfra/dashboard"
+    ]
+  ],
+  "linked": [],
+  "access": "restricted",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@erainfra/hub",
+    "@erainfra/hub-web",
+    "@erainfra/docs",
+    "@erainfra/release",
+    "@erainfra/typescript-config"
+  ],
+  "privatePackages": { "version": true, "tag": false }
+}

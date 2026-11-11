@@ -123,6 +123,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: pnpm install --frozen-lockfile
+      # Every change to a released package needs a changeset (.changeset/README.md): it becomes
+      # the CHANGELOG entry and decides the next product version. A change with nothing to tell
+      # users adds `pnpm changeset --empty`. Dependabot, the weekly pin bump and release branches
+      # cannot write one and are exempt.
+      - name: The pull request carries a changeset
+        if: >-
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          github.head_ref != 'automation/pin-bump' &&
+          !startsWith(github.head_ref, 'release/')
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: pnpm exec changeset status --since="origin/$BASE_REF"
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
