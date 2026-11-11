@@ -138,7 +138,7 @@ Do this per Profile. No command here retires the scale set.
 2. Configure the controller App's client ID and key in Convex. Leave the VM's credentials in place
    for rollback. Confirm the VM has acquired a lease, registered the GitHub URL and returned to
    listening. Check each Profile separately.
-3. Install the standby on ubuntu0 with its Worker env file, as above. Wait for its heartbeat to
+3. Install the standby on `<worker-host>` with its Worker env file, as above. Wait for its heartbeat to
    appear beside the VM's. It must log `controller standing by` and identify the VM as holder.
    If it says `notReady` or `profileIncomplete`, fix that before proceeding.
 4. Stop the VM's unit, without running `retire`:
@@ -147,9 +147,9 @@ Do this per Profile. No command here retires the scale set.
    sudo systemctl disable --now runner-center-controller@<profile>
    ```
 
-5. Watch ubuntu0 acquire a higher epoch and start listening. A graceful stop closes the old
+5. Watch `<worker-host>` acquire a higher epoch and start listening. A graceful stop closes the old
    GitHub session before releasing the lease. A crash can add GitHub's lingering-session delay.
-   Confirm the dashboard shows ubuntu0 listening with the Worker credential and submit a small
+   Confirm the dashboard shows `<worker-host>` listening with the Worker credential and submit a small
    workflow targeted at that Profile. Check its Attempt is created and reaches the Worker.
 6. Install another ready Worker's standby when available. Keep the VM env and credentials in an
    encrypted backup until every Profile has taken over and survived a Worker restart.

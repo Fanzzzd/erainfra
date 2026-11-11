@@ -559,7 +559,7 @@ once the Apps are where you want them.
    sidecar keeps running if it is the systemd service; a supervised one stops with the agent.
    A running sidecar keeps every link Convex gave it, restores them from its state file when it
    restarts, and keeps listening on their local ports. A Hub-mode agent that runs its links with
-   dumbpipe cannot bind those ports while it does: on `oracle-singapore-1` today, 60030 and 61050. If the Hub-mode agent names no sidecar, stop that one too:
+   dumbpipe cannot bind those ports while it does, such as a registry link's port (61050 by default). If the Hub-mode agent names no sidecar, stop that one too:
 
    ```sh
    { systemctl cat portless-agent; sudo cat /etc/portless/agent.env /etc/erainfra/agent.env 2>/dev/null; } |

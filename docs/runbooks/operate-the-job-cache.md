@@ -1274,7 +1274,7 @@ GitHub and saves a fresh one.
   `includeIf "hasconfig:remote.*.url:..."`. It leaves `refs/bundles/*` and the repository's whole
   history in every workspace, so a depth-1 checkout is no longer depth 1, and it offers no way to
   refresh the seed without a credential the guest does not have.
-- **A mirror service on ubuntu0 or another host.** It would have to fetch private repositories
+- **A mirror service on a Worker or another host.** It would have to fetch private repositories
   with a credential of its own, an installation token the controller mints per repository, and keep
   writable state outside the job. Seeding from the job's own fetch needs neither.
 - **`url.<mirror>.insteadOf`.** It changes what `git remote get-url origin` prints, which tools such
