@@ -95,6 +95,12 @@ reporting a boundary weaker than its executor promises is refused.
 **Readiness evidence**: the measured facts a Worker submits to justify a ready state, including
 the network policy identity hash and thin-pool identity. Admission is fail-closed against it.
 
+**Platform**: the service the control plane runs on: Convex (production today) or Cloudflare (a
+Durable Object, being built). Both answer the same Convex syscalls, so the backend runs unmodified
+on either; `packages/platform` holds the Cloudflare implementation
+([ADR 0019](docs/adr/0019-the-control-plane-runs-on-convex-or-cloudflare.md)). Not the Executor
+and not a Worker's OS.
+
 **API token**: a bearer credential for the Convex control plane's `/api/v1` and `/metrics`, minted
 in the dashboard and used by the `erainfra` CLI, scripts and Prometheus. Its **scope** is `read`,
 `admin` or `metrics` (`convex/apiTokenPolicy.ts`). It is unrelated to a
