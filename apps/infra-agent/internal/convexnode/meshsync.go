@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -18,6 +17,7 @@ import (
 
 	gw "github.com/Fanzzzd/erainfra/apps/infra-agent/internal/gateway"
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient"
+	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/oplog"
 )
 
 // Sidecar is this Node's erainfra-mesh endpoint as connect-convex drives it. agent.MeshManager
@@ -51,8 +51,8 @@ type MeshOptions struct {
 	// sidecar holds the links the routes use, and left alone while Convex is unreachable, so the
 	// proxy keeps serving the last copy. A Node that is not a gateway gets an empty table.
 	RoutesFile string
-	// Logf receives operator-facing messages. Default log.Printf. Messages never carry a
-	// credential, a relay token or a response body.
+	// Logf receives operator-facing messages. Default oplog.Printf, which logs through log/slog.
+	// Messages never carry a credential, a relay token or a response body.
 	Logf func(format string, args ...any)
 }
 
@@ -118,7 +118,7 @@ func newMeshLoop(c *Client, o MeshOptions) *meshLoop {
 		o.StatePoll = 10 * time.Second
 	}
 	if o.Logf == nil {
-		o.Logf = log.Printf
+		o.Logf = oplog.Printf
 	}
 	return &meshLoop{c: c, o: o, now: c.now, lastFailure: map[string]time.Time{}}
 }

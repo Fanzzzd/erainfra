@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -211,7 +212,7 @@ func (r *Runtime) KeepGuestElements(ctx context.Context) {
 		restored, _, _, err := restoreGuestElements(ctx, r.config.Network, r.readLiveTable(ctx), r.egress)
 		logRestoredGuests(restored)
 		if err != nil && ctx.Err() == nil {
-			logrus.WithError(err).Warn("could not check the per-guest elements of running guests")
+			slog.Warn("could not check the per-guest elements of running guests", "error", err)
 		}
 	}
 }
@@ -222,9 +223,10 @@ func (r *Runtime) readLiveTable(ctx context.Context) func() ([]byte, error) {
 
 func logRestoredGuests(restored []netpolicy.GuestEgressState) {
 	for _, state := range restored {
-		logrus.WithFields(logrus.Fields{"guest": state.Guest, "link": state.Link}).Warn(
-			"restored a running guest's link binding and egress membership, which the nftables table had lost; " +
+		slog.Warn(
+			"restored a running guest's link binding and egress membership, which the nftables table had lost; "+
 				"reload the table only with no Firecracker VMs running",
+			"guest", state.Guest, "link", state.Link,
 		)
 	}
 }
@@ -243,7 +245,7 @@ func (r *Runtime) mintCacheBearer(runnerName string) string {
 	}
 	token, _, err := r.cacheIssuer.IssueRunner(runnerName)
 	if err != nil {
-		logrus.WithError(err).WithField("runner", runnerName).Warn("could not mint cache bearer")
+		slog.Warn("could not mint cache bearer", "error", err, "runner", runnerName)
 		return ""
 	}
 	return token
@@ -551,8 +553,8 @@ func (r *Runtime) PrepareProfile(
 	// readiness failure.
 	runnerVersion := ""
 	if spec, specErr := image.Spec(containerdContext); specErr != nil {
-		logrus.WithError(specErr).WithField("image", profile.ImageRelease).
-			Warn("could not read the image config for its actions/runner version")
+		slog.Warn("could not read the image config for its actions/runner version",
+			"error", specErr, "image", profile.ImageRelease)
 	} else {
 		runnerVersion = imageRunnerVersion(spec)
 	}
@@ -721,6 +723,8 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 		WithStdout(console).
 		WithStderr(console).
 		Build(vmmContext)
+	// fc.WithLogger takes only a logrus entry, so logrus stays for this one silent adapter. The VMM
+	// writes its own log to firecracker.log in the work directory.
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
 	logger.SetLevel(logrus.PanicLevel)
@@ -1080,15 +1084,15 @@ func (l *machineLease) Wait(ctx context.Context) (executor.Result, error) {
 func (l *machineLease) runnerExit() *runnerexit.Report {
 	report, err := runnerexit.ReadConsole(l.consolePath)
 	if err != nil {
-		logrus.WithError(err).Warn("dropped the guest's runner exit report")
+		slog.Warn("dropped the guest's runner exit report", "error", err)
 		return nil
 	}
 	if report != nil {
-		logrus.WithFields(logrus.Fields{
-			"exitCode":   report.ExitCode,
-			"ranJob":     report.RanJob,
-			"diagnostic": report.Diagnostic,
-		}).Info("GitHub runner exited")
+		slog.Info("GitHub runner exited",
+			"exitCode", report.ExitCode,
+			"ranJob", report.RanJob,
+			"diagnostic", report.Diagnostic,
+		)
 	}
 	return report
 }
@@ -1099,12 +1103,12 @@ func (l *machineLease) runnerExit() *runnerexit.Report {
 // and never changes the Attempt's own result.
 func (l *machineLease) testReport() *testreport.Report {
 	if err := l.console.Sync(); err != nil {
-		logrus.WithError(err).Warn("could not flush the console to read test results")
+		slog.Warn("could not flush the console to read test results", "error", err)
 		return nil
 	}
 	report, err := testreport.ReadConsole(l.consolePath)
 	if err != nil {
-		logrus.WithError(err).Warn("dropped the guest's test results")
+		slog.Warn("dropped the guest's test results", "error", err)
 		return nil
 	}
 	return report
@@ -1169,7 +1173,7 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 			cancelEgress()
 			l.egressRecord = record
 			if err != nil {
-				logrus.WithError(err).WithField("guest", l.guestAddress.String()).Warn("could not remove guest egress state")
+				slog.Warn("could not remove guest egress state", "error", err, "guest", l.guestAddress.String())
 			}
 		}
 		l.cancelVMM()
