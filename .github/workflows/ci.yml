@@ -328,10 +328,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: The backend's tests pass on the Cloudflare platform runtime
         run: pnpm --filter @erainfra/backend run test:platform
-      - name: The Cloudflare module list matches convex/
-        run: |
-          pnpm --filter @erainfra/backend run generate:cloudflare
-          git diff --exit-code -- packages/backend/cloudflare/modules.generated.ts
       # Bundles the Worker without deploying, so an import workerd cannot load fails here. The
       # dashboard build supplies the static assets wrangler.jsonc points at.
       - name: The Cloudflare Worker bundles

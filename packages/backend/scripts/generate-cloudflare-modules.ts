@@ -1,7 +1,7 @@
 // Writes cloudflare/modules.generated.ts: one static import per backend module, keyed the way
 // Convex names functions ("infra/nodes" for convex/infra/nodes.ts). Workers cannot glob at run
-// time, so the Cloudflare entry imports this list. `pnpm generate:cloudflare`; CI checks it is
-// current.
+// time, so the Cloudflare entry imports this list. The build:cloudflare, dev:cloudflare and
+// deploy:cloudflare scripts run this first; the file is not committed, so it cannot go stale.
 import { execFileSync } from "node:child_process";
 import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
