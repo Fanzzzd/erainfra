@@ -4,6 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { egressRecordValidator } from "./egress";
+import { runnerCause, runnerCauseValidator } from "./runnerCauses";
 
 /** How many Attempts the Runs page shows, newest first. */
 export const ATTEMPT_LIST_LIMIT = 200;
@@ -80,6 +81,7 @@ export const list = query({
       result: v.optional(v.string()),
       lastError: v.optional(v.string()),
       cancelReason: v.optional(v.string()),
+      cause: v.optional(runnerCauseValidator),
       createdAt: v.number(),
       queueTime: v.optional(v.number()),
       queueWaitMs: v.union(v.number(), v.null()),
@@ -112,6 +114,7 @@ export const list = query({
       result: attempt.result,
       lastError: attempt.lastError,
       cancelReason: attempt.cancelReason,
+      cause: runnerCause(attempt) ?? undefined,
       createdAt: attempt.createdAt,
       queueTime: attempt.queueTime,
       queueWaitMs: queueWaitMs(attempt),

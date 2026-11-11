@@ -493,6 +493,24 @@ func TestJobsViewTable(t *testing.T) {
 	}
 }
 
+func TestJobsViewShowsTheRunnerCause(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	detail := strings.TrimSuffix(attemptJSON, "}") +
+		`,"executor":"firecracker","imageRelease":"ghcr.io/x@sha256:1","vcpus":4,"memoryMiB":16384,"runnerName":"r-1","runnerId":9,` +
+		`"lastError":"Executor exited with code 137","cause":{"code":"executor-killed","summary":"The executor was killed.",` +
+		`"docs":[{"title":"GitHub-hosted runners: machine specifications","url":"https://docs.github.com/x"}]}}`
+	h.api.on("GET /api/v1/attempts/j57abc", 200, `{"attempt":`+detail+`}`)
+	h.expect(ExitOK, "jobs", "view", "j57abc")
+	for _, want := range []string{
+		"Runner cause:      executor-killed: The executor was killed.",
+		"See:               GitHub-hosted runners: machine specifications https://docs.github.com/x",
+	} {
+		if !strings.Contains(h.stdout.String(), want) {
+			t.Errorf("jobs view lacks %q:\n%s", want, h.stdout.String())
+		}
+	}
+}
+
 func TestJobsViewShowsARetiringAttempt(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	detail := strings.TrimSuffix(attemptJSON, "}") +

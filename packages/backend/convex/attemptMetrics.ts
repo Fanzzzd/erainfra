@@ -15,6 +15,7 @@ import {
   type MetricsSnapshot,
 } from "./attemptMetricsModel";
 import { requireDashboardAuth } from "./dashboardAuth";
+import { runnerCause, runnerCauseValidator } from "./runnerCauses";
 
 /** Stores, serves and expires per-Attempt resource metrics; see attemptMetricsModel.ts. */
 
@@ -155,6 +156,7 @@ export const get = query({
         workflowRunId: v.optional(v.number()),
         result: v.optional(v.string()),
         lastError: v.optional(v.string()),
+        cause: v.optional(runnerCauseValidator),
         createdAt: v.number(),
         startedAt: v.optional(v.number()),
         finishedAt: v.optional(v.number()),
@@ -196,6 +198,7 @@ export const get = query({
         workflowRunId: attempt.workflowRunId,
         result: attempt.result,
         lastError: attempt.lastError,
+        cause: runnerCause(attempt) ?? undefined,
         createdAt: attempt.createdAt,
         startedAt: attempt.startedAt,
         finishedAt: attempt.finishedAt,
