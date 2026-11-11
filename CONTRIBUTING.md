@@ -36,6 +36,17 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 GOOS=linux govulncheck ./...
 ```
 
+`GOOS=linux` lints the code that ships; the module also lints clean with `GOOS=darwin`.
+
+govulncheck fails when shipped code calls a function with a known vulnerability, in a dependency or
+in the Go standard library of the `go` on your PATH. An advisory in a package the code imports but
+never calls is listed without failing. CI runs it for every OS a release ships Go binaries for:
+`GOOS=linux` and `GOOS=darwin` over `./...`, and `GOOS=windows` over the Infra Agent and the CLI,
+the only Windows binaries. The release workflow scans every published binary again with
+`govulncheck -mode binary`. Most findings are fixed by moving Go to its newest patch
+(`go run ./scripts/pinbump -only go`, or `-go-line 1.N` for a new minor) or by `go get` of the
+fixed module version the report names.
+
 A Go lint exception names its linter and gives a reason on the same line:
 `//nolint:errcheck // read-only body; a close error loses nothing`. golangci-lint rejects a
 `//nolint` without both, and one that no longer silences anything.
@@ -50,7 +61,11 @@ cargo test --locked
 cargo deny --locked check   # cargo-deny 0.20.2; policy in apps/mesh/deny.toml
 ```
 
-README.md, "Develop locally", lists what else CI checks.
+CI runs the same four and cross-compiles both Linux release targets with cargo-zigbuild.
+
+CI also runs the production build, compiles both shipped Linux architectures, refuses any rename of
+an identifier a customer's machine already holds, and verifies that the npm lockfile installed
+Workers use is current.
 
 ## Code rules
 
