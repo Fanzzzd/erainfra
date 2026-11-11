@@ -17,7 +17,10 @@ import type { Sql } from "../store/sql.ts";
 import { Store, type Row, type SchemaInfo, type Transaction } from "../store/store.ts";
 import { CRON_STATE, cronSpecs, type CronSpec, enqueueDueCrons, nextCronDue } from "./crons.ts";
 import { Files, STORAGE, UPLOADS, type FileStore } from "./files.ts";
+import { FunctionError, asFunctionError, rethrowable } from "./functionError.ts";
 import { checkJson, type JsonValidator } from "./validateJson.ts";
+
+export { FunctionError } from "./functionError.ts";
 
 export type { FileStore } from "./files.ts";
 
@@ -29,6 +32,10 @@ export type Modules = Record<string, Record<string, unknown>>;
 /** The user identity `ctx.auth.getUserIdentity()` returns, or null when signed out. */
 export type Identity = Record<string, JSONValue> | null;
 
+export type QueryOutcome =
+  | { ok: true; value: Value; reads: ReadonlySet<string> }
+  | { ok: false; error: FunctionError; reads: ReadonlySet<string> };
+
 export type RuntimeOptions = {
   modules: Modules;
   schema: SchemaInfo;
@@ -39,6 +46,12 @@ export type RuntimeOptions = {
   /** Called with the time the next scheduled function or cron is due, or null when none is. */
   setAlarm?: (at: number | null) => void;
   now?: () => number;
+  /**
+   * Treat a match on the root prefix route ("/*") as no match. The backend registers that route
+   * only for Convex's static-hosting component; on Cloudflare, Workers Static Assets serves the
+   * dashboard instead.
+   */
+  staticCatchAll?: boolean;
 };
 
 type Invocation = {
@@ -96,26 +109,8 @@ function installGlobalConvex(): void {
   };
 }
 
-/** An error a function threw, with ConvexError data decoded. */
-export class FunctionError extends Error {
-  constructor(
-    message: string,
-    readonly data: Value | undefined,
-  ) {
-    super(message);
-  }
-}
-
-function asFunctionError(err: unknown): FunctionError {
-  if (err instanceof FunctionError) return err;
-  const e = err as { message?: string; data?: unknown };
-  const isConvexError = typeof err === "object" && err !== null && Symbol.for("ConvexError") in err;
-  let data: Value | undefined;
-  if (isConvexError || e.data !== undefined) {
-    data = typeof e.data === "string" ? jsonToConvex(JSON.parse(e.data)) : (e.data as Value);
-  }
-  return new FunctionError(e.message ?? String(err), data);
-}
+/** Set on the 404 for a path no HTTP route matches, so a host can fall back to static files. */
+export const NO_ROUTE = "X-EraInfra-No-Route";
 
 const SCHEDULED = "_scheduled_functions";
 
@@ -174,6 +169,11 @@ export class Runtime {
     return this.files.upload(token, bytes, contentType);
   }
 
+  /** A stored file's bytes, for serving `ctx.storage.getUrl` URLs. */
+  readFile(id: string) {
+    return this.files.bytes(null, id);
+  }
+
   // ---- function lookup ----------------------------------------------------------------------
 
   private resolve(udfPath: string): { fn: RegisteredFunction; path: string } {
@@ -219,6 +219,35 @@ export class Runtime {
     return this.serialized(() => this.transaction(kind, fn, path, args, identity, null));
   }
 
+  /**
+   * Runs public queries for live subscriptions, all against one snapshot. Each result carries the
+   * tables its query read, so a commit to any other table cannot change it.
+   */
+  runQueries(
+    queries: readonly { udfPath: string; args: Value }[],
+    identity: Identity,
+  ): Promise<QueryOutcome[]> {
+    return this.serialized(async () => {
+      const out: QueryOutcome[] = [];
+      for (const { udfPath, args } of queries) {
+        const tx = this.store.begin();
+        try {
+          const { fn, path } = this.resolve(udfPath);
+          if (!fn.isQuery || !fn.isPublic)
+            throw new Error(`Could not find public query "${udfPath}"`);
+          this.checkArgs(fn, path, args, tx);
+          const inv = this.invocation("query", tx, identity, path, null);
+          const value = await this.call(fn, "query", inv, args);
+          this.checkReturns(fn, path, value, tx);
+          out.push({ ok: true, value, reads: tx.reads });
+        } catch (err) {
+          out.push({ ok: false, error: asFunctionError(err), reads: tx.reads });
+        }
+      }
+      return out;
+    });
+  }
+
   /** Runs `fn` with a raw transaction, for tests and data migrations (convex-test's `t.run`). */
   runInTransaction<T>(fn: (tx: Transaction) => Promise<T> | T): Promise<T> {
     return this.serialized(async () => {
@@ -260,7 +289,12 @@ export class Runtime {
     if (!router) return new Response("No HTTP routes", { status: 404 });
     const url = new URL(request.url);
     const match = router.lookup(url.pathname, request.method as never);
-    if (!match) return new Response("No matching route", { status: 404 });
+    // With `staticCatchAll`, the root prefix route "/*" belongs to Convex's static-hosting
+    // component, whose job the host's static files do; treat it as no match.
+    const isStaticCatchAll = this.options.staticCatchAll === true && match?.[2] === "/*";
+    if (!match || isStaticCatchAll) {
+      return new Response("No matching route", { status: 404, headers: { [NO_ROUTE]: "1" } });
+    }
     const [handler] = match;
     const inv = this.invocation(
       "action",
@@ -745,6 +779,11 @@ export class Runtime {
     this.options.setAlarm?.(this.nextDue());
   }
 
+  /** Arms the alarm for whatever is due next. A host calls this once when it starts. */
+  start(): void {
+    this.armAlarm();
+  }
+
   /**
    * Runs every scheduled function and cron due at `now`, then re-arms the alarm. A Durable
    * Object calls this from `alarm()`. Mutations run exactly once: the state change commits in
@@ -834,15 +873,6 @@ function patchFromJson(value: Record<string, JSONValue>): Record<string, Value |
       typeof v === "object" && v !== null && !Array.isArray(v) && "$undefined" in v;
     out[k] = isUndefined ? undefined : jsonToConvex(v);
   }
-  return out;
-}
-
-// Convex's performAsyncSyscall turns an error with `data` back into a ConvexError, and expects
-// `data` as JSON.
-function rethrowable(err: unknown): Error {
-  const e = asFunctionError(err);
-  const out = new Error(e.message) as Error & { data?: JSONValue };
-  if (e.data !== undefined) out.data = convexToJson(e.data);
   return out;
 }
 

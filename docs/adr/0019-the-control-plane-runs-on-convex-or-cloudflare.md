@@ -93,31 +93,43 @@ tests below run on every upgrade.
 - **Actions.** An action runs outside any transaction and reaches the store only through
   `ctx.runQuery` and `ctx.runMutation`. An action that awaits a fetch must re-check state in a
   mutation afterwards, which is already the rule on Convex.
-- **Live queries.** Clients hold a WebSocket to the object. The object records each subscription
-  (function, arguments, tables read) in SQLite, so hibernation does not lose it, and re-runs the
-  subscriptions whose tables a mutation wrote. Convex tracks reads per index range; table-level
-  invalidation re-runs more often but is correct, and the control plane's write rate is low.
+- **Live queries.** The object speaks Convex's WebSocket sync protocol
+  (`packages/platform/src/sync/session.ts`). Each connection keeps its subscriptions, with the
+  tables each one read, in memory, and a commit re-runs the subscriptions that read a table it
+  wrote. Convex tracks reads per index range; table-level invalidation re-runs more often but
+  returns the same values, and the control plane's write rate is low. Open sockets keep the
+  object resident, so it does not hibernate while clients are connected; a few dozen clients fit
+  in the Paid plan's included duration. If that changes, the subscriptions move to SQLite and the
+  object uses the hibernation API.
 - **Scheduler and crons.** `ctx.scheduler.runAfter` and `runAt` write `_scheduled_functions`
   rows. The object keeps its single alarm at the earliest due row and runs due rows when it fires.
-  The 9 crons become Cron Triggers on the Worker, which call into the object.
+  Crons use the same alarm: each due cron becomes a `_scheduled_functions` row, and `_cron_state`
+  holds each cron's next run. Cron Triggers are not used, so there is one clock and one retry path.
+  Only interval schedules are supported; the backend's 9 crons are all intervals.
 - **HTTP.** A Worker in front routes the existing HTTP paths to `httpAction` handlers and serves
   the dashboard from Workers Static Assets with SPA fallback.
 - **Files.** `ctx.storage` maps to R2.
 - **Logs and metrics.** High-volume tables (logs, Attempt metrics) are the cost driver: every
   index entry and every retention delete is a billed row write. They move to a second object or
   to R2 before a production cutover. Measure first.
-- **Auth.** Convex Auth's Password provider is replaced by the same flows (sign-in, sign-up by
-  invitation, sessions as signed JWTs) behind the same `getAuthUserId` call. Password hashes must
-  stay verifiable after a migration; production Workers cap PBKDF2 at 100,000 iterations and cap
-  `node:crypto` scrypt cost at an unpublished value, so the hash parameters are checked on a
-  deployed Worker before the auth phase lands.
+- **Auth.** Convex Auth stays. Its functions run on the object like any other backend code, and
+  the host verifies the RS256 JWTs they issue the way the Convex server does: keys from the `JWKS`
+  variable, issuer and audience from `auth.config.ts`. Password hashes must stay verifiable after
+  a migration; production Workers cap PBKDF2 at 100,000 iterations and cap `node:crypto` scrypt
+  cost at an unpublished value, so the hash parameters are checked on a deployed Worker before a
+  cutover.
 
-### Clients reach the control plane through a client port
+### Clients use Convex's own clients on both platforms
 
-The dashboard and the Action Runner Agent call functions by name through a small client interface
-(`query`, `mutation`, `action`, `onUpdate`). One implementation wraps `ConvexClient`; the other
-speaks the Cloudflare object's WebSocket protocol. The Go clients keep using HTTP and need only the
-base URL.
+Because the object speaks Convex's sync protocol and HTTP function API, the dashboard's
+`ConvexReactClient`, Convex Auth's React provider and the Action Runner Agent's `ConvexClient`
+connect to it unmodified. Only the deployment URL changes (`VITE_CONVEX_URL`, `CONVEX_URL`). An
+earlier draft of this ADR planned a client port with two implementations; it is not needed. The
+Go clients use the HTTP routes and need only the base URL.
+
+The protocol has no published specification. The tests in `packages/platform/tests/sync.test.ts`
+run Convex's real `ConvexClient` against the session, so a Convex release that changes the
+protocol fails them when the `convex` pin moves.
 
 ### Which platform runs is a deploy-time choice
 
@@ -139,10 +151,11 @@ there; Convex's value order puts null below every number.
 
 1. The store, with differential tests against convex-test. (This ADR's pull request.)
 2. The function runtime on Cloudflare: the syscall layer over the store, the Durable Object host,
-   nested calls, the scheduler and alarm, Cron Triggers, HTTP routing, R2 storage. The backend's
-   test suite runs on it.
-3. The client port, then the dashboard and the Action Runner Agent on it.
-4. Auth.
+   nested calls, the scheduler, crons on the alarm, HTTP routing, R2 storage and JWT
+   verification. The backend's test suite runs on it.
+3. Convex's sync protocol on the object, so the dashboard and the Action Runner Agent connect
+   unmodified.
+4. Auth on a deployed Worker: the password hash parameters and the full sign-in flow.
 5. Deploy tooling (`wrangler`), export and import between platforms, and an end-to-end run of the
    rc-e2e Profile against a Cloudflare deployment.
 6. A staged cutover, if the owner chooses Cloudflare for production.

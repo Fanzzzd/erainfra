@@ -20,3 +20,8 @@ deploy/infra/bin/
 
 # Cargo's build output for apps/mesh, including the release script's per-output target directories.
 apps/mesh/target/
+
+# Wrangler: local secrets (never commit), local state and the dry-run bundle.
+.dev.vars
+.wrangler/
+dist-cloudflare/
