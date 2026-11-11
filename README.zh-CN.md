@@ -31,7 +31,7 @@ jobs:
 
 你需要：
 
-- 一台工作机，装有 Git、Node.js 22 或更高版本、pnpm 11.21.0（即 `package.json` 固定的版本，`corepack enable` 会安装它）；
+- 一台工作机，装有 Git、Node.js 22.13 或更高版本、pnpm 12.18.0（即 `package.json` 固定的版本，`corepack enable` 会安装它）；
 - 一个 [Convex](https://www.convex.dev/) 账号；
 - 一台 Linux x64 或 ARM64 机器，带 systemd、sudo、Docker Engine 28 或更高版本，至少 2 个 CPU、至少 9 GiB 内存（调度器会给每台机器留出 10% 不用）；
 - 一个你有管理员权限的 GitHub 仓库，以及该仓库的 fine-grained personal access token，其 Administration 仓库权限设为 read and write。
@@ -177,7 +177,7 @@ flowchart LR
 
 ## 开发
 
-你需要 Node.js 22 或更高版本、pnpm 11.21.0、Go 1.27.4 或更高版本（以 `go.mod` 为准），以及一个 Convex 账号或本地 deployment；`apps/mesh` 还需要 rustup。先运行 `pnpm install`，再运行 `pnpm check`：它会执行 lint、格式检查、类型检查和每个包的测试，包括 Go 测试。[CONTRIBUTING.md](CONTRIBUTING.md) 列出了 CI 额外运行的 Go 和 Rust 检查以及提交规则，[Releases](docs/releases.md) 说明如何发版。
+你需要 Node.js 22.13 或更高版本（`.nvmrc` 固定为 CI 使用的 22.23.4）、pnpm 12.18.0、Go 1.27.4 或更高版本（以 `go.mod` 为准），以及一个 Convex 账号或本地 deployment；`apps/mesh` 还需要 rustup。先运行 `pnpm install`，再运行 `pnpm check`：它会执行 lint、格式检查、类型检查、900 行文件上限检查和每个包的测试，包括 Go 测试。[CONTRIBUTING.md](CONTRIBUTING.md) 列出了 CI 额外运行的 Go 和 Rust 检查以及提交规则，[Releases](docs/releases.md) 说明如何发版。
 
 ## 许可证
 

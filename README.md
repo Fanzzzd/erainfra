@@ -40,7 +40,7 @@ host kernel, so use it only for a repository you trust, and see [Limits](#limits
 
 You need:
 
-- a workstation with Git, Node.js 22 or later, and pnpm 11.21.0, the version `package.json` pins
+- a workstation with Git, Node.js 22.13 or later, and pnpm 12.18.0, the version `package.json` pins
   (`corepack enable` installs it);
 - a [Convex](https://www.convex.dev/) account;
 - a Linux x64 or ARM64 machine with systemd, sudo, Docker Engine 28 or later, at least 2 CPUs and
@@ -218,9 +218,10 @@ Runbooks for operators:
 
 ## Develop
 
-You need Node.js 22 or later, pnpm 11.21.0, Go 1.27.4 or later (as `go.mod` names), and a Convex account or local
-deployment; `apps/mesh` also needs rustup. Run `pnpm install`, then `pnpm check`: it runs lint, the
-format check, type checks and every package's tests, including the Go tests.
+You need Node.js 22.13 or later (`.nvmrc` pins 22.23.4, the version CI uses), pnpm 12.18.0,
+Go 1.27.4 or later (as `go.mod` names), and a Convex account or local deployment; `apps/mesh` also
+needs rustup. Run `pnpm install`, then `pnpm check`: it runs lint, the format check, type checks,
+the 900-line file limit and every package's tests, including the Go tests.
 [CONTRIBUTING.md](CONTRIBUTING.md) lists the Go and Rust gates CI adds and the commit rules, and
 [Releases](docs/releases.md) describes how versions are cut.
 
