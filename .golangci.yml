@@ -14,3 +14,11 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+
+# `golangci-lint run` fails on a file these would rewrite, and `golangci-lint fmt` rewrites it.
+# goimports runs without local-prefixes: the code sorts github.com/Fanzzzd/erainfra imports in one
+# group with other modules, and a prefix would make goimports demand a separate group in 23 files.
+formatters:
+  enable:
+    - gofmt
+    - goimports

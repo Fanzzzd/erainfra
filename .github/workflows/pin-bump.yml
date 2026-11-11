@@ -88,14 +88,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --create "$BRANCH"
-          git commit --all --quiet --message "chore(pins): move the hand-pinned toolchain to upstream's newest releases"
+          git commit --all --quiet --message "chore(pins): move hand-pinned tools to upstream's newest releases"
           git push --force --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
           number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
           if [ -n "$number" ]; then
             gh pr edit "$number" --body-file "$body"
           else
             gh pr create --base "$BASE" --head "$BRANCH" \
-              --title "chore(pins): move the hand-pinned toolchain to upstream's newest releases" \
+              --title "chore(pins): move hand-pinned tools to upstream's newest releases" \
               --body-file "$body"
           fi
       # A pin that could not be checked (upstream down, checksums that

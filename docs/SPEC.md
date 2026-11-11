@@ -1,8 +1,8 @@
-# EraInfra — self-hosted GitHub Actions runner control plane on Convex
+# EraInfra: self-hosted GitHub Actions runner control plane on Convex
 
 Open-source. Machines have NO public IP: they connect OUT to Convex via WebSocket
 subscription. GitHub webhooks hit Convex HTTP actions (public). Convex is the
-scheduler. Runners are ephemeral via GitHub JIT config — one job, one clean
+scheduler. Runners are ephemeral via GitHub JIT config: one job, one clean
 environment, destroyed after.
 
 ## Monorepo layout (pnpm workspace, Node 22, TypeScript everywhere)
@@ -14,7 +14,7 @@ EraInfra/
 ├── pnpm-workspace.yaml     # packages: ["apps/*", "packages/*"] + dependency catalog
 ├── .oxlintrc.json          # oxlint config (linting)
 ├── .oxfmtrc.json           # oxfmt config (formatting)
-├── packages/backend/       # @erainfra/backend — the Convex deployment
+├── packages/backend/       # @erainfra/backend: the Convex deployment
 │   ├── convex.json
 │   ├── .env.local          # CONVEX_DEPLOYMENT (untracked)
 │   ├── scripts/            # print-install-script.ts
@@ -79,7 +79,7 @@ commands: defineTable({
 
 1. **Webhook** `POST /github/webhook` (packages/backend/convex/http.ts, httpAction):
    - Verify `X-Hub-Signature-256` HMAC-SHA256 with env `GITHUB_WEBHOOK_SECRET`
-     (use Web Crypto — `crypto.subtle`, available in Convex runtime; timing-safe compare).
+     (use Web Crypto: `crypto.subtle`, available in Convex runtime; timing-safe compare).
    - Only event `workflow_job`. action=queued → insert job (status queued) IF
      labels contain "self-hosted", then schedule tryAssign. action=in_progress →
      match by_ghJobId → status running, startedAt. action=completed → status
@@ -98,7 +98,7 @@ commands: defineTable({
    revert assignment (job → queued, slot back, command deleted) and log.
 4. **Agent** (apps/action-runner-agent, single index.ts ~150 lines):
    - env/config: CONVEX_URL, MACHINE_TOKEN. Uses `ConvexClient` from "convex/browser".
-   - `client.onUpdate(api.agentApi.pendingCommands, { token }, cb)` — for each
+   - `client.onUpdate(api.agentApi.pendingCommands, { token }, cb)`. For each
      pending command: call claim mutation (returns jitConfig, atomically flips
      status→claimed and clears jitConfig from doc), then spawn
      `provisioners/provision-<os>.sh` with env JIT_CONFIG + RUNNER_NAME via execa,

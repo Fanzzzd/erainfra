@@ -90,7 +90,9 @@ func TestTeardownCannotDeleteReusedAddressMembership(t *testing.T) {
 			<-blocking.entered
 			effective := npmPolicy(t)
 			replacement := make(chan error, 1)
-			go func() { replacement <- guard.Register(context.Background(), guestAddress, guestLink, "vm-2", effective) }()
+			go func() {
+				replacement <- guard.Register(context.Background(), guestAddress, guestLink, "vm-2", effective)
+			}()
 			select {
 			case err := <-replacement:
 				unblock()
@@ -228,7 +230,9 @@ func TestReplacementDrainsInFlightDNSInsertion(t *testing.T) {
 	<-blocking.entered
 	effective := npmPolicy(t)
 	replacement := make(chan error, 1)
-	go func() { replacement <- guard.Register(context.Background(), guestAddress, guestLink, "vm-2", effective) }()
+	go func() {
+		replacement <- guard.Register(context.Background(), guestAddress, guestLink, "vm-2", effective)
+	}()
 	select {
 	case err := <-replacement:
 		t.Fatalf("replacement overtook DNS insertion: %v", err)

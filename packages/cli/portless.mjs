@@ -913,9 +913,10 @@ const commands = {
     } else {
       die("usage: portless chats [sync|list|search <q>|show <id>|autosync]");
     }
-    // 内网互连：portless link <provider>:<port> <consumer>[:<localPort>] — consumer 节点上出现
   },
-  // 127.0.0.1:<localPort>，流量走 iroh P2P 直连（NAT 打洞，不经 hub、不经 tunnel）。
+  // Private networking: `portless link <provider>:<port> <consumer>[:<localPort>]` makes
+  // 127.0.0.1:<localPort> appear on the consumer Node. Traffic goes over a direct iroh P2P
+  // connection (NAT hole punching), through neither the Hub nor the tunnel.
   async link({ flags, pos }) {
     const cfg = requireConfig();
     const [src, dst] = pos;

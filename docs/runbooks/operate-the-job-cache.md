@@ -1,7 +1,7 @@
 # Runbook: run the job cache
 
 The job cache is `apps/cache-service`: one standalone Go binary that speaks GitHub's Actions Cache
-Service protocol — **both generations** — and keeps the bytes in a bucket you point it at. Jobs
+Service protocol, **both generations**, and keeps the bytes in a bucket you point it at. Jobs
 reach it as an authenticated network client and nothing writable is added to any Worker, which is
 the whole reason [ADR 0007](../adr/0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)
 can add a cache without touching ADR 0002's isolation contract.
@@ -20,7 +20,7 @@ the git checkout mirror, which keeps its seeds in it too (§11).
 This is an operator's decision, not an architectural one, because the right answer depends on where
 your Workers are.
 
-### Case A — your Workers are on your own network
+### Case A: your Workers are on your own network
 
 Put the store on the same LAN. MinIO, Garage, SeaweedFS and Ceph all speak the S3 API and all fit
 the four-variable contract below. This is where the speedup actually comes from: the win is
@@ -31,8 +31,8 @@ independent reasons:
 
 - **A Worker cannot reach a store on itself.** ADR 0002's nftables table `inet runner-center` drops
   guest traffic to the host, so a bucket served from a Worker is unreachable from that Worker's own
-  jobs. Making it reachable means punching a hole in exactly the rule that is verified at readiness
-  — so the hole would have to be rendered and verified too.
+  jobs. Making it reachable means punching a hole in exactly the rule that is verified at readiness,
+  so the hole would have to be rendered and verified too.
 - **It would be the wrong shape even if it worked.** Persistent writable storage on a machine that
   also runs untrusted jobs sits inside the blast radius. The isolation argument rests on the cache
   being somewhere a job can only reach as an authenticated network client.
@@ -43,7 +43,7 @@ repository's own `check` job restores 329 MiB per warm run.
 
 ```bash
 # One workable shape, on the store host. Any S3-compatible server will do.
-# certs/ holds public.crt and private.key for this host — see the TLS note in §2,
+# certs/ holds public.crt and private.key for this host. See the TLS note in §2,
 # which is a requirement here rather than a nicety.
 #
 # The API port is published; the admin console is bound to loopback, because it
@@ -74,10 +74,10 @@ mc admin user add erainfra "$cache_access_key" "$cache_secret"
 mc admin policy attach erainfra readwrite --user "$cache_access_key"   # narrow this to the one bucket
 ```
 
-### Case B — no colocated store, or a fleet spread across sites
+### Case B: no colocated store, or a fleet spread across sites
 
-**R2 over S3, decisively.** A CI cache is egress-dominated — written once per key, restored by
-every job on every branch — so on S3 that egress is most of the bill and on R2 it is zero. R2 speaks
+**R2 over S3, decisively.** A CI cache is egress-dominated: written once per key, restored by
+every job on every branch. So on S3 that egress is most of the bill and on R2 it is zero. R2 speaks
 the S3 API, so choosing it now costs nothing if the fleet later consolidates onto one site.
 
 ```bash
@@ -97,14 +97,14 @@ Every variable is new, so every variable is spelled `ERAINFRA_CACHE_*`. Nothing 
 
 | variable                                   | required | default                        | what it is                                                                            |
 | ------------------------------------------ | -------- | ------------------------------ | ------------------------------------------------------------------------------------- |
-| `ERAINFRA_CACHE_S3_ENDPOINT`               | yes      | —                              | `http(s)://host:port` of the store                                                    |
-| `ERAINFRA_CACHE_S3_BUCKET`                 | yes      | —                              | bucket name                                                                           |
-| `ERAINFRA_CACHE_S3_ACCESS_KEY`             | yes      | —                              | access key id                                                                         |
-| `ERAINFRA_CACHE_S3_SECRET`                 | yes      | —                              | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`                                    |
+| `ERAINFRA_CACHE_S3_ENDPOINT`               | yes      | none                           | `http(s)://host:port` of the store                                                    |
+| `ERAINFRA_CACHE_S3_BUCKET`                 | yes      | none                           | bucket name                                                                           |
+| `ERAINFRA_CACHE_S3_ACCESS_KEY`             | yes      | none                           | access key id                                                                         |
+| `ERAINFRA_CACHE_S3_SECRET`                 | yes      | none                           | secret key; prefer `ERAINFRA_CACHE_S3_SECRET_FILE`                                    |
 | `ERAINFRA_CACHE_S3_REGION`                 | no       | `us-east-1`                    | signing region; R2 wants `auto`                                                       |
 | `ERAINFRA_CACHE_S3_PREFIX`                 | no       | `erainfra-cache/v1/`           | key prefix, so one bucket can hold more than the cache                                |
 | `ERAINFRA_CACHE_S3_PATH_STYLE`             | no       | `true`                         | address the bucket as a path segment                                                  |
-| `ERAINFRA_CACHE_SIGNING_KEY`               | yes      | —                              | HMAC secret shared with the token issuer; ≥32 bytes                                   |
+| `ERAINFRA_CACHE_SIGNING_KEY`               | yes      | none                           | HMAC secret shared with the token issuer; ≥32 bytes                                   |
 | `ERAINFRA_CACHE_LISTEN`                    | no       | `:8721`                        | listen address                                                                        |
 | `ERAINFRA_CACHE_PUBLIC_URL`                | no       | taken from the request         | base URL jobs reach this service at                                                   |
 | `ERAINFRA_CACHE_DOWNLOAD_MODE`             | no       | `presign`                      | `presign` or `proxy`; see below                                                       |
@@ -134,10 +134,10 @@ that comes up degraded.
 ```bash
 install -d -m 0700 /etc/erainfra
 # The signing key. Generate it once and give the same value to whatever mints
-# tokens — in stage C, the controller.
+# tokens: in stage C, the controller.
 openssl rand -base64 48 > /etc/erainfra/cache-signing-key
-# The store's secret key. This is $cache_secret from §1 — the bucket-scoped
-# credential that pairs with ERAINFRA_CACHE_S3_ACCESS_KEY — and never the root
+# The store's secret key. This is $cache_secret from §1, the bucket-scoped
+# credential that pairs with ERAINFRA_CACHE_S3_ACCESS_KEY, and never the root
 # password, which would both fail to authenticate against that access key and
 # hand the service the run of the store.
 printf '%s' "$cache_secret" > /etc/erainfra/cache-store-secret
@@ -146,8 +146,8 @@ chmod 600 /etc/erainfra/cache-signing-key /etc/erainfra/cache-store-secret
 
 **Give the store a TLS endpoint.** `ERAINFRA_CACHE_S3_ENDPOINT` should be `https://`, and not only
 because the cache bytes would otherwise cross the LAN in the clear. Uploads are signed with
-`UNSIGNED-PAYLOAD` — S3's own scheme for a streamed body of known length, since the payload cannot
-be hashed without buffering it — so **the signature covers the request, not the bytes**, and TLS is
+`UNSIGNED-PAYLOAD`, S3's own scheme for a streamed body of known length, since the payload cannot
+be hashed without buffering it. So **the signature covers the request, not the bytes**, and TLS is
 what stands between an on-path attacker and rewriting a cache entry in flight. That is the same
 supply-chain hole as a fork PR writing an entry, reached a different way: whoever can change those
 bytes injects them into every later job that restores the key.
@@ -160,13 +160,13 @@ can get on that segment. Say so in your own runbook rather than inheriting it fr
 
 **`ERAINFRA_CACHE_SPOOL_DIR` needs real disk.** A v1 upload is spooled whole before it reaches the
 store, because `@actions/cache` sends 32 MiB chunks out of order and each names its own byte range;
-a v2 block upload is spooled for the same reason in a different shape — the Azure protocol only
+a v2 block upload is spooled for the same reason in a different shape: the Azure protocol only
 names the block order in the final commit. Budget roughly one concurrent job's entry size per job
 that saves at the same time.
 
 **Download mode.** `presign` is the default and hands the job a URL for exactly one object, by GET
-only, that expires. It requires the jobs themselves to be able to reach `ERAINFRA_CACHE_S3_ENDPOINT`
-— which for stage C means that endpoint is a second allowed egress destination. Use `proxy` when
+only, that expires. It requires the jobs themselves to be able to reach `ERAINFRA_CACHE_S3_ENDPOINT`,
+which for stage C means that endpoint is a second allowed egress destination. Use `proxy` when
 the store is routable from the cache service and not from the jobs; it costs a hop for download
 bytes and leaves the jobs with exactly one destination to allow.
 
@@ -187,11 +187,11 @@ chmod 600 /etc/erainfra/cache.env
 
 The two `_FILE` variables are deliberately **not** in that file. `EnvironmentFile` is read by systemd
 as root, but the paths inside it are opened by the _service process_, and this unit runs under
-`DynamicUser=yes` — a transient identity that cannot traverse a `0700` root-owned `/etc/erainfra`.
+`DynamicUser=yes`, a transient identity that cannot traverse a `0700` root-owned `/etc/erainfra`.
 Pointing the variables straight at those paths produces a service that fails at startup with a
 permission error on a file that is plainly there. `LoadCredential=` is the way through: systemd reads
 each file as root and drops a copy, readable only by this service's identity, into
-`$CREDENTIALS_DIRECTORY` — which `%d` expands to.
+`$CREDENTIALS_DIRECTORY`, which `%d` expands to.
 
 ```ini
 # /etc/systemd/system/erainfra-cache-service.service
@@ -226,7 +226,7 @@ WantedBy=multi-user.target
 
 `LoadCredential=` needs systemd 247 or newer (`systemctl --version`). On anything older, replace the
 credential block and `DynamicUser=yes` with a real service account, and grant it the access
-explicitly — all three parts of it, because missing any one produces the same permission error on a
+explicitly, all three parts of it, because missing any one produces the same permission error on a
 file that is plainly there:
 
 ```bash
@@ -257,7 +257,7 @@ curl -fsS http://127.0.0.1:8721/healthz     # {"ok":true}
 ```
 
 `/healthz` needs no token and does not touch the store: it answers that the process is up, not that
-the bucket is reachable. The truth about the store is in the log — a restore that could not read
+the bucket is reachable. The truth about the store is in the log: a restore that could not read
 the bucket is logged at `error` and answered as a miss, on purpose (see §5).
 
 `/metrics` needs no token either and answers in the Prometheus text format. It carries counts only,
@@ -415,13 +415,13 @@ service-side budget, and every store call is bounded by it.
 
 | what broke                                     | budget                                  | what the job sees                                  |
 | ---------------------------------------------- | --------------------------------------- | -------------------------------------------------- |
-| store slow, hung, or unreachable, on a restore | `ERAINFRA_CACHE_LOOKUP_TIMEOUT` (5s)    | a cache miss — `204` on v1, `{"ok":false}` on v2   |
+| store slow, hung, or unreachable, on a restore | `ERAINFRA_CACHE_LOOKUP_TIMEOUT` (5s)    | a cache miss: `204` on v1, `{"ok":false}` on v2    |
 | store slow or hung, on a reserve               | `ERAINFRA_CACHE_RESERVE_TIMEOUT` (10s)  | the save is refused; the step warns and continues  |
 | store fails mid-upload                         | `ERAINFRA_CACHE_TRANSFER_TIMEOUT` (30m) | the save fails; the step warns and continues       |
-| token missing, forged or expired               | —                                       | `401`, which is deliberately **not** a miss        |
-| the job's facts never arrived, or expired      | —                                       | `401` on every cache request of that job           |
-| the service restarted while jobs ran           | —                                       | nothing: their facts are read back from the bucket |
-| a fork pull request tries to save              | —                                       | `403`                                              |
+| token missing, forged or expired               | none                                    | `401`, which is deliberately **not** a miss        |
+| the job's facts never arrived, or expired      | none                                    | `401` on every cache request of that job           |
+| the service restarted while jobs ran           | none                                    | nothing: their facts are read back from the bucket |
+| a fork pull request tries to save              | none                                    | `403`                                              |
 
 A restore never answers `404` and never answers `500`, whatever went wrong. Those shapes are
 measured to be expensive: a v1 `404` costs a warning and a lost cache, and a v2 `500` costs five
@@ -444,7 +444,7 @@ journalctl -u erainfra-cache-service -f
 | line                                                              | means                                                                                                            |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `cache entry saved`                                               | a save completed; carries generation, repository, ref, key, bytes                                                |
-| `v1 restore degraded to a miss` / `v2 restore degraded to a miss` | the store did not answer in budget — **investigate the store**                                                   |
+| `v1 restore degraded to a miss` / `v2 restore degraded to a miss` | the store did not answer in budget; **investigate the store**                                                    |
 | `cache token rejected`                                            | signing key mismatch, or an expired token                                                                        |
 | `refused a cache write to a read-only token`                      | rule 2 working: a fork pull request tried to save                                                                |
 | `cache key prefix has more entries than one listing page`         | a prefix has grown past one page; "newest wins" may be picking out of a partial set                              |
@@ -514,7 +514,7 @@ that were reaching the cache go back to missing, which is slower and not broken.
 systemctl disable --now erainfra-cache-service
 ```
 
-The bucket keeps its contents. Restarting the service picks them up again — the index is the bucket,
+The bucket keeps its contents. Restarting the service picks them up again: the index is the bucket,
 not process state. In-flight uploads are the exception: they are spooled on disk and are dropped on
 shutdown, which costs the jobs that were saving a cache miss on their next run.
 
@@ -530,8 +530,8 @@ fleet that sets neither composes exactly the environment it composed before.
 | `ERAINFRA_CACHE_URL`        | the endpoint a job's cache client is offered                      |
 | `ERAINFRA_CACHE_SERVICE_V2` | `true` or `false`; which protocol generation a client should pick |
 
-They are set on `apps/action-runner-agent` — the process that holds `CONVEX_URL` and
-`MACHINE_TOKEN` — and reach a job as `ACTIONS_CACHE_URL` and `ACTIONS_CACHE_SERVICE_V2`, written on
+They are set on `apps/action-runner-agent`, the process that holds `CONVEX_URL` and
+`MACHINE_TOKEN`, and reach a job as `ACTIONS_CACHE_URL` and `ACTIONS_CACHE_SERVICE_V2`, written on
 the `docker run` command line by `provision-docker.sh` next to `RC_VCPUS`. The operator's spelling
 is `ERAINFRA_CACHE_*` and the job's is `ACTIONS_*`, because a Worker's configuration must not be
 confusable with the runner's own job-message variables. A malformed value is refused when the Agent
@@ -551,7 +551,7 @@ is not a price this seam is allowed to pay quietly.
 ### Do the free measurement first
 
 The same probe run measured something that decides whether any of this works at all: the runner
-overwrites all four cache variables from its job message in every **action** step — and every cache
+overwrites all four cache variables from its job message in every **action** step, and every cache
 client (`actions/cache`, `actions/setup-node`, `actions/setup-go`) is an action step. A workflow
 `env:` block loses. `$GITHUB_ENV` loses. The container environment is the last candidate, and
 whether it survives is **unmeasured**, because until now nothing could set it.
@@ -571,14 +571,14 @@ gh workflow run cache-env-probe.yml -f cache_service_v2=true
 
 Read the **T0** line in the job summary.
 
-- `SURVIVED into an action step` — the container environment reaches a cache client. Setting
+- `SURVIVED into an action step`: the container environment reaches a cache client. Setting
   `ERAINFRA_CACHE_URL` will now do something, and the rest of this runbook is worth deploying.
-- `OVERWRITTEN in an action step` — the runner replaced it, and no Worker-side variable can reach a
+- `OVERWRITTEN in an action step`: the runner replaced it, and no Worker-side variable can reach a
   cache client. Nothing in this runbook fixes that; it makes ADR 0007 an amendment rather than an
   implementation, because what would be left is intercepting the runner itself.
 
 The flag alone is the right thing to set for this: GitHub serves both generations, so it moves no
-traffic anywhere new and a wrong answer costs nothing. The capitalisation is the tell — the runner
+traffic anywhere new and a wrong answer costs nothing. The capitalisation is the tell: the runner
 writes `True` and this writes `true`, so the two are never confusable in the report.
 
 ---
@@ -596,7 +596,7 @@ forwards the cache path to this service carrying a runner-auth bearer; everythin
 to GitHub (ADR 0012 says why the redirect is a name pin and not a packet rule). It works whichever
 way the §7 measurement came back, because it never relies on an environment variable surviving into
 an action step, and it is a guest mechanism, so it needs nothing in `provision-docker.sh`. A guest
-handed no cache runs exactly as one always did — direct to GitHub — so every part of this is inert
+handed no cache runs exactly as one always did, direct to GitHub, so every part of this is inert
 until the last piece is set.
 
 ### One key, three holders
@@ -678,7 +678,7 @@ Each step is inert on its own; the cache serves its first byte only once all fou
    `deploy-control-plane.md`).
 
 2. **A guest image that carries the redirect.** The redirect ships in the guest image, not in the
-   agent archive, so it moves by repinning the Profile — not by the release tag. The image built from
+   agent archive, so it moves by repinning the Profile, not by the release tag. The image built from
    the redirect merge (`06eb3bb`) is:
 
    ```text
@@ -687,7 +687,7 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 
    Set that as `RC_IMAGE_RELEASE` in the Profile's `.env` and restart the controller, which patches
    the `profiles` row; warm and new microVMs then boot the new guest. Confirm the running image
-   afterward — a Profile that silently kept the old digest is the most likely reason the redirect
+   afterward. A Profile that silently kept the old digest is the most likely reason the redirect
    never appears.
 
 3. **A runtime pointed at the service.** On each Worker's `runner-center-runtime.service`, set the
@@ -712,9 +712,10 @@ Each step is inert on its own; the cache serves its first byte only once all fou
 
 4. **A controller that pushes facts.** Set `RC_CACHE_FACTS_URL` (the same service, its admin path is
    internal to the client) and `RC_CACHE_SIGNING_KEY` on the controller, both together or neither,
-   then `deploy:control-plane`. Without the push, every job scopes to nothing and reads a cold cache —
-   safe, but pointless. Grant the controller's GitHub App `Actions: Read` and `Contents: Read` first
-   (see "One key, three holders"), or every job's lookup fails and reads cold the same way.
+   then `deploy:control-plane`. Without the push, every job scopes to nothing and reads a cold cache.
+   That is safe, but pointless. Grant the controller's GitHub App `Actions: Read` and
+   `Contents: Read` first (see "One key, three holders"), or every job's lookup fails and reads cold
+   the same way.
 
 ### A cache step at the top of a job
 
@@ -809,7 +810,7 @@ the whole redirect down rather than leave that container failing TLS.
 Unset the runtime's `RC_CACHE_SIGNING_KEY_FILE` (or `RC_CACHE_SIGNING_KEY`, whichever step 3 set) and
 `RC_CACHE_SERVICE_URL` and restart it. The runtime then
 mints no bearer and hands the guest no service URL, the redirect stays inert, and jobs go direct to
-GitHub — the same fall-back a failed redirect already takes. Repinning the Profile to the previous
+GitHub, the same fall-back a failed redirect already takes. Repinning the Profile to the previous
 image digest is the same edit as step 2. Nothing on a Worker is destroyed by either.
 
 ### The release step that used to block this
@@ -1025,7 +1026,7 @@ or write the repository's cache through the proxy. A workflow that writes `local
 - **A workflow sets its own `TURBO_TOKEN` but not `TURBO_API`.** turbo still sends to the guest's
   `TURBO_API`, and the request does not say where the workflow meant it to go. The proxy forwards
   that token nowhere, to the cache service or anyone else. turbo's status check gets a `401`, so the
-  job log has one `Remote caching unavailable (Authentication failed — check TURBO_TOKEN ...)`
+  job log has one `Remote caching unavailable (Authentication failed ...)`
   warning, and the build runs uncached. The guest journal says
   `build cache proxy: turbo presented a TURBO_TOKEN the workflow set ...`. The fix is in the
   workflow's `env`: `TURBO_API: https://vercel.com/api` for Vercel, or the repository's own server.

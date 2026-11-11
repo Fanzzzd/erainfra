@@ -15,7 +15,7 @@ per-repository scopes". Its reason was precise, and it is still correct:
 > known.
 
 That argument rules out **a per-repository device attached at boot**. It does not reach a cache
-that a job fetches over the network, because such a cache is opened _inside_ the job — after
+that a job fetches over the network, because such a cache is opened _inside_ the job, after
 `JobStarted` has already named the repository, ref and event. Nothing has to be attached at boot.
 Nothing writable has to survive on the Worker. The bytes land in the disposable environment and are
 destroyed with it, exactly like the source checkout.
@@ -24,8 +24,8 @@ The distinction is worth stating rather than assuming, because ADR 0002 also wro
 therefore comes from the digest-pinned Image Release", and a reader who stops there concludes the
 question is closed. It is not closed; it was answered for a different design.
 
-**What this ADR supersedes, exactly.** One bullet of ADR 0002's "Considered and rejected" list —
-"An EraInfra cache service with per-repository scopes" — and only in the object-store form decided
+**What this ADR supersedes, exactly.** One bullet of ADR 0002's "Considered and rejected" list,
+"An EraInfra cache service with per-repository scopes", and only in the object-store form decided
 here. Its stated revisit condition ("revisit only if the controller starts creating Attempts per
 `JobAvailable` message") turns out to be sufficient but not necessary: it is the condition for
 attaching a cache _device_ at boot, and this design does not attach one.
@@ -33,12 +33,12 @@ attaching a cache _device_ at boot, and this design does not attach one.
 **What this ADR leaves standing, without qualification.** The isolation contract. "Nothing writable
 survives a job" is unchanged, because nothing writable is added to the Worker: the cache is a
 network service, and the job's copy dies with the disposable environment. The removal of the
-Profile-wide pnpm volume stands, and this ADR must not be read as a route to bringing it back —
-a shared writable store _on the Worker_ is a cross-job write path; an authenticated, per-repository,
+Profile-wide pnpm volume stands, and this ADR must not be read as a route to bringing it back.
+A shared writable store _on the Worker_ is a cross-job write path; an authenticated, per-repository,
 fork-read-only network service is not the same object. `apps/runtime/netpolicy`'s egress policy
 stands; the cache endpoint becomes one more operator-declared allowed destination, in exactly the
 mechanism ADR 0002 built for reaching `actions/cache` in the first place. And ADR 0002's second
-objection — that this is "a new authenticated, multi-tenant storage surface to secure" — is not
+objection, that this is "a new authenticated, multi-tenant storage surface to secure", is not
 waved past. It is the largest part of this decision, below.
 
 The reason to do this at all is bandwidth, not compute. Issue #80's canary showed `check` and
@@ -58,7 +58,7 @@ and two of them correct issue #81.
 **The generation is not chosen by the runner version.** Issue #81 says "which one is used depends on
 the client action version, not only on the runner." The capture says it is neither: what selects the
 generation is an environment variable, `ACTIONS_CACHE_SERVICE_V2`. Absent it, every client we drove
-falls back to legacy v1 — including `actions/cache` v6.1.0, released two months ago (capture
+falls back to legacy v1, including `actions/cache` v6.1.0, released two months ago (capture
 L001–L006 with the variable absent, L007–L012 with it present). The pinned
 `actions-runner:2.336.0` does not choose either: its `Runner.Worker.dll` carries the literal pairs
 `CacheServerUrl`/`ACTIONS_CACHE_URL`, `ResultsServiceUrl`/`ACTIONS_RESULTS_URL` and
@@ -67,16 +67,16 @@ job flag, not a decision.
 
 **And EraInfra does not own that flag either.** `actions_uses_cache_service_v2` arrives in GitHub's
 job message; the runner maps it into the step environment. EraInfra's controller creates the JIT
-runner and observes `JobStarted` — it does not author the job message, so it cannot set the flag
+runner and observes `JobStarted`. It does not author the job message, so it cannot set the flag
 there. Overriding the value the runner injects, from outside the runner, is a _possible_ route and
 is exactly what third-party cache proxies do, but **whether an EraInfra-supplied value survives the
 runner's own injection is unmeasured here** and is a stage-C prerequisite, not an assumption this
 ADR is allowed to make. An earlier draft of this ADR said "EraInfra composes the job environment, so
-EraInfra picks the generation." That was wrong twice over — it skipped the origin of the flag and it
-skipped the override question — and it is retracted.
+EraInfra picks the generation." That was wrong twice over: it skipped the origin of the flag and it
+skipped the override question. It is retracted.
 
 **But it cannot pick only one.** Client version still decides in both directions. `actions/cache`
-v4.0.2 — which plenty of workflows still pin — has no v2 code path and stays on v1 even with the
+v4.0.2, which plenty of workflows still pin, has no v2 code path and stays on v1 even with the
 flag set (L013–L018). BuildKit's `type=gha` exporter is the mirror image: BuildKit v0.32.2 driven by
 buildx v0.20.1 stays on v1 _even with the flag set_ (L147–L164), because that buildx does not
 forward the flag into the builder container, while the same BuildKit driven by buildx v0.36.1 goes
@@ -96,17 +96,17 @@ because omitting it segfaults `buildkitd` after every byte has already been uplo
 Stated here rather than only in the capture, because a decision that hides its gaps is worse than
 one that names them.
 
-- **`actions/setup-python` with `cache:`** — named in issue #81 as one of the expensive implicit
+- **`actions/setup-python` with `cache:`**: named in issue #81 as one of the expensive implicit
   clients, and **not driven**. It bundles `@actions/cache` the same way `setup-node` and `setup-go`
   do, but that is an inference and is deliberately not carried into any claim above.
-- **`actions/setup-go` with `ACTIONS_CACHE_SERVICE_V2` set** — only its v1 path was captured
+- **`actions/setup-go` with `ACTIONS_CACHE_SERVICE_V2` set**: only its v1 path was captured
   (L041–L050). Its v2 behaviour is not claimed.
-- **A job end to end through the pinned `actions-runner:2.336.0`** — that needs a real scale-set
+- **A job end to end through the pinned `actions-runner:2.336.0`**: that needs a real scale-set
   Attempt bound to a repository. What is measured is the shipped `Runner.Worker.dll`'s own string
   table, which proves the environment mapping exists in the pinned binary; it does not prove when
   GitHub's service sets `actions_uses_cache_service_v2`, so a fleet that relays GitHub's flag
   instead of setting its own would be relying on unmeasured behaviour.
-- **BuildKit against malformed v1 responses** — only its v2 fault behaviour was observed.
+- **BuildKit against malformed v1 responses**: only its v2 fault behaviour was observed.
 - **Whether a value EraInfra sets for `ACTIONS_CACHE_SERVICE_V2` survives the runner's own
   injection.** The string table proves the runner writes that variable from the job message; it says
   nothing about what happens to a value already present in the process environment. Stage C has to
@@ -129,8 +129,8 @@ one that names them.
 **Speak GitHub's Actions Cache Service protocol at the runner-environment level. Do not ship an
 `erainfra/cache` action.**
 
-The convenience argument — that a swap-in action breaks the README's promise that
-"`runs-on: <profile>` is the entire workflow change" — is true but is not what decides it. What
+The convenience argument, that a swap-in action breaks the README's promise that
+"`runs-on: <profile>` is the entire workflow change", is true but is not what decides it. What
 decides it is coverage, and the capture puts a number on it. EraInfra's own `check` job restores
 329 MiB of cache per warm run: 194 MiB through `actions/setup-node`'s `cache: pnpm` (capture
 L020–L030) and 135 MiB through `actions/setup-go`'s `cache: true` (L042–L050). It contains **zero**
@@ -139,7 +139,7 @@ job this product runs on itself**, while requiring a workflow edit to capture no
 setup actions speak the cache protocol directly through their bundled `@actions/cache`, and so does
 buildx's `type=gha`; a per-Attempt environment captures all of them with no workflow change at all.
 
-**Implement both API generations.** Not as a migration with a deprecation date — as a standing
+**Implement both API generations.** Not as a migration with a deprecation date, but as a standing
 requirement, for two reasons rather than one: client version overrides the flag in both directions
 (measured), and the flag itself is GitHub's to set (above). `ACTIONS_CACHE_URL` and
 `ACTIONS_RESULTS_URL` are both pointed at EraInfra's service. Clients that reach for v2 must find
@@ -148,30 +148,30 @@ works by accident.
 
 Concretely, **v1 is the path that has to work with no assumptions at all**, because it is what every
 client we drove uses when the flag is absent. Nothing may ship that relies on v2 being selected
-until a job running on a real Attempt has been observed choosing it — an end-to-end test, not a
+until a job running on a real Attempt has been observed choosing it: an end-to-end test, not a
 capture against a stand-in. That test is a stage-C exit condition.
 
 **The store is S3-compatible with a configurable endpoint.** One `endpoint / bucket / access key /
 secret` contract covers R2, S3, MinIO, Garage, SeaweedFS and Ceph, and no vendor name appears in the
 design. This is deliberately an operator's decision and not an architectural one, because the right
-answer depends on a fact the design cannot know — where the Workers are:
+answer depends on a fact the design cannot know, which is where the Workers are:
 
 - **Workers on the operator's own network**, which is this product's entire premise: put the store
-  on the same LAN — MinIO or Garage on a NAS, or on a machine that is not a Worker. This is where
+  on the same LAN (MinIO or Garage on a NAS, or on a machine that is not a Worker). This is where
   the speedup actually comes from. The win is bandwidth and latency, not the storage vendor; a
   remote bucket recovers some of the gap to a colocated competitor, a local one recovers all of it.
 
   **"On the same LAN" means a different host, and that is a constraint rather than a preference.**
   ADR 0002's nftables table `inet runner-center` drops guest traffic to the host itself, so a store
   running on a Worker is not reachable from that Worker's own jobs without punching a hole in
-  exactly the rule ADR 0002 added — and that rule is verified at readiness, so the hole would have
+  exactly the rule ADR 0002 added. That rule is verified at readiness, so the hole would have
   to be rendered and verified too. Beyond reachability it is the wrong shape: persistent writable
   storage on a machine that also runs untrusted jobs is a target sitting inside the blast radius,
   and the isolation argument in this ADR rests on the cache being somewhere the job can only reach
   as an authenticated network client.
 
 - **No colocated store, or a fleet spread across sites:** R2 over S3, decisively. A CI cache is
-  egress-dominated — written once per key, restored by every job on every branch — so on S3 that
+  egress-dominated (written once per key, restored by every job on every branch), so on S3 that
   egress is most of the bill and on R2 it is zero. R2 speaks the S3 API, so choosing it now costs
   nothing if the fleet later consolidates onto one site.
 
@@ -228,13 +228,13 @@ before it is a feature.
    issuer decides write permission from the Attempt's `event` and head/base repository, and a token
    with no proven write claim is a read token.
 
-3. **Reproduce GitHub's restore fallback exactly: own ref, then base ref, then default branch —
+3. **Reproduce GitHub's restore fallback exactly: own ref, then base ref, then default branch;
    never a sibling feature branch.** People rely on this for warm caches on new branches, and it is
    simultaneously an isolation property: sibling-branch reads let any branch author stage bytes that
    another branch picks up.
 
    **This one is a requirement, not a finding.** The capture establishes only the mechanism it runs
-   on — v1 `keys` is a prefix match and the client accepts whatever `matched_key`/`cacheKey` the
+   on: v1 `keys` is a prefix match and the client accepts whatever `matched_key`/`cacheKey` the
    service returns (L072 answers a request for `index-D1-1-f921bd05` with `index-D1-1-f921bd05#1`),
    and v2 accepts a `restore_keys` array (L115). It contains no multi-entry `restore_keys` case and
    no ref other than `refs/heads/main`, so it says nothing about ordering or about sibling-branch
@@ -258,7 +258,7 @@ before it is a feature.
 The one place where "presign against an S3-compatible store" does not simply work, and it is worth
 naming here because it constrains stage B rather than decorating it.
 
-**Downloads presign cleanly.** Every download in the capture — both generations, every client — was
+**Downloads presign cleanly.** Every download in the capture (both generations, every client) was
 a plain `GET` with no `Range` or `x-ms-range` header (L006, L012, L030, L040, L073, L116). A
 presigned S3 `GET` satisfies that. `@actions/cache` fetches with its own HTTP client in both
 generations; only BuildKit's v2 path uses an Azure SDK, and it too sent a plain `GET`.
@@ -272,31 +272,31 @@ segfaults. None of that is S3: S3 has no `comp=block`, its multipart commit is
 `signed_upload_url`.** Stage B picks one of exactly two answers and this ADR does not pick it for
 them:
 
-- **translate** — `signed_upload_url` points back at EraInfra's own service, which accepts the Azure
+- **translate**: `signed_upload_url` points back at EraInfra's own service, which accepts the Azure
   block protocol, maps blocks to S3 multipart parts and `blocklist` to `CompleteMultipartUpload`,
   and answers the commit with `x-ms-request-id`. Costs a proxy hop for upload bytes; keeps the store
   a plain bucket.
-- **front the bucket with an Azure-compatible gateway** — no translation code, but a second piece of
+- **front the bucket with an Azure-compatible gateway**: no translation code, but a second piece of
   infrastructure an operator has to run, which cuts against the one-`endpoint`/`bucket`/`key`/
   `secret` contract above.
 
 Either way the contract on the commit response is fixed: **`x-ms-request-id` is mandatory**, and it
 is mandatory because of a nil-pointer dereference in a client we do not control, which no amount of
 protocol reasoning would have predicted. Whichever answer stage B picks, the v1 upload path is
-unaffected — it is `PATCH` against our own service already (L021–L028) and never touches a
+unaffected. It is `PATCH` against our own service already (L021–L028) and never touches a
 presigned URL.
 
 ## Consequences
 
 **`Cache` in `apps/runtime/internal/executor/report.go` stops being the whole truth, and must say
 more rather than change its answer.** The struct reports `Scope`, `SharedWritable` and `Detail`, and
-Workers report `Scope: immutable-image` — documented in the struct itself as "nothing writable is
+Workers report `Scope: immutable-image`, documented in the struct itself as "nothing writable is
 shared at all". That remains true _of the Worker_ once a network cache exists, and it stops being
 true _of the job_. ADR 0002's rule is that readiness reports evidence, not a boolean, and this is
 the first thing to strain it: leaving `immutable-image` in place would let the dashboard keep making
 a complete-sounding claim that has quietly become partial.
 
-So `SharedWritable` stays **false** — it means writable storage shared between jobs _on this
+So `SharedWritable` stays **false**: it means writable storage shared between jobs _on this
 Worker_, and no such thing is added. `Scope` must stop being a single word that implies exhaustion
 and must name the external cache and its scoping instead, with `Detail` carrying the endpoint the
 Worker will actually let jobs reach and the scope the token enforces. The concrete shape belongs to
@@ -326,8 +326,8 @@ that hangs rather than one that misses. Stage B therefore owes an explicit timeo
 and a test per fault class; until it exists, "restores degrade to misses" is a claim about `404` and
 `500`, not about the network.
 
-Uploads are where it is not free even on the measured path — a malformed _success_ response on the
-v2 commit path panics `buildkitd` and fails the build — so the service's upload path needs the
+Uploads are where it is not free even on the measured path. A malformed _success_ response on the
+v2 commit path panics `buildkitd` and fails the build, so the service's upload path needs the
 harder tests.
 
 **Stage B inherits a specification, not a guess.** The endpoint list, request and response bodies,
@@ -357,21 +357,21 @@ In ADR 0002's own style, stated so that a future reader can check it rather than
   elsewhere. Stage C reports this number the way #80's canary reported its numbers, and if it comes
   back small, stage C is where this ADR gets superseded rather than shipped.
 - **If GitHub retires the legacy v1 API and the client ecosystem converges on v2 alone**, the
-  two-generation requirement above should be revisited — but only against a fresh capture, and only
+  two-generation requirement above should be revisited, but only against a fresh capture, and only
   once the buildx client that still selects v1 (measured here at v0.20.1) is out of circulation.
-- **If rule 2 cannot be enforced** — if per-Attempt token issuance cannot reliably distinguish a
-  fork pull request from a branch push at the moment the token is minted — then this decision fails
+- **If rule 2 cannot be enforced** (if per-Attempt token issuance cannot reliably distinguish a
+  fork pull request from a branch push at the moment the token is minted), then this decision fails
   and must be withdrawn rather than shipped with a warning in the docs. A cache that a fork PR can
   write is worse than no cache.
-- **If Workers stop being on the operator's own network** — if the deployment model becomes a hosted
-  fleet — the LAN argument evaporates and the remaining case is only "cheaper egress than GitHub",
+- **If Workers stop being on the operator's own network** (if the deployment model becomes a hosted
+  fleet), the LAN argument evaporates and the remaining case is only "cheaper egress than GitHub",
   which is a much weaker reason to own a storage surface.
 
 ## Considered and rejected
 
 - **Ship an `erainfra/cache` action that workflows swap in for `actions/cache`, as Blacksmith does:**
   rejected on measurement, not on taste. It captures only explicit `actions/cache` steps, and the
-  expensive restores are implicit — 100% of EraInfra's own `check` job's 329 MiB of cache traffic
+  expensive restores are implicit: 100% of EraInfra's own `check` job's 329 MiB of cache traffic
   comes from `setup-node` and `setup-go`, which speak the protocol directly and would keep going to
   GitHub (capture L019–L050). It also breaks the README's one-line-change promise, and creates a
   second thing to version.
@@ -388,7 +388,7 @@ In ADR 0002's own style, stated so that a future reader can check it rather than
   design and it hands every untrusted job read-write access to the whole fleet's cache. It also
   cannot enforce rules 1–3, which are the entire answer to ADR 0002's second objection.
 - **Reuse the sticky-disk shape ADR 0002 rejected, now that a cache is wanted:** rejected, and the
-  rejection is ADR 0002's own and still correct — the repository is not known at boot, and a disk
+  rejection is ADR 0002's own and still correct: the repository is not known at boot, and a disk
   that survives a job is a cross-job write path regardless of what is on it.
 - **Infer the protocol from GitHub's changelog and the `@actions/cache` source:** rejected, and this
   is why the capture exists. Reading the source would have produced a v2-only design (v2 is what the

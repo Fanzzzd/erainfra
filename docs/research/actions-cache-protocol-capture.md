@@ -16,7 +16,7 @@ its claims cite the `Lnnn` line numbers in [the transcript](#transcript).
    observed job.
 2. **The generation is chosen by an environment variable, not by the runner version and not by the
    action version alone.** Every client we drove selects v2 only when `ACTIONS_CACHE_SERVICE_V2` is
-   present, and falls back to v1 otherwise — including `actions/cache` v6.1.0, released 2026-06-26
+   present, and falls back to v1 otherwise, including `actions/cache` v6.1.0, released 2026-06-26
    (L001–L006 vs L007–L012). The pinned runner sets that variable from a server-delivered job flag;
    see [What the pinned runner injects](#what-the-pinned-runner-injects).
 3. **Client version still decides, in both directions.** `actions/cache` v4.0.2 has no v2 code path
@@ -49,7 +49,7 @@ the answer is that it captures none of it.
 | ------------------------------------------ | ------------------------- | ---------- |
 | `actions/setup-node@v7` with `cache: pnpm` | 203,848,100 B (194.4 MiB) | L020–L030  |
 | `actions/setup-go@v7` with `cache: true`   | 141,265,787 B (134.7 MiB) | L042–L050  |
-| `actions/cache` steps                      | none exist in the repo    | —          |
+| `actions/cache` steps                      | none exist in the repo    | none       |
 
 329.1 MiB per warm job, **100% of it from implicit clients** that never name a cache action. The
 compressed archives came from a real `pnpm install --frozen-lockfile` of this repository's lockfile
@@ -76,7 +76,7 @@ Bundled cache libraries: `actions/cache` v6.1.0 and `setup-node` v7.0.0 carry `@
 `^6.1.0`; `setup-go` v7.0.0 carries `^6.2.0`; `actions/cache` v4.0.2 carries `^3.2.3`. BuildKit
 vendors `tonistiigi/go-actions-cache`.
 
-The endpoint is a throwaway logger, deliberately **not** shipped in this repository — this PR
+The endpoint is a throwaway logger, deliberately **not** shipped in this repository. This PR
 decides a design and measures a protocol, it does not begin implementing a cache service. What it
 answered is fully specified by the responses in the transcript, which is what a reimplementation
 needs.
@@ -120,7 +120,7 @@ binary; it does not prove the exact conditions under which the service sets the 
 ### The BuildKit panic
 
 The first v2 buildx run answered `PUT ?comp=blocklist` with `201` and an `ETag` but no
-`x-ms-request-id`. BuildKit did not fail the export — it crashed:
+`x-ms-request-id`. BuildKit did not fail the export. It crashed:
 
 ```text
 panic: runtime error: invalid memory address or nil pointer dereference
@@ -150,7 +150,7 @@ same build then round-tripped cleanly (L078–L120).
 
 † The two BuildKit rows come from separate fault runs that are not in the transcript below; the
 build printed `#4 importing cache manifest from gha:…` followed by `#4 ERROR: not_found` (and
-`ERROR: internal`) and still exited 0. "not driven" means exactly that — we did not run it and are
+`ERROR: internal`) and still exited 0. "not driven" means exactly that: we did not run it and are
 not inferring it from the other client.
 
 Restores degrade rather than fail in every shape we tried. Uploads do not: the panic above is a
@@ -158,7 +158,7 @@ failed build from a malformed _success_ response.
 
 ## Endpoint reference, as measured
 
-### Legacy v1 — REST, under `ACTIONS_CACHE_URL`
+### Legacy v1: REST, under `ACTIONS_CACHE_URL`
 
 - `GET  _apis/artifactcache/cache?keys=<comma-separated prefixes>&version=<sha256>`
   → `200 {"cacheKey","scope","archiveLocation"}` on hit, **`204` with no body on miss**.
@@ -179,7 +179,7 @@ BuildKit used `Go-http-client/1.1` on v1 and `azsdk-go-azblob/v1.5.0` with
 `x-ms-version: 2024-11-04` on v2, and that Azure client also sent a plain `GET`. Larger or resumed
 transfers may range-request; that is **unmeasured**.
 
-### Cache Service v2 — twirp, under `ACTIONS_RESULTS_URL`
+### Cache Service v2: twirp, under `ACTIONS_RESULTS_URL`
 
 All three are `POST` with `Content-Type: application/json` to
 `twirp/github.actions.results.api.v1.CacheService/<Method>`:
@@ -193,8 +193,8 @@ All three are `POST` with `Content-Type: application/json` to
   from BuildKit (L114). Both must be accepted.
 - The signed URL is driven by an Azure Blob SDK (`azsdk-go-azblob/v1.5.0` from BuildKit,
   `@azure/storage-blob` from `@actions/cache`). Small blobs go as a single `PUT` (L098); larger ones
-  as `PUT ?comp=block&blockid=<base64>` per block — 64 MiB blocks from `@actions/cache` (L034–L036),
-  1 MiB from BuildKit — followed by `PUT ?comp=blocklist` with an XML `<BlockList>` (L037).
+  as `PUT ?comp=block&blockid=<base64>` per block, 64 MiB blocks from `@actions/cache` (L034–L036),
+  1 MiB from BuildKit, followed by `PUT ?comp=blocklist` with an XML `<BlockList>` (L037).
   The commit response **must** carry `x-ms-request-id`.
 
 ## Transcript
