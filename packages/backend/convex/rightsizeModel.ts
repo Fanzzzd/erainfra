@@ -22,7 +22,7 @@
  * - **OOM kills win.** Any OOM kill in the window rules out a smaller memory and asks for more.
  * - **Firecracker memory is not pressure.** The Firecracker number is the VMM's resident memory,
  *   which climbs towards the allotment as the guest fills its page cache and never comes down
- *   (README, Job metrics). It is a safe upper bound for "would a smaller Profile have held this",
+ *   (docs/job-insights.md, Job metrics). It is a safe upper bound for "would a smaller Profile have held this",
  *   and no evidence at all that the job needs more, so on Firecracker only an OOM kill upsizes
  *   memory. Docker reports the working set, where a peak at 90 % of the limit is real pressure.
  */

@@ -42,7 +42,7 @@ npx convex env list --prod --names-only    # production's variables: CONTROLLER_
 
 The name after `/d/` is the production deployment. Its URLs are `https://<name>.convex.cloud` and
 `https://<name>.convex.site`, and `<deployment>` in every URL below is that name. It must be the
-deployment the fleet talks to: on `oracle-singapore-1`,
+deployment the fleet talks to: on each controller host,
 `sudo grep -h CONVEX /etc/runner-center/profiles/*.env` shows `https://<name>.convex.site`
 for every Profile. If the name differs, or `env list --prod` shows no `CONTROLLER_TOKEN`, stop:
 `.env.local` belongs to another project.
@@ -176,8 +176,8 @@ for u in $units; do
 done
 ```
 
-On `oracle-singapore-1` you expect the old version, an account line, and exactly
-`runner-center-controller@rc-e2e.service` and `runner-center-controller@rc-linux-js.service`, each
+On each controller host you expect the old version, an account line, and exactly one
+`runner-center-controller@<profile>.service` line for each Profile the host runs, each
 with `fragment=/etc/systemd/system/runner-center-controller@.service`, no drop-ins and `env=ok`.
 Anything else means `--update` would miss that controller or fail to start it, and roll back. Fix
 it before the window, or plan the dedicated-host install from
@@ -190,7 +190,7 @@ itself.
 Stage the new controller binary on every controller host, so the window does not wait on a
 download. The release names each binary by its target, and on ARM `uname -m` does not print the
 target: an `aarch64` host takes `linux-arm64`, an `x86_64` host `linux-x86_64`.
-`oracle-singapore-1` is aarch64, so it takes `runner-center-controller-linux-arm64`. Take the
+So an aarch64 `<controller-host>` takes `runner-center-controller-linux-arm64`. Take the
 binary from the GitHub Release of the tag and check it against the pin on the release commit:
 
 ```bash
@@ -200,7 +200,7 @@ case "$(uname -m)" in
   aarch64) target=linux-arm64 ;;
   *) target=none ;;
 esac
-asset=runner-center-controller-$target; echo "$asset"   # oracle-singapore-1: runner-center-controller-linux-arm64
+asset=runner-center-controller-$target; echo "$asset"   # an aarch64 host: runner-center-controller-linux-arm64
 mkdir -p ~/erainfra-controller-v$v && cd ~/erainfra-controller-v$v
 curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/v$v/$asset"
 pin=$(curl -fsSL "https://raw.githubusercontent.com/Fanzzzd/erainfra/v$v/packages/backend/convex/agentRelease.ts" |
@@ -248,7 +248,7 @@ curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role con
 ```
 
 The trailing `/` matters: with it, the installer reads `runner-center-controller-linux-arm64` on
-`oracle-singapore-1` and `runner-center-controller-linux-x86_64` on an x86_64 host.
+an aarch64 host and `runner-center-controller-linux-x86_64` on an x86_64 host.
 
 `--source` changes where the bytes come from, never which digest is accepted. `--update` restarts
 exactly the instances that were running and rolls itself back if one fails its health check

@@ -34,7 +34,7 @@ jobs:
       BRANCH: automation/pin-bump
       HAS_APP: ${{ vars.PIN_BUMP_APP_CLIENT_ID != '' }}
     steps:
-      # The pin-bump GitHub App (README, "How pins move") is installed on this
+      # The pin-bump GitHub App (docs/images.md, "How pins move") is installed on this
       # repository only. Its installation token can push under
       # .github/workflows, and the pull request it opens starts CI, which
       # GITHUB_TOKEN can do neither of. The token lives one hour and is
@@ -92,12 +92,12 @@ jobs:
             echo
             cat "$RUNNER_TEMP/pin-bump.md"
             echo
-            echo "Merging changes the provisioners and the Image Release source. The image itself still has to be published by the runner images workflow and its digest repinned in each Profile; see the README section \"Publish an Image Release\"."
+            echo "Merging changes the provisioners and the Image Release source. The image itself still has to be published by the runner images workflow and its digest repinned in each Profile; see \"Publish an Image Release\" in docs/images.md."
             echo
             echo "The next scheduled run force-pushes \`$BRANCH\`, so put review fixes in a commit on top only if you merge before then."
             if [ "$HAS_APP" != true ]; then
               echo
-              echo "**CI has not run on this pull request.** It was opened with \`GITHUB_TOKEN\`, and GitHub does not start workflows for events that token causes. Close and reopen the pull request to run CI. Configuring the pin-bump App (README, \"How pins move\") removes this step and lets the bump move the seeded Actions too."
+              echo "**CI has not run on this pull request.** It was opened with \`GITHUB_TOKEN\`, and GitHub does not start workflows for events that token causes. Close and reopen the pull request to run CI. Configuring the pin-bump App (docs/images.md, \"How pins move\") removes this step and lets the bump move the seeded Actions too."
             fi
           } > "$body"
           if [ "$HAS_APP" = true ]; then

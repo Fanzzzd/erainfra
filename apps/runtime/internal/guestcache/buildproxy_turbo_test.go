@@ -292,7 +292,7 @@ func TestRealTurboNeverSendsAWorkflowsOwnTokenAnywhere(t *testing.T) {
 		t.Fatalf("guest log = %q, want one line saying to set TURBO_API", got)
 	}
 	// turbo.json's apiUrl is shadowed. If a turbo release ranks turbo.json
-	// above TURBO_API, this fails, and the precedence the README and the
+	// above TURBO_API, this fails, and the precedence docs/job-cache.md and the
 	// runbook describe has to be measured again.
 	if got := own.requests(); len(got) != 0 {
 		t.Fatalf("turbo.json's own remote cache was used despite the guest's TURBO_API: %q", got)

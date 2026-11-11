@@ -24,7 +24,7 @@ npx convex env list --prod --names-only    # production's variables: CONTROLLER_
 
 The name after `/d/` is the production deployment. Its URLs are `https://<name>.convex.cloud` and
 `https://<name>.convex.site`, and `<deployment>` in every URL below is that name. It must be the
-deployment the fleet talks to: on `oracle-singapore-1`,
+deployment the fleet talks to: on `<controller-host>`,
 `sudo grep -h CONVEX /etc/runner-center/profiles/*.env` shows `https://<name>.convex.site`
 for every Profile. If the name differs, or `env list --prod` shows no `CONTROLLER_TOKEN`, stop:
 `.env.local` belongs to another project. Each `env set --prod` ends its output with
@@ -50,10 +50,10 @@ the moment the installer stops the Hub-mode agent until the DNS command returns:
 you run the commands back to back, and as long as you take if you stop to investigate. Requests and
 WebSockets in flight through the Hub are cut. Pick a quiet time and tell the App owners.
 
-On the current fleet: `work-remote` (ubuntu0) runs the Hub, every App, the registry, the job cache
-and the Firecracker CI Worker; `oracle-singapore-1` runs the CI controllers; `bielcrystal-aliyun-1`
-runs company services but no Apps. The two that run no Apps become the gateways. `work-remote` is
-the App Node.
+The steps below name three Nodes by role. `<app-node>` runs the Hub, every App, the registry, the
+job cache and the Firecracker CI Worker. `<controller-host>` runs the CI controllers.
+`<services-node>` runs other services but no Apps. The two that run no Apps become the gateways.
+`<app-node>` is the App Node. Substitute your own Node names.
 
 ## What retiring the Hub loses
 
@@ -99,7 +99,7 @@ instead.
    ```
 
    Do not set `ERAINFRA_REGISTRY_NODE` yet. It names the Node whose registry every other Node
-   reaches over the mesh, and `work-remote` joins the mesh only in step 5, which sets it then.
+   reaches over the mesh, and `<app-node>` joins the mesh only in step 5, which sets it then.
    Until then nothing is built through Convex: the canary in step 4 is image-only. A deploy that
    builds, or pulls an image from `127.0.0.1:61050`, fails at planning, before anything is built,
    with a message naming `ERAINFRA_REGISTRY_NODE`: the address is loopback, so each Node would
@@ -115,7 +115,7 @@ instead.
    writes, `~/.cloudflared/config-erainfra-gateway.yml`. Without `--config`, `route dns` reads a
    default config (`~/.cloudflared/config.yml`, `/etc/cloudflared/config.yml`) and routes to the
    tunnel that file names, whatever tunnel the command names (`hub.sh` pins its own routes the
-   same way). The rollback's command runs on `work-remote` with the config `hub.sh` wrote there.
+   same way). The rollback's command runs on `<app-node>` with the config `hub.sh` wrote there.
 
    If the zone's origin cert is not `~/.cloudflared/cert.pem`, for example on a Node whose
    `cert.pem` belongs to another zone, give `gateway.sh` its path in `TUNNEL_ORIGIN_CERT`. The
@@ -140,7 +140,7 @@ instead.
    cloudflared --version
    ```
 
-5. **Leave Worker updates for another window.** `work-remote` is also the CI Worker. Re-running
+5. **Leave Worker updates for another window.** `<app-node>` is also the CI Worker. Re-running
    `/install --role worker-host` there refuses while any Firecracker VM runs, including the idle
    warm VMs the runtime keeps parked; drain it first as the refusal says
    ([firecracker-cutover.md](firecracker-cutover.md#2-provision-the-worker-host)). Nothing in this
@@ -154,8 +154,8 @@ instead.
 7. **Turn the Hub's own failover off.** The Hub moves the Apps of a Hub-mode Node that has been
    disconnected for 20 seconds to another Hub-mode Node, with empty volumes
    (`apps/hub/src/runtime/failover.ts`). From step 2 on, the installer stops Hub-mode agents on
-   purpose: `work-remote`'s in step 5, while any Node you hold back in step 2 is still in Hub mode
-   and would receive every App. On `work-remote`, add the setting to the Hub's env file:
+   purpose: `<app-node>`'s in step 5, while any Node you hold back in step 2 is still in Hub mode
+   and would receive every App. On `<app-node>`, add the setting to the Hub's env file:
 
    ```sh
    ENVFILE=$(ls ~/erainfra-env/hub.env ~/portless-env/hub.env 2>/dev/null | head -1); echo "$ENVFILE"
@@ -191,7 +191,7 @@ instead.
    Write it before the install: the installer reloads systemd and starts `erainfra-node` with it.
    Written after the install, it takes effect on
    `sudo systemctl daemon-reload && sudo systemctl restart erainfra-node`. Step 2 writes it on each
-   Node that runs no Apps, and step 5 on `work-remote` before the window. A re-install keeps it.
+   Node that runs no Apps, and step 5 on `<app-node>` before the window. A re-install keeps it.
 
 ## 1. Copy the Hub into Convex
 
@@ -311,22 +311,22 @@ erainfra git bindings  # every branch the Hub deployed on push
 
 ## 2. Switch the Nodes that run no Apps
 
-Do this for each Node that runs no Apps (`oracle-singapore-1` and `bielcrystal-aliyun-1` here), one
+Do this for each Node that runs no Apps (`<controller-host>` and `<services-node>` here), one
 at a time. The Hub keeps serving every App throughout, because the App Node stays in Hub mode.
 
 First, list the Hub's links that end on the Node. The Hub carries a link only while both of its
 Nodes are in Hub mode, and Convex carries one only once both run `connect-convex`. So from this
-step until `work-remote` switches in step 5, every link between this Node and `work-remote` is
+step until `<app-node>` switches in step 5, every link between this Node and `<app-node>` is
 down. That includes `registry-<node>`, the link the Hub made for a Node that once pulled from the
-registry, and any link the company services on `bielcrystal-aliyun-1` use:
+registry, and any link the company services on `<services-node>` use:
 
 ```sh
-erainfra links list | grep -F oracle-singapore-1
+erainfra links list | grep -F <controller-host>
 ```
 
 A `registry-<node>` link alone is harmless here: nothing pulls on a gateway Node before step 5.
 For any other link, ask whether what uses it can be down until step 5. If it cannot, do not
-switch this Node now. Switch it right after `work-remote` in step 5, and run step 3 on it then;
+switch this Node now. Switch it right after `<app-node>` in step 5, and run step 3 on it then;
 one gateway is enough for the canary in step 4.
 
 1. Enroll it and copy its credential to the Node. Never put the credential on a command line. The
@@ -334,10 +334,10 @@ one gateway is enough for the canary in step 4.
    whatever its umask is:
 
    ```sh
-   (umask 077 && erainfra nodes enroll oracle-singapore-1 > oracle-singapore-1.credential)
-   scp oracle-singapore-1.credential oracle-singapore-1:
-   ssh oracle-singapore-1 chmod 600 oracle-singapore-1.credential
-   rm oracle-singapore-1.credential
+   (umask 077 && erainfra nodes enroll <controller-host> > <controller-host>.credential)
+   scp <controller-host>.credential <controller-host>:
+   ssh <controller-host> chmod 600 <controller-host>.credential
+   rm <controller-host>.credential
    ```
 
 2. On the Node, write the relay drop-in from
@@ -352,11 +352,11 @@ one gateway is enough for the canary in step 4.
 
    ```sh
    curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- \
-     --role node --convex --credential-file ./oracle-singapore-1.credential --replace-hub-agent
-   rm oracle-singapore-1.credential
+     --role node --convex --credential-file ./<controller-host>.credential --replace-hub-agent
+   rm <controller-host>.credential
    ```
 
-   The CI controllers on `oracle-singapore-1` are separate units; the installer does not touch
+   The CI controllers on `<controller-host>` are separate units; the installer does not touch
    them.
 
 4. Within a minute `erainfra nodes list` shows the Node with transport `convex`, `online` and
@@ -424,7 +424,7 @@ services:
     route: true
 EOF
 erainfra deploy ./hello-retire --app hello-retire \
-  --node oracle-singapore-1 --build-node oracle-singapore-1
+  --node <controller-host> --build-node <controller-host>
 # on a gateway Node:
 cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml \
   route dns erainfra-gateway hello-retire.<zone>
@@ -454,8 +454,8 @@ While only test Apps run through Convex, check the rest of Convex's surface on t
 
 Keep `hello-retire` until step 6.
 
-Now turn automatic failover off. Every real App runs on `work-remote`, and failover would move them
-to a gateway Node with empty volumes the first time `work-remote` is silent for two minutes, a
+Now turn automatic failover off. Every real App runs on `<app-node>`, and failover would move them
+to a gateway Node with empty volumes the first time `<app-node>` is silent for two minutes, a
 reboot for example, and remove the old containers when it comes back:
 
 ```sh
@@ -463,8 +463,8 @@ npx convex env set --prod ERAINFRA_FAILOVER 0
 ```
 
 Leave it off until there is a second Node that should run those Apps. That Node needs
-`work-remote`'s CPU: an image built on `work-remote` is x86_64 only, so it cannot start on
-`oracle-singapore-1`, which is aarch64.
+`<app-node>`'s CPU architecture: an image is built for the CPU of the Node that builds it, so an
+image built on an x86_64 Node cannot start on an aarch64 one.
 
 ## 5. Switch the App Node and move DNS, in one window
 
@@ -474,28 +474,28 @@ Get everything ready first, so the window holds only the commands that must be i
    changes. Make every change with `erainfra` or the dashboard from now on.
 2. Pause push-to-deploy. In the deploy GitHub App's settings, under Webhook, clear **Active** and
    save. A push the Hub deployed now would change what item 3 imports, and from the window on the
-   Hub cannot reach `work-remote` at all, so its deploy would fail and the push would be lost.
+   Hub cannot reach `<app-node>` at all, so its deploy would fail and the push would be lost.
    While the webhook is inactive GitHub sends nothing. Step 6 turns it on again at Convex and then
    deploys every bound branch from its head, so no push is missed.
 3. Repeat step 1 (snapshot, copy, import), so Convex holds the Hub's last routes, ports and Apps.
-4. Enroll `work-remote` and put its credential on it, as in step 2.1.
-5. On `work-remote`, write the relay drop-in from [Before you start](#before-you-start), item 8.
+4. Enroll `<app-node>` and put its credential on it, as in step 2.1.
+5. On `<app-node>`, write the relay drop-in from [Before you start](#before-you-start), item 8.
    The Hub-mode agent ignores it, so nothing changes until the install starts `erainfra-node`.
-   Without it the gateways cannot reach `work-remote`'s Apps and the window stays open.
+   Without it the gateways cannot reach `<app-node>`'s Apps and the window stays open.
 6. On a gateway Node, have this command typed and ready, with the `--config` path step 3 printed:
    `cloudflared tunnel --config ~/.cloudflared/config-erainfra-gateway.yml route dns --overwrite-dns erainfra-gateway '*.<zone>'`.
 
-The window starts at the next command. On `work-remote`:
+The window starts at the next command. On `<app-node>`:
 
 ```sh
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- \
-  --role node --convex --credential-file ./work-remote.credential --replace-hub-agent
+  --role node --convex --credential-file ./<app-node>.credential --replace-hub-agent
 ```
 
 The installer downloads and verifies everything before it stops `portless-agent.service`; from
-that moment the Hub answers errors for every App on `work-remote`. When it returns:
+that moment the Hub answers errors for every App on `<app-node>`. When it returns:
 
-1. `erainfra nodes list` shows `work-remote` with transport `convex`, `online`, `MESH proven`,
+1. `erainfra nodes list` shows `<app-node>` with transport `convex`, `online`, `MESH proven`,
    and its journal shows `published mesh endpoint … (1 relay, …)`.
 2. On a gateway Node, each App answers through the proxy:
 
@@ -523,15 +523,15 @@ and watch `journalctl -u erainfra-gateway` and `/healthz` on both gateway Nodes 
 
 If an App answers 503 at a gateway in item 2, `erainfra apps view <app>` and the gateway's
 `/healthz` route count show which route is missing. A 502 usually means the gateway cannot reach
-`work-remote` over the mesh: look for `timed out dialing` in the gateway Node's
-`journalctl -u erainfra-mesh -u erainfra-node`, and for `(0 relay, …)` on `work-remote` (item 1). Roll back (below) rather than leave
+`<app-node>` over the mesh: look for `timed out dialing` in the gateway Node's
+`journalctl -u erainfra-mesh -u erainfra-node`, and for `(0 relay, …)` on `<app-node>` (item 1). Roll back (below) rather than leave
 the window open while you investigate.
 
-Now that `work-remote` is on the mesh, name it as the registry Node, so builds on it push to its
+Now that `<app-node>` is on the mesh, name it as the registry Node, so builds on it push to its
 registry and other Nodes pull from it over `registry-<node>` links:
 
 ```sh
-npx convex env set --prod ERAINFRA_REGISTRY_NODE work-remote
+npx convex env set --prod ERAINFRA_REGISTRY_NODE <app-node>
 ```
 
 If a Node was held back in step 2 because of a link, switch it now (step 2), then make it a
@@ -561,9 +561,9 @@ Do the first three in this order.
   ```sh
   # An App the Hub deployed from a bound branch (erainfra git bindings shows it):
   erainfra deploy --repo owner/name --branch main --app <app> \
-    --node work-remote --build-node work-remote
+    --node <app-node> --build-node <app-node>
   # An App deployed from a checkout:
-  erainfra deploy ./path/to/checkout --app <app> --node work-remote --build-node work-remote
+  erainfra deploy ./path/to/checkout --app <app> --node <app-node> --build-node <app-node>
   ```
 
   Without `--node`, a deploy keeps an existing App on the Node it runs on and refuses if that Node
@@ -583,7 +583,7 @@ Do the first three in this order.
   shows a `git` run ending `done`. Bind any further branch with an admin token:
 
   ```sh
-  erainfra git bind acme/web main --app web --build-node work-remote --deploy-node work-remote
+  erainfra git bind acme/web main --app web --build-node <app-node> --deploy-node <app-node>
   erainfra git bindings
   ```
 
@@ -655,7 +655,7 @@ Node goes back before DNS moves back. Between the two commands its Apps are down
    checkout on this box is at now, not the one the Hub ran.
 
 3. Put the App Node back in Hub mode, then immediately point the wildcard back at the Hub's tunnel.
-   On `work-remote`:
+   On `<app-node>`:
 
    ```sh
    sudo systemctl disable --now erainfra-node
@@ -672,7 +672,7 @@ Node goes back before DNS moves back. Between the two commands its Apps are down
    sidecar: leave it running, and its next pass replaces Convex's links with the Hub's.
 
    `portless-agent.service` runs the binary it ran before step 5: `--convex` installed its own
-   agent elsewhere. Then, on `work-remote` as the user that ran `hub.sh`, with the config it wrote:
+   agent elsewhere. Then, on `<app-node>` as the user that ran `hub.sh`, with the config it wrote:
 
    ```sh
    cloudflared tunnel --config ~/.cloudflared/config-portless.yml \
@@ -684,7 +684,7 @@ Node goes back before DNS moves back. Between the two commands its Apps are down
 4. Switch the gateway Nodes back to Hub mode
    ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)), with the same sidecar
    check as item 3. Until they are back, the Hub's links to them stay down: on
-   `oracle-singapore-1` that is `registry-oracle-singapore-1` (port 61050) and the link on port 60030. A control-plane rollback also waits for this item, since a Node on `connect-convex`
+   `<controller-host>` that is `registry-<controller-host>` (port 61050) and any other link it carries. A control-plane rollback also waits for this item, since a Node on `connect-convex`
    needs the release that has the Node API. Revoke a Node's Convex credential
    (`erainfra nodes revoke <name>`) if it should leave the Convex mesh.
 5. Redeploy through the Hub (`portless deploy` or `portless redeploy`) any App that changed in

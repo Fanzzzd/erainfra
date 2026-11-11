@@ -122,10 +122,9 @@ export function summarizeLegacyCredentials(
 }
 
 /**
- * The removal step from the README's migration sequence, kept here so the
- * dashboard and the docs cannot drift apart. Order matters: retire the
- * repository webhooks and let in-flight jobs finish first — these commands are
- * step 5, not step 1.
+ * The removal step of the legacy webhook migration, which the dashboard's GitHub App setup
+ * shows from this one list. Order matters: retire the repository webhooks and let in-flight
+ * jobs finish first — these commands are step 5, not step 1.
  */
 export const LEGACY_REMOVAL_COMMANDS = [
   "pnpm convex env remove --prod GITHUB_PAT",

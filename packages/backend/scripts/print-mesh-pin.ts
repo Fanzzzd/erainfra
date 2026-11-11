@@ -1,7 +1,6 @@
 /**
  * Prints the `mesh` literal for `AGENT_RELEASE`, read out of the checksum sidecars of the five
- * `erainfra-mesh` assets. They come from a hand-run of the release workflow (README, release
- * section), because no single machine builds the macOS and Windows sidecars.
+ * `erainfra-mesh` assets. They come from a hand-run of the release workflow (docs/releases.md), because no single machine builds the macOS and Windows sidecars.
  *
  * A release commit pastes this in rather than transcribing the digests by hand. The release
  * workflow verifies the result against the bytes it builds, so a stale or mistyped pin fails the
