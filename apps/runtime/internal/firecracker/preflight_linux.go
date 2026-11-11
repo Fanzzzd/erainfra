@@ -34,7 +34,7 @@ import (
 func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.ProfileEgress) (executor.Report, error) {
 	network, egressCheck := egressReadiness(
 		r.config.Network, profileEgress,
-		[]string{r.config.CacheServiceURL, r.config.RegistryMirrorURL}, r.egress.Health,
+		[]string{r.config.CacheServiceURL, r.config.RegistryMirrorURL, r.config.AptMirrorURL}, r.egress.Health,
 	)
 	report := executor.Report{
 		Isolation: executor.IsolationFirecracker,

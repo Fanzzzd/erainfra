@@ -18,6 +18,20 @@ func TestConfigRegistryMirrorFailsAtStartup(t *testing.T) {
 	}
 }
 
+func TestConfigAptMirrorFailsAtStartup(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AptMirrorURL = "http://10.20.0.7:3142"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid apt mirror rejected: %v", err)
+	}
+	for _, malformed := range []string{"10.20.0.7:3142", "https://apt-mirror.lan", "http://apt-mirror.lan/ubuntu"} {
+		cfg.AptMirrorURL = malformed
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("apt mirror %q accepted at startup", malformed)
+		}
+	}
+}
+
 // The checkout mirror's seeds live in the cache service, so turning it on
 // without one is refused at startup rather than shipped to every guest as a
 // setting that can never work.

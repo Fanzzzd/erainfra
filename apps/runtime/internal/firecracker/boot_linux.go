@@ -257,6 +257,7 @@ func metadataFor(spec executor.Spec) map[string]any {
 					"cache_service_url":   spec.CacheServiceURL,
 					"cache_runner_token":  spec.CacheRunnerToken,
 					"registry_mirror_url": spec.RegistryMirrorURL,
+					"apt_mirror_url":      spec.AptMirrorURL,
 					"git_mirror":          spec.GitMirror,
 					"shutdown_on_exit":    true,
 				},

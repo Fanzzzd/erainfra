@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/aptmirror"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
 )
@@ -55,6 +56,10 @@ type Config struct {
 	// claim. It needs no key: a mirror serves public images, the same bytes
 	// to every job, which is also why it must never hold credentials.
 	RegistryMirrorURL string
+	// AptMirrorURL is an apt HTTP proxy, such as apt-cacher-ng, that guests
+	// can reach (RC_APT_MIRROR_URL), or empty. The guest points apt at it
+	// through a probe that falls back to direct fetches when it is down.
+	AptMirrorURL string
 	// GitMirror turns on the git checkout mirror in every guest
 	// (RC_GIT_MIRROR). A guest's checkout of its own repository then fetches
 	// from GitHub only what the repository's seed in the cache service lacks.
@@ -140,6 +145,11 @@ func (c Config) Validate() error {
 	if c.RegistryMirrorURL != "" {
 		if err := registrymirror.Validate(c.RegistryMirrorURL); err != nil {
 			return fmt.Errorf("RC_REGISTRY_MIRROR_URL: %w", err)
+		}
+	}
+	if c.AptMirrorURL != "" {
+		if err := aptmirror.Validate(c.AptMirrorURL); err != nil {
+			return fmt.Errorf("RC_APT_MIRROR_URL: %w", err)
 		}
 	}
 	if c.GitMirror && c.CacheServiceURL == "" {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/aptmirror"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
 )
 
@@ -34,6 +35,10 @@ type Metadata struct {
 	// that the guest writes into dockerd's registry-mirrors and BuildKit's
 	// default configuration. Empty means no mirror; pulls go to Docker Hub.
 	RegistryMirrorURL string `json:"registry_mirror_url,omitempty"`
+	// AptMirrorURL is the host-side apt HTTP proxy the guest points apt at
+	// through a fail-open probe. Empty means no mirror; apt fetches from the
+	// sources the image names.
+	AptMirrorURL string `json:"apt_mirror_url,omitempty"`
 	// GitMirror turns on the git checkout mirror, which keeps its seeds in the
 	// cache service at CacheServiceURL. False leaves the job's git exactly as
 	// it is on a guest without one.
@@ -85,6 +90,12 @@ func (m Metadata) Validate() error {
 	if m.RegistryMirrorURL != "" {
 		if err := registrymirror.Validate(m.RegistryMirrorURL); err != nil {
 			return fmt.Errorf("registry_mirror_url: %w", err)
+		}
+	}
+	// Checked again here because its host is written into a shell script.
+	if m.AptMirrorURL != "" {
+		if err := aptmirror.Validate(m.AptMirrorURL); err != nil {
+			return fmt.Errorf("apt_mirror_url: %w", err)
 		}
 	}
 	return nil
