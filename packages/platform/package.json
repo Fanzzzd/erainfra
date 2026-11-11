@@ -6,7 +6,8 @@
   "exports": {
     "./store": "./src/store/index.ts",
     "./runtime": "./src/runtime/runtime.ts",
-    "./testing": "./src/testing/convexTest.ts"
+    "./testing": "./src/testing/convexTest.ts",
+    "./cloudflare": "./src/cloudflare/controlPlane.ts"
   },
   "scripts": {
     "test": "vitest run",
