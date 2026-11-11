@@ -38,6 +38,12 @@ export type MintRequest = {
   fetch: typeof fetch;
   /** Per-request bound; GITHUB_REQUEST_TIMEOUT_MS unless a test shortens it. */
   timeoutMs?: number;
+  /**
+   * The control plane's own calls (strandedJobs.ts) name the permissions they need instead of the
+   * controller's set, and narrow an organization token to the one repository they act on.
+   */
+  permissions?: Permissions;
+  repository?: string;
 };
 
 /**
@@ -64,7 +70,7 @@ export function githubApiBase(githubConfigUrl: string) {
   return `${url.protocol}//api.${host === "www.github.com" ? "github.com" : host}`;
 }
 
-type Permissions = Record<string, "read" | "write">;
+export type Permissions = Record<string, "read" | "write">;
 
 /**
  * The narrowest token that does the controller's job at this scope. Creating the scale set's
@@ -162,8 +168,8 @@ function failure(status: number, error: string): MintResult {
   return { ok: false, status, error };
 }
 
-async function githubJson(
-  request: MintRequest,
+export async function githubJson(
+  request: Pick<MintRequest, "fetch" | "timeoutMs">,
   method: "GET" | "POST",
   url: string,
   bearer: string,
@@ -254,8 +260,12 @@ export async function mintInstallationToken(request: MintRequest): Promise<MintR
     `${api}/app/installations/${installationId}/access_tokens`,
     jwt,
     {
-      ...(scope.kind === "repository" ? { repositories: [scope.repository] } : {}),
-      permissions: tokenPermissions(scope, request.cacheFacts),
+      ...(scope.kind === "repository"
+        ? { repositories: [scope.repository] }
+        : request.repository === undefined
+          ? {}
+          : { repositories: [request.repository] }),
+      permissions: request.permissions ?? tokenPermissions(scope, request.cacheFacts),
     },
   );
   const token = (minted.payload as { token?: unknown } | null)?.token;

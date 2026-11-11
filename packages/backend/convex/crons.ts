@@ -6,6 +6,10 @@ const crons = cronJobs();
 
 crons.interval("reconcile runner state", { seconds: 60 }, internal.reconcile.run, {});
 
+// Off unless ERAINFRA_STRANDED_JOB_ACTION is cancel or rerun; then it acts on jobs routed to a
+// Profile that lost every ready Worker (strandedJobs.ts).
+crons.interval("recover stranded jobs", { minutes: 1 }, internal.strandedJobs.scan, {});
+
 // Five minutes, not the six hours GitHub's own recipe suggests: a `queued`
 // event recovered six hours late is usually worthless, because the workflow it
 // belongs to has been sitting in GitHub's queue toward its 24-hour cancellation

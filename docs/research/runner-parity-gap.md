@@ -156,8 +156,10 @@ local Convex backend, on x64.
    Profile stays queued for 24 hours if every Worker for that Profile drops before the job
    starts. GitHub-hosted and Blacksmith runners do not strand a job that way. The control plane
    already moves a waiting Attempt to another ready Worker. It cannot do that when no Worker is
-   ready. Planned: after a short deadline, the control plane cancels the workflow run and asks
-   GitHub to rerun it. The router job then answers with the fallback. Limits: the rerun repeats
+   ready. Built (#312): after `ERAINFRA_STRANDED_JOB_AFTER_MINUTES` (default 5), the control
+   plane cancels the workflow run and asks GitHub to rerun it once
+   (`ERAINFRA_STRANDED_JOB_ACTION=rerun`). The router job then answers with the fallback. See
+   `docs/workflows.md`, "When a Worker drops after routing". Limits: the rerun repeats
    the whole workflow, it helps only workflows that use the router, and the GitHub App needs
    Actions write. Off by default.
 3. **A second Worker, or a documented capacity floor.** One Worker means a hardware or uplink

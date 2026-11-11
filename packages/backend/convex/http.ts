@@ -16,6 +16,7 @@ import {
   parseCreateAttempt,
   parseGitHubTokenRequest,
   parseJobCompleted,
+  parseJobsAcquired,
   parseRunnerlessJobCompleted,
   parseJobStarted,
   parseLeaseEpoch,
@@ -787,6 +788,31 @@ http.route({
       throw error;
     }
     if (!completed) return jsonResponse({ error: "Unknown runner cleanup" }, 404);
+    return new Response(null, { status: 204 });
+  }),
+});
+
+// Jobs the controller acquired, with the workflow run each waits in (strandedJobs.ts). A
+// controller that predates this route never calls it; one that calls an older deployment gets a
+// 404 and only logs it.
+http.route({
+  path: "/controller/jobs/acquired",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const resolved = controllerCaller(request);
+    if (resolved.failure !== null) return resolved.failure;
+
+    const body = await requestJson(request);
+    const report = body.ok ? parseJobsAcquired(body.payload) : null;
+    if (report === null) return jsonResponse({ error: "Invalid acquired jobs report" }, 400);
+    try {
+      await ctx.runMutation(internal.controllerApi.recordJobsAcquired, {
+        ...report,
+        caller: resolved.caller,
+      });
+    } catch (error) {
+      return controllerRefusal(error) ?? jsonResponse({ error: "Unknown Profile" }, 409);
+    }
     return new Response(null, { status: 204 });
   }),
 });

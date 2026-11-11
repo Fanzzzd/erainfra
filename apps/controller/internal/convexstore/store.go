@@ -200,6 +200,43 @@ func (s *Store) MarkJobStarted(ctx context.Context, event fleet.JobStarted) erro
 	return nil
 }
 
+var _ fleet.JobAcquisitionRecorder = (*Store)(nil)
+
+// RecordJobsAcquired reports jobs the scale set acquired
+// (POST /controller/jobs/acquired). An older control plane answers 404, which
+// is returned like any other error and only logged by the caller.
+func (s *Store) RecordJobsAcquired(ctx context.Context, profile string, jobs []fleet.AcquiredJob) error {
+	type wireJob struct {
+		RunnerRequestID string `json:"runnerRequestId"`
+		Repository      string `json:"repository,omitempty"`
+		Owner           string `json:"owner,omitempty"`
+		JobID           string `json:"jobId,omitempty"`
+		DisplayName     string `json:"displayName,omitempty"`
+		WorkflowRunID   int64  `json:"workflowRunId,omitempty"`
+		QueueTime       *int64 `json:"queueTime,omitempty"`
+	}
+	wire := make([]wireJob, 0, len(jobs))
+	for _, job := range jobs {
+		wire = append(wire, wireJob{
+			RunnerRequestID: strconv.FormatInt(job.RunnerRequestID, 10),
+			Repository:      job.Repository,
+			Owner:           job.Owner,
+			JobID:           job.JobID,
+			DisplayName:     job.DisplayName,
+			WorkflowRunID:   job.WorkflowRunID,
+			QueueTime:       unixMillis(job.QueueTime),
+		})
+	}
+	err := s.doJSON(ctx, http.MethodPost, "/controller/jobs/acquired", struct {
+		Profile string    `json:"profile"`
+		Jobs    []wireJob `json:"jobs"`
+	}{Profile: profile, Jobs: wire}, nil, true)
+	if err != nil {
+		return fmt.Errorf("record %d acquired jobs: %w", len(jobs), err)
+	}
+	return nil
+}
+
 func (s *Store) MarkJobCompleted(ctx context.Context, event fleet.JobCompleted) error {
 	err := s.doJSON(ctx, http.MethodPost, "/controller/jobs/completed", struct {
 		Profile         string `json:"profile"`

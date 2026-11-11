@@ -120,6 +120,26 @@ type JobCompleted struct {
 	FinishedAt      time.Time `json:"finishedAt"`
 }
 
+// AcquiredJob is a job GitHub offered the scale set and the controller
+// acquired, before any Runner took it. The control plane keeps it so it can
+// tell which workflow run a job waits in when no Worker can take it.
+type AcquiredJob struct {
+	RunnerRequestID int64     `json:"runnerRequestId"`
+	Repository      string    `json:"repository"`
+	Owner           string    `json:"owner"`
+	JobID           string    `json:"jobId"`
+	DisplayName     string    `json:"displayName"`
+	WorkflowRunID   int64     `json:"workflowRunId"`
+	QueueTime       time.Time `json:"queueTime"`
+}
+
+// JobAcquisitionRecorder is optional: a Store that implements it learns each
+// acquired job. A Store without it, or a failed call, costs only the stranded
+// job recovery in the control plane, never the job.
+type JobAcquisitionRecorder interface {
+	RecordJobsAcquired(ctx context.Context, profile string, jobs []AcquiredJob) error
+}
+
 // Store is the deep boundary between GitHub demand and EraInfra's durable
 // scheduler. It deliberately says nothing about Convex, Firecracker, or Tart.
 //
