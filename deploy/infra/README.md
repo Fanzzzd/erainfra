@@ -18,7 +18,7 @@ rule covers everything.
 
 Quick tunnels (`*.trycloudflare.com`) are account-less and ephemeral: the URL changes on every
 restart and there's no uptime guarantee. They're only good for a throwaway demo. A **named
-tunnel + your domain** gives a fixed URL that survives restarts — what you want for real use.
+tunnel + your domain** gives a fixed URL that survives restarts, which is what you want for real use.
 (The per-app **Publish** button still uses quick tunnels for now; see "Next" below.)
 
 ## 0. Prereqs on the server
@@ -27,7 +27,7 @@ tunnel + your domain** gives a fixed URL that survives restarts — what you wan
 - `node >= 22` and `pnpm`
 - `cloudflared`, logged in once: `cloudflared tunnel login` → writes `~/.cloudflared/cert.pem`
 - A Cloudflare **zone** for your domain
-- The Portless repo on the server (it's a git repo now — push to a remote and `git clone`, or `rsync` it over)
+- The Portless repo on the server (it's a git repo now; push to a remote and `git clone`, or `rsync` it over)
 
 ## 1. Run the installer
 
@@ -54,7 +54,7 @@ until it's in place, anyone who finds the URL has full control.
 4. **Policy** → Action **Allow** → Include **Emails** → your email(s) (or an email domain / IdP group)
 5. Save. Now loading the URL requires an Access login; only then is the dashboard (and its token) served.
 
-That's real auth with zero code — and since you already use Cloudflare, nothing new to run.
+That's real auth with zero code, and since you already use Cloudflare, nothing new to run.
 
 ## 3. Verify
 
@@ -102,9 +102,9 @@ sudo systemctl daemon-reload
 
 ## Files this creates
 
-- `deploy/portless.env` — service env incl. the owner token (chmod 600, git-ignored)
-- `deploy/state/` — projects registry + audit log (git-ignored)
-- `~/.cloudflared/portless-config.yml` — the tunnel's ingress rules
+- `deploy/portless.env`: service env incl. the owner token (chmod 600, git-ignored)
+- `deploy/state/`: projects registry + audit log (git-ignored)
+- `~/.cloudflared/portless-config.yml`: the tunnel's ingress rules
 - `/etc/systemd/system/{portless-api,cloudflared-portless}.service`
 
 ## Next (proper per-user auth)
@@ -112,4 +112,4 @@ sudo systemctl daemon-reload
 Baked-token-behind-Access is the stable, lazy choice. To drop the shared token entirely, have the
 API trust the `Cf-Access-Jwt-Assertion` header Access injects (verify it against your team's
 `…cloudflareaccess.com/cdn-cgi/access/certs`) and derive the principal from the user's email. That
-gives real per-user identity with no token in the bundle. Not wired yet — open when you want it.
+gives real per-user identity with no token in the bundle. Not wired yet. Open when you want it.

@@ -3,8 +3,9 @@
 package convexnode
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
+
+	"golang.org/x/sys/windows"
 )
 
 func lockJournal(f *os.File) error {

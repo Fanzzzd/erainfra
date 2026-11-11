@@ -1,6 +1,6 @@
 # portless
 
-Deploy to **your own machines** — no public IP, no open ports, no third-party PaaS.
+Deploy to **your own machines**: no public IP, no open ports, no third-party PaaS.
 
 A hub (control plane + dashboard) runs on one box behind a Cloudflare tunnel. Agents on your other
 machines dial **out** to it over WSS, so everything works behind NAT/firewalls. Apps get automatic
@@ -34,7 +34,7 @@ AI agents get the same capabilities, typed, over MCP: `claude mcp add portless -
 
 ## portless.yaml
 
-How a project deploys is written in the project — the platform executes it deterministically:
+How a project deploys is written in the project. The platform executes it deterministically:
 
 ```yaml
 services:
@@ -53,7 +53,7 @@ services:
 No `portless.yaml` → single service, built from the repo root, routed at the app name.
 
 Same-node services reach each other by name (per-app docker network). Cross-node `needs:` are wired
-over an encrypted P2P mesh link (hole-punched when possible) — the database never touches a public
+over an encrypted P2P mesh link (hole-punched when possible). The database never touches a public
 domain. If a node dies, its apps auto-redeploy onto a survivor and the routes flip (stateless only).
 
 ## Stand up the infrastructure
@@ -65,7 +65,7 @@ PORTLESS_ZONE=example.com sh deploy/infra/hub.sh
 ```
 
 That brings up the hub + dashboard (`https://portless.<zone>`), an OCI registry, a dedicated named
-tunnel with a first-level wildcard (`*.<zone>` — Cloudflare's free Universal SSL covers exactly one
+tunnel with a first-level wildcard (`*.<zone>`; Cloudflare's free Universal SSL covers exactly one
 level), systemd units, and prints the enroll command.
 
 **Nodes** (any Linux box; installs docker if missing, systemd-persisted):
@@ -1579,21 +1579,21 @@ as `deny` with the reason.
 
 ## Develop
 
-Run from the repository root — this is one workspace with the rest of EraInfra, so scope the
+Run from the repository root. This is one workspace with the rest of EraInfra, so scope the
 commands to the two packages rather than starting the whole platform.
 
 ```sh
 pnpm install
 pnpm --filter @erainfra/hub dev       # hub :8787
 pnpm --filter @erainfra/hub-web dev   # dashboard (vite)
-pnpm test                             # hermetic — no docker, no network, no infra
+pnpm test                             # hermetic: no docker, no network, no infra
 ```
 
-- `apps/hub` — hub: Fastify + tRPC control plane, data plane (wildcard ingress over agent WS),
+- `apps/hub`: hub. Fastify + tRPC control plane, data plane (wildcard ingress over agent WS),
   deploy pipeline (`runtime/appdeploy.ts`), failover, secrets, backups.
-- `apps/infra-agent` — Go agent: outbound WS, docker deploys, builds, opt-in authenticated `erainfra-mesh` links.
-- `packages/cli` — the `portless` CLI + MCP server. Zero dependencies.
-- `apps/hub-web` — dashboard (React + shadcn).
-- `deploy/infra/` — `hub.sh`, `agent.sh`, `image.sh` (build), `registry.sh`, `cli.sh`.
-- `apps/hub/scripts/verify/` — the end-to-end harnesses (fresh box, multi-node, WSL, Windows,
+- `apps/infra-agent`: Go agent. Outbound WS, docker deploys, builds, opt-in authenticated `erainfra-mesh` links.
+- `packages/cli`: the `portless` CLI + MCP server. Zero dependencies.
+- `apps/hub-web`: dashboard (React + shadcn).
+- `deploy/infra/`: `hub.sh`, `agent.sh`, `image.sh` (build), `registry.sh`, `cli.sh`.
+- `apps/hub/scripts/verify/`: the end-to-end harnesses (fresh box, multi-node, WSL, Windows,
   failover). Not run by `pnpm test`: they need docker and real machines.

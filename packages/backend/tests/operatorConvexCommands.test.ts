@@ -14,7 +14,6 @@ const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 // strings the dashboard, the backend and the CLI show them.
 const ROOTS = [
   "README.md",
-  "SPEC.md",
   "CONTEXT.md",
   "docs",
   "deploy",

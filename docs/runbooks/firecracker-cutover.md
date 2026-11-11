@@ -6,10 +6,10 @@ section rolls the whole thing back.
 
 Roles:
 
-- **Worker host** — the machine that runs jobs. Needs `/dev/kvm`, root, containerd 1.7+, `nft`,
+- **Worker host**: the machine that runs jobs. Needs `/dev/kvm`, root, containerd 1.7+, `nft`,
   `dmsetup`, `thin_check` from thin-provisioning-tools, and two dedicated block devices for the
   thin-pool.
-- **Controller host** — the small always-on machine running
+- **Controller host**: the small always-on machine running
   `runner-center-controller@rc-linux-js`. Needs no KVM.
 
 ---
@@ -26,12 +26,12 @@ lsblk                              # pick two devices for the thin-pool
 ```
 
 A nested guest without exposed virtualization extensions cannot run Firecracker. There is no
-software fallback that preserves the boundary, and Docker is not one — see
+software fallback that preserves the boundary, and Docker is not one. See
 [ADR 0002](../adr/0002-verify-the-job-isolation-boundary.md).
 
 ## 2. Provision the Worker host
 
-The one-command form does all of this section in a single verified step — it downloads the agent
+The one-command form does all of this section in a single verified step: it downloads the agent
 archive this deployment pins, checks it against the pinned SHA-256, and hands the runtime inside to
 the provisioner that travels embedded in the script itself:
 
@@ -53,7 +53,7 @@ dashboard shows nothing running on the Worker (for a Profile's only Worker, foll
 re-run. Run by hand, `deploy/provision-firecracker-host.sh --force-network-reload` provisions anyway
 and ends every running job; the one-command form has no such option.
 
-Everything after this paragraph is the same provisioning done by hand — for air-gapped hosts, for
+Everything after this paragraph is the same provisioning done by hand, for air-gapped hosts, for
 a runtime built from source, or to read what the one command does.
 
 Download the runtime asset for the release you are running and verify it against its published
