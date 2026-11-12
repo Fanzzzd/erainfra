@@ -6,9 +6,10 @@
 // permissions the controller uses (docs/controllers.md, "GitHub permissions the controller needs").
 //
 // The controller's App is the one a dedicated host already holds as RC_GITHUB_APP_*. Moving its key
-// into Convex moves the identity, not the privilege. Convex environment variables are readable by
-// deployment admins only, never by a query, so the key cannot reach a browser or a Worker. The same
-// App also lends the control plane a token for its own calls (strandedJobs.ts) and for reading
+// into Convex moves the identity, not the privilege. Any Convex function can read an environment
+// variable, so the rule is that no function returns the key or the App JWT, or sends either to a
+// Worker: callers get only installation tokens (controllerApp below is the one reader). The same App
+// also lends the control plane a token for its own calls (strandedJobs.ts) and for reading
 // actions/runner's releases (github.ts).
 //
 // Pure apart from the injected fetch and clock: the HTTP route supplies both, and the tests mock
