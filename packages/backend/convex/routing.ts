@@ -11,6 +11,7 @@ import {
 } from "./attemptScheduler";
 import { profileEgressOf } from "./egress";
 import { fallbackReasonValidator } from "./routerDecisionsModel";
+import { isOverStartBudget } from "./startBudget";
 
 const LIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 
@@ -96,8 +97,16 @@ export const profileRoute = internalQuery({
     }
 
     const snapshot = await loadSchedulerSnapshot(ctx, now);
-    if (schedulableWorkers(snapshot, profile, now).length === 0) {
+    const workers = schedulableWorkers(snapshot, profile, now);
+    if (workers.length === 0) {
       return { route: "fallback" as const, reason: "no-ready-worker" as const, executor };
+    }
+    if (
+      workers.every((readiness) =>
+        isOverStartBudget(snapshot.machineById.get(readiness.machineId), now),
+      )
+    ) {
+      return { route: "fallback" as const, reason: "over-start-budget" as const, executor };
     }
 
     // Bounded per state: the decision only needs to know whether the total reaches maxRunners.

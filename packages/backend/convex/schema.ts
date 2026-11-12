@@ -13,6 +13,7 @@ import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator 
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
 import { routerDecisionFields } from "./routerDecisionsModel";
+import { storedStartBudgetValidator } from "./startBudgetModel";
 import { scaleSetJobFields } from "./strandedJobsModel";
 import {
   flakyTestFields,
@@ -114,6 +115,9 @@ export default defineSchema({
     maxSlots: v.number(),
     usedSlots: v.number(),
     lastSeen: v.number(),
+    // The runtime's start budget from the latest heartbeat (startBudgetModel.ts). Absent on a Worker
+    // without a Firecracker runtime or with an Agent older than v0.2.0-rc.18.
+    startBudget: v.optional(storedStartBudgetValidator),
     token: v.string(),
   })
     .index("by_name", ["name"])

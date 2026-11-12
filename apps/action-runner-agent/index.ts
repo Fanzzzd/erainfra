@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 
+import { readAdmissionState, type AdmissionState } from "./admission.js";
 import {
   BENCHMARK_REFRESH_MS,
   BENCHMARK_RETRY_MS,
@@ -101,7 +102,7 @@ const reportCommand = makeFunctionReference<
 >("agentApi:report");
 const heartbeatAgent = makeFunctionReference<
   "mutation",
-  { token: string },
+  { token: string; startBudget?: AdmissionState },
   { os: MachineOs; maxSlots: number }
 >("agentApi:heartbeat");
 
@@ -676,7 +677,14 @@ function pump() {
 
 async function heartbeat() {
   try {
-    const machine = await client.mutation(heartbeatAgent, { token: config.machineToken });
+    // Only a Firecracker Worker has a start budget; the runtime holds starts, and the control
+    // plane routes new jobs elsewhere while this reports overBudget.
+    const startBudget =
+      preparedFirecrackerProfiles.size > 0 ? await readAdmissionState() : undefined;
+    const machine = await client.mutation(heartbeatAgent, {
+      token: config.machineToken,
+      ...(startBudget ? { startBudget } : {}),
+    });
     maxSlots = machine.maxSlots;
     pump();
   } catch (error) {

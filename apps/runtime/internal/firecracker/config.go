@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/admission"
+
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/aptmirror"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/registrymirror"
@@ -36,6 +38,9 @@ type Config struct {
 	// before it may accept another Attempt. A thin-pool that fills mid-job fails
 	// the job with an unhelpful I/O error, so it is admission, not monitoring.
 	MinPoolFreeMiB int64
+	// StartBudget is how much starting this Worker allows at once. An Attempt
+	// over it waits in Start, for at most StartBudget.MaxHold.
+	StartBudget admission.Budget
 	// CacheSigningKey is the secret the host mints each Attempt's runner-auth
 	// cache bearer with, or empty. Empty is the default and mints no bearer,
 	// composing exactly the environment a fleet without a cache composes. It is
@@ -108,6 +113,7 @@ func DefaultConfig() Config {
 		// control plane applies per running guest. A Worker that cannot hold one
 		// more root should decline work rather than fail a job mid-run.
 		MinPoolFreeMiB: 8 * 1024,
+		StartBudget:    admission.DefaultBudget(),
 	}
 }
 
@@ -145,6 +151,9 @@ func (c Config) Validate() error {
 	}
 	if c.MinPoolFreeMiB < 0 {
 		return errors.New("minimum pool headroom cannot be negative")
+	}
+	if err := c.StartBudget.Validate(); err != nil {
+		return err
 	}
 	if err := validateCacheEndpoint(c.CacheServiceURL, len(c.CacheSigningKey) > 0); err != nil {
 		return err

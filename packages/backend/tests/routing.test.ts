@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 
@@ -526,5 +528,85 @@ describe("router decisions", () => {
 
     expect(await t.mutation(internal.routerDecisions.purgeExpired, {})).toBe(1);
     expect((await decisions(t)).map((row) => row.createdAt)).toEqual([now - 89 * DAY_MS]);
+  });
+});
+
+describe("start budget", () => {
+  // Written by the runtime's Go test (apps/runtime/internal/admission): two Attempts starting,
+  // one held, io pressure 41.5% against a 30% limit.
+  const overBudget = JSON.parse(
+    readFileSync(new URL("../../../testdata/admission-state.golden.json", import.meta.url), "utf8"),
+  ) as {
+    overBudget: boolean;
+    held: number;
+    starting: number;
+    ioSomeAvg10: number;
+  } & Record<string, number | boolean>;
+  const underBudget = { ...overBudget, overBudget: false, held: 0, starting: 0, ioSomeAvg10: 4 };
+
+  function heartbeat(t: Harness, name: string, startBudget: typeof overBudget) {
+    return t.mutation(api.agentApi.heartbeat, { token: `token-${name}`, startBudget } as never);
+  }
+
+  it("stores the runtime's state from the heartbeat", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    const machineId = await addReadyWorker(t, "worker-a");
+    await heartbeat(t, "worker-a", overBudget);
+
+    const machine = await t.run((ctx) => ctx.db.get(machineId));
+    expect(machine?.startBudget).toMatchObject({ ...overBudget, reportedAt: expect.any(Number) });
+  });
+
+  it("falls back while the only ready Worker is over its start budget", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+    await heartbeat(t, "worker-a", overBudget);
+
+    expect(await route(t)).toMatchObject({ route: "fallback", reason: "over-start-budget" });
+  });
+
+  it("routes again once the Worker reports it is under budget", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+    await heartbeat(t, "worker-a", overBudget);
+    await heartbeat(t, "worker-a", underBudget);
+
+    expect(await route(t)).toEqual({ route: "profile", executor: "firecracker" });
+  });
+
+  it("ignores a state older than three heartbeats", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    const machineId = await addReadyWorker(t, "worker-a");
+    await t.run((ctx) =>
+      ctx.db.patch(machineId, {
+        startBudget: { ...overBudget, reportedAt: Date.now() - 91_000 } as never,
+      }),
+    );
+
+    expect(await route(t)).toEqual({ route: "profile", executor: "firecracker" });
+  });
+
+  it("routes to the Profile while another ready Worker is under budget", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+    await addReadyWorker(t, "worker-b");
+    await heartbeat(t, "worker-a", overBudget);
+
+    expect(await route(t)).toEqual({ route: "profile", executor: "firecracker" });
+  });
+
+  it("refuses a heartbeat whose state has a field the runtime does not write", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+
+    await expect(
+      heartbeat(t, "worker-a", { ...overBudget, extra: 1 } as typeof overBudget),
+    ).rejects.toThrow();
   });
 });

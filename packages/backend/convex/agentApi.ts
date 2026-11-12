@@ -3,6 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { keepRunningAttemptsOfReturningWorker, workerReports } from "./attemptRetirement";
+import { startBudgetValidator } from "./startBudgetModel";
 
 const osValidator = v.union(v.literal("linux"), v.literal("mac"), v.literal("win"));
 
@@ -163,7 +164,7 @@ export const report = mutation({
 });
 
 export const heartbeat = mutation({
-  args: { token: v.string() },
+  args: { token: v.string(), startBudget: v.optional(startBudgetValidator) },
   returns: v.object({
     os: osValidator,
     maxSlots: v.number(),
@@ -188,7 +189,10 @@ export const heartbeat = mutation({
     if (!workerReports(machine, now)) {
       await keepRunningAttemptsOfReturningWorker(ctx, machine._id);
     }
-    await ctx.db.patch(machine._id, { lastSeen: now });
+    await ctx.db.patch(machine._id, {
+      lastSeen: now,
+      ...(args.startBudget ? { startBudget: { ...args.startBudget, reportedAt: now } } : {}),
+    });
     await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
     await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     return { os: machine.os, maxSlots: machine.maxSlots };

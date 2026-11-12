@@ -7,6 +7,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/admission"
 )
 
 // isolate removes every RC_ and ERAINFRA_ variable for one test, so the shell running the suite
@@ -95,5 +98,26 @@ func TestBoolEnvReadsASwitchAndRefusesATypo(t *testing.T) {
 	t.Setenv("RC_GIT_MIRROR", "enabled")
 	if _, err := boolEnv("RC_GIT_MIRROR"); err == nil {
 		t.Fatal("boolEnv accepted a value that is neither on nor off")
+	}
+}
+
+func TestStartBudgetEnvDefaultsAndOverrides(t *testing.T) {
+	isolate(t)
+	budget, err := startBudgetEnv()
+	if err != nil || budget != admission.DefaultBudget() {
+		t.Fatalf("startBudgetEnv() = %+v, %v; want the default", budget, err)
+	}
+	t.Setenv("ERAINFRA_MAX_STARTING", "0")
+	t.Setenv("RC_START_WINDOW_S", "90")
+	t.Setenv("RC_MAX_START_HOLD_S", "0")
+	t.Setenv("RC_IO_PRESSURE_LIMIT", "25.5")
+	budget, err = startBudgetEnv()
+	want := admission.Budget{MaxStarting: 0, StartWindow: 90 * time.Second, IOPressureLimit: 25.5, MaxHold: 0}
+	if err != nil || budget != want {
+		t.Fatalf("startBudgetEnv() = %+v, %v; want %+v", budget, err, want)
+	}
+	t.Setenv("RC_IO_PRESSURE_LIMIT", "120")
+	if _, err := startBudgetEnv(); err == nil {
+		t.Fatal("startBudgetEnv() accepted a 120% pressure limit")
 	}
 }

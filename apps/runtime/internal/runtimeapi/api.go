@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/admission"
+
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
@@ -144,6 +146,15 @@ func (c *Client) RemoveProfile(ctx context.Context, profile string) error {
 // Firecracker state with the control plane's authoritative live set.
 func (c *Client) RecoverOrphans(ctx context.Context, liveAttemptIDs []string) error {
 	return c.do(ctx, "/v1/recover", recoverRequest{LiveAttemptIDs: liveAttemptIDs}, nil)
+}
+
+// Admission reads the start budget and how much of it is in use.
+func (c *Client) Admission(ctx context.Context) (admission.State, error) {
+	var state admission.State
+	if err := c.do(ctx, "/v1/admission", struct{}{}, &state); err != nil {
+		return admission.State{}, err
+	}
+	return state, nil
 }
 
 // Metrics reads an Attempt's resource history from the runtime service.
@@ -352,6 +363,18 @@ func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handl
 		}
 		snapshot, live, found := metrics.Snapshot(input.AttemptID)
 		writeJSON(response, http.StatusOK, MetricsResponse{Found: found, Live: live, Snapshot: snapshot})
+	})
+	mux.HandleFunc("POST /v1/admission", func(response http.ResponseWriter, request *http.Request) {
+		if err := decodeRequest(request, &struct{}{}); err != nil {
+			writeError(response, err)
+			return
+		}
+		gate, ok := runtime.(interface{ AdmissionState() admission.State })
+		if !ok {
+			writeError(response, errors.New("this runtime has no start budget"))
+			return
+		}
+		writeJSON(response, http.StatusOK, gate.AdmissionState())
 	})
 	mux.HandleFunc("POST /v1/preflight", func(response http.ResponseWriter, request *http.Request) {
 		var input preflightRequest
