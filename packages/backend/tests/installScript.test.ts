@@ -879,7 +879,8 @@ exec "$@"
     expect(box.isLive("erainfra-node", "enabled")).toBe(true);
     expect(result.stdout).toMatch(/journalctl -u erainfra-node/);
     expect(result.stdout).toMatch(/erainfra nodes list .*online and MESH proven/);
-    expect(result.stdout).toMatch(/Roll back to Hub mode: systemctl disable --now erainfra-node/);
+    // The Hub is retired (ADR 0020), so the installer offers no Hub-mode rollback.
+    expect(result.stdout).not.toMatch(/Hub mode|portless-agent/);
     expect(result.stdout).not.toMatch(/--token|--hub/);
     expect(result.stdout).toMatch(/Delete .*edge-1\.credential/);
   });
