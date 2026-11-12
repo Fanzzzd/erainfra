@@ -107,7 +107,7 @@ describe("provisioner scripts", () => {
 
   it("delivers the JIT configuration to every provisioner on stdin", () => {
     const source = readFileSync(fileURLToPath(new URL("../provision.ts", import.meta.url)), "utf8");
-    assert.match(source, /input: jitConfig/);
+    assert.match(source, /input: attempt\.jitConfig/);
     assert.ok(
       !/\bJIT_CONFIG\b/.test(source),
       "the agent still puts the JIT configuration in the child's environment",

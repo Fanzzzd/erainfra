@@ -54,10 +54,6 @@ const EXCEPTIONS = new Map([
     "one TanStack route per file; its components can move to src/components",
   ],
   [
-    "apps/action-runner-agent/index.ts",
-    "the Action Runner Agent's claim loop and entry point; not split yet",
-  ],
-  [
     "apps/action-runner-agent/readiness.ts",
     "the Docker, Firecracker and Hyper-V readiness probes share one module; each can move to its own",
   ],

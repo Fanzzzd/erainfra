@@ -157,31 +157,6 @@ export function provisionInvocation(
     : { file: script, args: [], env };
 }
 
-/**
- * Starts a provisioner and hands back the running child so the caller can wait
- * on it or cancel it.
- *
- * SIGTERM reaches the provisioner, whose own traps delete the container or VM;
- * killing the agent's child alone would leave the runner behind.
- */
-export function spawnProvisioner(
-  os: MachineOs,
-  jitConfig: string,
-  runnerName: string,
-  image?: string,
-) {
-  const { file, args, env } = provisionInvocation(os, runnerName, image);
-  return execa(file, args, {
-    env: { ...process.env, ...env },
-    input: jitConfig,
-    stdout: "inherit",
-    stderr: "inherit",
-    reject: false,
-    killSignal: "SIGTERM",
-    forceKillAfterDelay: 30_000,
-  });
-}
-
 export function attemptInvocation(
   attempt: Omit<AttemptExecution, "jitConfig">,
 ): ProvisionInvocation {
