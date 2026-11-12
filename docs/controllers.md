@@ -8,35 +8,77 @@ in [Runbook: operate Profile controllers](runbooks/operate-the-controller-host.m
 ## Install a controller
 
 Controllers run on Workers or a dedicated host and need no KVM. For each Profile, Convex leases
-job intake to one process; the others stand by. The holder renews every 10 seconds, with a
-30-second expiry. Every controller write carries its epoch, and HTTP 412 stops a stale holder's
-listener immediately. Dedicated hosts using `CONTROLLER_TOKEN` or `CONTROLLER_TOKEN_NEXT` must
-hold the lease too. A fresh network score below 40 delays a Worker candidate by 15 seconds after
-the lease frees, giving better-connected Workers the first chance
-([ADR 0014](adr/0014-controllers-run-on-the-workers-under-a-lease.md)).
+job intake to one process; the others stand by
+([ADR 0014](adr/0014-controllers-run-on-the-workers-under-a-lease.md)). Dedicated hosts using
+`CONTROLLER_TOKEN` or `CONTROLLER_TOKEN_NEXT` must hold the lease too.
+
+The holder renews every 10 seconds, with a 30-second expiry. Every controller write carries its
+lease epoch. A stale write gets HTTP 412, which cancels the listener and closes the GitHub session.
+A controller that cannot renew stops when its last grant expires, even if GitHub remains reachable.
+A successor may then wait for GitHub to release its predecessor's abandoned session. The 409
+backoff starts at 10 seconds and doubles to 60 seconds, with jitter; GitHub can retain an abandoned
+session for minutes, so lease expiry alone is not a bound on resumed listening.
+
+A Worker with a fresh network benchmark score below 40 waits an extra 15 seconds after a lease
+becomes free. A better-connected standby gets the first chance; a lone poor Worker still serves.
+Missing or seven-day-old benchmark data gets no penalty. Convex owns all lease timings in
+`packages/backend/convex/controllerLease.ts`; controllers read them from the lease response.
+
+### Install a Worker standby
 
 A Worker standby uses its existing machine credential. It reads the Profile's contract from Convex
 and gets a short-lived GitHub App installation token from Convex only while holding the lease.
-It receives no App key or shared controller token. The job cache is the one setting it cannot read
-from Convex, because the signing key stays off the control plane: if the Profile publishes cache
-facts, give the standby `--cache-facts-url` and `--cache-signing-key-file` too. Convex refuses the
-lease to a standby without them, and its heartbeat shows `incapable`. Install it beside an already
-enrolled Worker:
+It receives no App key or shared controller token. Configure `CONTROLLER_GITHUB_APP_CLIENT_ID` and
+`CONTROLLER_GITHUB_APP_PRIVATE_KEY` in Convex, using the controller App described below, and
+register the Profile once from a dedicated controller before adding standbys. A Profile without its
+GitHub URL registered stays in standby.
+
+The Worker must already be enrolled and ready for the Profile. The installer needs Linux with
+systemd and outbound HTTPS to the Convex site and GitHub. Run it from the Worker's account, through
+sudo:
 
 ```bash
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
   --profile erainfra-4vcpu-ubuntu-2404 --no-prompt
 ```
 
-The installer reads `<SUDO_USER home>/.runner-center/agent/.env`, or an explicit
-`--worker-env-file /absolute/path/.env`, and copies only the machine token into a protected file.
-Image, resource and GitHub settings do not belong in a standby's env file. Register the Profile
-once from the upgraded dedicated controller before adding standbys. Configure
-`CONTROLLER_GITHUB_APP_CLIENT_ID` and `CONTROLLER_GITHUB_APP_PRIVATE_KEY` in Convex, using the
-controller App described below. A Profile without its GitHub URL registered remains in standby.
-The [controller runbook](runbooks/operate-the-controller-host.md) covers moving controllers
-from a dedicated host onto Workers, token setup, takeover checks and rollback. A backend with lease enforcement refuses
-old controller binaries; stage the binary upgrade and backend deployment together.
+Without `--controller-token-file`, the installer finds the Worker's env file at
+`<SUDO_USER home>/.runner-center/agent/.env`. If the account or path differs, name it explicitly:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
+  --profile erainfra-4vcpu-ubuntu-2404 \
+  --worker-env-file /home/klaus/.runner-center/agent/.env --no-prompt
+```
+
+It extracts only `MACHINE_TOKEN`, validates its 32 hex characters, and copies it to
+`/etc/runner-center/secrets/<profile>/machine-token`. The root-owned standby env file contains
+only the Convex site, Profile name and that token's file path. Do not pass image, size, GitHub,
+App or controller-token settings. The job cache is the one setting a standby cannot read from
+Convex, because the signing key stays off the control plane. If the Profile publishes cache facts
+(its dedicated controller had `RC_CACHE_FACTS_URL` set), the standby must also take
+`--cache-facts-url` and `--cache-signing-key-file`. Convex never leases such a Profile to a standby
+that lacks them: the runners it served would get no facts and every cache request would be
+refused. A standby refused for this reason stands by with reason `incapable`.
+
+The installer downloads the pinned binary, checks its SHA-256, installs the embedded unit and
+creates the unprivileged `runner-center-controller` account. It does not change the Worker,
+its runtime, account or service. Shared `runner-center` directories keep their existing modes.
+
+| Path                                                    | Owner and mode                      | Holds                          |
+| ------------------------------------------------------- | ----------------------------------- | ------------------------------ |
+| `/usr/local/lib/runner-center/runner-center-controller` | root, 0755                          | pinned binary                  |
+| `/etc/systemd/system/runner-center-controller@.service` | root, 0644                          | release unit                   |
+| `/etc/runner-center/profiles/<profile>.env`             | root, 0600                          | settings and secret file paths |
+| `/etc/runner-center/secrets/<profile>/`                 | root:runner-center-controller, 0750 | secret files, 0640             |
+
+systemd reads the env as root. The controller account reads the secret files. After a Worker
+re-registers and changes its machine token, rerun with the same `--profile` and
+`--worker-env-file`: the repair path refreshes the token copy and keeps the env file. The
+[controller runbook](runbooks/operate-the-controller-host.md) covers checking a standby, moving
+controllers from a dedicated host onto Workers, token setup, takeover checks and rollback.
+
+### Install a dedicated controller
 
 A dedicated host keeps the existing local App or PAT path. `--controller-token-file` selects that
 mode, even on a Worker host:
@@ -62,9 +104,8 @@ account, copies the secret files to `/etc/runner-center/secrets/<profile>/`, wri
 `runner-center-controller@<profile>`. It leaves a Worker install on the same host alone.
 `--role controller --update` moves every running controller on the host to the pinned release and
 keeps the previous binary as `runner-center-controller.bak-<version>`; with `--dry-run` it changes
-nothing and lists the instances it would restart and anything that would stop it. The controller pin is first
-filled at the release after v0.2.0-rc.10; until a deployment pins it, the installer refuses and the
-manual steps below apply. Updating, adding and retiring Profiles, rotating secrets, monitoring, back
+nothing and lists the instances it would restart and anything that would stop it. Updating, adding
+and retiring Profiles, rotating secrets, monitoring, back
 up and rebuild are in
 [Runbook: operate the controller host](runbooks/operate-the-controller-host.md).
 
@@ -161,8 +202,7 @@ npx convex data profiles --prod --limit 10000 --format jsonl > profiles.jsonl &&
 ```
 
 It exits 1 when there is a conflicting pair, 2 when the export is empty or unreadable, and 3 when
-some active Profiles carry no labels in the export (a backend before v0.2.0-rc.11 stores none),
-which it names so you can read their `RC_LABELS` on the controller hosts. The pinned Profile also does not keep an unpinned one
+some active Profiles carry no labels in the export, which it names so you can read their `RC_LABELS` on the controller hosts. The pinned Profile also does not keep an unpinned one
 off the labelled Workers: they share their slots. To reserve the Workers, pin the other Profile to
 a label only the other Workers carry.
 
