@@ -80,3 +80,41 @@ func TestPruneBreaksCreationTiesByName(t *testing.T) {
 		t.Fatalf("deleted %q, want %q", plan.Deleted, want)
 	}
 }
+
+func TestPruneKeepsTheMostRecentlyBootedReleaseOverANewerPull(t *testing.T) {
+	// ubuntu0 on 2026-11-12: every Profile ran 7, a canary candidate (8) was
+	// pulled later and booted only until 19:06, the other Profiles kept booting 7
+	// until the repin to 9. The rollback slot belongs to 7.
+	pulled := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	stored := []storedImage{
+		{Name: release("7"), CreatedAt: pulled, LastUsed: pulled.Add(20 * time.Hour)},
+		{Name: release("8"), CreatedAt: pulled.Add(18 * time.Hour), LastUsed: pulled.Add(19 * time.Hour)},
+		{Name: release("9"), CreatedAt: pulled.Add(20 * time.Hour)},
+	}
+	plan, err := planImagePrune(stored, []string{release("9")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{release("7"), release("9")}; !slices.Equal(plan.Kept, want) {
+		t.Fatalf("kept %q, want %q", plan.Kept, want)
+	}
+	if want := []string{release("8")}; !slices.Equal(plan.Deleted, want) {
+		t.Fatalf("deleted %q, want %q", plan.Deleted, want)
+	}
+}
+
+func TestPruneFallsBackToThePullTimeForAnImageNoVMBooted(t *testing.T) {
+	pulled := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	stored := []storedImage{
+		{Name: release("1"), CreatedAt: pulled, LastUsed: pulled.Add(time.Hour)},
+		{Name: release("2"), CreatedAt: pulled.Add(2 * time.Hour)},
+		{Name: release("3"), CreatedAt: pulled.Add(3 * time.Hour)},
+	}
+	plan, err := planImagePrune(stored, []string{release("3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{release("1")}; !slices.Equal(plan.Deleted, want) {
+		t.Fatalf("deleted %q, want %q", plan.Deleted, want)
+	}
+}

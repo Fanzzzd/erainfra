@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -78,6 +79,11 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 	image, err := ensureImage(leaseContext, client, r.config.Snapshotter, definition.profile.ImageRelease)
 	if err != nil {
 		return nil, err
+	}
+	// Best-effort: without the stamp, Image Release pruning falls back to the
+	// pull time when it picks the rollback release.
+	if err := markImageUsed(leaseContext, client, definition.profile.ImageRelease, time.Now()); err != nil {
+		slog.Warn("record the Image Release's last boot", "image", definition.profile.ImageRelease, "error", err)
 	}
 	rootFS, err := image.RootFS(leaseContext)
 	if err != nil {
