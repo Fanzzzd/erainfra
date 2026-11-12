@@ -63,7 +63,7 @@ workflow, Runner or job id.
 | `erainfra_controller_up`                            | `profile`                              | 1 when a controller reported in the last 90 seconds and holds the GitHub session. Absent until the first heartbeat.        |
 | `erainfra_controller_last_heartbeat_age_seconds`    | `profile`                              | Seconds since any of the Profile's controllers reported. Absent until the first heartbeat.                                 |
 | `erainfra_profile_runner_release_cutoff_seconds`    | `profile`                              | Seconds until GitHub stops serving the actions/runner in the Profile's image; negative past it. See Alerts.                |
-| `erainfra_node_online`                              | `node`                                 | 1 when the Node's Infra Agent heartbeated in `connect-convex` mode in the last two minutes. Absent for Hub-only Nodes.     |
+| `erainfra_node_online`                              | `node`                                 | 1 when the Node's Infra Agent heartbeated in the last two minutes.                                                         |
 | `erainfra_node_commands_blocked`                    | `node`, `reason`                       | 1 while the Node reports it cannot run commands (`journal_full`, `journal_error`, `command_api`, `command_error`), else 0. |
 | `erainfra_node_commands_blocked_seconds`            | `node`, `reason`                       | Seconds since the Node first reported the block. Absent while it can run commands.                                         |
 | `erainfra_node_journal_keys` / `_key_limit`         | `node`                                 | Keys in the Node's execution journal, and the limit at which it refuses new builds, deploys and operations.                |
@@ -127,7 +127,7 @@ tracking it. After that, a controller that stops reporting, stops cleanly, or ke
 while GitHub refuses it the session counts as silent. A paused (retired) Profile is not alerted
 on.
 
-The two Node rules cover infrastructure Nodes on the Convex transport, which belong to no Profile,
+The two Node rules cover infrastructure Nodes, which belong to no Profile,
 so a Profile scope does not narrow them. **Node offline** watches a Node that has heartbeated at
 least once; its floor of two minutes is the silence after which deploys and failover treat the
 Node as gone. A Node whose credentials are all revoked (`erainfra nodes revoke`) is retired: it is

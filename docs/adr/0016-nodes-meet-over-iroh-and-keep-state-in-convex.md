@@ -1,6 +1,7 @@
 # ADR 0016: Nodes meet over iroh and keep their state in Convex
 
-- Status: Accepted; implementation in progress (until each phase lands, the Hub runs as before)
+- Status: Implemented. The owner's fleet retired its Hub on 2026-11-08, and
+  [ADR 0020](0020-the-hub-leaves-main.md) removed the Hub and dumbpipe from main.
 - Date: 2026-11-05
 - Owners: EraInfra
 - Related: [ADR 0004](0004-portless-is-a-feature-not-a-second-product.md),

@@ -144,9 +144,8 @@ function MachinesPage() {
       setRegistration({
         commands: {
           posix: `curl -fsSL ${siteUrl}/install | bash -s -- --token ${result.token}`,
-          // -Role worker is explicit because /install.ps1 defaults to the Node role: that URL has
-          // been serving the Node installer since before it carried a Worker one, and commands
-          // already in operators' hands omit the flag.
+          // -Role worker is explicit because /install.ps1 defaults to the Node role, which now
+          // only refuses: Windows Nodes ran Hub mode, which retired (ADR 0020).
           win: `& ([scriptblock]::Create((irm ${siteUrl}/install.ps1))) -Role worker -Token ${result.token}`,
         },
         issuedAt: result.expiresAt - REGISTRATION_TTL_MS,
@@ -186,8 +185,8 @@ function MachinesPage() {
     }
   }
 
-  // A Node's enrollment token is issued by the Hub it reports to, not by this control plane, so
-  // switching to that role neither needs nor spends a registration token.
+  // A Node's credential comes from enrolling it on the Nodes page, so switching to that role
+  // neither needs nor spends a registration token.
   // Switching which body to run does not touch the registration: the token is already minted and
   // both commands carry the same one.
   function changeInstallOs(next: InstallOs) {
@@ -663,14 +662,9 @@ function MachinesPage() {
 }
 
 /**
- * Onboarding a Node, in the same dialog as onboarding a Worker — this absorbs the Hub dashboard's
- * separate node-add flow, which handed out `curl <hub>/agent.sh | sh` and installed a binary with
- * no integrity check of any kind.
- *
- * Two differences from the Worker flow, both inherent rather than incidental: a Node reports to the
- * customer's own Hub rather than to this control plane, so the URL and the enrollment token are the
- * operator's to fill in and there is no short-lived token to mint here; and this control plane never
- * learns that the Node connected, because the Hub is what it connects to.
+ * Onboarding a Node, in the same dialog as onboarding a Worker. A Node runs the Infra Agent in
+ * Convex mode (`connect-convex`), which needs Linux with systemd, and authenticates with a
+ * credential issued when it is enrolled on the Nodes page, so there is no token to mint here.
  */
 function AddNodeInstructions({
   copied,
@@ -680,66 +674,54 @@ function AddNodeInstructions({
   onCopy: (value: string) => Promise<void>;
 }) {
   const site = convexSiteUrl();
-  const commands = [
-    {
-      label: "Linux or macOS",
-      value: `curl -fsSL ${site}/install | sudo bash -s -- --role node --hub wss://HUB/agent --token HUB_TOKEN`,
-    },
-    {
-      label: "Windows",
-      value: `& ([scriptblock]::Create((irm ${site}/install.ps1))) -Hub wss://HUB/agent -Token HUB_TOKEN -Install`,
-    },
-  ];
+  const command = `curl -fsSL ${site}/install | sudo bash -s -- --role node --credential-file /root/node.credential`;
 
   return (
     <div className="space-y-4 py-1">
-      {commands.map((command) => (
-        <div key={command.label} className="space-y-2">
-          <span className="text-sm font-medium text-secondary-foreground">{command.label}</span>
-          <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
-              <code>{command.value}</code>
-            </pre>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="absolute right-1.5 top-1.5 size-8"
-              aria-label={`Copy the ${command.label} install command`}
-              onClick={() => void onCopy(command.value)}
-            >
-              {copied === command.value ? <Check /> : <Clipboard />}
-            </Button>
-          </div>
-        </div>
-      ))}
+      <p className="text-xs leading-5 text-muted-foreground">
+        Enroll the Node on the Nodes page first, then save its credential on the Node in a file only
+        root can read (<code className="text-secondary-foreground">chmod 600</code>). On the Node,
+        which must run Linux with systemd:
+      </p>
+      <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
+          <code>{command}</code>
+        </pre>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="absolute right-1.5 top-1.5 size-8"
+          aria-label="Copy the Node install command"
+          onClick={() => void onCopy(command)}
+        >
+          {copied === command ? <Check /> : <Clipboard />}
+        </Button>
+      </div>
 
       <p className="text-xs leading-5 text-muted-foreground">
-        Replace <code className="text-secondary-foreground">HUB</code> with the host this Node
-        reports to and <code className="text-secondary-foreground">HUB_TOKEN</code> with an
-        enrollment token from that Hub. This deployment serves the installer and the checksum; the
-        binary itself comes from the release, and the install stops if the two disagree.
+        This deployment serves the installer and the checksum; the binary itself comes from the
+        release, and the install stops if the two disagree. The installer copies the credential to
+        <code className="text-secondary-foreground"> /etc/erainfra-node.credential</code>; delete
+        the file you saved afterwards.
       </p>
 
       <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
         <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
-          Air-gapped, or serving the binary from your own Hub
+          Air-gapped
         </summary>
         <div className="mt-3 space-y-2 leading-5">
           <p>
             Append{" "}
-            <code className="text-secondary-foreground">--source https://HUB/agent-bin/…</code> to
-            take the bytes from your Hub instead of the release, or{" "}
             <code className="text-secondary-foreground">--source file:///path/to/infra-agent</code>{" "}
-            to take them off local disk.
+            to take the bytes off local disk instead of the release.
           </p>
           <p>
             Verification is identical either way: the digest arrives with this script over TLS from
             this deployment, so where the bytes come from does not have to be trusted.
           </p>
           <p>
-            Append <code className="text-secondary-foreground">--name node-01</code> to override the
-            hostname, or <code className="text-secondary-foreground">--no-docker</code> to skip the
+            Append <code className="text-secondary-foreground">--no-docker</code> to skip the
             container-runtime install.
           </p>
         </div>

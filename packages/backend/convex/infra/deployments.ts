@@ -14,7 +14,6 @@ import { requirePermission } from "./access";
 import { loadRouteOwner } from "./apps";
 import { appendAudit } from "./auditLog";
 import { bumpCounter, readCounter, writeCounter } from "./counters";
-import { convexWrite } from "./hubProvenance";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
 import {
   DEPLOY_STAGES,
@@ -164,9 +163,6 @@ export const sweepStale = internalMutation({
         .withIndex("by_stage", (q) => q.eq("stage", stage))
         .take(200);
       for (const row of rows) {
-        // A run copied from the Hub belongs to the Hub, which settles it; the next import copies
-        // the outcome.
-        if (row.trigger?.kind === "hub-import") continue;
         let reason: string | null = null;
         if (row.leaseEpoch === undefined) {
           if (now - row.startedAt > QUEUED_RUN_TIMEOUT_MS)
@@ -271,7 +267,6 @@ export const completeFailover = internalMutation({
     await ctx.db.patch(app._id, {
       nodeId: app.nodeId === args.fromNodeId ? args.toNodeId : app.nodeId,
       services,
-      provenance: convexWrite(now),
       updatedAt: now,
     });
     for (const s of services) {
@@ -287,7 +282,6 @@ export const completeFailover = internalMutation({
         await ctx.db.patch(route._id, {
           nodeId: args.toNodeId,
           ...(s.port === undefined ? {} : { port: s.port }),
-          provenance: convexWrite(now),
           updatedAt: now,
         });
       }

@@ -10,44 +10,42 @@ import (
 )
 
 // Stage 1 of retiring the "Portless" name (ADR 0004; CONTEXT.md rule 4). Four cases, and the
-// fourth — neither name set — is the one that breaks a Node silently, because `--hub` and
-// `--token` take their defaults from these and an empty default is not an error until the dial
-// fails minutes later.
+// fourth — neither name set — is the one that breaks a Node silently, because a caller takes its
+// default from these and an empty default is not an error until something fails minutes later.
 
 func TestEnvPrefersTheNewNameSilently(t *testing.T) {
 	Reset()
-	t.Setenv("ERAINFRA_HUB", "wss://new.example/agent")
-	if got := Env("ERAINFRA_HUB", "PORTLESS_HUB"); got != "wss://new.example/agent" {
+	t.Setenv("ERAINFRA_PREFIX", "/opt/new")
+	if got := Env("ERAINFRA_PREFIX", "PORTLESS_PREFIX"); got != "/opt/new" {
 		t.Fatalf("new name only: got %q", got)
 	}
-	if warned["PORTLESS_HUB"] {
+	if warned["PORTLESS_PREFIX"] {
 		t.Fatal("the supported name must not warn")
 	}
 }
 
 func TestEnvAcceptsTheRetiredNameAndSaysSoOnce(t *testing.T) {
 	Reset()
-	t.Setenv("PORTLESS_HUB", "wss://old.example/agent")
-	// A developer with ERAINFRA_HUB exported would otherwise take the renamed branch, and this test
+	t.Setenv("PORTLESS_PREFIX", "/opt/old")
+	// A developer with ERAINFRA_PREFIX exported would otherwise take the renamed branch, and this test
 	// would report on a path it never walked.
-	os_unset(t, "ERAINFRA_HUB")
-	// Read twice: connect() re-dials forever, so a warning that fired per read would fill a Node's
-	// journal on its own.
+	os_unset(t, "ERAINFRA_PREFIX")
+	// Read several times: a warning that fired per read would fill a Node's journal on its own.
 	for i := 0; i < 3; i++ {
-		if got := Env("ERAINFRA_HUB", "PORTLESS_HUB"); got != "wss://old.example/agent" {
-			t.Fatalf("old name only, read %d: got %q — every Node in the field sets only this", i, got)
+		if got := Env("ERAINFRA_PREFIX", "PORTLESS_PREFIX"); got != "/opt/old" {
+			t.Fatalf("old name only, read %d: got %q", i, got)
 		}
 	}
-	if !warned["PORTLESS_HUB"] {
+	if !warned["PORTLESS_PREFIX"] {
 		t.Fatal("accepting a retired name without saying so is how it never gets migrated")
 	}
 }
 
 func TestEnvNewNameWinsWhenBothAreSet(t *testing.T) {
 	Reset()
-	t.Setenv("ERAINFRA_TOKEN", "new")
-	t.Setenv("PORTLESS_TOKEN", "old")
-	if got := Env("ERAINFRA_TOKEN", "PORTLESS_TOKEN"); got != "new" {
+	t.Setenv("ERAINFRA_PREFIX", "new")
+	t.Setenv("PORTLESS_PREFIX", "old")
+	if got := Env("ERAINFRA_PREFIX", "PORTLESS_PREFIX"); got != "new" {
 		t.Fatalf("both set: got %q, want the new name's value", got)
 	}
 }
@@ -65,11 +63,11 @@ func TestEnvWithNeitherSetReturnsEmptySoTheFlagDefaultSurvives(t *testing.T) {
 
 func TestEnvTreatsTheEmptyStringAsSet(t *testing.T) {
 	Reset()
-	// PORTLESS_TOKEN= means the empty string. Falling through to the other name would change what
+	// PORTLESS_PREFIX= means the empty string. Falling through to the other name would change what
 	// a Node does rather than only what it prints.
-	t.Setenv("ERAINFRA_TOKEN", "")
-	t.Setenv("PORTLESS_TOKEN", "old")
-	if got := Env("ERAINFRA_TOKEN", "PORTLESS_TOKEN"); got != "" {
+	t.Setenv("ERAINFRA_PREFIX", "")
+	t.Setenv("PORTLESS_PREFIX", "old")
+	if got := Env("ERAINFRA_PREFIX", "PORTLESS_PREFIX"); got != "" {
 		t.Fatalf("new name set to empty: got %q, want the empty string it was set to", got)
 	}
 }
@@ -80,8 +78,6 @@ func TestEnvTreatsTheEmptyStringAsSet(t *testing.T) {
 // completeness test can hold it against the sources: a table is only a safety property while it is
 // complete, and nothing about adding a read site otherwise makes this list grow with it.
 var agentVariables = [][2]string{
-	{"PORTLESS_HUB", "ERAINFRA_HUB"},
-	{"PORTLESS_TOKEN", "ERAINFRA_TOKEN"},
 	{"PORTLESS_PREFIX", "ERAINFRA_PREFIX"},
 }
 
@@ -100,11 +96,9 @@ func TestTheRetiredNameAloneIsSufficientForEveryVariableTheAgentReads(t *testing
 	}
 }
 
-// The Hub half of this PR proves its own table complete by reading its sources
-// (apps/hub/test/renamed-identifiers.test.ts). The Agent needs the same guard for the same reason:
-// the test above is a loop over a hand-written list, so a fourth `rename.Env` added anywhere in the
-// Agent would be dual-read but never proven sufficient, and the suite would stay green while the
-// property it claims quietly stopped covering everything.
+// The test above is a loop over a hand-written list, so a new `rename.Env` added anywhere in the
+// Infra Agent would be dual-read but never proven sufficient, and the suite would stay green while
+// the property it claims quietly stopped covering everything.
 //
 // Both directions, because each fails differently: a read site missing from the table is an
 // unproven variable, and a table row with no read site is a name that has already been removed and

@@ -87,8 +87,8 @@ var appsListCommand = command{
 	summary: "List Apps with status, Nodes, last deploy and URLs",
 	long: `
 STATUS is what Convex can tell: deploying while a run is in flight, running when
-every Node the App is on heartbeats, node-offline when one stopped, and hub when a
-Node it runs on has not connected to Convex yet (only the Hub sees that App).`,
+every Node the App is on heartbeats, and node-offline when one is gone, has never
+connected or stopped heartbeating.`,
 	run: func(ctx context.Context, a *App, in invocation) error {
 		c, _, err := a.connect()
 		if err != nil {
@@ -217,8 +217,8 @@ var appsRemoveCommand = command{
 	long: `
 Queues the removal of the App's containers and network on each Node, and forgets
 its routes, ports and App row at once. The App's env and git bindings stay. It is
-refused while a deploy or failover of the App runs, and for an App on a Node that
-has not connected to Convex: remove that one through the Hub with portless remove.`,
+refused while a deploy or failover of the App runs. A Node that is offline removes
+the containers when it next connects.`,
 	flags: []flagSpec{{name: "yes", usage: "confirm; required, since removal cannot be undone"}},
 	run: func(ctx context.Context, a *App, in invocation) error {
 		name := in.args[0]

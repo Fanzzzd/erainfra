@@ -12,10 +12,10 @@ import (
 // closed; in particular there is no syntax that can request host namespaces, devices, elevated
 // capabilities, security-profile changes, bind mounts, or host sockets.
 //
-// The Hub applies the same policy before this ever runs. "The same" is asserted, not assumed:
+// Convex applies the same policy before this ever runs. "The same" is asserted, not assumed:
 // testdata/dockerargs-cases.json is read as a table test by dockerargs_conformance_test.go here
-// and by apps/hub/test/dockerargs.test.ts there. Any rule changed in this file has to be changed
-// in both, or the fixture goes red.
+// and by packages/backend/tests/nodeTransport.test.ts there. Any rule changed in this file has to
+// be changed in both, or the fixture goes red.
 var (
 	dockerVolumeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 	dockerEnvName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

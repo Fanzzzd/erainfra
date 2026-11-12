@@ -11,10 +11,10 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/meshclient/meshtest"
 )
 
-// Hub mode and Convex mode can never drive one sidecar at once on a host, even when they are
-// configured with different control directories: the second one to start fails before it sends
-// the sidecar anything.
-func TestHubAndConvexModesCannotDriveOneSidecar(t *testing.T) {
+// Two Infra Agents can never drive one sidecar at once on a host, even when they are configured
+// with different control directories: the second one to start fails before it sends the sidecar
+// anything.
+func TestTwoInfraAgentsCannotDriveOneSidecar(t *testing.T) {
 	sidecar := meshtest.Start(t)
 	t.Setenv("ERAINFRA_MESH_BIN", "")
 	t.Setenv("ERAINFRA_MESH_SOCKET", sidecar.Socket)
@@ -26,7 +26,7 @@ func TestHubAndConvexModesCannotDriveOneSidecar(t *testing.T) {
 		t.Cleanup(func() { _ = os.RemoveAll(dir) })
 		return dir
 	}
-	hubDir, convexDir := control(), control()
+	firstDir, secondDir := control(), control()
 	refused := func(err error) {
 		t.Helper()
 		if err == nil || !strings.Contains(err.Error(), "already has a controller") {
@@ -34,31 +34,31 @@ func TestHubAndConvexModesCannotDriveOneSidecar(t *testing.T) {
 		}
 	}
 
-	t.Setenv("ERAINFRA_MESH_CONTROL_DIR", hubDir)
-	hub, err := connectMesh(t.Context(), "hub")
-	if err != nil || !hub.Enabled() {
+	t.Setenv("ERAINFRA_MESH_CONTROL_DIR", firstDir)
+	first, err := convexMesh(t.Context())
+	if err != nil || first == nil || !first.Enabled() {
 		t.Fatal(err)
 	}
 	statusCalls := sidecar.Ops("status")
 	_, err = convexMesh(t.Context())
 	refused(err)
-	t.Setenv("ERAINFRA_MESH_CONTROL_DIR", convexDir)
+	t.Setenv("ERAINFRA_MESH_CONTROL_DIR", secondDir)
 	_, err = convexMesh(t.Context())
 	refused(err)
 	if sidecar.Ops("status") != statusCalls {
 		t.Fatal("a refused controller talked to the sidecar")
 	}
 
-	if err := hub.Close(); err != nil {
+	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	convex, err := convexMesh(t.Context())
-	if err != nil || convex == nil {
-		t.Fatalf("Convex mode after Hub mode stopped: %v", err)
+	second, err := convexMesh(t.Context())
+	if err != nil || second == nil {
+		t.Fatalf("second Infra Agent after the first stopped: %v", err)
 	}
-	defer func() { _ = convex.Close() }()
-	t.Setenv("ERAINFRA_MESH_CONTROL_DIR", hubDir)
-	_, err = connectMesh(t.Context(), "hub")
+	defer func() { _ = second.Close() }()
+	t.Setenv("ERAINFRA_MESH_CONTROL_DIR", firstDir)
+	_, err = convexMesh(t.Context())
 	refused(err)
 }
 

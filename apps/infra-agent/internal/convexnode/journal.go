@@ -1,4 +1,4 @@
-// Package convexnode implements the opt-in Convex Node transport, separate from the Hub protocol.
+// Package convexnode implements the Infra Agent's Convex Node transport (connect-convex).
 package convexnode
 
 import (

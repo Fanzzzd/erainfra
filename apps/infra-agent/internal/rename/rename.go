@@ -7,12 +7,8 @@
 // in this release writes an ERAINFRA_* name, so on every Node in the field today Env returns exactly
 // what os.Getenv returned before and logs one line.
 //
-// It lives here rather than in internal/agent because package main reads --hub and --token defaults
-// before it constructs anything, and both halves must warn the same way.
-//
-// The same idiom in TypeScript is apps/hub/src/env.ts; in shell it is deploy/infra/agent.sh's
-// dual_env. Three runtimes, one rule — see convex/installScript.ts:649, which established it for
-// the runner-center-agent- → erainfra-agent- asset rename.
+// It lives here rather than in internal/agent because package main reads PORTLESS_PREFIX before it
+// constructs anything, and every reader must warn the same way.
 package rename
 
 import (
@@ -42,7 +38,7 @@ func Warn(old, next, note string) {
 // Env reads a renamed environment variable: the new name wins, the old one still works and warns.
 //
 // os.LookupEnv rather than os.Getenv so "set to empty" and "unset" stay distinguishable: an
-// operator who exported PORTLESS_TOKEN= meant the empty string, and a helper that skipped past it
+// operator who exported PORTLESS_PREFIX= meant the empty string, and a helper that skipped past it
 // to a stale value under the other name would change what a Node does, not only what it prints.
 func Env(newName, oldName string) string {
 	if v, ok := os.LookupEnv(newName); ok {

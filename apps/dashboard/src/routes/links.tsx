@@ -10,7 +10,6 @@ import { PageHeader } from "@/components/page-header";
 import { LiveBadge, StatusDot, type Tone } from "@/components/status";
 import { TableRowsSkeleton } from "@/components/table-skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -186,13 +185,12 @@ function LinksPage() {
       </Card>
 
       <Card className="overflow-hidden">
-        <Table className="min-w-[960px]">
+        <Table className="min-w-[840px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[220px]">Link</TableHead>
               <TableHead className="w-[180px]">From</TableHead>
               <TableHead className="w-[220px]">Surfaced on</TableHead>
-              <TableHead className="w-[120px]">Transport</TableHead>
               <TableHead>State</TableHead>
               <TableHead className="w-[60px]">
                 <span className="sr-only">Actions</span>
@@ -201,10 +199,10 @@ function LinksPage() {
           </TableHeader>
           <TableBody>
             {links === undefined ? (
-              <TableRowsSkeleton columns={6} rows={3} />
+              <TableRowsSkeleton columns={5} rows={3} />
             ) : links.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="p-0">
+                <TableCell colSpan={5} className="p-0">
                   <EmptyState
                     icon={Link2}
                     title="No links yet"
@@ -232,13 +230,6 @@ function LinksPage() {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {link.consumer ?? "?"} <code className="text-[10px]">{link.listen}</code>
-                    </TableCell>
-                    <TableCell>
-                      {link.transport === "mesh" ? (
-                        <Badge variant="success">Mesh</Badge>
-                      ) : (
-                        <Badge variant="warning">Legacy</Badge>
-                      )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       <span className="flex items-center gap-2 capitalize">
@@ -272,9 +263,9 @@ function LinksPage() {
         </Table>
       </Card>
       <p className="text-xs leading-5 text-muted-foreground">
-        Mesh: both Nodes have a proven endpoint and a live credential, so Convex grants the link
-        over erainfra-mesh. Legacy: Convex grants nothing for it; only a Hub still driving one of
-        the Nodes can carry it. State comes from endpoint proofs and heartbeats, not from traffic.
+        Convex grants a link over erainfra-mesh once both Nodes have a proven endpoint and a live
+        credential; until then it is pending. State comes from endpoint proofs and heartbeats, not
+        from traffic.
       </p>
     </div>
   );

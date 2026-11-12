@@ -184,22 +184,6 @@ describe("port allocation", () => {
       await t.mutation(internal.infra.ports.allocate, { nodeId: node, key: "web-api/api" }),
     ).toBe(kept);
   });
-
-  it("refuses to claim a port another key holds", async () => {
-    const t = convexTest(schema, modules);
-    const node = await addNode(t, "node-a");
-    await t.mutation(internal.infra.ports.allocate, { nodeId: node, key: "a/web" });
-    await expect(
-      t.run(async (ctx) => {
-        const { claimPort } = await import("../convex/infra/ports");
-        await claimPort(
-          ctx,
-          { nodeId: node, key: "b/web", port: PORT_RANGE_START, allocatedAt: T0 },
-          { hash: "hub-row" },
-        );
-      }),
-    ).rejects.toThrow(/already held by a\/web/);
-  });
 });
 
 describe("accounts", () => {

@@ -19,20 +19,18 @@ type linkRow struct {
 	ProviderPort int64   `json:"providerPort"`
 	Consumer     *string `json:"consumer"`
 	Listen       string  `json:"listen"`
-	Transport    string  `json:"transport"`
 	State        string  `json:"state"`
 	Reason       *string `json:"reason"`
 }
 
 var linksListCommand = command{
 	path:    "links list",
-	summary: "List mesh links with transport and state",
+	summary: "List mesh links with their state",
 	long: `
-Standalone links and every App's dependency links. TRANSPORT is mesh when both
-Nodes have a proven endpoint and a live credential, so Convex grants the link over
-erainfra-mesh; legacy means Convex grants nothing for it and only a Hub still
-driving a Node can carry it. STATE comes from endpoint proofs and heartbeats, not
-from traffic: active, degraded (a Node stopped heartbeating) or pending.`,
+Standalone links and every App's dependency links. Convex grants a link over
+erainfra-mesh once both Nodes have a proven endpoint and a live credential. STATE
+comes from endpoint proofs and heartbeats, not from traffic: active, degraded (a
+Node stopped heartbeating) or pending (a Node has no proven endpoint yet).`,
 	run: func(ctx context.Context, a *App, in invocation) error {
 		c, _, err := a.connect()
 		if err != nil {
@@ -56,13 +54,13 @@ from traffic: active, degraded (a Node stopped heartbeating) or pending.`,
 			return err
 		}
 		tw := newTable(a.Stdout)
-		row(tw, "LINK", "FROM", "SURFACED ON", "TRANSPORT", "STATE", "BY")
+		row(tw, "LINK", "FROM", "SURFACED ON", "STATE", "BY")
 		for _, l := range page.Links {
 			by := orDash(l.CreatedBy)
 			if l.App != nil {
 				by = "app:" + *l.App
 			}
-			row(tw, l.Name, fmt.Sprintf("%s:%d", orDash(l.Provider), l.ProviderPort), orDash(l.Consumer)+" @"+l.Listen, l.Transport, l.State, by)
+			row(tw, l.Name, fmt.Sprintf("%s:%d", orDash(l.Provider), l.ProviderPort), orDash(l.Consumer)+" @"+l.Listen, l.State, by)
 		}
 		if err := tw.Flush(); err != nil {
 			return err

@@ -126,12 +126,9 @@ apps/infra-agent          Node daemon: App deploys and allowlisted host operatio
 apps/erainfra-cli         the `erainfra` operator CLI over the control plane's /api/v1
 apps/mesh                 erainfra-mesh (Rust): Node-to-Node TCP links over iroh
 apps/dashboard            React dashboard for the Convex control plane
-apps/hub, apps/hub-web    the legacy Hub and its dashboard, kept for Hub-mode Nodes
-apps/docs                 the legacy Hub-era documentation site
 deploy                    the Firecracker host provisioner and systemd units
-deploy/infra              Node, gateway, relay and Hub installers
+deploy/infra              the gateway and relay installers
 packages/backend          the Convex control plane
-packages/cli              the published `portless` CLI, which talks to the Hub
 packages/release          deterministic release packager
 packages/platform         the store and runtime seam that runs the control plane on Convex or
                           Cloudflare (ADR 0019)

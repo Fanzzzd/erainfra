@@ -56,7 +56,7 @@ func TestReconcilerAppliesTheConvexSnapshot(t *testing.T) {
 		}
 		return map[string]any{"changed": true}
 	})
-	if _, err := (&Reconciler{Client: c}).Apply(t.Context(), d, ""); err != nil {
+	if _, err := (&Reconciler{Client: c}).Apply(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}
 	fleet := byOp["set_fleet"][0]["peers"].([]any)[0].(map[string]any)
@@ -106,7 +106,7 @@ func TestReconcilerSendsRelayQUICPorts(t *testing.T) {
 		}
 		return map[string]any{"changed": true}
 	})
-	if _, err := (&Reconciler{Client: c}).Apply(t.Context(), d, ""); err != nil {
+	if _, err := (&Reconciler{Client: c}).Apply(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}
 	want := `[{"quic_port":443,"url":"https://relay.on99.ai"},"https://relay.example.com",{"quic":false,"url":"https://noqad.example.com"}]`

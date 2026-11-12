@@ -142,7 +142,7 @@ export const request = internalMutation({
       if (!isNodeLive(node.lastSeenAt, Date.now())) {
         throw new ConvexError(
           node.lastSeenAt === undefined
-            ? `${node.name} has not connected to Convex; read its logs through the Hub (portless logs)`
+            ? `${node.name} has not connected to Convex`
             : `${node.name} is offline`,
         );
       }

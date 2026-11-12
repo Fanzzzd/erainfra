@@ -1,6 +1,6 @@
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 
-export type CounterName = "auditSeq" | "deployments" | "hubAuditImportedThrough";
+export type CounterName = "auditSeq" | "deployments";
 
 async function counterRow(ctx: QueryCtx, name: CounterName) {
   return await ctx.db

@@ -72,7 +72,7 @@ TAB=$(printf '\t')
 
 # Findings accumulate in FILES rather than shell variables. Several of the
 # loops below run in subshells, and a subshell cannot write back to its
-# parent: `deploy/infra/rename.test.sh` shipped with exactly that bug, counted
+# parent: the since-deleted `deploy/infra/rename.test.sh` shipped with exactly that bug, counted
 # its failures into a discarded copy, and exited 0 with four assertions
 # failing. A conformance job that reports success while failing is worse than
 # no conformance job, so the tally lives somewhere every subshell shares.
