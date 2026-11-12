@@ -20,6 +20,7 @@ import type * as apiTokens from "../apiTokens.js";
 import type * as attemptMetrics from "../attemptMetrics.js";
 import type * as attemptMetricsModel from "../attemptMetricsModel.js";
 import type * as attemptScheduler from "../attemptScheduler.js";
+import type * as attemptStates from "../attemptStates.js";
 import type * as attemptSecrets from "../attemptSecrets.js";
 import type * as attempts from "../attempts.js";
 import type * as auth from "../auth.js";
@@ -123,6 +124,7 @@ declare const fullApi: ApiFromModules<{
   attemptMetrics: typeof attemptMetrics;
   attemptMetricsModel: typeof attemptMetricsModel;
   attemptScheduler: typeof attemptScheduler;
+  attemptStates: typeof attemptStates;
   attemptSecrets: typeof attemptSecrets;
   attempts: typeof attempts;
   auth: typeof auth;

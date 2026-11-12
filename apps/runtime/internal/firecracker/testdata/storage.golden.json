@@ -1,0 +1,7 @@
+{
+  "snapshotter": "devmapper",
+  "poolName": "runner-center-thinpool",
+  "poolTotalMiB": 102400,
+  "poolFreeMiB": 81920,
+  "poolReserveMiB": 8192
+}

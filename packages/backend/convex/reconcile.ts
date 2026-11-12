@@ -10,6 +10,12 @@ import {
   workerReports,
 } from "./attemptRetirement";
 import { deleteAttemptSecret } from "./attemptSecrets";
+import {
+  ACTIVE_ATTEMPT_STATES,
+  ACTIVE_EXPERIMENT_STATES,
+  TERMINAL_ATTEMPT_STATES,
+  TERMINAL_EXPERIMENT_STATES,
+} from "./attemptStates";
 import { deleteAttemptEgress } from "./egress";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -29,10 +35,6 @@ export const TERMINAL_WORK_RETENTION_MS = 30 * 24 * 60 * 60_000;
 // A push delivery row is what makes a GitHub redelivery of it a duplicate
 // (infra/git.ts). GitHub redelivers for up to three days.
 export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
-const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
-const ACTIVE_EXPERIMENT_STATES = ["queued", "preparing", "running"] as const;
-const TERMINAL_ATTEMPT_STATES = ["completed", "cancelled", "failed"] as const;
-const TERMINAL_EXPERIMENT_STATES = ["completed", "cancelled", "failed"] as const;
 
 export const run = internalMutation({
   args: {},

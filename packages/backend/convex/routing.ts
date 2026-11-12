@@ -9,11 +9,10 @@ import {
   type SchedulerSnapshot,
   unassignedQueue,
 } from "./attemptScheduler";
+import { ACTIVE_ATTEMPT_STATES } from "./attemptStates";
 import { profileEgressOf } from "./egress";
 import { fallbackReasonValidator } from "./routerDecisionsModel";
 import { isOverStartBudget } from "./startBudget";
-
-const LIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 
 const executorValidator = v.union(
   v.literal("docker"),
@@ -111,7 +110,7 @@ export const profileRoute = internalQuery({
 
     // Bounded per state: the decision only needs to know whether the total reaches maxRunners.
     const [pending, preparing, ready, running] = await Promise.all(
-      LIVE_ATTEMPT_STATES.map(
+      ACTIVE_ATTEMPT_STATES.map(
         async (state) =>
           (
             await ctx.db

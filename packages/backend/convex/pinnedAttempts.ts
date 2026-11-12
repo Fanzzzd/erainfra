@@ -2,10 +2,8 @@ import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { retireAttempt } from "./attemptRetirement";
 import { releaseAttemptSlot } from "./attemptScheduler";
+import { IDLE_ATTEMPT_STATES } from "./attemptStates";
 import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
-
-/** The states an Attempt is in on a Worker before GitHub has handed its Runner a job. */
-const IDLE_STATES = ["pending", "preparing", "ready"] as const;
 
 export type PinRetirement = { requeued: number; retired: number };
 
@@ -51,7 +49,7 @@ async function retireIfOffPin(
 export async function retireOffPinOnWorker(ctx: MutationCtx, machine: Doc<"machines">) {
   const tally: PinRetirement = { requeued: 0, retired: 0 };
   const profiles = new Map<string, Doc<"profiles"> | null>();
-  for (const state of IDLE_STATES) {
+  for (const state of IDLE_ATTEMPT_STATES) {
     const attempts = await ctx.db
       .query("attempts")
       .withIndex("by_machine_state_finishedAt", (q) =>
@@ -78,7 +76,7 @@ export async function retireOffPinOnWorker(ctx: MutationCtx, machine: Doc<"machi
 export async function retireOffPinForProfile(ctx: MutationCtx, profile: Doc<"profiles">) {
   const tally: PinRetirement = { requeued: 0, retired: 0 };
   if (profile.workerLabels === undefined || profile.workerLabels.length === 0) return tally;
-  for (const state of IDLE_STATES) {
+  for (const state of IDLE_ATTEMPT_STATES) {
     const attempts = await ctx.db
       .query("attempts")
       .withIndex("by_profile_state", (q) => q.eq("profile", profile.name).eq("state", state))

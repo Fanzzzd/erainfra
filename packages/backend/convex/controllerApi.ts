@@ -6,6 +6,7 @@ import { internalMutation, internalQuery, type MutationCtx } from "./_generated/
 import { endIdleAttempt, finishRetirement, isRetiring, keepForJob } from "./attemptRetirement";
 import { releaseAttemptSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
+import { ACTIVE_ATTEMPT_STATES } from "./attemptStates";
 import { fitPolicyValidator } from "./benchmark";
 import {
   authorizeController,
@@ -41,7 +42,6 @@ const activeAttemptState = v.union(
 );
 
 const terminalStates = new Set(["completed", "cancelled", "failed"]);
-const activeAttemptStates = ["pending", "preparing", "ready", "running"] as const;
 
 export const registerProfile = internalMutation({
   args: {
@@ -300,7 +300,7 @@ export const listActiveAttempts = internalQuery({
   handler: async (ctx, args) => {
     await authorize(ctx, args.profile, args.caller);
     const ranges = await Promise.all(
-      activeAttemptStates.map(async (state) => {
+      ACTIVE_ATTEMPT_STATES.map(async (state) => {
         const attempts = await ctx.db
           .query("attempts")
           .withIndex("by_profile_state", (query) =>
