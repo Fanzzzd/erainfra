@@ -498,7 +498,8 @@ export function registerOperatorRoutes(http: HttpRouter) {
     path: `${API_PREFIX}/attempts`,
     method: "GET",
     handler: operatorRoute("read", async (ctx, request) => {
-      const parsed = parseAttemptQuery(new URL(request.url).searchParams, Date.now());
+      const params = new URL(request.url).searchParams;
+      const parsed = parseAttemptQuery(params, Date.now());
       if (!parsed.ok) return apiError(400, "invalid_request", parsed.error);
       const { limit, cursor, ...filters } = parsed.query;
       let result;
@@ -509,9 +510,18 @@ export function registerOperatorRoutes(http: HttpRouter) {
         });
       } catch (error) {
         // A cursor is opaque and bound to the filters that produced it; Convex
-        // refuses one that is malformed or was issued for another query.
+        // refuses one that is malformed or was issued for another query. A
+        // `since` span resolves against each request's clock, so with a cursor
+        // it names a later window than the page that issued the cursor.
         if (cursor !== null) {
-          return apiError(400, "invalid_cursor", "cursor is not valid for these filters");
+          const span = RELATIVE_SINCE.test(params.get("since") ?? "");
+          return apiError(
+            400,
+            "invalid_cursor",
+            span
+              ? "cursor is not valid for these filters: a since span moves with each request, so send the RFC 3339 time it meant on the first page"
+              : "cursor is not valid for these filters",
+          );
         }
         throw error;
       }
