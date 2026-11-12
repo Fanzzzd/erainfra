@@ -8,7 +8,7 @@ const modules = import.meta.glob("../convex/**/*.ts");
 type Harness = TestConvex<typeof schema>;
 
 const CONTRACT = {
-  profile: "rc-linux-js",
+  profile: "erainfra-4vcpu-ubuntu-2404",
   executor: "firecracker" as const,
   imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
   vcpus: 2,
@@ -154,8 +154,8 @@ describe("routing.profileRoute", () => {
   });
 
   it("falls back when no controller holds the Profile's lease, however ready the Workers", async () => {
-    // 2026-11-12: rc-linux-js's controller was disabled while ubuntu0 still reported the Profile
-    // ready. The router kept answering rc-linux-js, and payable's jobs queued with no listener.
+    // 2026-11-12: erainfra-4vcpu-ubuntu-2404's controller was disabled while ubuntu0 still reported the Profile
+    // ready. The router kept answering erainfra-4vcpu-ubuntu-2404, and payable's jobs queued with no listener.
     const t = convexTest(schema, modules);
     await registerProfile(t);
     await addReadyWorker(t, "worker-a");
@@ -315,9 +315,12 @@ describe("GET /runs-on?profile=", () => {
     await registerProfile(t);
     await addReadyWorker(t, "worker-a");
 
-    const { status, response, body } = await runsOn(t, "profile=rc-linux-js&fallback=ubuntu-24.04");
+    const { status, response, body } = await runsOn(
+      t,
+      "profile=erainfra-4vcpu-ubuntu-2404&fallback=ubuntu-24.04",
+    );
     expect(status).toBe(200);
-    expect(body).toEqual({ "runs-on": "rc-linux-js" });
+    expect(body).toEqual({ "runs-on": "erainfra-4vcpu-ubuntu-2404" });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
@@ -325,7 +328,10 @@ describe("GET /runs-on?profile=", () => {
     const t = convexTest(schema, modules);
     await registerProfile(t);
 
-    const { status, body } = await runsOn(t, "profile=rc-linux-js&fallback=ubuntu-24.04");
+    const { status, body } = await runsOn(
+      t,
+      "profile=erainfra-4vcpu-ubuntu-2404&fallback=ubuntu-24.04",
+    );
     expect(status).toBe(200);
     expect(body).toEqual({ "runs-on": "ubuntu-24.04" });
   });
@@ -337,7 +343,7 @@ describe("GET /runs-on?profile=", () => {
     const attempt = await createAttempt(t);
     await t.run((ctx) => ctx.db.patch(attempt._id, { state: "running" }));
 
-    const { body } = await runsOn(t, "profile=rc-linux-js&fallback=ubuntu-24.04");
+    const { body } = await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404&fallback=ubuntu-24.04");
     expect(body).toEqual({ "runs-on": "ubuntu-24.04" });
   });
 
@@ -352,9 +358,13 @@ describe("GET /runs-on?profile=", () => {
   it("refuses labels it would otherwise echo back", async () => {
     const t = convexTest(schema, modules);
 
-    expect((await runsOn(t, "profile=rc-linux-js&fallback=%3Cscript%3E")).status).toBe(400);
+    expect(
+      (await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404&fallback=%3Cscript%3E")).status,
+    ).toBe(400);
     expect((await runsOn(t, `profile=${"x".repeat(101)}`)).status).toBe(400);
-    expect((await runsOn(t, "profile=rc-linux-js&labels=rc-linux")).status).toBe(400);
+    expect((await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404&labels=rc-linux")).status).toBe(
+      400,
+    );
     expect((await runsOn(t, "")).status).toBe(400);
   });
 
@@ -392,11 +402,14 @@ describe("router decisions", () => {
     await registerProfile(t);
     await addReadyWorker(t, "worker-a");
 
-    const routed = await runsOn(t, "profile=rc-linux-js&fallback=ubuntu-24.04&repo=acme/web");
-    expect(routed.body).toEqual({ "runs-on": "rc-linux-js" });
+    const routed = await runsOn(
+      t,
+      "profile=erainfra-4vcpu-ubuntu-2404&fallback=ubuntu-24.04&repo=acme/web",
+    );
+    expect(routed.body).toEqual({ "runs-on": "erainfra-4vcpu-ubuntu-2404" });
     const fellBack = await runsOn(t, "profile=rc-nothing&repo=acme/web");
     expect(fellBack.body).toEqual({ "runs-on": "ubuntu-latest" });
-    await runsOn(t, "profile=rc-linux-js");
+    await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404");
 
     const rows = (await decisions(t)).map((row) => ({
       profile: row.profile,
@@ -407,8 +420,8 @@ describe("router decisions", () => {
     }));
     expect(rows).toEqual([
       {
-        profile: "rc-linux-js",
-        answer: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
+        answer: "erainfra-4vcpu-ubuntu-2404",
         route: "profile",
         reason: undefined,
         repo: "acme/web",
@@ -421,8 +434,8 @@ describe("router decisions", () => {
         repo: "acme/web",
       },
       {
-        profile: "rc-linux-js",
-        answer: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
+        answer: "erainfra-4vcpu-ubuntu-2404",
         route: "profile",
         reason: undefined,
         repo: undefined,
@@ -455,7 +468,7 @@ describe("router decisions", () => {
       "-acme/web",
       `acme/${"x".repeat(101)}`,
     ]) {
-      expect((await runsOn(t, `profile=rc-linux-js&repo=${repo}`)).status).toBe(400);
+      expect((await runsOn(t, `profile=erainfra-4vcpu-ubuntu-2404&repo=${repo}`)).status).toBe(400);
     }
     expect(await decisions(t)).toEqual([]);
   });
@@ -484,7 +497,11 @@ describe("router decisions", () => {
         { repo: "acme/web", createdAt: day + 49 * hour, route: "profile" as const },
       ];
       for (const row of rows) {
-        await ctx.db.insert("routerDecisions", { profile: "rc-linux-js", answer: "x", ...row });
+        await ctx.db.insert("routerDecisions", {
+          profile: "erainfra-4vcpu-ubuntu-2404",
+          answer: "x",
+          ...row,
+        });
       }
     });
 
@@ -512,8 +529,8 @@ describe("router decisions", () => {
     await t.run(async (ctx) => {
       for (const age of [91, 89]) {
         await ctx.db.insert("routerDecisions", {
-          profile: "rc-linux-js",
-          answer: "rc-linux-js",
+          profile: "erainfra-4vcpu-ubuntu-2404",
+          answer: "erainfra-4vcpu-ubuntu-2404",
           route: "profile",
           createdAt: now - age * DAY_MS,
         });

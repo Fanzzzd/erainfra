@@ -43,7 +43,7 @@ func scrape(t *testing.T, h *harness) string {
 // resurrect a job whose window has closed.
 func TestStoredFactsExpireAcrossARestart(t *testing.T) {
 	h := newHarness(t, nil)
-	token := h.pushRunnerFacts("rc-linux-js-a", h.now().Add(10*time.Minute))
+	token := h.pushRunnerFacts("erainfra-4vcpu-ubuntu-2404-a", h.now().Add(10*time.Minute))
 	h.restart()
 	h.advance(11 * time.Minute)
 	if status := h.restoreStatus(token, "k", "v"); status != http.StatusUnauthorized {
@@ -56,8 +56,8 @@ func TestStoredFactsExpireAcrossARestart(t *testing.T) {
 // whoever can write to the bucket still cannot widen a runner's scope.
 func TestStoredFactsMustCarryTheControllersSignature(t *testing.T) {
 	h := newHarness(t, nil)
-	token := h.pushRunnerFacts("rc-linux-js-a", h.now().Add(time.Hour))
-	key := h.factsKey("rc-linux-js-a")
+	token := h.pushRunnerFacts("erainfra-4vcpu-ubuntu-2404-a", h.now().Add(time.Hour))
+	key := h.factsKey("erainfra-4vcpu-ubuntu-2404-a")
 	stored, ok := h.store.Object(key)
 	if !ok {
 		t.Fatalf("push wrote nothing at %s; keys %v", key, h.store.Keys())
@@ -90,7 +90,7 @@ func TestFactsPushThatCannotBePersistedIsRetryable(t *testing.T) {
 		return 0
 	})
 	body := jsonBody(map[string]any{
-		"runner": "rc-linux-js-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
 		"event": "push", "ref": "refs/heads/main", "expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
 	pushed := h.pushFacts(body, adminSign(body))
@@ -98,7 +98,7 @@ func TestFactsPushThatCannotBePersistedIsRetryable(t *testing.T) {
 	if pushed.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("push the store refused = %d, want 503", pushed.StatusCode)
 	}
-	token := h.runnerToken("rc-linux-js-a")
+	token := h.runnerToken("erainfra-4vcpu-ubuntu-2404-a")
 	if status := h.restoreStatus(token, "k", "v"); status != http.StatusNoContent {
 		t.Fatalf("restore while the push is unpersisted = %d, want a 204 miss", status)
 	}
@@ -177,7 +177,7 @@ func TestUnknownRunnerIsMemoizedUntilPushed(t *testing.T) {
 // memoized: the next request reads again.
 func TestUnreadableStoredFactsAreCountedApart(t *testing.T) {
 	h := newHarness(t, nil)
-	token := h.pushRunnerFacts("rc-linux-js-a", h.now().Add(time.Hour))
+	token := h.pushRunnerFacts("erainfra-4vcpu-ubuntu-2404-a", h.now().Add(time.Hour))
 	h.restart()
 	h.store.SetFail(func(method, key string, _ map[string][]string) int {
 		if method == http.MethodGet && strings.Contains(key, factsRoot) {
@@ -228,7 +228,7 @@ func TestStoredFactsSweepDeletesOnlyClosedWindows(t *testing.T) {
 // one replica is served by another.
 func TestFactsPushedToOneReplicaAreServedByAnother(t *testing.T) {
 	h := newHarness(t, nil)
-	token := h.pushRunnerFacts("rc-linux-js-a", h.now().Add(time.Hour))
+	token := h.pushRunnerFacts("erainfra-4vcpu-ubuntu-2404-a", h.now().Add(time.Hour))
 	first := h.http
 	h.start()
 	if first == h.http {

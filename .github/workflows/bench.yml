@@ -4,9 +4,11 @@ name: EraInfra executor benchmark
 # each, so a slow job can be attributed to CPU, disk, or the executor instead
 # of argued about. The Docker leg of the same comparison runs on a Worker host
 # by hand; see the issue that dispatched this run. The default Profile is
-# rc-e2e because that is the scale set registered on this repository;
-# rc-linux-js is registered on its consumer's. Triggers only when the
-# benchmark itself changes, or by hand once this file is on the default branch.
+# erainfra-canary-4vcpu-ubuntu-2404 because that is the scale set registered
+# on this repository. erainfra-4vcpu-ubuntu-2404 is registered on the
+# bielcrystal-labs organization, so it serves no job here. Triggers only when
+# the benchmark itself changes, or by hand once this file is on the default
+# branch.
 on:
   pull_request:
     paths:
@@ -16,7 +18,7 @@ on:
     inputs:
       profile:
         description: The EraInfra Profile to benchmark against ubuntu-latest
-        default: rc-e2e
+        default: erainfra-canary-4vcpu-ubuntu-2404
         required: true
 
 permissions:
@@ -25,7 +27,7 @@ permissions:
 jobs:
   bench:
     name: ${{ matrix.leg }} run ${{ matrix.repeat }}
-    runs-on: ${{ matrix.leg == 'hosted' && 'ubuntu-latest' || inputs.profile || 'rc-e2e' }}
+    runs-on: ${{ matrix.leg == 'hosted' && 'ubuntu-latest' || inputs.profile || 'erainfra-canary-4vcpu-ubuntu-2404' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false

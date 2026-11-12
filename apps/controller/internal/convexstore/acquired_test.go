@@ -29,7 +29,7 @@ func TestRecordJobsAcquiredPostsTheRunOfEachJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	queued := time.UnixMilli(1_763_000_000_000)
-	err = store.RecordJobsAcquired(t.Context(), "rc-linux-js", []fleet.AcquiredJob{{
+	err = store.RecordJobsAcquired(t.Context(), "erainfra-4vcpu-ubuntu-2404", []fleet.AcquiredJob{{
 		RunnerRequestID: 9_007_199_254_740_993, Repository: "payable", Owner: "example-org",
 		JobID: "job-1", DisplayName: "e2e", WorkflowRunID: 4242, QueueTime: queued,
 	}})
@@ -37,7 +37,7 @@ func TestRecordJobsAcquiredPostsTheRunOfEachJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"profile": "rc-linux-js",
+		"profile": "erainfra-4vcpu-ubuntu-2404",
 		"jobs": []any{map[string]any{
 			// A decimal string: the id can exceed what a JavaScript number holds exactly.
 			"runnerRequestId": "9007199254740993",
@@ -61,7 +61,7 @@ func TestRecordJobsAcquiredReportsAnOlderControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordJobsAcquired(t.Context(), "rc-linux-js", []fleet.AcquiredJob{{RunnerRequestID: 1}}); err == nil {
+	if err := store.RecordJobsAcquired(t.Context(), "erainfra-4vcpu-ubuntu-2404", []fleet.AcquiredJob{{RunnerRequestID: 1}}); err == nil {
 		t.Fatal("a 404 from a control plane without the route must be an error")
 	}
 }

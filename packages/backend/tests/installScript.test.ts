@@ -2396,7 +2396,7 @@ exit 0
     // Two running Profiles. A retired one is installed but stopped, so it is not listed active.
     writeFileSync(
       path.join(sandbox.root, "active-units"),
-      "runner-center-controller@rc-linux-js.service\nrunner-center-controller@rc-e2e.service\n",
+      "runner-center-controller@erainfra-4vcpu-ubuntu-2404.service\nrunner-center-controller@erainfra-canary-4vcpu-ubuntu-2404.service\n",
     );
     return sandbox;
   }
@@ -2411,8 +2411,8 @@ exit 0
     const service = serviceLog(sandbox);
     const restarts = service.filter((line) => line.startsWith("restart "));
     expect(restarts).toEqual([
-      "restart runner-center-controller@rc-linux-js.service",
-      "restart runner-center-controller@rc-e2e.service",
+      "restart runner-center-controller@erainfra-4vcpu-ubuntu-2404.service",
+      "restart runner-center-controller@erainfra-canary-4vcpu-ubuntu-2404.service",
     ]);
     // No start, restart or enable ever names a pattern, which would revive a stopped instance.
     expect(
@@ -2422,8 +2422,8 @@ exit 0
   });
 
   const ACTIVE_UNITS = [
-    "runner-center-controller@rc-linux-js.service",
-    "runner-center-controller@rc-e2e.service",
+    "runner-center-controller@erainfra-4vcpu-ubuntu-2404.service",
+    "runner-center-controller@erainfra-canary-4vcpu-ubuntu-2404.service",
   ];
   const OLD_UNIT = "# previous controller unit\n[Service]\nRestartSec=17s\n";
 
@@ -2586,7 +2586,7 @@ fi
     dryRunHost(
       sandbox,
       ACTIVE_UNITS.map((unit) => `${unit} ${TEMPLATE}`),
-      ["rc-linux-js", "rc-e2e"],
+      ["erainfra-4vcpu-ubuntu-2404", "erainfra-canary-4vcpu-ubuntu-2404"],
     );
     const result = dryRun(sandbox);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -2613,7 +2613,7 @@ fi
       `${ACTIVE_UNITS[0]} runs from /etc/systemd/system/${ACTIVE_UNITS[0]}, not ${TEMPLATE}`,
     );
     expect(result.stderr).toContain(
-      `${ACTIVE_UNITS[1]} has no /etc/runner-center/profiles/rc-e2e.env`,
+      `${ACTIVE_UNITS[1]} has no /etc/runner-center/profiles/erainfra-canary-4vcpu-ubuntu-2404.env`,
     );
     expect(result.stderr).toContain("Dry run found 2 problem(s)");
     expectUntouched(sandbox);
@@ -2808,13 +2808,13 @@ exec /bin/cp "$@"
     const sandbox = installedForUpdate();
     writeFileSync(
       path.join(sandbox.root, "failing-units"),
-      "runner-center-controller@rc-e2e.service\n",
+      "runner-center-controller@erainfra-canary-4vcpu-ubuntu-2404.service\n",
     );
     const result = ctlRun(sandbox, ["--update"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Rolled back to 1.3.0");
     expect(result.stdout + result.stderr).toContain(
-      "journal for runner-center-controller@rc-e2e.service",
+      "journal for runner-center-controller@erainfra-canary-4vcpu-ubuntu-2404.service",
     );
     expect(readFileSync(binaryPath(sandbox), "utf8")).toBe(fakeController("1.3.0"));
     // Both instances restarted onto the new binary, then both again onto the restored one.

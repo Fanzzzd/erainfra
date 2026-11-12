@@ -432,8 +432,17 @@ describe("a scale-set label conflict stored before the control plane refused the
     const result = report(
       parseRows(
         [
-          { name: "rc-linux-js", scaleSetName: "rc-linux-js", state: "active" },
-          { name: "rc-e2e", scaleSetName: "rc-e2e", labels: [], state: "active" },
+          {
+            name: "erainfra-4vcpu-ubuntu-2404",
+            scaleSetName: "erainfra-4vcpu-ubuntu-2404",
+            state: "active",
+          },
+          {
+            name: "erainfra-canary-4vcpu-ubuntu-2404",
+            scaleSetName: "erainfra-canary-4vcpu-ubuntu-2404",
+            labels: [],
+            state: "active",
+          },
           { name: "labelled", scaleSetName: "labelled", labels: ["labelled"], state: "active" },
           { name: "gone", scaleSetName: "gone", state: "paused" },
         ]
@@ -442,9 +451,12 @@ describe("a scale-set label conflict stored before the control plane refused the
       ),
     );
     expect(result.conflicts).toEqual([]);
-    expect(result.unlabeled).toEqual(["rc-e2e", "rc-linux-js"]);
+    expect(result.unlabeled).toEqual([
+      "erainfra-4vcpu-ubuntu-2404",
+      "erainfra-canary-4vcpu-ubuntu-2404",
+    ]);
     expect(result.warnings[0]).toBe(
-      "2 active Profile(s) carry no labels in this export: rc-e2e, rc-linux-js.",
+      "2 active Profile(s) carry no labels in this export: erainfra-4vcpu-ubuntu-2404, erainfra-canary-4vcpu-ubuntu-2404.",
     );
     expect(exitCode(result)).toBe(3);
     const labelled = report(
@@ -464,10 +476,14 @@ describe("a scale-set label conflict stored before the control plane refused the
     const empty = run("");
     expect(empty.status, empty.stderr).toBe(2);
     expect(empty.stderr).toContain("read no Profile rows");
-    const unlabeled = run('{"name":"rc-e2e","scaleSetName":"rc-e2e","state":"active"}\n');
+    const unlabeled = run(
+      '{"name":"erainfra-canary-4vcpu-ubuntu-2404","scaleSetName":"erainfra-canary-4vcpu-ubuntu-2404","state":"active"}\n',
+    );
     expect(unlabeled.status, unlabeled.stderr).toBe(3);
     expect(unlabeled.stdout).toContain("No conflicts among 1 active Profiles.");
-    expect(unlabeled.stderr).toContain("carry no labels in this export: rc-e2e.");
+    expect(unlabeled.stderr).toContain(
+      "carry no labels in this export: erainfra-canary-4vcpu-ubuntu-2404.",
+    );
   });
 });
 

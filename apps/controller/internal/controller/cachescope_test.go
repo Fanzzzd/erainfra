@@ -193,7 +193,7 @@ func publishAndRecord(t *testing.T, github *fakeGitHub, budget time.Duration, jo
 	}
 	store := &fakeStore{}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 1),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 1),
 		store,
 		&fakeIssuer{},
 		names("unused"),

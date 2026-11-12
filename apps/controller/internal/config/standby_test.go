@@ -9,7 +9,7 @@ import (
 )
 
 func TestWorkerStandbyNeedsOnlyExistingMachineCredentialAndProfileName(t *testing.T) {
-	cfg := Config{ConvexURL: "https://example.convex.site", Profile: "rc-linux-js", MachineToken: "0123456789abcdef0123456789abcdef"}
+	cfg := Config{ConvexURL: "https://example.convex.site", Profile: "erainfra-4vcpu-ubuntu-2404", MachineToken: "0123456789abcdef0123456789abcdef"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestLoadWorkerTokenFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RC_CONVEX_URL", "https://example.convex.site")
-	t.Setenv("RC_PROFILE", "rc-linux-js")
+	t.Setenv("RC_PROFILE", "erainfra-4vcpu-ubuntu-2404")
 	t.Setenv("RC_MACHINE_TOKEN_FILE", file)
 	cfg, err := Load()
 	if err != nil {
@@ -81,7 +81,7 @@ func TestStandbyRefusesACacheFactsProfileItCannotPublishFor(t *testing.T) {
 	if !spec.GitHubCacheFacts {
 		t.Fatal("precondition: the dedicated host registers cache facts")
 	}
-	standby := Config{ConvexURL: "https://example.convex.site", Profile: "rc-linux-js", MachineToken: "0123456789abcdef0123456789abcdef"}
+	standby := Config{ConvexURL: "https://example.convex.site", Profile: "erainfra-4vcpu-ubuntu-2404", MachineToken: "0123456789abcdef0123456789abcdef"}
 	if _, err := standby.WithProfile(&spec); err == nil {
 		t.Fatal("standby accepted a cache-facts Profile it cannot publish facts for")
 	}

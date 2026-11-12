@@ -172,8 +172,8 @@ describe("hasSnapshotHeadroom", () => {
 
 async function worker(t: Harness, token: string) {
   await t.mutation(internal.controllerApi.registerProfile, {
-    name: "rc-linux-js",
-    scaleSetName: "rc-linux-js",
+    name: "erainfra-4vcpu-ubuntu-2404",
+    scaleSetName: "erainfra-4vcpu-ubuntu-2404",
     executor: "firecracker",
     imageRelease: IMAGE,
     vcpus: 2,
@@ -200,7 +200,7 @@ describe("workerApi.reportReadiness", () => {
     await worker(t, "token-a");
     await t.mutation(api.workerApi.reportReadiness, {
       token: "token-a",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease: IMAGE,
       state: "ready",
@@ -232,7 +232,7 @@ describe("workerApi.reportReadiness", () => {
     await expect(
       t.mutation(api.workerApi.reportReadiness, {
         token: "token-b",
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: IMAGE,
         state: "ready",
@@ -260,7 +260,7 @@ describe("workerApi.reportReadiness", () => {
     async function assignWith(poolFreeMiB: number) {
       await t.mutation(api.workerApi.reportReadiness, {
         token: "token-d",
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: IMAGE,
         state: "ready",
@@ -273,7 +273,7 @@ describe("workerApi.reportReadiness", () => {
     }
 
     await t.mutation(internal.controllerApi.createAttempt, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease: IMAGE,
       vcpus: 2,
@@ -294,7 +294,7 @@ describe("workerApi.reportReadiness", () => {
     await expect(
       t.mutation(api.workerApi.reportReadiness, {
         token: "token-c",
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: IMAGE,
         vcpus: 2,
@@ -315,7 +315,7 @@ describe("workerApi.reportReadiness", () => {
     await t.run(async (ctx) =>
       ctx.db.insert("workerReadiness", {
         machineId: machine._id,
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: IMAGE,
         state: "ready",
@@ -339,7 +339,7 @@ describe("workerApi.reportReadiness", () => {
 
     await t.mutation(api.workerApi.reportReadiness, {
       token: "token-legacy",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease: IMAGE,
       state: "ready",
@@ -370,7 +370,7 @@ describe("workerApi.reportReadiness", () => {
     await worker(t, "token-state");
     const contract = {
       token: "token-state",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker" as const,
       imageRelease: IMAGE,
     };
@@ -431,7 +431,7 @@ describe("workerApi.reportReadiness", () => {
     await worker(t, "token-recovery");
     const contract = {
       token: "token-recovery",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker" as const,
       imageRelease: IMAGE,
     };

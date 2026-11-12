@@ -59,7 +59,7 @@ func TestNewMintsARunnerBearerTheServiceCanVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	token := runtime.mintCacheBearer("rc-linux-js-a")
+	token := runtime.mintCacheBearer("erainfra-4vcpu-ubuntu-2404-a")
 	if token == "" {
 		t.Fatal("a configured issuer minted no bearer")
 	}
@@ -72,8 +72,8 @@ func TestNewMintsARunnerBearerTheServiceCanVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("minted bearer did not verify: %v", err)
 	}
-	if claims.Runner != "rc-linux-js-a" {
-		t.Fatalf("bearer names %q, want rc-linux-js-a", claims.Runner)
+	if claims.Runner != "erainfra-4vcpu-ubuntu-2404-a" {
+		t.Fatalf("bearer names %q, want erainfra-4vcpu-ubuntu-2404-a", claims.Runner)
 	}
 }
 

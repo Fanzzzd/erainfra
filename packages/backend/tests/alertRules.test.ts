@@ -659,12 +659,12 @@ const CONTENT: NotificationContent = {
     name: "Queue <backlog> & co",
     kind: "queue-backlog",
     condition: "Oldest queued Attempt older than 15m",
-    profile: "rc-linux-js",
+    profile: "erainfra-4vcpu-ubuntu-2404",
   },
   incident: {
     id: "incident-1",
-    subject: "rc-linux-js",
-    summary: "3 Attempts queued on Profile rc-linux-js; the oldest has waited 16m.",
+    subject: "erainfra-4vcpu-ubuntu-2404",
+    summary: "3 Attempts queued on Profile erainfra-4vcpu-ubuntu-2404; the oldest has waited 16m.",
     since: NOW - 16 * MINUTE,
     firedAt: NOW,
     resolvedAt: null,
@@ -681,7 +681,7 @@ describe("notification bodies", () => {
       incident: {
         id: "incident-1",
         status: "firing",
-        subject: "rc-linux-js",
+        subject: "erainfra-4vcpu-ubuntu-2404",
         summary: CONTENT.incident.summary,
         since: "2026-11-05T11:44:00.000Z",
         firedAt: "2026-11-05T12:00:00.000Z",
@@ -697,11 +697,11 @@ describe("notification bodies", () => {
       blocks: Array<{ type: string; text: { type: string; text: string } }>;
     };
     expect(body.text).toBe(
-      ":white_check_mark: Resolved: Queue &lt;backlog&gt; &amp; co: 3 Attempts queued on Profile rc-linux-js; the oldest has waited 16m.",
+      ":white_check_mark: Resolved: Queue &lt;backlog&gt; &amp; co: 3 Attempts queued on Profile erainfra-4vcpu-ubuntu-2404; the oldest has waited 16m.",
     );
     expect(body.blocks).toHaveLength(1);
     expect(body.blocks[0]?.text.type).toBe("mrkdwn");
-    expect(body.blocks[0]?.text.text).toContain("Subject `rc-linux-js`");
+    expect(body.blocks[0]?.text.text).toContain("Subject `erainfra-4vcpu-ubuntu-2404`");
   });
 });
 

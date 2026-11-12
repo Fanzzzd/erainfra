@@ -65,7 +65,7 @@ describe("parseRuntimeReport", () => {
 describe("prepareProfile", () => {
   it("refuses a Profile whose image is not pinned by digest", async () => {
     const result = await prepareProfile({
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease: "ghcr.io/fanzzzd/runner:latest",
       vcpus: 2,
@@ -99,7 +99,7 @@ describe("prepareProfile", () => {
   it("refuses a Docker Profile wider than the Worker's CPUs", async () => {
     const result = await prepareProfile(
       {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "docker",
         imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
         vcpus: 64,
@@ -122,7 +122,7 @@ describe("prepareProfile", () => {
   it("records the Profile fitting the Worker as a check of its own", async () => {
     const result = await prepareProfile(
       {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "docker",
         imageRelease: `ghcr.io/fanzzzd/does-not-exist${DIGEST}`,
         vcpus: 2,
@@ -224,7 +224,7 @@ const probe = (stdout: string, exitCode = 0, stderr = "") => ({ exitCode, stdout
 
 describe("job resource visibility", () => {
   const PROFILE = {
-    profile: "rc-linux-js",
+    profile: "erainfra-4vcpu-ubuntu-2404",
     executor: "docker" as const,
     imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
     vcpus: 8,

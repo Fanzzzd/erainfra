@@ -50,7 +50,7 @@ tweak() { # tweak <file> <sed-expression>
 }
 
 LABEL_A="ubuntu-latest (GitHub-hosted)"
-LABEL_B="rc-e2e (EraInfra Profile)"
+LABEL_B="erainfra-canary-4vcpu-ubuntu-2404 (EraInfra Profile)"
 DIFF_STATUS=0
 
 # Not a subshell function: it reports back through DIFF_STATUS.

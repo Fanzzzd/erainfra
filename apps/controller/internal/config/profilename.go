@@ -47,8 +47,8 @@ func ProfileNameError(name string) error {
 }
 
 // ProfileNameFollowsScheme reports whether a legal name also follows ADR 0010.
-// A name that does not is still served -- rc-linux-js and rc-e2e are in service
-// and GitHub holds their scale sets -- but the controller says so at startup.
+// A name that does not is still served, because GitHub holds the scale set of a
+// Profile named before ADR 0010, but the controller says so at startup.
 func ProfileNameFollowsScheme(name string) bool {
 	return profileNameScheme.MatchString(name)
 }
