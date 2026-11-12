@@ -170,10 +170,10 @@ func TestScalerReconcilesDesiredCountDurably(t *testing.T) {
 	store := &fakeStore{}
 	issuer := &fakeIssuer{nextID: 40}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 4),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 4),
 		store,
 		issuer,
-		names("rc-linux-js-a", "rc-linux-js-b"),
+		names("erainfra-4vcpu-ubuntu-2404-a", "erainfra-4vcpu-ubuntu-2404-b"),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -186,13 +186,13 @@ func TestScalerReconcilesDesiredCountDurably(t *testing.T) {
 	if actual != 2 {
 		t.Fatalf("actual runners = %d, want 2", actual)
 	}
-	if !reflect.DeepEqual(issuer.generated, []string{"rc-linux-js-a", "rc-linux-js-b"}) {
+	if !reflect.DeepEqual(issuer.generated, []string{"erainfra-4vcpu-ubuntu-2404-a", "erainfra-4vcpu-ubuntu-2404-b"}) {
 		t.Fatalf("generated runners = %v", issuer.generated)
 	}
 	if len(store.created) != 2 {
 		t.Fatalf("created attempts = %d, want 2", len(store.created))
 	}
-	if store.created[0].EncodedJITConfig != "secret-for-rc-linux-js-a" {
+	if store.created[0].EncodedJITConfig != "secret-for-erainfra-4vcpu-ubuntu-2404-a" {
 		t.Fatal("JIT configuration was not handed to the durable store")
 	}
 }
@@ -202,7 +202,7 @@ func TestScalerDeletesAbandonedRunnersBeforeReplacingCapacity(t *testing.T) {
 	store := &fakeStore{cleanups: []fleet.RunnerCleanup{cleanup}}
 	issuer := &fakeIssuer{nextID: 40}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 1),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 1),
 		store,
 		issuer,
 		names("replacement"),
@@ -266,10 +266,10 @@ func TestScalerCompensatesFailedAttemptCreation(t *testing.T) {
 	store := &fakeStore{createError: errors.New("control plane unavailable")}
 	issuer := &fakeIssuer{nextID: 80}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 1),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 1),
 		store,
 		issuer,
-		names("rc-linux-js-orphan"),
+		names("erainfra-4vcpu-ubuntu-2404-orphan"),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +290,7 @@ func TestScalerCompensatesFailedAttemptCreation(t *testing.T) {
 func TestScalerMapsLifecycleMessages(t *testing.T) {
 	store := &fakeStore{}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 1),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 1),
 		store,
 		&fakeIssuer{},
 		names("unused"),
@@ -302,7 +302,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 	finishedAt := queueTime.Add(3 * time.Minute)
 
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
-		RunnerName: "rc-linux-js-a",
+		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{
 			RunnerRequestID: 7,
 			RepositoryName:  "EraInfra",
@@ -319,7 +319,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = scaler.HandleJobCompleted(t.Context(), &scaleset.JobCompleted{
-		RunnerName: "rc-linux-js-a",
+		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		Result:     "succeeded",
 		JobMessageBase: scaleset.JobMessageBase{
 			RunnerRequestID: 7,
@@ -345,7 +345,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 func TestScalerPublishesColdCacheFactsWithoutGitHub(t *testing.T) {
 	cache := &fakeCache{}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 1),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 1),
 		&fakeStore{},
 		&fakeIssuer{},
 		names("unused"),
@@ -356,7 +356,7 @@ func TestScalerPublishesColdCacheFactsWithoutGitHub(t *testing.T) {
 	}
 
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
-		RunnerName: "rc-linux-js-a",
+		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{
 			RepositoryName: "EraInfra",
 			OwnerName:      "Fanzzzd",
@@ -371,7 +371,7 @@ func TestScalerPublishesColdCacheFactsWithoutGitHub(t *testing.T) {
 	scaler.publishing.Wait()
 
 	want := cachefacts.Facts{
-		Runner:         "rc-linux-js-a",
+		Runner:         "erainfra-4vcpu-ubuntu-2404-a",
 		Repository:     "Fanzzzd/EraInfra",
 		HeadRepository: unverifiedHeadRepository,
 		Event:          "push",
@@ -388,7 +388,7 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 	cache := &fakeCache{err: errors.New("cache down")}
 	store := &fakeStore{}
 	scaler, err := NewScaler(
-		validConfig("rc-linux-js", 1),
+		validConfig("erainfra-4vcpu-ubuntu-2404", 1),
 		store,
 		&fakeIssuer{},
 		names("unused"),
@@ -400,7 +400,7 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 	scaler.cacheRetry = retryPolicy{first: time.Millisecond, ceiling: time.Millisecond, window: 20 * time.Millisecond}
 
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
-		RunnerName: "rc-linux-js-a",
+		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{
 			RepositoryName: "EraInfra",
 			OwnerName:      "Fanzzzd",
@@ -421,14 +421,14 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 // a fast retry policy, and waits for the publish to finish.
 func startJobWithCache(t *testing.T, cache *fakeCache, retry retryPolicy) {
 	t.Helper()
-	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
 		WithCachePublisher(cache, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	scaler.cacheRetry = retry
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
-		RunnerName:     "rc-linux-js-a",
+		RunnerName:     "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{RepositoryName: "erainfra", OwnerName: "Fanzzzd", EventName: "push"},
 	})
 	if err != nil {
@@ -476,13 +476,13 @@ func TestScalerGivesUpOnCacheFactsWhenTheWindowCloses(t *testing.T) {
 }
 
 func TestScalerRejectsUnsafeConfiguration(t *testing.T) {
-	missingProfile := validConfig("rc-linux", 1)
+	missingProfile := validConfig("erainfra-4vcpu-ubuntu-2404", 1)
 	missingProfile.Profile = ""
-	negativeMinimum := validConfig("rc-linux", 1)
+	negativeMinimum := validConfig("erainfra-4vcpu-ubuntu-2404", 1)
 	negativeMinimum.MinRunners = -1
-	badBounds := validConfig("rc-linux", 1)
+	badBounds := validConfig("erainfra-4vcpu-ubuntu-2404", 1)
 	badBounds.MinRunners = 2
-	zeroMaximum := validConfig("rc-linux", 0)
+	zeroMaximum := validConfig("erainfra-4vcpu-ubuntu-2404", 0)
 	tests := []Config{missingProfile, negativeMinimum, badBounds, zeroMaximum}
 	for _, config := range tests {
 		if _, err := NewScaler(config, &fakeStore{}, &fakeIssuer{}, names("unused")); err == nil {
@@ -496,7 +496,7 @@ func TestScalerRejectsUnsafeConfiguration(t *testing.T) {
 func TestScalerSkipsAJobCompletedThatNoRunnerTook(t *testing.T) {
 	store := &fakeStore{}
 	scaler, err := NewScaler(
-		validConfig("rc-e2e", 1),
+		validConfig("erainfra-canary-4vcpu-ubuntu-2404", 1),
 		store,
 		&fakeIssuer{},
 		names("unused"),

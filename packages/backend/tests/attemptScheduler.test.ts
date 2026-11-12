@@ -9,7 +9,7 @@ const modules = import.meta.glob("../convex/**/*.ts");
 type Harness = TestConvex<typeof schema>;
 
 const CONTRACT = {
-  profile: "rc-linux-js",
+  profile: "erainfra-4vcpu-ubuntu-2404",
   executor: "firecracker" as const,
   imageRelease:
     "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

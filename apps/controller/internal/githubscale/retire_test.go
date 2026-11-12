@@ -38,12 +38,12 @@ func (f *retireFake) DeleteRunnerScaleSet(_ context.Context, id int) error {
 }
 
 func idle(id int) *scaleset.RunnerScaleSet {
-	return &scaleset.RunnerScaleSet{ID: id, Name: "rc-linux-js", RunnerGroupID: 1, Statistics: &scaleset.RunnerScaleSetStatistic{}}
+	return &scaleset.RunnerScaleSet{ID: id, Name: "erainfra-4vcpu-ubuntu-2404", RunnerGroupID: 1, Statistics: &scaleset.RunnerScaleSetStatistic{}}
 }
 
 func TestRetireWithoutApplyOnlyReports(t *testing.T) {
 	fake := &retireFake{scaleSet: idle(7)}
-	plan, err := Retire(t.Context(), fake, "rc-linux-js", "", false, false)
+	plan, err := Retire(t.Context(), fake, "erainfra-4vcpu-ubuntu-2404", "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,11 +54,11 @@ func TestRetireWithoutApplyOnlyReports(t *testing.T) {
 
 func TestRetireDeletesAnIdleScaleSet(t *testing.T) {
 	fake := &retireFake{scaleSet: idle(7)}
-	plan, err := Retire(t.Context(), fake, " rc-linux-js ", scaleset.DefaultRunnerGroup, true, false)
+	plan, err := Retire(t.Context(), fake, " erainfra-4vcpu-ubuntu-2404 ", scaleset.DefaultRunnerGroup, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !plan.Deleted || len(fake.deleted) != 1 || fake.deleted[0] != 7 || fake.asked != "rc-linux-js" {
+	if !plan.Deleted || len(fake.deleted) != 1 || fake.deleted[0] != 7 || fake.asked != "erainfra-4vcpu-ubuntu-2404" {
 		t.Fatalf("plan %+v, deleted %v, asked %q", plan, fake.deleted, fake.asked)
 	}
 }
@@ -73,11 +73,11 @@ func TestRetireRefusesWhileGitHubCountsWork(t *testing.T) {
 			set := idle(9)
 			set.Statistics = &stats
 			fake := &retireFake{scaleSet: set}
-			_, err := Retire(t.Context(), fake, "rc-linux-js", "", true, false)
+			_, err := Retire(t.Context(), fake, "erainfra-4vcpu-ubuntu-2404", "", true, false)
 			if err == nil || !strings.Contains(err.Error(), "--force") || len(fake.deleted) != 0 {
 				t.Fatalf("err %v, deleted %v", err, fake.deleted)
 			}
-			plan, err := Retire(t.Context(), fake, "rc-linux-js", "", true, true)
+			plan, err := Retire(t.Context(), fake, "erainfra-4vcpu-ubuntu-2404", "", true, true)
 			if err != nil || !plan.Deleted {
 				t.Fatalf("force did not delete: %+v %v", plan, err)
 			}
@@ -87,7 +87,7 @@ func TestRetireRefusesWhileGitHubCountsWork(t *testing.T) {
 
 func TestRetireOfAMissingScaleSetIsNotAnError(t *testing.T) {
 	fake := &retireFake{}
-	plan, err := Retire(t.Context(), fake, "rc-e2e", "", true, false)
+	plan, err := Retire(t.Context(), fake, "erainfra-canary-4vcpu-ubuntu-2404", "", true, false)
 	if err != nil || plan.Found || plan.Deleted || len(fake.deleted) != 0 {
 		t.Fatalf("plan %+v err %v deleted %v", plan, err, fake.deleted)
 	}
@@ -97,7 +97,7 @@ func TestRetireResolvesANamedRunnerGroup(t *testing.T) {
 	set := idle(3)
 	set.RunnerGroupID = 42
 	fake := &retireFake{scaleSet: set, groupID: 42}
-	plan, err := Retire(t.Context(), fake, "rc-linux-js", "ci", true, false)
+	plan, err := Retire(t.Context(), fake, "erainfra-4vcpu-ubuntu-2404", "ci", true, false)
 	if err != nil || !plan.Deleted {
 		t.Fatalf("plan %+v err %v", plan, err)
 	}
@@ -119,7 +119,7 @@ func TestRetireRefusesUnknownStatisticsUnlessForced(t *testing.T) {
 			set := idle(7)
 			set.Statistics = nil
 			fake := &retireFake{scaleSet: set}
-			plan, err := Retire(t.Context(), fake, "rc-linux-js", "", tc.apply, tc.force)
+			plan, err := Retire(t.Context(), fake, "erainfra-4vcpu-ubuntu-2404", "", tc.apply, tc.force)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("plan %+v, err %v; wantError %v", plan, err, tc.wantError)
 			}
@@ -138,7 +138,7 @@ func TestRetireRefusesUnknownStatisticsUnlessForced(t *testing.T) {
 
 func TestRetireSurfacesLookupFailures(t *testing.T) {
 	fake := &retireFake{getErr: errors.New("boom")}
-	if _, err := Retire(t.Context(), fake, "rc-linux-js", "", true, false); err == nil {
+	if _, err := Retire(t.Context(), fake, "erainfra-4vcpu-ubuntu-2404", "", true, false); err == nil {
 		t.Fatal("want an error")
 	}
 }

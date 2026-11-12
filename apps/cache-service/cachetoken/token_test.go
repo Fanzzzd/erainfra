@@ -331,7 +331,7 @@ func TestValidateRepository(t *testing.T) {
 }
 
 func TestRunnerTokenRoundTrip(t *testing.T) {
-	token, minted, err := newTestIssuer(t).IssueRunner("rc-linux-js-a")
+	token, minted, err := newTestIssuer(t).IssueRunner("erainfra-4vcpu-ubuntu-2404-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestRunnerTokenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.Runner != "rc-linux-js-a" || claims.Runner != minted.Runner {
+	if claims.Runner != "erainfra-4vcpu-ubuntu-2404-a" || claims.Runner != minted.Runner {
 		t.Errorf("verified runner %q, minted %q", claims.Runner, minted.Runner)
 	}
 	if claims.ExpiresAt != testNow.Add(30*time.Minute).Unix() {
@@ -357,7 +357,7 @@ func TestIssueRunnerRefusesUnsafeNames(t *testing.T) {
 }
 
 func TestVerifyRunnerRejectsForgedTamperedAndExpired(t *testing.T) {
-	token, _, err := newTestIssuer(t).IssueRunner("rc-linux-js-a")
+	token, _, err := newTestIssuer(t).IssueRunner("erainfra-4vcpu-ubuntu-2404-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestRunnerAndAuthorizationTokensDoNotCross(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runnerToken, _, err := issuer.IssueRunner("rc-linux-js-a")
+	runnerToken, _, err := issuer.IssueRunner("erainfra-4vcpu-ubuntu-2404-a")
 	if err != nil {
 		t.Fatal(err)
 	}

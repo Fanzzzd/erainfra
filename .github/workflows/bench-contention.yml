@@ -14,7 +14,7 @@ on:
     inputs:
       profile:
         description: The EraInfra Profile to benchmark
-        default: rc-e2e
+        default: erainfra-canary-4vcpu-ubuntu-2404
         required: true
 
 permissions:
@@ -23,7 +23,7 @@ permissions:
 jobs:
   solo:
     name: solo
-    runs-on: ${{ inputs.profile || 'rc-e2e' }}
+    runs-on: ${{ inputs.profile || 'erainfra-canary-4vcpu-ubuntu-2404' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,7 +34,7 @@ jobs:
   crowd:
     name: crowd ${{ matrix.slot }}
     needs: solo
-    runs-on: ${{ inputs.profile || 'rc-e2e' }}
+    runs-on: ${{ inputs.profile || 'erainfra-canary-4vcpu-ubuntu-2404' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false

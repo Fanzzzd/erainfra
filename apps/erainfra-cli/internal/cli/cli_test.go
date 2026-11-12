@@ -510,11 +510,12 @@ func TestJobsListPrintsAnEmptyJSONArray(t *testing.T) {
 func TestJobsViewTable(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	detail := strings.TrimSuffix(attemptJSON, "}") +
-		`,"executor":"firecracker","imageRelease":"ghcr.io/x@sha256:1","vcpus":4,"memoryMiB":16384,"runnerName":"r-1","runnerId":9,"executorExitCode":0}`
+		`,"executor":"firecracker","imageRelease":"ghcr.io/x@sha256:1","vcpus":4,"memoryMiB":16384,"runnerName":"r-1","runnerId":9,"executorExitCode":0,"scaleSetAssignedAt":"2026-11-05T11:00:02.000Z"}`
 	h.api.on("GET /api/v1/attempts/j57abc", 200, `{"attempt":`+detail+`}`)
 	h.expect(ExitOK, "jobs", "view", "j57abc")
 	for _, want := range []string{
 		"State:             completed",
+		"On scale set:      2026-11-05T11:00:02.000Z",
 		"Executor:          firecracker, 4 vCPU / 16 GiB",
 		"Run:               https://github.com/acme/web/actions/runs/77",
 		"Queue wait:        3s",

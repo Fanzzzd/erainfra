@@ -71,7 +71,10 @@ sent once, since a repeat could create something twice or report a done delete a
 errors never show a `token=` URL value.
 
 Each `jobs` row is one Attempt. `WAIT` is how long GitHub held the job before a Runner of this fleet
-took it, and `DURATION` runs from the job starting to it finishing. The control plane stores no job
+took it. GitHub's scale-set messages have so far carried no queue time, so `WAIT` counts from when GitHub handed
+the job to the Profile's scale set, `queuedAt` stays null, and `jobs view` prints that start as
+"On scale set" (`scaleSetAssignedAt` in JSON). `DURATION` runs from GitHub assigning the job to a
+Runner to it finishing. The control plane stores no job
 or Worker logs: GitHub holds the job log, so `jobs logs` runs `gh run view <run> --log` when the
 GitHub CLI is installed and prints the run URL otherwise. A Worker's own Agent log is read on the
 Worker with `rc logs`.

@@ -4,7 +4,7 @@ name: EraInfra full image guest refresh
 # appends one layer to an existing full image. The layer holds the guest and
 # the Go cache helper, built from this commit. crane uploads only that layer
 # and a new manifest, so the run takes minutes. It publishes a candidate tag
-# and changes no Profile; pin it on rc-e2e first, as with a full build.
+# and changes no Profile; pin it on erainfra-canary-4vcpu-ubuntu-2404 first, as with a full build.
 on:
   workflow_dispatch:
     inputs:

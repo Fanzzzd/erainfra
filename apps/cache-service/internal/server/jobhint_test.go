@@ -43,22 +43,22 @@ const hintBody = `{"repository":"Fanzzzd/erainfra","runID":42820231088,"runAttem
 // the runner lists the hint, verifies it against GitHub and pushes the facts.
 func TestJobHintIsListedToTheOwningControllerUntilFactsArrive(t *testing.T) {
 	h := newHarness(t, nil)
-	token := h.runnerToken("rc-rc-e2e-abc")
+	token := h.runnerToken("rc-erainfra-canary-4vcpu-ubuntu-2404-abc")
 	if status := h.postHint(token, hintBody); status != http.StatusNoContent {
 		t.Fatalf("hint = %d, want 204", status)
 	}
 	now := time.Now().Unix()
-	status, hints := h.listHints([]string{"rc-rc-e2e-"}, now, true)
+	status, hints := h.listHints([]string{"rc-erainfra-canary-4vcpu-ubuntu-2404-"}, now, true)
 	if status != http.StatusOK || len(hints) != 1 || hints[0] != (JobHint{
-		Runner: "rc-rc-e2e-abc", Repository: "Fanzzzd/erainfra", RunID: 42820231088, RunAttempt: 1,
+		Runner: "rc-erainfra-canary-4vcpu-ubuntu-2404-abc", Repository: "Fanzzzd/erainfra", RunID: 42820231088, RunAttempt: 1,
 	}) {
 		t.Fatalf("list = %d %#v", status, hints)
 	}
-	if _, other := h.listHints([]string{"rc-rc-linux-js-"}, now, true); len(other) != 0 {
+	if _, other := h.listHints([]string{"rc-erainfra-4vcpu-ubuntu-2404-"}, now, true); len(other) != 0 {
 		t.Fatalf("another controller's prefix listed %#v", other)
 	}
-	h.pushRunnerFacts("rc-rc-e2e-abc", h.now().Add(time.Hour))
-	if _, after := h.listHints([]string{"rc-rc-e2e-"}, now, true); len(after) != 0 {
+	h.pushRunnerFacts("rc-erainfra-canary-4vcpu-ubuntu-2404-abc", h.now().Add(time.Hour))
+	if _, after := h.listHints([]string{"rc-erainfra-canary-4vcpu-ubuntu-2404-"}, now, true); len(after) != 0 {
 		t.Fatalf("hint still listed after its facts arrived: %#v", after)
 	}
 }
@@ -75,7 +75,7 @@ func TestJobHintRequiresARunnerToken(t *testing.T) {
 
 func TestJobHintRejectsNonsense(t *testing.T) {
 	h := newHarness(t, nil)
-	token := h.runnerToken("rc-rc-e2e-abc")
+	token := h.runnerToken("rc-erainfra-canary-4vcpu-ubuntu-2404-abc")
 	for _, body := range []string{
 		`{"repository":"no-owner","runID":1,"runAttempt":1}`,
 		`{"repository":"a/b","runID":0,"runAttempt":1}`,
@@ -93,7 +93,7 @@ func TestJobHintRejectsNonsense(t *testing.T) {
 // request cannot be replayed indefinitely.
 func TestJobHintListingIsSignedAndFresh(t *testing.T) {
 	h := newHarness(t, nil)
-	h.postHint(h.runnerToken("rc-rc-e2e-abc"), hintBody)
+	h.postHint(h.runnerToken("rc-erainfra-canary-4vcpu-ubuntu-2404-abc"), hintBody)
 	if status, _ := h.listHints([]string{"rc-"}, time.Now().Unix(), false); status != http.StatusUnauthorized {
 		t.Fatalf("unsigned list = %d, want 401", status)
 	}
@@ -105,8 +105,8 @@ func TestJobHintListingIsSignedAndFresh(t *testing.T) {
 // A runner that already has facts gains nothing from a hint, so none is kept.
 func TestJobHintForARunnerWithFactsIsIgnored(t *testing.T) {
 	h := newHarness(t, nil)
-	h.pushRunnerFacts("rc-rc-e2e-abc", h.now().Add(time.Hour))
-	h.postHint(h.runnerToken("rc-rc-e2e-abc"), hintBody)
+	h.pushRunnerFacts("rc-erainfra-canary-4vcpu-ubuntu-2404-abc", h.now().Add(time.Hour))
+	h.postHint(h.runnerToken("rc-erainfra-canary-4vcpu-ubuntu-2404-abc"), hintBody)
 	if _, hints := h.listHints([]string{"rc-"}, time.Now().Unix(), true); len(hints) != 0 {
 		t.Fatalf("listed %#v for a runner that has facts", hints)
 	}

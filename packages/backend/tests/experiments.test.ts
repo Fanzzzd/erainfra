@@ -44,8 +44,8 @@ const FIRECRACKER_FACTS = {
 
 async function setup(t: TestConvex<typeof schema>, maxSlots = 2) {
   await t.mutation(internal.controllerApi.registerProfile, {
-    name: "rc-linux-js",
-    scaleSetName: "rc-linux-js",
+    name: "erainfra-4vcpu-ubuntu-2404",
+    scaleSetName: "erainfra-4vcpu-ubuntu-2404",
     executor: "firecracker",
     imageRelease: IMAGE,
     vcpus: 2,
@@ -68,7 +68,7 @@ async function setup(t: TestConvex<typeof schema>, maxSlots = 2) {
   );
   await t.mutation(api.workerApi.reportReadiness, {
     token: "machine-token",
-    profile: "rc-linux-js",
+    profile: "erainfra-4vcpu-ubuntu-2404",
     executor: "firecracker",
     imageRelease: IMAGE,
     vcpus: 2,
@@ -85,7 +85,7 @@ describe("Experiment lifecycle", () => {
     const machineId = await setup(t);
     const experimentId = await t.withIdentity(OPERATOR).mutation(api.experiments.create, {
       name: "node smoke",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       command: ["node", "--version"],
       timeoutSeconds: 120,
     });
@@ -107,7 +107,7 @@ describe("Experiment lifecycle", () => {
     const machineId = await setup(t);
     const experimentId = await t.withIdentity(OPERATOR).mutation(api.experiments.create, {
       name: "failing smoke",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       command: ["sh", "-lc", "exit 17"],
       timeoutSeconds: 60,
     });
@@ -150,7 +150,7 @@ describe("Experiment lifecycle", () => {
     const authed = t.withIdentity(OPERATOR);
     const experimentId = await authed.mutation(api.experiments.create, {
       name: "cancel me",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       command: ["sleep", "300"],
       timeoutSeconds: 600,
     });
@@ -162,7 +162,7 @@ describe("Experiment lifecycle", () => {
     await expect(
       authed.mutation(api.experiments.create, {
         name: "too long",
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         command: ["echo", "x".repeat(16 * 1024)],
         timeoutSeconds: 1,
       }),
@@ -175,7 +175,7 @@ describe("Experiment lifecycle", () => {
     await expect(
       t.mutation(api.experiments.create, {
         name: "unauthorized",
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         command: ["true"],
         timeoutSeconds: 60,
       }),
@@ -187,7 +187,7 @@ describe("Experiment lifecycle", () => {
     const machineId = await setup(t);
     const experimentId = await t.withIdentity(OPERATOR).mutation(api.experiments.create, {
       name: "recover me",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       command: ["true"],
       timeoutSeconds: 60,
     });

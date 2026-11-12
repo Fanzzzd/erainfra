@@ -95,7 +95,7 @@ func testSpec() executor.Spec {
 		Kind:         "ci",
 		AttemptID:    "attempt-1",
 		RunnerName:   "runner-1",
-		Profile:      "rc-linux-js",
+		Profile:      "erainfra-4vcpu-ubuntu-2404",
 		ImageRelease: "ghcr.io/example/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		VCPUs:        2,
 		MemoryMiB:    4096,
@@ -158,7 +158,7 @@ func TestClientUsesUnixSocketForLifecycle(t *testing.T) {
 		t.Fatalf("readiness was checked for %+v, want the Profile's %+v", runtime.preflightEgress, allowlist)
 	}
 	profile := executor.Profile{
-		Name: "rc-linux-js", ImageRelease: testSpec().ImageRelease, VCPUs: 2, MemoryMiB: 4096, WarmPool: 2,
+		Name: "erainfra-4vcpu-ubuntu-2404", ImageRelease: testSpec().ImageRelease, VCPUs: 2, MemoryMiB: 4096, WarmPool: 2,
 		Egress: allowlist,
 	}
 	status, err := client.PrepareProfile(ctx, profile)

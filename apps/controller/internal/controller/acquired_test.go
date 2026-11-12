@@ -33,7 +33,7 @@ func TestScalerRecordsAcquiredJobsWithTheirWorkflowRun(t *testing.T) {
 	queued := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 	for _, recordErr := range []error{nil, errors.New("control plane is older")} {
 		store := &acquisitionStore{fakeStore: &fakeStore{}, err: recordErr}
-		scaler, err := NewScaler(validConfig("rc-linux-js", 4), store, &fakeIssuer{}, names("rc-linux-js-a"))
+		scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 4), store, &fakeIssuer{}, names("erainfra-4vcpu-ubuntu-2404-a"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +64,7 @@ func TestScalerRecordsAcquiredJobsWithTheirWorkflowRun(t *testing.T) {
 			RunnerRequestID: 31, Repository: "payable", Owner: "example-org", JobID: "job-31",
 			DisplayName: "e2e", WorkflowRunID: 4242, QueueTime: queued,
 		}}
-		if store.profile != "rc-linux-js" || !reflect.DeepEqual(store.recorded, want) {
+		if store.profile != "erainfra-4vcpu-ubuntu-2404" || !reflect.DeepEqual(store.recorded, want) {
 			t.Fatalf("recorded %q %+v, want %+v", store.profile, store.recorded, want)
 		}
 		if !reflect.DeepEqual(queue.deleted, []int{7}) {

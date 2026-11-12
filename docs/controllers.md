@@ -99,9 +99,9 @@ Each of these is also read under its `RC_` name, which is what the installer wri
 Name a new Profile `erainfra-<N>vcpu-<os><version>[-arm]`, for example `erainfra-4vcpu-ubuntu-2404`
 ([ADR 0010](adr/0010-name-profiles-the-way-runner-vendors-name-labels.md)). The controller
 refuses a name GitHub would misread (uppercase, longer than 45 characters, or a GitHub-hosted label
-such as `ubuntu-latest`) and warns about a legal name outside the scheme. `rc-linux-js` and `rc-e2e`
-predate it and keep working; a Profile is renamed by registering the new name beside the old one,
-never in place, because GitHub holds the scale-set name.
+such as `ubuntu-latest`) and warns about a legal name outside the scheme. A Profile is renamed by
+registering the new name beside the old one, never in place, because GitHub holds the scale-set
+name.
 
 ## Pin a Profile to some Workers
 
@@ -177,11 +177,12 @@ to it, and with no listener they wait until GitHub cancels them after 24 hours. 
 all controller hosts, including Worker standbys, then retire from the dedicated host's saved env:
 
 ```bash
-sudo systemctl disable --now runner-center-controller@rc-linux-js
-sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
-  exec /usr/local/lib/runner-center/runner-center-controller retire'        # report only
-sudo sh -c 'set -a; . /etc/runner-center/profiles/rc-linux-js.env; \
-  exec /usr/local/lib/runner-center/runner-center-controller retire --yes'  # delete and pause
+profile=<profile>   # the Profile to retire
+sudo systemctl disable --now "runner-center-controller@$profile"
+sudo sh -c "set -a; . /etc/runner-center/profiles/$profile.env; \
+  exec /usr/local/lib/runner-center/runner-center-controller retire"        # report only
+sudo sh -c "set -a; . /etc/runner-center/profiles/$profile.env; \
+  exec /usr/local/lib/runner-center/runner-center-controller retire --yes"  # delete and pause
 ```
 
 `retire --yes` acquires the lease, checks GitHub's activity statistics, pauses the Profile and
@@ -295,5 +296,5 @@ VM; execution Workers cannot if the VM has no `/dev/kvm`.
 The release includes `runner-center-controller@.service`. Install the binary and unit in root-owned
 paths, create the unprivileged `runner-center-controller` account, and put one mode-`0600` file per
 Profile at `/etc/runner-center/profiles/<profile>.env`; enabling
-`runner-center-controller@rc-linux-js` then keeps that Profile's listener online independently of
-any Worker.
+`runner-center-controller@erainfra-4vcpu-ubuntu-2404` then keeps that Profile's listener online
+independently of any Worker.

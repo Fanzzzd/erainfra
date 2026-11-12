@@ -91,7 +91,7 @@ describe("Attempt metrics on the Worker", () => {
     startAttemptMetrics({
       attemptId: "attempt-7",
       executor: "docker",
-      runnerName: "rc-linux-js-7",
+      runnerName: "erainfra-4vcpu-ubuntu-2404-7",
       upload: async (body) => void uploads.push(body),
       platform: "linux",
       spawnSampler,
@@ -99,7 +99,7 @@ describe("Attempt metrics on the Worker", () => {
     assert.deepEqual(calls[0]?.args, ["sample"]);
     assert.equal(calls[0]?.env.RC_EXECUTOR, "docker");
     assert.equal(calls[0]?.env.RC_ATTEMPT_ID, "attempt-7");
-    assert.equal(calls[0]?.env.RC_RUNNER_NAME, "rc-linux-js-7");
+    assert.equal(calls[0]?.env.RC_RUNNER_NAME, "erainfra-4vcpu-ubuntu-2404-7");
 
     sampler.line(reportOf(3));
     await tick();

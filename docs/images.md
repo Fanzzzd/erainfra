@@ -61,10 +61,11 @@ a different CPU count from the one it may use, a tool present there and missing 
 directory mounted `noexec`. It runs daily and on every change to the provisioners, the images or
 the readiness code, because those are the three inputs that can move it.
 
-A Profile is declarable only once a Worker serves it on _this_ repository. Scale sets are registered
-per repository, so a leg for a Profile nobody serves here does not fail. It queues until the
-timeout, and a timeout reads exactly like a runner that died. `rc-linux-js` is deliberately not
-declared today for that reason, and is therefore not among what the job proves.
+A Profile is declarable only once a Worker serves it on _this_ repository. A scale set is registered
+on one repository or organization, so a leg for a Profile nobody serves here does not fail. It
+queues until the timeout, and a timeout reads exactly like a runner that died.
+`erainfra-4vcpu-ubuntu-2404` is registered on the bielcrystal-labs organization. It is deliberately
+not declared for that reason, and is therefore not among what the job proves.
 
 ## How pins move
 
