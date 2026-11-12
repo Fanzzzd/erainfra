@@ -69,24 +69,22 @@ function RightsizePage() {
   const key = JSON.stringify([days, repo, refreshes]);
 
   useEffect(() => {
-    let current = true;
+    const stale = new AbortController();
     void (async () => {
       try {
         const next = await convex.query(api.rightsize.report, {
           sinceDays: days,
           ...(repo === "" ? {} : { repo }),
         });
-        if (!current) return;
+        if (stale.signal.aborted) return;
         setReport(next);
         setSettled({ key });
       } catch (caught) {
-        if (!current) return;
+        if (stale.signal.aborted) return;
         setSettled({ key, error: caught instanceof Error ? caught.message : String(caught) });
       }
     })();
-    return () => {
-      current = false;
-    };
+    return () => stale.abort();
   }, [convex, days, repo, key]);
 
   const loading = settled?.key !== key;
