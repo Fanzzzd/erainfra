@@ -35,9 +35,12 @@ jobs:
       - name: Check the base digest
         run: |
           [[ "$BASE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "base must be sha256:<64 hex>"; exit 1; }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Compile the guest and cache helper
         env:
-          GOTOOLCHAIN: go1.27.3
           CGO_ENABLED: "0"
         run: |
           mkdir -p "$RUNNER_TEMP/layer/usr/local/bin"
