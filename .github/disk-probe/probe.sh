@@ -12,6 +12,9 @@
 #   dirty    set vm.dirty_background_bytes and vm.dirty_bytes low
 #   tmpfs    put the pnpm store and the install directory on tmpfs
 #
+# Other words are labels and change nothing, so a matrix can repeat a
+# variant as base+r2.
+#
 # The first dispatch showed that a load whose files are in the guest's page
 # cache takes the same 0.5 s during a burst as after it, and that a load whose
 # files must be read from the disk took 15 s while the Worker flushed the
@@ -46,7 +49,7 @@ repo=$base/repo
 store=$base/store
 mkdir -p "$out"
 : >"$out/phases.log"
-: >"$out/loads.log"
+echo "variant $variant" >"$out/loads.log"
 
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
