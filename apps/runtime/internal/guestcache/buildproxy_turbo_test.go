@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetest"
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // findTurbo returns a real turbo binary: ERAINFRA_TEST_TURBO if set, else the

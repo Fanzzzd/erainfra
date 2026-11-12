@@ -51,8 +51,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 const (

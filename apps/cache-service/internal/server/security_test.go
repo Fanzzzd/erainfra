@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // ADR 0007's security contract, one test per rule and each written before the

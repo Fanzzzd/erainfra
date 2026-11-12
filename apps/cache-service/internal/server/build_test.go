@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/adminapi"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // turboPath and goPath are where the guest proxy forwards turbo's

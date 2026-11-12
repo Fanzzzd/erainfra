@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // Build-system caches: the Turborepo Remote Cache API and the Go build cache.

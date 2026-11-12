@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // The git seed is one git bundle per repository and ref scope: the branches and
