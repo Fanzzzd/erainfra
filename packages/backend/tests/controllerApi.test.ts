@@ -262,6 +262,73 @@ describe("scale-set Attempt protocol", () => {
     expect(settled).toMatchObject({ state: "completed", headBranch: "feature" });
   });
 
+  // GitHub can deliver JobStarted after the job finished, in the same message as its
+  // JobCompleted. The controller then records the start before the completion, but the control
+  // plane receives the start after GitHub's finish time.
+  it("never records a start after the finish when JobStarted arrives late", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    for (const [runnerId, runnerName] of [
+      [1, "assigned"],
+      [2, "unassigned"],
+    ] as const) {
+      await t.mutation(internal.controllerApi.createAttempt, {
+        ...CONTRACT,
+        profile: "rc-linux-js",
+        runnerName,
+        runnerId,
+        encodedJITConfig: "secret",
+      });
+    }
+    const finishedAt = Date.now() - 700;
+    const runnerAssignedAt = finishedAt - 25_000;
+    const started = { profile: "rc-linux-js", displayName: "test", workflowRunId: 99 };
+    const stored = async (runnerName: string) =>
+      t.run(async (ctx) =>
+        ctx.db
+          .query("attempts")
+          .withIndex("by_runnerName", (q) => q.eq("runnerName", runnerName))
+          .unique(),
+      );
+
+    // GitHub's runnerAssignTime is the start, on the clock its FinishTime is on.
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "assigned",
+      assignedAt: runnerAssignedAt - 3_000,
+      runnerAssignedAt,
+    });
+    await t.mutation(internal.controllerApi.markJobCompleted, {
+      profile: "rc-linux-js",
+      runnerName: "assigned",
+      result: "succeeded",
+      finishedAt,
+    });
+    expect(await stored("assigned")).toMatchObject({
+      state: "completed",
+      startedAt: runnerAssignedAt,
+      finishedAt,
+    });
+
+    // Without it the start is the receipt time, later than the finish. The finish wins.
+    await t.mutation(internal.controllerApi.markJobStarted, {
+      ...started,
+      runnerName: "unassigned",
+    });
+    expect((await stored("unassigned"))?.startedAt).toBeGreaterThan(finishedAt);
+    await t.mutation(internal.controllerApi.markJobCompleted, {
+      profile: "rc-linux-js",
+      runnerName: "unassigned",
+      result: "succeeded",
+      finishedAt,
+    });
+    expect(await stored("unassigned")).toMatchObject({
+      state: "completed",
+      startedAt: finishedAt,
+      finishedAt,
+    });
+  });
+
   it("cancels only non-running Attempts and clears their JIT", async () => {
     const t = convexTest(schema, modules);
     await registerProfile(t);
