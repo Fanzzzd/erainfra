@@ -261,13 +261,12 @@ node_convex_install() {
   $NODE_SUDO mv "$NODE_CONVEX_BIN.new" "$NODE_CONVEX_BIN"
   node_log "Installed $NODE_CONVEX_BIN."
   node_convex_install_service ||
-    node_fail 'erainfra-node.service did not start; its last log lines are above. Fix it and re-run, or roll back to Hub mode: systemctl disable --now erainfra-node, then systemctl enable --now portless-agent'
+    node_fail 'erainfra-node.service did not start; its last log lines are above. Fix it and re-run this command.'
   NODE_HUB_STOPPED=''
   node_log "systemd service 'erainfra-node' is active: connect-convex to $NODE_SITE through erainfra-mesh.service."
   printf '%s\n' "   Logs:  journalctl -u erainfra-node -f   (expect 'published mesh endpoint', then 'applied mesh snapshot')"
   printf '%s\n' '   Check: erainfra nodes list   (this Node shows online and MESH proven)'
   printf '%s\n' '   Relays or gateway routes: systemctl edit erainfra-node, add the Environment= lines, then systemctl restart erainfra-node'
-  printf '%s\n' '   Roll back to Hub mode: systemctl disable --now erainfra-node, then systemctl enable --now portless-agent'
   if [ "$NODE_CREDENTIAL_SOURCE" != '/etc/erainfra-node.credential' ]; then
     printf '%s\n' "   The credential is now in /etc/erainfra-node.credential. Delete $NODE_CREDENTIAL_SOURCE."
   fi
