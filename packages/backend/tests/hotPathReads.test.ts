@@ -19,14 +19,6 @@ const justifiedFullScans: Record<string, FullScanAllowance> = {
     occurrences: 1,
     reason: "The bounded 100-row Experiment dashboard joins the operator-managed Worker fleet.",
   },
-  "githubApp.ts:githubApp": {
-    occurrences: 1,
-    reason: "githubApp is an enforced singleton replaced by the App setup mutation.",
-  },
-  "githubApp.ts:githubAppSetups": {
-    occurrences: 1,
-    reason: "Setup states are operator-authored, short-lived, and swept only when setup begins.",
-  },
   "infra/apps.ts:apps": {
     occurrences: 1,
     reason: "The App list is operator-deployed and shown in full, as the Hub showed it.",

@@ -7,7 +7,9 @@ import { internal } from "../convex/_generated/api";
 import {
   GITHUB_REQUEST_TIMEOUT_MS,
   appJwt,
+  controllerApp,
   mintInstallationToken,
+  normalizePrivateKey,
 } from "../convex/controllerGithubToken";
 import schema from "../convex/schema";
 import {
@@ -236,5 +238,23 @@ describe("server-side installation tokens", () => {
     const count = fetch.mock.calls.length;
     expect((await request(grant.epoch)).status).toBe(412);
     expect(fetch).toHaveBeenCalledTimes(count);
+  });
+});
+
+describe("the controller App's environment", () => {
+  it("needs both halves, trimmed", () => {
+    expect(controllerApp({ CONTROLLER_GITHUB_APP_CLIENT_ID: " Iv23.x " })).toBeNull();
+    expect(controllerApp({ CONTROLLER_GITHUB_APP_PRIVATE_KEY: "pem" })).toBeNull();
+    expect(
+      controllerApp({
+        CONTROLLER_GITHUB_APP_CLIENT_ID: " Iv23.x ",
+        CONTROLLER_GITHUB_APP_PRIVATE_KEY: " pem\n",
+      }),
+    ).toEqual({ clientId: "Iv23.x", privateKey: "pem" });
+  });
+
+  it("expands an escaped PEM and leaves a multiline one untouched", () => {
+    expect(normalizePrivateKey("line-1\\nline-2")).toBe("line-1\nline-2");
+    expect(normalizePrivateKey("line-1\nline-2")).toBe("line-1\nline-2");
   });
 });

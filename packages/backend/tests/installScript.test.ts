@@ -39,7 +39,6 @@ import {
   type AgentRelease,
 } from "../convex/agentRelease.ts";
 import { CONTROLLER_UNIT_B64, CONTROLLER_UNIT_SHA256 } from "../convex/controllerUnit.generated.ts";
-import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderInstallScript } from "../convex/installScript.ts";
 import {
   FIRECRACKER_HOST_PROVISIONER_B64,
@@ -47,6 +46,7 @@ import {
   FIRECRACKER_RUNTIME_UNIT_B64,
   FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "../convex/provisionerFirecrackerHost.generated.ts";
+import { resolveSiteUrl } from "../convex/siteUrl.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";

@@ -239,30 +239,6 @@ export default defineSchema({
     .index("by_createdAt", ["createdAt"])
     .index("by_usedAt", ["usedAt"]),
 
-  // Credentials produced by the GitHub App Manifest flow. Convex environment
-  // variables are read-only at runtime, so the callback cannot write back to
-  // `convex env` and stores the App here instead. At most one row exists, and
-  // only internal functions read `privateKey` / `webhookSecret`.
-  githubApp: defineTable({
-    appId: v.number(),
-    clientId: v.string(),
-    slug: v.string(),
-    name: v.string(),
-    privateKey: v.string(),
-    webhookSecret: v.string(),
-    htmlUrl: v.string(),
-    createdAt: v.number(),
-  }),
-
-  // Single-use CSRF state for the Manifest flow. GitHub redirects to an
-  // unauthenticated HTTP route, so this token is what ties the callback back to
-  // the dashboard session that asked for it.
-  githubAppSetups: defineTable({
-    state: v.string(),
-    createdAt: v.number(),
-    usedAt: v.optional(v.number()),
-  }).index("by_state", ["state"]),
-
   // Push deliveries for push-to-deploy (infra/git.ts), keyed by
   // X-GitHub-Delivery so a redelivery deploys nothing a second time. Rows are
   // written settled ("processed"); the other statuses and `workflowJob` belong

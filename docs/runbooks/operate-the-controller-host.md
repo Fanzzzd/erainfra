@@ -33,8 +33,7 @@ server-side environment variables in the Convex dashboard:
 
 Use the same controller App the dedicated host already uses, installed on the Profile's repository
 or organization with the [permissions in Profile controllers](../controllers.md#github-permissions-the-controller-needs).
-The App created by the dashboard's Manifest flow stays separate: its manifest lacks
-organization Self-hosted runners and Contents read. No key or App JWT is returned to a Worker.
+No key or App JWT is returned to a Worker.
 
 Each of the two GitHub calls behind a token request has a 10-second bound, so a GitHub stall
 answers the holder with 504 and it retries. Convex checks the lease again after GitHub answers and

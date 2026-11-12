@@ -288,8 +288,7 @@ in the control plane, not the controller, with the same App. When the deployment
 `ERAINFRA_STRANDED_JOB_ACTION` to `cancel` or `rerun`, it calls
 `POST /repos/{owner}/{repo}/actions/runs/{run_id}/cancel`, `GET` on the run, and
 `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun`. Those need Repository: Actions, Read and
-write. Grant it on the App's settings page. The dashboard's App manifest describes a different App
-and still asks for Actions read only.
+write. Grant it on the App's settings page.
 
 Sources, per endpoint: GitHub's
 [permissions required for GitHub Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
@@ -306,12 +305,10 @@ for `manage_runners:enterprise`; and
 which uses the same scale-set protocol, for Metadata and for "You cannot authenticate using a
 GitHub App for runners at the enterprise level."
 
-The controller App stays separate from the App the dashboard's GitHub App setup creates. Set its
-client ID and private key in Convex as `CONTROLLER_GITHUB_APP_CLIENT_ID` and
-`CONTROLLER_GITHUB_APP_PRIVATE_KEY` for Worker holders. Dedicated hosts can keep their existing
+Set the controller App's client ID and private key in Convex as `CONTROLLER_GITHUB_APP_CLIENT_ID`
+and `CONTROLLER_GITHUB_APP_PRIVATE_KEY` for Worker holders. Dedicated hosts can keep their existing
 `RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials (`ERAINFRA_GITHUB_APP_*` and `ERAINFRA_GITHUB_TOKEN`
-are the same settings). Reusing the dashboard App would widen its manifest
-to organization runner management and Contents read.
+are the same settings).
 
 Convex looks up the controller App's installation for the registered URL and requests only the
 permissions above. Repository tokens name only that repository; organization tokens stay within
@@ -321,11 +318,9 @@ refresh five minutes before expiry. The adapter in `githubscale/token.go` change
 request's bearer without rebuilding the Actions client or dropping its message session; refresh
 failure never extends an expired credential. The App key never leaves Convex.
 
-The dashboard App served the webhook job path, which is removed. Its manifest
-(`packages/backend/convex/githubAppConfig.ts`) still asks for Repository: Administration, read and
-write, and Repository: Actions, read-only, and subscribes to `workflow_job`, which Convex now
-ignores. Convex uses the App only for an installation token to read `actions/runner` releases
-(`convex/github.ts`), and falls back to the controller App when no dashboard App is connected.
+Convex also uses the controller App for an installation token to read `actions/runner` releases
+(`convex/github.ts`). A deployment without the controller App reads them anonymously, within
+GitHub's limit of 60 requests an hour.
 
 Without the installer, use a process supervisor such as systemd with `Restart=always`, a private
 `EnvironmentFile`, and a dedicated unprivileged service account. Controller releases are static Linux/macOS x64/ARM64

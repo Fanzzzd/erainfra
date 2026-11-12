@@ -5,14 +5,11 @@
 // one-hour installation token, narrowed to the Profile's repository (or organization) and to the
 // permissions the controller uses (docs/controllers.md, "GitHub permissions the controller needs").
 //
-// Why environment variables and not the `githubApp` table the dashboard's Manifest flow fills: that
-// App served the retired workflow_job webhook path. Its manifest asks for Repository Administration
-// and Actions read, and nothing at organization scope, while an organization scale set needs
-// Organization Self-hosted runners and the cache facts need Repository Contents read. Widening that
-// App would give the webhook path permissions it does not use, so the controller keeps its own App,
-// the one a dedicated host already holds as RC_GITHUB_APP_*. Moving its key into Convex moves the
-// identity, not the privilege. Convex environment variables are readable by deployment admins only,
-// never by a query, so the key cannot reach a browser or a Worker.
+// The controller's App is the one a dedicated host already holds as RC_GITHUB_APP_*. Moving its key
+// into Convex moves the identity, not the privilege. Convex environment variables are readable by
+// deployment admins only, never by a query, so the key cannot reach a browser or a Worker. The same
+// App also lends the control plane a token for its own calls (strandedJobs.ts) and for reading
+// actions/runner's releases (github.ts).
 //
 // Pure apart from the injected fetch and clock: the HTTP route supplies both, and the tests mock
 // GitHub with them. Web Crypto only, so it runs in Convex's default runtime and in the tests.
@@ -131,9 +128,23 @@ function pemBody(pem: string, label: string) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
+/** Environment variables flatten newlines in some tools; accept the escaped form too. */
+export function normalizePrivateKey(privateKey: string) {
+  return privateKey.includes("\\n") ? privateKey.replace(/\\n/g, "\n") : privateKey;
+}
+
+export type ControllerApp = { clientId: string; privateKey: string };
+
+/** The controller's App as this deployment's environment holds it, or null if either half is unset. */
+export function controllerApp(env: Record<string, string | undefined>): ControllerApp | null {
+  const clientId = env.CONTROLLER_GITHUB_APP_CLIENT_ID?.trim() ?? "";
+  const privateKey = env.CONTROLLER_GITHUB_APP_PRIVATE_KEY?.trim() ?? "";
+  if (clientId.length === 0 || privateKey.length === 0) return null;
+  return { clientId, privateKey };
+}
+
 async function importAppKey(privateKey: string) {
-  // Environment variables flatten newlines in some tools; accept the escaped form too.
-  const pem = privateKey.includes("\\n") ? privateKey.replace(/\\n/g, "\n") : privateKey;
+  const pem = normalizePrivateKey(privateKey);
   const pkcs8 = pemBody(pem, "PRIVATE KEY");
   const pkcs1 = pkcs8 === null ? pemBody(pem, "RSA PRIVATE KEY") : null;
   const der = pkcs8 ?? (pkcs1 === null ? null : pkcs1ToPkcs8(pkcs1));

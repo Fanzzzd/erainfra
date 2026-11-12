@@ -133,7 +133,7 @@ describe("operator commands that act on a Convex deployment", () => {
       "docs/infra-management.md",
       "deploy/infra/gateway.sh",
       "apps/dashboard/src/routes/login.tsx",
-      "packages/backend/convex/githubAppConfig.ts",
+      "packages/backend/convex/http.ts",
     ]) {
       expect(scanned).toContain(runbook);
     }

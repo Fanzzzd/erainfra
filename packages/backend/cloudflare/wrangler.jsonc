@@ -1,5 +1,5 @@
 // The control plane on Cloudflare (ADR 0019). Deploy: `pnpm --filter @erainfra/backend run
-// deploy:cloudflare`. Secrets (JWT_PRIVATE_KEY, JWKS, GITHUB_APP_PRIVATE_KEY, ...) are set with
+// deploy:cloudflare`. Secrets (JWT_PRIVATE_KEY, JWKS, CONTROLLER_GITHUB_APP_PRIVATE_KEY, ...) are set with
 // `wrangler secret put`, the same names the Convex deployment uses.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
