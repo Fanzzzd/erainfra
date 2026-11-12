@@ -95,7 +95,11 @@ type Claims struct {
 	// read.
 	Permission string `json:"permission"`
 	// Attempt is carried for logs only. Nothing is scoped by it.
-	Attempt   string `json:"attempt,omitempty"`
+	Attempt string `json:"attempt,omitempty"`
+	// Runner is the runner whose verified bearer made the request, set by the
+	// server after it checks the token and never read from one. It tells two
+	// jobs apart, so a job's own retry is not mistaken for another job's save.
+	Runner    string `json:"-"`
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 }

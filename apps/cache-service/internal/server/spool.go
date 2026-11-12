@@ -62,9 +62,11 @@ type reservation struct {
 	ref          string
 	key          string
 	version      string
-	path         string
-	limit        int64
-	expires      time.Time
+	// runner is the job that reserved the entry (see holdUpload).
+	runner  string
+	path    string
+	limit   int64
+	expires time.Time
 
 	mu      sync.Mutex
 	file    *os.File
@@ -177,9 +179,11 @@ type session struct {
 	ref          string
 	key          string
 	version      string
-	dir          string
-	limit        int64
-	expires      time.Time
+	// runner is the job that reserved the entry (see holdUpload).
+	runner  string
+	dir     string
+	limit   int64
+	expires time.Time
 
 	mu        sync.Mutex
 	blocks    map[string]stagedBlock
