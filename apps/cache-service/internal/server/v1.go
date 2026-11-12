@@ -168,11 +168,16 @@ func (s *Server) v1Reserve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	held.repository, held.repositoryID, held.ref = claims.Repository, claims.RepositoryID, claims.WriteScope()
-	held.key, held.version = request.Key, request.Version
+	held.key, held.version, held.runner = request.Key, request.Version, claims.Runner
 
-	s.mu.Lock()
-	s.reservations[id] = held
-	s.mu.Unlock()
+	if !s.holdUpload(held.repository, held.ref, held.key, held.version, held.runner, func() { s.reservations[id] = held }) {
+		held.discard()
+		// GitHub's own cache answers a key another job is still saving the same
+		// way, and @actions/cache logs it as a skipped save, not a failure.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"message": fmt.Sprintf("Unable to reserve cache with key %s, another job may be creating this cache.", request.Key)})
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]int64{"cacheId": id})
 }

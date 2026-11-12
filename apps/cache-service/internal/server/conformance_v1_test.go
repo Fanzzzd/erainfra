@@ -297,3 +297,40 @@ func TestV1StoreFaultsDegradeToAMiss(t *testing.T) {
 		})
 	}
 }
+
+// Eight shards that all miss the same key on a cold cache would each rebuild
+// and upload it. The first reservation holds the key until it commits or
+// expires; the others get GitHub's own answer for a key another job is saving.
+func TestV1ReserveRefusesAKeyAnotherJobIsStillUploading(t *testing.T) {
+	h := newHarness(t, nil)
+	shard1 := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+	shard2 := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+	reserveAs := func(token, key, version string) *http.Response {
+		return h.postJSON(v1Path("caches"), token, jsonBody(map[string]any{"key": key, "version": version}))
+	}
+	reserve := func(key, version string) *http.Response { return reserveAs(shard2, key, version) }
+
+	first := reserveAs(shard1, "pnpm-store", versionA)
+	_ = first.Body.Close()
+	if first.StatusCode != http.StatusCreated {
+		t.Fatalf("first reserve = %d, want 201", first.StatusCode)
+	}
+	second := reserve("pnpm-store", versionA)
+	message := string(readAll(t, second))
+	if second.StatusCode != http.StatusConflict || !strings.Contains(message, "another job may be creating this cache") {
+		t.Fatalf("second reserve = %d %s, want 409 naming the other job", second.StatusCode, message)
+	}
+	for _, other := range [][2]string{{"pnpm-store-other", versionA}, {"pnpm-store", versionBuildKit}} {
+		response := reserve(other[0], other[1])
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("reserve %v = %d, want 201: only the same key and version wait", other, response.StatusCode)
+		}
+	}
+	// The job holding the key may reserve it again: a client retry is not another job.
+	retry := reserveAs(shard1, "pnpm-store", versionA)
+	_ = retry.Body.Close()
+	if retry.StatusCode != http.StatusCreated {
+		t.Fatalf("the holder's own retry = %d, want 201", retry.StatusCode)
+	}
+}

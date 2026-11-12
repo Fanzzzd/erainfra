@@ -190,11 +190,15 @@ func (s *Server) v2Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	held.repository, held.repositoryID, held.ref = claims.Repository, claims.RepositoryID, claims.WriteScope()
-	held.key, held.version = request.Key, request.Version
+	held.key, held.version, held.runner = request.Key, request.Version, claims.Runner
 
-	s.mu.Lock()
-	s.sessions[id] = held
-	s.mu.Unlock()
+	if !s.holdUpload(held.repository, held.ref, held.key, held.version, held.runner, func() { s.sessions[id] = held }) {
+		held.discard()
+		s.logger.Info("refused a v2 reservation another job is still uploading",
+			"repository", claims.Repository, "ref", claims.WriteScope(), "key", request.Key)
+		writeJSON(w, http.StatusOK, v2CreateResponse{})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, v2CreateResponse{
 		OK: true,

@@ -331,3 +331,36 @@ func TestV2UnknownMethodIsBadRoute(t *testing.T) {
 		t.Fatalf("status = %d body = %s", response.StatusCode, body)
 	}
 }
+
+// The v2 form of the same rule: a second CreateCacheEntry for a key another job
+// is still uploading answers ok:false, which @actions/cache treats as a skipped
+// save. Once the first upload finalizes, the entry exists and later saves are
+// refused as before.
+func TestV2CreateRefusesAKeyAnotherJobIsStillUploading(t *testing.T) {
+	h := newHarness(t, nil)
+	token := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+	other := h.pushToken("Fanzzzd/erainfra", "refs/heads/main")
+	create := func() v2CreateResponse {
+		response := h.postJSON(v2Path("CreateCacheEntry"), other,
+			jsonBody(map[string]any{"key": "pnpm-store", "version": versionA}))
+		var created v2CreateResponse
+		decodeInto(t, response, &created)
+		return created
+	}
+
+	uploadURL := h.createV2(token, "pnpm-store", versionA)
+	if again := create(); again.OK {
+		t.Fatal("a second CreateCacheEntry for a key still uploading was accepted")
+	}
+
+	body := payload(1024)
+	put := h.do(http.MethodPut, blobPathOf(t, uploadURL), "", bytes.NewReader(body),
+		map[string]string{"x-ms-blob-type": "BlockBlob"})
+	readAll(t, put)
+	if finalized := h.finalizeV2(token, "pnpm-store", versionA, "1024"); !finalized.OK {
+		t.Fatalf("FinalizeCacheEntryUpload = %+v", finalized)
+	}
+	if after := create(); after.OK {
+		t.Fatal("a CreateCacheEntry for a committed key was accepted")
+	}
+}

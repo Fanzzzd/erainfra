@@ -306,6 +306,7 @@ func (s *Server) authenticate(r *http.Request) (cachetoken.Claims, bool) {
 		s.logger.Warn("runner facts do not scope a cache", "runner", runner.Runner, "reason", err)
 		return cachetoken.Claims{}, false
 	}
+	claims.Runner = runner.Runner
 	return claims, true
 }
 
