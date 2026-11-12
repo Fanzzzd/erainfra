@@ -132,6 +132,9 @@ deploy/infra              Node, gateway, relay and Hub installers
 packages/backend          the Convex control plane
 packages/cli              the published `portless` CLI, which talks to the Hub
 packages/release          deterministic release packager
+packages/platform         the store and runtime seam that runs the control plane on Convex or
+                          Cloudflare (ADR 0019)
+packages/typescript-config shared tsconfig presets
 images                    Image Release definitions
 .github/conformance       the environment fingerprint, its diff, and the allowlist of intended
                           differences from `ubuntu-latest`
