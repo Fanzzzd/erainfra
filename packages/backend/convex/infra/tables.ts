@@ -37,12 +37,8 @@ export const auditOutcomeValidator = v.union(
  * Placement roles (CONTEXT.md): which capability a Node carries for the Apps deployed onto it.
  * Only `gateway` changes what Convex sends a Node today (infra/ingress.ts).
  */
-export const placementRoleValidator = v.union(
-  v.literal("gateway"),
-  v.literal("compute"),
-  v.literal("database"),
-  v.literal("relay"),
-);
+export const PLACEMENT_ROLES = ["gateway", "compute", "database", "relay"] as const;
+export const placementRoleValidator = v.union(...PLACEMENT_ROLES.map((role) => v.literal(role)));
 
 /** What phase 1's `erainfra-mesh` publishes so peers can dial a Node without n0's discovery. */
 export const endpointAddrValidator = v.object({

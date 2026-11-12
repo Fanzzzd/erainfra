@@ -20,6 +20,7 @@ import {
 import { apiCallerValidator, requirePermission, requireTokenPermission } from "./access";
 import { isSingleContainerRoute, loadRouteOwner, ownerOfRoute, upsertMeshLink } from "./apps";
 import { appendAudit } from "./auditLog";
+import { recordTombstone } from "./hubProvenance";
 import { INGRESS_PORT_END, INGRESS_PORT_START } from "./ingress";
 import { insertNodeCommand } from "./nodeCommands";
 import {
@@ -29,13 +30,10 @@ import {
   revokeNodeCredential,
   setNodePlacementRoles,
 } from "./nodes";
-
-/** CONTEXT.md, "Placement role". Mirrors tables.ts placementRoleValidator. */
-export const PLACEMENT_ROLES = ["gateway", "compute", "database", "relay"] as const;
-import { recordTombstone } from "./hubProvenance";
 import { isNodeLive, isTerminalStage } from "./policy";
 import { releaseAppPorts } from "./ports";
 import { maskedSecrets, setSecrets, unsetSecret } from "./secrets";
+import { PLACEMENT_ROLES } from "./tables";
 
 type Node = Doc<"nodes">;
 
