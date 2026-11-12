@@ -33,9 +33,9 @@ type Budget struct {
 	MaxHold time.Duration
 }
 
-// DefaultBudget fits a Worker whose guests share one spinning-disk array. On ubuntu0 one or two
-// starting guests keep io "some" under 25%; six starting together hold it at 40 to 60% for
-// minutes.
+// DefaultBudget fits a Worker whose guests share one SATA SSD RAID1 with write-through cache, as on
+// ubuntu0. There one or two starting guests keep io "some" under 25%; six starting together hold
+// it at 40 to 60% for minutes.
 func DefaultBudget() Budget {
 	return Budget{MaxStarting: 2, StartWindow: 60 * time.Second, IOPressureLimit: 30, MaxHold: 120 * time.Second}
 }
