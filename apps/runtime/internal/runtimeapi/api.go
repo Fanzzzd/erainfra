@@ -72,6 +72,10 @@ type recoverRequest struct {
 	LiveAttemptIDs []string `json:"liveAttemptIds"`
 }
 
+type pruneImagesRequest struct {
+	Keep []string `json:"keep"`
+}
+
 // preflightResponse always carries the full readiness Report, including when a
 // check failed: "not ready, and here is exactly which prerequisite is broken"
 // is an answer the Worker forwards to the control plane, not a protocol error.
@@ -146,6 +150,15 @@ func (c *Client) RemoveProfile(ctx context.Context, profile string) error {
 // Firecracker state with the control plane's authoritative live set.
 func (c *Client) RecoverOrphans(ctx context.Context, liveAttemptIDs []string) error {
 	return c.do(ctx, "/v1/recover", recoverRequest{LiveAttemptIDs: liveAttemptIDs}, nil)
+}
+
+// PruneImages deletes the Image Releases no Profile in keep uses, keeping the newest other one.
+func (c *Client) PruneImages(ctx context.Context, keep []string) (executor.ImagePrune, error) {
+	var result executor.ImagePrune
+	if err := c.do(ctx, "/v1/images/prune", pruneImagesRequest{Keep: keep}, &result); err != nil {
+		return executor.ImagePrune{}, err
+	}
+	return result, nil
 }
 
 // Admission reads the start budget and how much of it is in use.
@@ -363,6 +376,26 @@ func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handl
 		}
 		snapshot, live, found := metrics.Snapshot(input.AttemptID)
 		writeJSON(response, http.StatusOK, MetricsResponse{Found: found, Live: live, Snapshot: snapshot})
+	})
+	mux.HandleFunc("POST /v1/images/prune", func(response http.ResponseWriter, request *http.Request) {
+		var input pruneImagesRequest
+		if err := decodeRequest(request, &input); err != nil {
+			writeError(response, err)
+			return
+		}
+		pruner, ok := runtime.(interface {
+			PruneImages(context.Context, []string) (executor.ImagePrune, error)
+		})
+		if !ok {
+			writeError(response, errors.New("this runtime keeps no Image Releases"))
+			return
+		}
+		result, err := pruner.PruneImages(request.Context(), input.Keep)
+		if err != nil {
+			writeError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result)
 	})
 	mux.HandleFunc("POST /v1/admission", func(response http.ResponseWriter, request *http.Request) {
 		if err := decodeRequest(request, &struct{}{}); err != nil {

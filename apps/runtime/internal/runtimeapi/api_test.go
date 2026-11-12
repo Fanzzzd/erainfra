@@ -401,3 +401,28 @@ func TestClientReadsTheStartBudgetState(t *testing.T) {
 		t.Fatal("Admission() on a runtime without a start budget succeeded")
 	}
 }
+
+// pruningExecutor is a fakeExecutor that records the Image Releases it was told to keep.
+type pruningExecutor struct {
+	*fakeExecutor
+	keep []string
+}
+
+func (p *pruningExecutor) PruneImages(_ context.Context, keep []string) (executor.ImagePrune, error) {
+	p.keep = keep
+	return executor.ImagePrune{Kept: keep, Deleted: []string{"old"}}, nil
+}
+
+func TestClientPrunesImageReleases(t *testing.T) {
+	runtime := &pruningExecutor{fakeExecutor: &fakeExecutor{}}
+	got, err := unixClient(t, runtime).PruneImages(t.Context(), []string{"current"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.keep) != 1 || runtime.keep[0] != "current" || len(got.Deleted) != 1 || got.Deleted[0] != "old" {
+		t.Fatalf("PruneImages() = %+v with keep %q", got, runtime.keep)
+	}
+	if _, err := unixClient(t, &fakeExecutor{}).PruneImages(t.Context(), []string{"current"}); err == nil {
+		t.Fatal("PruneImages() on a runtime without Image Releases succeeded")
+	}
+}

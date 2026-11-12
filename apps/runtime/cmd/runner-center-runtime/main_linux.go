@@ -49,7 +49,7 @@ func run(ctx context.Context, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, errors.New(
 			"usage: runner-center-runtime " +
-				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment|sample|admission",
+				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment|sample|admission|prune-images",
 		)
 	}
 	if args[0] == "version" {
@@ -168,6 +168,8 @@ func run(ctx context.Context, args []string) (int, error) {
 		return runExperiment(ctx, client)
 	case "sample":
 		return runSample(ctx, client)
+	case "prune-images":
+		return pruneImages(ctx, client)
 	case "admission":
 		// The Action Runner Agent forwards this document in its heartbeat.
 		state, err := client.Admission(ctx)
@@ -181,6 +183,30 @@ func run(ctx context.Context, args []string) (int, error) {
 	default:
 		return 2, fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// pruneImages reads the Image Releases to keep as a JSON array on stdin, the Action Runner
+// Agent's current Profiles, and prints what the runtime kept and deleted.
+func pruneImages(ctx context.Context, client *runtimeapi.Client) (int, error) {
+	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxRecoveryBytes+1))
+	if err != nil {
+		return 2, fmt.Errorf("read Image Releases to keep: %w", err)
+	}
+	if len(payload) > maxRecoveryBytes {
+		return 2, errors.New("Image Releases to keep exceed 2 MiB") //nolint:staticcheck // ST1005: Image Release is a CONTEXT.md domain term
+	}
+	var keep []string
+	if err := json.Unmarshal(payload, &keep); err != nil {
+		return 2, errors.New("Image Releases to keep must be a JSON array of strings") //nolint:staticcheck // ST1005: Image Release is a CONTEXT.md domain term
+	}
+	result, err := client.PruneImages(ctx, keep)
+	if err != nil {
+		return 1, err
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		return 1, fmt.Errorf("write prune result: %w", err)
+	}
+	return 0, nil
 }
 
 func recoverOrphans(ctx context.Context, client *runtimeapi.Client) (int, error) {
