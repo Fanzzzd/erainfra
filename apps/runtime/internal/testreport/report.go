@@ -22,8 +22,9 @@ import (
 // Version is the report format. A reader refuses any other value.
 const Version = 1
 
-// Bounds on one report. The control plane enforces the same numbers
-// (packages/backend/convex/testReportsModel.ts); change both together.
+// Bounds on one report. The control plane enforces the shared ones as well;
+// testdata/test-report-limits.json holds their values and both sides test
+// against it.
 const (
 	// MaxCases is how many individual cases a report carries: every failed,
 	// errored and flaky case first, then the slowest passes.
