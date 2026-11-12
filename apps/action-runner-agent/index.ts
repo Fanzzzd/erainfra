@@ -681,10 +681,20 @@ async function heartbeat() {
     // plane routes new jobs elsewhere while this reports overBudget.
     const startBudget =
       preparedFirecrackerProfiles.size > 0 ? await readAdmissionState() : undefined;
-    const machine = await client.mutation(heartbeatAgent, {
-      token: config.machineToken,
-      ...(startBudget ? { startBudget } : {}),
-    });
+    let machine: { maxSlots: number };
+    try {
+      machine = await client.mutation(heartbeatAgent, {
+        token: config.machineToken,
+        ...(startBudget ? { startBudget } : {}),
+      });
+    } catch (error) {
+      if (!startBudget) throw error;
+      // A control plane older than this Agent rejects the field. A heartbeat without it keeps
+      // the Worker schedulable; only the start budget routing is lost until the control plane
+      // is deployed.
+      console.error("Heartbeat with the start budget failed; sending it without", error);
+      machine = await client.mutation(heartbeatAgent, { token: config.machineToken });
+    }
     maxSlots = machine.maxSlots;
     pump();
   } catch (error) {
