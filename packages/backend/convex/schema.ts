@@ -263,11 +263,11 @@ export default defineSchema({
     usedAt: v.optional(v.number()),
   }).index("by_state", ["state"]),
 
-  // Durable webhook intake. The HTTP route verifies the signature, records the
-  // delivery keyed by X-GitHub-Delivery and returns 2xx immediately; a
-  // scheduled mutation does the real work. GitHub never retries a failed
-  // delivery, so the row is the only thing standing between a transient error
-  // and a permanently lost job.
+  // Push deliveries for push-to-deploy (infra/git.ts), keyed by
+  // X-GitHub-Delivery so a redelivery deploys nothing a second time. Rows are
+  // written settled ("processed"); the other statuses and `workflowJob` belong
+  // to the retired workflow_job intake and stay only so its last rows validate
+  // until reconcile's retention deletes them (DELIVERY_RETENTION_MS).
   webhookDeliveries: defineTable({
     deliveryId: v.string(),
     event: v.string(),
@@ -278,8 +278,7 @@ export default defineSchema({
       v.literal("rejected"),
       v.literal("failed"),
     ),
-    // The narrowed workflow_job event, not the raw payload: everything the
-    // processor needs, nothing else retained.
+    // Written by nothing. Drop after the last such row ages out.
     workflowJob: v.optional(
       v.object({
         action: v.union(v.literal("queued"), v.literal("in_progress"), v.literal("completed")),
@@ -293,9 +292,7 @@ export default defineSchema({
         conclusion: v.optional(v.string()),
       }),
     ),
-    // A push delivery for push-to-deploy (infra/git.ts). Recorded here rather
-    // than in a table of its own so one X-GitHub-Delivery id is seen once
-    // whichever surface it is for, and reconcile's retention covers both.
+    // The push and what it did.
     push: v.optional(
       v.object({
         repo: v.string(),
@@ -313,117 +310,8 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_status_receivedAt", ["status", "receivedAt"]),
 
-  // One row per delivery GUID we have asked GitHub to redeliver. Some
-  // deliveries can never be accepted — a payload parseWorkflowJob rejects, a
-  // signature from a retired secret — and without this row they would be
-  // re-requested on every run for the whole window GitHub keeps them.
-  //
-  // `guid` is GitHub's delivery GUID, which is what it sends as
-  // X-GitHub-Delivery and therefore what `webhookDeliveries.deliveryId` holds
-  // once a delivery finally lands.
-  webhookRecovery: defineTable({
-    guid: v.string(),
-    // GitHub's numeric id for the failed attempt we asked it to repeat.
-    githubDeliveryId: v.number(),
-    event: v.string(),
-    deliveredAt: v.number(),
-    // The status GitHub recorded for that attempt, so an operator can tell a
-    // rotated secret (401) from a cold deployment (0 or 5xx).
-    statusCode: v.number(),
-    // Redelivery requests we made, capped by recovery.MAX_RECOVERY_ATTEMPTS.
-    attempts: v.number(),
-    firstRequestedAt: v.number(),
-    lastRequestedAt: v.number(),
-    nextAttemptAt: v.number(),
-    state: v.union(v.literal("requested"), v.literal("recovered"), v.literal("abandoned")),
-    // Status-code text only; a GitHub response body never reaches this field.
-    lastError: v.optional(v.string()),
-  })
-    .index("by_guid", ["guid"])
-    .index("by_state", ["state"])
-    .index("by_state_lastRequestedAt", ["state", "lastRequestedAt"]),
-
-  // Singleton run record for the recovery cron: the watermark it scans from and
-  // the circuit breaker that stops it from hammering GitHub — or its own
-  // deployment — every five minutes when something is broken.
-  webhookRecoveryState: defineTable({
-    scannedThrough: v.number(),
-    lastRunAt: v.number(),
-    lastSuccessAt: v.optional(v.number()),
-    nextRunAt: v.number(),
-    consecutiveFailures: v.number(),
-    lastOutcome: v.union(
-      v.literal("pending"),
-      v.literal("ok"),
-      v.literal("skipped-no-app"),
-      v.literal("skipped-backoff"),
-      v.literal("error"),
-    ),
-    lastError: v.optional(v.string()),
-    // Counters from the most recent completed scan.
-    listed: v.number(),
-    missing: v.number(),
-    requested: v.number(),
-  }),
-
-  jobs: defineTable({
-    ghJobId: v.number(),
-    githubInstallationId: v.optional(v.number()),
-    repo: v.string(),
-    workflowName: v.string(),
-    labels: v.array(v.string()),
-    status: v.union(
-      v.literal("queued"),
-      v.literal("assigned"),
-      v.literal("running"),
-      v.literal("done"),
-      v.literal("failed"),
-    ),
-    machineId: v.optional(v.id("machines")),
-    runnerName: v.optional(v.string()),
-    queuedAt: v.number(),
-    startedAt: v.optional(v.number()),
-    finishedAt: v.optional(v.number()),
-    conclusion: v.optional(v.string()),
-    // Provisioning attempt bookkeeping. Optional so rows written by an earlier
-    // deployment keep validating; absent means "zero attempts so far".
-    attempts: v.optional(v.number()),
-    lastError: v.optional(v.string()),
-    // Backoff gate: the scheduler skips a queued job until this passes.
-    nextAttemptAt: v.optional(v.number()),
-    // The machine whose last attempt failed, so a retry prefers another host.
-    lastFailedMachineId: v.optional(v.id("machines")),
-  })
-    .index("by_status", ["status"])
-    .index("by_status_queuedAt", ["status", "queuedAt"])
-    .index("by_ghJobId", ["ghJobId"]),
-
-  commands: defineTable({
-    machineId: v.id("machines"),
-    jobId: v.id("jobs"),
-    jitConfig: v.optional(v.string()),
-    image: v.optional(v.string()),
-    runnerName: v.string(),
-    // GitHub's id for the JIT runner registration, kept so an abandoned
-    // registration can be deleted instead of lingering as an offline runner.
-    runnerId: v.optional(v.number()),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("claimed"),
-      v.literal("cancelled"),
-      v.literal("finished"),
-    ),
-    claimedAt: v.optional(v.number()),
-    cancelledAt: v.optional(v.number()),
-    exitCode: v.optional(v.number()),
-  })
-    .index("by_machine_status", ["machineId", "status"])
-    .index("by_status", ["status"])
-    .index("by_jobId", ["jobId"])
-    .index("by_runnerName", ["runnerName"]),
-
-  // Scale-set-native execution records. Unlike the legacy `jobs` table, an
-  // Attempt exists before GitHub assigns a concrete job: the official listener
+  // Scale-set-native execution records. An Attempt exists before GitHub
+  // assigns a concrete job: the official listener
   // asks for capacity, EraInfra prepares one ephemeral runner, and a later
   // JobStarted message binds the GitHub metadata to it by runnerName.
   attempts: defineTable({
@@ -787,19 +675,6 @@ export default defineSchema({
   })
     .index("by_destination", ["destinationId"])
     .index("by_status_createdAt", ["status", "createdAt"]),
-
-  // Work queue for deleting JIT runner registrations that were created on
-  // GitHub but never consumed. Mutations cannot call GitHub, so they enqueue
-  // here and an action drains it.
-  runnerDeletions: defineTable({
-    repo: v.string(),
-    githubInstallationId: v.optional(v.number()),
-    runnerId: v.number(),
-    runnerName: v.string(),
-    createdAt: v.number(),
-    attempts: v.number(),
-    lastError: v.optional(v.string()),
-  }).index("by_createdAt", ["createdAt"]),
 
   // Jobs a controller acquired that no Runner has taken yet, for stranded job recovery
   // (strandedJobsModel.ts).

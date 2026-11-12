@@ -11,11 +11,9 @@ import {
 } from "./attemptRetirement";
 import { deleteAttemptSecret } from "./attemptSecrets";
 import { deleteAttemptEgress } from "./egress";
-import { decideAttemptOutcome } from "./retry";
-import { discardCommand, enqueueRunnerDeletion } from "./runners";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
-// Measured from the moment the agent claimed the command, not from when it was
+// Measured from the moment the Worker claimed the Attempt, not from when it was
 // created: a cold `docker pull` or a first `tart clone` legitimately takes many
 // minutes, and tearing that down mid-flight provisions a second runner for a
 // job that is already starting.
@@ -23,24 +21,16 @@ const ASSIGNMENT_STUCK_MS = 45 * 60_000;
 const RUNNING_ABANDONED_MS = 10 * 60_000;
 const QUEUE_EXPIRED_MS = 24 * 60 * 60_000;
 const REGISTRATION_TOKEN_RETENTION_MS = 60 * 60_000;
-const FINISHED_JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
 // The dashboard shows only the newest 200 Attempts and 100 Experiments. Keep
-// terminal work for the same 30-day diagnostic window as finished Jobs, then
-// delete it in bounded batches; pending runner-cleanup tombstones are retained
-// until their controller acknowledges them.
-export const TERMINAL_WORK_RETENTION_MS = FINISHED_JOB_RETENTION_MS;
-// Must stay strictly greater than recovery.RECOVERY_WINDOW_MS — asserted in
-// tests/recovery.test.ts. These rows are what tells the recovery scan a
-// delivery already arrived. If one expired while GitHub could still list its
-// delivery, the scan would read that absence as a loss, ask for a redelivery,
-// and re-apply a stale `queued` event for a job that finished days ago.
+// terminal work for a 30-day diagnostic window, then delete it in bounded
+// batches; pending runner-cleanup tombstones are retained until their
+// controller acknowledges them.
+export const TERMINAL_WORK_RETENTION_MS = 30 * 24 * 60 * 60_000;
+// A push delivery row is what makes a GitHub redelivery of it a duplicate
+// (infra/git.ts). GitHub redelivers for up to three days.
 export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
-// Settled recovery rows are diagnostics, kept on the same clock as the
-// deliveries they describe.
-const RECOVERY_RETENTION_MS = DELIVERY_RETENTION_MS;
 const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 const ACTIVE_EXPERIMENT_STATES = ["queued", "preparing", "running"] as const;
-const ACTIVE_COMMAND_STATES = ["pending", "claimed", "cancelled"] as const;
 const TERMINAL_ATTEMPT_STATES = ["completed", "cancelled", "failed"] as const;
 const TERMINAL_EXPERIMENT_STATES = ["completed", "cancelled", "failed"] as const;
 
@@ -51,7 +41,6 @@ export const run = internalMutation({
     abandoned: v.number(),
     expired: v.number(),
     slotsRepaired: v.number(),
-    deliveriesRetried: v.number(),
   }),
   handler: async (
     ctx,
@@ -60,43 +49,10 @@ export const run = internalMutation({
     abandoned: number;
     expired: number;
     slotsRepaired: number;
-    deliveriesRetried: number;
   }> => {
     const now = Date.now();
 
-    const [
-      assignedJobs,
-      runningJobs,
-      queuedJobs,
-      commandRanges,
-      finishedCommands,
-      attemptRanges,
-      experimentRanges,
-    ] = await Promise.all([
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "assigned"))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "running"))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "queued"))
-        .collect(),
-      Promise.all(
-        ACTIVE_COMMAND_STATES.map((status) =>
-          ctx.db
-            .query("commands")
-            .withIndex("by_status", (query) => query.eq("status", status))
-            .collect(),
-        ),
-      ),
-      ctx.db
-        .query("commands")
-        .withIndex("by_status", (query) => query.eq("status", "finished"))
-        .take(200),
+    const [attemptRanges, experimentRanges] = await Promise.all([
       Promise.all(
         ACTIVE_ATTEMPT_STATES.map((state) =>
           ctx.db
@@ -115,11 +71,10 @@ export const run = internalMutation({
       ),
     ]);
 
-    const commands = commandRanges.flat();
     const attempts = attemptRanges.flat();
     const experiments = experimentRanges.flat();
     const referencedMachineIds = new Set(
-      [...assignedJobs, ...runningJobs, ...queuedJobs, ...attempts, ...experiments].flatMap((row) =>
+      [...attempts, ...experiments].flatMap((row) =>
         row.machineId === undefined ? [] : [row.machineId],
       ),
     );
@@ -138,111 +93,10 @@ export const run = internalMutation({
     const machines = [...machinesById.values()];
 
     const machineSlots = new Map(machines.map((machine) => [machine._id, machine.usedSlots]));
-    const commandsByJob = new Map<string, typeof commands>();
-
-    for (const command of finishedCommands) {
-      await ctx.db.delete(command._id);
-    }
-    for (const command of commands) {
-      const jobCommands = commandsByJob.get(command.jobId) ?? [];
-      jobCommands.push(command);
-      commandsByJob.set(command.jobId, jobCommands);
-    }
 
     let requeued = 0;
     let abandoned = 0;
     let expired = 0;
-
-    for (const job of assignedJobs) {
-      const machine = job.machineId === undefined ? undefined : machinesById.get(job.machineId);
-      const agentOffline =
-        machine === undefined || now - machine.lastSeen > WORKER_OFFLINE_AFTER_MS;
-      const currentCommands = (commandsByJob.get(job._id) ?? []).filter(
-        (command) => command.runnerName === job.runnerName && command.machineId === job.machineId,
-      );
-      const startedAt = currentCommands.reduce(
-        (latest, command) => Math.max(latest, command.claimedAt ?? command._creationTime),
-        0,
-      );
-      const assignmentStuck = startedAt > 0 && now - startedAt > ASSIGNMENT_STUCK_MS;
-
-      if (!agentOffline && !assignmentStuck) continue;
-
-      for (const command of commandsByJob.get(job._id) ?? []) {
-        await discardCommand(ctx, command, job);
-      }
-      if (machine !== undefined) {
-        const usedSlots = Math.max(0, (machineSlots.get(machine._id) ?? machine.usedSlots) - 1);
-        machineSlots.set(machine._id, usedSlots);
-        await ctx.db.patch(machine._id, { usedSlots });
-      }
-
-      // Same bounded-retry path as a provisioner failure: an agent that never
-      // comes back must not keep the job cycling forever.
-      const reason = agentOffline
-        ? `Agent for ${machine?.name ?? "the assigned machine"} stopped reporting`
-        : `Provisioning did not start within ${Math.round(ASSIGNMENT_STUCK_MS / 60_000)} minutes`;
-      const outcome = decideAttemptOutcome(job.attempts ?? 1, now, reason);
-      if (outcome.kind === "exhausted") {
-        await ctx.db.patch(job._id, {
-          status: "failed",
-          conclusion: "provision-failed",
-          finishedAt: now,
-          lastError: outcome.lastError,
-          machineId: undefined,
-          runnerName: undefined,
-          nextAttemptAt: undefined,
-        });
-      } else {
-        await ctx.db.patch(job._id, {
-          status: "queued",
-          machineId: undefined,
-          runnerName: undefined,
-          lastError: outcome.lastError,
-          nextAttemptAt: outcome.nextAttemptAt,
-          lastFailedMachineId: job.machineId,
-        });
-        requeued += 1;
-      }
-    }
-
-    for (const job of runningJobs) {
-      const machine = job.machineId === undefined ? undefined : machinesById.get(job.machineId);
-      const agentAbandoned = machine === undefined || now - machine.lastSeen > RUNNING_ABANDONED_MS;
-
-      if (!agentAbandoned) continue;
-
-      await ctx.db.patch(job._id, {
-        status: "failed",
-        conclusion: "abandoned",
-        finishedAt: now,
-      });
-      for (const command of commandsByJob.get(job._id) ?? []) {
-        if (command.status !== "finished") {
-          await ctx.db.patch(command._id, { status: "finished" });
-        }
-        // The host vanished mid-job, so its runner cannot deregister itself.
-        await enqueueRunnerDeletion(ctx, command, job);
-      }
-      if (machine !== undefined) {
-        const usedSlots = Math.max(0, (machineSlots.get(machine._id) ?? machine.usedSlots) - 1);
-        machineSlots.set(machine._id, usedSlots);
-        await ctx.db.patch(machine._id, { usedSlots });
-      }
-      abandoned += 1;
-    }
-
-    for (const job of queuedJobs) {
-      if (now - job.queuedAt <= QUEUE_EXPIRED_MS) continue;
-
-      await ctx.db.patch(job._id, {
-        status: "failed",
-        conclusion: "expired",
-        finishedAt: now,
-        nextAttemptAt: undefined,
-      });
-      expired += 1;
-    }
 
     for (const attempt of attempts) {
       if (attempt.machineId === undefined) {
@@ -380,7 +234,8 @@ export const run = internalMutation({
     )) {
       await ctx.db.delete(registrationId);
     }
-    for (const status of ["processed", "rejected", "failed"] as const) {
+    // "pending" too: a workflow_job row left pending by the retired intake has nothing to retry it.
+    for (const status of ["pending", "processed", "rejected", "failed"] as const) {
       const settled = await ctx.db
         .query("webhookDeliveries")
         .withIndex("by_status_receivedAt", (q) =>
@@ -391,34 +246,6 @@ export const run = internalMutation({
       for (const delivery of settled) {
         if (now - (delivery.settledAt ?? delivery.receivedAt) >= DELIVERY_RETENTION_MS) {
           await ctx.db.delete(delivery._id);
-        }
-      }
-    }
-    for (const recoveryState of ["recovered", "abandoned"] as const) {
-      const settled = await ctx.db
-        .query("webhookRecovery")
-        .withIndex("by_state_lastRequestedAt", (q) =>
-          q.eq("state", recoveryState).lte("lastRequestedAt", now - RECOVERY_RETENTION_MS),
-        )
-        .order("asc")
-        .take(200);
-      for (const row of settled) {
-        if (now - row.lastRequestedAt >= RECOVERY_RETENTION_MS) {
-          await ctx.db.delete(row._id);
-        }
-      }
-    }
-    for (const status of ["done", "failed"] as const) {
-      const finishedJobs = await ctx.db
-        .query("jobs")
-        .withIndex("by_status_queuedAt", (q) =>
-          q.eq("status", status).lte("queuedAt", now - FINISHED_JOB_RETENTION_MS),
-        )
-        .order("asc")
-        .take(100);
-      for (const job of finishedJobs) {
-        if (now - (job.finishedAt ?? job._creationTime) >= FINISHED_JOB_RETENTION_MS) {
-          await ctx.db.delete(job._id);
         }
       }
     }
@@ -485,18 +312,8 @@ export const run = internalMutation({
       }
     }
 
-    // Recompute from durable active work after recovery. The old implementation
-    // counted only legacy Jobs and silently reset scale-set/Experiment slots to
-    // zero every minute.
-    const [currentJobRanges, currentAttemptRanges, currentExperimentRanges] = await Promise.all([
-      Promise.all(
-        (["assigned", "running"] as const).map((status) =>
-          ctx.db
-            .query("jobs")
-            .withIndex("by_status", (query) => query.eq("status", status))
-            .collect(),
-        ),
-      ),
+    // Recompute from durable active work after recovery.
+    const [currentAttemptRanges, currentExperimentRanges] = await Promise.all([
       Promise.all(
         ACTIVE_ATTEMPT_STATES.map((state) =>
           ctx.db
@@ -514,7 +331,6 @@ export const run = internalMutation({
         ),
       ),
     ]);
-    const currentJobs = currentJobRanges.flat();
     const currentAttempts = currentAttemptRanges.flat();
     const currentExperiments = currentExperimentRanges.flat();
     const expectedByMachine = new Map<string, number>();
@@ -522,7 +338,6 @@ export const run = internalMutation({
       if (machineId === undefined) return;
       expectedByMachine.set(machineId, (expectedByMachine.get(machineId) ?? 0) + 1);
     }
-    for (const job of currentJobs) count(job.machineId);
     for (const attempt of currentAttempts) count(attempt.machineId);
     for (const experiment of currentExperiments) count(experiment.machineId);
 
@@ -537,23 +352,10 @@ export const run = internalMutation({
       slotsRepaired += 1;
     }
 
-    const deliveries = await ctx.runMutation(internal.webhooks.retryStalledDeliveries, { now });
-
     if (requeued > 0 || abandoned > 0 || expired > 0 || slotsRepaired > 0) {
-      await ctx.scheduler.runAfter(0, internal.scheduler.tryAssign, {});
       await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     }
-    const orphanedRunners = await ctx.db.query("runnerDeletions").take(1);
-    if (orphanedRunners.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.github.drainRunnerDeletions, {});
-    }
 
-    return {
-      requeued,
-      abandoned,
-      expired,
-      slotsRepaired,
-      deliveriesRetried: deliveries.retried,
-    };
+    return { requeued, abandoned, expired, slotsRepaired };
   },
 });

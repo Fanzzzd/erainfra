@@ -4,8 +4,8 @@
 // so two concurrent binds could both pass. Here both checks and the insert are one transaction.
 //
 // The Hub also deployed once per webhook request, so a GitHub redelivery deployed again. The
-// intake here records every delivery by X-GitHub-Delivery in the same `webhookDeliveries` table
-// the CI intake uses (webhooks.ts) and queues at most one run per delivery.
+// intake here records every delivery by X-GitHub-Delivery in the `webhookDeliveries` table and
+// queues at most one run per delivery.
 import { ConvexError, v } from "convex/values";
 
 import type { Doc, Id } from "../_generated/dataModel";

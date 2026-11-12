@@ -261,7 +261,7 @@ export function buildMetricFamilies(
   );
   const slotsUsed = family(
     "erainfra_machine_slots_used",
-    "Slots held by Attempts, Experiments and legacy jobs on the Worker.",
+    "Slots held by Attempts and Experiments on the Worker.",
   );
   const benchmarkScore = family(
     "erainfra_machine_benchmark_score",

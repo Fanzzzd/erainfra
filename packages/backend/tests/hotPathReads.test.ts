@@ -43,10 +43,6 @@ const justifiedFullScans: Record<string, FullScanAllowance> = {
     occurrences: 1,
     reason: "The Node list is the operator-enrolled fleet, shown in full like machines.",
   },
-  "jobs.ts:machines": {
-    occurrences: 1,
-    reason: "The bounded 200-row Job dashboard joins the operator-managed Worker fleet.",
-  },
   "rightsize.ts:profiles": {
     occurrences: 1,
     reason:

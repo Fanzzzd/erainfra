@@ -14,17 +14,11 @@ import {
   evaluateSetupState,
   isSetupStateCollectable,
   resolveCredentialSource,
-  summarizeLegacyCredentials,
   canConnectApp,
   toAppSummary,
 } from "./githubAppConfig";
 
-const sourceValidator = v.union(
-  v.literal("manifest"),
-  v.literal("envApp"),
-  v.literal("pat"),
-  v.literal("none"),
-);
+const sourceValidator = v.union(v.literal("manifest"), v.literal("envApp"), v.literal("none"));
 
 // Exactly the fields that may cross the wire to a browser. The private key and
 // webhook secret are absent by construction, not by filtering.
@@ -52,17 +46,8 @@ function credentialEnv() {
   return {
     appId: process.env.GITHUB_APP_ID,
     privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
-    pat: process.env.GITHUB_PAT,
   };
 }
-
-// Presence only. Named to make it obvious at the call site that no secret value
-// is being read into a client-facing payload.
-const legacyValidator = v.object({
-  webhookSecretConfigured: v.boolean(),
-  patConfigured: v.boolean(),
-  cutoverIncomplete: v.boolean(),
-});
 
 export const status = query({
   args: {},
@@ -71,7 +56,6 @@ export const status = query({
     source: sourceValidator,
     canConnect: v.boolean(),
     app: v.union(v.null(), appSummaryValidator),
-    legacy: legacyValidator,
   }),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
@@ -82,12 +66,6 @@ export const status = query({
       source,
       canConnect: canConnectApp(source),
       app: app === null ? null : toAppSummary(app),
-      // Booleans, not values: the operator needs to know the legacy webhook
-      // secret is still an accepted signing key, and nothing more.
-      legacy: summarizeLegacyCredentials(source, {
-        webhookSecret: process.env.GITHUB_WEBHOOK_SECRET,
-        pat: process.env.GITHUB_PAT,
-      }),
     };
   },
 });

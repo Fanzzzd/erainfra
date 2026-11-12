@@ -1,6 +1,6 @@
 import { api } from "@erainfra/backend/api";
 import { controllerLiveness, type ControllerLiveness } from "@erainfra/backend/controllerLiveness";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
   Check,
@@ -405,8 +405,6 @@ function MachinesPage() {
         </Dialog>
       </PageHeader>
 
-      <AllowlistWarning />
-
       <div className="grid gap-3 sm:grid-cols-3">
         <StatTile
           label="Machines online"
@@ -632,7 +630,6 @@ function MachinesPage() {
                       <ActiveRuns
                         attempts={machine.currentAttempts}
                         experiments={machine.currentExperiments}
-                        legacyJobs={machine.currentJobs}
                       />
                     </TableCell>
                   </TableRow>
@@ -730,33 +727,6 @@ function AddNodeInstructions({
   );
 }
 
-/**
- * Registering machines is pointless while intake rejects everything, and the
- * rejection is otherwise invisible from this page — so the warning belongs
- * here, next to onboarding, not only on the Jobs page where the diagnosis
- * lives. Silent when the allowlist is set.
- */
-function AllowlistWarning() {
-  const policy = useQuery(api.settings.repositoryPolicy);
-  if (policy === undefined || policy.configured) return null;
-
-  return (
-    <Alert variant="destructive">
-      <ShieldAlert />
-      <AlertTitle>No repositories are allowed yet</AlertTitle>
-      <AlertDescription>
-        <p>
-          <code>ALLOWED_REPOS</code> is unset, so every workflow job is rejected. Set it before
-          installing the GitHub App.
-        </p>
-        <Link to="/jobs" className="underline underline-offset-2 hover:text-destructive-foreground">
-          See rejected deliveries
-        </Link>
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 function StatTile({
   label,
   value,
@@ -851,7 +821,6 @@ function ProfileReadiness({
 function ActiveRuns({
   attempts,
   experiments,
-  legacyJobs,
 }: {
   attempts: Array<{
     _id: string;
@@ -863,14 +832,8 @@ function ActiveRuns({
     name: string;
     state: "queued" | "preparing" | "running";
   }>;
-  legacyJobs: Array<{
-    _id: string;
-    repo: string;
-    workflowName: string;
-    status: "assigned" | "running";
-  }>;
 }) {
-  if (attempts.length === 0 && experiments.length === 0 && legacyJobs.length === 0) {
+  if (attempts.length === 0 && experiments.length === 0) {
     return <span className="text-subtle-foreground">—</span>;
   }
 
@@ -898,21 +861,6 @@ function ActiveRuns({
             {experiment.name}
           </span>
           <span className="text-xs text-subtle-foreground">experiment</span>
-        </div>
-      ))}
-      {legacyJobs.map((job) => (
-        <div key={job._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-          <StatusDot
-            tone={job.status === "running" ? "success" : "warning"}
-            live={job.status === "running"}
-          />
-          <span className="sr-only">{job.status}: </span>
-          <span className="max-w-40 truncate font-mono text-[12px] text-secondary-foreground">
-            {job.repo}
-          </span>
-          <span className="max-w-40 truncate text-xs text-subtle-foreground">
-            {job.workflowName}
-          </span>
         </div>
       ))}
     </div>

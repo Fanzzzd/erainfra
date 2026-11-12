@@ -14,7 +14,6 @@ const modules = {
 const STORED_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----stored-secret-material";
 const STORED_WEBHOOK_SECRET = "whsec_stored_secret_material";
 const ENV_WEBHOOK_SECRET = "whsec_legacy_env_secret";
-const ENV_PAT = "ghp_legacy_env_pat";
 
 beforeEach(() => {
   vi.unstubAllEnvs();
@@ -49,7 +48,6 @@ describe("githubApp.status", () => {
     const t = setup();
     await storeApp(t);
     vi.stubEnv("GITHUB_WEBHOOK_SECRET", ENV_WEBHOOK_SECRET);
-    vi.stubEnv("GITHUB_PAT", ENV_PAT);
     vi.stubEnv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----env");
 
     const status = await asOperator(t).query(api.githubApp.status, {});
@@ -61,36 +59,10 @@ describe("githubApp.status", () => {
       STORED_PRIVATE_KEY,
       STORED_WEBHOOK_SECRET,
       ENV_WEBHOOK_SECRET,
-      ENV_PAT,
       "-----BEGIN RSA PRIVATE KEY-----env",
     ]) {
       expect(serialized).not.toContain(secret);
     }
-  });
-
-  it("exposes legacy credentials as presence booleans only", async () => {
-    const t = setup();
-    await storeApp(t);
-    vi.stubEnv("GITHUB_WEBHOOK_SECRET", ENV_WEBHOOK_SECRET);
-    vi.stubEnv("GITHUB_PAT", ENV_PAT);
-
-    const status = await asOperator(t).query(api.githubApp.status, {});
-
-    expect(status.legacy).toEqual({
-      webhookSecretConfigured: true,
-      patConfigured: true,
-      cutoverIncomplete: true,
-    });
-  });
-
-  it("reports a finished cut-over once the legacy secrets are removed", async () => {
-    const t = setup();
-    await storeApp(t);
-
-    const status = await asOperator(t).query(api.githubApp.status, {});
-
-    expect(status.legacy.cutoverIncomplete).toBe(false);
-    expect(status.legacy.webhookSecretConfigured).toBe(false);
   });
 
   // Precedence is the invariant this change must not disturb.
@@ -99,7 +71,6 @@ describe("githubApp.status", () => {
     await storeApp(t);
     vi.stubEnv("GITHUB_APP_ID", "999");
     vi.stubEnv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----env");
-    vi.stubEnv("GITHUB_PAT", ENV_PAT);
 
     const status = await asOperator(t).query(api.githubApp.status, {});
 
@@ -108,17 +79,14 @@ describe("githubApp.status", () => {
     expect(status.app?.appId).toBe(4242);
   });
 
-  it("still reports the legacy path before an App is connected, without prompting", async () => {
+  it("ignores a GITHUB_PAT left in the environment", async () => {
     const t = setup();
-    vi.stubEnv("GITHUB_WEBHOOK_SECRET", ENV_WEBHOOK_SECRET);
-    vi.stubEnv("GITHUB_PAT", ENV_PAT);
+    vi.stubEnv("GITHUB_PAT", "ghp_retired");
 
     const status = await asOperator(t).query(api.githubApp.status, {});
 
-    expect(status.source).toBe("pat");
-    expect(status.legacy.webhookSecretConfigured).toBe(true);
-    // Removing the only working credentials is not advice worth giving.
-    expect(status.legacy.cutoverIncomplete).toBe(false);
+    expect(status.source).toBe("none");
+    expect(status.configured).toBe(false);
   });
 
   it("requires a signed-in operator", async () => {

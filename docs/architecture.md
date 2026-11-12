@@ -57,10 +57,7 @@ Both Linux executors use the new Profile and scale-set protocol. Docker delibera
 bind mounts, privileged mode, Docker socket, or shared volume, but it shares the host kernel and
 the Docker daemon can inspect container state. That is why Docker Profiles are restricted to
 mutually trusted jobs and should map to one trust domain. Use Firecracker for untrusted code. The
-dashboard shows the real boundary, `guest kernel` or `shared kernel`, next to every Profile. The
-old `workflow_job` webhook scheduler remains temporarily for migration; the dashboard labels its
-Jobs view and GitHub App setup as legacy. Webhook intake stores a `workflow_job` delivery only when
-that scheduler acts on it: the job's labels include `self-hosted`, or it already holds the job.
+dashboard shows the real boundary, `guest kernel` or `shared kernel`, next to every Profile.
 
 ## Security properties
 
@@ -76,7 +73,7 @@ that scheduler acts on it: the job's labels include `self-hosted`, or it already
 - Image and product releases are immutable and checksum/provenance verified.
 - The Linux guest obtains workload metadata through MMDSv2; it has no host SSH path.
 - Worker cancellation terminates the complete executor process group and destroys VM state.
-- A minute reconciliation repairs slots across legacy Jobs, scale-set Attempts, and Experiments,
+- A minute reconciliation repairs slots across scale-set Attempts and Experiments,
   requeues only unclaimed work, and fails abandoned claimed work.
 - Profile readiness expires operationally when a Worker heartbeat is older than two minutes.
 - Secrets are never written into workflow files, process arguments, image layers, or logs.
@@ -105,15 +102,13 @@ Two sets of names are outside this rule. A job still sees `RC_VCPUS` and `RC_MEM
 environment, because workflows read them. The cache service's settings were `ERAINFRA_CACHE_*` from
 the start.
 
-## Legacy webhook delivery recovery
+## Webhook intake
 
-Minute reconciliation calls `retryStalledDeliveries` for deliveries that reached Convex but remained
-pending, retrying them with a bounded attempt count before marking them failed. GitHub App
-deployments also repair events that never reached Convex with a separate five-minute scan: it lists
-recent failed App deliveries, deduplicates them by their stable delivery GUID, records bounded
-retry/backoff state in `webhookRecovery`, and asks GitHub to redeliver only missing, still-useful
-events. The dashboard exposes the latest scan and any recovered or abandoned delivery; deployments
-using only a legacy PAT can retry received rows but cannot recover events that never arrived.
+`/github/webhook` acts only on `push`, for push-to-deploy (`convex/infra/git.ts`). It records each
+push by its `X-GitHub-Delivery` id in `webhookDeliveries`, so a redelivery deploys nothing twice.
+Every other verified event, `workflow_job` included, is answered 200 and ignored. The webhook job
+path that stored `workflow_job` events, assigned them to Workers as `commands` and redelivered
+missed events is removed (ADR 0005); Profiles learn about jobs from their scale-set controller.
 
 ## Repository layout
 

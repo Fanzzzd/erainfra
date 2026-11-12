@@ -14,7 +14,6 @@ import { Route as AppsRouteImport } from './routes/apps'
 import { Route as AttemptsRouteImport } from './routes/attempts'
 import { Route as DeploymentsRouteImport } from './routes/deployments'
 import { Route as ExperimentsRouteImport } from './routes/experiments'
-import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as LinksRouteImport } from './routes/links'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as NodesRouteImport } from './routes/nodes'
@@ -46,11 +45,6 @@ const DeploymentsRoute = DeploymentsRouteImport.update({
 const ExperimentsRoute = ExperimentsRouteImport.update({
   id: '/experiments',
   path: '/experiments',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const JobsRoute = JobsRouteImport.update({
-  id: '/jobs',
-  path: '/jobs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LinksRoute = LinksRouteImport.update({
@@ -95,7 +89,6 @@ export interface FileRoutesByFullPath {
   '/attempts': typeof AttemptsRoute
   '/deployments': typeof DeploymentsRoute
   '/experiments': typeof ExperimentsRoute
-  '/jobs': typeof JobsRoute
   '/links': typeof LinksRoute
   '/login': typeof LoginRoute
   '/nodes': typeof NodesRoute
@@ -110,7 +103,6 @@ export interface FileRoutesByTo {
   '/attempts': typeof AttemptsRoute
   '/deployments': typeof DeploymentsRoute
   '/experiments': typeof ExperimentsRoute
-  '/jobs': typeof JobsRoute
   '/links': typeof LinksRoute
   '/login': typeof LoginRoute
   '/nodes': typeof NodesRoute
@@ -126,7 +118,6 @@ export interface FileRoutesById {
   '/attempts': typeof AttemptsRoute
   '/deployments': typeof DeploymentsRoute
   '/experiments': typeof ExperimentsRoute
-  '/jobs': typeof JobsRoute
   '/links': typeof LinksRoute
   '/login': typeof LoginRoute
   '/nodes': typeof NodesRoute
@@ -143,7 +134,6 @@ export interface FileRouteTypes {
     | '/attempts'
     | '/deployments'
     | '/experiments'
-    | '/jobs'
     | '/links'
     | '/login'
     | '/nodes'
@@ -158,7 +148,6 @@ export interface FileRouteTypes {
     | '/attempts'
     | '/deployments'
     | '/experiments'
-    | '/jobs'
     | '/links'
     | '/login'
     | '/nodes'
@@ -173,7 +162,6 @@ export interface FileRouteTypes {
     | '/attempts'
     | '/deployments'
     | '/experiments'
-    | '/jobs'
     | '/links'
     | '/login'
     | '/nodes'
@@ -189,7 +177,6 @@ export interface RootRouteChildren {
   AttemptsRoute: typeof AttemptsRoute
   DeploymentsRoute: typeof DeploymentsRoute
   ExperimentsRoute: typeof ExperimentsRoute
-  JobsRoute: typeof JobsRoute
   LinksRoute: typeof LinksRoute
   LoginRoute: typeof LoginRoute
   NodesRoute: typeof NodesRoute
@@ -234,13 +221,6 @@ declare module '@tanstack/react-router' {
       path: '/experiments'
       fullPath: '/experiments'
       preLoaderRoute: typeof ExperimentsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/jobs': {
-      id: '/jobs'
-      path: '/jobs'
-      fullPath: '/jobs'
-      preLoaderRoute: typeof JobsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/links': {
@@ -301,7 +281,6 @@ const rootRouteChildren: RootRouteChildren = {
   AttemptsRoute: AttemptsRoute,
   DeploymentsRoute: DeploymentsRoute,
   ExperimentsRoute: ExperimentsRoute,
-  JobsRoute: JobsRoute,
   LinksRoute: LinksRoute,
   LoginRoute: LoginRoute,
   NodesRoute: NodesRoute,

@@ -1,5 +1,5 @@
 // Pure decision logic for dashboard account bootstrap. Kept free of Convex
-// bindings so the rules can be unit tested directly, the same way policy.ts is.
+// bindings so the rules can be unit tested directly, the same way githubAppConfig.ts is.
 
 /**
  * A shorter secret than this is refused outright. 32 characters is the width of

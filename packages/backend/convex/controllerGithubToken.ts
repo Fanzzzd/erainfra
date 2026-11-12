@@ -6,7 +6,7 @@
 // permissions the controller uses (docs/controllers.md, "GitHub permissions the controller needs").
 //
 // Why environment variables and not the `githubApp` table the dashboard's Manifest flow fills: that
-// App serves the legacy workflow_job webhook path. Its manifest asks for Repository Administration
+// App served the retired workflow_job webhook path. Its manifest asks for Repository Administration
 // and Actions read, and nothing at organization scope, while an organization scale set needs
 // Organization Self-hosted runners and the cache facts need Repository Contents read. Widening that
 // App would give the webhook path permissions it does not use, so the controller keeps its own App,
