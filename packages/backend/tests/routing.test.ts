@@ -379,3 +379,148 @@ describe("GET /runs-on?profile=", () => {
     });
   });
 });
+
+describe("router decisions", () => {
+  const DAY_MS = 24 * 60 * 60_000;
+
+  function decisions(t: Harness) {
+    return t.run((ctx) => ctx.db.query("routerDecisions").collect());
+  }
+
+  it("stores each answer with its route, reason and repository", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+
+    const routed = await runsOn(t, "profile=rc-linux-js&fallback=ubuntu-24.04&repo=acme/web");
+    expect(routed.body).toEqual({ "runs-on": "rc-linux-js" });
+    const fellBack = await runsOn(t, "profile=rc-nothing&repo=acme/web");
+    expect(fellBack.body).toEqual({ "runs-on": "ubuntu-latest" });
+    await runsOn(t, "profile=rc-linux-js");
+
+    const rows = (await decisions(t)).map((row) => ({
+      profile: row.profile,
+      answer: row.answer,
+      route: row.route,
+      reason: row.reason,
+      repo: row.repo,
+    }));
+    expect(rows).toEqual([
+      {
+        profile: "rc-linux-js",
+        answer: "rc-linux-js",
+        route: "profile",
+        reason: undefined,
+        repo: "acme/web",
+      },
+      {
+        profile: "rc-nothing",
+        answer: "ubuntu-latest",
+        route: "fallback",
+        reason: "unknown-profile",
+        repo: "acme/web",
+      },
+      {
+        profile: "rc-linux-js",
+        answer: "rc-linux-js",
+        route: "profile",
+        reason: undefined,
+        repo: undefined,
+      },
+    ]);
+  });
+
+  it("stores the legacy labels answer", async () => {
+    const t = convexTest(schema, modules);
+
+    const { body } = await runsOn(t, "labels=rc-linux&fallback=ubuntu-24.04&repo=acme/web");
+    expect(body).toEqual({ "runs-on": "ubuntu-24.04" });
+    expect(await decisions(t)).toMatchObject([
+      {
+        labels: ["self-hosted", "rc-linux"],
+        answer: "ubuntu-24.04",
+        route: "fallback",
+        repo: "acme/web",
+      },
+    ]);
+  });
+
+  it("refuses a repo that is not OWNER/NAME and stores nothing", async () => {
+    const t = convexTest(schema, modules);
+
+    for (const repo of [
+      "acme",
+      "acme/web/x",
+      "%3Cscript%3E/web",
+      "-acme/web",
+      `acme/${"x".repeat(101)}`,
+    ]) {
+      expect((await runsOn(t, `profile=rc-linux-js&repo=${repo}`)).status).toBe(400);
+    }
+    expect(await decisions(t)).toEqual([]);
+  });
+
+  it("counts decisions per day, route and reason for one repository", async () => {
+    const t = convexTest(schema, modules);
+    const day = Date.UTC(2026, 10, 1);
+    const hour = 60 * 60_000;
+    await t.run(async (ctx) => {
+      const rows = [
+        { repo: "acme/web", createdAt: day + hour, route: "profile" as const },
+        { repo: "acme/web", createdAt: day + 2 * hour, route: "profile" as const },
+        {
+          repo: "acme/web",
+          createdAt: day + 3 * hour,
+          route: "fallback" as const,
+          reason: "saturated" as const,
+        },
+        {
+          repo: "acme/web",
+          createdAt: day + 25 * hour,
+          route: "fallback" as const,
+          reason: "paused" as const,
+        },
+        { repo: "acme/api", createdAt: day + hour, route: "profile" as const },
+        { repo: "acme/web", createdAt: day + 49 * hour, route: "profile" as const },
+      ];
+      for (const row of rows) {
+        await ctx.db.insert("routerDecisions", { profile: "rc-linux-js", answer: "x", ...row });
+      }
+    });
+
+    expect(
+      await t.query(internal.routerDecisions.counts, {
+        repo: "acme/web",
+        from: day,
+        to: day + 48 * hour,
+      }),
+    ).toEqual({
+      truncated: false,
+      rows: [
+        { day: "2026-11-01", route: "profile", count: 2 },
+        { day: "2026-11-01", route: "fallback", reason: "saturated", count: 1 },
+        { day: "2026-11-02", route: "fallback", reason: "paused", count: 1 },
+      ],
+    });
+    const all = await t.query(internal.routerDecisions.counts, { from: day, to: day + hour + 1 });
+    expect(all.rows).toEqual([{ day: "2026-11-01", route: "profile", count: 2 }]);
+  });
+
+  it("purges decisions older than 90 days", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (const age of [91, 89]) {
+        await ctx.db.insert("routerDecisions", {
+          profile: "rc-linux-js",
+          answer: "rc-linux-js",
+          route: "profile",
+          createdAt: now - age * DAY_MS,
+        });
+      }
+    });
+
+    expect(await t.mutation(internal.routerDecisions.purgeExpired, {})).toBe(1);
+    expect((await decisions(t)).map((row) => row.createdAt)).toEqual([now - 89 * DAY_MS]);
+  });
+});
