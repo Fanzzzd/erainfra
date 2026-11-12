@@ -1,0 +1,14 @@
+{
+  "_comment": "Bounds on one test report that the guest (apps/runtime/internal/testreport) and the control plane (packages/backend/convex/testReportsModel.ts) both enforce. Each side's table test maps every key here to its own constant, so a bound changed on one side alone turns one suite red. Change a bound here first.",
+  "limits": {
+    "cases": 500,
+    "passed": 20000,
+    "files": 200,
+    "idBytes": 512,
+    "nameBytes": 512,
+    "messageBytes": 1024,
+    "total": 10000000,
+    "durationMs": 604800000,
+    "passedHashLength": 12
+  }
+}

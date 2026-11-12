@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/cachefacts"
 	"github.com/Fanzzzd/erainfra/apps/controller/internal/githubapi"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 	"github.com/actions/scaleset"
 )
 

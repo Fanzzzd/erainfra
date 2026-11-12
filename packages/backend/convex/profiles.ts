@@ -1,6 +1,5 @@
 import { v } from "convex/values";
 
-import type { Doc } from "./_generated/dataModel";
 import { query, type QueryCtx } from "./_generated/server";
 import { isSchedulableReadiness } from "./attemptScheduler";
 import { fitPolicyValidator } from "./benchmark";
@@ -159,8 +158,7 @@ export async function listProfiles(ctx: QueryCtx) {
         const machine = machineById.get(row.machineId);
         if (machine === undefined) return [];
         const evidence = evidenceByKey.get(`${row.machineId}:${row.profile}`);
-        // Evidence must describe this exact hot report. Until the next Agent
-        // refresh creates it, fall back to the legacy inline fields.
+        // Evidence must describe this exact hot report.
         const currentEvidence = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
         const admissionError = readinessAdmissionError(row, evidence, profileEgressOf(profile));
         return [
@@ -170,25 +168,21 @@ export async function listProfiles(ctx: QueryCtx) {
             state: effectiveReadinessState(row, evidence, profileEgressOf(profile)),
             checkedAt: row.checkedAt,
             preparedAt: row.preparedAt,
-            statusDetail: currentEvidence?.statusDetail ?? row.statusDetail,
+            statusDetail: currentEvidence?.statusDetail,
             online: now - machine.lastSeen < WORKER_OFFLINE_AFTER_MS,
             maxSlots: machine.maxSlots,
             usedSlots: machine.usedSlots,
-            isolation: currentEvidence?.isolation ?? row.isolation,
-            boundary: currentEvidence?.boundary ?? row.boundary,
-            cacheScope: currentEvidence?.cacheScope ?? row.cacheScope,
-            cacheSharedWritable: currentEvidence?.cacheSharedWritable ?? row.cacheSharedWritable,
-            checks: currentEvidence?.checks ?? row.checks,
-            hardware: currentEvidence?.hardware ?? row.hardware,
-            storage: currentEvidence?.storage ?? row.storage,
-            // The legacy hot row is the same shape without the egress half.
-            network: (currentEvidence?.network ?? row.network) as
-              | Doc<"readinessEvidence">["network"]
-              | undefined,
+            isolation: currentEvidence?.isolation,
+            boundary: currentEvidence?.boundary,
+            cacheScope: currentEvidence?.cacheScope,
+            cacheSharedWritable: currentEvidence?.cacheSharedWritable,
+            checks: currentEvidence?.checks,
+            hardware: currentEvidence?.hardware,
+            storage: currentEvidence?.storage,
+            network: currentEvidence?.network,
             lastError:
               pinDetail(profile.workerLabels, machine.labels) ??
               currentEvidence?.lastError ??
-              row.lastError ??
               admissionError,
           },
         ];

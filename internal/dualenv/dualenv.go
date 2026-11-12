@@ -58,22 +58,9 @@ func (e *ConflictError) Error() string {
 	)
 }
 
-// Get returns the value of ERAINFRA_<NAME>, or of RC_<NAME> when the new name is unset or empty.
-// It fails when both are set to different non-empty values.
-func Get(legacy string) (string, error) {
-	newName := NewName(legacy)
-	current, old := os.Getenv(newName), os.Getenv(legacy)
-	if current != "" && old != "" && current != old {
-		return "", &ConflictError{New: newName, Legacy: legacy}
-	}
-	if current != "" {
-		return current, nil
-	}
-	return old, nil
-}
-
-// Value is Get for a process that has already passed Check, which is the only state in which the
-// two names cannot disagree. Called before Check it still prefers the new name, but a conflict is
+// Value returns the value of ERAINFRA_<NAME>, or of RC_<NAME> when the new name is unset or empty.
+// It is correct once the process has passed Check, the only state in which the two names cannot
+// disagree. Called before Check it still prefers the new name, but a conflict is
 // then nobody's error, so every entry point calls Check first.
 func Value(legacy string) string {
 	newName := NewName(legacy)

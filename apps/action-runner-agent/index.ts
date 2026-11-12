@@ -33,7 +33,6 @@ import {
   reportAttemptWithRunnerExit,
   spawnAttempt,
   spawnExperiment,
-  spawnProvisioner,
   type AttemptExecution,
   type ExperimentExecution,
   type MachineOs,
@@ -53,20 +52,6 @@ import {
 } from "./readiness.js";
 import { createStopHandler, createWorkCounter } from "./stop.js";
 
-type PendingCommand = { commandId: string; runnerName: string };
-type PendingCommandsResult = {
-  os: MachineOs;
-  maxSlots: number;
-  commands: PendingCommand[];
-  liveCommandIds?: string[];
-};
-type ClaimedCommand = {
-  jitConfig: string;
-  image?: string;
-  runnerName: string;
-  os: MachineOs;
-};
-
 type PendingAttempt = { attemptId: string; runnerName: string };
 type PendingAttemptsResult = {
   maxSlots: number;
@@ -84,23 +69,9 @@ type PendingExperimentsResult = {
 type ClaimedExperiment = Omit<ExperimentExecution, "experimentId">;
 
 type WorkItem =
-  | { kind: "command"; id: string; runnerName: string }
   | { kind: "attempt"; id: string; runnerName: string }
   | { kind: "experiment"; id: string; runnerName: string };
 
-const pendingCommands = makeFunctionReference<"query", { token: string }, PendingCommandsResult>(
-  "agentApi:pendingCommands",
-);
-const claimCommand = makeFunctionReference<
-  "mutation",
-  { token: string; commandId: string },
-  ClaimedCommand | null
->("agentApi:claim");
-const reportCommand = makeFunctionReference<
-  "mutation",
-  { token: string; commandId: string; exitCode: number },
-  boolean
->("agentApi:report");
 const heartbeatAgent = makeFunctionReference<
   "mutation",
   { token: string; startBudget?: AdmissionState },
@@ -192,7 +163,7 @@ const reportExperiment = makeFunctionReference<
 const client = new ConvexClient(config.convexUrl);
 const queuedIds = new Set<string>();
 const queue: WorkItem[] = [];
-const running = new Map<string, ReturnType<typeof spawnProvisioner>>();
+const running = new Map<string, ReturnType<typeof spawnAttempt>>();
 const work = createWorkCounter();
 let maxSlots = 1;
 let shuttingDown = false;
@@ -287,47 +258,6 @@ async function refreshBenchmark() {
 
 function workKey(kind: WorkItem["kind"], id: string) {
   return `${kind}:${id}`;
-}
-
-async function runLegacyCommand(item: Extract<WorkItem, { kind: "command" }>) {
-  let exitCode = 1;
-  let claimedByThisAgent = false;
-  try {
-    const claimed = await client.mutation(claimCommand, {
-      token: config.machineToken,
-      commandId: item.id,
-    });
-    if (claimed === null) return;
-    claimedByThisAgent = true;
-    console.log(`Starting legacy ephemeral runner ${claimed.runnerName}`);
-    const child = spawnProvisioner(
-      claimed.os,
-      claimed.jitConfig,
-      claimed.runnerName,
-      claimed.image,
-    );
-    running.set(workKey(item.kind, item.id), child);
-    try {
-      const result = await child;
-      exitCode = result.exitCode ?? 1;
-    } finally {
-      running.delete(workKey(item.kind, item.id));
-    }
-  } catch (error) {
-    console.error(`Legacy provisioning ${item.runnerName} failed`, error);
-  } finally {
-    if (claimedByThisAgent) {
-      try {
-        await client.mutation(reportCommand, {
-          token: config.machineToken,
-          commandId: item.id,
-          exitCode,
-        });
-      } catch (error) {
-        console.error(`Reporting ${item.runnerName} failed`, error);
-      }
-    }
-  }
 }
 
 async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) {
@@ -527,9 +457,7 @@ async function runExperiment(item: Extract<WorkItem, { kind: "experiment" }>) {
 }
 
 async function runWork(item: WorkItem) {
-  if (item.kind === "command") {
-    await runLegacyCommand(item);
-  } else if (item.kind === "attempt") {
+  if (item.kind === "attempt") {
     await runScaleSetAttempt(item);
   } else {
     await runExperiment(item);
@@ -859,20 +787,6 @@ await publishReadinessSignal(dualEnv("RC_READY_FILE"), dualEnv("RC_AGENT_VERSION
 console.log(`EraInfra Worker connected to ${config.convexUrl}; discovering compatible Profiles`);
 acceptingWork = true;
 
-const unsubscribeCommands = client.onUpdate(
-  pendingCommands,
-  { token: config.machineToken },
-  (result) => {
-    maxSlots = result.maxSlots;
-    reconcileWithServer("command", result.liveCommandIds);
-    for (const command of result.commands) {
-      enqueue({ kind: "command", id: command.commandId, runnerName: command.runnerName });
-    }
-    pump();
-  },
-  (error) => console.error("Legacy command subscription failed", error),
-);
-
 const unsubscribeAttempts = client.onUpdate(
   pendingAttempts,
   { token: config.machineToken },
@@ -944,7 +858,6 @@ const shutdown = createStopHandler({
   finish: async () => {
     clearInterval(heartbeatTimer);
     if (coreReconcileTimer !== undefined) clearTimeout(coreReconcileTimer);
-    unsubscribeCommands();
     unsubscribeAttempts();
     unsubscribeExperiments();
     unsubscribeProfiles();

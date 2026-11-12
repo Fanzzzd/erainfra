@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // adminFactsMarker is the path the controller pushes job facts to. It is not a

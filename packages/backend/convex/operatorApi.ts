@@ -22,8 +22,8 @@ const attemptStateValidator = v.union(
   v.literal("failed"),
 );
 
-/** An Attempt as the API may show it: never the single-use JIT config. */
-export type OperatorAttempt = Omit<Doc<"attempts">, "jitConfig"> & { workerName?: string };
+/** An Attempt as the API shows it. The single-use JIT config lives in attemptSecrets, not here. */
+export type OperatorAttempt = Doc<"attempts"> & { workerName?: string };
 
 async function withWorkerNames(ctx: QueryCtx, attempts: Doc<"attempts">[]) {
   const machineIds = [
@@ -34,7 +34,7 @@ async function withWorkerNames(ctx: QueryCtx, attempts: Doc<"attempts">[]) {
     const machine = await ctx.db.get(machineId);
     if (machine !== null) names.set(machineId, machine.name);
   }
-  return attempts.map(({ jitConfig: _jitConfig, ...attempt }): OperatorAttempt => ({
+  return attempts.map((attempt): OperatorAttempt => ({
     ...attempt,
     workerName: attempt.machineId === undefined ? undefined : names.get(attempt.machineId),
   }));

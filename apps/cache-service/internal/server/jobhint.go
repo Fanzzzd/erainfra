@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // Job hints. GitHub's JobStarted message, which the controller derives a job's

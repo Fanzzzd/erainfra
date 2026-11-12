@@ -1,7 +1,7 @@
 import { ConvexError, v, type Infer } from "convex/values";
 
 import type { Doc, Id } from "../_generated/dataModel";
-import { mutation, query, type MutationCtx, type QueryCtx } from "../_generated/server";
+import { mutation, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";
 import { recordTombstone } from "./hubProvenance";
 import {
@@ -134,28 +134,6 @@ async function assertNotLastOwner(ctx: QueryCtx, target: Doc<"users">, verb: str
     throw new ConvexError(`Cannot ${verb} the last owner account`);
   }
 }
-
-export const listUsers = query({
-  args: {},
-  returns: v.array(
-    v.object({
-      _id: v.id("users"),
-      email: v.optional(v.string()),
-      role: permissionRoleValidator,
-      createdAt: v.number(),
-    }),
-  ),
-  handler: async (ctx) => {
-    await requirePermission(ctx, "account.admin");
-    const users = await ctx.db.query("users").collect();
-    return users.map((user) => ({
-      _id: user._id,
-      email: user.email,
-      role: effectiveRole(user.role),
-      createdAt: user.createdAt ?? user._creationTime,
-    }));
-  },
-});
 
 export const setUserRole = mutation({
   args: { userId: v.id("users"), role: permissionRoleValidator },

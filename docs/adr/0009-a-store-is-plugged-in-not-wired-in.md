@@ -1,6 +1,8 @@
 # ADR 0009: A store is plugged in, not wired in, and the freedom lives at the service↔store seam
 
-- Status: Proposed
+- Status: Accepted, implemented in part. The cache service, proxy download and the `cacheService`
+  pin (v0.2.0-rc.9) shipped. §6's `--role cache-store` installer role has not; the cache service is
+  installed by hand ([operate-the-job-cache.md](../runbooks/operate-the-job-cache.md)).
 - Date: 2026-08-20
 - Owners: EraInfra
 - Amends: [ADR 0007](0007-serve-the-actions-cache-protocol-from-an-s3-compatible-store.md)

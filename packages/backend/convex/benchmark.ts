@@ -100,14 +100,6 @@ export type StoredBenchmark = BenchmarkReport & {
   };
 };
 
-export type BenchmarkSummary = Pick<StoredBenchmark, "measuredAt" | "scores">;
-
-export function isStoredBenchmark(
-  benchmark: BenchmarkSummary | StoredBenchmark | undefined,
-): benchmark is StoredBenchmark {
-  return benchmark !== undefined && "reportedAt" in benchmark;
-}
-
 function boundedNumber(value: number | undefined, name: string, minimum: number, maximum: number) {
   if (value !== undefined && (!Number.isFinite(value) || value < minimum || value > maximum)) {
     throw new ConvexError(`${name} is outside the accepted benchmark range`);
@@ -242,7 +234,7 @@ export function normalizeBenchmark(report: BenchmarkReport, reportedAt: number):
 }
 
 export function benchmarkScore(
-  benchmark: BenchmarkSummary | undefined,
+  benchmark: Pick<StoredBenchmark, "measuredAt" | "scores"> | undefined,
   policy: FitPolicy,
   now: number,
 ) {

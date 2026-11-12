@@ -33,7 +33,7 @@ func set(t *testing.T, name string, value *string) {
 
 func ptr(value string) *string { return &value }
 
-func TestGet(t *testing.T) {
+func TestValueAfterCheck(t *testing.T) {
 	for _, row := range []struct {
 		name       string
 		current    *string
@@ -60,11 +60,11 @@ func TestGet(t *testing.T) {
 			set(t, "ERAINFRA_DUALENV_TEST", row.current)
 			set(t, "RC_DUALENV_TEST", row.legacy)
 
-			got, err := Get("RC_DUALENV_TEST")
+			err := Check()
 			if row.conflicted {
 				var conflict *ConflictError
 				if !errors.As(err, &conflict) {
-					t.Fatalf("Get = %q, %v; want a ConflictError", got, err)
+					t.Fatalf("Check = %v; want a ConflictError", err)
 				}
 				for _, name := range []string{"ERAINFRA_DUALENV_TEST", "RC_DUALENV_TEST"} {
 					if !strings.Contains(err.Error(), name) {
@@ -78,11 +78,11 @@ func TestGet(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || got != row.want {
-				t.Fatalf("Get = %q, %v; want %q", got, err, row.want)
+			if err != nil {
+				t.Fatalf("Check = %v, want nil", err)
 			}
 			if value := Value("RC_DUALENV_TEST"); value != row.want {
-				t.Fatalf("Value = %q, want %q, the same answer Get gives", value, row.want)
+				t.Fatalf("Value = %q, want %q", value, row.want)
 			}
 		})
 	}
@@ -178,7 +178,7 @@ func TestNoWorkerSideGoCodeReadsAnRCVariableDirectly(t *testing.T) {
 			}
 			walked++
 			for _, match := range raw.FindAllString(string(source), -1) {
-				t.Errorf("%s: %s reads one name only; use dualenv.Value or dualenv.Get", path, match)
+				t.Errorf("%s: %s reads one name only; use dualenv.Value", path, match)
 			}
 			return nil
 		})

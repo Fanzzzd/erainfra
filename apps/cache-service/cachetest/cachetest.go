@@ -24,11 +24,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore/fakes3"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/server"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // signingKey is fixed: nothing outside the test process ever holds it.
@@ -195,7 +195,3 @@ func (s *Service) Metric(series string) int64 {
 	}
 	return -1
 }
-
-// Close stops the service before the test ends, which is how a test makes the
-// cache unreachable mid-job.
-func (s *Service) Close() { s.http.Close() }

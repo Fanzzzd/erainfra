@@ -123,6 +123,11 @@ account that ran `sudo` becomes the Worker account unless `--worker-user` names 
 (`--pool-gib`, `--pool-dir`), which is for evaluation only, for the reason under the flags below.
 `--uninstall` reverses it.
 
+`--data-device` and `--meta-device` belong to the thin-pool from then on, so never name a partition
+holding data. A new pair must be zero-filled in full before the first provision.
+Thin-pool setup never erases either device: it reopens valid metadata, initializes a pair it has
+read back as entirely zero, and refuses anything else.
+
 To run the script from a checkout instead, download the matching
 `runner-center-runtime-linux-<arch>` release asset, verify its `.sha256` sidecar, then:
 
@@ -162,6 +167,22 @@ sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
 # the full readiness report, one line per prerequisite
 /usr/local/lib/runner-center/runner-center-runtime preflight
 ```
+
+### Re-provision a live Worker
+
+Re-running the `worker-host` role or the provisioner on a live Worker, to move the runtime to a
+newer release or to apply a `runtime.env` change, refuses while any Firecracker VM runs on the
+host. That includes the idle warm VMs the runtime keeps parked for the next job, so a Worker with no
+jobs still refuses. Provisioning reloads the job network policy and restarts the runtime, which
+would end those VMs. Drain first, as the refusal lists:
+
+1. Wait until the dashboard's Attempts page shows nothing running on the Worker. For a Profile's
+   only Worker, follow [take the only Worker out of service](runbooks/take-the-only-worker-away.md).
+2. `sudo systemctl stop runner-center-runtime`, which ends the idle warm VMs.
+3. `pgrep -x firecracker` must print nothing. Then re-run.
+
+`deploy/provision-firecracker-host.sh --force-network-reload` provisions anyway, and every running
+job ends when it restarts the runtime. The `worker-host` role has no such option.
 
 ### Old Image Releases
 

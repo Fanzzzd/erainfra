@@ -213,8 +213,10 @@ Runbooks for operators:
 - [Operate Profile controllers](docs/runbooks/operate-the-controller-host.md).
 - [Move a Profile to Firecracker](docs/runbooks/firecracker-cutover.md).
 - [Restrict a Profile's egress](docs/runbooks/restrict-job-egress.md).
-- [Run the job cache](docs/runbooks/operate-the-job-cache.md) and [a registry mirror](docs/runbooks/operate-the-registry-mirror.md).
+- [Run the job cache](docs/runbooks/operate-the-job-cache.md), [a registry mirror](docs/runbooks/operate-the-registry-mirror.md) and [an apt mirror](docs/runbooks/operate-the-apt-mirror.md).
 - [Take the only Worker out of service](docs/runbooks/take-the-only-worker-away.md).
+- [Run a fleet relay](docs/runbooks/run-a-fleet-relay.md) for the Node mesh.
+- [Rename machine-side identifiers](docs/runbooks/rename-phase-2.md) (phase 2, not run yet).
 
 ## Develop
 

@@ -47,14 +47,8 @@ A direct connection to an unlisted address is dropped and shows as a `blocked` f
 ## Host override and precedence
 
 `RC_EGRESS_MODE` and `RC_EGRESS_ALLOW` in a Worker's `/etc/runner-center/runtime.env` are the host
-operator's override and apply to every guest on that Worker. The stricter layer wins:
-
-- the effective mode is the stricter of the host's and the Profile's (`public` < `audit` <
-  `allowlist`);
-- a host allowlist keeps denying everything not in `RC_EGRESS_ALLOW`, whatever a Profile allows, so
-  a guest under both reaches only what both allow;
-- a Profile cannot open a private, host or special-purpose range; the operator must list it in
-  `RC_EGRESS_ALLOW` and the Profile must list it too.
+operator's override and apply to every guest on that Worker. The stricter of the host and the
+Profile wins; [Egress policy](../job-isolation.md#egress-policy) states the rule in full.
 
 Changing `runtime.env` needs the provisioner re-run (it re-renders the nftables table) and a runtime
 restart.
@@ -65,15 +59,8 @@ the guests keep running: their links accept IPv6 and borrowed source addresses a
 allowlist guest is no longer restricted. The runtime notices within 10 seconds, and at every
 readiness check, and writes the elements back, logging `restored a running guest's link binding`.
 Readiness fails if it cannot. Until then the guest is unprotected. The provisioner refuses to run
-while any Firecracker VM is running and prints the drain steps:
-
-1. Wait until the dashboard's Attempts page shows nothing running on the Worker. For a Profile's
-   only Worker, follow [take the only Worker out of service](take-the-only-worker-away.md).
-2. `sudo systemctl stop runner-center-runtime`, which ends the idle warm VMs.
-3. `pgrep -x firecracker` must print nothing. Then re-run the provisioner.
-
-`--force-network-reload` makes the provisioner go ahead anyway. Every running job then ends when it
-restarts the runtime.
+while any Firecracker VM is running; drain the Worker as
+[Re-provision a live Worker](../workers.md#re-provision-a-live-worker) says.
 
 ## What a broken Worker looks like
 
