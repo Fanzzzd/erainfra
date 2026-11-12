@@ -476,3 +476,40 @@ func TestResolverOptionsMatchTheSharedCases(t *testing.T) {
 		t.Fatalf("resolverOptions is %q, testdata/resolver-options.json says %q", resolverOptions, cases.Options)
 	}
 }
+
+func TestConfigureLazyWritebackWritesEverySetting(t *testing.T) {
+	vmDir := t.TempDir()
+	for _, setting := range lazyWriteback {
+		if err := os.WriteFile(filepath.Join(vmDir, setting.name), []byte("0\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := configureLazyWriteback(vmDir); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"dirty_ratio":               "80\n",
+		"dirty_background_ratio":    "50\n",
+		"dirty_expire_centisecs":    "360000\n",
+		"dirty_writeback_centisecs": "6000\n",
+	}
+	for name, value := range want {
+		got, err := os.ReadFile(filepath.Join(vmDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != value {
+			t.Fatalf("vm.%s = %q, want %q", name, got, value)
+		}
+	}
+	if len(lazyWriteback) != len(want) {
+		t.Fatalf("lazyWriteback has %d settings, the test checks %d", len(lazyWriteback), len(want))
+	}
+}
+
+func TestConfigureLazyWritebackNamesTheSettingItCouldNotWrite(t *testing.T) {
+	err := configureLazyWriteback(filepath.Join(t.TempDir(), "missing"))
+	if err == nil || !strings.Contains(err.Error(), "vm.dirty_ratio=80") {
+		t.Fatalf("err = %v, want it to name vm.dirty_ratio=80", err)
+	}
+}

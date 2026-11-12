@@ -220,6 +220,18 @@ EraInfra does not silently create or wipe a dedicated thin-pool device: selectin
 is an explicit operator storage decision, and the provisioner destroys only the devices you name.
 The official Fireactions installation guide remains a compatible reference for the same components.
 
+### Guest writeback
+
+A guest's root drive is a snapshot the runtime deletes when the Attempt ends, so the guest keeps
+a job's writes in memory instead of sending them to the shared disk. `runner-center-guest` sets
+`vm.dirty_background_ratio=50`, `vm.dirty_ratio=80`, `vm.dirty_expire_centisecs=360000` and
+`vm.dirty_writeback_centisecs=6000` at boot. When the runner exits, it resets the VM without the
+sync and unmount. On ubuntu0 a job writing about 2.5 GiB of small files sent 102 MiB to its drive
+instead of 9015 MiB, and the host's io "some" stayed under 5% instead of reaching 42%
+([#351](https://github.com/Fanzzzd/erainfra/pull/351)). Memory pressure still writes pages back,
+so a job that writes more than the guest's memory holds runs as before; nothing caps its space.
+A job that calls `sync` pays for its own dirty pages.
+
 ## macOS Worker prerequisites
 
 ```bash
