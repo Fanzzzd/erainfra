@@ -203,7 +203,7 @@ describe("workerApi.reportReadiness", () => {
         ctx.db.query("readinessEvidence").unique(),
       ]),
     );
-    expect(row?.boundary).toBeUndefined();
+    expect(row).not.toHaveProperty("boundary");
     expect(row?.storage).toEqual({ poolTotalMiB: 51_200, poolFreeMiB: 40_960 });
     expect(evidence?.boundary).toBe("guest-kernel");
     expect(evidence?.cacheSharedWritable).toBe(false);
@@ -291,65 +291,6 @@ describe("workerApi.reportReadiness", () => {
     ).rejects.toThrow(/Firecracker readiness evidence is incomplete/);
     const row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
     expect(row).toBeNull();
-  });
-
-  it("serves one-cycle legacy evidence and compacts it on the next report", async () => {
-    const t = convexTest(schema, modules);
-    await worker(t, "token-legacy");
-    const machine = await t.run(async (ctx) => ctx.db.query("machines").unique());
-    if (machine === null) throw new Error("missing machine");
-    const checkedAt = Date.now() - 1_000;
-    await t.run(async (ctx) =>
-      ctx.db.insert("workerReadiness", {
-        machineId: machine._id,
-        profile: "erainfra-4vcpu-ubuntu-2404",
-        executor: "firecracker",
-        imageRelease: IMAGE,
-        state: "ready",
-        checkedAt,
-        preparedAt: checkedAt,
-        statusDetail: "legacy detail",
-        boundary: "guest-kernel",
-        checks: [{ name: "kvm-device", passed: true }],
-        storage: { snapshotter: "devmapper", poolFreeMiB: 32_768 },
-      }),
-    );
-
-    const [legacyProfile] = await t
-      .withIdentity({ subject: "operator" })
-      .query(api.profiles.list, {});
-    expect(legacyProfile?.workers[0]).toMatchObject({
-      statusDetail: "legacy detail",
-      boundary: "guest-kernel",
-      storage: { snapshotter: "devmapper", poolFreeMiB: 32_768 },
-    });
-
-    await t.mutation(api.workerApi.reportReadiness, {
-      token: "token-legacy",
-      profile: "erainfra-4vcpu-ubuntu-2404",
-      executor: "firecracker",
-      imageRelease: IMAGE,
-      state: "ready",
-      vcpus: 2,
-      memoryMiB: 4_096,
-      statusDetail: "new evidence detail",
-      ...FIRECRACKER_FACTS,
-      storage: { ...FIRECRACKER_FACTS.storage, poolFreeMiB: 24_576 },
-    });
-    const [hot, evidence] = await t.run(async (ctx) =>
-      Promise.all([
-        ctx.db.query("workerReadiness").unique(),
-        ctx.db.query("readinessEvidence").unique(),
-      ]),
-    );
-    expect(hot).toMatchObject({ storage: { poolFreeMiB: 24_576 } });
-    expect(hot?.statusDetail).toBeUndefined();
-    expect(hot?.boundary).toBeUndefined();
-    expect(evidence).toMatchObject({
-      statusDetail: "new evidence detail",
-      boundary: "guest-kernel",
-      storage: { snapshotter: "devmapper", poolFreeMiB: 24_576 },
-    });
   });
 
   it("distinguishes a first failure from a regression of previously ready capacity", async () => {

@@ -9,7 +9,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
+import { resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { selectImageForMachine } from "./catalog";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
@@ -178,9 +178,7 @@ export async function listMachines(ctx: QueryCtx) {
     .toSorted((a, b) => a.name.localeCompare(b.name))
     .map(({ token: _token, ...machine }) => ({
       ...machine,
-      benchmark:
-        benchmarkEvidenceByMachine.get(machine._id) ??
-        (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined),
+      benchmark: benchmarkEvidenceByMachine.get(machine._id),
       currentJobs: activeJobs
         .filter((job) => job.machineId === machine._id)
         .map((job) => ({
@@ -239,13 +237,10 @@ export async function listMachines(ctx: QueryCtx) {
                 : entry.state,
             checkedAt: entry.checkedAt,
             preparedAt: entry.preparedAt,
-            // Legacy hot rows are the one-cycle fallback until their next
-            // readiness report creates a matching evidence document.
-            statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
+            statusDetail: currentEvidence?.statusDetail,
             lastError:
               pinDetail(workerLabelsByProfile.get(entry.profile), machine.labels) ??
               currentEvidence?.lastError ??
-              entry.lastError ??
               admissionError,
           };
         }),

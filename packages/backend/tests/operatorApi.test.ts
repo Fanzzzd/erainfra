@@ -62,7 +62,6 @@ async function seedAttempt(
     startedAt: number;
     finishedAt: number;
     workflowRunId: number;
-    jitConfig: string;
   }> = {},
 ) {
   vi.setSystemTime(at);
@@ -247,6 +246,12 @@ describe("operator API reads", () => {
         profile: "erainfra-4vcpu-ubuntu-2404",
         state: "preparing",
         checkedAt: T0,
+      });
+      await ctx.db.insert("readinessEvidence", {
+        ...CONTRACT,
+        machineId: id,
+        profile: "erainfra-4vcpu-ubuntu-2404",
+        checkedAt: T0,
         statusDetail: "pulling image",
       });
       return id;
@@ -421,8 +426,14 @@ describe("operator API reads", () => {
       startedAt: T0 + 5_000,
       finishedAt: T0 + 65_000,
       workflowRunId: 77,
-      jitConfig: "single-use-secret",
     });
+    await t.run((ctx) =>
+      ctx.db.insert("attemptSecrets", {
+        attemptId: id,
+        jitConfig: "single-use-secret",
+        createdAt: T0,
+      }),
+    );
     const response = await get(t, `/api/v1/attempts/${id}`, token);
     const text = await response.text();
     expect(response.status).toBe(200);

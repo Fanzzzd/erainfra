@@ -11,7 +11,6 @@ import {
   benchmarkRecommendedSlots,
   benchmarkReportValidator,
   benchmarkScoresValidator,
-  isStoredBenchmark,
   normalizeBenchmark,
   resourceRecommendedSlots,
 } from "./benchmark";
@@ -121,11 +120,7 @@ export const reportHostFacts = mutation({
       .query("benchmarkEvidence")
       .withIndex("by_machine", (q) => q.eq("machineId", machine._id))
       .unique();
-    // During the no-migration rollout, a machine may have either a legacy full
-    // inline benchmark or the new summary + evidence shape.
-    const benchmark =
-      evidence?.benchmark ?? (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined);
-    const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, benchmark, now);
+    const recommendedSlots = benchmarkRecommendedSlots(resourceSlots, evidence?.benchmark, now);
     // Machines registered before slot policies existed are automatic. Only an
     // explicit operator choice is fixed; the first v0.2 heartbeat persists the
     // migrated policy so every later read is unambiguous.
@@ -190,8 +185,6 @@ export const reportBenchmark = mutation({
       await ctx.db.patch(existingEvidence._id, { benchmark });
     }
     await ctx.db.patch(machine._id, {
-      // Write the compact hot shape on the next report; the schema still
-      // accepts an old full report for one refresh cycle, so no migration runs.
       benchmark: { measuredAt: benchmark.measuredAt, scores: benchmark.scores },
       slotPolicy,
       configuredSlots,
@@ -422,13 +415,12 @@ export const claimAttempt = mutation({
       .query("attemptSecrets")
       .withIndex("by_attempt", (q) => q.eq("attemptId", attempt._id))
       .unique();
-    const jitConfig = secret?.jitConfig ?? attempt.jitConfig;
-    if (jitConfig === undefined) return null;
-    if (secret !== null) await ctx.db.delete(secret._id);
+    if (secret === null) return null;
+    const jitConfig = secret.jitConfig;
+    await ctx.db.delete(secret._id);
     await ctx.db.patch(attempt._id, {
       state: "preparing",
       claimedAt: Date.now(),
-      jitConfig: undefined,
     });
     return {
       runnerName: attempt.runnerName,
@@ -566,7 +558,6 @@ export const reportAttempt = mutation({
     ) {
       await deleteAttemptSecret(ctx, attempt._id);
       await ctx.db.patch(attempt._id, {
-        jitConfig: undefined,
         executorFinishedAt,
         executorExitCode: args.exitCode,
       });
@@ -581,7 +572,6 @@ export const reportAttempt = mutation({
       // failure-rate alert would count; the controller's delete of a Runner already gone succeeds.
       await ctx.db.patch(attempt._id, {
         state: retirement.outcome,
-        jitConfig: undefined,
         executorFinishedAt,
         executorExitCode: args.exitCode,
         finishedAt: executorFinishedAt,
@@ -597,7 +587,6 @@ export const reportAttempt = mutation({
     const runnerFailure = joblessRunnerFailure(attempt, args.runnerExit);
     await ctx.db.patch(attempt._id, {
       state: args.exitCode === 0 && runnerFailure === undefined ? "completed" : "failed",
-      jitConfig: undefined,
       executorFinishedAt,
       executorExitCode: args.exitCode,
       finishedAt: executorFinishedAt,
@@ -731,9 +720,7 @@ export const reportReadiness = mutation({
       state,
       checkedAt,
       preparedAt,
-      // Scheduling needs only numeric capacity facts. The next report removes
-      // legacy evidence fields from this hot row; older rows remain readable
-      // for one cycle and dashboard queries fall back to them below.
+      // Scheduling needs only numeric capacity facts. The rest goes to readinessEvidence below.
       storage:
         args.storage === undefined
           ? undefined
@@ -742,15 +729,6 @@ export const reportReadiness = mutation({
               poolFreeMiB: args.storage.poolFreeMiB,
             },
       warmPool: args.warmPool ?? (sameContract ? existing?.warmPool : undefined),
-      statusDetail: undefined,
-      lastError: undefined,
-      isolation: undefined,
-      boundary: undefined,
-      checks: undefined,
-      cacheScope: undefined,
-      cacheSharedWritable: undefined,
-      hardware: undefined,
-      network: undefined,
     };
     if (existing === null) {
       await ctx.db.insert("workerReadiness", { machineId: machine._id, ...patch });
