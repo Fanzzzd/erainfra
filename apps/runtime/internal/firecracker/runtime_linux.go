@@ -374,6 +374,8 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if err == nil {
 		return lease, nil
 	}
+	// Only a miss, demand above the warm target, cold-boots. Any other claim
+	// error is a broken pool, and the Attempt fails rather than hiding it.
 	if !errors.Is(err, errWarmPoolMiss) {
 		return nil, err
 	}
