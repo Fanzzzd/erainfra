@@ -11,6 +11,9 @@
 #   noatime  remount / with noatime
 #   dirty    set vm.dirty_background_bytes and vm.dirty_bytes low
 #   tmpfs    put the pnpm store and the install directory on tmpfs
+#   lazy     defer writeback: dirty ratios 50/80, expire after an hour, so
+#            data deleted or never flushed before the VM ends never reaches
+#            the Worker's disk
 #
 # Other words are labels and change nothing, so a matrix can repeat a
 # variant as base+r2.
@@ -30,7 +33,12 @@
 #   burst<N>  copy the pnpm store until about 2 GiB of small files are written
 #   now<N>    a miss and a hit load straight after burst<N>
 #   late<N>   a miss load 10 s later, while the Worker flushes the burst
+#   sync      a timed sync; the last burst is kept so sync pays for it
 #   quiet     a miss load after sync and 20 s of rest
+#
+# The probe syncs once after `pick` so evicted files are clean. Every variant
+# pays that flush of the install; `wrote` lines report the root disk's writes
+# from `calm` to the final sync, and during it.
 #
 # A sampler records the root disk's counters, Dirty, Writeback and, where the
 # kernel has it, io PSI, once a second.
@@ -76,12 +84,17 @@ if has noatime; then sudo mount -o remount,noatime /; fi
 if has dirty; then
   sudo sysctl -q -w vm.dirty_background_bytes=$((64 << 20)) vm.dirty_bytes=$((256 << 20))
 fi
+if has lazy; then
+  sudo sysctl -q -w vm.dirty_background_ratio=50 vm.dirty_ratio=80 \
+    vm.dirty_expire_centisecs=360000 vm.dirty_writeback_centisecs=6000
+fi
 sudo mkdir -p "$base"
 if has tmpfs; then sudo mount -t tmpfs -o size=12g,mode=1777 tmpfs "$base"; fi
 sudo chown "$(id -u):$(id -g)" "$base"
 findmnt -no SOURCE,FSTYPE,OPTIONS /
 findmnt -no SOURCE,FSTYPE,OPTIONS -T "$base"
-sysctl vm.dirty_background_bytes vm.dirty_bytes
+sysctl vm.dirty_background_bytes vm.dirty_bytes vm.dirty_background_ratio vm.dirty_ratio \
+  vm.dirty_expire_centisecs vm.dirty_writeback_centisecs
 
 # The sampler: epoch, disk reads, read sectors, read ms, writes, write
 # sectors, write ms, in flight, Dirty KiB, Writeback KiB, io some avg10 (-1
@@ -156,6 +169,8 @@ node "$here/modload.cjs" pick "$repo" "$target" "$out/list.txt" | sed 's/^/pick 
 echo "pick seconds=$(since "$t0")" | tee -a "$out/loads.log"
 sync
 
+wsect() { awk '{ print $7 }' "$disk"; }
+w_calm=$(wsect)
 mark calm
 miss calm-miss
 load calm-hit
@@ -174,12 +189,21 @@ for n in $(seq 1 "$repeats"); do
   sleep 10
   mark "late$n"
   miss "late$n-miss"
-  mark "clean$n"
-  rm -rf "$base/burst$n"-*
+  if [ "$n" -lt "$repeats" ]; then
+    mark "clean$n"
+    rm -rf "$base/burst$n"-*
+  fi
 done
 
+w_sync=$(wsect)
 mark sync
+t0=$(now)
 sync
+echo "sync seconds=$(since "$t0")" | tee -a "$out/loads.log"
+w_end=$(wsect)
+awk -v a="$w_calm" -v b="$w_sync" -v c="$w_end" \
+  'BEGIN { printf "wrote before_sync_MiB=%.0f sync_MiB=%.0f\n", (b - a) / 2048, (c - b) / 2048 }' |
+  tee -a "$out/loads.log"
 sleep 20
 mark quiet
 miss quiet-miss
