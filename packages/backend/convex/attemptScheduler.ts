@@ -2,15 +2,14 @@ import { v } from "convex/values";
 
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { ASSIGNED_ATTEMPT_STATES, ASSIGNED_EXPERIMENT_STATES } from "./attemptStates";
 import { benchmarkScore, type FitPolicy } from "./benchmark";
 import { profileEgressOf, type ProfileEgress } from "./egress";
 import { carriesHostLabels } from "./hostLabels";
 import { hasSnapshotHeadroomForGuests, readinessAdmissionError } from "./isolation";
-import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
+import { usableHostCapacity, WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 export const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
-const RESERVED_ATTEMPT_STATES = ["preparing", "ready", "running"] as const;
-const RESERVED_EXPERIMENT_STATES = ["preparing", "running"] as const;
 const READINESS_STATES = ["preparing", "ready", "degraded", "failed"] as const;
 
 export async function releaseMachineSlot(
@@ -110,7 +109,7 @@ export async function loadSchedulerSnapshot(
       : [pending.attempts, pending.experiments];
   const [attemptRanges, experimentRanges, machines, profiles] = await Promise.all([
     Promise.all(
-      RESERVED_ATTEMPT_STATES.map((state) =>
+      ASSIGNED_ATTEMPT_STATES.map((state) =>
         ctx.db
           .query("attempts")
           .withIndex("by_state", (query) => query.eq("state", state))
@@ -118,7 +117,7 @@ export async function loadSchedulerSnapshot(
       ),
     ),
     Promise.all(
-      RESERVED_EXPERIMENT_STATES.map((state) =>
+      ASSIGNED_EXPERIMENT_STATES.map((state) =>
         ctx.db
           .query("experiments")
           .withIndex("by_state", (query) => query.eq("state", state))
@@ -300,15 +299,11 @@ export function placeInOrder<I extends { work: WorkContract }>(
         const usableVCPUs =
           machine.cpus === undefined
             ? Number.POSITIVE_INFINITY
-            : machine.cpus <= work.vcpus
-              ? machine.cpus
-              : Math.floor(machine.cpus * 0.9);
+            : usableHostCapacity(machine.cpus, work.vcpus);
         const usableMemoryMiB =
           machine.memoryMiB === undefined
             ? Number.POSITIVE_INFINITY
-            : machine.memoryMiB <= work.memoryMiB
-              ? machine.memoryMiB
-              : Math.floor(machine.memoryMiB * 0.9);
+            : usableHostCapacity(machine.memoryMiB, work.memoryMiB);
         const warmKey = `${machine._id}:${work.profile}`;
         const usesWarm = (idleWarmByMachineProfile.get(warmKey) ?? 0) > 0;
         const additionalVCPUs = usesWarm ? 0 : work.vcpus;

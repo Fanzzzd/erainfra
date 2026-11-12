@@ -67,6 +67,7 @@ export const readinessFactsValidator = {
       poolName: v.optional(v.string()),
       poolTotalMiB: v.optional(v.number()),
       poolFreeMiB: v.optional(v.number()),
+      poolReserveMiB: v.optional(v.number()),
     }),
   ),
   network: v.optional(
@@ -96,6 +97,7 @@ export type ReadinessFacts = {
     poolName?: string;
     poolTotalMiB?: number;
     poolFreeMiB?: number;
+    poolReserveMiB?: number;
   };
   network?: {
     policyName?: string;
@@ -168,6 +170,13 @@ export function firecrackerReadinessError(
     (poolTotalMiB !== undefined && (poolFreeMiB ?? 0) > poolTotalMiB)
   ) {
     problems.push("storage.poolFreeMiB must be positive headroom within the pool");
+  }
+  const poolReserveMiB = facts.storage?.poolReserveMiB;
+  if (
+    poolReserveMiB !== undefined &&
+    (!Number.isSafeInteger(poolReserveMiB) || poolReserveMiB < 0)
+  ) {
+    problems.push("storage.poolReserveMiB must be a non-negative integer when reported");
   }
   if (facts.network?.policyName?.trim() === "" || facts.network?.policyName === undefined) {
     problems.push("network.policyName is required");
@@ -323,41 +332,32 @@ export function assertReadinessContract(
 }
 
 /**
- * Copy-on-write room one running Attempt may consume before its snapshot is
- * discarded. A CI job that installs dependencies and builds writes a few GiB
- * over the immutable image; this is a deliberately generous reservation because
- * the failure it prevents is expensive.
+ * The copy-on-write room each guest needs on a Worker whose runtime does not report
+ * `storage.poolReserveMiB`: the `RC_MIN_POOL_FREE_MIB` default of runtimes up to v0.2.0-rc.20.
+ * A newer runtime reports the value it enforces, and placement uses that. This constant describes
+ * those older runtimes only, so it does not follow a later change to the runtime's default
+ * (apps/runtime/internal/firecracker/config.go, MinPoolFreeMiB).
  */
-export const SNAPSHOT_RESERVE_MIB = 8 * 1024;
+export const LEGACY_POOL_RESERVE_MIB = 8 * 1024;
 
 /**
- * Whether a Worker still has copy-on-write room for one more Attempt.
+ * Whether a Worker's thin-pool still has copy-on-write room for this many guests.
  *
  * CPU and memory admission already happens against the Worker's measured host
  * facts. Disk is the dimension that was missing, and it fails worst: a
  * thin-pool that runs out mid-job does not reject the Attempt, it fails the
  * running Job with an I/O error after the work is already done.
  *
- * A Worker that reports no pool at all — a Docker or Tart Profile, or an older
- * Agent — is not blocked. Admission tightens as evidence arrives; it never
+ * Each guest needs the reserve the Worker reports, so an operator changes it in one place, the
+ * Worker's `RC_MIN_POOL_FREE_MIB`. A Worker that reports no pool at all, a Docker or Tart Profile or
+ * an older Action Runner Agent, is not blocked. Admission tightens as evidence arrives; it never
  * invents a constraint from missing data.
  */
-export function hasSnapshotHeadroom(
-  storage: { poolFreeMiB?: number } | undefined,
-  concurrentAttempts: number,
-  reserveMiB: number = SNAPSHOT_RESERVE_MIB,
-) {
-  const free = storage?.poolFreeMiB;
-  if (free === undefined) return true;
-  return free >= reserveMiB * (concurrentAttempts + 1);
-}
-
 export function hasSnapshotHeadroomForGuests(
-  storage: { poolFreeMiB?: number } | undefined,
+  storage: { poolFreeMiB?: number; poolReserveMiB?: number } | undefined,
   guests: number,
-  reserveMiB: number = SNAPSHOT_RESERVE_MIB,
 ) {
   const free = storage?.poolFreeMiB;
   if (free === undefined) return true;
-  return free >= reserveMiB * guests;
+  return free >= (storage?.poolReserveMiB ?? LEGACY_POOL_RESERVE_MIB) * guests;
 }

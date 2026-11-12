@@ -73,6 +73,7 @@ export type ReadinessFacts = {
     poolName?: string;
     poolTotalMiB?: number;
     poolFreeMiB?: number;
+    poolReserveMiB?: number;
   };
   network?: {
     policyName?: string;
@@ -825,6 +826,16 @@ export function parseWarmPoolStatus(
   }
 }
 
+/**
+ * How much of a Worker's measured CPUs or memory guests may reserve: 90%, rounded down, or the
+ * whole host for a guest that needs all of it. The control plane places each Attempt with the same
+ * rule (packages/backend/convex/workerPolicy.ts). `testdata/host-envelope-cases.json` owns it, and
+ * both test suites run its cases.
+ */
+export function usableHostCapacity(hostTotal: number, guestSize: number) {
+  return guestSize >= hostTotal ? hostTotal : Math.floor(hostTotal * 0.9);
+}
+
 export function warmPoolCapacityError(
   profiles: ProfileSpec[],
   maxSlots: number,
@@ -840,8 +851,16 @@ export function warmPoolCapacityError(
     (total, profile) => total + (profile.warmPool ?? 0) * profile.memoryMiB,
     0,
   );
-  const usableCPUs = Math.max(1, Math.floor(hostCPUs * 0.9));
-  const usableMemoryMiB = Math.max(512, Math.floor(hostMemoryMiB * 0.9));
+  // Placement applies the envelope per Attempt, so the whole-host exception is earned by the
+  // largest single guest, never by the pool's total.
+  const usableCPUs = usableHostCapacity(
+    hostCPUs,
+    Math.max(0, ...warm.map((profile) => profile.vcpus)),
+  );
+  const usableMemoryMiB = usableHostCapacity(
+    hostMemoryMiB,
+    Math.max(0, ...warm.map((profile) => profile.memoryMiB)),
+  );
   if (slots > maxSlots)
     return `warm pools require ${slots} slots but this Worker admits ${maxSlots}`;
   if (vcpus > usableCPUs)

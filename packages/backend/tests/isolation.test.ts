@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 
@@ -7,9 +9,9 @@ import {
   assertReadinessContract,
   EXECUTOR_BOUNDARY,
   FIRECRACKER_REQUIRED_CHECKS,
-  hasSnapshotHeadroom,
+  hasSnapshotHeadroomForGuests,
   isTrustedOnly,
-  SNAPSHOT_RESERVE_MIB,
+  LEGACY_POOL_RESERVE_MIB,
 } from "../convex/isolation.ts";
 import schema from "../convex/schema";
 
@@ -138,22 +140,39 @@ describe("assertReadinessContract", () => {
   });
 });
 
-describe("hasSnapshotHeadroom", () => {
-  it("admits an Attempt the thin-pool can still grow for", () => {
-    expect(hasSnapshotHeadroom({ poolFreeMiB: SNAPSHOT_RESERVE_MIB * 3 }, 0)).toBe(true);
-    expect(hasSnapshotHeadroom({ poolFreeMiB: SNAPSHOT_RESERVE_MIB * 3 }, 2)).toBe(true);
+describe("hasSnapshotHeadroomForGuests", () => {
+  it("admits guests the thin-pool can still grow for", () => {
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: LEGACY_POOL_RESERVE_MIB * 3 }, 1)).toBe(
+      true,
+    );
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: LEGACY_POOL_RESERVE_MIB * 3 }, 3)).toBe(
+      true,
+    );
   });
 
   it("stops scheduling before the pool runs out mid-Job", () => {
-    expect(hasSnapshotHeadroom({ poolFreeMiB: SNAPSHOT_RESERVE_MIB * 3 }, 3)).toBe(false);
-    expect(hasSnapshotHeadroom({ poolFreeMiB: 512 }, 0)).toBe(false);
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: LEGACY_POOL_RESERVE_MIB * 3 }, 4)).toBe(
+      false,
+    );
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: 512 }, 1)).toBe(false);
+  });
+
+  it("reserves what the Worker reports it enforces", () => {
+    // RC_MIN_POOL_FREE_MIB on the Worker is the only setting: placement follows it both ways.
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: 4_096, poolReserveMiB: 2_048 }, 2)).toBe(
+      true,
+    );
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: 40_960, poolReserveMiB: 16_384 }, 3)).toBe(
+      false,
+    );
+    expect(hasSnapshotHeadroomForGuests({ poolFreeMiB: 1, poolReserveMiB: 0 }, 8)).toBe(true);
   });
 
   it("does not invent a constraint for a Worker with no thin-pool", () => {
-    // Docker and Tart Profiles have no devmapper pool, and an older Agent
+    // Docker and Tart Profiles have no devmapper pool, and an older Action Runner Agent
     // reports none at all. Neither may be locked out of scheduling.
-    expect(hasSnapshotHeadroom(undefined, 8)).toBe(true);
-    expect(hasSnapshotHeadroom({}, 8)).toBe(true);
+    expect(hasSnapshotHeadroomForGuests(undefined, 8)).toBe(true);
+    expect(hasSnapshotHeadroomForGuests({}, 8)).toBe(true);
   });
 });
 
@@ -272,7 +291,59 @@ describe("workerApi.reportReadiness", () => {
 
     // A pool with less headroom than one Attempt can grow into is not capacity.
     expect(await assignWith(1_024)).toBe(0);
-    expect(await assignWith(SNAPSHOT_RESERVE_MIB * 4)).toBe(1);
+    expect(await assignWith(LEGACY_POOL_RESERVE_MIB * 4)).toBe(1);
+  });
+
+  it("places against the pool reserve the runtime reports", async () => {
+    // The storage a default Worker reports, written by the runtime's own test
+    // (apps/runtime/internal/firecracker/storage_test.go).
+    const reported = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../apps/runtime/internal/firecracker/testdata/storage.golden.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as typeof FIRECRACKER_FACTS.storage & { poolReserveMiB: number };
+    const t = convexTest(schema, modules);
+    await worker(t, "token-r");
+    await t.mutation(api.workerApi.reportHostFacts, {
+      token: "token-r",
+      arch: "amd64",
+      cpus: 64,
+      memoryMiB: 257_000,
+    });
+
+    async function assignWith(poolReserveMiB: number) {
+      await t.mutation(api.workerApi.reportReadiness, {
+        token: "token-r",
+        profile: "erainfra-4vcpu-ubuntu-2404",
+        executor: "firecracker",
+        imageRelease: IMAGE,
+        state: "ready",
+        vcpus: 2,
+        memoryMiB: 4_096,
+        ...FIRECRACKER_FACTS,
+        storage: { ...reported, poolReserveMiB },
+      });
+      return t.mutation(internal.attemptScheduler.tryAssign, {});
+    }
+
+    await t.mutation(internal.controllerApi.createAttempt, {
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      executor: "firecracker",
+      imageRelease: IMAGE,
+      vcpus: 2,
+      memoryMiB: 4_096,
+      runnerName: "runner-reserve",
+      runnerId: 1,
+      encodedJITConfig: "jit",
+    });
+
+    // An operator who raises RC_MIN_POOL_FREE_MIB past the free space stops placement too.
+    expect(await assignWith(reported.poolFreeMiB + 1)).toBe(0);
+    expect(await assignWith(reported.poolReserveMiB)).toBe(1);
   });
 
   it("rejects a blank current Firecracker report at the write boundary", async () => {

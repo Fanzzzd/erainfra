@@ -1,0 +1,38 @@
+{
+  "_comment": "How much of a Worker's measured CPUs or memory guests may reserve. This file owns the rule. Two implementations run it as a table test: usableHostCapacity in packages/backend/convex/workerPolicy.ts (placement of each Attempt) and in apps/action-runner-agent/readiness.ts (the warm-pool check). Guests may reserve 90% of the host, rounded down, so the host keeps room for its own processes. A guest that needs the whole host or more is measured against the whole host instead, so a Worker sized exactly for one guest can still run it. hostTotal and guestSize are vCPUs or MiB; usable is in the same unit.",
+  "cases": [
+    { "name": "small guests leave 10% of the CPUs", "hostTotal": 8, "guestSize": 2, "usable": 7 },
+    { "name": "rounds down", "hostTotal": 10, "guestSize": 1, "usable": 9 },
+    {
+      "name": "small guests leave 10% of memory",
+      "hostTotal": 32768,
+      "guestSize": 4096,
+      "usable": 29491
+    },
+    {
+      "name": "a guest one unit short of the host gets 90%",
+      "hostTotal": 8,
+      "guestSize": 7,
+      "usable": 7
+    },
+    {
+      "name": "a guest the size of the host gets the whole host",
+      "hostTotal": 8,
+      "guestSize": 8,
+      "usable": 8
+    },
+    {
+      "name": "a guest larger than the host gets the whole host",
+      "hostTotal": 8,
+      "guestSize": 12,
+      "usable": 8
+    },
+    { "name": "a one-CPU host runs a one-vCPU guest", "hostTotal": 1, "guestSize": 1, "usable": 1 },
+    {
+      "name": "memory sized exactly for one guest",
+      "hostTotal": 4096,
+      "guestSize": 4096,
+      "usable": 4096
+    }
+  ]
+}

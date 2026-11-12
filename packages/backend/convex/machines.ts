@@ -8,6 +8,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { ACTIVE_ATTEMPT_STATES, ACTIVE_EXPERIMENT_STATES } from "./attemptStates";
 import { resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
@@ -17,8 +18,6 @@ import { retireOffPinOnWorker } from "./pinnedAttempts";
 import { largestServedProfileMemoryMiB } from "./workerPolicy";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
-const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
-const ACTIVE_EXPERIMENT_STATES = ["queued", "preparing", "running"] as const;
 
 const osValidator = v.union(v.literal("linux"), v.literal("mac"), v.literal("win"));
 
