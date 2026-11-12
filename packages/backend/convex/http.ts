@@ -263,70 +263,6 @@ function parseRegistrationRequest(payload: unknown) {
   };
 }
 
-export function parseWorkflowJob(payload: unknown) {
-  if (!isRecord(payload)) {
-    return null;
-  }
-  const action = payload.action;
-  if (action !== "queued" && action !== "in_progress" && action !== "completed") {
-    return null;
-  }
-  const workflowJob = payload.workflow_job;
-  const repository = payload.repository;
-  if (!isRecord(workflowJob) || !isRecord(repository)) {
-    return null;
-  }
-
-  let githubInstallationId: number | undefined;
-  if (payload.installation !== undefined) {
-    if (
-      !isRecord(payload.installation) ||
-      typeof payload.installation.id !== "number" ||
-      !Number.isSafeInteger(payload.installation.id) ||
-      payload.installation.id <= 0
-    ) {
-      return null;
-    }
-    githubInstallationId = payload.installation.id;
-  }
-  if (
-    typeof workflowJob.id !== "number" ||
-    typeof repository.full_name !== "string" ||
-    !Array.isArray(workflowJob.labels) ||
-    !workflowJob.labels.every((label) => typeof label === "string")
-  ) {
-    return null;
-  }
-
-  const workflowName =
-    typeof workflowJob.workflow_name === "string"
-      ? workflowJob.workflow_name
-      : typeof workflowJob.name === "string"
-        ? workflowJob.name
-        : "Unknown workflow";
-  const conclusion =
-    typeof workflowJob.conclusion === "string" ? workflowJob.conclusion : undefined;
-  const runnerName =
-    typeof workflowJob.runner_name === "string" && workflowJob.runner_name.length > 0
-      ? workflowJob.runner_name
-      : undefined;
-  // Absent or malformed `private` is treated as public: the repository policy
-  // fails closed rather than trusting a payload we could not read.
-  const repoIsPublic = repository.private !== true;
-
-  return {
-    action: action as "queued" | "in_progress" | "completed",
-    ghJobId: workflowJob.id,
-    githubInstallationId,
-    repo: repository.full_name,
-    repoIsPublic,
-    workflowName,
-    labels: workflowJob.labels as string[],
-    runnerName,
-    conclusion,
-  };
-}
-
 // Any URL this deployment publishes — the agent installer's SITE_URL, and
 // everything the GitHub App Manifest flow hands to GitHub — is built from the
 // deployment's own configured origin, never from the request. See
@@ -881,8 +817,10 @@ http.route({
 
 // Verify, record, acknowledge. GitHub marks any response slower than 10s as a
 // failed delivery and never retries it on its own, so the handler does the
-// minimum here and leaves the real work to a scheduled mutation. The delivery
-// row is keyed by X-GitHub-Delivery, which also makes a redelivery a no-op.
+// minimum. Only `push` does anything (push-to-deploy, infra/git.ts); its
+// delivery row is keyed by X-GitHub-Delivery, which makes a redelivery a no-op.
+// Every other verified event, `workflow_job` included, is acknowledged and
+// ignored: Profiles learn about jobs from their scale-set controller.
 http.route({
   path: "/github/webhook",
   method: "POST",
@@ -892,9 +830,7 @@ http.route({
 
     // One secret per purpose (infra/githubDeploy.ts, webhookSecretsFor): the event type picks the
     // secrets before anything is verified, so a holder of the CI App's secret cannot sign a push
-    // that deploys, and a holder of the deploy App's secret cannot queue a job. A Manifest-created
-    // CI App's secret outranks the environment, but both are offered so deliveries keep verifying
-    // mid-migration.
+    // that deploys.
     const event = request.headers.get("X-GitHub-Event") ?? "";
     const storedSecret = await ctx.runQuery(internal.githubApp.webhookSecret, {});
     const secrets = webhookSecretsFor(event, {
@@ -914,7 +850,7 @@ http.route({
       return new Response("Invalid signature", { status: 401 });
     }
 
-    if (event !== "workflow_job" && event !== "push") {
+    if (event !== "push") {
       return new Response("Ignored", { status: 200 });
     }
 
@@ -930,36 +866,17 @@ http.route({
       return new Response("Invalid JSON", { status: 400 });
     }
 
-    // Push-to-deploy (infra/git.ts). The delivery row and the run it queues commit together,
-    // keyed by X-GitHub-Delivery, so a redelivery deploys nothing a second time.
-    if (event === "push") {
-      const push = parsePush(payload);
-      if (push === null) return new Response("Ignored", { status: 200 });
-      const accepted = await ctx.runMutation(internal.infra.git.acceptPush, {
-        deliveryId,
-        ...push,
-      });
-      return new Response(accepted.outcome === "duplicate" ? "Duplicate" : "Accepted", {
-        status: 202,
-      });
-    }
-    const workflowJob = parseWorkflowJob(payload);
-    if (workflowJob === null) {
-      return new Response("Ignored", { status: 200 });
-    }
-
-    // A job the pre-Profile path would not take is dropped unstored (webhooks.recordDelivery).
-    // It answers 200 like any other ignored event, so GitHub records it delivered and delivery
-    // recovery never asks for it again.
-    const { outcome } = await ctx.runMutation(internal.webhooks.recordDelivery, {
+    // The delivery row and the run it queues commit together, keyed by X-GitHub-Delivery, so a
+    // redelivery deploys nothing a second time.
+    const push = parsePush(payload);
+    if (push === null) return new Response("Ignored", { status: 200 });
+    const accepted = await ctx.runMutation(internal.infra.git.acceptPush, {
       deliveryId,
-      event,
-      workflowJob,
+      ...push,
     });
-    if (outcome === "dropped") {
-      return new Response("Ignored", { status: 200 });
-    }
-    return new Response(outcome === "duplicate" ? "Duplicate" : "Accepted", { status: 202 });
+    return new Response(accepted.outcome === "duplicate" ? "Duplicate" : "Accepted", {
+      status: 202,
+    });
   }),
 });
 

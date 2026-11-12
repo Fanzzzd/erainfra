@@ -27,14 +27,12 @@ export const APP_EVENTS = ["workflow_job"] as const;
  *
  * - `manifest` — App credentials stored in the database by the Manifest flow.
  * - `envApp`   — App hand-registered through GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY.
- * - `pat`      — legacy GITHUB_PAT, kept only as a migration fallback.
  */
-export type CredentialSource = "manifest" | "envApp" | "pat" | "none";
+export type CredentialSource = "manifest" | "envApp" | "none";
 
 export type CredentialEnv = {
   appId: string | undefined;
   privateKey: string | undefined;
-  pat: string | undefined;
 };
 
 function isNonEmpty(value: string | undefined): value is string {
@@ -48,8 +46,7 @@ function hasEnvApp(env: CredentialEnv) {
 /**
  * Database-stored App credentials outrank the environment. The operator created
  * them later and deliberately, through the dashboard, so they win over anything
- * left in `convex env` — including a legacy PAT, which stays reachable purely as
- * a migration fallback for deployments that have not connected an App yet.
+ * left in `convex env`.
  */
 export function resolveCredentialSource(
   hasStoredApp: boolean,
@@ -61,75 +58,18 @@ export function resolveCredentialSource(
   if (hasEnvApp(env)) {
     return "envApp";
   }
-  if (isNonEmpty(env.pat)) {
-    return "pat";
-  }
   return "none";
 }
 
 /**
  * True when the operator can still usefully connect an App.
  *
- * Deliberately true for `pat` and `envApp`: a deployment running on the legacy
- * PAT must be able to migrate onto an App, and a hand-registered App may be
- * replaced by a managed one. Only a Manifest-created App hides the offer.
+ * Deliberately true for `envApp`: a hand-registered App may be replaced by a
+ * managed one. Only a Manifest-created App hides the offer.
  */
 export function canConnectApp(source: CredentialSource) {
   return source !== "manifest";
 }
-
-export type LegacyCredentialEnv = {
-  webhookSecret: string | undefined;
-  pat: string | undefined;
-};
-
-export type LegacyCredentialStatus = {
-  /** GITHUB_WEBHOOK_SECRET is set, so it is still an accepted signing key. */
-  webhookSecretConfigured: boolean;
-  /** GITHUB_PAT is set, so the legacy auth path is still reachable. */
-  patConfigured: boolean;
-  /** An App is connected while at least one legacy credential is still live. */
-  cutoverIncomplete: boolean;
-};
-
-/**
- * Whether legacy credentials are still accepted, as booleans only.
- *
- * The verifier takes the stored App secret *or* GITHUB_WEBHOOK_SECRET, and it
- * never stops taking the latter on its own, so connecting an App does not end
- * the migration — it only makes finishing it possible. Until the env secret is
- * removed, anyone still holding it can submit deliveries this deployment
- * trusts, including whoever configured the repository webhooks being retired.
- *
- * `cutoverIncomplete` is deliberately false before an App is connected: a
- * deployment running on the legacy path needs those credentials, and telling an
- * operator to remove the only thing that works would be actively harmful.
- *
- * This returns presence, never the values. The whole point is that the
- * dashboard can say "still configured" without a secret crossing the wire.
- */
-export function summarizeLegacyCredentials(
-  source: CredentialSource,
-  env: LegacyCredentialEnv,
-): LegacyCredentialStatus {
-  const webhookSecretConfigured = isNonEmpty(env.webhookSecret);
-  const patConfigured = isNonEmpty(env.pat);
-  return {
-    webhookSecretConfigured,
-    patConfigured,
-    cutoverIncomplete: source === "manifest" && (webhookSecretConfigured || patConfigured),
-  };
-}
-
-/**
- * The removal step of the legacy webhook migration, which the dashboard's GitHub App setup
- * shows from this one list. Order matters: retire the repository webhooks and let in-flight
- * jobs finish first — these commands are step 5, not step 1.
- */
-export const LEGACY_REMOVAL_COMMANDS = [
-  "pnpm convex env remove --prod GITHUB_PAT",
-  "pnpm convex env remove --prod GITHUB_WEBHOOK_SECRET",
-] as const;
 
 /**
  * What `disconnect` requires as proof of intent.
@@ -154,9 +94,7 @@ export type AppCredentialResult =
 /**
  * Resolve the App credentials used to mint an installation token.
  *
- * Fails closed with an actionable message: a job that arrived with an
- * installation id can only be served by App auth, so there is no silent
- * downgrade to the PAT here.
+ * Fails closed with an actionable message.
  */
 export function resolveAppCredentials(
   stored: { appId: number; privateKey: string } | null,
@@ -190,7 +128,7 @@ export function resolveAppCredentials(
     return {
       ok: false,
       error:
-        "This job was delivered by a GitHub App installation, but no App credentials are configured. Connect a GitHub App from the dashboard, or set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY.",
+        "No GitHub App credentials are configured. Connect a GitHub App from the dashboard, or set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY.",
     };
   }
   if (!isNonEmpty(appId) || !/^[1-9]\d*$/.test(appId) || !Number.isSafeInteger(Number(appId))) {

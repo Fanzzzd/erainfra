@@ -15,7 +15,6 @@ import {
   HardDrive,
   Link2,
   Rocket,
-  ListChecks,
   LogOut,
   Server,
   Settings,
@@ -76,10 +75,6 @@ const INFRA_NAV: NavItem[] = [
   { to: "/links", label: "Links", icon: Link2 },
 ];
 
-// Kept reachable but visually demoted below the separator: the webhook runner
-// path is on its way out, and the rail should say so before a page does.
-const LEGACY_NAV: NavItem[] = [{ to: "/jobs", label: "Legacy jobs", icon: ListChecks }];
-
 function RailLink({ item }: { item: NavItem }) {
   const Icon = item.icon;
   return (
@@ -134,10 +129,6 @@ function RootComponent() {
             ))}
             <Separator className="my-1.5 w-6 self-center" />
             {INFRA_NAV.map((item) => (
-              <RailLink key={item.label} item={item} />
-            ))}
-            <Separator className="my-1.5 w-6 self-center" />
-            {LEGACY_NAV.map((item) => (
               <RailLink key={item.label} item={item} />
             ))}
           </nav>

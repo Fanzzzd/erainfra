@@ -57,8 +57,8 @@ learns what the other is not.
 
 - **"Runner" is reserved for the ephemeral, GitHub-issued entity**, never for our daemon. A
   Runner is an object in GitHub's database with a `runner_id` GitHub assigns
-  (`convex/github.ts:122` creates one per Attempt via `actions/runners/generate-jitconfig`;
-  `:197` deletes it). The cardinality is one Agent to many Runners, and they sit on opposite
+  (the controller's `GenerateJIT` in `apps/controller/internal/githubscale/githubscale.go`
+  creates one per Attempt; `RemoveRunner` deletes it). The cardinality is one Agent to many Runners, and they sit on opposite
   sides of the isolation boundary: the Agent on the host with credentials, the Runner inside a
   disposable microVM with a single-use JIT token. Collapsing both into "runner" would make the
   product's central sentences unsayable: "the Agent registered a Runner", "the Runner cannot

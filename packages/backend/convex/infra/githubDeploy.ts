@@ -29,9 +29,9 @@ const present = (value: string | null | undefined): value is string =>
 
 /**
  * The secrets a delivery of `event` may be signed with, chosen before verification. A `push`
- * deploys, so only the deploy App's secret signs it; a `workflow_job` queues CI work, so only the
- * CI App's secrets (the Manifest record, then GITHUB_WEBHOOK_SECRET) sign it. Any other event is
- * acknowledged and ignored, so either App's secret may sign it (GitHub's `ping` comes from both).
+ * deploys, so only the deploy App's secret signs it. Any other event, `workflow_job` included, is
+ * acknowledged and ignored, so either App's secret may sign it (GitHub's `ping` comes from both):
+ * the CI App's (the Manifest record, then GITHUB_WEBHOOK_SECRET) or the deploy App's.
  */
 export function webhookSecretsFor(
   event: string,
@@ -40,7 +40,6 @@ export function webhookSecretsFor(
   const ci = [configured.ciStored, configured.ciEnv].filter(present);
   const deploy = [configured.deploy].filter(present);
   if (event === "push") return deploy;
-  if (event === "workflow_job") return ci;
   return [...ci, ...deploy];
 }
 

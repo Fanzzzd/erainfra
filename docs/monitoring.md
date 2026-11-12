@@ -154,7 +154,7 @@ never changes a Worker's readiness state. A Docker Profile's version is the tag 
 `ghcr.io/actions/actions-runner` image. Tart and Hyper-V Profiles report none yet, and the rule
 never fires for a Profile whose version is unknown. The release list is GitHub's
 `/repos/actions/runner/releases`, fetched every six hours (retried hourly on failure) with the
-GitHub App's installation token, the legacy `GITHUB_PAT`, or anonymously; a failed fetch keeps
+CI GitHub App's installation token, else the controller GitHub App's, else anonymously; a failed fetch keeps
 the previous list. Until the first fetch succeeds after a deploy, the rule has nothing to compare
 against and stays quiet.
 

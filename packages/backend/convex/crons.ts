@@ -10,19 +10,6 @@ crons.interval("reconcile runner state", { seconds: 60 }, internal.reconcile.run
 // Profile that lost every ready Worker (strandedJobs.ts).
 crons.interval("recover stranded jobs", { minutes: 1 }, internal.strandedJobs.scan, {});
 
-// Five minutes, not the six hours GitHub's own recipe suggests: a `queued`
-// event recovered six hours late is usually worthless, because the workflow it
-// belongs to has been sitting in GitHub's queue toward its 24-hour cancellation
-// the whole time. The run is cheap when there is nothing to do — one query and
-// no network on a deployment with no App, none at all while the circuit breaker
-// is open — so the short interval buys latency rather than load.
-crons.interval(
-  "recover lost webhook deliveries",
-  { minutes: 5 },
-  internal.github.recoverLostDeliveries,
-  {},
-);
-
 // Alert rules from the dashboard. A query reads fleet state and computes breaches, then a mutation
 // that touches only the alert tables advances incidents and enqueues notifications, which are sent
 // by their own scheduled actions. With no enabled rule the run is one indexed read and a

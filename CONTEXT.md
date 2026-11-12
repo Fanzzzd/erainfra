@@ -38,9 +38,9 @@ one behind NAT with no public IP.
 **Action Runner Agent**: the daemon on a Worker. Registers the machine's capacity contract,
 claims Attempts, and drives a provisioner that creates and destroys one isolation boundary per
 Attempt. It has two claim paths: `workerApi:claimAttempt` and `workerApi:claimExperiment`. It
-still sends `agentApi:heartbeat`. Releases up to v0.2.0-rc.19 also poll `agentApi:pendingCommands`
-and call `agentApi:claim` and `agentApi:report` for legacy commands, so the backend keeps those
-functions until every Worker runs a newer release. Machines install it with plain `npm install`
+also sends `agentApi:heartbeat`. Releases up to v0.2.0-rc.19 also called `agentApi:pendingCommands`,
+`agentApi:claim` and `agentApi:report`. The backend no longer has them, so a Worker needs
+v0.2.0-rc.20 or later. Machines install it with plain `npm install`
 from an archive pinned by SHA-256, which is why it deliberately does not use the `catalog:` or
 `workspace:` protocols. Read the name as "the agent that serves Action Runners": **it is not
 itself a Runner.**

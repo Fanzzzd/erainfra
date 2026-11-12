@@ -39,14 +39,6 @@ const machineListItemValidator = v.object({
   maxSlots: v.number(),
   usedSlots: v.number(),
   lastSeen: v.number(),
-  currentJobs: v.array(
-    v.object({
-      _id: v.id("jobs"),
-      repo: v.string(),
-      workflowName: v.string(),
-      status: v.union(v.literal("assigned"), v.literal("running")),
-    }),
-  ),
   currentAttempts: v.array(
     v.object({
       _id: v.id("attempts"),
@@ -118,8 +110,6 @@ export const list = query({
 export async function listMachines(ctx: QueryCtx) {
   const [
     machines,
-    assignedJobs,
-    runningJobs,
     attemptRanges,
     experimentRanges,
     readiness,
@@ -127,14 +117,6 @@ export async function listMachines(ctx: QueryCtx) {
     benchmarkEvidence,
   ] = await Promise.all([
     ctx.db.query("machines").collect(),
-    ctx.db
-      .query("jobs")
-      .withIndex("by_status", (q) => q.eq("status", "assigned"))
-      .collect(),
-    ctx.db
-      .query("jobs")
-      .withIndex("by_status", (q) => q.eq("status", "running"))
-      .collect(),
     Promise.all(
       ACTIVE_ATTEMPT_STATES.map((state) =>
         ctx.db
@@ -156,7 +138,6 @@ export async function listMachines(ctx: QueryCtx) {
     ctx.db.query("benchmarkEvidence").collect(),
   ]);
 
-  const activeJobs = [...assignedJobs, ...runningJobs];
   const attempts = attemptRanges.flat();
   const experiments = experimentRanges.flat();
   const profileRows = await ctx.db.query("profiles").collect();
@@ -177,14 +158,6 @@ export async function listMachines(ctx: QueryCtx) {
     .map(({ token: _token, ...machine }) => ({
       ...machine,
       benchmark: benchmarkEvidenceByMachine.get(machine._id),
-      currentJobs: activeJobs
-        .filter((job) => job.machineId === machine._id)
-        .map((job) => ({
-          _id: job._id,
-          repo: job.repo,
-          workflowName: job.workflowName,
-          status: job.status as "assigned" | "running",
-        })),
       currentAttempts: attempts
         .filter(
           (attempt) =>

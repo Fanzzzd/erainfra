@@ -310,8 +310,8 @@ The controller App stays separate from the App the dashboard's GitHub App setup 
 client ID and private key in Convex as `CONTROLLER_GITHUB_APP_CLIENT_ID` and
 `CONTROLLER_GITHUB_APP_PRIVATE_KEY` for Worker holders. Dedicated hosts can keep their existing
 `RC_GITHUB_APP_*` or `RC_GITHUB_TOKEN` credentials (`ERAINFRA_GITHUB_APP_*` and `ERAINFRA_GITHUB_TOKEN`
-are the same settings). Reusing the webhook App would widen its manifest
-to organization runner management and Contents read, which its own work does not need.
+are the same settings). Reusing the dashboard App would widen its manifest
+to organization runner management and Contents read.
 
 Convex looks up the controller App's installation for the registered URL and requests only the
 permissions above. Repository tokens name only that repository; organization tokens stay within
@@ -321,12 +321,11 @@ refresh five minutes before expiry. The adapter in `githubscale/token.go` change
 request's bearer without rebuilding the Actions client or dropping its message session; refresh
 failure never extends an expired credential. The App key never leaves Convex.
 
-The dashboard App serves the legacy `workflow_job` webhook path. Its manifest
-(`packages/backend/convex/githubAppConfig.ts`) asks for Repository: Administration, read and write,
-for `POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig`
-and `DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}`, and Repository: Actions, read-only,
-which GitHub requires before it delivers `workflow_job` events. Its delivery recovery calls
-`/app/hook/deliveries`, which takes the App's JWT and no installation permission.
+The dashboard App served the webhook job path, which is removed. Its manifest
+(`packages/backend/convex/githubAppConfig.ts`) still asks for Repository: Administration, read and
+write, and Repository: Actions, read-only, and subscribes to `workflow_job`, which Convex now
+ignores. Convex uses the App only for an installation token to read `actions/runner` releases
+(`convex/github.ts`), and falls back to the controller App when no dashboard App is connected.
 
 Without the installer, use a process supervisor such as systemd with `Restart=always`, a private
 `EnvironmentFile`, and a dedicated unprivileged service account. Controller releases are static Linux/macOS x64/ARM64

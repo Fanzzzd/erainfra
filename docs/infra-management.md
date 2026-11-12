@@ -860,8 +860,9 @@ permission): Repository Contents read, subscribed to `push`, webhook URL `<site>
 Install it on the repositories you deploy, then set its credentials in the Convex environment under
 these names. Its webhook secret must differ from the CI App's: `/github/webhook` picks
 the secret by event type before it checks the signature, so a `push` verifies only against
-`ERAINFRA_GH_WEBHOOK_SECRET` and a `workflow_job` only against the CI App's secret. A holder of one
-cannot trigger the other's work. With no deploy secret set, every push is refused.
+`ERAINFRA_GH_WEBHOOK_SECRET`. A holder of the CI App's secret cannot trigger a deploy. Every other
+event, `workflow_job` included, is acknowledged and ignored. With no deploy secret set, every push
+is refused.
 
 ```sh
 npx convex env set --prod ERAINFRA_GH_APP_ID <app id>

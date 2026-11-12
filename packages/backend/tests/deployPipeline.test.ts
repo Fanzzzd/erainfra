@@ -838,7 +838,7 @@ describe("webhook secrets", () => {
     repository: { full_name: "acme/shop", private: false },
   });
 
-  it("refuses a push signed with the CI App's secret, and a job signed with the deploy secret", async () => {
+  it("refuses a push signed with the CI App's secret, and stores no workflow_job", async () => {
     const s = await setup();
     await s.beat();
     await s.human.mutation(api.infra.git.bind, { repo: "acme/shop", branch: "main", app: "shop" });
@@ -846,16 +846,19 @@ describe("webhook secrets", () => {
     process.env.ERAINFRA_GH_WEBHOOK_SECRET = "deploy-secret";
 
     expect((await deliver(s, "push", "ci-secret", push)).status).toBe(401);
-    expect((await deliver(s, "workflow_job", "deploy-secret", job)).status).toBe(401);
+    // Nothing acts on a workflow_job any more, so either secret gets it acknowledged and ignored.
+    for (const secret of ["deploy-secret", "ci-secret"]) {
+      const response = await deliver(s, "workflow_job", secret, job);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("Ignored");
+    }
     const recorded = await s.t.run(async (ctx) => ({
       runs: await ctx.db.query("appDeployments").collect(),
       deliveries: await ctx.db.query("webhookDeliveries").collect(),
     }));
     expect(recorded).toEqual({ runs: [], deliveries: [] });
 
-    // Each secret still works for its own purpose.
     expect((await deliver(s, "push", "deploy-secret", push)).status).toBe(202);
-    expect((await deliver(s, "workflow_job", "ci-secret", job)).status).not.toBe(401);
     // GitHub's ping comes from either App and does nothing.
     expect((await deliver(s, "ping", "deploy-secret", "{}")).status).toBe(200);
     expect((await deliver(s, "ping", "ci-secret", "{}")).status).toBe(200);

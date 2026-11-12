@@ -36,7 +36,6 @@ Set these deployment variables before production use, from `packages/backend` wi
 | `CONTROLLER_TOKEN_NEXT`             | Optional second controller token, accepted beside `CONTROLLER_TOKEN` during a rotation ([runbook](runbooks/operate-the-controller-host.md)).        |
 | `CONTROLLER_GITHUB_APP_CLIENT_ID`   | Client ID of the controller GitHub App, for controllers on Workers ([Profile controllers](controllers.md#github-permissions-the-controller-needs)). |
 | `CONTROLLER_GITHUB_APP_PRIVATE_KEY` | That App's private key. It never leaves Convex.                                                                                                     |
-| `ALLOWED_REPOS`                     | Legacy webhook allowlist; omit when that path is unused.                                                                                            |
 | `RELAY_ACCESS_TOKEN`                | Secret a fleet relay sends to `/api/v1/relay/access`; omit without a fleet relay ([runbook](runbooks/run-a-fleet-relay.md)).                        |
 | `RELAY_ACCESS_TOKEN_NEXT`           | Optional second relay secret, accepted beside `RELAY_ACCESS_TOKEN` during a rotation.                                                               |
 

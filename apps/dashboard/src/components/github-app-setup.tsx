@@ -1,8 +1,5 @@
 import { api } from "@erainfra/backend/api";
-import {
-  DISCONNECT_CONFIRMATION,
-  LEGACY_REMOVAL_COMMANDS,
-} from "@erainfra/backend/githubAppConfig";
+import { DISCONNECT_CONFIRMATION } from "@erainfra/backend/githubAppConfig";
 import { useMutation, useQuery } from "convex/react";
 import { CircleCheck, ExternalLink, GitPullRequest, KeyRound, TriangleAlert } from "lucide-react";
 import { type ReactNode, useEffect, useId, useState } from "react";
@@ -63,7 +60,6 @@ function useCallbackResult() {
 }
 
 const SOURCE_NOTE: Record<string, string> = {
-  pat: "This deployment authenticates with the legacy GITHUB_PAT. Connect an App to migrate — once connected, the App takes precedence and the PAT is only used for repositories the App does not cover.",
   envApp:
     "This deployment uses a hand-registered App from GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY. Connecting an App here replaces it: stored credentials take precedence over the environment.",
 };
@@ -79,51 +75,6 @@ function Panel({ tone, children }: { tone: "neutral" | "warn"; children: ReactNo
     >
       {children}
     </section>
-  );
-}
-
-/**
- * The migration is not over when the App connects.
- *
- * `GITHUB_WEBHOOK_SECRET` stays an accepted signing key until it is removed by
- * hand, and nothing else in the product ever says so. Silent once the legacy
- * credentials are gone.
- */
-function CutoverWarning({
-  webhookSecretConfigured,
-  patConfigured,
-}: {
-  webhookSecretConfigured: boolean;
-  patConfigured: boolean;
-}) {
-  return (
-    <div role="status" className="mt-3 border-t border-border pt-3 text-xs leading-5 text-warning">
-      <p className="flex items-start gap-2 font-medium">
-        <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-        Finish the cut-over: legacy credentials are still accepted
-      </p>
-      <p className="mt-1.5 opacity-85">
-        {webhookSecretConfigured && (
-          <>
-            <code className="text-warning-foreground">GITHUB_WEBHOOK_SECRET</code> is still set, so
-            it remains a valid signing key for{" "}
-            <code className="text-warning-foreground">/github/webhook</code> — anyone holding it,
-            including whoever configured the repository webhooks you are retiring, can submit
-            deliveries this deployment trusts.{" "}
-          </>
-        )}
-        {patConfigured && (
-          <>
-            <code className="text-warning-foreground">GITHUB_PAT</code> is still set and still
-            serves jobs that arrive without an App installation ID.{" "}
-          </>
-        )}
-        Retire the per-repository webhooks and let in-flight jobs finish first, then remove them:
-      </p>
-      <pre className="mt-2 overflow-x-auto rounded-md border border-border bg-sunken p-2.5 font-mono text-[11px] leading-5 text-secondary-foreground">
-        <code>{LEGACY_REMOVAL_COMMANDS.join("\n")}</code>
-      </pre>
-    </div>
   );
 }
 
@@ -217,7 +168,7 @@ export function GithubAppSetup() {
   }
 
   // Only a Manifest-created App suppresses the offer to connect one; every
-  // other source (none, legacy PAT, hand-registered App) keeps it reachable so
+  // other source (none, hand-registered App) keeps it reachable so
   // an operator can always migrate onto a managed App.
   const app = status.app;
   if (!status.canConnect && app !== null) {
@@ -264,12 +215,6 @@ export function GithubAppSetup() {
               App created. Install it on the repositories EraInfra should serve.
             </p>
           </>
-        )}
-        {status.legacy.cutoverIncomplete && (
-          <CutoverWarning
-            webhookSecretConfigured={status.legacy.webhookSecretConfigured}
-            patConfigured={status.legacy.patConfigured}
-          />
         )}
         {confirmingDisconnect && (
           <DisconnectConfirm
