@@ -62,6 +62,30 @@ async function registerProfile(t: Harness, maxRunners = 4, minRunners = 0) {
     minRunners,
     maxRunners,
   });
+  await holdLease(t);
+}
+
+/** A controller listening for the Profile: it holds the lease until `expiresAt`. */
+async function holdLease(t: Harness, expiresAt = Date.now() + 30_000) {
+  await t.run(async (ctx) => {
+    const existing = await ctx.db
+      .query("controllerLeases")
+      .withIndex("by_profile", (query) => query.eq("profile", CONTRACT.profile))
+      .first();
+    if (existing !== null) await ctx.db.delete(existing._id);
+    await ctx.db.insert("controllerLeases", {
+      profile: CONTRACT.profile,
+      epoch: 1,
+      holder: {
+        credential: "controllerToken",
+        hostname: "controller-host",
+        instance: "instance-1",
+      },
+      acquiredAt: Date.now() - 60_000,
+      renewedAt: Date.now(),
+      expiresAt,
+    });
+  });
 }
 
 async function addReadyWorker(t: Harness, name: string, maxSlots = 1) {
@@ -126,6 +150,41 @@ describe("routing.profileRoute", () => {
     await registerProfile(t);
     await addReadyWorker(t, "worker-a");
 
+    expect(await route(t)).toEqual({ route: "profile", executor: "firecracker" });
+  });
+
+  it("falls back when no controller holds the Profile's lease, however ready the Workers", async () => {
+    // 2026-11-12: rc-linux-js's controller was disabled while ubuntu0 still reported the Profile
+    // ready. The router kept answering rc-linux-js, and payable's jobs queued with no listener.
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+    await t.run(async (ctx) => {
+      const lease = await ctx.db.query("controllerLeases").first();
+      if (lease !== null) await ctx.db.delete(lease._id);
+    });
+
+    expect(await route(t)).toMatchObject({ route: "fallback", reason: "no-controller" });
+    expect((await runsOn(t, `profile=${CONTRACT.profile}&fallback=ubuntu-24.04`)).body).toEqual({
+      "runs-on": "ubuntu-24.04",
+    });
+  });
+
+  it("falls back when the controller's lease expired or was released", async () => {
+    const t = convexTest(schema, modules);
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
+
+    await holdLease(t, Date.now() - 1);
+    expect(await route(t)).toMatchObject({ route: "fallback", reason: "no-controller" });
+
+    await t.run(async (ctx) => {
+      const lease = await ctx.db.query("controllerLeases").first();
+      if (lease !== null) await ctx.db.patch(lease._id, { holder: undefined });
+    });
+    expect(await route(t)).toMatchObject({ route: "fallback", reason: "no-controller" });
+
+    await holdLease(t);
     expect(await route(t)).toEqual({ route: "profile", executor: "firecracker" });
   });
 

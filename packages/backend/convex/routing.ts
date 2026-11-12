@@ -23,6 +23,7 @@ const executorValidator = v.union(
 export const fallbackReasonValidator = v.union(
   v.literal("unknown-profile"),
   v.literal("paused"),
+  v.literal("no-controller"),
   v.literal("no-ready-worker"),
   v.literal("saturated"),
 );
@@ -51,7 +52,8 @@ export function schedulableWorkers(
 /**
  * Whether a job sent to this Profile now would start without waiting, for the `/runs-on` router.
  *
- * It needs an active Profile, at least one Worker that passes the scheduler's readiness predicate,
+ * It needs an active Profile, a controller holding the Profile's lease (ADR 0014), at least one
+ * Worker that passes the scheduler's readiness predicate,
  * and live Attempts below `maxRunners` (the bound the controller's scaler applies). Then the
  * answer is "profile" in two cases:
  * - a Runner of this Profile is online and not promised to a job already waiting (one of the
@@ -86,6 +88,18 @@ export const profileRoute = internalQuery({
     const executor = profile.executor;
     if (profile.state !== "active") {
       return { route: "fallback" as const, reason: "paused" as const, executor };
+    }
+
+    // Without a controller nobody listens on the scale set: GitHub queues the job, and no Runner is
+    // ever created for it, however many Workers are ready. Every controller from v0.2.0-rc.11 on
+    // holds the lease while it listens and renews it every 10 seconds, so a lease that is free or
+    // expired means the listener is gone (stopped, disabled, or lost its GitHub credential).
+    const lease = await ctx.db
+      .query("controllerLeases")
+      .withIndex("by_profile", (query) => query.eq("profile", profile.name))
+      .first();
+    if (lease === null || lease.holder === undefined || lease.expiresAt <= now) {
+      return { route: "fallback" as const, reason: "no-controller" as const, executor };
     }
 
     const snapshot = await loadSchedulerSnapshot(ctx, now);
