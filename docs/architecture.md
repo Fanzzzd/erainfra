@@ -59,7 +59,8 @@ the Docker daemon can inspect container state. That is why Docker Profiles are r
 mutually trusted jobs and should map to one trust domain. Use Firecracker for untrusted code. The
 dashboard shows the real boundary, `guest kernel` or `shared kernel`, next to every Profile. The
 old `workflow_job` webhook scheduler remains temporarily for migration; the dashboard labels its
-Jobs view and GitHub App setup as legacy.
+Jobs view and GitHub App setup as legacy. Webhook intake stores a `workflow_job` delivery only when
+that scheduler acts on it: the job's labels include `self-hosted`, or it already holds the job.
 
 ## Security properties
 
@@ -132,6 +133,9 @@ deploy/infra              Node, gateway, relay and Hub installers
 packages/backend          the Convex control plane
 packages/cli              the published `portless` CLI, which talks to the Hub
 packages/release          deterministic release packager
+packages/platform         the store and runtime seam that runs the control plane on Convex or
+                          Cloudflare (ADR 0019)
+packages/typescript-config shared tsconfig presets
 images                    Image Release definitions
 .github/conformance       the environment fingerprint, its diff, and the allowlist of intended
                           differences from `ubuntu-latest`

@@ -22,7 +22,7 @@ import { childEnvironment, runtimeBinary } from "./dual-env.ts";
 /** One line of `runner-center-runtime sample` output. The snapshot is checked by the server. */
 export type MetricsReport = { final: boolean; snapshot: Record<string, unknown> };
 
-export type MetricsUpload = (report: MetricsReport) => Promise<unknown>;
+type MetricsUpload = (report: MetricsReport) => Promise<unknown>;
 
 /** The slice of a child process this module uses, so tests can stand one in. */
 export type SamplerProcess = {

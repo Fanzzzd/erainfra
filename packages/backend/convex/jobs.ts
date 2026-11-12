@@ -2,7 +2,7 @@ import { v } from "convex/values";
 
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, query, type MutationCtx } from "./_generated/server";
+import { internalMutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { discardCommand, enqueueRunnerDeletion } from "./runners";
 
@@ -188,6 +188,23 @@ async function adoptRunnerAssignment(
   return adopted;
 }
 
+function findLegacyJob(ctx: QueryCtx, event: Pick<WorkflowJobEvent, "ghJobId">) {
+  return ctx.db
+    .query("jobs")
+    .withIndex("by_ghJobId", (q) => q.eq("ghJobId", event.ghJobId))
+    .first();
+}
+
+/**
+ * Whether the pre-Profile job path acts on this event. It takes a job whose labels include
+ * `self-hosted`, and once a job is its own it settles every later event for it rather than
+ * trusting the label array again. Every other event, which is every job a Profile serves, changes
+ * nothing, so webhook intake drops it instead of storing it (webhooks.recordDelivery).
+ */
+export async function legacyPathTakes(ctx: QueryCtx, event: WorkflowJobEvent) {
+  return event.labels.includes("self-hosted") || (await findLegacyJob(ctx, event)) !== null;
+}
+
 /**
  * Apply one workflow_job event to the control plane.
  *
@@ -200,13 +217,8 @@ async function adoptRunnerAssignment(
  * instead of provisioning a runner for a job that has already moved on.
  */
 export async function applyWorkflowJob(ctx: MutationCtx, args: WorkflowJobEvent) {
-  let existing = await ctx.db
-    .query("jobs")
-    .withIndex("by_ghJobId", (q) => q.eq("ghJobId", args.ghJobId))
-    .first();
-
-  // Only self-hosted work concerns us — but once a job is ours we always settle
-  // it, rather than trusting the label array on every later event.
+  let existing = await findLegacyJob(ctx, args);
+  // legacyPathTakes, inlined because the row is needed below.
   if (existing === null && !args.labels.includes("self-hosted")) {
     return;
   }

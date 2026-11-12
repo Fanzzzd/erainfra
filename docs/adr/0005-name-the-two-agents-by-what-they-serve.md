@@ -15,7 +15,7 @@ The two are genuinely different things:
 |                      | on a **Worker**                                                                     | on a **Node**                                     |
 | -------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------- |
 | registers            | capacity per Profile (`executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`) | itself, for management                            |
-| claims               | Attempts, experiments, legacy commands                                              | nothing; it is commanded                          |
+| claims               | Attempts, experiments                                                               | nothing; it is commanded                          |
 | runs                 | one disposable boundary per Attempt, then destroys it                               | long-lived Apps, plus allowlisted host operations |
 | lifetime of its work | single-use, torn down on every exit path                                            | persistent                                        |
 

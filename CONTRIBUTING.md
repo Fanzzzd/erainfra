@@ -113,6 +113,7 @@ to write the operator-facing summary. A change users will not notice carries an 
 ## Writing
 
 Everything in the repository is English: code, comments, docs, commit messages and UI strings.
-Unicode test inputs are the only exception. Write in short sentences with active verbs. State
+There are two exceptions: Unicode test inputs, and `README.zh-CN.md`, the Chinese translation of
+`README.md`, which keeps the same sections and link targets. Write in short sentences with active verbs. State
 limits and unshipped behavior plainly. Do not use marketing words, em dashes or slogans as
 headings.

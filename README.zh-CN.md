@@ -172,8 +172,10 @@ flowchart LR
 - [Operate Profile controllers](docs/runbooks/operate-the-controller-host.md)：运维 Profile controller。
 - [Move a Profile to Firecracker](docs/runbooks/firecracker-cutover.md)：把 Profile 迁到 Firecracker。
 - [Restrict a Profile's egress](docs/runbooks/restrict-job-egress.md)：限制 Profile 的出站流量。
-- [Run the job cache](docs/runbooks/operate-the-job-cache.md) 和 [a registry mirror](docs/runbooks/operate-the-registry-mirror.md)：运行 job 缓存和镜像仓库镜像。
+- [Run the job cache](docs/runbooks/operate-the-job-cache.md)、[a registry mirror](docs/runbooks/operate-the-registry-mirror.md) 和 [an apt mirror](docs/runbooks/operate-the-apt-mirror.md)：运行 job 缓存、镜像仓库镜像和 apt 镜像。
 - [Take the only Worker out of service](docs/runbooks/take-the-only-worker-away.md)：下线唯一的 Worker。
+- [Run a fleet relay](docs/runbooks/run-a-fleet-relay.md)：为 Node mesh 运行机群 relay。
+- [Rename machine-side identifiers](docs/runbooks/rename-phase-2.md)：机器侧标识符改名（第二阶段，尚未执行）。
 
 ## 开发
 

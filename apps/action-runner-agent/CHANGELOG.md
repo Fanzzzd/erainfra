@@ -1,5 +1,11 @@
 # @erainfra/agent
 
+## 0.2.0-rc.19
+
+### Patch Changes
+
+- [#337](https://github.com/Fanzzzd/erainfra/pull/337) [`7f3f275`](https://github.com/Fanzzzd/erainfra/commit/7f3f2756df008fcc6a31d5bdeb8192c009ecb724) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The runtime deletes Image Releases no Profile of its Worker uses. Once an hour the Agent sends the Image Releases of its Firecracker Profiles; the runtime keeps those, its warm pools' and the newest other one, and deletes the rest. ubuntu0 held seven, about 10 GiB each unpacked, with every Profile on one. `runner-center-runtime prune-images` runs it by hand.
+
 ## 0.2.0-rc.18
 
 ### Patch Changes

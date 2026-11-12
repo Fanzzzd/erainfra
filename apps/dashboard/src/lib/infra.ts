@@ -7,8 +7,6 @@ import type { Tone } from "@/components/status";
 // Node goes quiet, so a liveness flag computed in the query would stay "online" after the Node
 // stopped. The rule is the backend's own (isNodeLive), so the two cannot disagree.
 
-export type NodeTransport = "hub" | "convex";
-
 export function nodeOnline(lastSeenAt: number | null, now: number) {
   return isNodeLive(lastSeenAt ?? undefined, now);
 }

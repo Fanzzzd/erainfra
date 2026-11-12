@@ -98,11 +98,18 @@ Because the set follows DNS, an allowed name that moves to a new address keeps w
 chain behind an allowed name is followed. The record comes from the resolver and from a kernel set
 the forward chain fills, so nothing in it depends on the guest.
 
-The host operator's `RC_EGRESS_MODE` and `RC_EGRESS_ALLOW` in `runtime.env` (or their `ERAINFRA_`
-names) still apply, and the
-stricter layer wins: the effective mode is the stricter of the two, a host allowlist keeps denying
-everything it does not list, and a Profile cannot open a private or host range unless the operator
-lists it too. A Worker that cannot run the resolver or write the per-guest sets fails its
+The host operator's `RC_EGRESS_MODE` and `RC_EGRESS_ALLOW` in `/etc/runner-center/runtime.env`
+(or their `ERAINFRA_` names) apply to every guest on that Worker, on top of each Profile's egress.
+The stricter layer wins:
+
+- the effective mode is the stricter of the host's and the Profile's (`public` < `audit` <
+  `allowlist`);
+- a host allowlist keeps denying everything not in `RC_EGRESS_ALLOW`, whatever a Profile allows, so
+  a guest under both reaches only what both allow;
+- a Profile cannot open a private, host or special-purpose range; the operator must list it in
+  `RC_EGRESS_ALLOW` and the Profile must list it too.
+
+A Worker that cannot run the resolver or write the per-guest sets fails its
 `egress-policy` check and is not ready for audit or allowlist Profiles; its public Profiles keep
 running. The [egress runbook](runbooks/restrict-job-egress.md) walks through moving a Profile
 from audit to allowlist, and [ADR 0015](adr/0015-egress-is-a-property-of-the-profile.md)

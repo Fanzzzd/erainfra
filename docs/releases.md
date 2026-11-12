@@ -27,8 +27,8 @@ the artifacts, and publishes:
   Infra Agent: the Node-to-Node sidecar on iroh that replaces dumbpipe (ADR 0016,
   [apps/mesh/README.md](../apps/mesh/README.md)). Linux builds are static musl binaries. Services
   require both fleet membership and explicit per-exposure `allowed_peers` grants; omitted or
-  empty grants deny access. Nodes opt in with `/install --role node --mesh`. `AGENT_RELEASE.mesh`
-  stays empty until the next authorized release, so that path refuses today. Until every Node has
+  empty grants deny access. Nodes opt in with `/install --role node --mesh`; every release from
+  v0.2.0-rc.11 on pins `AGENT_RELEASE.mesh`. Until every Node has
   it, a link with an end that lacks the sidecar stays on legacy dumbpipe, which `portless links`
   marks `legacy-dumbpipe (unauthenticated)`; links move to the mesh as their Nodes upgrade, and
   `ERAINFRA_MESH_REQUIRE=true` on the Hub refuses the rest. See
@@ -64,5 +64,4 @@ pnpm --filter @erainfra/backend print-mesh-pin dist/mesh-pin
 ```
 
 The tag run rebuilds the sidecars and refuses to publish if any digest differs from the pin or a
-target is missing. On main the map is empty, and `/install --role node --mesh` refuses until a
-release pins it.
+target is missing.

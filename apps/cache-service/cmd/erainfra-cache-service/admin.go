@@ -14,8 +14,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/adminapi"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // The admin subcommand is an operator's view of the cache: what a repository

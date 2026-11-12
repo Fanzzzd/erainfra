@@ -29,7 +29,7 @@ import { execa } from "execa";
  */
 
 /** The label provision-docker.sh puts on every container it starts. */
-export const PROFILE_LABEL = "runner-center.profile";
+const PROFILE_LABEL = "runner-center.profile";
 
 /**
  * Reported for an Attempt this Worker could not give cores to. 75 is sysexits'

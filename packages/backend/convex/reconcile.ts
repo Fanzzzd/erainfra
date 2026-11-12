@@ -250,7 +250,6 @@ export const run = internalMutation({
           await deleteAttemptSecret(ctx, attempt._id);
           await ctx.db.patch(attempt._id, {
             state: "cancelled",
-            jitConfig: undefined,
             cancelReason: "No compatible Worker became ready within 24 hours",
             finishedAt: now,
             runnerCleanupPending: true,

@@ -1275,8 +1275,7 @@ function workerFacts(worker: ProfileSummary["workers"][number]): Fact[] {
         .join(" · "),
     });
   }
-  // Legacy inline readiness rows carry no egress evidence; only the split
-  // evidence row does.
+  // Evidence from a runtime that predates Profile egress carries none.
   const egress = network?.egress;
   if (egress !== undefined) {
     facts.push({

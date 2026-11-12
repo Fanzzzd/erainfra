@@ -3,20 +3,18 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import {
   internalMutation,
-  internalQuery,
   mutation,
   query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { isStoredBenchmark, resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
-import { selectImageForMachine } from "./catalog";
+import { resourceRecommendedSlots, storedBenchmarkValidator } from "./benchmark";
 import { requireDashboardAuth } from "./dashboardAuth";
 import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
 import { normalizeHostLabels, pinDetail } from "./hostLabels";
 import { readinessAdmissionError } from "./isolation";
 import { retireOffPinOnWorker } from "./pinnedAttempts";
-import { largestServedProfileMemoryMiB, WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
+import { largestServedProfileMemoryMiB } from "./workerPolicy";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
 const ACTIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
@@ -178,9 +176,7 @@ export async function listMachines(ctx: QueryCtx) {
     .toSorted((a, b) => a.name.localeCompare(b.name))
     .map(({ token: _token, ...machine }) => ({
       ...machine,
-      benchmark:
-        benchmarkEvidenceByMachine.get(machine._id) ??
-        (isStoredBenchmark(machine.benchmark) ? machine.benchmark : undefined),
+      benchmark: benchmarkEvidenceByMachine.get(machine._id),
       currentJobs: activeJobs
         .filter((job) => job.machineId === machine._id)
         .map((job) => ({
@@ -239,13 +235,10 @@ export async function listMachines(ctx: QueryCtx) {
                 : entry.state,
             checkedAt: entry.checkedAt,
             preparedAt: entry.preparedAt,
-            // Legacy hot rows are the one-cycle fallback until their next
-            // readiness report creates a matching evidence document.
-            statusDetail: currentEvidence?.statusDetail ?? entry.statusDetail,
+            statusDetail: currentEvidence?.statusDetail,
             lastError:
               pinDetail(workerLabelsByProfile.get(entry.profile), machine.labels) ??
               currentEvidence?.lastError ??
-              entry.lastError ??
               admissionError,
           };
         }),
@@ -427,39 +420,5 @@ export const registerAgent = internalMutation({
       token: machineToken,
     });
     return { ok: true as const, machineToken };
-  },
-});
-
-// Availability probe for the runs-on fallback endpoint: will a slot actually
-// be free for this job? Counts free slots on matching online machines minus
-// the queued jobs already competing for them, so callers are not routed onto
-// a backlog they would wait behind.
-export const hasCapacity = internalQuery({
-  args: { labels: v.array(v.string()) },
-  returns: v.boolean(),
-  handler: async (ctx, args) => {
-    const now = Date.now();
-    const [machines, queuedJobs] = await Promise.all([
-      ctx.db
-        .query("machines")
-        .withIndex("by_lastSeen", (q) => q.gt("lastSeen", now - WORKER_OFFLINE_AFTER_MS))
-        .collect(),
-      ctx.db
-        .query("jobs")
-        .withIndex("by_status", (q) => q.eq("status", "queued"))
-        .collect(),
-    ]);
-
-    const eligibleMachines = machines.filter(
-      (machine) => selectImageForMachine(args.labels, machine) !== undefined,
-    );
-    const freeSlots = eligibleMachines.reduce(
-      (total, machine) => total + Math.max(0, machine.maxSlots - machine.usedSlots),
-      0,
-    );
-    const backlog = queuedJobs.filter((job) =>
-      eligibleMachines.some((machine) => selectImageForMachine(job.labels, machine) !== undefined),
-    ).length;
-    return freeSlots > backlog;
   },
 });
