@@ -547,7 +547,11 @@ export const markJobStarted = internalMutation({
       // Worker stopped reporting stays retiring: a redelivered JobStarted says nothing new.
       ...(attempt.state === "running" ? {} : keepForJob(attempt)),
       state: "running",
-      startedAt: attempt.startedAt ?? Date.now(),
+      // GitHub's runnerAssignTime is on the same clock as the FinishTime JobCompleted carries, so
+      // a duration never mixes clocks. The receipt time is only a fallback: GitHub can deliver
+      // JobStarted late, even in the same message as the job's JobCompleted, so it may land after
+      // the job finished.
+      startedAt: attempt.startedAt ?? args.runnerAssignedAt ?? Date.now(),
       ...(args.runnerRequestId === undefined ? {} : { runnerRequestId: args.runnerRequestId }),
       ...(args.repository === undefined ? {} : { repo: args.repository }),
       ...(args.owner === undefined ? {} : { owner: args.owner }),
@@ -628,6 +632,11 @@ export const markJobCompleted = internalMutation({
     }
     await deleteAttemptSecret(ctx, attempt._id);
     await ctx.db.patch(attempt._id, {
+      // A start known only by when JobStarted reached the control plane can be later than
+      // GitHub's own finish time. GitHub's time wins, so a job never ends before it starts.
+      ...(attempt.startedAt !== undefined && attempt.startedAt > args.finishedAt
+        ? { startedAt: args.finishedAt }
+        : {}),
       state: "completed",
       jitConfig: undefined,
       runnerCleanupPending: undefined,
