@@ -69,7 +69,7 @@ func (s *Server) retainTickOnce(ctx context.Context) {
 	if err != nil {
 		s.logger.Error("cache quota check failed; retrying next tick", "error", err)
 	}
-	if report.EvictedIdle+report.EvictedQuota+report.EvictedDangling+report.BlobsDeleted > 0 {
+	if report.EvictedIdle+report.EvictedQuota+report.EvictedDangling+report.EvictedUnowned+report.BlobsDeleted > 0 {
 		s.logSweep("cache quota check finished", report)
 	}
 }
@@ -98,6 +98,7 @@ func (s *Server) logSweep(message string, report cacheindex.SweepReport) {
 		"evictedIdle", report.EvictedIdle,
 		"evictedQuota", report.EvictedQuota,
 		"evictedDangling", report.EvictedDangling,
+		"evictedUnowned", report.EvictedUnowned,
 		"evictedBytes", report.EvictedBytes,
 		"entriesAdopted", report.EntriesAdopted,
 		"blobsDeleted", report.BlobsDeleted,

@@ -125,15 +125,6 @@ export const provenanceValidator = v.union(
   v.object({ by: v.literal("convex"), at: v.number() }),
 );
 
-/** The kinds of `hubImportTombstones` rows. Nothing writes them since the importer left main. */
-export const hubTombstoneKindValidator = v.union(
-  v.literal("app"),
-  v.literal("link"),
-  v.literal("secret"),
-  v.literal("gitBinding"),
-  v.literal("user"),
-);
-
 export const infraTables = {
   // A machine that runs deployed Apps (CONTEXT.md). `name` is the agent id the Hub knew it by;
   // `endpointId` is the iroh key phase 1 gives it, which becomes its identity once registered.
@@ -415,16 +406,6 @@ export const infraTables = {
     createdAt: v.number(),
     expiresAt: v.number(),
   }).index("by_command", ["commandId"]),
-
-  // Rows Convex deleted while the Hub importer could still copy them back: a removed App, link or
-  // Hub account, an unset env variable, an unbound branch. Nothing writes or reads this table since
-  // the importer left main. The schema keeps it so a deploy does not fail on existing rows, and a
-  // later release may drop it.
-  hubImportTombstones: defineTable({
-    kind: hubTombstoneKindValidator,
-    key: v.string(),
-    at: v.number(),
-  }).index("by_kind_key", ["kind", "key"]),
 
   // Named counters:`auditSeq` (last audit sequence issued) and `deployments` (rows retained in
   // appDeployments). One row each, so an audit append and a deploy never contend on the same

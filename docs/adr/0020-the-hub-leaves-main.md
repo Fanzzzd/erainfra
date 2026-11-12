@@ -53,8 +53,9 @@ main reads.
      rollback needs them exactly as they are. Never rename or delete them.
    - `infra/hubPassword.ts`, every `legacyHubId` field and the `"hub-import"` Node source: imported
      accounts and Nodes hold them.
-   - The `provenance` fields and the `hubImportTombstones` table stay in the Convex schema, written
-     by nothing, so a deploy cannot fail on existing rows. A later release drops them.
+   - The `provenance` fields stay in the Convex schema, written by nothing, so a deploy cannot fail
+     on the rows that carry them. The `hubImportTombstones` table left the schema on 2026-11-13,
+     after its two rows were deleted in production.
 4. **These frozen identifiers leave the tree.** Only the Hub, its installers, its CLI or its
    importer used them. The frozen-identifier gate in `.github/workflows/ci.yml` reads the block
    below and lets exactly these names leave; every other frozen name still fails it. The gate

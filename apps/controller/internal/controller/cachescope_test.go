@@ -461,6 +461,23 @@ func TestCacheScopeRepositoryMismatchIsCold(t *testing.T) {
 	assertScope(t, scope(t, facts), false)
 }
 
+// A run that names no repository ID gets cold facts: the cache service refuses
+// facts that grant a cache by the repository's name alone.
+func TestCacheScopeRunWithoutRepositoryIDIsCold(t *testing.T) {
+	github := &fakeGitHub{
+		run: run("push", "main", map[string]any{
+			"repository": map[string]any{"full_name": testRepoName},
+		}),
+		defaultBranch: "main",
+	}
+	facts := onlyFacts(t, publish(t, github, 0,
+		startedJob("rc-a", "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main", "push")))
+	if facts.Ref != unresolvedRef || facts.RepositoryID != 0 {
+		t.Fatalf("facts = %#v, want cold facts", facts)
+	}
+	assertScope(t, scope(t, facts), false)
+}
+
 // A matrix starts several jobs from one run; they cost GitHub one run lookup.
 func TestCacheScopeMatrixSharesOneRunLookup(t *testing.T) {
 	github := &fakeGitHub{run: run("push", "main", nil), defaultBranch: "main"}

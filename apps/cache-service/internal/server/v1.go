@@ -336,10 +336,10 @@ func (s *Server) reservationFor(w http.ResponseWriter, rawID string, claims cach
 	return held, true
 }
 
-// sameRepositoryID reports whether two GitHub repository IDs can be the same
-// repository. Zero is unknown, from an older controller, and matches either.
+// sameRepositoryID reports whether two GitHub repository IDs are the same
+// repository. Zero is no repository and matches nothing.
 func sameRepositoryID(a, b int64) bool {
-	return a == 0 || b == 0 || a == b
+	return a > 0 && a == b
 }
 
 func (s *Server) dropReservation(id int64) {

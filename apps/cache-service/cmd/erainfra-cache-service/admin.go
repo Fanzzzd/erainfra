@@ -225,7 +225,7 @@ func adminList(ctx context.Context, args []string, env adminEnv) error {
 	say(env.stdout, "\n%d of %d entries (page %d), %s in total\n",
 		len(response.Entries), response.TotalCount, response.Page, humanBytes(response.TotalBytes))
 	if response.RepositoryID != 0 {
-		say(env.stdout, "%s is held by repository ID %d; entries without an ID belong to it\n",
+		say(env.stdout, "%s is held by repository ID %d\n",
 			response.Repository, response.RepositoryID)
 	}
 	return nil
@@ -342,8 +342,8 @@ func writeJSONOut(w io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
-// repositoryIDCell is an entry's repository ID in a table: "-" for one saved
-// without an ID.
+// repositoryIDCell is an entry's repository ID in a table: "-" for one stored
+// before IDs were recorded, which the next sweep removes.
 func repositoryIDCell(id int64) string {
 	if id == 0 {
 		return "-"

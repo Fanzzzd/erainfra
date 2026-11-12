@@ -48,8 +48,8 @@ type Facts struct {
 	Runner     string
 	Repository string
 	// RepositoryID is GitHub's ID for Repository. It tells apart repositories
-	// that had the same name at different times; the cache service keys the
-	// git checkout seed by it. Zero when unknown.
+	// that had the same name at different times. The cache service refuses
+	// facts without it unless they grant nothing, as cold facts do.
 	RepositoryID   int64
 	HeadRepository string
 	Event          string

@@ -27,14 +27,44 @@ import (
 // runtime keeps those, the Image Releases of its warm pools, and the newest other one, so a
 // rollback to the previous release needs no pull. It deletes the rest.
 //
+// "Previous" is the Image Release a VM booted from most recently, not the one
+// pulled last: a canary candidate pulled after the release the other Profiles
+// ran must not displace that release as the rollback. Each boot stamps
+// lastUsedLabel on the image record; an image no VM booted falls back to its
+// pull time.
+//
 // Deleting an image name is safe under a running Attempt or a parked warm guest: each holds a
 // containerd lease on its writable snapshot, and that snapshot pins the image's layers. A wrong
 // deletion therefore costs a pull, never a running job.
+
+// lastUsedLabel holds, on an Image Release's containerd record, when a VM last
+// booted from it (RFC 3339, UTC).
+const lastUsedLabel = "erainfra.io/last-used"
 
 // storedImage is one image record in the runtime's containerd namespace.
 type storedImage struct {
 	Name      string
 	CreatedAt time.Time
+	// LastUsed is zero for an image no VM has booted from.
+	LastUsed time.Time
+}
+
+// recency orders Image Releases for the rollback slot: last boot, else pull.
+func (image storedImage) recency() time.Time {
+	if !image.LastUsed.IsZero() {
+		return image.LastUsed
+	}
+	return image.CreatedAt
+}
+
+// markImageUsed stamps lastUsedLabel on the image record. Only that label is
+// written; the rest of the record is left as containerd holds it.
+func markImageUsed(ctx context.Context, client *containerd.Client, name string, at time.Time) error {
+	_, err := client.ImageService().Update(ctx, images.Image{
+		Name:   name,
+		Labels: map[string]string{lastUsedLabel: at.UTC().Format(time.RFC3339)},
+	}, "labels."+lastUsedLabel)
+	return err
 }
 
 // planImagePrune splits stored into the names to keep and the names to delete. keep must name
@@ -52,9 +82,10 @@ func planImagePrune(stored []storedImage, keep []string) (executor.ImagePrune, e
 	others := slices.DeleteFunc(slices.Clone(stored), func(image storedImage) bool {
 		return slices.Contains(keep, image.Name)
 	})
-	// Newest first; the name breaks ties so the plan never depends on listing order.
+	// Most recently used first; the name breaks ties so the plan never depends
+	// on listing order.
 	slices.SortFunc(others, func(left, right storedImage) int {
-		return cmp.Or(right.CreatedAt.Compare(left.CreatedAt), cmp.Compare(left.Name, right.Name))
+		return cmp.Or(right.recency().Compare(left.recency()), cmp.Compare(left.Name, right.Name))
 	})
 	plan := executor.ImagePrune{Kept: []string{}, Deleted: []string{}}
 	for _, image := range stored {
@@ -64,7 +95,7 @@ func planImagePrune(stored []storedImage, keep []string) (executor.ImagePrune, e
 	}
 	for index, image := range others {
 		if index == 0 {
-			plan.Kept = append(plan.Kept, image.Name) // the previous release
+			plan.Kept = append(plan.Kept, image.Name) // the most recently used other release
 			continue
 		}
 		plan.Deleted = append(plan.Deleted, image.Name)
@@ -95,7 +126,11 @@ func (r *Runtime) PruneImages(ctx context.Context, keep []string) (executor.Imag
 	}
 	stored := make([]storedImage, 0, len(listed))
 	for _, image := range listed {
-		stored = append(stored, storedImage{Name: image.Name, CreatedAt: image.CreatedAt})
+		entry := storedImage{Name: image.Name, CreatedAt: image.CreatedAt}
+		if used, parseErr := time.Parse(time.RFC3339, image.Labels[lastUsedLabel]); parseErr == nil {
+			entry.LastUsed = used
+		}
+		stored = append(stored, entry)
 	}
 	plan, err := planImagePrune(stored, keep)
 	if err != nil {

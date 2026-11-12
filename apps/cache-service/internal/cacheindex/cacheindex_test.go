@@ -124,7 +124,7 @@ func TestRecencySuffixSortsNewestFirst(t *testing.T) {
 func TestNewestMatchingEntryWins(t *testing.T) {
 	index, store, setClock := newTestIndex(t)
 	ctx := context.Background()
-	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"}
+	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Ref: "refs/heads/main"}
 
 	// A hit has to name bytes that exist, so both blobs are really written.
 	store.Overwrite("blobs/old", []byte("old"))
@@ -132,14 +132,14 @@ func TestNewestMatchingEntryWins(t *testing.T) {
 
 	setClock(time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
 	if err := index.Commit(ctx, Entry{
-		Key: "pnpm-old", Version: "v1", Repository: "Fanzzzd/erainfra",
+		Key: "pnpm-old", Version: "v1", Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID,
 		Ref: "refs/heads/main", Blob: "blobs/old", Size: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	setClock(time.Date(2026, 8, 18, 13, 0, 0, 0, time.UTC))
 	if err := index.Commit(ctx, Entry{
-		Key: "pnpm-new", Version: "v1", Repository: "Fanzzzd/erainfra",
+		Key: "pnpm-new", Version: "v1", Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID,
 		Ref: "refs/heads/main", Blob: "blobs/new", Size: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -159,10 +159,10 @@ func TestNewestMatchingEntryWins(t *testing.T) {
 func TestLookupIsScopedByVersion(t *testing.T) {
 	index, _, _ := newTestIndex(t)
 	ctx := context.Background()
-	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"}
+	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Ref: "refs/heads/main"}
 
 	if err := index.Commit(ctx, Entry{
-		Key: "dep", Version: "version-one", Repository: "Fanzzzd/erainfra",
+		Key: "dep", Version: "version-one", Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID,
 		Ref: "refs/heads/main", Blob: "blobs/a",
 	}); err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestLookupWithNoScopesIsAMiss(t *testing.T) {
 	index, _, _ := newTestIndex(t)
 	ctx := context.Background()
 	if err := index.Commit(ctx, Entry{
-		Key: "dep", Version: "v1", Repository: "Fanzzzd/erainfra",
+		Key: "dep", Version: "v1", Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID,
 		Ref: "refs/heads/main", Blob: "blobs/a",
 	}); err != nil {
 		t.Fatal(err)
@@ -202,10 +202,10 @@ func TestLookupWithNoScopesIsAMiss(t *testing.T) {
 func TestEntryMetadataThatContradictsItsLocationIsRefused(t *testing.T) {
 	index, store, _ := newTestIndex(t)
 	ctx := context.Background()
-	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"}
+	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Ref: "refs/heads/main"}
 
 	if err := index.Commit(ctx, Entry{
-		Key: "dep", Version: "v1", Repository: "Fanzzzd/erainfra",
+		Key: "dep", Version: "v1", Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID,
 		Ref: "refs/heads/main", Blob: "blobs/a",
 	}); err != nil {
 		t.Fatal(err)
