@@ -10,6 +10,7 @@ import {
   unassignedQueue,
 } from "./attemptScheduler";
 import { profileEgressOf } from "./egress";
+import { fallbackReasonValidator } from "./routerDecisionsModel";
 
 const LIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
 
@@ -18,14 +19,6 @@ const executorValidator = v.union(
   v.literal("firecracker"),
   v.literal("tart"),
   v.literal("hyperv"),
-);
-
-export const fallbackReasonValidator = v.union(
-  v.literal("unknown-profile"),
-  v.literal("paused"),
-  v.literal("no-controller"),
-  v.literal("no-ready-worker"),
-  v.literal("saturated"),
 );
 
 /**
