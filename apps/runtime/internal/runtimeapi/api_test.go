@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/admission"
+
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/jobmetrics"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
@@ -375,5 +377,27 @@ func TestExecuteMeasuresACIAttemptAndKeepsItsFinalSnapshot(t *testing.T) {
 	}
 	if response, _ := client.Metrics(ctx, "experiment-1"); response.Found {
 		t.Fatal("only CI Attempts are measured")
+	}
+}
+
+// admissionExecutor is a fakeExecutor with a start budget.
+type admissionExecutor struct {
+	*fakeExecutor
+	state admission.State
+}
+
+func (a *admissionExecutor) AdmissionState() admission.State { return a.state }
+
+func TestClientReadsTheStartBudgetState(t *testing.T) {
+	want := admission.State{MaxStarting: 2, StartWindowSeconds: 60, IOPressureLimit: 30, MaxHoldSeconds: 120, Starting: 2, Held: 1, IOSomeAvg10: 41.5, PressureKnown: true, OverBudget: true}
+	got, err := unixClient(t, &admissionExecutor{fakeExecutor: &fakeExecutor{}, state: want}).Admission(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("Admission() = %+v, want %+v", got, want)
+	}
+	if _, err := unixClient(t, &fakeExecutor{}).Admission(t.Context()); err == nil {
+		t.Fatal("Admission() on a runtime without a start budget succeeded")
 	}
 }

@@ -1,0 +1,11 @@
+{
+  "maxStarting": 2,
+  "startWindowSeconds": 60,
+  "ioPressureLimit": 30,
+  "maxHoldSeconds": 120,
+  "starting": 2,
+  "held": 1,
+  "ioSomeAvg10": 41.5,
+  "pressureKnown": true,
+  "overBudget": true
+}

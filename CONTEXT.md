@@ -83,6 +83,12 @@ GitHub gave the Runner a job first, and a running Attempt's Worker reporting aga
 retirement made for its silence (`convex/attemptRetirement.ts`). Not the retirement of a
 Profile's scale set (`runner-center-controller retire`).
 
+**Start budget**: how much starting a Firecracker Worker allows at once: Attempts still in their
+start window, and the host's I/O pressure. The runtime holds an Attempt's start while either is at
+its limit, for a bounded time, then starts it anyway (`apps/runtime/internal/admission`). `/runs-on`
+answers the fallback while every ready Worker is over budget (`convex/startBudget.ts`). It spaces
+starts on a shared disk; it is not a capacity limit, which slots and `maxRunners` set.
+
 **App**: a customer workload deployed onto one or more Nodes, with its own Docker network.
 
 **Executor**: the mechanism providing an Attempt's boundary: `docker` (shared-kernel),

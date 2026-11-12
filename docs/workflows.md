@@ -140,10 +140,17 @@ rejects labels outside `[A-Za-z0-9._-]` (up to 100 characters) rather than echo 
 
 The control plane stores each answer as a row in `routerDecisions`: the Profile (or labels), the
 returned label, the route (`profile` or `fallback`) and the fallback reason (`unknown-profile`,
-`paused`, `no-ready-worker` or `saturated`). Add `repo=OWNER/NAME` to the query to store the
+`paused`, `no-ready-worker`, `saturated` or `over-start-budget`). Add `repo=OWNER/NAME` to the query to store the
 repository with it, as the router step above does. The parameter is optional and does not change the answer; a value that is not
 `OWNER/NAME` gets a 400. Rows are kept 90 days. `internal.routerDecisions.counts` counts them per
 UTC day, route and reason for a repository and time range, for billing reconciliation.
+
+A Worker over its start budget answers the fallback too (`over-start-budget`). Its runtime holds
+an Attempt's start while two others are still in their first 60 seconds or the host's I/O pressure
+(io "some" avg10) is at 30% or more, for at most 120 seconds, and the Agent reports that state
+every 30 seconds. A job already sent to the Worker waits out the hold. The router sends the next
+one to the fallback while every ready Worker is over budget. [Start budget](workers.md#start-budget)
+lists the settings.
 
 The answer covers one job. Jobs that share it, such as a matrix, all go to the Profile on a "yes"
 even when only one slot was free; the rest queue there. The router itself runs on a GitHub-hosted

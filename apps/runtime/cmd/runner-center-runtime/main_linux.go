@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/admission"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/firecracker"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
@@ -48,7 +49,7 @@ func run(ctx context.Context, args []string) (int, error) {
 	if len(args) != 1 {
 		return 2, errors.New(
 			"usage: runner-center-runtime " +
-				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment|sample",
+				"version|serve|render-cni|render-nftables|verify-network|preflight|prepare|remove-profile|recover|run|experiment|sample|admission",
 		)
 	}
 	if args[0] == "version" {
@@ -81,6 +82,10 @@ func run(ctx context.Context, args []string) (int, error) {
 		config.RegistryMirrorURL = strings.TrimSpace(dualenv.Value("RC_REGISTRY_MIRROR_URL"))
 		config.AptMirrorURL = strings.TrimSpace(dualenv.Value("RC_APT_MIRROR_URL"))
 		config.GitMirror, err = boolEnv("RC_GIT_MIRROR")
+		if err != nil {
+			return 2, err
+		}
+		config.StartBudget, err = startBudgetEnv()
 		if err != nil {
 			return 2, err
 		}
@@ -163,6 +168,16 @@ func run(ctx context.Context, args []string) (int, error) {
 		return runExperiment(ctx, client)
 	case "sample":
 		return runSample(ctx, client)
+	case "admission":
+		// The Action Runner Agent forwards this document in its heartbeat.
+		state, err := client.Admission(ctx)
+		if err != nil {
+			return 1, err
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(state); err != nil {
+			return 1, fmt.Errorf("write start budget state: %w", err)
+		}
+		return 0, nil
 	default:
 		return 2, fmt.Errorf("unknown command %q", args[0])
 	}
@@ -514,6 +529,40 @@ func nonnegativeIntEnv(name string) (int, error) {
 		return 0, fmt.Errorf("%s must be a non-negative integer", name)
 	}
 	return parsed, nil
+}
+
+// startBudgetEnv reads the start budget, defaulting each part to admission.DefaultBudget. A 0
+// turns that limit off.
+func startBudgetEnv() (admission.Budget, error) {
+	budget := admission.DefaultBudget()
+	var err error
+	if budget.MaxStarting, err = intOr("RC_MAX_STARTING", budget.MaxStarting); err != nil {
+		return budget, err
+	}
+	seconds, err := intOr("RC_START_WINDOW_S", int(budget.StartWindow/time.Second))
+	if err != nil {
+		return budget, err
+	}
+	budget.StartWindow = time.Duration(seconds) * time.Second
+	if seconds, err = intOr("RC_MAX_START_HOLD_S", int(budget.MaxHold/time.Second)); err != nil {
+		return budget, err
+	}
+	budget.MaxHold = time.Duration(seconds) * time.Second
+	if value := strings.TrimSpace(dualenv.Value("RC_IO_PRESSURE_LIMIT")); value != "" {
+		limit, parseErr := strconv.ParseFloat(value, 64)
+		if parseErr != nil {
+			return budget, errors.New("RC_IO_PRESSURE_LIMIT must be a percentage from 0 to 100")
+		}
+		budget.IOPressureLimit = limit
+	}
+	return budget, budget.Validate()
+}
+
+func intOr(name string, fallback int) (int, error) {
+	if strings.TrimSpace(dualenv.Value(name)) == "" {
+		return fallback, nil
+	}
+	return nonnegativeIntEnv(name)
 }
 
 func durationEnv(name string, fallback time.Duration) (time.Duration, error) {

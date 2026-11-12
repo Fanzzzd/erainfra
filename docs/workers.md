@@ -163,6 +163,27 @@ sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
 /usr/local/lib/runner-center/runner-center-runtime preflight
 ```
 
+### Start budget
+
+Every guest on a Worker shares its disk. Six Attempts starting together on ubuntu0's spinning-disk
+array held the host's I/O stall (io "some") at 40 to 60% for minutes, and every job on the Worker
+slowed. The runtime therefore spaces starts out. An Attempt waits in `Start`, warm claims
+included, while either limit is reached:
+
+| Setting (`ERAINFRA_` or `RC_`) | Default | Limit                                                    |
+| ------------------------------ | ------- | -------------------------------------------------------- |
+| `MAX_STARTING`                 | 2       | Attempts still in their start window                     |
+| `START_WINDOW_S`               | 60      | Seconds an admitted Attempt counts as starting           |
+| `IO_PRESSURE_LIMIT`            | 30      | io "some" avg10 percentage at or above which starts wait |
+| `MAX_START_HOLD_S`             | 120     | Longest wait; the Attempt then starts anyway             |
+
+Attempts start in arrival order. A 0 turns that limit off. Set them on
+`runner-center-runtime.service` and restart it. The wait counts against `RC_BOOT_TIMEOUT_S`
+(300 seconds), so keep `MAX_START_HOLD_S` well below it. The runtime logs each hold as
+`held Attempt for the start budget`. `runner-center-runtime admission` prints the current state,
+which the Agent forwards every 30 seconds; `/runs-on` answers the fallback while every ready
+Worker is over budget ([workflows](workflows.md)).
+
 EraInfra does not silently create or wipe a dedicated thin-pool device: selecting that device
 is an explicit operator storage decision, and the provisioner destroys only the devices you name.
 The official Fireactions installation guide remains a compatible reference for the same components.

@@ -7,6 +7,9 @@ export const fallbackReasonValidator = v.union(
   v.literal("no-controller"),
   v.literal("no-ready-worker"),
   v.literal("saturated"),
+  // Every schedulable Worker is over its start budget, so a job sent there would wait for its
+  // start (startBudget.ts).
+  v.literal("over-start-budget"),
 );
 
 export const routerRouteValidator = v.union(v.literal("profile"), v.literal("fallback"));

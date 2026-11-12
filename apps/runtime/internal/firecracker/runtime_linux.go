@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Fanzzzd/erainfra/apps/runtime/internal/admission"
+
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/egress"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
@@ -40,6 +42,8 @@ type Runtime struct {
 	// egress owns every guest's per-guest egress state and the host resolver
 	// audit and allowlist guests are redirected to.
 	egress *egress.Guard
+	// admission spaces Attempt starts out within config.StartBudget.
+	admission *admission.Gate
 
 	recoveryMu sync.Mutex
 	activeMu   sync.Mutex
@@ -159,6 +163,11 @@ func New(config Config) (*Runtime, error) {
 		runtime.cacheIssuer = issuer
 	}
 	runtime.egress = egress.NewGuard(config.Network, egress.NftApplier{Binary: config.NftBinary})
+	gate, err := admission.New(config.StartBudget, admission.FilePressure(admission.IOPressureFile), admission.Options{})
+	if err != nil {
+		return nil, err
+	}
+	runtime.admission = gate
 	runtime.pool = newWarmPoolManager(runtime.newWarmSlot)
 	return runtime, nil
 }
@@ -315,6 +324,9 @@ func (r *Runtime) RemoveProfile(ctx context.Context, profile string) error {
 	return r.pool.Remove(ctx, strings.TrimSpace(profile))
 }
 
+// AdmissionState reports the start budget and how much of it is in use.
+func (r *Runtime) AdmissionState() admission.State { return r.admission.State() }
+
 func (r *Runtime) Shutdown(ctx context.Context) error { return r.pool.Shutdown(ctx) }
 
 func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lease, returnedError error) {
@@ -323,6 +335,17 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	}
 	if _, err := r.Preflight(ctx, spec.Egress); err != nil {
 		return nil, err
+	}
+	// Warm claims wait too: a warm guest skips the boot, not the job's own
+	// checkout and install, which load the shared disk the same way.
+	decision, err := r.admission.Admit(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("wait for the start budget: %w", err)
+	}
+	if decision.Held > 0 {
+		slog.Info("held Attempt for the start budget",
+			"attempt", spec.AttemptID, "held", decision.Held.Round(time.Second).String(),
+			"reason", decision.Reason, "forced", decision.Forced)
 	}
 	// Mint the runner-auth bearer here, at claim, where the runner name is known.
 	// Both the warm-claim and cold-boot paths below read it back out of the spec
