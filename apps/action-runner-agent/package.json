@@ -1,6 +1,6 @@
 {
   "name": "@erainfra/agent",
-  "version": "0.2.0-rc.17",
+  "version": "0.2.0-rc.18",
   "private": true,
   "type": "module",
   "scripts": {

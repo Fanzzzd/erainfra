@@ -1,5 +1,12 @@
 # @erainfra/dashboard
 
+## 0.2.0-rc.18
+
+### Patch Changes
+
+- Updated dependencies [[`cf3d1cb`](https://github.com/Fanzzzd/erainfra/commit/cf3d1cb34ab87aba4d1643035539922538b53c1d)]:
+  - @erainfra/backend@0.2.0-rc.18
+
 ## 0.2.0-rc.17
 
 ### Patch Changes
