@@ -18,7 +18,7 @@ export const TEST_REPORT_VERSION = 1;
 export const TEST_RETENTION_MS = 30 * 24 * 60 * 60_000;
 /** The same late-upload window as resource metrics: past it nothing writes to the Attempt. */
 export const TESTS_LATE_REPORT_MS = 15 * 60_000;
-/** The Go package's bounds, field for field (report.go, collect.go). */
+/** The Go package's bounds. `testdata/test-report-limits.json` holds the values both sides test. */
 export const MAX_CASES = 500;
 export const MAX_PASSED = 20_000;
 export const MAX_FILES = 200;

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { convexTest, type TestConvex } from "convex-test";
 import { getDocumentSize } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,11 +9,14 @@ import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
 import {
   MAX_CASES,
+  MAX_DURATION_MS,
+  MAX_FILES,
   MAX_FLAKY_FINDINGS,
   MAX_ID_BYTES,
   MAX_MESSAGE_BYTES,
   MAX_NAME_BYTES,
   MAX_PASSED,
+  MAX_TOTAL,
   MAX_REVISION_PEERS,
   passedHash,
   PASSED_HASH_LENGTH,
@@ -245,4 +250,31 @@ describe("test reports inside Convex's transaction limits", () => {
     expect(left.hashes.map((row) => row.reportId)).toEqual([left.reports[0]!._id]);
     expect(left.cases).toHaveLength(1);
   }, 600_000);
+});
+
+// The guest enforces the same bounds in Go. Both suites read this file, so a bound changed on one
+// side alone turns one of them red.
+describe("bounds shared with the runtime", () => {
+  const shared = JSON.parse(
+    readFileSync(new URL("../../../testdata/test-report-limits.json", import.meta.url), "utf8"),
+  ) as { limits: Record<string, number> };
+  const ours: Record<string, number> = {
+    cases: MAX_CASES,
+    passed: MAX_PASSED,
+    files: MAX_FILES,
+    idBytes: MAX_ID_BYTES,
+    nameBytes: MAX_NAME_BYTES,
+    messageBytes: MAX_MESSAGE_BYTES,
+    total: MAX_TOTAL,
+    durationMs: MAX_DURATION_MS,
+    passedHashLength: PASSED_HASH_LENGTH,
+  };
+
+  it("maps every bound the file lists, and no other", () => {
+    expect(Object.keys(ours).toSorted()).toEqual(Object.keys(shared.limits).toSorted());
+  });
+
+  it.each(Object.entries(shared.limits))("enforces %s = %d like the runtime", (name, value) => {
+    expect(ours[name]).toBe(value);
+  });
 });
