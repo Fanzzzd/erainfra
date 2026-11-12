@@ -74,7 +74,7 @@ async function deliver(
     labels: string[];
   },
 ) {
-  const { duplicate } = await t.mutation(internal.webhooks.recordDelivery, {
+  const { outcome } = await t.mutation(internal.webhooks.recordDelivery, {
     deliveryId,
     event: "workflow_job",
     workflowJob,
@@ -88,7 +88,7 @@ async function deliver(
   if (delivery !== null && delivery.status === "pending") {
     await t.mutation(internal.webhooks.processDelivery, { deliveryId: delivery._id });
   }
-  return { duplicate };
+  return { outcome };
 }
 
 describe("missingGuids", () => {
@@ -396,14 +396,36 @@ describe("a redelivery arriving", () => {
     const first = await deliver(t, "delivery-guid", event);
     const second = await deliver(t, "delivery-guid", event);
 
-    expect(first).toEqual({ duplicate: false });
-    expect(second).toEqual({ duplicate: true });
+    expect(first).toEqual({ outcome: "accepted" });
+    expect(second).toEqual({ outcome: "duplicate" });
     expect(await t.run(async (ctx) => ctx.db.query("jobs").collect())).toHaveLength(1);
 
     expect(await t.mutation(internal.webhooks.reconcileRecovered, { now: NOW })).toEqual({
       recovered: 1,
       abandoned: 0,
     });
+    expect((await readRecovery(t, "delivery-guid"))?.state).toBe("recovered");
+  });
+
+  it("closes out its recovery row when intake drops it unstored", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.webhooks.claimRecovery, {
+      now: NOW,
+      candidates: [candidate("delivery-guid")],
+    });
+
+    const dropped = await deliver(t, "delivery-guid", {
+      action: "queued",
+      ghJobId: 4242,
+      githubInstallationId: 42,
+      repo: "acme/app",
+      repoIsPublic: false,
+      workflowName: "CI",
+      labels: ["erainfra-4vcpu-ubuntu-2404"],
+    });
+
+    expect(dropped).toEqual({ outcome: "dropped" });
+    expect(await t.run(async (ctx) => ctx.db.query("webhookDeliveries").collect())).toEqual([]);
     expect((await readRecovery(t, "delivery-guid"))?.state).toBe("recovered");
   });
 });
