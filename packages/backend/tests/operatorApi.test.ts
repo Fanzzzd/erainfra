@@ -57,6 +57,7 @@ async function seedAttempt(
     owner: string;
     machineId: Id<"machines">;
     queueTime: number;
+    assignedAt: number;
     runnerAssignedAt: number;
     startedAt: number;
     finishedAt: number;
@@ -411,6 +412,23 @@ describe("operator API reads", () => {
       durationMs: 60_000,
       workflowRunUrl: "https://github.com/acme/web/actions/runs/77",
       runnerName: `runner-${T0}`,
+    });
+
+    // GitHub's scale-set messages carry no queue time: the wait starts at the scale-set
+    // assignment, and queuedAt stays null rather than showing a time GitHub never sent.
+    const scaleSet = await seedAttempt(t, T0, {
+      machineId,
+      assignedAt: T0 + 2_000,
+      runnerAssignedAt: T0 + 4_000,
+      startedAt: T0 + 4_000,
+      finishedAt: T0 + 65_000,
+    });
+    const scaleSetResponse = await get(t, `/api/v1/attempts/${scaleSet}`, token);
+    expect((await scaleSetResponse.json()).attempt).toMatchObject({
+      queuedAt: null,
+      scaleSetAssignedAt: new Date(T0 + 2_000).toISOString(),
+      queueWaitMs: 2_000,
+      durationMs: 61_000,
     });
 
     for (const missing of ["nope", encodeURIComponent("a/b")]) {

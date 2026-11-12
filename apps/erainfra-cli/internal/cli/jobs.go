@@ -44,8 +44,10 @@ var jobsListCommand = command{
 	summary: "List jobs (Attempts), newest first",
 	long: `
 Each row is one Attempt: one GitHub job run in one disposable boundary. WAIT is
-how long GitHub held the job before a Runner of this fleet took it; DURATION is
-from the job starting to it finishing.
+how long GitHub held the job before a Runner of this fleet took it, counted from
+when GitHub handed the job to the Profile's scale set while GitHub's
+scale-set messages carry no queue time; DURATION is from GitHub assigning the
+job to a Runner to it finishing.
 
 A page holds --limit Attempts (default 50). When there are more, the table
 mode prints the --cursor for the next page on standard error, and json carries
@@ -140,17 +142,20 @@ return a page shorter than --limit before the last page.`,
 
 type attemptDetail struct {
 	attemptRow
-	Executor           string  `json:"executor"`
-	ImageRelease       string  `json:"imageRelease"`
-	Vcpus              int64   `json:"vcpus"`
-	MemoryMiB          int64   `json:"memoryMiB"`
-	RunnerName         string  `json:"runnerName"`
-	RunnerID           int64   `json:"runnerId"`
-	SelectionReason    *string `json:"selectionReason"`
-	EventName          *string `json:"eventName"`
-	WorkflowRef        *string `json:"workflowRef"`
-	ClaimedAt          *string `json:"claimedAt"`
-	ReadyAt            *string `json:"readyAt"`
+	Executor        string  `json:"executor"`
+	ImageRelease    string  `json:"imageRelease"`
+	Vcpus           int64   `json:"vcpus"`
+	MemoryMiB       int64   `json:"memoryMiB"`
+	RunnerName      string  `json:"runnerName"`
+	RunnerID        int64   `json:"runnerId"`
+	SelectionReason *string `json:"selectionReason"`
+	EventName       *string `json:"eventName"`
+	WorkflowRef     *string `json:"workflowRef"`
+	ClaimedAt       *string `json:"claimedAt"`
+	ReadyAt         *string `json:"readyAt"`
+	// ScaleSetAssignedAt is when GitHub handed the job to the Profile's scale
+	// set, where WAIT starts. Absent from older control planes.
+	ScaleSetAssignedAt *string `json:"scaleSetAssignedAt"`
 	ExecutorFinishedAt *string `json:"executorFinishedAt"`
 	ExecutorExitCode   *int64  `json:"executorExitCode"`
 	CancelReason       *string `json:"cancelReason"`
@@ -241,6 +246,7 @@ result and the run URL. The id is the first column of ` + "`erainfra jobs list`"
 			{"Claimed", orDash(d.ClaimedAt)},
 			{"Boundary ready", orDash(d.ReadyAt)},
 			{"Queued on GitHub", orDash(d.QueuedAt)},
+			{"On scale set", orDash(d.ScaleSetAssignedAt)},
 			{"Started", orDash(d.StartedAt)},
 			{"Finished", orDash(d.FinishedAt)},
 			{"Queue wait", millis(d.QueueWaitMs)},

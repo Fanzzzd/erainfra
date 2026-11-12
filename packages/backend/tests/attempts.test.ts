@@ -133,15 +133,29 @@ describe("attempts.list", () => {
 });
 
 describe("queueWaitMs", () => {
-  it("is null until GitHub has said when the job was queued", () => {
+  it("is null until GitHub has said when the job was queued or handed to the scale set", () => {
     expect(queueWaitMs({})).toBeNull();
     expect(queueWaitMs({ runnerAssignedAt: 5_000, startedAt: 6_000 })).toBeNull();
     expect(queueWaitMs({ queueTime: 1_000 })).toBeNull();
+    expect(queueWaitMs({ assignedAt: 1_000 })).toBeNull();
   });
 
   it("measures queue to Runner assignment on GitHub's clock when it can", () => {
-    expect(queueWaitMs({ queueTime: 1_000, runnerAssignedAt: 4_000, startedAt: 9_000 })).toBe(
-      3_000,
+    expect(
+      queueWaitMs({
+        queueTime: 1_000,
+        assignedAt: 2_000,
+        runnerAssignedAt: 4_000,
+        startedAt: 9_000,
+      }),
+    ).toBe(3_000);
+  });
+
+  // GitHub's scale-set JobStarted carries queueTime as zero, which the controller drops, but
+  // scaleSetAssignTime and runnerAssignTime set.
+  it("starts at the scale-set assignment when GitHub sent no queue time", () => {
+    expect(queueWaitMs({ assignedAt: 2_000, runnerAssignedAt: 4_000, startedAt: 9_000 })).toBe(
+      2_000,
     );
   });
 

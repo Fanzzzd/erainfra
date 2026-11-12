@@ -324,6 +324,8 @@ export function attemptDetailJson(attempt: OperatorAttempt) {
     githubJobId: attempt.jobId ?? null,
     claimedAt: iso(attempt.claimedAt),
     readyAt: iso(attempt.readyAt),
+    // GitHub's scaleSetAssignTime: where queueWaitMs starts when GitHub sent no queue time.
+    scaleSetAssignedAt: iso(attempt.assignedAt),
     runnerAssignedAt: iso(attempt.runnerAssignedAt),
     executorFinishedAt: iso(attempt.executorFinishedAt),
     executorExitCode: attempt.executorExitCode ?? null,
