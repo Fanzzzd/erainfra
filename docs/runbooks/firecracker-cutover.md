@@ -36,75 +36,16 @@ software fallback that preserves the boundary, and Docker is not one. See
 
 ## 2. Provision the Worker host
 
-The one-command form does all of this section in a single verified step: it downloads the agent
-archive this deployment pins, checks it against the pinned SHA-256, and hands the runtime inside to
-the provisioner that travels embedded in the script itself:
+Provision the host as [Linux Worker prerequisites](../workers.md#linux-worker-prerequisites)
+describes: the `worker-host` role in one command, or `deploy/provision-firecracker-host.sh` by hand
+for an air-gapped host or a runtime built from source. Use the devices you chose in step 1. A host
+that already runs Firecracker jobs must be drained first
+([Re-provision a live Worker](../workers.md#re-provision-a-live-worker)).
 
-```bash
-curl -fsSL https://<your-deployment>.convex.site/install | sudo bash -s -- --role worker-host \
-  --pool-gib 200 --pool-dir /path/on/a/roomy/filesystem
-```
-
-`--worker-user` defaults to whoever ran sudo; `--data-device`/`--meta-device` swap the file-backed
-pool for dedicated devices (destroyed, as below); `--uninstall` mirrors the rollback section.
-
-Re-running it on a live Worker, to move the runtime to a newer release, refuses while any
-Firecracker VM runs on the host. That includes the idle warm VMs the runtime keeps parked for the
-next job, so a Worker with no jobs still refuses. Provisioning reloads the job network policy and
-restarts the runtime, which would end those VMs. Drain first, as the refusal lists: wait until the
-dashboard shows nothing running on the Worker (for a Profile's only Worker, follow
-[take-the-only-worker-away.md](take-the-only-worker-away.md)), run
-`sudo systemctl stop runner-center-runtime`, check that `pgrep -x firecracker` prints nothing, then
-re-run. Run by hand, `deploy/provision-firecracker-host.sh --force-network-reload` provisions anyway
-and ends every running job; the one-command form has no such option.
-
-Everything after this paragraph is the same provisioning done by hand, for air-gapped hosts, for
-a runtime built from source, or to read what the one command does.
-
-Download the runtime asset for the release you are running and verify it against its published
-sidecar before it touches the host:
-
-```bash
-version=v0.3.0            # the EraInfra release you are deploying
-case "$(uname -m)" in    # release assets say arm64 where uname -m says aarch64
-  x86_64) arch=x86_64 ;;
-  aarch64) arch=arm64 ;;
-esac
-base="https://github.com/Fanzzzd/erainfra/releases/download/$version"
-curl -fsSLO "$base/runner-center-runtime-linux-$arch"
-curl -fsSLO "$base/runner-center-runtime-linux-$arch.sha256"
-sha256sum -c "runner-center-runtime-linux-$arch.sha256"
-chmod +x "runner-center-runtime-linux-$arch"
-```
-
-Then provision. `--data-device` and `--meta-device` belong to the thin-pool from then on; name the
-devices you chose in step 1, not a partition holding data. A new pair must be zero-filled in full
-before the first provision. Thin-pool setup never erases either device: it reopens valid metadata,
-initializes a pair it has read back as entirely zero, and refuses anything else.
-
-```bash
-sudo deploy/provision-firecracker-host.sh \
-  --runtime-binary "./runner-center-runtime-linux-$arch" \
-  --data-device /dev/nvme1n1 \
-  --meta-device /dev/nvme2n1 \
-  --worker-user "$USER"
-```
-
-For an evaluation host with no spare devices, swap both device flags for `--file-backed-pool 60`,
-adding `--pool-dir /path/on/a/roomy/filesystem` when the root filesystem is tight. That backs the
-pool with sparse files, so filling their filesystem fails every running job at once. The provisioner
-refuses a filesystem that cannot hold the whole pool, but that check is a floor, not a licence: do
-not ship it.
-
-The provisioner ends by printing the readiness report. Every check must pass. If one does not, the
-report names it; `journalctl -u runner-center-runtime -n 50 --no-pager` has the detail.
-
-Log out and back in so the `runner-center` group membership takes effect, then:
-
-```bash
-rc doctor
-sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
-```
+Every check in the readiness report the provisioner prints must pass. If one does not, the report
+names it; `journalctl -u runner-center-runtime -n 50 --no-pager` has the detail. Log out and back
+in, then `rc doctor` and `sudo /usr/local/lib/runner-center/runner-center-runtime verify-network`
+must both pass.
 
 ## 3. Enrol or restart the Worker
 

@@ -345,7 +345,7 @@ serves the new pins:
   swaps atomically. Re-running `/install --role worker-host` to update the Firecracker runtime
   refuses while any Firecracker VM runs, including the idle warm VMs the runtime keeps parked:
   drain the Worker first, as the refusal and
-  [firecracker-cutover.md](firecracker-cutover.md#2-provision-the-worker-host) say.
+  [Re-provision a live Worker](../workers.md#re-provision-a-live-worker) say.
 - Nodes: re-run the `/install --role node …` command the Node was installed with. A `--convex`
   Node can pass `--credential-file /etc/erainfra-node.credential`, the copy the installer keeps.
 
