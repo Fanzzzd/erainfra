@@ -62,12 +62,12 @@ async function setup(t: TestConvex<typeof schema>) {
     });
     await ctx.db.insert("machines", { ...machine, name: "linux-b", token: "other-token" });
     const attemptId = await ctx.db.insert("attempts", {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "docker",
       imageRelease: IMAGE,
       vcpus: 4,
       memoryMiB: 16_384,
-      runnerName: "rc-linux-js-1",
+      runnerName: "erainfra-4vcpu-ubuntu-2404-1",
       runnerId: 1,
       state: "running",
       machineId,

@@ -20,7 +20,7 @@ func (r *retireRecorder) GetRunnerGroupByName(context.Context, string) (*scalese
 }
 
 func (r *retireRecorder) GetRunnerScaleSet(context.Context, int, string) (*scaleset.RunnerScaleSet, error) {
-	return &scaleset.RunnerScaleSet{ID: 9, Name: "rc-linux-js", Statistics: r.stats}, nil
+	return &scaleset.RunnerScaleSet{ID: 9, Name: "erainfra-4vcpu-ubuntu-2404", Statistics: r.stats}, nil
 }
 
 func (r *retireRecorder) DeleteRunnerScaleSet(context.Context, int) error {
@@ -34,7 +34,7 @@ func (r *retireRecorder) PauseProfile(context.Context, string) (bool, error) {
 }
 
 func TestRetireUnderLeaseRefusesBeforePausingAndPausesBeforeDeleting(t *testing.T) {
-	cfg := config.Config{Profile: "rc-linux-js", ScaleSetName: "rc-linux-js", RunnerGroup: scaleset.DefaultRunnerGroup}
+	cfg := config.Config{Profile: "erainfra-4vcpu-ubuntu-2404", ScaleSetName: "erainfra-4vcpu-ubuntu-2404", RunnerGroup: scaleset.DefaultRunnerGroup}
 	idle := &scaleset.RunnerScaleSetStatistic{}
 	busy := &scaleset.RunnerScaleSetStatistic{TotalRunningJobs: 1}
 	for _, tc := range []struct {

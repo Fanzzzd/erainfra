@@ -15,8 +15,8 @@ const CONTRACT = {
 
 async function registerProfile(t: TestConvex<typeof schema>) {
   await t.mutation(internal.controllerApi.registerProfile, {
-    name: "rc-linux-js",
-    scaleSetName: "rc-linux-js",
+    name: "erainfra-4vcpu-ubuntu-2404",
+    scaleSetName: "erainfra-4vcpu-ubuntu-2404",
     ...CONTRACT,
     minRunners: 0,
     maxRunners: 4,
@@ -27,8 +27,8 @@ describe("Profile registration", () => {
   it("clears cache read permission when a current registration disables cache facts, but preserves legacy settings", async () => {
     const t = convexTest(schema, modules);
     const registration = {
-      name: "rc-linux-js",
-      scaleSetName: "rc-linux-js",
+      name: "erainfra-4vcpu-ubuntu-2404",
+      scaleSetName: "erainfra-4vcpu-ubuntu-2404",
       ...CONTRACT,
       minRunners: 0,
       maxRunners: 4,
@@ -60,8 +60,8 @@ describe("scale-set Attempt protocol", () => {
     await registerProfile(t);
     const input = {
       ...CONTRACT,
-      profile: "rc-linux-js",
-      runnerName: "rc-linux-js-a",
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      runnerName: "erainfra-4vcpu-ubuntu-2404-a",
       runnerId: 42,
       encodedJITConfig: "single-use-secret",
     };
@@ -74,7 +74,7 @@ describe("scale-set Attempt protocol", () => {
 
     expect(
       await t.query(internal.controllerApi.listActiveAttempts, {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
       }),
     ).toEqual([
       expect.objectContaining({
@@ -99,7 +99,7 @@ describe("scale-set Attempt protocol", () => {
     await registerProfile(t);
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "runner-a",
       runnerId: 1,
       encodedJITConfig: "first",
@@ -107,7 +107,7 @@ describe("scale-set Attempt protocol", () => {
     await expect(
       t.mutation(internal.controllerApi.createAttempt, {
         ...CONTRACT,
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName: "runner-a",
         runnerId: 2,
         encodedJITConfig: "second",
@@ -120,13 +120,13 @@ describe("scale-set Attempt protocol", () => {
     await registerProfile(t);
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "runner-a",
       runnerId: 1,
       encodedJITConfig: "secret",
     });
     const started = {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "runner-a",
       runnerRequestId: "7",
       repository: "EraInfra",
@@ -143,7 +143,7 @@ describe("scale-set Attempt protocol", () => {
     await t.mutation(internal.controllerApi.markJobStarted, started);
     await t.mutation(internal.controllerApi.markJobStarted, started);
     await t.mutation(internal.controllerApi.markJobCompleted, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "runner-a",
       runnerRequestId: "7",
       jobId: "job-1",
@@ -151,7 +151,7 @@ describe("scale-set Attempt protocol", () => {
       finishedAt: 400,
     });
     await t.mutation(internal.controllerApi.markJobCompleted, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "runner-a",
       runnerRequestId: "7",
       jobId: "job-1",
@@ -171,7 +171,7 @@ describe("scale-set Attempt protocol", () => {
     expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
     expect(
       await t.query(internal.controllerApi.listActiveAttempts, {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
       }),
     ).toEqual([]);
   });
@@ -180,7 +180,7 @@ describe("scale-set Attempt protocol", () => {
     const t = convexTest(schema, modules);
     await registerProfile(t);
     const started = {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       repository: "app",
       owner: "acme",
       workflowRef: "acme/shared/.github/workflows/test.yml@refs/heads/main",
@@ -207,7 +207,7 @@ describe("scale-set Attempt protocol", () => {
     ] as const) {
       await t.mutation(internal.controllerApi.createAttempt, {
         ...CONTRACT,
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName,
         runnerId,
         encodedJITConfig: "secret",
@@ -238,7 +238,7 @@ describe("scale-set Attempt protocol", () => {
     // A job that settled before the lookup came back still gets its branch, once.
     await t.mutation(internal.controllerApi.markJobStarted, { ...started, runnerName: "settled" });
     await t.mutation(internal.controllerApi.markJobCompleted, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "settled",
       result: "succeeded",
       finishedAt: 400,
@@ -267,13 +267,13 @@ describe("scale-set Attempt protocol", () => {
     await registerProfile(t);
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "idle",
       runnerId: 1,
       encodedJITConfig: "idle-secret",
     });
     await t.mutation(internal.controllerApi.cancelAttempt, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "idle",
       reason: "scale down",
     });
@@ -284,13 +284,13 @@ describe("scale-set Attempt protocol", () => {
 
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "running",
       runnerId: 2,
       encodedJITConfig: "running-secret",
     });
     await t.mutation(internal.controllerApi.markJobStarted, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "running",
       runnerRequestId: "8",
       repository: "runner-center",
@@ -303,7 +303,7 @@ describe("scale-set Attempt protocol", () => {
     });
     await expect(
       t.mutation(internal.controllerApi.cancelAttempt, {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName: "running",
         reason: "scale down",
       }),
@@ -315,7 +315,7 @@ describe("scale-set Attempt protocol", () => {
     await registerProfile(t);
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "expired",
       runnerId: 99,
       encodedJITConfig: "expired-secret",
@@ -339,7 +339,7 @@ describe("scale-set Attempt protocol", () => {
     await registerProfile(t);
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "orphan",
       runnerId: 73,
       encodedJITConfig: "secret",
@@ -351,13 +351,17 @@ describe("scale-set Attempt protocol", () => {
     });
 
     expect(
-      await t.query(internal.controllerApi.listRunnerCleanups, { profile: "rc-linux-js" }),
+      await t.query(internal.controllerApi.listRunnerCleanups, {
+        profile: "erainfra-4vcpu-ubuntu-2404",
+      }),
     ).toEqual([{ runnerName: "orphan", runnerId: 73 }]);
-    const cleanup = { profile: "rc-linux-js", runnerName: "orphan", runnerId: 73 };
+    const cleanup = { profile: "erainfra-4vcpu-ubuntu-2404", runnerName: "orphan", runnerId: 73 };
     expect(await t.mutation(internal.controllerApi.completeRunnerCleanup, cleanup)).toBe(true);
     expect(await t.mutation(internal.controllerApi.completeRunnerCleanup, cleanup)).toBe(true);
     expect(
-      await t.query(internal.controllerApi.listRunnerCleanups, { profile: "rc-linux-js" }),
+      await t.query(internal.controllerApi.listRunnerCleanups, {
+        profile: "erainfra-4vcpu-ubuntu-2404",
+      }),
     ).toEqual([]);
   });
 });
@@ -366,13 +370,13 @@ describe("retiring a Profile", () => {
   it("pauses a registered Profile so Worker discovery stops seeing it, and a re-register revives it", async () => {
     const t = convexTest(schema, modules);
     await registerProfile(t);
-    expect(await t.mutation(internal.controllerApi.pauseProfile, { name: "rc-linux-js" })).toBe(
-      true,
-    );
+    expect(
+      await t.mutation(internal.controllerApi.pauseProfile, { name: "erainfra-4vcpu-ubuntu-2404" }),
+    ).toBe(true);
     const paused = await t.run((ctx) =>
       ctx.db
         .query("profiles")
-        .withIndex("by_name", (q) => q.eq("name", "rc-linux-js"))
+        .withIndex("by_name", (q) => q.eq("name", "erainfra-4vcpu-ubuntu-2404"))
         .unique(),
     );
     expect(paused?.state).toBe("paused");
@@ -388,7 +392,7 @@ describe("retiring a Profile", () => {
     const revived = await t.run((ctx) =>
       ctx.db
         .query("profiles")
-        .withIndex("by_name", (q) => q.eq("name", "rc-linux-js"))
+        .withIndex("by_name", (q) => q.eq("name", "erainfra-4vcpu-ubuntu-2404"))
         .unique(),
     );
     expect(revived?.state).toBe("active");
@@ -427,15 +431,17 @@ describe("POST /controller/profiles/pause", () => {
         });
       };
 
-      expect((await post({ name: "rc-linux-js" })).status).toBe(401);
-      expect((await post({ name: "rc-linux-js" }, "Bearer wrong")).status).toBe(401);
+      expect((await post({ name: "erainfra-4vcpu-ubuntu-2404" })).status).toBe(401);
+      expect((await post({ name: "erainfra-4vcpu-ubuntu-2404" }, "Bearer wrong")).status).toBe(401);
       expect((await post({ name: "../x" }, `Bearer ${token}`)).status).toBe(400);
       expect((await post({ name: "nope" }, `Bearer ${token}`)).status).toBe(404);
-      expect((await post({ name: "rc-linux-js" }, `Bearer ${token}`)).status).toBe(204);
+      expect((await post({ name: "erainfra-4vcpu-ubuntu-2404" }, `Bearer ${token}`)).status).toBe(
+        204,
+      );
       const row = await t.run((ctx) =>
         ctx.db
           .query("profiles")
-          .withIndex("by_name", (q) => q.eq("name", "rc-linux-js"))
+          .withIndex("by_name", (q) => q.eq("name", "erainfra-4vcpu-ubuntu-2404"))
           .unique(),
       );
       expect(row?.state).toBe("paused");

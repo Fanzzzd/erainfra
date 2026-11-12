@@ -4,8 +4,8 @@ A Profile with one Worker cannot roll. While that Worker is away, the scale-set 
 accepting jobs and they queue: GitHub has no fallback label, and it cancels a queued self-hosted
 job only after 24 hours. A consumer that has read its own runbook will not wait that long.
 biel-payable-system's rule is "any required check queued longer than 10 minutes, unset
-`RC_CI_RUNS_ON`", and on 2026-08-20 that rule fired during the Firecracker cutover, moved the
-repository to `ubuntu-latest`, and nobody set it back for two weeks (#138).
+`RC_CI_RUNS_ON`" (now `ERAINFRA_CI_RUNS_ON`). On 2026-08-20 that rule fired during the Firecracker
+cutover, moved the repository to `ubuntu-latest`, and nobody set it back for two weeks (#138).
 
 So the question before any operation on a single-Worker Profile is one number: how long will the
 Worker be away, and is that longer than the consumer's rule.
@@ -55,11 +55,12 @@ provisioner to install the full policy before switching the daemon. Run the new 
 1. Look at what is running and queued: the dashboard's Attempts page, and `rc logs -f` on the
    Worker for `Starting firecracker Attempt` lines without a matching finish.
 2. Tell the consumer to move to hosted for the duration. For biel-payable-system that is
-   `gh variable delete RC_CI_RUNS_ON` in that repository, run by someone with access to it, and
+   `gh variable delete ERAINFRA_CI_RUNS_ON` in that repository, run by someone with access to it, and
    cancelling anything already queued on the Profile label (a queued job keeps its label).
 3. Write the re-enable down where the consumer will see it, before starting: a task in their
    tracker with the exact command, assigned to a person. This is the step that was forgotten.
-   The command for biel-payable-system is `gh variable set RC_CI_RUNS_ON --body rc-linux-js`.
+   The command for biel-payable-system is
+   `gh variable set ERAINFRA_CI_RUNS_ON --body erainfra-4vcpu-ubuntu-2404`.
 4. Wait for the Worker to be idle if the operation loses Attempts.
 
 Steps 2 and 3 are not needed for a consumer whose workflow starts with the router job in
@@ -73,7 +74,7 @@ wait for it, so cancel those as in step 2.
 Do the operation. Watch `rc logs -f` on the Worker; the line to wait for is
 
 ```
-rc-linux-js readiness: ready (firecracker-microvm, guest-kernel)
+erainfra-4vcpu-ubuntu-2404 readiness: ready (firecracker-microvm, guest-kernel)
 ```
 
 for every Profile the Worker serves. The dashboard's Profile row turns ready at the same moment.

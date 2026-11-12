@@ -8,7 +8,7 @@ const IMAGE = `ghcr.io/fanzzzd/runner-center-ubuntu-js@sha256:${"a".repeat(64)}`
 function env(overrides: Record<string, string> = {}) {
   return {
     IMAGE,
-    RC_PROFILE: "rc-linux-js",
+    RC_PROFILE: "erainfra-4vcpu-ubuntu-2404",
     RC_VCPUS: "4",
     RC_MEMORY_MIB: "8192",
     RC_CPUSET_CPUS: "4-7",
@@ -40,7 +40,7 @@ describe("provision-docker.sh", () => {
     const argv = harness.argv();
     assert.match(argv, /^docker\trun\t--rm\t--pull=never\t--init/m);
     assert.doesNotMatch(argv, /--mount|--volume|runner-cache/);
-    assert.match(argv, /--label\trunner-center\.profile=rc-linux-js/);
+    assert.match(argv, /--label\trunner-center\.profile=erainfra-4vcpu-ubuntu-2404/);
     // The whole point of #80: --cpus is a quota, --cpuset-cpus is what nproc,
     // os.availableParallelism() and runtime.NumCPU() actually read.
     assert.match(argv, /--cpus\t4\t--cpuset-cpus\t4-7\t/);

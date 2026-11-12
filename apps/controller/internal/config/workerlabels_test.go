@@ -62,7 +62,7 @@ func TestProfileSpecPublishesWorkerLabelsOnlyWhenPinned(t *testing.T) {
 }
 
 func TestStandbyTakesTheWorkerLabelsFromConvex(t *testing.T) {
-	standby := Config{Profile: "rc-linux-js", ConvexURL: "https://example.convex.cloud", MachineToken: strings.Repeat("a", 32)}
+	standby := Config{Profile: "erainfra-4vcpu-ubuntu-2404", ConvexURL: "https://example.convex.cloud", MachineToken: strings.Repeat("a", 32)}
 	spec := validConfig().ProfileSpec()
 	spec.WorkerLabels = []string{"gpu"}
 	cfg, err := standby.WithProfile(&spec)

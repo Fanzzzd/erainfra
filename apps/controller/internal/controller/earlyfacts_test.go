@@ -61,7 +61,7 @@ func pushRun() githubapi.WorkflowRun {
 
 func runPoller(t *testing.T, cache *hintingCache, runs assignedRuns) {
 	t.Helper()
-	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
 		WithCachePublisher(cache, nil), WithWorkflowRuns(runs))
 	if err != nil {
 		t.Fatal(err)
@@ -69,23 +69,23 @@ func runPoller(t *testing.T, cache *hintingCache, runs assignedRuns) {
 	scaler.hintPoll = 5 * time.Millisecond
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	scaler.RunHintPoller(ctx, "rc-linux-js-")
+	scaler.RunHintPoller(ctx, "erainfra-4vcpu-ubuntu-2404-")
 	scaler.publishing.Wait()
 }
 
 // A hint GitHub confirms becomes the runner's facts, without JobStarted.
 func TestConfirmedJobHintPublishesTheRunnersFacts(t *testing.T) {
 	cache := &hintingCache{hints: []cachefacts.Hint{{
-		Runner: "rc-linux-js-a", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
+		Runner: "erainfra-4vcpu-ubuntu-2404-a", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
 	}}}
-	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"rc-linux-js-a"}}})
+	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"erainfra-4vcpu-ubuntu-2404-a"}}})
 
 	pushed := cache.facts()
-	if len(pushed) != 1 || pushed[0].Runner != "rc-linux-js-a" || pushed[0].Repository != "Fanzzzd/EraInfra" ||
+	if len(pushed) != 1 || pushed[0].Runner != "erainfra-4vcpu-ubuntu-2404-a" || pushed[0].Repository != "Fanzzzd/EraInfra" ||
 		pushed[0].Ref != "refs/heads/main" {
-		t.Fatalf("pushed = %#v, want the facts of rc-linux-js-a on refs/heads/main", pushed)
+		t.Fatalf("pushed = %#v, want the facts of erainfra-4vcpu-ubuntu-2404-a on refs/heads/main", pushed)
 	}
-	if len(cache.prefixes) != 1 || cache.prefixes[0] != "rc-linux-js-" {
+	if len(cache.prefixes) != 1 || cache.prefixes[0] != "erainfra-4vcpu-ubuntu-2404-" {
 		t.Fatalf("listed prefixes %q, want only this controller's", cache.prefixes)
 	}
 }
@@ -94,9 +94,9 @@ func TestConfirmedJobHintPublishesTheRunnersFacts(t *testing.T) {
 // decides, not the hint.
 func TestJobHintGitHubDoesNotConfirmIsIgnored(t *testing.T) {
 	cache := &hintingCache{hints: []cachefacts.Hint{{
-		Runner: "rc-linux-js-liar", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
+		Runner: "erainfra-4vcpu-ubuntu-2404-liar", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
 	}}}
-	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"rc-linux-js-a"}}})
+	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"erainfra-4vcpu-ubuntu-2404-a"}}})
 
 	if pushed := cache.facts(); len(pushed) != 0 {
 		t.Fatalf("pushed %#v for a runner GitHub does not assign to the run", pushed)
@@ -105,13 +105,13 @@ func TestJobHintGitHubDoesNotConfirmIsIgnored(t *testing.T) {
 
 // Without a cache that lists hints the poller does nothing and returns.
 func TestHintPollerNeedsAHintSource(t *testing.T) {
-	scaler, err := NewScaler(validConfig("rc-linux-js", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 1), &fakeStore{}, &fakeIssuer{}, names("unused"),
 		WithCachePublisher(&fakeCache{}, nil), WithWorkflowRuns(assignedRuns{}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
-	go func() { scaler.RunHintPoller(t.Context(), "rc-linux-js-"); close(done) }()
+	go func() { scaler.RunHintPoller(t.Context(), "erainfra-4vcpu-ubuntu-2404-"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):

@@ -46,7 +46,7 @@ func (s *recordingSender) next(t *testing.T) fleet.ControllerHeartbeat {
 
 func base() fleet.ControllerHeartbeat {
 	return fleet.ControllerHeartbeat{
-		Profile:   "rc-linux-js",
+		Profile:   "erainfra-4vcpu-ubuntu-2404",
 		Hostname:  "oracle-singapore-1",
 		Version:   "0.2.0-rc.11",
 		StartedAt: time.UnixMilli(1_786_300_000_000),

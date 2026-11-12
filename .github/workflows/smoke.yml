@@ -11,7 +11,7 @@ on:
 
 jobs:
   smoke:
-    runs-on: rc-e2e
+    runs-on: erainfra-canary-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Assert the executor contract
@@ -98,7 +98,7 @@ jobs:
   # pinned by index digest so a moved tag cannot turn the canary red on a day
   # the fleet did not change.
   services:
-    runs-on: rc-e2e
+    runs-on: erainfra-canary-4vcpu-ubuntu-2404
     timeout-minutes: 10
     services:
       postgres:
@@ -126,9 +126,9 @@ jobs:
           test "$(docker exec "$POSTGRES_ID" psql -U postgres -tAc 'select 1')" = 1
       # Compose v2 and Buildx are the two Docker CLI plugins ubuntu-latest
       # carries and a workflow calls without installing. The Image Release adds
-      # both (#151); rc-e2e measures the image it is pinned to until it is
-      # repinned, so until the date below a missing plugin is a warning, and
-      # after it the canary goes red. The date matches the conformance
+      # both (#151); erainfra-canary-4vcpu-ubuntu-2404 measures the image it
+      # is pinned to until it is repinned, so until the date below a missing
+      # plugin is a warning, and after it the canary goes red. The date matches the conformance
       # allowlist's pending entries for the same two tools.
       - name: The Docker CLI plugins answer
         run: |
@@ -138,7 +138,7 @@ jobs:
           docker buildx version || missing+=(buildx)
           [ "${#missing[@]}" -eq 0 ] && exit 0
           if [ "$(date -u +%Y%m%d)" -le 20261205 ]; then
-            echo "::warning::Docker CLI plugins missing until rc-e2e is repinned to an image with #151: ${missing[*]}"
+            echo "::warning::Docker CLI plugins missing until erainfra-canary-4vcpu-ubuntu-2404 is repinned to an image with #151: ${missing[*]}"
             exit 0
           fi
           echo "Docker CLI plugins missing: ${missing[*]}" >&2
@@ -148,7 +148,7 @@ jobs:
   # the guest, with a service reached by its name on the job network rather
   # than through a published port.
   container-job:
-    runs-on: rc-e2e
+    runs-on: erainfra-canary-4vcpu-ubuntu-2404
     timeout-minutes: 10
     container:
       # The base of the Image Release itself, at the digest the Dockerfile pins.

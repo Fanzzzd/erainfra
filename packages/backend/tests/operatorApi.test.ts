@@ -332,7 +332,10 @@ describe("operator API reads", () => {
     await seedAttempt(t, T0 - 3 * 86_400_000, { repo: "acme/web" });
     await seedAttempt(t, T0 - 1_000, { repo: "web", owner: "acme", state: "failed" });
     await seedAttempt(t, T0 - 500, { repo: "acme/api" });
-    await seedAttempt(t, T0 - 100, { profile: "rc-linux-js", repo: "acme/web" });
+    await seedAttempt(t, T0 - 100, {
+      profile: "erainfra-canary-4vcpu-ubuntu-2404",
+      repo: "acme/web",
+    });
     vi.setSystemTime(T0);
 
     const repos = async (query: string) => {
@@ -344,15 +347,17 @@ describe("operator API reads", () => {
       );
     };
 
-    expect(await repos("profile=rc-linux-js")).toEqual(["rc-linux-js:acme/web:completed"]);
+    expect(await repos("profile=erainfra-canary-4vcpu-ubuntu-2404")).toEqual([
+      "erainfra-canary-4vcpu-ubuntu-2404:acme/web:completed",
+    ]);
     expect(await repos("state=failed")).toEqual(["erainfra-4vcpu-ubuntu-2404:acme/web:failed"]);
     expect(await repos("repo=acme/web")).toEqual([
-      "rc-linux-js:acme/web:completed",
+      "erainfra-canary-4vcpu-ubuntu-2404:acme/web:completed",
       "erainfra-4vcpu-ubuntu-2404:acme/web:failed",
       "erainfra-4vcpu-ubuntu-2404:acme/web:completed",
     ]);
     expect(await repos("repo=acme/web&since=1d")).toEqual([
-      "rc-linux-js:acme/web:completed",
+      "erainfra-canary-4vcpu-ubuntu-2404:acme/web:completed",
       "erainfra-4vcpu-ubuntu-2404:acme/web:failed",
     ]);
     expect(await repos("profile=erainfra-4vcpu-ubuntu-2404&state=completed&since=1h")).toEqual([

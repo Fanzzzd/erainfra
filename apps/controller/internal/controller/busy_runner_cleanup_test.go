@@ -23,7 +23,7 @@ func TestBusyRunnerCleanupDoesNotBlockScaleUp(t *testing.T) {
 		nextID:    40,
 		removeErr: fmt.Errorf("DELETE runner 39: %w: still running", scaleset.JobStillRunningError),
 	}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 4), store, issuer, names("a", "b", "c"))
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 4), store, issuer, names("a", "b", "c"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestBusyRunnerCleanupDoesNotBlockScaleUp(t *testing.T) {
 func TestFailedRunnerDeletionIsRetriedLater(t *testing.T) {
 	store := &fakeStore{cleanups: []fleet.RunnerCleanup{{RunnerName: "orphan", RunnerID: 7}}}
 	issuer := &fakeIssuer{nextID: 10, removeErr: errors.New("502 Bad Gateway")}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 2), store, issuer, names("a"))
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 2), store, issuer, names("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestScaleDownLeavesABusyRunnerToItsJob(t *testing.T) {
 		{RunnerName: "new-idle", RunnerID: 3, State: fleet.AttemptReady, CreatedAt: base.Add(time.Minute)},
 	}}
 	issuer := &fakeIssuer{removeErr: fmt.Errorf("DELETE: %w", scaleset.JobStillRunningError)}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 4), store, issuer, names("unused"))
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 4), store, issuer, names("unused"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestScaleDownSkipsAnAttemptThatStartedAJob(t *testing.T) {
 		cancelError: fmt.Errorf("%w: controller API returned 409 Conflict", fleet.ErrAttemptRunning),
 	}
 	issuer := &fakeIssuer{}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 4), store, issuer, names("unused"))
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 4), store, issuer, names("unused"))
 	if err != nil {
 		t.Fatal(err)
 	}
