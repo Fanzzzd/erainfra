@@ -87,10 +87,24 @@ func TestEntryIsReadOnlyByTheRepositoryIDThatSavedIt(t *testing.T) {
 	if entry, err := f.index.LookupExact(context.Background(), feature, "deps-linux", "v1"); err != nil || entry != nil {
 		t.Fatalf("another repository's default-branch fallback = %+v, %v; want a miss", entry, err)
 	}
-	// A controller from before the ID was pushed reads by name, as it did.
-	if entry := f.lookupAs(0, "deps-linux"); entry == nil {
-		t.Fatal("a token without an ID lost the by-name restore it had")
+	// A token without an ID restores nothing by name.
+	if entry := f.lookupAs(0, "deps-linux"); entry != nil {
+		t.Fatalf("a token without an ID restored %+v by name", entry)
 	}
+}
+
+// legacyEntry writes an entry the way a service from before IDs were recorded
+// stored it: no repositoryId in the document.
+func (f *fixture) legacyEntry(key string) {
+	f.t.Helper()
+	blob := "blobs/" + repositorySegment(renamedRepo) + "/" + hex.EncodeToString([]byte(key))
+	f.store.Overwrite(blob, []byte(key))
+	created := f.at.UnixMilli()
+	body := fmt.Sprintf(`{"key":%q,"version":"v1","repository":%q,"ref":"refs/heads/main","blob":%q,"size":%d,"createdAt":%d}`,
+		key, renamedRepo, blob, len(key), created)
+	f.store.Overwrite(scopePrefix(renamedRepo, "refs/heads/main", versionSegment("v1"))+
+		hex.EncodeToString([]byte(key))+"."+recencySuffix(created), []byte(body))
+	f.advance(time.Second)
 }
 
 // A lookup reads past another repository's newer entry to this repository's
@@ -115,8 +129,8 @@ func TestLookupReadsPastAnotherRepositorysNewerEntry(t *testing.T) {
 	if entry := f.lookupAs(newID, "deps-"); entry == nil || entry.Key != "deps-a" {
 		t.Fatalf("prefix lookup = %+v, want this repository's own deps-a", entry)
 	}
-	if entry := f.lookupAs(0, "deps-"); entry == nil || entry.Key != "deps-b" {
-		t.Fatalf("a token without an ID = %+v, want the newest entry by name", entry)
+	if entry := f.lookupAs(0, "deps-"); entry != nil {
+		t.Fatalf("a token without an ID = %+v, want a miss", entry)
 	}
 }
 
@@ -151,48 +165,76 @@ func TestFirstSaveUnderANewIDRemovesTheEarlierRepositorysEntries(t *testing.T) {
 	}
 }
 
-// Entries saved before IDs were recorded keep working: the first ID that saves
-// under the name adopts them. A different ID saving later removes them, so
-// that is the end of the window in which they reach another repository.
-func TestEntriesWithoutAnIDBelongToTheFirstIDThatSaves(t *testing.T) {
+// An entry stored before IDs were recorded belongs to no repository: no token
+// restores it, and the first save under an ID removes it.
+func TestEntriesWithoutAnIDBelongToNoRepository(t *testing.T) {
 	f := newFixture(t, Retention{})
-	legacy := f.saveAs(0, "deps-legacy")
+	f.legacyEntry("deps-legacy")
 
-	// The stored document is the shape an older service wrote and reads.
-	for _, key := range f.store.Keys() {
-		if strings.HasPrefix(key, entriesRoot) {
-			body, _ := f.store.Object(key)
-			if strings.Contains(string(body), "repositoryId") {
-				t.Fatalf("an entry saved without an ID carries one: %s", body)
-			}
+	for _, id := range []int64{oldID, newID, 0} {
+		if entry := f.lookupAs(id, "deps-legacy"); entry != nil {
+			t.Fatalf("a token for ID %d restored an entry without an ID: %+v", id, entry)
 		}
 	}
 
-	// No save with an ID yet: by name, as before, for every token.
-	if entry := f.lookupAs(oldID, legacy.Key); entry == nil {
-		t.Fatal("an entry saved before IDs were recorded is no longer restored")
-	}
-
 	f.saveAs(oldID, "deps-new")
-	if entry := f.lookupAs(oldID, legacy.Key); entry == nil {
-		t.Fatal("the first ID to save lost the entries it adopted")
-	}
-	if entry := f.lookupAs(newID, legacy.Key); entry != nil {
-		t.Fatalf("another ID restored an entry the holder adopted: %+v", entry)
-	}
-	if entry := f.lookupAs(0, legacy.Key); entry == nil {
-		t.Fatal("a token without an ID lost the by-name restore it had")
-	}
-
-	f.saveAs(newID, "deps-mine")
 	if keys := f.keysOf(0); len(keys) != 0 {
-		t.Fatalf("the adopted entries survived the name changing hands: %v", keys)
+		t.Fatalf("the entry without an ID survived the first save under an ID: %v", keys)
 	}
-	if keys := f.keysOf(oldID); len(keys) != 0 {
-		t.Fatalf("the earlier ID's entries survived the name changing hands: %v", keys)
+	if keys := f.keysOf(oldID); len(keys) != 1 || keys[0] != "deps-new" {
+		t.Fatalf("the holder's entries = %v, want its own", keys)
 	}
-	if keys := f.keysOf(newID); len(keys) != 1 || keys[0] != "deps-mine" {
-		t.Fatalf("the new holder's entries = %v, want its own", keys)
+}
+
+// The sweep removes an entry without an ID at once, without waiting for it to
+// go idle, and keeps the ones beside it.
+func TestTheSweepRemovesEntriesWithoutAnID(t *testing.T) {
+	f := newFixture(t, Retention{})
+	f.legacyEntry("deps-legacy")
+	f.saveAs(oldID, "deps-own")
+	// The first save already removed it; write it again as an older service
+	// would have, after the name was taken.
+	f.legacyEntry("deps-legacy")
+
+	report := f.sweep()
+	if report.EvictedUnowned != 1 || report.EvictedIdle != 0 {
+		t.Fatalf("report = %+v, want the entry without an ID evicted and nothing idle", report)
+	}
+	if keys := f.keysOf(0); len(keys) != 0 {
+		t.Fatalf("the entry without an ID survived the sweep: %v", keys)
+	}
+	if keys := f.keysOf(oldID); len(keys) != 1 || keys[0] != "deps-own" {
+		t.Fatalf("the sweep took the holder's entries too: %v", keys)
+	}
+}
+
+// A save without an ID is refused at every door into the index, and it leaves
+// the name and its entries as they were.
+func TestASaveWithoutARepositoryIDIsRefused(t *testing.T) {
+	f := newFixture(t, Retention{})
+	f.saveAs(oldID, "deps-linux")
+
+	if _, err := f.index.Exists(context.Background(), claimsFor(0), "deps-x", "v1"); !errors.Is(err, ErrNoRepositoryID) {
+		t.Fatalf("Exists without an ID = %v, want ErrNoRepositoryID", err)
+	}
+	if err := f.index.ClaimName(context.Background(), renamedRepo, 0); !errors.Is(err, ErrNoRepositoryID) {
+		t.Fatalf("ClaimName without an ID = %v, want ErrNoRepositoryID", err)
+	}
+	entry := Entry{
+		Key: "deps-x", Version: "v1", Repository: renamedRepo,
+		Ref: "refs/heads/main", Blob: "blobs/" + repositorySegment(renamedRepo) + "/x", Size: 1,
+	}
+	if err := f.index.Commit(context.Background(), entry); !errors.Is(err, ErrNoRepositoryID) {
+		t.Fatalf("Commit without an ID = %v, want ErrNoRepositoryID", err)
+	}
+	if keys := f.keysOf(oldID); len(keys) != 1 {
+		t.Fatalf("the holder's entries after the refused saves = %v", keys)
+	}
+	if keys := f.keysOf(0); len(keys) != 0 {
+		t.Fatalf("a save without an ID was published: %v", keys)
+	}
+	if holder, err := f.index.NameOwner(context.Background(), renamedRepo); err != nil || holder != oldID {
+		t.Fatalf("name holder = %d, %v; want %d", holder, err, oldID)
 	}
 }
 
@@ -301,13 +343,12 @@ func TestAStaleSaveIsRefusedWhenTheNameRecordIsGone(t *testing.T) {
 	}
 }
 
-// After an upgrade every name holds entries without an ID, and the first save
-// under an ID reads all of them. A matrix's first saves arrive together; they
-// read the name once, not once each.
+// The first save under a new ID reads every entry the name holds. A matrix's
+// first saves arrive together; they read the name once, not once each.
 func TestConcurrentFirstSavesUnderANameReadItsEntriesOnce(t *testing.T) {
 	f := newFixture(t, Retention{})
-	for _, key := range []string{"legacy-a", "legacy-b", "legacy-c"} {
-		f.saveAs(0, key)
+	for _, key := range []string{"earlier-a", "earlier-b", "earlier-c"} {
+		f.saveAs(oldID, key)
 	}
 
 	const savers = 6

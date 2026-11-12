@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -147,8 +148,26 @@ func (h *harness) advance(by time.Duration) {
 // at JobStarted and the host mints the runner token at claim — so the harness
 // does both: it registers the facts under a fresh runner and returns that
 // runner's token. The service scopes the request from the facts exactly as it
-// would in production.
+// would in production. Facts without a repository ID get the one
+// testRepositoryID gives their name, as the controller always pushes one;
+// rawToken registers them as they are.
 func (h *harness) token(facts cachetoken.JobFacts) string {
+	h.t.Helper()
+	if facts.RepositoryID == 0 {
+		facts.RepositoryID = testRepositoryID(facts.Repository)
+	}
+	return h.rawToken(facts)
+}
+
+// testRepositoryID is a stable GitHub repository ID for a test repository
+// name, so two names never share one.
+func testRepositoryID(repository string) int64 {
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(strings.ToLower(repository)))
+	return int64(sum.Sum32()) + 1
+}
+
+func (h *harness) rawToken(facts cachetoken.JobFacts) string {
 	h.t.Helper()
 	h.mu.Lock()
 	h.seq++

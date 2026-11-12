@@ -117,6 +117,11 @@ func cacheFactsFromRun(
 	if event == "" {
 		return cachefacts.Facts{}, errors.New("workflow run names no event")
 	}
+	if run.Repository.ID <= 0 {
+		// The cache service refuses facts without the ID: a name alone can
+		// belong to two repositories over time.
+		return cachefacts.Facts{}, errors.New("workflow run names no repository ID")
+	}
 
 	facts := cachefacts.Facts{
 		Runner:       job.RunnerName,

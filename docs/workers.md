@@ -188,8 +188,11 @@ job ends when it restarts the runtime. The `worker-host` role has no such option
 
 Each repin pulls a new Image Release into the runtime's containerd, about 10 GiB unpacked for the
 full image. Once an hour, after a readiness pass, the Agent sends the runtime the Image Releases
-of this Worker's Firecracker Profiles. The runtime keeps those, its warm pools' and the newest
-other one, so a rollback to the previous release needs no pull, and deletes the rest. It logs each
+of this Worker's Firecracker Profiles. The runtime keeps those, its warm pools' and the other
+one a VM booted from most recently, so a rollback to the previous release needs no pull, and
+deletes the rest. Each boot stamps `erainfra.io/last-used` on the image record. An image no VM
+booted counts from its pull, so a canary candidate pulled after the release the other Profiles ran
+does not take the rollback slot. It logs each
 deletion as `deleted an Image Release no Profile uses`. A running Attempt or parked guest holds
 a containerd lease on its own snapshot, so deleting its image's name never breaks it.
 `runner-center-runtime prune-images` does the same by hand; it reads the Image Releases to keep
@@ -219,6 +222,18 @@ Worker is over budget ([workflows](workflows.md)).
 EraInfra does not silently create or wipe a dedicated thin-pool device: selecting that device
 is an explicit operator storage decision, and the provisioner destroys only the devices you name.
 The official Fireactions installation guide remains a compatible reference for the same components.
+
+### Guest writeback
+
+A guest's root drive is a snapshot the runtime deletes when the Attempt ends, so the guest keeps
+a job's writes in memory instead of sending them to the shared disk. `runner-center-guest` sets
+`vm.dirty_background_ratio=50`, `vm.dirty_ratio=80`, `vm.dirty_expire_centisecs=360000` and
+`vm.dirty_writeback_centisecs=6000` at boot. When the runner exits, it resets the VM without the
+sync and unmount. On ubuntu0 a job writing about 2.5 GiB of small files sent 102 MiB to its drive
+instead of 9015 MiB, and the host's io "some" stayed under 5% instead of reaching 42%
+([#351](https://github.com/Fanzzzd/erainfra/pull/351)). Memory pressure still writes pages back,
+so a job that writes more than the guest's memory holds runs as before; nothing caps its space.
+A job that calls `sync` pays for its own dirty pages.
 
 ## macOS Worker prerequisites
 

@@ -16,10 +16,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -120,7 +122,8 @@ func (s *Service) PushJob(repository, ref string) string {
 
 // RunnerToken registers facts for a fresh runner, exactly as the controller
 // does at JobStarted, and returns the bearer the host would mint for that
-// runner at claim.
+// runner at claim. Facts without a repository ID get a stable one derived from
+// the name, as the controller always pushes one.
 func (s *Service) RunnerToken(facts cachetoken.JobFacts) string {
 	s.t.Helper()
 	s.mu.Lock()
@@ -128,9 +131,16 @@ func (s *Service) RunnerToken(facts cachetoken.JobFacts) string {
 	runner := fmt.Sprintf("cachetest-runner-%d", s.seq)
 	s.mu.Unlock()
 
+	repositoryID := facts.RepositoryID
+	if repositoryID == 0 {
+		sum := fnv.New32a()
+		_, _ = sum.Write([]byte(strings.ToLower(facts.Repository)))
+		repositoryID = int64(sum.Sum32()) + 1
+	}
 	body, err := json.Marshal(map[string]any{
 		"runner":         runner,
 		"repository":     facts.Repository,
+		"repositoryId":   repositoryID,
 		"headRepository": facts.HeadRepository,
 		"event":          facts.Event,
 		"ref":            facts.Ref,
