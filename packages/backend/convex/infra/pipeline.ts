@@ -34,7 +34,6 @@ import {
 } from "./apps";
 import { appendAudit } from "./auditLog";
 import { createDeployment } from "./deployments";
-import { convexWrite } from "./hubProvenance";
 import { isRouteLabel } from "./ingress";
 import { acquireAppLease, assertAppLease, releaseAppLease, renewAppLease } from "./leases";
 import { namespaceRefusal } from "./namespace";
@@ -73,8 +72,8 @@ export function registryAddress(): string | null {
 const REGISTRY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?(\/[a-z0-9][a-z0-9._-]*)*$/;
 const REGISTRY_UNSET =
   "ERAINFRA_REGISTRY is not set in the Convex environment, so there is nowhere to push a build. " +
-  "Set it to the registry every Node pushes to and pulls from, e.g. 127.0.0.1:61050 for the one " +
-  "deploy/infra/hub.sh runs, with ERAINFRA_REGISTRY_NODE naming the Node that runs it " +
+  "Set it to the registry every Node pushes to and pulls from, e.g. 127.0.0.1:61050 for the " +
+  "portless-registry container, with ERAINFRA_REGISTRY_NODE naming the Node that runs it " +
   "(docs/infra-management.md, Image registry and cross-Node links)";
 
 /**
@@ -185,8 +184,8 @@ async function currentPlacement(
 /** Why an existing App cannot be deployed where it runs, because that Node is not live. */
 function notLiveRefusal(app: string, node: string) {
   return (
-    `App "${app}" runs on ${node}, which is not connected to Convex (it is down, or still in Hub ` +
-    `mode). A deploy that names no Node keeps the App where its volumes are. Bring ${node} back, ` +
+    `App "${app}" runs on ${node}, which is not connected to Convex (it is down, or has never ` +
+    `connected). A deploy that names no Node keeps the App where its volumes are. Bring ${node} back, ` +
     `or name another Node with --node to move the App there with empty volumes; failover is what ` +
     `moves Apps off a lost Node.`
   );
@@ -843,10 +842,8 @@ async function cleanUp(ctx: MutationCtx, run: Run) {
   if (run.gitBindingId !== undefined) {
     const binding = await ctx.db.get(run.gitBindingId);
     const now = Date.now();
-    // The result of a Convex run: the binding is Convex's from now on (hubProvenance.ts).
     if (binding !== null)
       await ctx.db.patch(binding._id, {
-        provenance: convexWrite(now),
         updatedAt: now,
         lastStatus: {
           at: now,

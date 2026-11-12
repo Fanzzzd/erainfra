@@ -30,21 +30,9 @@ var imagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,511}$`)
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var credentialPattern = regexp.MustCompile(`^erainfra_node_[0-9a-f]{64}$`)
 
-// Config does not read Hub environment variables. Main validates both modes before starting
-// either transport, so an existing Hub connection can never silently turn into a Convex one.
 type Config struct {
 	URL, Credential, StateDir, Version string
 	AllowHTTPForTests                  bool
-}
-
-func ValidateMode(mode, hub, convexURL, credential string) error {
-	if mode == "connect" && (convexURL != "" || credential != "") {
-		return errors.New("hub and Convex modes are mutually exclusive")
-	}
-	if mode == "connect-convex" && hub != "" {
-		return errors.New("unset Hub configuration before using Convex mode")
-	}
-	return nil
 }
 
 // Payload is a claimed command's work, built by Convex from its own rows. Spec and build payloads
@@ -679,8 +667,8 @@ func (c *Client) execute(ctx context.Context, cmd pendingCommand) error {
 	return err
 }
 
-// executionLimit bounds one command's run. A build gets the Hub's 15 minutes; everything else
-// keeps the 10 minutes this transport has always allowed.
+// executionLimit bounds one command's run. A build gets 15 minutes; everything else keeps the 10
+// minutes this transport has always allowed.
 func executionLimit(kind string) time.Duration {
 	switch kind {
 	case "build":

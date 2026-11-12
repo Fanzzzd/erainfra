@@ -16,7 +16,7 @@ export function heartbeatsByName(nodes: readonly { name: string; lastSeenAt: num
   return new Map(nodes.map((node) => [node.name, node.lastSeenAt]));
 }
 
-export type AppStatus = "deploying" | "running" | "node-offline" | "hub";
+export type AppStatus = "deploying" | "running" | "node-offline";
 
 /**
  * The server's status, with `running` re-judged against the current time: a Node that stopped
@@ -38,7 +38,6 @@ export const APP_STATUS: Record<AppStatus, { label: string; tone: Tone }> = {
   deploying: { label: "Deploying", tone: "info" },
   running: { label: "Running", tone: "success" },
   "node-offline": { label: "Node offline", tone: "destructive" },
-  hub: { label: "Hub-managed", tone: "muted" },
 };
 
 export type LinkState = "active" | "degraded" | "pending";
@@ -46,7 +45,6 @@ export type LinkState = "active" | "degraded" | "pending";
 /** Same re-judgement for a link on the mesh: an end that stopped heartbeating degrades it. */
 export function linkState(
   link: {
-    transport: "mesh" | "legacy";
     state: LinkState;
     reason: string | null;
     provider: string | null;
@@ -55,7 +53,7 @@ export function linkState(
   heartbeats: Map<string, number | null>,
   now: number,
 ): { state: LinkState; reason: string | null } {
-  if (link.transport !== "mesh") return { state: link.state, reason: link.reason };
+  if (link.state === "pending") return { state: link.state, reason: link.reason };
   const silent = [link.provider, link.consumer].filter(
     (name) => name === null || !nodeOnline(heartbeats.get(name) ?? null, now),
   );

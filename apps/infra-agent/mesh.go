@@ -12,14 +12,10 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/infra-agent/internal/rename"
 )
 
-// The owner is one control channel for this process lifetime. Hub mode (`connect`) and Convex
-// mode (`connect-convex`) both open the sidecar here, under the same two controller locks (the
-// control directory's and the sidecar socket's), so only one of them can drive it at a time.
-// Enabling the local sidecar is explicit and does not change the enrollment channel.
-func connectMesh(ctx context.Context, owner string) (*agent.MeshManager, error) {
-	if owner != "hub" && owner != "convex" {
-		return nil, fmt.Errorf("unknown mesh control channel")
-	}
+// connectMesh opens the sidecar under two controller locks (the control directory's and the
+// sidecar socket's), so only one Infra Agent can drive it at a time. Enabling the local sidecar is
+// explicit and does not change the enrollment channel.
+func connectMesh(ctx context.Context) (*agent.MeshManager, error) {
 	socket := os.Getenv("ERAINFRA_MESH_SOCKET")
 	binary := os.Getenv("ERAINFRA_MESH_BIN")
 	if socket == "" && binary == "" {

@@ -91,7 +91,19 @@ jobs:
           # This file is excluded from every scan: the patterns above name every frozen identifier
           # literally, so without the exclusion an edit here would add all of them to the
           # "still present" side and mask a genuine removal somewhere else in the same PR.
-          git diff --unified=0 -M20% -l0 "$BASE" -- . ':(exclude).github/workflows/ci.yml' > /tmp/pr.diff
+          #
+          # An ADR retires frozen identifiers by listing them, one per line, in a fenced block
+          # opened with ```retired-identifiers (ADR 0020 is the first). Exactly those names may
+          # leave the tree. Such an ADR names them literally too, so it is excluded from both scans
+          # for the same reason as this file: the record of a retirement must not vouch for the
+          # names it retires, nor for any other frozen name it mentions.
+          FENCE=$(printf '\140\140\140') # three backticks, spelled so no quoting reads them as a command
+          status=0
+          git grep -l -e "^ *${FENCE}retired-identifiers\$" -- 'docs/adr/*.md' > /tmp/retiring-adrs || status=$?
+          [ "$status" -le 1 ]
+          set -- ':(exclude).github/workflows/ci.yml'
+          while IFS= read -r adr; do set -- "$@" ":(exclude)$adr"; done < /tmp/retiring-adrs
+          git diff --unified=0 -M20% -l0 "$BASE" -- . "$@" > /tmp/pr.diff
           # Pull frozen identifiers out of whatever is on stdin. EXACT names are taken with their
           # surrounding token and then required to BE the whole token; PREFIX names are taken as-is.
           extract() {
@@ -108,6 +120,9 @@ jobs:
           }
           side - > /tmp/frozen-removed
           side + > /tmp/frozen-added
+          while IFS= read -r adr; do
+            sed -n "/^ *${FENCE}retired-identifiers\$/,/^ *${FENCE}\$/p" "$adr"
+          done < /tmp/retiring-adrs | extract | sort -u > /tmp/frozen-retired
           # A frozen identifier can leave THIS DIFF while staying in the tree, and that is a refactor
           # rather than a rename: when the only site that wrote it moves to a file that already
           # contained it, the diff shows a removal with no matching addition. #72 hit exactly this —
@@ -123,13 +138,18 @@ jobs:
           comm -23 /tmp/frozen-removed /tmp/frozen-added > /tmp/frozen-diff-gone
           # Only lines that mention the stem can carry a frozen identifier — every name in both
           # patterns above contains "portless" — so this scans those rather than the whole tree.
-          git grep -hIi --no-color -e portless -- . ':(exclude).github/workflows/ci.yml' \
+          git grep -hIi --no-color -e portless -- . "$@" \
             | extract | sort -u > /tmp/frozen-tree
-          gone=$(comm -23 /tmp/frozen-diff-gone /tmp/frozen-tree)
+          gone=$(comm -23 /tmp/frozen-diff-gone /tmp/frozen-tree | comm -23 - /tmp/frozen-retired)
+          retired=$(comm -23 /tmp/frozen-diff-gone /tmp/frozen-tree | comm -12 - /tmp/frozen-retired)
           moved=$(comm -12 /tmp/frozen-diff-gone /tmp/frozen-tree)
           if [ -n "$moved" ]; then
             echo "Left this diff but still in the tree, so moved rather than renamed:"
             echo "$moved"
+          fi
+          if [ -n "$retired" ]; then
+            echo "Left the tree as an ADR's retired-identifiers block allows:"
+            echo "$retired"
           fi
           if [ -n "$gone" ]; then
             echo "These frozen runtime identifiers left the tree:" >&2
@@ -187,24 +207,6 @@ jobs:
       # The step still fails when any suite fails.
       - run: pnpm exec turbo run test --continue
       - run: pnpm build
-      # The Node suite pins server.ts's four import.meta.dirname defaults as they resolve from a
-      # checkout. hub.sh no longer mounts a checkout — it mounts dist/hub — and all four of those
-      # lookups fail SOFT: a missing file is a 404 whose body a shell dutifully executes as a
-      # no-op, so `curl <hub>/agent.sh | sh` silently does nothing and reports success. A bundle
-      # that boots proves nothing; the served bodies do. Runs after `pnpm build` because it needs
-      # apps/hub-web/dist, and before nothing that reads the workspace's node_modules, because
-      # `pnpm deploy` leaves its dependency-status check wanting a re-install.
-      - name: The assembled Hub bundle serves every onboarding route
-        run: |
-          sh deploy/infra/build-hub-bundle.sh
-          sh deploy/infra/bundle.test.sh
-      # The five installer scripts are curl'd and piped to sh on a customer's machine, so each
-      # carries its own copy of dual_env rather than sourcing one — five chances to write
-      # `${NEW:-${OLD}}` in a way that looks right and silently reclassifies "set to empty" as
-      # "unset". `pnpm test` cannot reach them: deploy/ is not a workspace package. This runs the
-      # real functions out of the real files, and pins the frozen identifiers they still write.
-      - name: The installers read both names and rename nothing frozen
-        run: sh deploy/infra/rename.test.sh
       # gateway.sh is run by hand on gateway Nodes, so nothing else exercises it before an operator
       # does: it must read an agent only root can enter and pin every DNS command to its tunnel.
       - name: The gateway setup script runs as the runbooks run it
@@ -218,10 +220,10 @@ jobs:
       # machine it degrades to a skip. Here it must not: an installer that does not parse is the
       # failure mode with no other signal, and the runner image ships PowerShell.
       #
-      # `node`, not `pnpm run`: the Hub-bundle step above leaves pnpm's dependency status wanting a
-      # re-install, so pnpm prefixes its own summary to stdout and that summary lands in the file
-      # being parsed. The script imports nothing outside this repository, so it needs no
-      # node_modules. The first line is checked because a truncated render still parses as nothing.
+      # `node`, not `pnpm run`: pnpm can prefix its own dependency-status summary to stdout, and
+      # that summary would land in the file being parsed. The script imports nothing outside this
+      # repository, so it needs no node_modules. The first line is checked because a truncated
+      # render still parses as nothing.
       - name: The rendered Windows installer parses
         working-directory: packages/backend
         run: |

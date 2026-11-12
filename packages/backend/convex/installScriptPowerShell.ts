@@ -1,171 +1,47 @@
 import type { AgentRelease } from "./agentRelease";
 
 /**
- * `/install.ps1` — the Windows installer, both roles.
+ * `/install.ps1`: the Windows installer. It installs the Worker role only.
  *
- * This module has served the Node role since the Infra Agent moved onto a pinned download. #49 adds
- * the Worker role to it rather than beside it: ADR 0006 is one onboarding path with the role as a
- * parameter, and a second script per role is the shape that ADR retired. It stays one file for a
- * second, harder reason — PowerShell allows exactly one `param()` block per script, so two roles
- * served from one URL have to share one, and two modules could not have composed into one body.
+ * It served the Node role first, and a Worker role joined it in #49. The Windows Node role ran the
+ * Infra Agent in Hub mode only (`connect --hub --token`), and Hub mode retired on 2026-11-08. A Node
+ * now runs connect-convex beside the erainfra-mesh systemd unit, so the Node role needs Linux with
+ * systemd and the bash installer (`/install --role node`). `-Role node` here fails and says so. The
+ * installer of release v0.2.0-rc.19 still has the Windows Node role.
  *
  * This is the PowerShell counterpart of `installScript.ts`, and it mirrors that file's supply chain
  * rather than inventing a second one: the archive named by this deployment's `AGENT_RELEASE`, the
- * digest published beside it, and — the part that actually matters — the digest this deployment
- * pins, which is a trust root outside the release. An archive the release vouches for but the pin
- * does not is refused. `#49`'s design reference reached GitHub over an unpinned branch tarball and
- * then ran `npm install && npm run build` on the customer's machine; none of that is here.
+ * digest published beside it, and the digest this deployment pins, which is a trust root outside
+ * the release. An archive the release vouches for but the pin does not is refused. `#49`'s design
+ * reference reached GitHub over an unpinned branch tarball and then ran `npm install && npm run
+ * build` on the customer's machine; none of that is here.
  *
- * One file for both roles, the way `installScript.ts` is one file for both roles: a shared preamble,
- * the Worker body, the `-Role` dispatch, then the Node body that `installScriptPowerShell.ts` held
- * on its own until this landed. Two files could not have composed — PowerShell allows exactly one
- * `param()` block per script, and the two roles have to share it.
+ * The rendered script must stay pure ASCII: Windows PowerShell 5.1 reads a BOM-less file as ANSI,
+ * and this one is fetched over HTTP and built with `[scriptblock]::Create`, so there is no BOM to
+ * read.
  *
  * Nothing in the Worker body has been executed on Windows. See `installScriptPowerShell.test.ts`
  * for what the suite does and does not prove.
  */
-
-/**
- * The Node body's `param()` entries — the ones only `-Role node` reads. The Worker refuses them,
- * the same way bash hands each role only its own flags.
- */
-const POWERSHELL_NODE_PARAMS = [
-  '  [string]$Hub = "",',
-  '  [string]$Source = "",',
-  "  [switch]$Install,",
-] as const;
-
-/**
- * The Node installer, from the release pin down — the body this module shipped before #49, kept as
- * close to unchanged as sharing one script with a second role allows. Three deltas, each forced:
- *
- * 1. `param()`, `$ErrorActionPreference`, the TLS line, `Get-RenamedEnv` and `Fail` moved up into
- *    the shared preamble. PowerShell allows exactly one `param()` block per script, so two roles in
- *    one script have to share it, and the dispatch needs `Fail` declared above it.
- * 2. `$version` became `$releaseVersion`. PowerShell variable names are case-insensitive, so with
- *    `-Version` in the shared block a bare `$version` here IS that parameter, and this body would
- *    silently overwrite an argument the operator passed.
- * 3. The `-Role` refusal became the dispatch below it.
- * 4. One em dash in a comment became a hyphen. The rendered script has to stay pure ASCII: Windows
- *    PowerShell 5.1 reads a BOM-less file as ANSI, and this one is fetched over HTTP and built with
- *    `[scriptblock]::Create`, so there is no BOM to read.
- *
- * `$repo` keeps its name because nothing collides with it, and the digest comparison keeps its own
- * `Get-FileHash` rather than borrowing the Worker's helper: this path is shipped and working, and
- * consolidating it would be a change to it for no benefit the Node role receives.
- */
-const POWERSHELL_NODE_BODY = String.raw`$repo = '__AGENT_REPO__'
-$releaseVersion = '__AGENT_VERSION__'
-
-# Every Infra Agent digest this deployment pins. A target that is not listed is a target this
-# installer refuses: there would be nothing to check the bytes against.
-$pinned = @{
-__INFRA_AGENT_DIGESTS__
-}
-
-if (-not $Token) { Fail 'need -Token <hub enrollment token> (or $env:PORTLESS_TOKEN)' }
-if (-not $Hub) { Fail 'need -Hub wss://<hub>/agent (or $env:PORTLESS_HUB)' }
-
-if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-  Fail "This deployment publishes no ARM64 Windows Infra Agent; run it on an x64 Windows host."
-}
-$target = "windows-x86_64"
-$asset = "infra-agent-$target.exe"
-
-$expected = $pinned[$target]
-if (-not $expected) {
-  Fail "This EraInfra deployment pins no Infra Agent build for $target, so there is nothing to verify the download against. Deploy a backend whose AGENT_RELEASE pins a release that publishes it."
-}
-
-$url = "https://github.com/$repo/releases/download/v$releaseVersion/$asset"
-$origin = "the release this deployment pins"
-if ($Source) {
-  if ($Source.EndsWith("/")) { $url = $Source + $asset } else { $url = $Source }
-  $origin = $url
-}
-
-# $HOME\.portless is an identifier a running Node already holds (rule 4). Prefer the renamed
-# directory only when it is ALREADY there; a fresh install still lands on the frozen path.
-$prefix = if (Test-Path (Join-Path $HOME ".erainfra")) { Join-Path $HOME ".erainfra" } else { Join-Path $HOME ".portless" }
-$bin = Join-Path $prefix "bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-$exe = Join-Path $bin "portless-agent.exe"
-$staged = Join-Path ([IO.Path]::GetTempPath()) ("infra-agent-staged-" + [IO.Path]::GetRandomFileName() + ".exe")
-
-Write-Host "[erainfra] fetching the Infra Agent $releaseVersion for $target from $origin ..."
-try {
-  if ($url -match '^https?://') {
-    Invoke-WebRequest -Uri $url -OutFile $staged -UseBasicParsing
-  } elseif ($url -match '^file://') {
-    Copy-Item -LiteralPath ($url -replace '^file:///?', '') -Destination $staged -Force
-  } else {
-    Copy-Item -LiteralPath $url -Destination $staged -Force
-  }
-} catch {
-  Fail "Could not read the Infra Agent from $url"
-}
-
-$actual = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actual -ne $expected) {
-  Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-  Fail "Infra Agent checksum verification failed: expected $expected but got $actual. Nothing was installed."
-}
-Write-Host "[erainfra] verified $asset against the checksum pinned by this EraInfra deployment." -ForegroundColor Green
-
-# Only past the verification does anything on this machine change. A mismatch above leaves an
-# already-installed agent running on the bytes it was installed with.
-Move-Item -LiteralPath $staged -Destination $exe -Force
-Unblock-File -LiteralPath $exe   # clear MOTW so it runs without a SmartScreen prompt
-Write-Host "[erainfra] installed $exe"
-
-if (-not $Name) { $Name = $env:COMPUTERNAME }
-$agentArgs = @("connect", "--hub", $Hub, "--token", $Token, "--name", $Name)
-
-if ($Install) {
-  # The scheduled task name is an identifier a running Node already holds, so it keeps the one
-  # deploy/infra/agent.ps1 registers. On a UAC-filtered local admin in a non-elevated shell,
-  # Register-ScheduledTask is Access Denied - fall back to a per-user Startup entry, which needs no
-  # elevation and still survives reboot.
-  try {
-    $action = New-ScheduledTaskAction -Execute $exe -Argument ($agentArgs -join " ")
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    Register-ScheduledTask -TaskName "PortlessAgent" -Action $action -Trigger $trigger -Force -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName "PortlessAgent" -ErrorAction Stop
-    Write-Host "[erainfra] installed scheduled task 'PortlessAgent' and started it." -ForegroundColor Green
-    Write-Host '[erainfra] remove with: Unregister-ScheduledTask -TaskName PortlessAgent -Confirm:$false'
-  } catch {
-    Write-Host "[erainfra] scheduled task needs elevation here; using a per-user Startup entry instead." -ForegroundColor Yellow
-    $startup = [Environment]::GetFolderPath('Startup')
-    $cmd = Join-Path $startup 'portless-agent.cmd'
-    Set-Content -Path $cmd -Encoding ASCII -Value ('@start "" "' + $exe + '" ' + ($agentArgs -join ' '))
-    Start-Process -FilePath $exe -ArgumentList $agentArgs -WindowStyle Hidden
-    Write-Host "[erainfra] installed Startup entry and started the agent (hidden)." -ForegroundColor Green
-  }
-  Start-Sleep -Seconds 2
-  Write-Host "[erainfra] this Node reports to $Hub as $Name."
-} else {
-  Write-Host "[erainfra] connecting to $Hub ... (Ctrl-C to stop; re-run with -Install to survive reboot)"
-  & $exe @agentArgs
-}
-`;
 const WINDOWS_INSTALL_SCRIPT = String.raw`#Requires -Version 5.1
-# The EraInfra installer for Windows. One URL, two roles, the same way /install is one bash file
-# with a --role dispatch at the top:
+# The EraInfra installer for Windows. It installs a Worker, which executes CI jobs and runs the
+# Action Runner Agent:
 #
-#   Worker - executes CI jobs, runs the Action Runner Agent:
 #     & ([scriptblock]::Create((irm <site>/install.ps1))) -Role worker -Token rcreg_xxx
-#   Node - runs deployed Apps, runs the Infra Agent:
-#     & ([scriptblock]::Create((irm <site>/install.ps1))) -Token <token> -Hub wss://<hub>/agent -Install
 #
-# -Role defaults to "node" where the bash installer defaults to "worker". That asymmetry is
-# deliberate: this URL has served the Node installer since the Infra Agent moved onto a pinned
-# download, and install commands already in operators' hands omit the flag entirely. The role that
-# arrives second is the role that names itself.
+# -Role still defaults to "node", the Windows Node role this URL served first. That role ran only in
+# Hub mode, which retired on 2026-11-08, so -Role node now fails with that reason. Node install
+# commands already in operators' hands omit -Role, and with this default they fail the same way
+# instead of running the Worker installer.
+#
+# Install-Worker reads these parameters through PowerShell's dynamic scoping, which
+# PSReviewUnusedParameter does not follow into a nested function. The attribute is not
+# [CmdletBinding()], so the script stays a simple one that leaves unbound arguments in $args.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Install-Worker reads them through dynamic scoping')]
 param(
   [string]$Role = "node",
   [string]$Token = "",
   [string]$Name = "",
-__NODE_PARAMS__
   [string]$Labels = "",
   [string]$Slots = "",
   [switch]$Update,
@@ -173,10 +49,11 @@ __NODE_PARAMS__
   [string]$Sha256 = ""
 )
 $ErrorActionPreference = "Stop"
-# $PSBoundParameters is per-scope: inside a function it describes that function's own call, not the
-# script's. Each role checks which flags the OPERATOR actually passed, so the script's own set is
-# captured here, once, where it is still in scope.
-$invokedParameters = @($PSBoundParameters.Keys)
+# param() has no [CmdletBinding()], so PowerShell puts an argument it cannot bind into $args instead
+# of refusing it. $args is per-scope: inside a function it holds that function's own arguments, not
+# the script's. The Worker checks what the OPERATOR passed, so the script's own set is captured
+# here, once, where it is still in scope.
+$unboundArguments = @($args)
 # Invoke-WebRequest on Windows PowerShell 5.1 draws a progress bar that costs more wall-clock than
 # the transfer it is describing. Silencing it is worth an order of magnitude on a release archive.
 $ProgressPreference = "SilentlyContinue"
@@ -203,8 +80,8 @@ function Invoke-Native {
 }
 
 # One hashing implementation for every byte this script verifies, so there is exactly one place a
-# comparison could be written wrongly, and it is the same one for the Node binary, the Worker
-# archive, the Node.js runtime and the service wrapper.
+# comparison could be written wrongly, and it is the same one for the Worker archive, the Node.js
+# runtime and the service wrapper.
 function Get-Sha256($path) {
   return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
@@ -231,21 +108,6 @@ function Get-VerifiedDownload {
     Fail "$What checksum verification failed: expected $Expected but got $actual. Nothing was installed."
   }
   return $Destination
-}
-
-# Stage 1 of retiring the "Portless" name (ADR 0004; CONTEXT.md rule 4): read both, prefer the new,
-# warn on the old, delete nothing. A param default cannot call a function declared below it, so the
-# environment fallback for -Token / -Hub lands below rather than in param().
-function Get-RenamedEnv {
-  param([string]$NewName, [string]$OldName)
-  $current = [Environment]::GetEnvironmentVariable($NewName)
-  if ($null -ne $current -and $current -ne "") { return $current }
-  $retired = [Environment]::GetEnvironmentVariable($OldName)
-  if ($null -ne $retired -and $retired -ne "") {
-    Write-Host "[erainfra] $OldName is a retired name - use $NewName instead. The old name still works." -ForegroundColor Yellow
-    return $retired
-  }
-  return $null
 }
 
 # A Windows-only API that answers conservatively when it is unavailable: an empty SID grants one
@@ -295,7 +157,8 @@ function Install-Worker {
   # A new identifier, and frozen the day it ships, so it is named under the current rules rather
   # than the retiring runner-center-* ones (CONTEXT.md rule 2 calls those legacy, not precedent).
   # Qualified by the surface it serves, because rule 1 says "agent" alone is never a name here: this
-  # is the Action Runner Agent's task, and a box can be a Node too, whose task is PortlessAgent.
+  # is the Action Runner Agent's task, and a box that was once a Windows Node still has a task
+  # named PortlessAgent.
   $taskName = 'erainfra-action-runner-agent'
 
   function Show-Usage {
@@ -303,13 +166,12 @@ function Install-Worker {
     Write-Host '       -Role worker -Update [-Version vX.Y.Z] [-Sha256 HEX]'
   }
 
-  # Each role sees exactly its own flags, the same property bash gets by rotating unparsed arguments
-  # to its role's own parser. One param() block for two roles would otherwise accept -Hub on a
-  # Worker and silently do nothing with it.
-  foreach ($nodeOnly in @('Hub', 'Source', 'Install')) {
-    if ($invokedParameters -contains $nodeOnly) {
+  # -Hub, -Source and -Install belonged to the retired Windows Node role. They are no longer in
+  # param(), so they arrive unbound; refuse them rather than accept them and do nothing.
+  foreach ($nodeOnly in @('-Hub', '-Source', '-Install')) {
+    if ($unboundArguments -contains $nodeOnly) {
       Show-Usage
-      Fail "-$nodeOnly belongs to -Role node. The Worker installer does not take it."
+      Fail "$nodeOnly belonged to the retired Windows Node role. The Worker installer does not take it."
     }
   }
 
@@ -830,8 +692,7 @@ function Install-Worker {
   # credential to machine-scope DPAPI (<image>.cred.json, ACLed to SYSTEM and Administrators), so
   # the account no longer has to be the one that built the image. What still ties this to the
   # installing account is RC_HOME under its %USERPROFILE%, where the images live; a boot-time
-  # service is its own change and needs a real Windows host to verify. Until then this is also what
-  # the Node role's own scheduled task already does.
+  # service is its own change and needs a real Windows host to verify.
   #
   # The cost is stated rather than hidden: this starts at LOGON, so an unattended reboot leaves the
   # Worker down until someone signs in. On a dedicated Worker box, enable automatic logon.
@@ -896,57 +757,20 @@ function Install-Worker {
   exit 0
 }
 
-# The dispatch, and the only place either role is chosen. It reads nothing from the environment and
+# The dispatch, and the only place the role is chosen. It reads nothing from the environment and
 # nothing from a URL: one body, rendered from this deployment's own configuration.
 if ($Role -eq "worker") {
   Install-Worker
   exit 0
 }
-if ($Role -ne "node") {
-  Fail "Unknown -Role: $Role (expected worker or node)"
+if ($Role -eq "node") {
+  Fail "The Windows Node role ran only in Hub mode, which retired on 2026-11-08. A Node now runs connect-convex, which needs Linux with systemd: enroll it with 'erainfra nodes enroll <name>' and install it with /install --role node. The installer of release v0.2.0-rc.19 still has the Windows Node role."
 }
-foreach ($workerOnly in @('Labels', 'Slots', 'Update', 'Version', 'Sha256')) {
-  if ($invokedParameters -contains $workerOnly) {
-    Fail "-$workerOnly belongs to -Role worker. The Node installer does not take it."
-  }
-}
-if (-not $Token) { $Token = Get-RenamedEnv "ERAINFRA_TOKEN" "PORTLESS_TOKEN" }
-if (-not $Hub) { $Hub = Get-RenamedEnv "ERAINFRA_HUB" "PORTLESS_HUB" }
-
-__NODE_BODY__
+Fail "Unknown -Role: $Role (expected worker)"
 `;
 
 /**
- * The `$pinned` hashtable entries, one per pinned target.
- *
- * Checked rather than trusted, for the same reason the bash renderer checks: this is interpolated
- * into a script an operator runs with the privileges of whoever ran it. An empty map renders no
- * entries, so an unpinned deployment refuses rather than installing something it cannot verify.
- */
-function renderPinnedDigests(infraAgent: AgentRelease["infraAgent"]) {
-  return Object.entries(infraAgent)
-    .filter(([target]) => target.startsWith("windows-"))
-    .map(([target, digest]) => {
-      if (!/^[a-z0-9]+-[a-z0-9_]+$/.test(target)) {
-        throw new Error(`Infra Agent pin has an unusable target name: ${target}`);
-      }
-      if (!/^[0-9a-f]{64}$/.test(digest)) {
-        throw new Error(`Infra Agent pin for ${target} is not a lowercase SHA-256 digest`);
-      }
-      return `  "${target}" = "${digest}"`;
-    })
-    .join("\n");
-}
-
-/** The Node body with this deployment's Infra Agent pin substituted in. */
-function renderNodeInstallBody(release: AgentRelease) {
-  return POWERSHELL_NODE_BODY.replaceAll("__AGENT_REPO__", release.repo)
-    .replaceAll("__AGENT_VERSION__", release.version)
-    .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent));
-}
-
-/**
- * The one body `/install.ps1` serves: shared preamble, Worker, dispatch, Node.
+ * The one body `/install.ps1` serves: shared preamble, Worker, dispatch.
  *
  * `siteUrl` is interpolated into a single-quoted PowerShell string in a script an operator runs, so
  * it is checked the same way `installScript.ts` checks it — the route only ever hands this a
@@ -958,9 +782,7 @@ export function renderWindowsInstallScript(siteUrl: string, release: AgentReleas
   if (origin.includes("'") || /[\r\n]/.test(origin)) {
     throw new Error("The site URL cannot be rendered into the Windows installer safely");
   }
-  return WINDOWS_INSTALL_SCRIPT.replaceAll("__NODE_PARAMS__", POWERSHELL_NODE_PARAMS.join("\n"))
-    .replaceAll("__NODE_BODY__", renderNodeInstallBody(release))
-    .replaceAll("__ERAINFRA_SITE_URL__", origin)
+  return WINDOWS_INSTALL_SCRIPT.replaceAll("__ERAINFRA_SITE_URL__", origin)
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256);

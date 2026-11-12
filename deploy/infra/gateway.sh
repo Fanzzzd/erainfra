@@ -26,9 +26,9 @@
 # request to the geographically closest replica and, if that connection fails, retries another;
 # a tunnel takes up to 25 replicas. See docs/infra-management.md.
 #
-# This script never moves DNS. The wildcard stays wherever it points (the Hub's tunnel, if one
-# exists) until you run the cutover in docs/runbooks/move-ingress-to-gateways.md, or set
-# ERAINFRA_GATEWAY_ROUTE_DNS=1 on a zone that has no Hub. Idempotent: re-run after an upgrade.
+# This script moves DNS only with ERAINFRA_GATEWAY_ROUTE_DNS=1. Otherwise the wildcard stays
+# wherever it points until you move it (docs/infra-management.md, "Set up a gateway Node").
+# Idempotent: re-run after an upgrade.
 set -eu
 
 log() { printf '\033[36m[gateway]\033[0m %s\n' "$*" >&2; }

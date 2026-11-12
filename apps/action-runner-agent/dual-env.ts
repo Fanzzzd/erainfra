@@ -13,7 +13,7 @@
  * - Both set to different values is an error naming both. Values never appear
  *   in it, because some of these variables are secrets.
  *
- * Unlike apps/hub/src/env.ts it does not warn when only the old name is set.
+ * It does not warn when only the old name is set.
  * This release still writes RC_ names itself (start-agent.sh, and every child
  * process below), so a warning would fire on every Attempt with nothing for an
  * operator to change. The release that flips the writers adds it.

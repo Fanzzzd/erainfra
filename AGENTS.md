@@ -9,10 +9,11 @@ Attempt, Runner, Hub) means exactly what `CONTEXT.md` says, in code, comments, d
 - "Runner" means GitHub's ephemeral runner, never one of our daemons.
 - Do not name a component after a property every component shares, such as "edge" or "outbound".
 - Repository paths and workspace package names may change. An identifier a running system already
-  holds may not: the `portless-data` volume, `PORTLESS_*` and `RC_*` variables,
+  holds may not: the `portless-data` volume, `PORTLESS_PREFIX` and `RC_*` variables,
   `/etc/portless/agent.env`, `portless-agent.service`, `runner-center-*` units, published package
   names and download paths. `CONTEXT.md` naming rule 4 has the full list. CI fails a pull request
-  that removes a frozen `portless` identifier from the tree.
+  that removes a frozen `portless` identifier from the tree, unless an ADR's
+  `retired-identifiers` block lists it ([ADR 0020](docs/adr/0020-the-hub-leaves-main.md)).
 
 ## Where a rule lives
 

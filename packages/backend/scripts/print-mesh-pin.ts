@@ -4,7 +4,7 @@
  *
  * A release commit pastes this in rather than transcribing the digests by hand. The release
  * workflow verifies the result against the bytes it builds, so a stale or mistyped pin fails the
- * tag rather than reaching a host that runs `/install --role node --mesh`.
+ * tag rather than reaching a host that runs `/install --role node`.
  *
  * Usage: pnpm --filter @erainfra/backend print-mesh-pin [<directory>]
  */

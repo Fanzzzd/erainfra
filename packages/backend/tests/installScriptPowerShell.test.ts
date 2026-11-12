@@ -13,7 +13,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 /**
- * The Windows installer contract, for both roles `/install.ps1` serves.
+ * The Windows installer contract: the Worker role `/install.ps1` serves, and the Node role it
+ * refuses since Hub mode retired.
  *
  * Two halves, and the difference between them is the honest part of this file:
  *
@@ -41,7 +42,6 @@ import { renderWindowsInstallScript } from "../convex/installScriptPowerShell.ts
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
 const MACHINE_TOKEN = "a".repeat(32);
-const WINDOWS_DIGEST = "b".repeat(64);
 
 const CURRENT: AgentRelease = {
   repo: TEST_REPO,
@@ -53,10 +53,6 @@ const CURRENT: AgentRelease = {
   controller: {},
 };
 const OLDER: AgentRelease = { ...CURRENT, version: "1.3.0" };
-const WINDOWS_PINNED: AgentRelease = {
-  ...CURRENT,
-  infraAgent: { "windows-x86_64": WINDOWS_DIGEST, "linux-x86_64": "c".repeat(64) },
-};
 
 const sandboxes: string[] = [];
 afterAll(() => {
@@ -101,33 +97,34 @@ function writeExecutable(filePath: string, contents: string) {
 describe("the rendered Windows installer", () => {
   const script = renderWindowsInstallScript(SITE_URL, AGENT_RELEASE);
 
-  it("serves both roles from one body, with one dispatch", () => {
-    expect(script).toMatch(/\[string\]\$Role = "node"/);
+  it("serves the Worker role, with one dispatch", () => {
     expect(script).toMatch(/if \(\$Role -eq "worker"\) \{\n {2}Install-Worker/);
-    expect(script).toMatch(/Fail "Unknown -Role: \$Role \(expected worker or node\)"/);
+    expect(script).toMatch(/Fail "Unknown -Role: \$Role \(expected worker\)"/);
   });
 
-  // The bash installer defaults to worker. This URL cannot, because it has been serving the Node
-  // installer on its own and the dashboard's Node command does not pass -Role at all.
-  it("keeps the Node role as the default, so commands already in the wild still work", () => {
+  // The Windows Node role ran only in Hub mode. -Role keeps its old default, so a Node command
+  // already in the wild, which never passed -Role, fails with the reason instead of installing a
+  // Worker.
+  it("keeps -Role defaulting to node, and refuses the Node role with the reason", () => {
     const params = script.slice(
       script.indexOf("param("),
       script.indexOf(")\n$ErrorActionPreference"),
     );
     expect(params).toMatch(/\[string\]\$Role = "node"/);
-    expect(script).toMatch(/Join-Path \$HOME "\.portless"/);
-    expect(script).toMatch(/-TaskName "PortlessAgent"/);
+    expect(params).not.toMatch(/\$Hub|\$Source|\$Install/);
+    expect(script).toMatch(
+      /if \(\$Role -eq "node"\) \{\n {2}Fail "The Windows Node role ran only in Hub mode, which retired on 2026-11-08\./,
+    );
+    expect(script).toMatch(/release v0\.2\.0-rc\.19 still has the Windows Node role/);
+    expect(script).not.toMatch(/"connect", "--hub"|-TaskName "PortlessAgent"|Get-RenamedEnv/);
   });
 
-  it("hands each role only its own flags", () => {
-    expect(script).toMatch(/foreach \(\$nodeOnly in @\('Hub', 'Source', 'Install'\)\)/);
-    expect(script).toMatch(
-      /foreach \(\$workerOnly in @\('Labels', 'Slots', 'Update', 'Version', 'Sha256'\)\)/,
-    );
-    // Captured at script scope: $PSBoundParameters inside Install-Worker describes the function's
-    // own (empty) call, so reading it there would accept every foreign flag in silence.
-    expect(script).toMatch(/\$invokedParameters = @\(\$PSBoundParameters\.Keys\)/);
-    expect(script).not.toMatch(/Install-Worker[\s\S]*\$PSBoundParameters/);
+  it("refuses the retired Node flags on a Worker", () => {
+    expect(script).toMatch(/foreach \(\$nodeOnly in @\('-Hub', '-Source', '-Install'\)\)/);
+    // Captured at script scope: $args inside Install-Worker holds the function's own (empty)
+    // arguments, so reading it there would accept every retired flag in silence.
+    expect(script).toMatch(/\$unboundArguments = @\(\$args\)/);
+    expect(script).not.toMatch(/function Install-Worker[\s\S]*\$args\b/);
   });
 
   it("carries the release this deployment pins, as the Worker's trust root", () => {
@@ -172,7 +169,6 @@ describe("the rendered Windows installer", () => {
   it("keeps every frozen identifier the release publishes", () => {
     expect(script).toMatch(/erainfra-agent-\$installVersion\.tar\.gz/);
     expect(script).toMatch(/runner-center-agent-\$installVersion\.tar\.gz/);
-    expect(script).toMatch(/infra-agent-\$target\.exe/);
     expect(script).toMatch(/--strip-components=1/);
     expect(script).toMatch(/agent\.previous/);
   });
@@ -206,10 +202,8 @@ describe("the rendered Windows installer", () => {
     ]);
   });
 
-  // Two, not one: the Worker's helper, and the Node body's own line, left exactly as it shipped.
-  // Folding the Node role into the helper would be a change to a working path for no gain to it.
-  it("gives the Worker one hashing helper without touching the Node body's own", () => {
-    expect(script.match(/Get-FileHash/g)).toHaveLength(2);
+  it("hashes every download through one helper", () => {
+    expect(script.match(/Get-FileHash/g)).toHaveLength(1);
     expect(script).toMatch(/function Get-Sha256\(\$path\) \{\n {2}return \(Get-FileHash/);
   });
 
@@ -231,18 +225,6 @@ describe("the rendered Windows installer", () => {
     expect(script).toMatch(/RC_HOME under its %USERPROFILE%/);
     // And the cost is stated rather than hidden.
     expect(script).toMatch(/starts at LOGON/);
-  });
-
-  it("refuses the Node role when this deployment pins nothing for Windows", () => {
-    const unpinned = renderWindowsInstallScript(SITE_URL, CURRENT);
-    expect(unpinned).toMatch(/\$pinned = @\{\n+\}/);
-    expect(unpinned).toMatch(/pins no Infra Agent build for \$target/);
-  });
-
-  it("carries the Windows digest and no other target's", () => {
-    const pinned = renderWindowsInstallScript(SITE_URL, WINDOWS_PINNED);
-    expect(pinned).toMatch(new RegExp(`"windows-x86_64" = "${WINDOWS_DIGEST}"`));
-    expect(pinned).not.toMatch(/linux-x86_64/);
   });
 
   it("bakes in the given origin, and refuses one it could not quote safely", () => {
@@ -774,15 +756,34 @@ describeExecuted("the Windows installer, executed", () => {
     expect(agentMarker(sandbox)).toBe("// older agent");
   });
 
-  it("refuses arguments that belong to the other role", () => {
+  it("refuses the retired Node flags on a Worker", () => {
     const sandbox = createWinSandbox(CURRENT);
-    const worker = run(sandbox, ["-Role", "worker", "-Token", "t", "-Hub", "wss://h/agent"]);
-    expect(worker.status).not.toBe(0);
-    expect(worker.stdout).toContain("-Hub belongs to -Role node");
+    for (const flag of ["-Hub", "-Source", "-Install"]) {
+      const args = flag === "-Install" ? [flag] : [flag, "wss://h/agent"];
+      const worker = run(sandbox, ["-Role", "worker", "-Token", "t", ...args]);
+      expect(worker.status, flag).not.toBe(0);
+      expect(worker.stdout).toContain(`${flag} belonged to the retired Windows Node role`);
+    }
+    expect(readLog(sandbox.requestLog)).toBe("");
+  });
 
-    const node = run(sandbox, ["-Role", "node", "-Token", "t", "-Slots", "2"]);
-    expect(node.status).not.toBe(0);
-    expect(node.stdout).toContain("-Slots belongs to -Role worker");
+  // The Windows Node role ran only in Hub mode. A command written for it, with or without -Role,
+  // fails with the reason and touches nothing.
+  it("refuses the Node role, with or without -Role, and says why", () => {
+    const sandbox = createWinSandbox(CURRENT);
+    for (const args of [
+      ["-Token", "t", "-Hub", "wss://h/agent", "-Install"],
+      ["-Role", "node", "-Token", "t"],
+    ]) {
+      const result = run(sandbox, args);
+      expect(result.status, args.join(" ")).not.toBe(0);
+      expect(result.stdout).toContain(
+        "The Windows Node role ran only in Hub mode, which retired on 2026-11-08.",
+      );
+      expect(result.stdout).toContain("/install --role node");
+    }
+    expect(readLog(sandbox.requestLog)).toBe("");
+    expect(existsSync(path.join(sandbox.home, ".portless"))).toBe(false);
   });
 
   it("refuses malformed flag values before it touches the network", () => {

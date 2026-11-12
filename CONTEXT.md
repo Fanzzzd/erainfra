@@ -51,15 +51,16 @@ itself a Runner.**
 isolation boundary with only a single-use JIT token. One Agent creates many Runners over its
 lifetime. Never use "Runner" for either of our daemons.
 
-**Infra Agent**: the daemon on a Node. In Convex mode (`connect-convex`, the current mode) it dials
-the Convex **control plane** with its Node credential; in Hub mode (`connect`, legacy) it holds an
-outbound WebSocket to the Hub. Either way it executes only allowlist-resolved operations; there is
-no raw-argv path. Also builds images and deploys Apps.
+**Infra Agent**: the daemon on a Node. It runs `connect-convex`: it dials the Convex **control
+plane** with its Node credential and executes only allowlist-resolved operations; there is no
+raw-argv path. Also builds images and deploys Apps. Its Hub mode (`connect`) left main with
+[ADR 0020](docs/adr/0020-the-hub-leaves-main.md).
 
-**Hub**: legacy. The separate control plane (`apps/hub`) that Infra Agents in Hub mode connect to.
+**Hub**: retired. The separate control plane that Infra Agents in Hub mode connected to.
 ADR 0016 moved its state, deploys, ingress and operator surface into Convex, and the owner's
-fleet retired its Hub on 2026-11-08 ([retire-the-hub.md](docs/runbooks/retire-the-hub.md)). The
-code remains for Hub-mode Nodes and rollback. Never use "Hub" for the Convex control plane; the
+fleet retired its Hub on 2026-11-08 ([retire-the-hub.md](docs/runbooks/retire-the-hub.md)). Its
+code left main with [ADR 0020](docs/adr/0020-the-hub-leaves-main.md); a rollback uses the
+`v0.2.0-rc.19` tag, the last that carries it. Never use "Hub" for the Convex control plane; the
 terms are not interchangeable.
 
 **Profile**: the immutable contract a Worker advertises capacity against. Not just a size: it
@@ -112,7 +113,7 @@ and not a Worker's OS.
 in the dashboard and used by the `erainfra` CLI, scripts and Prometheus. Its **scope** is `read`,
 `admin` or `metrics` (`convex/apiTokenPolicy.ts`). It is unrelated to a
 Worker's machine token, a Node's enrollment credential (`erainfra_node_`, bound to one Node), the
-controller's `CONTROLLER_TOKEN`, and the Hub's API tokens
+controller's `CONTROLLER_TOKEN`, and the retired Hub's API tokens
 ([ADR 0011](docs/adr/0011-one-erainfra-cli-over-an-operator-api.md)).
 
 **Role**: three unrelated vocabularies here use the word, and only the first is a machine kind, so
@@ -122,11 +123,10 @@ a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
   owner of the word **worker**. Neither of the other two may spend it.
 - **Placement role**: `gateway` | `compute` | `database` | `relay`, which capability a Node carries
   for the Apps deployed onto it, reported by the Infra Agent on its `hello` frame. `compute` was
-  called `worker` until #64, which is how a Node came to be badged as a Worker; the Hub reads both
-  names until that rollout's last stage.
-- **Permission role**: `owner` | `admin` | `operator` | `viewer`, what a human may do, in the Hub
-  and, since ADR 0016 phase 2a, on a Convex account (`convex/infra/policy.ts`, where a dashboard API
-  token's scope maps onto the same permissions). It shares only the field name with either of the
+  called `worker` until #64, which is how a Node came to be badged as a Worker.
+- **Permission role**: `owner` | `admin` | `operator` | `viewer`, what a human may do on a Convex
+  account (`convex/infra/policy.ts`, where a dashboard API token's scope maps onto the same
+  permissions). The Hub used the same four. It shares only the field name with either of the
   above.
 
 ## Naming rules
@@ -139,13 +139,19 @@ a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
 3. Do not name a component after a property every component shares. "Edge", "outbound" and
    "NAT-traversing" describe both agents and therefore distinguish neither.
 4. **Renaming rule for the merge: repository paths and workspace package names may change; no
-   identifier a running system already holds may change.** Frozen for that reason: the
-   `portless-data` Docker volume (it holds `portless.db`, the Hub's entire state; `hub.sh` is
-   idempotent by design and customers re-run it, so a renamed volume silently comes up empty, with
-   no accounts, apps, routes or tokens, and CI cannot catch it because CI never runs `hub.sh`); the
-   51 `PORTLESS_*` environment variables across ~70 files; `/etc/portless/agent.env`;
-   `portless-agent.service`; the published npm package name; and the `agent-bin` download path.
-   Retiring those identifiers is migration work with its own rollout, sequenced after the merge.
+   identifier a running system already holds may change.** Frozen for that reason, on Nodes:
+   `portless-agent.service` and `erainfra-agent.service` (Hub-mode units the Node installer
+   detects), `/etc/portless/agent.env`, `~/.portless` and `PORTLESS_PREFIX`, and the names the
+   Convex-mode installer writes: `erainfra-node.service`, `/etc/erainfra-node.credential`,
+   `/var/lib/erainfra-node`, `erainfra-mesh.service`, the `erainfra-mesh` user,
+   `/var/lib/erainfra-mesh`, `/var/lib/erainfra/mesh-control` and `/usr/local/lib/erainfra`, and
+   the `erainfra-gateway*` and `erainfra-relay*` units, users and directories that
+   `deploy/infra/gateway.sh` and `relay.sh` write. On the fleet's registry Node: the
+   `portless-registry` container and volume. On the retired Hub's host: the `portless-data` volume,
+   which holds `portless.db`, the Hub's entire state and the rollback source; a renamed or deleted
+   volume comes back empty. [ADR 0020](docs/adr/0020-the-hub-leaves-main.md) retired the names only
+   the Hub used and lists them; the CI gate lets exactly those leave the tree. Retiring any other
+   identifier is migration work with its own rollout.
    The npm package `@erainfra/agent` is frozen for a different reason: its `package.json` is packed
    into the attested release archive, so renaming it moves the published SHA-256.
    The Worker side's `RC_*` variables, `runner-center-*` units and paths and the `rc` command are

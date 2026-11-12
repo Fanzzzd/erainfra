@@ -69,7 +69,7 @@ func TestConvexBuildFromUploadRunsDockerBuildThenPush(t *testing.T) {
 		"web/Dockerfile": "FROM scratch\n",
 	}))
 	b := ConvexBuilder{AllowLoopbackHTTP: true}
-	r := ShellRunner{Docker: docker, OutputLimit: 16 * 1024, Token: "hub-token-must-not-leak"}
+	r := ShellRunner{Docker: docker, OutputLimit: 16 * 1024}
 	src := ConvexSource{Kind: "upload", URL: server.URL + "/api/storage/abc"}
 
 	spec, err := b.ReadConvexSpec(context.Background(), r, src)

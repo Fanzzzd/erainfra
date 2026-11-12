@@ -3,8 +3,6 @@
 package agent
 
 import (
-	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"os"
@@ -95,13 +93,9 @@ func TestBuiltSidecarThroughInfraAgentThreePeers(t *testing.T) {
 	}()
 	db := meshclient.Desired{V: 1, Fleet: peers, Exposures: []meshclient.Exposure{{Name: "db", Target: echo.Addr().String(), AllowedPeers: []string{sa.EndpointID}}}}
 	apply := func(n *node, d meshclient.Desired) meshclient.Status {
-		out, e := n.manager.Apply(t.Context(), d, "")
+		s, e := n.manager.ApplyDesired(t.Context(), d)
 		if e != nil {
 			t.Fatal(e)
-		}
-		var s meshclient.Status
-		if json.Unmarshal([]byte(out), &s) != nil {
-			t.Fatal("bad manager status")
 		}
 		return s
 	}
@@ -164,14 +158,6 @@ func TestBuiltSidecarThroughInfraAgentThreePeers(t *testing.T) {
 	}
 	if status(a).EndpointID != sa.EndpointID {
 		t.Fatal("agent restart changed identity")
-	}
-	// The reopened agent has applied nothing yet, but its sidecar still holds the "db" link, so a
-	// stale legacy command for that name is refused rather than starting dumbpipe beside it.
-	if _, e := a.manager.Connect(t.Context(), "db", "legacy-ticket", 15432); !errors.Is(e, ErrOnMesh) {
-		t.Fatalf("dumbpipe accepted for a link on the mesh: %v", e)
-	}
-	if _, e := b.manager.Share(t.Context(), "db", 5432); !errors.Is(e, ErrOnMesh) {
-		t.Fatalf("dumbpipe accepted for an exposure on the mesh: %v", e)
 	}
 	// Restart the actual child; init must not replace the persisted key, and grants restore.
 	if e := b.supervisor.Close(); e != nil {
