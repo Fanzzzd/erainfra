@@ -3,19 +3,8 @@
 A Profile's controller is `runner-center-controller@<profile>`, one systemd unit per Profile. It
 turns GitHub scale-set demand into Attempts and runs no jobs. Controllers can run on Workers or on
 a dedicated Linux host. Convex gives one process the Profile's lease; every other process stands
-by ([ADR 0014](../adr/0014-controllers-run-on-the-workers-under-a-lease.md)).
-
-The holder renews every 10 seconds, with a 30-second expiry. Every controller write carries its
-lease epoch. A stale write gets HTTP 412, which cancels the listener and closes the GitHub session.
-A controller that cannot renew stops when its last grant expires, even if GitHub remains reachable.
-A successor may then wait for GitHub to release its predecessor's abandoned session. The existing
-409 backoff starts at 10 seconds and doubles to 60 seconds, with jitter; GitHub can retain an
-abandoned session for minutes, so lease expiry alone is not a bound on resumed listening.
-
-A Worker with a fresh network benchmark score below 40 waits an extra 15 seconds after a lease
-becomes free. A better-connected standby gets the first chance; a lone poor Worker still serves.
-Missing or seven-day-old benchmark data gets no penalty. Convex owns all lease timings in
-`packages/backend/convex/controllerLease.ts`; controllers read them from the lease response.
+by. [Install a controller](../controllers.md#install-a-controller) states the lease timings, what
+HTTP 412 and 409 mean, and the network-score delay.
 
 ## Profile settings and credentials
 
@@ -23,9 +12,8 @@ Register a Profile once from a dedicated controller's existing env file. That ho
 the executor, image, resources, pool and runner bounds, egress policy, GitHub registration URL,
 runner group, labels and whether it publishes cache facts. Standbys read that contract from
 Convex; they never register it or overwrite it. A Worker cannot take a Profile's lease until it
-has advertised readiness for the same executor, image and resources. A pre-lease Profile without
-a registered GitHub URL reports `profileIncomplete` until the upgraded dedicated controller
-registers it.
+has advertised readiness for the same executor, image and resources. A Profile without a
+registered GitHub URL reports `profileIncomplete` until a dedicated controller registers it.
 
 The dedicated host's env remains the bootstrap source. Restart it to publish a changed contract;
 do not keep a different contract in each standby's env file. There is no new dashboard editor or
@@ -70,50 +58,14 @@ as Workers. `CONTROLLER_TOKEN_NEXT` still overlaps the current token for rotatio
 
 ## Install a Worker standby
 
-The Worker must already be enrolled and ready for the Profile. The installer needs Linux with
-systemd, outbound HTTPS to the Convex site and GitHub, and a release with
-`AGENT_RELEASE.controller` populated. Until a release pins the controller binary, the installer
-refuses rather than install unverifiable bytes.
-
-Run from the Worker's account, through sudo:
+[Install a Worker standby](../controllers.md#install-a-worker-standby) has the command, the env
+file it reads, the cache flags a standby needs, and the files it installs. In short, from the
+Worker's account:
 
 ```bash
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
   --profile erainfra-4vcpu-ubuntu-2404 --no-prompt
 ```
-
-Without `--controller-token-file`, the installer finds the Worker's env file at
-`<SUDO_USER home>/.runner-center/agent/.env`. If the account or path differs, name it explicitly:
-
-```bash
-curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller \
-  --profile erainfra-4vcpu-ubuntu-2404 \
-  --worker-env-file /home/klaus/.runner-center/agent/.env --no-prompt
-```
-
-It extracts only `MACHINE_TOKEN`, validates its 32 hex characters, and copies it to
-`/etc/runner-center/secrets/<profile>/machine-token`. The root-owned standby env file contains
-only the Convex site, Profile name and that token's file path. Do not pass image, size, GitHub,
-App or controller-token settings. If the Profile publishes cache facts (its dedicated controller
-had `RC_CACHE_FACTS_URL` set), the standby must also take `--cache-facts-url` and
-`--cache-signing-key-file`. Convex never leases such a Profile to a standby that lacks them: the
-runners it served would get no facts and every cache request would be refused. A standby refused
-for this reason stands by with reason `incapable`.
-
-The installer downloads the pinned binary, checks its SHA-256, installs the embedded unit and
-creates the unprivileged `runner-center-controller` account. It does not change the Worker,
-its runtime, account or service. Shared `runner-center` directories keep their existing modes.
-
-| Path                                                    | Owner and mode                      | Holds                          |
-| ------------------------------------------------------- | ----------------------------------- | ------------------------------ |
-| `/usr/local/lib/runner-center/runner-center-controller` | root, 0755                          | pinned binary                  |
-| `/etc/systemd/system/runner-center-controller@.service` | root, 0644                          | release unit                   |
-| `/etc/runner-center/profiles/<profile>.env`             | root, 0600                          | settings and secret file paths |
-| `/etc/runner-center/secrets/<profile>/`                 | root:runner-center-controller, 0750 | secret files, 0640             |
-
-systemd reads the env as root. The controller account reads the secret files. After a Worker
-re-registers and changes its machine token, rerun with the same `--profile` and
-`--worker-env-file`: the repair path refreshes the token copy and keeps the env file.
 
 Check the service and the dashboard's Profiles table:
 
@@ -127,39 +79,36 @@ retry delay and network penalty. After a grant it says `acquired controller leas
 `runner scale-set controller started`. The tooltip shows the host, Worker credential, lease epoch
 and session state. A 409 means it has the lease but is waiting for GitHub's previous session.
 
-## Migrate a live Profile from the VM to Workers
+## Move a live Profile from a dedicated host to Workers
 
-Do this per Profile. No command here retires the scale set.
+Do this per Profile. No command here retires the scale set. "The dedicated host" below is the host
+whose controller holds the Profile's lease now.
 
-1. Prepare a controller release containing the lease code and pin it in the deployment. Stage the
-   binary on the VM, deploy the backend and restart the VM unit on that binary in one maintenance
-   window. The new backend refuses every unfenced write, including from old dedicated binaries;
-   there is no legacy bypass. GitHub queues demand during the short restart gap.
-2. Configure the controller App's client ID and key in Convex. Leave the VM's credentials in place
-   for rollback. Confirm the VM has acquired a lease, registered the GitHub URL and returned to
+1. Configure the controller App's client ID and key in Convex. Leave the dedicated host's credentials in place
+   for rollback. Confirm the dedicated host holds the lease, has registered the GitHub URL and is
    listening. Check each Profile separately.
-3. Install the standby on `<worker-host>` with its Worker env file, as above. Wait for its heartbeat to
-   appear beside the VM's. It must log `controller standing by` and identify the VM as holder.
-   If it says `notReady` or `profileIncomplete`, fix that before proceeding.
-4. Stop the VM's unit, without running `retire`:
+2. Install the standby on `<worker-host>` with its Worker env file, as above. Wait for its
+   heartbeat to appear beside the dedicated host's. It must log `controller standing by` and
+   identify the dedicated host as holder. If it says `notReady` or `profileIncomplete`, fix that
+   before proceeding.
+3. Stop the dedicated host's unit, without running `retire`:
 
    ```bash
    sudo systemctl disable --now runner-center-controller@<profile>
    ```
 
-5. Watch `<worker-host>` acquire a higher epoch and start listening. A graceful stop closes the old
+4. Watch `<worker-host>` acquire a higher epoch and start listening. A graceful stop closes the old
    GitHub session before releasing the lease. A crash can add GitHub's lingering-session delay.
    Confirm the dashboard shows `<worker-host>` listening with the Worker credential and submit a small
    workflow targeted at that Profile. Check its Attempt is created and reaches the Worker.
-6. Install another ready Worker's standby when available. Keep the VM env and credentials in an
-   encrypted backup until every Profile has taken over and survived a Worker restart.
+5. Install another ready Worker's standby when available. Keep the dedicated host's env and
+   credentials in an encrypted backup until every Profile has taken over and survived a Worker
+   restart.
 
-Rollback before retiring the VM: stop the Worker standby units for that Profile on **every**
-Worker, then start the VM unit on the lease-aware binary. Watch it acquire the lease and session.
-A dedicated host has no priority over a Worker, so leaving a Worker holder running will leave the
-VM standing by. Do not roll the controller binary back to a pre-lease release against this
-backend. To return to that release, stop every controller and roll the backend back as well in a
-maintenance window.
+Rollback before retiring the dedicated host: stop the Worker standby units for that Profile on
+**every** Worker, then start the dedicated host's unit. Watch it acquire the lease and session. A
+dedicated host has no priority over a Worker, so leaving a Worker holder running will leave the
+dedicated host standing by.
 
 ## Dedicated host install and update
 
@@ -225,8 +174,7 @@ problem, when the binary is not at `/usr/local/lib/runner-center/runner-center-c
 `runner-center-controller` account is missing, no instance is running, an instance runs from a unit
 file other than `/etc/systemd/system/runner-center-controller@.service`, or an instance has no
 `/etc/runner-center/profiles/<profile>.env`. It warns about drop-ins, which can override what the
-release unit sets. A controller installed by hand, as releases before v0.2.0-rc.11 required, may
-fail any of these. Releases before v0.2.0-rc.11 serve no `--dry-run`;
+release unit sets. A controller installed by hand may fail any of these.
 [deploy-control-plane.md](deploy-control-plane.md#prove---update-will-find-the-controllers) has
 the same checks as plain `systemctl` commands.
 
@@ -240,8 +188,6 @@ sudo cp -p /etc/systemd/system/runner-center-controller@.service.bak-<version> \
 sudo systemctl daemon-reload
 sudo systemctl restart 'runner-center-controller@<profile>'   # each instance that should run
 ```
-
-A pre-lease backup is not a compatible rollback against the lease-enforcing backend.
 
 ## Retire a Profile
 

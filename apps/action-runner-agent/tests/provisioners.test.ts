@@ -762,7 +762,7 @@ describe("agent invocation of the Windows provisioner", () => {
   // The JIT configuration reaches every provisioner on stdin, so it is in
   // neither argv nor the child's environment block, on any platform.
   it("hands the provisioner its input on stdin, never argv or the environment", () => {
-    assert.match(agentSource, /input: jitConfig/);
+    assert.match(agentSource, /input: attempt\.jitConfig/);
     assert.doesNotMatch(agentSource, /\bJIT_CONFIG\b/);
     const afterExe = agentSource.slice(agentSource.indexOf('"powershell.exe"'));
     const argv = afterExe.slice(afterExe.indexOf("["), afterExe.indexOf("]") + 1);

@@ -5,7 +5,6 @@ import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { AGENT_RELEASE } from "./agentRelease";
 import { auth } from "./auth";
-import { findImageLabel, IMAGE_CATALOG } from "./catalog";
 import { mintInstallationToken } from "./controllerGithubToken";
 import {
   controllerAuthorization,
@@ -949,32 +948,20 @@ http.route({
       return new Response("Ignored", { status: 200 });
     }
 
-    const { duplicate } = await ctx.runMutation(internal.webhooks.recordDelivery, {
+    // A job the pre-Profile path would not take is dropped unstored (webhooks.recordDelivery).
+    // It answers 200 like any other ignored event, so GitHub records it delivered and delivery
+    // recovery never asks for it again.
+    const { outcome } = await ctx.runMutation(internal.webhooks.recordDelivery, {
       deliveryId,
       event,
       workflowJob,
     });
-    return new Response(duplicate ? "Duplicate" : "Accepted", { status: 202 });
+    if (outcome === "dropped") {
+      return new Response("Ignored", { status: 200 });
+    }
+    return new Response(outcome === "duplicate" ? "Duplicate" : "Accepted", { status: 202 });
   }),
 });
-
-// The requested image label doubles as the GitHub-hosted fallback when
-// GitHub offers it (ubuntu-22.04, macos-15, windows-2022, …); otherwise fall
-// back to the latest hosted runner for the catalog OS.
-const LATEST_HOSTED_RUNNER_BY_OS = {
-  linux: "ubuntu-latest",
-  mac: "macos-latest",
-  win: "windows-latest",
-} as const;
-
-function defaultGitHubHostedFallback(labels: string[]) {
-  const imageLabel = findImageLabel(labels);
-  if (imageLabel !== undefined && /^(ubuntu|macos|windows)-\d/.test(imageLabel)) {
-    return imageLabel;
-  }
-  const os = imageLabel === undefined ? "linux" : IMAGE_CATALOG[imageLabel].os;
-  return LATEST_HOSTED_RUNNER_BY_OS[os];
-}
 
 const HOSTED_RUNNER_BY_EXECUTOR = {
   docker: "ubuntu-latest",
@@ -989,7 +976,7 @@ const RUNS_ON_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // The optional `repo=OWNER/NAME` the router stores with each decision, in GitHub's name alphabet.
 const RUNS_ON_REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 
-function runsOnResponse(label: string | string[]) {
+function runsOnResponse(label: string) {
   return new Response(JSON.stringify({ "runs-on": label }), {
     status: 200,
     headers: {
@@ -1018,9 +1005,9 @@ function runsOnResponse(label: string | string[]) {
 // go to the deployment log, not to the caller. Each answer is stored as a
 // routerDecisions row, with the optional `repo=OWNER/NAME` the caller sent.
 //
-// The legacy form `?labels=ubuntu-24.04[,…]` still answers from the pre-Profile
-// `machines`/`jobs` path (machines.hasCapacity), which webhook-intake jobs
-// still use.
+// The pre-Profile form `?labels=ubuntu-24.04[,…]` is retired and answers 400
+// naming `profile=`. No stored decision has used it since decisions were first
+// recorded.
 http.route({
   path: "/runs-on",
   method: "GET",
@@ -1030,57 +1017,41 @@ http.route({
     if (repo !== undefined && !RUNS_ON_REPO.test(repo)) {
       return jsonResponse({ error: "repo must be OWNER/NAME" }, 400);
     }
+    if (url.searchParams.has("labels")) {
+      return jsonResponse(
+        {
+          error:
+            "labels= is retired; name a Profile with profile=<name> (docs/workflows.md, Fall back to GitHub-hosted runners)",
+        },
+        400,
+      );
+    }
     const profile = url.searchParams.get("profile");
-    if (profile !== null) {
-      if (url.searchParams.has("labels")) {
-        return jsonResponse({ error: "use either profile or labels, not both" }, 400);
-      }
-      const fallbackParam = url.searchParams.get("fallback");
-      if (!RUNS_ON_LABEL.test(profile)) {
-        return jsonResponse({ error: "profile is not a valid runs-on label" }, 400);
-      }
-      if (fallbackParam !== null && !RUNS_ON_LABEL.test(fallbackParam)) {
-        return jsonResponse({ error: "fallback is not a valid runs-on label" }, 400);
-      }
-      const decision = await ctx.runQuery(internal.routing.profileRoute, { profile });
-      if (decision.route === "profile") {
-        await recordRouterDecision(ctx, { profile, answer: profile, route: "profile", repo });
-        return runsOnResponse(profile);
-      }
-      const fallback =
-        fallbackParam ?? HOSTED_RUNNER_BY_EXECUTOR[decision.executor ?? "firecracker"];
-      console.info(`/runs-on: Profile ${profile} → ${fallback} (${decision.reason})`);
-      await recordRouterDecision(ctx, {
-        profile,
-        answer: fallback,
-        route: "fallback",
-        reason: decision.reason,
-        repo,
-      });
-      return runsOnResponse(fallback);
+    if (profile === null) {
+      return jsonResponse({ error: "profile is required" }, 400);
     }
-
-    const labels = (url.searchParams.get("labels") ?? "")
-      .split(",")
-      .map((label) => label.trim())
-      .filter((label) => label.length > 0);
-    if (labels.length === 0) {
-      return jsonResponse({ error: "profile or labels is required" }, 400);
+    const fallbackParam = url.searchParams.get("fallback");
+    if (!RUNS_ON_LABEL.test(profile)) {
+      return jsonResponse({ error: "profile is not a valid runs-on label" }, 400);
     }
-    const fallback = url.searchParams.get("fallback") ?? defaultGitHubHostedFallback(labels);
-
-    const selfHostedLabels = labels.includes("self-hosted") ? labels : ["self-hosted", ...labels];
-    const available = await ctx.runQuery(internal.machines.hasCapacity, {
-      labels: selfHostedLabels,
-    });
-    const answer = available ? selfHostedLabels : fallback;
+    if (fallbackParam !== null && !RUNS_ON_LABEL.test(fallbackParam)) {
+      return jsonResponse({ error: "fallback is not a valid runs-on label" }, 400);
+    }
+    const decision = await ctx.runQuery(internal.routing.profileRoute, { profile });
+    if (decision.route === "profile") {
+      await recordRouterDecision(ctx, { profile, answer: profile, route: "profile", repo });
+      return runsOnResponse(profile);
+    }
+    const fallback = fallbackParam ?? HOSTED_RUNNER_BY_EXECUTOR[decision.executor ?? "firecracker"];
+    console.info(`/runs-on: Profile ${profile} → ${fallback} (${decision.reason})`);
     await recordRouterDecision(ctx, {
-      labels: selfHostedLabels,
-      answer,
-      route: available ? "profile" : "fallback",
+      profile,
+      answer: fallback,
+      route: "fallback",
+      reason: decision.reason,
       repo,
     });
-    return jsonResponse({ "runs-on": answer }, 200);
+    return runsOnResponse(fallback);
   }),
 });
 

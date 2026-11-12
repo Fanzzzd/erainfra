@@ -638,7 +638,6 @@ export const markJobCompleted = internalMutation({
         ? { startedAt: args.finishedAt }
         : {}),
       state: "completed",
-      jitConfig: undefined,
       runnerCleanupPending: undefined,
       retirement: undefined,
       ...(args.runnerRequestId === undefined ? {} : { runnerRequestId: args.runnerRequestId }),

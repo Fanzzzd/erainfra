@@ -2,9 +2,9 @@ import { v } from "convex/values";
 
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { internalMutation, internalQuery, query } from "./_generated/server";
+import { internalMutation, internalQuery, query, type MutationCtx } from "./_generated/server";
 import { requireDashboardAuth } from "./dashboardAuth";
-import { applyWorkflowJob } from "./jobs";
+import { applyWorkflowJob, legacyPathTakes } from "./jobs";
 import { decideRepository, parseRepositoryPolicy } from "./policy";
 import {
   advanceWatermark,
@@ -127,6 +127,10 @@ export const recentFailures = query({
  * Record a verified delivery and hand it to a scheduled processor. Keyed by
  * X-GitHub-Delivery, so a redelivery of the same event is a no-op rather than a
  * second job.
+ *
+ * A workflow_job the pre-Profile job path would not act on (jobs.legacyPathTakes)
+ * is dropped instead: nothing else reads a stored workflow_job, and the App
+ * delivers one for every job of every installed repository.
  */
 export const recordDelivery = internalMutation({
   args: {
@@ -134,14 +138,21 @@ export const recordDelivery = internalMutation({
     event: v.string(),
     workflowJob: v.optional(workflowJobValidator),
   },
-  returns: v.object({ duplicate: v.boolean() }),
+  returns: v.object({
+    outcome: v.union(v.literal("accepted"), v.literal("duplicate"), v.literal("dropped")),
+  }),
   handler: async (ctx, args) => {
+    if (args.workflowJob !== undefined && !(await legacyPathTakes(ctx, args.workflowJob))) {
+      await settleDroppedRecovery(ctx, args.deliveryId);
+      return { outcome: "dropped" as const };
+    }
+
     const existing = await ctx.db
       .query("webhookDeliveries")
       .withIndex("by_deliveryId", (q) => q.eq("deliveryId", args.deliveryId))
       .unique();
     if (existing !== null) {
-      return { duplicate: true };
+      return { outcome: "duplicate" as const };
     }
 
     const deliveryId = await ctx.db.insert("webhookDeliveries", {
@@ -155,9 +166,25 @@ export const recordDelivery = internalMutation({
     await ctx.scheduler.runAfter(0, internal.webhooks.processDelivery, {
       deliveryId,
     });
-    return { duplicate: false };
+    return { outcome: "accepted" as const };
   },
 });
+
+/**
+ * A dropped delivery leaves no row for `reconcileRecovered` to find, so a
+ * recovery request that GitHub redelivered would stay "requested" for good.
+ * Close it here. One point read on the drop path; a write only when recovery
+ * asked for this delivery.
+ */
+async function settleDroppedRecovery(ctx: MutationCtx, guid: string) {
+  const row = await ctx.db
+    .query("webhookRecovery")
+    .withIndex("by_guid", (q) => q.eq("guid", guid))
+    .unique();
+  if (row?.state === "requested") {
+    await ctx.db.patch(row._id, { state: "recovered", lastError: undefined });
+  }
+}
 
 /**
  * Apply one recorded delivery. Runs as its own transaction: on an unexpected

@@ -12,18 +12,20 @@ Two facts decide the order:
   that release's commit, never from the tip of `main`. A commit after the tag can carry pins for a
   release that does not exist yet.
 - **The backend and the controllers move together.** The backend refuses every controller write
-  that does not carry the Profile's lease epoch (`controllerLease.ts`), with no legacy bypass. A
-  controller from before the lease code stops working the moment the new backend is live, and a
-  lease-aware controller cannot talk to a backend from before it. So the controller update runs in
-  the same window as the deploy, and a rollback moves both back together.
+  that does not carry the Profile's lease epoch (`controllerLease.ts`), with no legacy bypass. Each
+  release pins its own controller binary, and nothing tests a backend against another release's
+  controller. So the controller update runs in the same window as the deploy, and a rollback moves
+  both back together.
 
 ## Check which deployment the CLI reaches
 
 Every `npx convex` command below finds the Convex project through `packages/backend/.env.local`.
 On the owner's machine that file names a dev deployment (`CONVEX_DEPLOYMENT=dev:…`), not
 production. `npx convex deploy` targets the project's production deployment anyway. Every other
-command (`env`, `run`, `data`) acts on the dev deployment unless it passes `--prod`, so every one
-below does. Add `--prod` to any `npx convex` command you type yourself.
+command (`env`, `run`, `data`) acts on the dev deployment unless it passes `--prod`, and the live
+fleet never sees what it changes there. So every command below passes `--prod`. Add it to any
+`npx convex` command you type yourself. Other runbooks that run `npx convex` start with the check
+in this section.
 
 Git ignores `*.local`, so a new worktree does not have the file: copy it in after every
 `git worktree add`, as each block below does. Without it, `npx convex deploy` stops with "No
@@ -45,16 +47,26 @@ The name after `/d/` is the production deployment. Its URLs are `https://<name>.
 deployment the fleet talks to: on each controller host,
 `sudo grep -h CONVEX /etc/runner-center/profiles/*.env` shows `https://<name>.convex.site`
 for every Profile. If the name differs, or `env list --prod` shows no `CONTROLLER_TOKEN`, stop:
-`.env.local` belongs to another project.
+`.env.local` belongs to another project. Each `env set --prod` ends its output with
+`(on prod deployment <name>)`; check that it names the same deployment.
 
 ## 1. Before
 
-Pick the release and check it out in a clean worktree, from the checkout you deploy from today:
+`<tag>` below is the tag of the release you deploy, `v<version>`. `<previous tag>` is the tag of
+the release production serves now. `/install` prints that version, without the leading `v`:
+
+```bash
+curl -fsSL https://<deployment>.convex.site/install | grep -m1 '^PINNED_VERSION='
+```
+
+Check the release out in a clean worktree, from the checkout you deploy from today:
 
 ```bash
 main=$PWD                                              # this checkout, whose packages/backend/.env.local finds the project
+new=<tag>                                              # the release you deploy
+old=<previous tag>                                     # the release production serves now
 git fetch --tags origin
-git worktree add ../erainfra-release v0.2.0-rc.11      # the tag you are deploying
+git worktree add ../erainfra-release "$new"
 cd ../erainfra-release
 cp "$main/packages/backend/.env.local" packages/backend/
 grep -n 'version:' packages/backend/convex/agentRelease.ts
@@ -62,9 +74,7 @@ pnpm install --frozen-lockfile
 pnpm check                                             # green on the commit you deploy
 ```
 
-The `version` must be the tag's. `mesh` and `controller` in `AGENT_RELEASE` must not be empty if
-you will install Nodes with `--convex` or update controllers; an empty map makes `/install` refuse
-that role.
+The `version` must be the tag's, without the leading `v`.
 
 ### The rollback branch
 
@@ -72,22 +82,16 @@ A plain checkout of the release production runs now cannot be deployed over the 
 ([Roll back](#4-roll-back) says why). Its rollback is a branch with the old functions on the new
 schema, and it must exist and pass its checks before the window.
 
-For v0.2.0-rc.10 to v0.2.0-rc.11 it exists:
-`rollback/v0.2.0-rc.10-on-v0.2.0-rc.11-schema`. It was built against `0bfc2b1`, the rc.11
-candidate, and its commit message lists what it took from there. Confirm the tag's schema is still
-that one. No output means the branch is current:
-
-```bash
-git diff --stat 0bfc2b1 v0.2.0-rc.11 -- packages/backend/convex/{schema,alertRules,attemptMetricsModel,benchmark,controllerLiveness,egress,testReportsModel,workerPolicy}.ts \
-  packages/backend/convex/infra/{nodeCommandModel,policy,tables}.ts
-```
-
-If it lists a file, redo the steps below on the branch for what changed. Then check the branch out
-where the rollback will run from, and run its checks:
+The branch is `rollback/$old-on-$new-schema`. If it already exists, its commit message names the
+commit its schema came from and the modules it took. Confirm the tag's schema is still that one:
+`git diff --stat <that commit> "$new" --` over `packages/backend/convex/schema.ts` and each listed
+module. No output means the branch is current. If it lists a file, redo the steps below on the
+branch for what changed. Then check the branch out where the rollback will run from, and run its
+checks:
 
 ```bash
 cd "$main"
-git worktree add ../erainfra-rollback origin/rollback/v0.2.0-rc.10-on-v0.2.0-rc.11-schema
+git worktree add ../erainfra-rollback "origin/rollback/$old-on-$new-schema"
 cd ../erainfra-rollback
 cp "$main/packages/backend/.env.local" packages/backend/
 pnpm install --frozen-lockfile && pnpm check           # green: old functions, new schema
@@ -95,26 +99,26 @@ pnpm --filter @erainfra/dashboard build && rm -rf apps/dashboard/dist
 cd "$main"
 ```
 
-For a later pair of releases, build the branch the same way (`old` is production now, `new` the
-release you deploy):
+If the branch does not exist, build it:
 
-1. `git worktree add -b "rollback/v$old-on-v$new-schema" ../erainfra-rollback "v$old"`, then copy
+1. `git worktree add -b "rollback/$old-on-$new-schema" ../erainfra-rollback "$old"`, then copy
    `.env.local` in as above.
-2. `git checkout "v$new" -- packages/backend/convex/schema.ts`.
+2. `git checkout "$new" -- packages/backend/convex/schema.ts`.
 3. Follow every relative import of `schema.ts`, and of each module it brings in, except
    `import type`. For each module:
    - The old release lacks it, and it defines no Convex function (no `query(`, `mutation(`,
-     `action(`, `httpAction(` or `internal…(`): take it from `v$new`.
+     `action(`, `httpAction(` or `internal…(`): take it from `$new`.
    - It would bring in functions, or a module the old functions already use: copy only the
      validators `schema.ts` needs into `schema.ts`, verbatim.
-   - The old release has it and its exported validators match `v$new`'s: keep the old copy, so the
+   - The old release has it and its exported validators match `$new`'s: keep the old copy, so the
      old functions behave as they did.
 4. Add each module you took to `packages/backend/convex/_generated/api.d.ts`, in the order
    `convex codegen` uses (byte order of the path). Codegen itself needs a deployment.
 5. In the root `package.json`, `deploy:control-plane` must be
    `pnpm --filter @erainfra/backend run deploy`. Without `run`, pnpm runs its own `deploy`.
-6. `pnpm install --frozen-lockfile && pnpm check`, build the dashboard as above, commit, and
-   `git push origin "rollback/v$old-on-v$new-schema"`. Never merge it into `main`.
+6. `pnpm install --frozen-lockfile && pnpm check`, build the dashboard as above, and commit with a
+   message that names the commit of `$new` the schema came from and every module you took. Then
+   `git push origin "rollback/$old-on-$new-schema"`. Never merge it into `main`.
 
 The branch adds no function code: the functions are the old release's, and the schema only declares
 more tables and optional fields than the old one did.
@@ -140,8 +144,7 @@ cd "$main"
 | 2    | The input could not be read or held no Profile. Fix the export and run it again.                                                                                                              |
 | 3    | No pair among what the export shows, but the Profiles it names carry no labels in it. Their controllers register with `RC_LABELS` from their env files, which the deployment does not record. |
 
-v0.2.0-rc.10 stores no labels, so expect 3. On each controller host, read the labels the
-controllers really use:
+On exit 3, read the labels the controllers really use, on each controller host:
 
 ```bash
 sudo grep -H LABELS= /etc/runner-center/profiles/*.env
@@ -158,9 +161,9 @@ removing the other Profile's name from one side's labels and restarting that con
 `--update` moves only instances named `runner-center-controller@<profile>` that run from
 `/etc/systemd/system/runner-center-controller@.service`, it replaces the binary at
 `/usr/local/lib/runner-center/runner-center-controller`, and the unit it installs runs each
-instance as `runner-center-controller` with `/etc/runner-center/profiles/<profile>.env`.
-v0.2.0-rc.10's `/install` has no controller role, so a controller on rc.10 was installed by hand.
-Check each controller host before the window. Everything here only reads:
+instance as `runner-center-controller` with `/etc/runner-center/profiles/<profile>.env`. A
+controller installed by hand can differ. Check each controller host before the window. Everything
+here only reads:
 
 ```bash
 sudo /usr/local/lib/runner-center/runner-center-controller version
@@ -182,8 +185,8 @@ with `fragment=/etc/systemd/system/runner-center-controller@.service`, no drop-i
 Anything else means `--update` would miss that controller or fail to start it, and roll back. Fix
 it before the window, or plan the dedicated-host install from
 [operate-the-controller-host.md](operate-the-controller-host.md#dedicated-host-install-and-update)
-for it. From v0.2.0-rc.11 on, `/install … --role controller --update --dry-run` runs these checks
-itself.
+for it. The `--dry-run` in [step 2](#2-deploy-and-update-the-controllers-in-the-same-window)
+runs these checks again with the new installer.
 
 ### Stage the controller
 
@@ -194,16 +197,16 @@ So an aarch64 `<controller-host>` takes `runner-center-controller-linux-arm64`. 
 binary from the GitHub Release of the tag and check it against the pin on the release commit:
 
 ```bash
-v=0.2.0-rc.11
+new=<tag>
 case "$(uname -m)" in
   x86_64) target=linux-x86_64 ;;
   aarch64) target=linux-arm64 ;;
   *) target=none ;;
 esac
 asset=runner-center-controller-$target; echo "$asset"   # an aarch64 host: runner-center-controller-linux-arm64
-mkdir -p ~/erainfra-controller-v$v && cd ~/erainfra-controller-v$v
-curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/v$v/$asset"
-pin=$(curl -fsSL "https://raw.githubusercontent.com/Fanzzzd/erainfra/v$v/packages/backend/convex/agentRelease.ts" |
+mkdir -p ~/erainfra-controller-$new && cd ~/erainfra-controller-$new
+curl -fsSLO "https://github.com/Fanzzzd/erainfra/releases/download/$new/$asset"
+pin=$(curl -fsSL "https://raw.githubusercontent.com/Fanzzzd/erainfra/$new/packages/backend/convex/agentRelease.ts" |
   awk '/^  controller: \{/,/^  \},/' | grep -F "\"$target\"" | cut -d '"' -f 4)
 echo "$pin  $asset" | sha256sum -c -                    # runner-center-controller-linux-arm64: OK
 ```
@@ -240,11 +243,11 @@ repeats the checks from [Before](#prove---update-will-find-the-controllers) with
 installer:
 
 ```bash
-v=0.2.0-rc.11
+new=<tag>
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
-  --source "file://$HOME/erainfra-controller-v$v/" --dry-run
+  --source "file://$HOME/erainfra-controller-$new/" --dry-run
 curl -fsSL https://<deployment>.convex.site/install | sudo bash -s -- --role controller --update \
-  --source "file://$HOME/erainfra-controller-v$v/"
+  --source "file://$HOME/erainfra-controller-$new/"
 ```
 
 The trailing `/` matters: with it, the installer reads `runner-center-controller-linux-arm64` on
@@ -281,24 +284,19 @@ refused at that check, and the rollback fails exactly when it is needed. The rol
 anything the new release wrote. Old functions never read the new fields, and every new field is
 optional, so the old code behaves as it did.
 
-### When a rollback to v0.2.0-rc.10 is safe
+### When a rollback is safe
 
-v0.2.0-rc.10 has no `convex/infra/`: no Node API, no deploy pipeline, no failover, no operator API.
-Every Node running `connect-convex` and every gateway Node depends on it. Rolled back under them,
-running Apps and gateway routes keep serving their last state (as when
-[Convex is unreachable](../infra-management.md#when-convex-is-unreachable)), but nothing deploys,
-fails over, changes env or links, or updates a route, and the `erainfra` CLI and the dashboard's
-Nodes, Apps, Deployments and Links pages stop working. So the rule depends on how far
-[retire-the-hub.md](retire-the-hub.md) has gone:
+The rollback branch reaches one release back: `<previous tag>`'s functions on `<tag>`'s schema. It
+works within one schema-compatible release, so build and check it for every deploy. A rollback
+further back needs its own branch for that pair of releases.
 
-- **Before its step 2** (no Node runs `connect-convex`): roll back as below.
-- **After step 2, before step 5** (only the gateway Nodes run `connect-convex`; the Hub still
-  serves every App): first put the gateway Nodes back in Hub mode
-  ([Roll back to Hub mode](../infra-management.md#roll-back-to-hub-mode)), then roll back as below.
-- **From step 5 on**: first run [retire-the-hub.md, Roll back](retire-the-hub.md#roll-back) in full,
-  so every Node is in Hub mode and `*.<zone>` points at the Hub again. Then roll back as below.
-
-If the Apps cannot take that, do not roll the control plane back: fix forward with a new release.
+The old functions do not serve anything `<tag>` added. A Node, gateway Node, `erainfra` CLI command
+or dashboard page that calls a function `<previous tag>` lacks stops working until the next deploy.
+Running Apps and gateway routes keep serving their last state, as when
+[Convex is unreachable](../infra-management.md#when-convex-is-unreachable), but whatever needs the
+missing function does not deploy, fail over or change. Read the release's CHANGELOG for new Node and
+operator functions before the window. If the fleet cannot take that, do not roll the control plane
+back: fix forward with a new release.
 
 ### Order and commands
 
@@ -317,7 +315,7 @@ them at once.
 
    If `npx convex deploy` is refused with a schema validation error naming a table or field, stop
    here: nothing changed, and CI still runs on the new release. The branch is missing part of the
-   new schema. Add that declaration from `v$new`, check the branch again, and deploy again.
+   new schema. Add that declaration from `$new`, check the branch again, and deploy again.
 
 2. On each controller host, put back the binary and unit `--update` kept, and restart the
    instances that should run:
@@ -332,20 +330,18 @@ them at once.
    ```
 
 Then cancel and retry any Attempt created during the window. Attempts already claimed or running
-are unaffected. If the previous backend predates the controller lease, the previous controller
-binary is the only one that works with it, and the reverse holds too; never leave one side rolled
-back alone.
+are unaffected. Never leave the backend or the controllers rolled back alone.
 
 ## 5. Agent pins
 
-Installed Worker agents and Infra Agents do not update themselves. After the deploy, `/install`
+Installed Workers and Infra Agents do not update themselves. After the deploy, `/install`
 serves the new pins:
 
 - Workers: `rc update` on each Worker fetches the release this deployment pins, verifies it and
   swaps atomically. Re-running `/install --role worker-host` to update the Firecracker runtime
   refuses while any Firecracker VM runs, including the idle warm VMs the runtime keeps parked:
   drain the Worker first, as the refusal and
-  [firecracker-cutover.md](firecracker-cutover.md#2-provision-the-worker-host) say.
+  [Re-provision a live Worker](../workers.md#re-provision-a-live-worker) say.
 - Nodes: re-run the `/install --role node …` command the Node was installed with. A `--convex`
   Node can pass `--credential-file /etc/erainfra-node.credential`, the copy the installer keeps.
 

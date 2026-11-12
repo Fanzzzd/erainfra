@@ -175,7 +175,7 @@ describe("readiness-gated Attempt scheduling", () => {
     }
   });
 
-  it("treats an incomplete legacy ready row as not ready and surfaces the reason", async () => {
+  it("treats a ready row with missing or incomplete evidence as not ready and surfaces the reason", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.controllerApi.registerProfile, {
       name: CONTRACT.profile,
@@ -189,13 +189,13 @@ describe("readiness-gated Attempt scheduling", () => {
     });
     const machineId = await t.run((ctx) =>
       ctx.db.insert("machines", {
-        name: "legacy",
+        name: "unproven",
         os: "linux",
         labels: [],
         maxSlots: 1,
         usedSlots: 0,
         lastSeen: Date.now(),
-        token: "token-legacy",
+        token: "token-unproven",
       }),
     );
     const checkedAt = Date.now();
@@ -206,17 +206,34 @@ describe("readiness-gated Attempt scheduling", () => {
         state: "ready",
         checkedAt,
         preparedAt: checkedAt,
-        boundary: "guest-kernel",
-        checks: [{ name: "kvm-device", passed: true }],
       }),
     );
     await t.mutation(internal.controllerApi.createAttempt, {
       ...CONTRACT,
-      runnerName: "runner-legacy",
+      runnerName: "runner-unproven",
       runnerId: 51,
-      encodedJITConfig: "secret-legacy",
+      encodedJITConfig: "secret-unproven",
     });
 
+    expect(await t.mutation(internal.attemptScheduler.tryAssign, {})).toBe(0);
+    const [missing] = await t
+      .withIdentity({ subject: "operator", issuer: "https://example.test" })
+      .query(api.profiles.list, {});
+    expect(missing?.readyWorkers).toBe(0);
+    expect(missing?.workers[0]).toMatchObject({
+      state: "degraded",
+      lastError: "no readinessEvidence for this Worker and Profile",
+    });
+
+    const evidenceId = await t.run((ctx) =>
+      ctx.db.insert("readinessEvidence", {
+        machineId,
+        ...CONTRACT,
+        checkedAt,
+        boundary: "guest-kernel",
+        checks: [{ name: "kvm-device", passed: true }],
+      }),
+    );
     expect(await t.mutation(internal.attemptScheduler.tryAssign, {})).toBe(0);
     const [profile] = await t
       .withIdentity({ subject: "operator", issuer: "https://example.test" })
@@ -228,9 +245,7 @@ describe("readiness-gated Attempt scheduling", () => {
     });
 
     await t.run(async (ctx) => {
-      const readiness = await ctx.db.query("workerReadiness").unique();
-      if (readiness === null) throw new Error("missing legacy readiness");
-      await ctx.db.patch(readiness._id, {
+      await ctx.db.patch(evidenceId, {
         ...FIRECRACKER_FACTS,
         checks: FIRECRACKER_FACTS.checks.map((check) =>
           check.name === "job-network-policy" ? { ...check, passed: false } : check,
@@ -501,10 +516,7 @@ describe("readiness-gated Attempt scheduling", () => {
         )
         .unique();
       if (readiness === null) throw new Error("missing readiness");
-      await ctx.db.patch(readiness._id, {
-        state: "degraded",
-        lastError: "a recheck failed",
-      });
+      await ctx.db.patch(readiness._id, { state: "degraded" });
     });
 
     await createAttempt(t);
@@ -536,7 +548,6 @@ describe("readiness-gated Attempt scheduling", () => {
         attemptId: attempt._id,
       }),
     ).toBeNull();
-    expect((await t.run(async (ctx) => ctx.db.get(attempt._id)))?.jitConfig).toBeUndefined();
     expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
 
     await t.mutation(api.workerApi.reportAttempt, {
@@ -548,25 +559,22 @@ describe("readiness-gated Attempt scheduling", () => {
     expect((await t.run(async (ctx) => ctx.db.get(machineId)))?.usedSlots).toBe(0);
   });
 
-  it("claims one-cycle legacy inline JIT and erases it", async () => {
+  it("refuses a claim on an Attempt whose secret is gone", async () => {
     const t = convexTest(schema, modules);
     await addWorker(t, "alpha");
     await createAttempt(t);
     const attempt = await t.run(async (ctx) => ctx.db.query("attempts").unique());
     const secret = await t.run(async (ctx) => ctx.db.query("attemptSecrets").unique());
     if (attempt === null || secret === null) throw new Error("missing attempt secret");
-    await t.run(async (ctx) => {
-      await ctx.db.delete(secret._id);
-      await ctx.db.patch(attempt._id, { jitConfig: "legacy-inline-secret" });
-    });
+    await t.run(async (ctx) => ctx.db.delete(secret._id));
 
     expect(
       await t.mutation(api.workerApi.claimAttempt, {
         token: "token-alpha",
         attemptId: attempt._id,
       }),
-    ).toMatchObject({ jitConfig: "legacy-inline-secret" });
-    expect((await t.run(async (ctx) => ctx.db.get(attempt._id)))?.jitConfig).toBeUndefined();
+    ).toBeNull();
+    expect((await t.run(async (ctx) => ctx.db.get(attempt._id)))?.state).toBe("pending");
   });
 
   it("deletes an unclaimed secret when the Worker terminally reports the Attempt", async () => {
@@ -994,27 +1002,6 @@ describe("readiness-gated Attempt scheduling", () => {
     ).toBeUndefined();
   });
 
-  it("uses a one-cycle legacy inline benchmark when host facts refresh", async () => {
-    const t = convexTest(schema, modules);
-    const machineId = await addWorker(t, "legacy-benchmark", 16);
-    await publishBenchmark(t, "legacy-benchmark", { cpu: 1_500, network: 100, disk: 1 });
-    const evidence = await t.run(async (ctx) => ctx.db.query("benchmarkEvidence").unique());
-    if (evidence === null) throw new Error("missing benchmark evidence");
-    await t.run(async (ctx) => {
-      await ctx.db.patch(machineId, { benchmark: evidence.benchmark });
-      await ctx.db.delete(evidence._id);
-    });
-
-    expect(
-      await t.mutation(api.workerApi.reportHostFacts, {
-        token: "token-legacy-benchmark",
-        arch: "x64",
-        cpus: 64,
-        memoryMiB: 256 * 1_024,
-      }),
-    ).toEqual({ maxSlots: 4, recommendedSlots: 4 });
-  });
-
   it("does not overcommit the host resource envelope even when slots remain", async () => {
     const t = convexTest(schema, modules);
     const machineId = await addWorker(t, "small", 4);
@@ -1057,7 +1044,6 @@ describe("readiness-gated Attempt scheduling", () => {
         runnerName: "runner-paused",
         runnerId: 90,
         state: "pending",
-        jitConfig: "secret",
         createdAt: Date.now(),
       }),
     );

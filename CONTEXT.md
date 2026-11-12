@@ -18,7 +18,7 @@ platform and the name is retired. See [ADR 0004](docs/adr/0004-portless-is-a-fea
 | lives at            | `apps/action-runner-agent`                            | `apps/infra-agent`                                |
 | runs on             | a **Worker**                                          | a **Node**                                        |
 | registers           | capacity per Profile                                  | itself, for management                            |
-| claims work         | Attempts, experiments, legacy commands                | nothing; it is commanded                          |
+| claims work         | Attempts, experiments                                 | nothing; it is commanded                          |
 | what it runs        | one disposable boundary per Attempt, then destroys it | long-lived **Apps** + allowlisted host operations |
 | its work's lifetime | single-use                                            | persistent                                        |
 
@@ -37,10 +37,11 @@ one behind NAT with no public IP.
 
 **Action Runner Agent**: the daemon on a Worker. Registers the machine's capacity contract,
 claims Attempts, and drives a provisioner that creates and destroys one isolation boundary per
-Attempt. It has three claim paths, not one: `workerApi:claimAttempt`, `workerApi:claimExperiment`,
-and the still-live `agentApi:claim` for legacy commands
-(`apps/action-runner-agent/index.ts:93`). Machines install it with plain `npm install` from an
-archive pinned by SHA-256, which is why it deliberately does not use the `catalog:` or
+Attempt. It has two claim paths: `workerApi:claimAttempt` and `workerApi:claimExperiment`. It
+still sends `agentApi:heartbeat`. Releases up to v0.2.0-rc.19 also poll `agentApi:pendingCommands`
+and call `agentApi:claim` and `agentApi:report` for legacy commands, so the backend keeps those
+functions until every Worker runs a newer release. Machines install it with plain `npm install`
+from an archive pinned by SHA-256, which is why it deliberately does not use the `catalog:` or
 `workspace:` protocols. Read the name as "the agent that serves Action Runners": **it is not
 itself a Runner.**
 
@@ -63,7 +64,7 @@ terms are not interchangeable.
 
 **Profile**: the immutable contract a Worker advertises capacity against. Not just a size: it
 carries `executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`, `fitPolicy`, `minRunners` and
-`maxRunners` (`convex/schema.ts:70-82`), and its `egress` (public, audit or allowlist; see
+`maxRunners` (the `profiles` table in `convex/schema.ts`), and its `egress` (public, audit or allowlist; see
 [ADR 0015](docs/adr/0015-egress-is-a-property-of-the-profile.md)), and the `workerLabels` it is pinned
 to. Readiness is per Worker _and_ Profile.
 
