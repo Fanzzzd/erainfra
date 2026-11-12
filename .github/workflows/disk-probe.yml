@@ -1,0 +1,89 @@
+name: EraInfra disk probe
+
+# Measures how a fresh install's write burst slows a synchronous load of about
+# 750 small modules inside a guest, and which guest-side setting stops it.
+# Payable's toolchain test loads that many modules and passes vitest's 5 s
+# limit when ubuntu0's disk is busy. Each matrix job applies one variant from
+# .github/bench/diskprobe.sh, so the variants compare on the same Worker. The
+# hosted leg is the baseline. It runs only by hand: the canary Profile shares
+# the Worker's disk with production Profiles. The pull_request trigger only
+# registers the workflow so a branch can dispatch it; every job skips there.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/disk-probe.yml
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: JSON list of variants for the Profile leg
+        default: '["base","noatime","dirty","tmpfs","noatime+dirty"]'
+        required: true
+      parallel:
+        description: Profile jobs allowed to run at once
+        default: "1"
+        required: true
+      repeats:
+        description: Copy imports, each followed by two loads
+        default: "3"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  hosted:
+    if: github.event_name == 'workflow_dispatch'
+    name: hosted base
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No `cache:` on either action: the probe needs an empty store.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Probe
+        env:
+          VARIANT: base
+          PROBE_REPEATS: ${{ inputs.repeats }}
+        run: bash .github/bench/diskprobe.sh "$VARIANT"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diskprobe-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/diskprobe
+          retention-days: 14
+
+  profile:
+    if: github.event_name == 'workflow_dispatch'
+    name: profile ${{ matrix.variant }}
+    runs-on: erainfra-canary-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        variant: ${{ fromJSON(inputs.variants) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No `cache:` on either action: the probe needs an empty store.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Probe
+        env:
+          VARIANT: ${{ matrix.variant }}
+          PROBE_REPEATS: ${{ inputs.repeats }}
+        run: bash .github/bench/diskprobe.sh "$VARIANT"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diskprobe-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/diskprobe
+          retention-days: 14

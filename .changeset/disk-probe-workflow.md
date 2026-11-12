@@ -1,0 +1,4 @@
+---
+---
+
+Add a dispatch-only probe that measures guest module loads under a write burst.
