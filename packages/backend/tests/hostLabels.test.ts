@@ -177,6 +177,15 @@ describe("a Profile pinned to host labels", () => {
     await registerProfile(t, PINNED, ["gpu"]);
     await addMachine(t, "gpu-1", ["gpu"]);
     await reportReady(t, "gpu-1", PINNED);
+    // A controller listens for the Profile, so only the Worker's labels decide the route.
+    await t.run((ctx) =>
+      ctx.db.insert("controllerLeases", {
+        profile: PINNED,
+        epoch: 1,
+        holder: { credential: "controllerToken", hostname: "controller-host", instance: "i-1" },
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
 
     const route = async () =>
       (await (await t.fetch(`/runs-on?profile=${PINNED}&fallback=ubuntu-24.04`)).json()) as {

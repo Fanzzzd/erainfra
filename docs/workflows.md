@@ -90,11 +90,12 @@ and GitHub cancels a queued self-hosted job only after 24 hours. The control pla
 question a workflow needs instead. `GET /runs-on?profile=<name>&fallback=<label>` on the
 deployment's site URL returns `{"runs-on": "<name>"}` when a job sent to the Profile now would
 start without waiting, and `{"runs-on": "<label>"}` otherwise. A Profile has room when it is
-active, at least one Worker is ready for it, its live Attempts are below `maxRunners`, and either
+active, a controller holds its lease (so a listener takes the job from GitHub), at least one Worker
+is ready for it, its live Attempts are below `maxRunners`, and either
 one of its `minRunners` warm Runners is idle or the scheduler would place one more Attempt on a
 ready Worker behind everything already queued. Readiness, slots, CPU, memory, disk and warm-pool
-rules are the scheduler's own. An unknown or paused Profile, no ready Worker, or a full Profile all answer the
-fallback, which defaults to `ubuntu-latest` (`macos-latest` for Tart, `windows-latest` for
+rules are the scheduler's own. An unknown or paused Profile, no controller, no ready Worker, or a full Profile all
+answer the fallback, which defaults to `ubuntu-latest` (`macos-latest` for Tart, `windows-latest` for
 Hyper-V).
 
 A small router job at the top of the workflow asks once and every other job reads its answer:
