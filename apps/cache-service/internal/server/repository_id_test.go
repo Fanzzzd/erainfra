@@ -112,32 +112,11 @@ func TestANewRepositoryOfTheSameNameSavesTheOldOnesKeys(t *testing.T) {
 	}
 }
 
-// Entries saved before IDs were recorded, and jobs from a controller that
-// pushes none, keep today's by-name behaviour until a different ID saves.
-func TestEntriesAndJobsWithoutAnIDKeepWorkingByName(t *testing.T) {
-	h := newHarness(t, nil)
-	legacy := payload(1 << 10)
-	h.saveV1(h.pushToken("acme/app", "refs/heads/main"), "legacy", sameNameVersion, legacy, wholeBody(legacy))
-
-	if got := h.restoreV1(sameNameJob(h, 1001), "legacy", sameNameVersion); !bytes.Equal(got, legacy) {
-		t.Fatal("an entry saved without an ID is no longer restored by the repository that holds the name")
-	}
-	own := payload(2 << 10)
-	h.saveV1(sameNameJob(h, 1001), "own", sameNameVersion, own, wholeBody(own))
-	if got := h.restoreV1(h.pushToken("acme/app", "refs/heads/main"), "own", sameNameVersion); !bytes.Equal(got, own) {
-		t.Fatal("a job without an ID lost the by-name restore it had")
-	}
-	if status := h.restoreStatus(sameNameJob(h, 2002), "legacy", sameNameVersion); status == http.StatusOK {
-		t.Fatal("another repository of the same name restored an entry the holder adopted")
-	}
-}
-
 // The admin API reports which ID saved each entry and which ID holds the name,
 // and narrows a list or a delete to one ID.
 func TestAdminReportsAndNarrowsByRepositoryID(t *testing.T) {
 	h := newHarness(t, nil)
 	body := payload(64)
-	h.saveV1(h.pushToken("acme/app", "refs/heads/main"), "legacy", sameNameVersion, body, wholeBody(body))
 	h.saveV1(sameNameJob(h, 1001), "own", sameNameVersion, body, wholeBody(body))
 	client := h.adminClient()
 	ctx := context.Background()
@@ -146,16 +125,22 @@ func TestAdminReportsAndNarrowsByRepositoryID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.RepositoryID != 1001 || len(all.Entries) != 2 ||
-		all.Entries[0].RepositoryID != 0 || all.Entries[1].RepositoryID != 1001 {
-		t.Fatalf("list = %+v, want the holder and each entry's own ID", all)
+	if all.RepositoryID != 1001 || len(all.Entries) != 1 || all.Entries[0].RepositoryID != 1001 {
+		t.Fatalf("list = %+v, want the holder and the entry's own ID", all)
 	}
-	narrowed, err := client.List(ctx, adminapi.ListQuery{Repository: "acme/app", RepositoryID: 1001})
+	narrowed, err := client.List(ctx, adminapi.ListQuery{Repository: "acme/app", RepositoryID: 2002})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if narrowed.TotalCount != 1 || narrowed.Entries[0].Key != "own" {
-		t.Fatalf("list narrowed to 1001 = %+v", narrowed)
+	if narrowed.TotalCount != 0 {
+		t.Fatalf("list narrowed to 2002 = %+v, want nothing", narrowed)
+	}
+	none, err := client.Delete(ctx, adminapi.DeleteQuery{Repository: "acme/app", All: true, RepositoryID: 2002})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.DeletedCount != 0 {
+		t.Fatalf("clear narrowed to 2002 = %+v, want nothing deleted", none)
 	}
 	deleted, err := client.Delete(ctx, adminapi.DeleteQuery{Repository: "acme/app", All: true, RepositoryID: 1001})
 	if err != nil {
@@ -271,10 +256,6 @@ func TestGitSeedRefusalIsNotInheritedByANewRepositoryOfTheSameName(t *testing.T)
 	if got := h.seedWritable(sameNameJob(h, 2002)); got != "true" {
 		t.Fatalf("a new repository of the same name inherited the refusal: writable = %q", got)
 	}
-	// A controller without IDs still sees the refusal by name.
-	if got := h.seedWritable(h.pushToken("acme/app", "refs/heads/main")); got != "false" {
-		t.Fatalf("a job without an ID is writable = %q, want the refusal by name", got)
-	}
 }
 
 // A refusal recorded before refusals were scoped carries no ref, so it may
@@ -283,7 +264,7 @@ func TestGitSeedRefusalIsNotInheritedByANewRepositoryOfTheSameName(t *testing.T)
 func TestGitSeedRefusalWithoutARefDoesNotHoldTheDefaultBranch(t *testing.T) {
 	h := newHarness(t, func(cfg *config.Config) { cfg.MaxEntryBytes = 1 << 10 })
 	record, err := json.Marshal(map[string]any{
-		"repository": "acme/app", "bytes": 1 << 40, "limit": 1 << 10, "refusals": 1,
+		"repository": "acme/app", "repositoryId": 1001, "bytes": 1 << 40, "limit": 1 << 10, "refusals": 1,
 		"refusedAt": h.now().Unix(),
 	})
 	if err != nil {

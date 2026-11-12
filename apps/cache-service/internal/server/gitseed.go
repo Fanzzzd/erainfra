@@ -49,22 +49,20 @@ const (
 )
 
 // gitSeedVersionFor is the version a job's seed is saved and looked up under.
-// It carries GitHub's ID for the repository when the controller pushed one.
-// The name alone is not the repository: one deleted, or renamed away, and then
-// created again under the same name is a different repository, with a
-// different history, and must not restore the old one's seed. GitHub deletes a
-// repository's own Actions cache with it; this is the seed's equivalent. A
-// controller from before the ID was pushed leaves it zero, and its jobs keep
-// the version every seed had then.
+// It carries GitHub's ID for the repository. The name alone is not the
+// repository: one deleted, or renamed away, and then created again under the
+// same name is a different repository, with a different history, and must not
+// restore the old one's seed. GitHub deletes a repository's own Actions cache
+// with it; this is the seed's equivalent.
 func gitSeedVersionFor(claims cachetoken.Claims) string {
-	if claims.RepositoryID == 0 {
-		return gitSeedVersion
-	}
 	return gitSeedVersion + gitSeedRepositoryIDTag + strconv.FormatInt(claims.RepositoryID, 10)
 }
 
 const gitSeedRepositoryIDTag = "+repository-"
 
+// isGitSeedVersion matches every seed version, including the bare one seeds
+// had before they were keyed by repository ID, so a new seed replaces any of
+// them in its scope.
 func isGitSeedVersion(version string) bool {
 	return version == gitSeedVersion || strings.HasPrefix(version, gitSeedVersion+gitSeedRepositoryIDTag)
 }
@@ -74,8 +72,7 @@ func isGitSeedVersion(version string) bool {
 // the name (Index.ClaimName), which removed every seed another repository ID
 // saved, except one a newer repository saved after this process last read the
 // name. That one is left: a repository that gave the name up never removes
-// the entries of the one holding it now. A claimant without an ID (an older
-// controller) removes by name, as before.
+// the entries of the one holding it now.
 func (s *Server) removeGitSeeds(ctx context.Context, claims cachetoken.Claims, scope string) error {
 	repository := claims.Repository
 	records, err := s.index.Entries(ctx, repository, cacheindex.Match{Prefix: gitSeedKeyPrefix, Ref: scope})
@@ -86,7 +83,7 @@ func (s *Server) removeGitSeeds(ctx context.Context, claims cachetoken.Claims, s
 		if !isGitSeedVersion(record.Version) {
 			continue
 		}
-		if claims.RepositoryID != 0 && record.RepositoryID > claims.RepositoryID {
+		if record.RepositoryID > claims.RepositoryID {
 			s.metrics.stalePurgesRefused.Add(1)
 			s.logger.Warn("left a newer repository's git seed in place; the saving job's repository gave this name up",
 				"repository", repository, "ref", scope, "repositoryId", claims.RepositoryID,
@@ -216,6 +213,10 @@ func (s *Server) gitSeedWrite(w http.ResponseWriter, r *http.Request) {
 	if err := s.index.ClaimName(ctx, claims.Repository, claims.RepositoryID); err != nil {
 		if errors.Is(err, cacheindex.ErrNameHeldByNewerRepository) {
 			writeJSON(w, http.StatusConflict, map[string]string{"message": err.Error()})
+			return
+		}
+		if errors.Is(err, cacheindex.ErrNoRepositoryID) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"message": err.Error()})
 			return
 		}
 		s.logger.Error("git seed save could not read the repository name", "repository", claims.Repository, "error", err)

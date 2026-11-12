@@ -132,7 +132,7 @@ func TestGitSeedSaveReplacesTheOlderSeedInItsScope(t *testing.T) {
 		t.Fatalf("GET = %q, want the newest", body)
 	}
 	records, err := h.server.index.Entries(t.Context(), "Fanzzzd/erainfra", cacheindex.Match{
-		Prefix: gitSeedKeyPrefix, Version: gitSeedVersion,
+		Prefix: gitSeedKeyPrefix, Version: gitSeedVersionFor(cachetoken.Claims{RepositoryID: testRepositoryID("Fanzzzd/erainfra")}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -303,10 +303,5 @@ func TestGitSeedIsKeyedByRepositoryID(t *testing.T) {
 	}
 	if response, body := h.getSeed(h.runnerToken("rc-pushed-id")); response.StatusCode != http.StatusOK || !bytes.Equal(body, fresh) {
 		t.Fatalf("a job whose pushed facts carry the ID got %d, want that repository's seed", response.StatusCode)
-	}
-
-	// A controller from before the ID was pushed: the version seeds had then.
-	if response, _ := h.getSeed(h.pushToken("Fanzzzd/erainfra", "refs/heads/main")); response.StatusCode != http.StatusNotFound {
-		t.Fatalf("a job without an ID got %d, want no ID-keyed seed", response.StatusCode)
 	}
 }
