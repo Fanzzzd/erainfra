@@ -12,6 +12,7 @@ import {
   PUBLIC_EGRESS,
   type ProfileEgress,
 } from "../convex/egress";
+import { FIRECRACKER_REQUIRED_CHECKS } from "../convex/isolation";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -26,21 +27,7 @@ const GITHUB_ALLOWLIST: ProfileEgress = {
   cidrs: [],
 };
 
-const CHECKS = [
-  "firecracker-binary",
-  "guest-kernel-image",
-  "guest-kernel-arguments",
-  "kvm-device",
-  "cni-plugins",
-  "cni-network-configuration",
-  "job-network-policy",
-  "containerd-snapshotter",
-  "cni-address-reservations",
-  "snapshot-storage-headroom",
-  "cache-isolation",
-  "image-release",
-  "warm-pool",
-].map((name) => ({ name, passed: true }));
+const CHECKS = [...FIRECRACKER_REQUIRED_CHECKS].map((name) => ({ name, passed: true }));
 
 function facts(egress?: { mode: string; profile: ProfileEgress; checkPassed?: boolean }) {
   return {

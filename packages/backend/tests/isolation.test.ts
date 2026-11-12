@@ -6,6 +6,7 @@ import { PUBLIC_EGRESS } from "../convex/egress.ts";
 import {
   assertReadinessContract,
   EXECUTOR_BOUNDARY,
+  FIRECRACKER_REQUIRED_CHECKS,
   hasSnapshotHeadroom,
   isTrustedOnly,
   SNAPSHOT_RESERVE_MIB,
@@ -18,21 +19,7 @@ type Harness = TestConvex<typeof schema>;
 const IMAGE =
   "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-const FIRECRACKER_CHECKS = [
-  "firecracker-binary",
-  "guest-kernel-image",
-  "guest-kernel-arguments",
-  "kvm-device",
-  "cni-plugins",
-  "cni-network-configuration",
-  "job-network-policy",
-  "containerd-snapshotter",
-  "cni-address-reservations",
-  "snapshot-storage-headroom",
-  "cache-isolation",
-  "image-release",
-  "warm-pool",
-].map((name) => ({ name, passed: true }));
+const FIRECRACKER_CHECKS = [...FIRECRACKER_REQUIRED_CHECKS].map((name) => ({ name, passed: true }));
 
 const FIRECRACKER_FACTS = {
   isolation: "firecracker-microvm",

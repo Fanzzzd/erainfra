@@ -1,12 +1,16 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "tui",
-  // testdata/dockerargs-cases.json sits outside every package, because the boundary it
-  // defines belongs to neither of the two apps that implement it. Turbo hashes a task
-  // against its own package's files, so without this line editing the fixture would leave
-  // apps/hub's cached `test` result standing — a green replay of a run that never saw the
-  // new row.
-  "globalDependencies": ["testdata/dockerargs-cases.json"],
+  // Tests in several packages read files that belong to no single package: the shared
+  // case files in testdata/, the provisioner and units under deploy/ (embed hash tests),
+  // and the runtime's golden test report. Turbo hashes a task against its own package's
+  // files, so without these globs editing one of them would replay a cached green `test`
+  // run that never saw the change.
+  "globalDependencies": [
+    "testdata/**",
+    "deploy/**",
+    "apps/runtime/internal/testreport/testdata/**"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

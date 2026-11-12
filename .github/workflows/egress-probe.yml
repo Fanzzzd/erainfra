@@ -1,0 +1,60 @@
+name: EraInfra egress probe
+
+# Measures a guest's path to github.com from inside a Firecracker guest: a full
+# actions/checkout of this repository, then COUNT new TCP connections to
+# github.com:443 one second apart. Issue #149 needs it: the office uplink drops
+# the first SYN of some flows to GitHub's Singapore git edge, and a change to
+# that path (for example routing it through a tunnel) must be proven from a
+# guest, whose MTU and NAT differ from the host's. The job fails when any
+# connect takes longer than the limit, so a red run is the measurement.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: The EraInfra Profile to run on
+        default: erainfra-canary-4vcpu-ubuntu-2404
+        required: true
+      count:
+        description: Connections to open, one second apart
+        default: "200"
+        required: true
+      limit:
+        description: Slowest allowed TCP connect, in seconds
+        default: "3"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ${{ inputs.profile }}
+    timeout-minutes: 20
+    steps:
+      - name: Full checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Connect to github.com
+        env:
+          COUNT: ${{ inputs.count }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          ip -4 route get 20.205.243.166 || true
+          echo "mtu $(cat /sys/class/net/eth0/mtu 2>/dev/null || echo unknown)"
+          : > connects.txt
+          for _ in $(seq 1 "$COUNT"); do
+            curl -so /dev/null --connect-timeout 20 --max-time 30 \
+              -w '%{time_connect} %{time_appconnect} %{http_code}\n' https://github.com/ >> connects.txt \
+              || echo "fail fail $?" >> connects.txt
+            sleep 1
+          done
+          sort -n connects.txt | awk -v limit="$LIMIT" '
+            { n++; c[n] = $1 }
+            $1 == "fail" || $1 + 0 > limit + 0 { bad++ }
+            END {
+              printf "connects=%d p50=%s p90=%s max=%s over_limit=%d\n", n, c[int(n * 0.5)], c[int(n * 0.9)], c[n], bad
+              printf "| connects | p50 s | p90 s | max s | over %s s |\n|---|---|---|---|---|\n| %d | %s | %s | %s | %d |\n", limit, n, c[int(n * 0.5)], c[int(n * 0.9)], c[n], bad >> ENVIRON["GITHUB_STEP_SUMMARY"]
+              exit bad > 0
+            }'

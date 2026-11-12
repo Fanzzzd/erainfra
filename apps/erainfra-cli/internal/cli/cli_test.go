@@ -410,7 +410,7 @@ func TestJobsListSendsFiltersAndRendersATable(t *testing.T) {
 		"--repo", "acme/web", "--since", "7d", "--limit", "1")
 	query := h.api.requests[0].URL.Query()
 	for key, want := range map[string]string{
-		"profile": "erainfra-4vcpu-ubuntu-2404", "state": "completed", "repo": "acme/web", "since": "7d", "limit": "1",
+		"profile": "erainfra-4vcpu-ubuntu-2404", "state": "completed", "repo": "acme/web", "since": "2026-10-29T12:00:00.000Z", "limit": "1",
 	} {
 		if query.Get(key) != want {
 			t.Errorf("query %s = %q, want %q", key, query.Get(key), want)
@@ -422,7 +422,7 @@ func TestJobsListSendsFiltersAndRendersATable(t *testing.T) {
 	if h.stdout.String() != want {
 		t.Errorf("table:\n%s\nwant:\n%s", h.stdout.String(), want)
 	}
-	if h.stderr.String() != "More Attempts: add --cursor c2\n" {
+	if h.stderr.String() != "More Attempts: add --cursor c2 and change --since 7d to --since 2026-10-29T12:00:00.000Z\n" {
 		t.Errorf("stderr = %q", h.stderr.String())
 	}
 }
@@ -452,6 +452,45 @@ func TestJobsListAllFollowsTheCursor(t *testing.T) {
 	}
 	if got := h.api.requests[1].URL.Query().Get("cursor"); got != "next" {
 		t.Errorf("second page cursor = %q", got)
+	}
+}
+
+// Regression: `jobs list --since 720h --all` failed on page 2 with "cursor is not valid for these
+// filters (HTTP 400)". The API resolves a span against its own clock on each request, and a cursor
+// is bound to the window it was issued for. The fake API does the same, with a clock that moves
+// one second per request.
+func TestJobsListAllKeepsTheSinceWindowAcrossPages(t *testing.T) {
+	h := newHarness(t).loggedIn()
+	clock := fixedNow
+	windowOf := map[string]string{}
+	h.api.routes["GET /api/v1/attempts"] = func(w http.ResponseWriter, r *http.Request) {
+		clock = clock.Add(time.Second)
+		window, _ := resolveSince(r.URL.Query().Get("since"), clock)
+		switch cursor := r.URL.Query().Get("cursor"); {
+		case cursor == "":
+			windowOf["p2"] = window
+			_, _ = io.WriteString(w, `{"attempts":[{"id":"a"}],"nextCursor":"p2"}`)
+		case windowOf[cursor] != window:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_cursor","message":"cursor is not valid for these filters"}}`)
+		default:
+			_, _ = io.WriteString(w, `{"attempts":[{"id":"b"}],"nextCursor":null}`)
+		}
+	}
+	h.expect(ExitOK, "jobs", "list", "--since", "720h", "--all", "--json")
+	if len(h.api.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(h.api.requests))
+	}
+	for i, r := range h.api.requests {
+		if got := r.URL.Query().Get("since"); got != "2026-10-06T12:00:00.000Z" {
+			t.Errorf("page %d since = %q, want the span resolved once", i+1, got)
+		}
+	}
+
+	// An RFC 3339 time is already fixed, so it goes out as given.
+	h.expect(ExitOK, "jobs", "list", "--since", "2026-11-01T00:00:00Z", "--all", "--json")
+	if got := h.api.requests[3].URL.Query().Get("since"); got != "2026-11-01T00:00:00Z" {
+		t.Errorf("since = %q, want it unchanged", got)
 	}
 }
 

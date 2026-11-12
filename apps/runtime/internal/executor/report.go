@@ -44,6 +44,10 @@ const (
 	// slower, not unsafe, and the control plane does not require it, so a
 	// Worker on a runtime that predates the check is admitted unchanged.
 	CheckRootfsIoEngine = "rootfs-io-engine"
+	// CheckBlockZeroing fails when the thin pool hands out new blocks without
+	// zeroing them, because a guest could then read what an earlier Attempt
+	// wrote to the same block. The control plane requires it.
+	CheckBlockZeroing = "snapshot-block-zeroing"
 )
 
 // Check is one named, independently reportable readiness condition.
