@@ -46,7 +46,7 @@ function queueJob(t: Harness, ghJobId = 1) {
     repo: REPO,
     repoIsPublic: false,
     workflowName: "CI",
-    labels: ["self-hosted", "rc-linux"],
+    labels: ["self-hosted", "ubuntu-24.04"],
   });
 }
 
@@ -103,7 +103,7 @@ describe("assignment bookkeeping", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       runnerName: current.runnerName,
     });
 
@@ -131,7 +131,7 @@ describe("assignment bookkeeping", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       runnerName: current.runnerName,
       conclusion: "success",
     });
@@ -161,7 +161,7 @@ describe("assignment bookkeeping", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       runnerName: firstBefore.runnerName,
     });
 
@@ -195,7 +195,7 @@ describe("assignment bookkeeping", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       runnerName: firstBefore.runnerName,
     });
 
@@ -226,7 +226,7 @@ describe("assignment bookkeeping", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       runnerName: current.runnerName,
       conclusion: "success",
     });
@@ -253,7 +253,7 @@ describe("assignment bookkeeping", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       runnerName: current.runnerName,
     });
 
@@ -497,7 +497,7 @@ describe("agent reporting", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       conclusion: "cancelled",
     });
     // The agent kills the provisioner, which exits non-zero.
@@ -530,7 +530,7 @@ describe("cancellation is observable to the agent", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       conclusion: "cancelled",
     });
 
@@ -561,7 +561,7 @@ describe("cancellation is observable to the agent", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
     });
     await t.mutation(internal.jobs.handleWorkflowJob, {
       action: "completed",
@@ -569,7 +569,7 @@ describe("cancellation is observable to the agent", () => {
       repo: REPO,
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
       conclusion: "success",
     });
 

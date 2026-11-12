@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
+	"time"
 )
 
 type attemptRow struct {
@@ -35,6 +37,24 @@ type attemptPage struct {
 	NextCursor *string           `json:"nextCursor"`
 }
 
+// A --since span as the operator API reads it (convex/operatorHttp.ts parseSince).
+var sinceSpan = regexp.MustCompile(`^([1-9][0-9]{0,5})([mhd])$`)
+
+var sinceUnit = map[string]time.Duration{"m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}
+
+// resolveSince turns a span such as 7d into the RFC 3339 time it means at now. The API resolves a
+// span against its own clock on every request, and a cursor is bound to the window it was issued
+// for, so a span sent with a cursor names a later window and the API refuses the cursor. Anything
+// that is not a span is returned unchanged for the API to judge.
+func resolveSince(value string, now time.Time) (string, bool) {
+	match := sinceSpan.FindStringSubmatch(value)
+	if match == nil {
+		return value, false
+	}
+	n, _ := strconv.Atoi(match[1])
+	return now.Add(-time.Duration(n) * sinceUnit[match[2]]).UTC().Format("2006-01-02T15:04:05.000Z"), true
+}
+
 // maxPages bounds `jobs list --all`: 100 pages of 100 is ten thousand
 // Attempts, past which a script should narrow with --since.
 const maxPages = 100
@@ -52,7 +72,11 @@ job to a Runner to it finishing.
 A page holds --limit Attempts (default 50). When there are more, the table
 mode prints the --cursor for the next page on standard error, and json carries
 it as nextCursor. --all follows the cursor to the end. A --repo filter can
-return a page shorter than --limit before the last page.`,
+return a page shorter than --limit before the last page.
+
+A --since span is turned into a time once, before the first page, so every
+page covers the same window. A cursor only works with the filters of the page
+that returned it, so the hint for the next page names that time.`,
 	flags: []flagSpec{
 		{name: "profile", metavar: "NAME", usage: "only this Profile"},
 		{name: "state", metavar: "STATE", usage: "pending, preparing, ready, running, completed, cancelled or failed"},
@@ -64,10 +88,15 @@ return a page shorter than --limit before the last page.`,
 	},
 	run: func(ctx context.Context, a *App, in invocation) error {
 		query := url.Values{}
-		for _, name := range []string{"profile", "state", "repo", "since", "cursor"} {
+		for _, name := range []string{"profile", "state", "repo", "cursor"} {
 			if value, ok := in.value(name); ok {
 				query.Set(name, value)
 			}
+		}
+		span, hasSince := in.value("since")
+		resolved, fromSpan := resolveSince(span, a.Now())
+		if hasSince {
+			query.Set("since", resolved)
 		}
 		if limit, ok := in.value("limit"); ok {
 			n, err := strconv.Atoi(limit)
@@ -133,7 +162,10 @@ return a page shorter than --limit before the last page.`,
 				return err
 			}
 		}
-		if next != nil {
+		if next != nil && fromSpan {
+			_, _ = fmt.Fprintf(a.Stderr, "More Attempts: add --cursor %s and change --since %s to --since %s\n",
+				*next, span, resolved)
+		} else if next != nil {
 			_, _ = fmt.Fprintf(a.Stderr, "More Attempts: add --cursor %s\n", *next)
 		}
 		return nil

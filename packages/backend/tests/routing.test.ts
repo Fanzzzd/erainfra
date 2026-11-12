@@ -2,6 +2,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 
 import { api, internal } from "../convex/_generated/api";
+import { FIRECRACKER_REQUIRED_CHECKS } from "../convex/isolation";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -18,21 +19,7 @@ const CONTRACT = {
 const FIRECRACKER_FACTS = {
   isolation: "firecracker-microvm",
   boundary: "guest-kernel" as const,
-  checks: [
-    "firecracker-binary",
-    "guest-kernel-image",
-    "guest-kernel-arguments",
-    "kvm-device",
-    "cni-plugins",
-    "cni-network-configuration",
-    "job-network-policy",
-    "containerd-snapshotter",
-    "cni-address-reservations",
-    "snapshot-storage-headroom",
-    "cache-isolation",
-    "image-release",
-    "warm-pool",
-  ].map((name) => ({ name, passed: true })),
+  checks: [...FIRECRACKER_REQUIRED_CHECKS].map((name) => ({ name, passed: true })),
   cacheScope: "immutable-image",
   cacheSharedWritable: false,
   hardware: { kvm: true },
@@ -362,7 +349,7 @@ describe("GET /runs-on?profile=", () => {
       (await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404&fallback=%3Cscript%3E")).status,
     ).toBe(400);
     expect((await runsOn(t, `profile=${"x".repeat(101)}`)).status).toBe(400);
-    expect((await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404&labels=rc-linux")).status).toBe(
+    expect((await runsOn(t, "profile=erainfra-4vcpu-ubuntu-2404&labels=ubuntu-24.04")).status).toBe(
       400,
     );
     expect((await runsOn(t, "")).status).toBe(400);
@@ -384,8 +371,8 @@ describe("GET /runs-on?profile=", () => {
       }),
     );
 
-    expect((await runsOn(t, "labels=rc-linux")).body).toEqual({
-      "runs-on": ["self-hosted", "rc-linux"],
+    expect((await runsOn(t, "labels=ubuntu-24.04")).body).toEqual({
+      "runs-on": ["self-hosted", "ubuntu-24.04"],
     });
   });
 });
@@ -446,11 +433,11 @@ describe("router decisions", () => {
   it("stores the legacy labels answer", async () => {
     const t = convexTest(schema, modules);
 
-    const { body } = await runsOn(t, "labels=rc-linux&fallback=ubuntu-24.04&repo=acme/web");
+    const { body } = await runsOn(t, "labels=ubuntu-24.04&fallback=ubuntu-24.04&repo=acme/web");
     expect(body).toEqual({ "runs-on": "ubuntu-24.04" });
     expect(await decisions(t)).toMatchObject([
       {
-        labels: ["self-hosted", "rc-linux"],
+        labels: ["self-hosted", "ubuntu-24.04"],
         answer: "ubuntu-24.04",
         route: "fallback",
         repo: "acme/web",

@@ -119,6 +119,7 @@ export const FIRECRACKER_REQUIRED_CHECKS = [
   "containerd-snapshotter",
   "cni-address-reservations",
   "snapshot-storage-headroom",
+  "snapshot-block-zeroing",
   "cache-isolation",
   "image-release",
   "warm-pool",

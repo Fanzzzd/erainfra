@@ -18,12 +18,9 @@ const winMachine = { os: "win", labels: [] } as const;
 const PRODUCTION_LABELS = [
   "ubuntu-22.04",
   "ubuntu-24.04",
-  "rc-linux",
   "macos-15",
-  "rc-mac",
   "windows-2022",
   "windows-2025",
-  "rc-win",
 ] as const;
 
 // The Sequoia digest the end-to-end Tart runs were executed against.
@@ -68,14 +65,36 @@ describe("selectImageForMachine", () => {
 
   it("requires the machine to carry every non-image capability label", () => {
     const gpuWin = { os: "win", labels: ["gpu"] } as const;
-    expect(selectImageForMachine(["self-hosted", "rc-win", "gpu"], gpuWin)).toBeDefined();
-    expect(selectImageForMachine(["self-hosted", "rc-win", "gpu"], winMachine)).toBeUndefined();
+    expect(selectImageForMachine(["self-hosted", "windows-2025", "gpu"], gpuWin)).toBeDefined();
+    expect(
+      selectImageForMachine(["self-hosted", "windows-2025", "gpu"], winMachine),
+    ).toBeUndefined();
   });
 
-  it("treats rc-win as an alias of the default Windows image", () => {
-    expect(selectImageForMachine(["self-hosted", "rc-win"], winMachine)?.image).toBe(
-      selectImageForMachine(["self-hosted", "windows-2025"], winMachine)?.image,
-    );
+  it("gives a job that names no image the newest production image of the machine's OS", () => {
+    const defaults = [
+      [linuxMachine, "ubuntu-24.04"],
+      [macMachine, "macos-15"],
+      [winMachine, "windows-2025"],
+    ] as const;
+    for (const [machine, label] of defaults) {
+      expect(selectImageForMachine(["self-hosted"], machine), machine.os).toBe(
+        IMAGE_CATALOG[label],
+      );
+    }
+  });
+
+  // The pre-Profile aliases are gone. A job that still asks for one gets the default image, and
+  // the old name counts as a host label like any other, so only a Worker carrying it matches.
+  it("treats a removed alias as a host label, not an image", () => {
+    for (const label of ["rc-linux", "rc-mac", "rc-win"]) {
+      expect(findImageLabel(["self-hosted", label]), label).toBeUndefined();
+      expect(IMAGE_CATALOG[label], label).toBeUndefined();
+    }
+    expect(selectImageForMachine(["self-hosted", "rc-linux"], linuxMachine)).toBeUndefined();
+    expect(
+      selectImageForMachine(["self-hosted", "rc-linux"], { os: "linux", labels: ["rc-linux"] }),
+    ).toBe(IMAGE_CATALOG["ubuntu-24.04"]);
   });
 });
 
@@ -132,11 +151,11 @@ describe("IMAGE_CATALOG", () => {
     }
   });
 
-  // Regression: macos-15 and rc-mac pointed at `:latest`, which had already
+  // Regression: macos-15 pointed at `:latest`, which had already
   // moved to a different image than the one the end-to-end runs verified. A
   // machine re-pulling the tag would have swapped the OS out silently.
   it("pins the production macOS image to the digest jobs were verified on", () => {
-    for (const label of ["macos-15", "rc-mac"] as const) {
+    for (const label of ["macos-15"] as const) {
       expect(IMAGE_CATALOG[label]?.image, `${label} is not pinned by digest`).toBe(
         `ghcr.io/cirruslabs/macos-sequoia-base@${TESTED_SEQUOIA_DIGEST}`,
       );
@@ -146,7 +165,7 @@ describe("IMAGE_CATALOG", () => {
   // A ghcr.io tag can be re-pushed, so a tag alone lets the image under every
   // Docker Worker change without a commit here. The tag stays for the reader.
   it("pins the Docker executor's runner image by release and digest", () => {
-    for (const label of ["ubuntu-22.04", "ubuntu-24.04", "rc-linux"] as const) {
+    for (const label of ["ubuntu-22.04", "ubuntu-24.04"] as const) {
       expect(IMAGE_CATALOG[label]?.image, `${label} is not pinned by digest`).toMatch(
         /^ghcr\.io\/actions\/actions-runner:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/,
       );

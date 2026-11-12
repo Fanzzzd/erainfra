@@ -476,13 +476,13 @@ func TestScalerGivesUpOnCacheFactsWhenTheWindowCloses(t *testing.T) {
 }
 
 func TestScalerRejectsUnsafeConfiguration(t *testing.T) {
-	missingProfile := validConfig("rc-linux", 1)
+	missingProfile := validConfig("erainfra-4vcpu-ubuntu-2404", 1)
 	missingProfile.Profile = ""
-	negativeMinimum := validConfig("rc-linux", 1)
+	negativeMinimum := validConfig("erainfra-4vcpu-ubuntu-2404", 1)
 	negativeMinimum.MinRunners = -1
-	badBounds := validConfig("rc-linux", 1)
+	badBounds := validConfig("erainfra-4vcpu-ubuntu-2404", 1)
 	badBounds.MinRunners = 2
-	zeroMaximum := validConfig("rc-linux", 0)
+	zeroMaximum := validConfig("erainfra-4vcpu-ubuntu-2404", 0)
 	tests := []Config{missingProfile, negativeMinimum, badBounds, zeroMaximum}
 	for _, config := range tests {
 		if _, err := NewScaler(config, &fakeStore{}, &fakeIssuer{}, names("unused")); err == nil {

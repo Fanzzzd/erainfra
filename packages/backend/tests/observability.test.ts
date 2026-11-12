@@ -48,7 +48,7 @@ function seedDelivery(t: Harness, seed: DeliverySeed) {
         repo: seed.repo ?? "acme/app",
         repoIsPublic: false,
         workflowName: "CI",
-        labels: ["self-hosted", "rc-linux"],
+        labels: ["self-hosted", "ubuntu-24.04"],
       },
     }),
   );
@@ -173,7 +173,7 @@ describe("webhooks.recentFailures", () => {
       "status",
     ]);
     expect(JSON.stringify(delivery)).not.toContain("githubInstallationId");
-    expect(JSON.stringify(delivery)).not.toContain("rc-linux");
+    expect(JSON.stringify(delivery)).not.toContain("ubuntu-24.04");
   });
 
   it("caps how much history it returns", async () => {

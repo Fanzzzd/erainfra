@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { api, internal } from "../convex/_generated/api";
 import { missingHostLabels, normalizeHostLabels } from "../convex/hostLabels";
+import { FIRECRACKER_REQUIRED_CHECKS } from "../convex/isolation";
 import schema from "../convex/schema";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -22,21 +23,7 @@ const CONTRACT = {
 const FIRECRACKER_FACTS = {
   isolation: "firecracker-microvm",
   boundary: "guest-kernel" as const,
-  checks: [
-    "firecracker-binary",
-    "guest-kernel-image",
-    "guest-kernel-arguments",
-    "kvm-device",
-    "cni-plugins",
-    "cni-network-configuration",
-    "job-network-policy",
-    "containerd-snapshotter",
-    "cni-address-reservations",
-    "snapshot-storage-headroom",
-    "cache-isolation",
-    "image-release",
-    "warm-pool",
-  ].map((name) => ({ name, passed: true })),
+  checks: [...FIRECRACKER_REQUIRED_CHECKS].map((name) => ({ name, passed: true })),
   cacheScope: "immutable-image",
   cacheSharedWritable: false,
   hardware: { kvm: true },
