@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { FAKE_JIT, Harness, PROVISION_DOCKER, waitFor } from "./helpers/harness.ts";
+import { RESOLVER_OPTIONS } from "./helpers/resolverOptions.ts";
 
 const IMAGE = `ghcr.io/fanzzzd/runner-center-ubuntu-js@sha256:${"a".repeat(64)}`;
 
@@ -69,7 +70,11 @@ describe("provision-docker.sh", () => {
     // search domain is: a bare name must not resolve through whatever suffix
     // the Worker's network happens to supply (#96).
     assert.match(argv, /--dns\t10\.0\.0\.53\t--dns\t10\.0\.0\.54\t/);
-    assert.match(argv, /--dns-option\tedns0\t--dns-search\t\.\t/);
+    assert.ok(
+      argv.includes(
+        `${RESOLVER_OPTIONS.map((option) => `--dns-option\t${option}`).join("\t")}\t--dns-search\t.\t`,
+      ),
+    );
     assert.doesNotMatch(argv, /trust-ad/);
     assert.match(
       argv,
@@ -194,7 +199,13 @@ describe("provision-docker.sh", () => {
 
     if (result.code === 0) {
       assert.match(harness.argv(), /--dns\t[0-9a-fA-F.:]+\t/);
-      assert.match(harness.argv(), /--dns-option\tedns0\t--dns-search\t\.\t/);
+      assert.ok(
+        harness
+          .argv()
+          .includes(
+            `${RESOLVER_OPTIONS.map((option) => `--dns-option\t${option}`).join("\t")}\t--dns-search\t.\t`,
+          ),
+      );
     } else {
       assert.equal(result.code, 2);
       assert.match(result.stderr, /set RC_DNS_SERVERS/);

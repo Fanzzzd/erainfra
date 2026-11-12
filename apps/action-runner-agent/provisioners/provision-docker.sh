@@ -243,8 +243,11 @@ done
 # edns0 lets the stub advertise a UDP payload larger than 512 bytes, so an
 # answer that would otherwise come back truncated and be retried over TCP fits
 # in one datagram. `ubuntu-latest` sets it; large TXT and SRV answers and
-# DNSSEC-signed zones are the ones that notice.
-dns_flags+=(--dns-option edns0)
+# DNSSEC-signed zones are the ones that notice. timeout:1 attempts:3 because
+# the resolvers sit across the Worker's uplink, where glibc's default 5 s
+# timeout made one lost UDP query a 5 s stall (#149). The list is shared with
+# the Firecracker guest: testdata/resolver-options.json, which the tests read.
+dns_flags+=(--dns-option edns0 --dns-option timeout:1 --dns-option attempts:3)
 # `trust-ad` is deliberately NOT set even though ubuntu-latest has it. It tells
 # the stub to believe the AD bit in a reply, which is only sound when the
 # resolver is trusted and local -- there it is systemd-resolved on 127.0.0.53,

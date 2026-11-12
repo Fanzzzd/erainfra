@@ -23,7 +23,7 @@ func TestResolverConfigKeepsOnlyResolverDirectives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolverConfig returned %v", err)
 	}
-	want := "nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions edns0\n"
+	want := "nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions edns0 timeout:1 attempts:3\n"
 	if config != want {
 		t.Fatalf("resolverConfig produced %q, want %q", config, want)
 	}
@@ -34,16 +34,17 @@ func TestResolverConfigKeepsSearchAndDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolverConfig returned %v", err)
 	}
-	want := "domain example.test\nsearch a.test b.test\nnameserver 10.0.0.53\noptions edns0\n"
+	want := "domain example.test\nsearch a.test b.test\nnameserver 10.0.0.53\noptions edns0 timeout:1 attempts:3\n"
 	if config != want {
 		t.Fatalf("resolverConfig produced %q, want %q", config, want)
 	}
 }
 
 // The options line is a decision, not something the kernel publication can
-// carry: edns0 as ubuntu-latest has it, and never trust-ad, which would make
-// glibc believe the AD bit from a resolver across the network.
-func TestResolverConfigAsksForEDNS0AndNotTrustAD(t *testing.T) {
+// carry: exactly resolverOptions (edns0 as ubuntu-latest has it, short
+// timeouts), and never trust-ad, which would make glibc believe the AD bit
+// from a resolver across the network.
+func TestResolverConfigWritesResolverOptionsAndNotTrustAD(t *testing.T) {
 	config, err := resolverConfig([]byte("#MANUAL\nnameserver 1.1.1.1\n"))
 	if err != nil {
 		t.Fatalf("resolverConfig returned %v", err)
@@ -54,8 +55,8 @@ func TestResolverConfigAsksForEDNS0AndNotTrustAD(t *testing.T) {
 			options = append(options, fields[1:]...)
 		}
 	}
-	if strings.Join(options, " ") != "edns0" {
-		t.Fatalf("resolverConfig options are %q, want exactly edns0 (config %q)", options, config)
+	if !slices.Equal(options, resolverOptions) || slices.Contains(options, "trust-ad") {
+		t.Fatalf("resolverConfig options are %q, want exactly %q (config %q)", options, resolverOptions, config)
 	}
 }
 
@@ -457,5 +458,21 @@ func TestHostsEntriesIgnoreCommentsWhenLookingForLocalhost(t *testing.T) {
 	got := string(hostsWithEntries([]byte("# 127.0.0.1 localhost\n"), "runner-c"))
 	if !strings.Contains(got, "\n127.0.0.1\tlocalhost\n") || !strings.Contains(got, "\n::1\tlocalhost") {
 		t.Fatalf("a commented-out entry must not count: %q", got)
+	}
+}
+
+func TestResolverOptionsMatchTheSharedCases(t *testing.T) {
+	contents, err := os.ReadFile("../../../../testdata/resolver-options.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases struct {
+		Options []string `json:"options"`
+	}
+	if err := json.Unmarshal(contents, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(resolverOptions, cases.Options) {
+		t.Fatalf("resolverOptions is %q, testdata/resolver-options.json says %q", resolverOptions, cases.Options)
 	}
 }

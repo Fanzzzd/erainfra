@@ -10,6 +10,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
+import { RESOLVER_OPTIONS } from "./helpers/resolverOptions.ts";
+
 function provisioner(name: string) {
   return readFileSync(new URL(`../provisioners/${name}`, import.meta.url), "utf8");
 }
@@ -120,7 +122,12 @@ describe("provision-docker.sh isolation contract", () => {
   // the daemon inherited, and a bare name may not resolve through a suffix the
   // Worker's network happens to supply.
   it("decides the resolver shape instead of inheriting it", () => {
-    assert.match(provisionDocker, /dns_flags\+=\(--dns-option edns0\)/);
+    assert.match(
+      provisionDocker,
+      new RegExp(
+        `dns_flags\\+=\\(${RESOLVER_OPTIONS.map((option) => `--dns-option ${option}`).join(" ")}\\)`,
+      ),
+    );
     assert.match(provisionDocker, /dns_flags\+=\(--dns-search \.\)/);
     assert.match(provisionDocker, /"\$\{dns_flags\[@\]\}"/);
     // trust-ad asks the stub to believe an AD bit from a resolver we do not own.
