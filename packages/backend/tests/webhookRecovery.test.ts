@@ -391,7 +391,7 @@ describe("a redelivery arriving", () => {
       repo: "acme/app",
       repoIsPublic: false,
       workflowName: "CI",
-      labels: ["self-hosted", "rc-linux"],
+      labels: ["self-hosted", "ubuntu-24.04"],
     };
     const first = await deliver(t, "delivery-guid", event);
     const second = await deliver(t, "delivery-guid", event);
