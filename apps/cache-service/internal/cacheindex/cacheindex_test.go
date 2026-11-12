@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore/fakes3"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 func newTestIndex(t *testing.T) (*Index, *fakes3.Server, func(time.Time)) {

@@ -2,18 +2,26 @@
 // job cache trusts, and it is deliberately the only place that decides whether
 // a job may write.
 //
-// It is a library rather than part of the service because the two ends live in
-// different processes: the controller mints a token when GitHub tells it what
-// an Attempt is actually running (`JobStarted` carries the repository, ref and
-// event), and the cache service verifies it on every request. They share only
-// an HMAC secret, ERAINFRA_CACHE_SIGNING_KEY.
+// It lives in the root internal/ because the two ends run in different
+// programs. The runtime on the Worker mints a runner-auth token when it claims
+// an Attempt (IssueRunner): it names the runner and nothing else, because the
+// repository is not known until GitHub sends JobStarted. The cache service
+// verifies that token on every request (VerifyRunner), looks up the job facts
+// the controller pushed after JobStarted (repository, ref and event), and
+// derives what the job may read and write from them (Scope). The runtime, the
+// controller and the cache service share only an HMAC secret,
+// ERAINFRA_CACHE_SIGNING_KEY.
 //
-// ADR 0007's security contract, rule 1, is the reason the repository lives in
-// the token at all: the capture shows the client sends `key` and `version` and
-// nothing that names a repository (capture L008, L020), so any repository
-// identity read out of a request is identity the job chose. Rule 2 is the
-// reason Issue defaults to read-only: write has to prove itself from the event
-// and the head repository, and anything unproven is a read token.
+// Issue and Verify sign and check a token that carries the job's claims itself.
+// Only tests call them today.
+//
+// ADR 0007's security contract, rule 1, is the reason the repository comes
+// from the controller and never from the request: the capture shows the client
+// sends `key` and `version` and nothing that names a repository (capture L008,
+// L020), so any repository identity read out of a request is identity the job
+// chose. Rule 2 is the reason Scope defaults to read-only: write has to prove
+// itself from the event and the head repository, and anything unproven is a
+// read scope.
 package cachetoken
 
 import (
@@ -237,8 +245,7 @@ func (i *Issuer) now() time.Time {
 	return time.Now()
 }
 
-// Issue turns what the controller learned at JobStarted into a token and the
-// claims that token carries. The claims are returned as well so the caller can
+// Issue turns a job's facts into a token and the claims that token carries. The claims are returned as well so the caller can
 // log what it granted without parsing its own token back.
 func (i *Issuer) Issue(facts JobFacts) (string, Claims, error) {
 	claims, err := Scope(facts)

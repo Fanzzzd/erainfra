@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // Legacy v1 conformance. Keys, versions and JSON bodies below are copied out of

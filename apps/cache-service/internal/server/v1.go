@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // Legacy v1, the REST API under ACTIONS_CACHE_URL.

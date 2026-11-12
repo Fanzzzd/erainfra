@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // A seed this service refused to store is remembered, so that it is not built

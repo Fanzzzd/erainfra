@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 var testCacheKey = []byte("erainfra-cache-service-signing-key-0123456789")

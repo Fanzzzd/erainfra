@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/cacheindex"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 func (h *harness) putSeed(token string, body []byte) *http.Response {
