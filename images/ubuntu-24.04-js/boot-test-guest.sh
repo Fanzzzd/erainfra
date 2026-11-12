@@ -22,6 +22,18 @@ fail() {
 }
 
 echo "boot-test: kernel $(uname -r)"
+
+# The runtime passes rootflags on the kernel command line (KernelArgs in
+# apps/runtime/internal/firecracker/config.go). Check they survived boot,
+# including systemd's remount of / from fstab.
+root_options=$(findmnt --noheadings --output OPTIONS --target /)
+echo "boot-test: root mount options: $root_options"
+for option in noatime nobarrier data=writeback journal_async_commit commit=30; do
+  case ",$root_options," in
+    *",$option,"*) ;;
+    *) fail "the root filesystem is not mounted with $option" ;;
+  esac
+done
 for _ in $(seq 120); do
   docker info >/dev/null 2>&1 && break
   sleep 1

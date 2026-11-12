@@ -82,7 +82,18 @@ func DefaultConfig() Config {
 		// configuration Firecracker supports. nomodules is not a kernel
 		// parameter at all; the kernel hands words it does not recognise to init
 		// as arguments.
-		KernelArgs:          "console=ttyS0 reboot=k panic=1 pci=off ipv6.disable=1 rw",
+		//
+		// rootflags are the root mount options GitHub's hosted image sets through
+		// GRUB (nobarrier,data=writeback,journal_async_commit,commit=30), plus
+		// noatime. Our image has no GRUB, so they live here. The root is a
+		// per-Attempt snapshot that nothing reads after the VM ends, so
+		// durability across a crash buys nothing. Every small write it saves also
+		// saves a 64 KiB copy-on-write or zeroing write in the host's thin pool.
+		// relatime would still write each file's atime on its first read after
+		// boot, because the image's files are older than a day.
+		// images/ubuntu-24.04-js/boot-test.sh reads this line, so keep the value
+		// one string literal on one line.
+		KernelArgs:          "console=ttyS0 reboot=k panic=1 pci=off ipv6.disable=1 rw rootflags=noatime,nobarrier,data=writeback,journal_async_commit,commit=30",
 		ContainerdAddress:   "/run/runner-center-containerd/containerd.sock",
 		ContainerdNamespace: "runner-center",
 		Snapshotter:         "devmapper",
