@@ -357,25 +357,21 @@ describe("GET /runs-on?profile=", () => {
     expect((await runsOn(t, "")).status).toBe(400);
   });
 
-  it("keeps answering the legacy labels form from the pre-Profile machines path", async () => {
+  it("answers the retired labels form 400, naming profile=, and stores nothing", async () => {
     const t = convexTest(schema, modules);
-    await t.run((ctx) =>
-      ctx.db.insert("machines", {
-        name: "legacy",
-        os: "linux",
-        labels: [],
-        cpus: 16,
-        memoryMiB: 32_768,
-        maxSlots: 4,
-        usedSlots: 0,
-        lastSeen: Date.now(),
-        token: "legacy-token",
-      }),
-    );
+    await registerProfile(t);
+    await addReadyWorker(t, "worker-a");
 
-    expect((await runsOn(t, "labels=ubuntu-24.04")).body).toEqual({
-      "runs-on": ["self-hosted", "ubuntu-24.04"],
-    });
+    for (const query of [
+      "labels=ubuntu-24.04",
+      "labels=ubuntu-24.04&fallback=ubuntu-24.04&repo=acme/web",
+      "profile=erainfra-4vcpu-ubuntu-2404&labels=ubuntu-24.04",
+    ]) {
+      const { status, body } = await runsOn(t, query);
+      expect(status, query).toBe(400);
+      expect((body as { error: string }).error, query).toContain("profile=");
+    }
+    expect(await t.run((ctx) => ctx.db.query("routerDecisions").collect())).toEqual([]);
   });
 });
 
@@ -428,21 +424,6 @@ describe("router decisions", () => {
         route: "profile",
         reason: undefined,
         repo: undefined,
-      },
-    ]);
-  });
-
-  it("stores the legacy labels answer", async () => {
-    const t = convexTest(schema, modules);
-
-    const { body } = await runsOn(t, "labels=ubuntu-24.04&fallback=ubuntu-24.04&repo=acme/web");
-    expect(body).toEqual({ "runs-on": "ubuntu-24.04" });
-    expect(await decisions(t)).toMatchObject([
-      {
-        labels: ["self-hosted", "ubuntu-24.04"],
-        answer: "ubuntu-24.04",
-        route: "fallback",
-        repo: "acme/web",
       },
     ]);
   });

@@ -19,7 +19,8 @@ export const ROUTER_DECISION_RETENTION_MS = 90 * 24 * 60 * 60_000;
 
 /** One `/runs-on` answer (routerDecisions.ts). */
 export const routerDecisionFields = {
-  // The Profile asked about, or the labels of the legacy `labels=` form.
+  // The Profile asked about. `labels` held the retired `labels=` form's labels; /runs-on no longer
+  // writes it, and production holds no such row.
   profile: v.optional(v.string()),
   labels: v.optional(v.array(v.string())),
   // The `runs-on` value the router returned.

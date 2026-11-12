@@ -68,7 +68,7 @@ or a `with:` to another workflow, renaming the label would change what that sees
 and the calls stay as they are and an `input-shared` note names the first such read. In a [router job](#fall-back-to-github-hosted-runners),
 it renames the Profile the router asks about (a `PROFILE` variable or a `profile=` query) and
 leaves the router's own `runs-on`, which has to stay GitHub-hosted. A router job is one that
-declares `outputs:` and has a step calling the `/runs-on` endpoint with `profile=` or `labels=`;
+declares `outputs:` and has a step calling the `/runs-on` endpoint with `profile=` or the retired `labels=`;
 a script that only mentions a path such as `.github/runs-on.yml` is an ordinary job. It leaves the
 rest unchanged and prints a note for each one, on stderr, or under `notes` with `--json`: matrix
 and other expressions (the note lists what each matrix value would become), lists of several
@@ -156,8 +156,8 @@ The answer covers one job. Jobs that share it, such as a matrix, all go to the P
 even when only one slot was free; the rest queue there. The router itself runs on a GitHub-hosted
 runner, a few seconds per workflow run.
 
-The older form `/runs-on?labels=ubuntu-24.04` still answers for the pre-Profile webhook path, from that
-path's machine slots. It knows nothing of Profiles.
+The pre-Profile form `/runs-on?labels=ubuntu-24.04` is retired. It answers 400 with an error that
+names `profile=`. Ask about a Profile instead.
 
 Agree on a queue limit with whoever operates the Profile. Before an operation takes a Profile's
 only Worker away for longer than that limit, the operator follows
