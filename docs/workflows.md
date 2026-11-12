@@ -149,7 +149,7 @@ The answer covers one job. Jobs that share it, such as a matrix, all go to the P
 even when only one slot was free; the rest queue there. The router itself runs on a GitHub-hosted
 runner, a few seconds per workflow run.
 
-The older form `/runs-on?labels=rc-linux` still answers for the pre-Profile webhook path, from that
+The older form `/runs-on?labels=ubuntu-24.04` still answers for the pre-Profile webhook path, from that
 path's machine slots. It knows nothing of Profiles.
 
 Agree on a queue limit with whoever operates the Profile. Before an operation takes a Profile's

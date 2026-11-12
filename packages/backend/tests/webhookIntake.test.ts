@@ -35,7 +35,7 @@ function workflowJob(overrides: Partial<WorkflowJob> = {}): WorkflowJob {
     repo: "acme/app",
     repoIsPublic: false,
     workflowName: "CI",
-    labels: ["self-hosted", "rc-linux"],
+    labels: ["self-hosted", "ubuntu-24.04"],
     ...overrides,
   };
 }
