@@ -58,8 +58,8 @@ jobs:
         include:
           - leg: github-hosted
             runs-on: ubuntu-24.04
-          - leg: rc-e2e
-            runs-on: rc-e2e
+          - leg: erainfra-canary-4vcpu-ubuntu-2404
+            runs-on: erainfra-canary-4vcpu-ubuntu-2404
     runs-on: ${{ matrix.runs-on }}
     # A Profile leg has no runner at all unless a Worker is serving that
     # Profile, and a job with no runner QUEUES rather than fails — which reads

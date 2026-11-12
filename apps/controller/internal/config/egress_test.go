@@ -12,7 +12,7 @@ func loadWithEgress(t *testing.T, mode, presets, allow string) (Config, error) {
 	t.Setenv("RC_CONVEX_URL", "https://example.convex.cloud")
 	t.Setenv("RC_CONTROLLER_TOKEN", "controller-token")
 	t.Setenv("RC_GITHUB_CONFIG_URL", "https://github.com/example")
-	t.Setenv("RC_PROFILE", "rc-linux-js")
+	t.Setenv("RC_PROFILE", "erainfra-4vcpu-ubuntu-2404")
 	t.Setenv("RC_EXECUTOR", "firecracker")
 	t.Setenv("RC_IMAGE_RELEASE", validConfig().ImageRelease)
 	t.Setenv("RC_GITHUB_TOKEN", "github-token")

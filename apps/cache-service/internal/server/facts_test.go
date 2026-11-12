@@ -56,7 +56,7 @@ func TestUnknownRunnerIsUnauthorized(t *testing.T) {
 func TestFactsPushRequiresTheSigningKey(t *testing.T) {
 	h := newHarness(t, nil)
 	body := jsonBody(map[string]any{
-		"runner": "rc-linux-js-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
 		"event": "push", "ref": "refs/heads/main", "expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
 
@@ -115,7 +115,7 @@ func TestFactsPushRejectsWrongMethod(t *testing.T) {
 func TestScopedAccessAfterEndpointPush(t *testing.T) {
 	h := newHarness(t, nil)
 	body := jsonBody(map[string]any{
-		"runner": "rc-linux-js-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
 		"event": "push", "ref": "refs/heads/main", "defaultBranch": "refs/heads/main",
 		"expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
@@ -125,7 +125,7 @@ func TestScopedAccessAfterEndpointPush(t *testing.T) {
 		t.Fatalf("push = %d, want 204", pushed.StatusCode)
 	}
 
-	token := h.runnerToken("rc-linux-js-a")
+	token := h.runnerToken("erainfra-4vcpu-ubuntu-2404-a")
 	want := payload(4096)
 	h.saveV1(token, "build-cache", "v1", want, wholeBody(want))
 	got := h.restoreV1(token, "build-cache", "v1")
@@ -141,7 +141,7 @@ func TestScopedAccessAfterEndpointPush(t *testing.T) {
 func TestPushedFactsSurviveARestart(t *testing.T) {
 	h := newHarness(t, nil)
 	body := jsonBody(map[string]any{
-		"runner": "rc-linux-js-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
 		"event": "push", "ref": "refs/heads/main", "defaultBranch": "refs/heads/main",
 		"expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
@@ -150,7 +150,7 @@ func TestPushedFactsSurviveARestart(t *testing.T) {
 	if pushed.StatusCode != http.StatusNoContent {
 		t.Fatalf("push = %d, want 204", pushed.StatusCode)
 	}
-	token := h.runnerToken("rc-linux-js-a")
+	token := h.runnerToken("erainfra-4vcpu-ubuntu-2404-a")
 	before := payload(2048)
 	h.saveV1(token, "before-restart", "v1", before, wholeBody(before))
 

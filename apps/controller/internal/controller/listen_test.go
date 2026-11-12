@@ -63,8 +63,8 @@ func request(id int64) scaleset.JobMessageBase {
 // statistics while the long poll comes back empty.
 func TestSessionScalerAcquiresRecordsAndConverges(t *testing.T) {
 	store := &fakeStore{}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 4), store, &fakeIssuer{},
-		names("rc-linux-js-a", "rc-linux-js-b", "rc-linux-js-c", "rc-linux-js-d"))
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 4), store, &fakeIssuer{},
+		names("erainfra-4vcpu-ubuntu-2404-a", "erainfra-4vcpu-ubuntu-2404-b", "erainfra-4vcpu-ubuntu-2404-c", "erainfra-4vcpu-ubuntu-2404-d"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,9 +79,9 @@ func TestSessionScalerAcquiresRecordsAndConverges(t *testing.T) {
 				MessageID:            1,
 				Statistics:           &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: 2},
 				JobAvailableMessages: []*scaleset.JobAvailable{{JobMessageBase: request(11)}, {JobMessageBase: request(12)}},
-				JobStartedMessages:   []*scaleset.JobStarted{{RunnerName: "rc-linux-js-a", JobMessageBase: request(11)}},
+				JobStartedMessages:   []*scaleset.JobStarted{{RunnerName: "erainfra-4vcpu-ubuntu-2404-a", JobMessageBase: request(11)}},
 				JobCompletedMessages: []*scaleset.JobCompleted{
-					{RunnerName: "rc-linux-js-a", Result: "succeeded", JobMessageBase: request(11)},
+					{RunnerName: "erainfra-4vcpu-ubuntu-2404-a", Result: "succeeded", JobMessageBase: request(11)},
 				},
 			}, nil
 		},
@@ -106,7 +106,7 @@ func TestSessionScalerAcquiresRecordsAndConverges(t *testing.T) {
 	if !reflect.DeepEqual(queue.deleted, []int{1}) {
 		t.Fatalf("acked = %v, want [1]", queue.deleted)
 	}
-	if started := store.startedEvents(true); len(started) != 1 || started[0].RunnerName != "rc-linux-js-a" {
+	if started := store.startedEvents(true); len(started) != 1 || started[0].RunnerName != "erainfra-4vcpu-ubuntu-2404-a" {
 		t.Fatalf("started = %+v", started)
 	}
 	if len(store.completed) != 1 || store.completed[0].Result != "succeeded" {
@@ -121,7 +121,7 @@ func TestSessionScalerAcquiresRecordsAndConverges(t *testing.T) {
 // again on the next poll.
 func TestSessionScalerLeavesAFailedMessageUnacked(t *testing.T) {
 	store := &fakeStore{}
-	scaler, err := NewScaler(validConfig("rc-linux-js", 4), store, &fakeIssuer{}, names("rc-linux-js-a"))
+	scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 4), store, &fakeIssuer{}, names("erainfra-4vcpu-ubuntu-2404-a"))
 	if err != nil {
 		t.Fatal(err)
 	}

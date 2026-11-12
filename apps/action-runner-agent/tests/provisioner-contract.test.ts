@@ -83,7 +83,7 @@ describe("provisioner scripts", () => {
     const source = readFileSync(dockerProvisionerPath(), "utf8");
     const args = probeInvocation(
       {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "docker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus: 4,
@@ -233,7 +233,7 @@ describe("scale-set Attempt invocation", () => {
     const invocation = attemptInvocation({
       attemptId: "attempt-docker",
       runnerName: "runner-docker",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "docker",
       imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
       vcpus: 4,
@@ -244,7 +244,7 @@ describe("scale-set Attempt invocation", () => {
     assert.deepEqual(invocation.args, []);
     assert.deepEqual(invocation.env, {
       RUNNER_NAME: "runner-docker",
-      RC_PROFILE: "rc-linux-js",
+      RC_PROFILE: "erainfra-4vcpu-ubuntu-2404",
       IMAGE: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
       RC_VCPUS: "4",
       RC_MEMORY_MIB: "8192",
@@ -260,7 +260,7 @@ describe("scale-set Attempt invocation", () => {
   const DOCKER_ATTEMPT = {
     attemptId: "attempt-docker",
     runnerName: "runner-docker",
-    profile: "rc-linux-js",
+    profile: "erainfra-4vcpu-ubuntu-2404",
     executor: "docker" as const,
     imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
     vcpus: 4,
@@ -312,7 +312,7 @@ describe("scale-set Attempt invocation", () => {
       const { env } = attemptInvocation({
         attemptId: "attempt-docker",
         runnerName: "runner-docker",
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "docker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus,
@@ -330,7 +330,7 @@ describe("scale-set Attempt invocation", () => {
         attemptInvocation({
           attemptId: "attempt-docker",
           runnerName: "runner-docker",
-          profile: "rc-linux-js",
+          profile: "erainfra-4vcpu-ubuntu-2404",
           executor: "docker",
           imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
           vcpus: 4,
@@ -344,7 +344,7 @@ describe("scale-set Attempt invocation", () => {
     const invocation = attemptInvocation({
       attemptId: "attempt-1",
       runnerName: "runner-a",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease:
         "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -358,7 +358,7 @@ describe("scale-set Attempt invocation", () => {
     assert.deepEqual(invocation.env, {
       RC_ATTEMPT_ID: "attempt-1",
       RC_RUNNER_NAME: "runner-a",
-      RC_PROFILE: "rc-linux-js",
+      RC_PROFILE: "erainfra-4vcpu-ubuntu-2404",
       RC_IMAGE_RELEASE:
         "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       RC_VCPUS: "4",
@@ -594,7 +594,7 @@ describe("scale-set Attempt invocation", () => {
     const base = {
       attemptId: "attempt-1",
       runnerName: "runner-a",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker" as const,
       imageRelease:
         "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -678,7 +678,7 @@ describe("Experiment invocation", () => {
     const invocation = experimentInvocation({
       experimentId: "experiment-1",
       name: "benchmark",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease:
         "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

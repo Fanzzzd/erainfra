@@ -3,6 +3,6 @@ self-hosted-runner:
   # separate issue #17 production gate passes.
   labels:
     # Also the Profile the environment conformance job fingerprints against
-    # ubuntu-latest: it is the only scale set measured to pick work up on THIS
-    # repository, and .github/conformance/profiles.txt says why that matters.
-    - rc-e2e
+    # ubuntu-latest: it is the only scale set registered on THIS repository,
+    # and .github/conformance/profiles.txt says why that matters.
+    - erainfra-canary-4vcpu-ubuntu-2404

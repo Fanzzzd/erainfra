@@ -290,7 +290,7 @@ describe("the controller-silent alert", () => {
     expect(open).toHaveLength(1);
     expect(open[0]).toMatchObject({ subject: CONTRACT.profile, status: "firing" });
     expect(open[0]?.summary).toBe(
-      "Profile rc-linux-js has had no listening controller for 4m; the last report came from oracle-singapore-1 (0.2.0-rc.11) 4m ago.",
+      "Profile erainfra-4vcpu-ubuntu-2404 has had no listening controller for 4m; the last report came from oracle-singapore-1 (0.2.0-rc.11) 4m ago.",
     );
 
     at(5);

@@ -14,8 +14,11 @@ const CASES = [
   ],
   [{ lastError: "Executor exited with code 137" }, "executor-killed"],
   [{ lastError: "Executor exited with code 2" }, "executor-failed"],
-  [{ cancelReason: strandedReason("rc-linux-js", 5, "rerun") }, "stranded-rerun"],
-  [{ cancelReason: strandedReason("rc-linux-js", 5, "cancel") }, "stranded-cancelled"],
+  [{ cancelReason: strandedReason("erainfra-4vcpu-ubuntu-2404", 5, "rerun") }, "stranded-rerun"],
+  [
+    { cancelReason: strandedReason("erainfra-4vcpu-ubuntu-2404", 5, "cancel") },
+    "stranded-cancelled",
+  ],
 ] as const;
 
 describe("runnerCause", () => {
@@ -54,10 +57,12 @@ describe("runnerCause", () => {
   });
 
   test("the stranded reason uses the wording operators see", () => {
-    expect(strandedReason("rc-linux-js", 5, "rerun")).toBe(
-      "No ready Worker for rc-linux-js within 5 minutes; cancelled the run and asked GitHub to rerun it",
+    expect(strandedReason("erainfra-4vcpu-ubuntu-2404", 5, "rerun")).toBe(
+      "No ready Worker for erainfra-4vcpu-ubuntu-2404 within 5 minutes; cancelled the run and asked GitHub to rerun it",
     );
-    const cause = runnerCause({ cancelReason: strandedReason("rc-linux-js", 5, "rerun") });
+    const cause = runnerCause({
+      cancelReason: strandedReason("erainfra-4vcpu-ubuntu-2404", 5, "rerun"),
+    });
     expect(cause?.docs.map((doc) => doc.url)).toEqual([
       "https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs",
       "https://github.com/Fanzzzd/erainfra/blob/main/docs/workflows.md#fall-back-to-github-hosted-runners",

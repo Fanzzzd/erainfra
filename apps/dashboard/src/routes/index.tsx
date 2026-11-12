@@ -440,7 +440,7 @@ function MachinesPage() {
           </CardDescription>
           <CardAction>
             <code className="rounded-md border border-border bg-sunken px-2.5 py-1.5 text-xs text-primary">
-              runs-on: {profiles?.[0]?.name ?? "rc-linux-js"}
+              runs-on: {profiles?.[0]?.name ?? "erainfra-4vcpu-ubuntu-2404"}
             </code>
           </CardAction>
         </CardHeader>

@@ -17,8 +17,9 @@ Stage A answered everything it could from a capture against a stand-in and from
 the shipped `Runner.Worker.dll`'s string table. Neither can answer this one:
 the mapping's existence in the binary says nothing about precedence, and a
 stand-in has no runner in front of it. The only honest instrument is a real
-Attempt on a real Profile, which is why the workflow runs on `rc-e2e`, the one
-scale set measured to pick work up on this repository.
+Attempt on a real Profile, which is why the workflow runs on
+`erainfra-canary-4vcpu-ubuntu-2404`, the one scale set registered on this
+repository. The runs below predate the rename and ran on `rc-e2e`, its old name.
 
 ## What the first live run found, and why there is a second iteration
 

@@ -19,7 +19,7 @@ const operator = { subject: "operator", issuer: "https://example.test" };
 
 async function harness() {
   const t = convexTest(schema, modules);
-  for (const name of ["rc-e2e", "rc-linux-js"]) {
+  for (const name of ["erainfra-canary-4vcpu-ubuntu-2404", "erainfra-4vcpu-ubuntu-2404"]) {
     await t.mutation(internal.controllerApi.registerProfile, {
       ...CONTRACT,
       name,
@@ -56,25 +56,24 @@ describe("profiles.activity", () => {
     const t = await harness();
     const now = Date.now();
     const day = 24 * 60 * 60_000;
-    // rc-linux-js: a consumer job 18 days ago, then only unused capacity.
-    await seedAttempt(t, "rc-linux-js", now - 18 * day, "bielcrystal-labs/biel-payable-system");
-    await seedAttempt(t, "rc-linux-js", now - 2 * day);
-    // rc-e2e: canaries this week, one of them without a job.
-    await seedAttempt(t, "rc-e2e", now - 3 * day, "Fanzzzd/erainfra");
-    await seedAttempt(t, "rc-e2e", now - 1 * day, "Fanzzzd/erainfra");
-    await seedAttempt(t, "rc-e2e", now - 60_000);
+    // erainfra-4vcpu-ubuntu-2404: a consumer job 18 days ago, then only unused capacity.
+    await seedAttempt(
+      t,
+      "erainfra-4vcpu-ubuntu-2404",
+      now - 18 * day,
+      "bielcrystal-labs/biel-payable-system",
+    );
+    await seedAttempt(t, "erainfra-4vcpu-ubuntu-2404", now - 2 * day);
+    // erainfra-canary-4vcpu-ubuntu-2404: canaries this week, one of them without a job.
+    await seedAttempt(t, "erainfra-canary-4vcpu-ubuntu-2404", now - 3 * day, "Fanzzzd/erainfra");
+    await seedAttempt(t, "erainfra-canary-4vcpu-ubuntu-2404", now - 1 * day, "Fanzzzd/erainfra");
+    await seedAttempt(t, "erainfra-canary-4vcpu-ubuntu-2404", now - 60_000);
 
     const activity = await t.withIdentity(operator).query(api.profiles.activity, {});
 
     expect(activity).toEqual([
       {
-        name: "rc-e2e",
-        lastJob: { repo: "Fanzzzd/erainfra", at: now - 1 * day, displayName: "test" },
-        jobsInWindow: 2,
-        sampleExhausted: false,
-      },
-      {
-        name: "rc-linux-js",
+        name: "erainfra-4vcpu-ubuntu-2404",
         lastJob: {
           repo: "bielcrystal-labs/biel-payable-system",
           at: now - 18 * day,
@@ -83,23 +82,38 @@ describe("profiles.activity", () => {
         jobsInWindow: 0,
         sampleExhausted: false,
       },
+      {
+        name: "erainfra-canary-4vcpu-ubuntu-2404",
+        lastJob: { repo: "Fanzzzd/erainfra", at: now - 1 * day, displayName: "test" },
+        jobsInWindow: 2,
+        sampleExhausted: false,
+      },
     ]);
   });
 
   it("has nothing to say about a Profile no job ever started on", async () => {
     const t = await harness();
-    const [e2e] = await t.withIdentity(operator).query(api.profiles.activity, {});
-    expect(e2e).toEqual({ name: "rc-e2e", jobsInWindow: 0, sampleExhausted: false });
+    const [, canary] = await t.withIdentity(operator).query(api.profiles.activity, {});
+    expect(canary).toEqual({
+      name: "erainfra-canary-4vcpu-ubuntu-2404",
+      jobsInWindow: 0,
+      sampleExhausted: false,
+    });
   });
 
   it("reads a bounded window and says so when the week overflows it", async () => {
     const t = await harness();
     const now = Date.now();
     for (let i = 0; i < ACTIVITY_SAMPLE + 5; i++) {
-      await seedAttempt(t, "rc-e2e", now - i * 60_000, "Fanzzzd/erainfra");
+      await seedAttempt(
+        t,
+        "erainfra-canary-4vcpu-ubuntu-2404",
+        now - i * 60_000,
+        "Fanzzzd/erainfra",
+      );
     }
-    const [e2e] = await t.withIdentity(operator).query(api.profiles.activity, {});
-    expect(e2e).toMatchObject({ jobsInWindow: ACTIVITY_SAMPLE, sampleExhausted: true });
+    const [, canary] = await t.withIdentity(operator).query(api.profiles.activity, {});
+    expect(canary).toMatchObject({ jobsInWindow: ACTIVITY_SAMPLE, sampleExhausted: true });
     expect(ACTIVITY_SAMPLE * 60_000).toBeLessThan(ACTIVITY_WINDOW_MS);
   });
 

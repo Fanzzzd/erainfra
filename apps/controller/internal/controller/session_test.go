@@ -67,13 +67,13 @@ func newFakeActionsService(t *testing.T, conflicts int) *fakeActionsService {
 			if service.conflicts.Add(-1) >= 0 {
 				response.Header().Set("Content-Type", "application/json")
 				response.WriteHeader(http.StatusConflict)
-				_, _ = response.Write([]byte(`{"typeName":"TaskAgentSessionConflictException","message":"The scale set already has an active session for owner other-host:rc-linux-js."}`))
+				_, _ = response.Write([]byte(`{"typeName":"TaskAgentSessionConflictException","message":"The scale set already has an active session for owner other-host:erainfra-4vcpu-ubuntu-2404."}`))
 				return
 			}
 			_ = json.NewEncoder(response).Encode(scaleset.RunnerScaleSetSession{
 				SessionID:               uuid.New(),
-				OwnerName:               "this-host:rc-linux-js",
-				RunnerScaleSet:          &scaleset.RunnerScaleSet{ID: 1, Name: "rc-linux-js"},
+				OwnerName:               "this-host:erainfra-4vcpu-ubuntu-2404",
+				RunnerScaleSet:          &scaleset.RunnerScaleSet{ID: 1, Name: "erainfra-4vcpu-ubuntu-2404"},
 				MessageQueueURL:         service.server.URL + "/queue",
 				MessageQueueAccessToken: "queue-token",
 				Statistics:              &scaleset.RunnerScaleSetStatistic{},
@@ -134,7 +134,7 @@ func TestASecondControllerWaitsOutTheSessionConflictAndThenListens(t *testing.T)
 
 	supervisor := &SessionSupervisor{
 		Open: func(ctx context.Context) (MessageSession, error) {
-			return client.MessageSessionClient(ctx, 1, "this-host:rc-linux-js")
+			return client.MessageSessionClient(ctx, 1, "this-host:erainfra-4vcpu-ubuntu-2404")
 		},
 		Listen: func(ctx context.Context, session listener.Client) error {
 			if listening.Add(1) != 1 {
@@ -188,7 +188,7 @@ func TestConflictBackoffDoublesUpToItsCap(t *testing.T) {
 	defer cancel()
 	supervisor := &SessionSupervisor{
 		Open: func(ctx context.Context) (MessageSession, error) {
-			return client.MessageSessionClient(ctx, 1, "this-host:rc-linux-js")
+			return client.MessageSessionClient(ctx, 1, "this-host:erainfra-4vcpu-ubuntu-2404")
 		},
 		Listen: func(ctx context.Context, _ listener.Client) error {
 			cancel()
@@ -216,7 +216,7 @@ func TestStoppingWhileWaitingOutAConflictNeverListens(t *testing.T) {
 	defer cancel()
 	supervisor := &SessionSupervisor{
 		Open: func(ctx context.Context) (MessageSession, error) {
-			return client.MessageSessionClient(ctx, 1, "this-host:rc-linux-js")
+			return client.MessageSessionClient(ctx, 1, "this-host:erainfra-4vcpu-ubuntu-2404")
 		},
 		Listen: func(context.Context, listener.Client) error {
 			t.Error("a controller that never got the session must not listen")

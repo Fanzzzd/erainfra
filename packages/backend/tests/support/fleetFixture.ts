@@ -17,7 +17,7 @@ export const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
 export const MINUTE = 60_000;
 
 export const CONTRACT = {
-  profile: "rc-linux-js",
+  profile: "erainfra-4vcpu-ubuntu-2404",
   executor: "firecracker" as const,
   imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
   vcpus: 2,

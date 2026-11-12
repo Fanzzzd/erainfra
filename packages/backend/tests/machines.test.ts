@@ -30,7 +30,7 @@ describe("machines.list", () => {
     const t = convexTest(schema, modules);
     const machineId = await seedMachine(t, "worker-a", "token-a");
     const baseAttempt = {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker" as const,
       imageRelease: IMAGE,
       vcpus: 2,
@@ -41,7 +41,7 @@ describe("machines.list", () => {
     };
     const baseExperiment = {
       name: "smoke",
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker" as const,
       imageRelease: IMAGE,
       vcpus: 2,
@@ -76,7 +76,7 @@ describe("machines.list", () => {
 
     const [machine] = await t.withIdentity(OPERATOR).query(api.machines.list, {});
     expect(machine?.currentAttempts).toEqual([
-      expect.objectContaining({ profile: "rc-linux-js", state: "ready" }),
+      expect.objectContaining({ profile: "erainfra-4vcpu-ubuntu-2404", state: "ready" }),
     ]);
     expect(machine?.currentExperiments).toEqual([
       expect.objectContaining({ name: "smoke", state: "running" }),

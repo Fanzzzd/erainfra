@@ -76,14 +76,14 @@ describe("parseControllerHeartbeat", () => {
     expect(parseControllerHeartbeat(valid)).toEqual({ ...valid, lastError: undefined });
     expect(
       parseControllerHeartbeat({
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         hostname: "h",
         version: "dev",
         sessionState: "starting",
         assignedJobs: 0,
         runningJobs: 0,
       }),
-    ).toMatchObject({ profile: "rc-linux-js", sessionState: "starting" });
+    ).toMatchObject({ profile: "erainfra-4vcpu-ubuntu-2404", sessionState: "starting" });
   });
 
   it("refuses anything outside the contract", () => {
@@ -112,8 +112,8 @@ describe("controller payloads", () => {
   it("accepts only immutable Profile contracts", () => {
     expect(
       parseRegisterProfile({
-        name: "rc-linux-js",
-        scaleSetName: "rc-linux-js",
+        name: "erainfra-4vcpu-ubuntu-2404",
+        scaleSetName: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus: 2,
@@ -175,8 +175,8 @@ describe("controller payloads", () => {
     ).toMatchObject({ executor: "docker", imageRelease: expect.stringContaining("@sha256:") });
     expect(
       parseRegisterProfile({
-        name: "rc-linux-js",
-        scaleSetName: "rc-linux-js",
+        name: "erainfra-4vcpu-ubuntu-2404",
+        scaleSetName: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: "ghcr.io/fanzzzd/runner:latest",
         vcpus: 2,
@@ -187,8 +187,8 @@ describe("controller payloads", () => {
     ).toBeNull();
     expect(
       parseRegisterProfile({
-        name: "rc-linux-js",
-        scaleSetName: "rc-linux-js",
+        name: "erainfra-4vcpu-ubuntu-2404",
+        scaleSetName: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus: 2,
@@ -200,8 +200,8 @@ describe("controller payloads", () => {
     ).toBeNull();
     expect(
       parseRegisterProfile({
-        name: "rc-linux-js",
-        scaleSetName: "rc-linux-js",
+        name: "erainfra-4vcpu-ubuntu-2404",
+        scaleSetName: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"A".repeat(64)}`,
         vcpus: 2,
@@ -215,7 +215,7 @@ describe("controller payloads", () => {
   it("accepts one complete Attempt without changing its JIT bytes", () => {
     expect(
       parseCreateAttempt({
-        profile: " rc-linux-js ",
+        profile: " erainfra-4vcpu-ubuntu-2404 ",
         executor: "firecracker",
         imageRelease:
           "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -226,7 +226,7 @@ describe("controller payloads", () => {
         encodedJITConfig: " base64-is-opaque ",
       }),
     ).toEqual({
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
       imageRelease:
         "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -241,7 +241,7 @@ describe("controller payloads", () => {
   it("rejects lossy or unsafe numeric identifiers", () => {
     expect(
       parseCreateAttempt({
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker",
         imageRelease:
           "image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -257,7 +257,7 @@ describe("controller payloads", () => {
   it("accepts scale-set lifecycle payloads", () => {
     expect(
       parseJobStarted({
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName: "runner-a",
         runnerRequestId: "9007199254740993",
         repository: "runner-center",
@@ -271,7 +271,7 @@ describe("controller payloads", () => {
     ).not.toBeNull();
     expect(
       parseJobCompleted({
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName: "runner-a",
         runnerRequestId: "9007199254740993",
         jobId: "job-1",
@@ -281,15 +281,19 @@ describe("controller payloads", () => {
     ).not.toBeNull();
     expect(
       parseCompleteRunnerCleanup({
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName: "runner-a",
         runnerId: 42,
       }),
-    ).toEqual({ profile: "rc-linux-js", runnerName: "runner-a", runnerId: 42 });
+    ).toEqual({ profile: "erainfra-4vcpu-ubuntu-2404", runnerName: "runner-a", runnerId: 42 });
   });
 
   it("takes the run's head branch when a controller sends it, and does without it", () => {
-    const base = { profile: "rc-linux-js", runnerName: "runner-a", eventName: "push" };
+    const base = {
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      runnerName: "runner-a",
+      eventName: "push",
+    };
     expect(parseJobStarted({ ...base, headBranch: " feature/x " })).toMatchObject({
       headBranch: "feature/x",
     });
@@ -299,9 +303,13 @@ describe("controller payloads", () => {
   });
 
   it("tells a job no Runner took apart from a malformed JobCompleted", () => {
-    const cancelled = { profile: "rc-e2e", result: "canceled", finishedAt: 1_786_300_000_000 };
+    const cancelled = {
+      profile: "erainfra-canary-4vcpu-ubuntu-2404",
+      result: "canceled",
+      finishedAt: 1_786_300_000_000,
+    };
     expect(parseRunnerlessJobCompleted({ ...cancelled, runnerName: "" })).toEqual({
-      profile: "rc-e2e",
+      profile: "erainfra-canary-4vcpu-ubuntu-2404",
     });
     expect(parseRunnerlessJobCompleted({ ...cancelled, runnerName: "  " })).not.toBeNull();
     expect(parseRunnerlessJobCompleted(cancelled)).not.toBeNull();
@@ -313,7 +321,7 @@ describe("controller payloads", () => {
 
   it("keeps GitHub int64 request identifiers lossless", () => {
     const base = {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "runner-a",
       runnerRequestId: "9223372036854775807",
       jobId: "job-1",

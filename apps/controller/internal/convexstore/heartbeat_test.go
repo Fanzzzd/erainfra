@@ -85,7 +85,7 @@ func TestSendHeartbeatOmitsWhatIsNotKnownYetAndCapsTheError(t *testing.T) {
 	}
 
 	err = store.SendHeartbeat(t.Context(), fleet.ControllerHeartbeat{
-		Profile:      "rc-linux-js",
+		Profile:      "erainfra-4vcpu-ubuntu-2404",
 		Hostname:     "host",
 		Version:      "dev",
 		SessionState: fleet.SessionConflict,

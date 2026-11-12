@@ -21,20 +21,25 @@ const stateValidator = v.union(
 
 /**
  * How long GitHub held the job before a Runner of ours picked it up, or null when the controller
- * never reported when the job was queued.
+ * reported neither when the job was queued nor when GitHub assigned it to the scale set.
  *
- * Both ends come from GitHub's JobStarted message (queueTime and runnerAssignTime), so the
- * difference is measured on one clock. Only when GitHub omitted the assignment time does this fall
- * back to `startedAt`, the control plane's receipt of JobStarted, which can be skewed against
- * GitHub's clock; a negative result from that skew reads as zero, not as a wait.
+ * Both ends come from GitHub's JobStarted message, so the difference is measured on one clock. The
+ * wait starts at queueTime. GitHub's scale-set messages have so far carried it as zero, which the
+ * controller drops, so the wait then starts at scaleSetAssignTime (`assignedAt`): when GitHub
+ * handed the job to this Profile's scale set. That leaves out only the time before the scale set
+ * acquired the job, which is short while its controller listens. The wait ends at
+ * runnerAssignTime. Only when GitHub omitted that does it fall back to `startedAt`, which may be
+ * the control plane's receipt of JobStarted and skewed against GitHub's clock; a negative result
+ * from that skew reads as zero, not as a wait.
  */
 export function queueWaitMs(
-  attempt: Pick<Doc<"attempts">, "queueTime" | "runnerAssignedAt" | "startedAt">,
+  attempt: Pick<Doc<"attempts">, "queueTime" | "assignedAt" | "runnerAssignedAt" | "startedAt">,
 ): number | null {
-  if (attempt.queueTime === undefined) return null;
+  const queued = attempt.queueTime ?? attempt.assignedAt;
+  if (queued === undefined) return null;
   const start = attempt.runnerAssignedAt ?? attempt.startedAt;
   if (start === undefined) return null;
-  return Math.max(0, start - attempt.queueTime);
+  return Math.max(0, start - queued);
 }
 
 /**

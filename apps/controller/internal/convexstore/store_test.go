@@ -84,8 +84,8 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := fleet.ProfileSpec{
-		Name:         "rc-linux-js",
-		ScaleSetName: "rc-linux-js",
+		Name:         "erainfra-4vcpu-ubuntu-2404",
+		ScaleSetName: "erainfra-4vcpu-ubuntu-2404",
 		Executor:     "firecracker",
 		ImageRelease: "image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		VCPUs:        2,
@@ -107,7 +107,7 @@ func TestStoreUsesAuthenticatedFleetProtocol(t *testing.T) {
 	}
 
 	input := fleet.NewAttempt{
-		Profile:          "rc-linux-js",
+		Profile:          "erainfra-4vcpu-ubuntu-2404",
 		Executor:         "firecracker",
 		ImageRelease:     "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		VCPUs:            2,
@@ -205,7 +205,7 @@ func TestStoreDoesNotReflectJITOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = store.CreateAttempt(t.Context(), fleet.NewAttempt{
-		Profile:          "rc-linux-js",
+		Profile:          "erainfra-4vcpu-ubuntu-2404",
 		Executor:         "firecracker",
 		ImageRelease:     "ghcr.io/fanzzzd/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		VCPUs:            2,
@@ -251,7 +251,7 @@ func TestPauseProfileTreatsAnUnknownProfileAsNothingToDo(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch body["name"] {
-		case "rc-linux-js":
+		case "erainfra-4vcpu-ubuntu-2404":
 			response.WriteHeader(http.StatusNoContent)
 		case "gone":
 			http.Error(response, `{"error":"Unknown Profile"}`, http.StatusNotFound)
@@ -264,7 +264,7 @@ func TestPauseProfileTreatsAnUnknownProfileAsNothingToDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found, err := store.PauseProfile(t.Context(), "rc-linux-js"); err != nil || !found {
+	if found, err := store.PauseProfile(t.Context(), "erainfra-4vcpu-ubuntu-2404"); err != nil || !found {
 		t.Fatalf("pause = %v, %v", found, err)
 	}
 	if found, err := store.PauseProfile(t.Context(), "gone"); err != nil || found {
@@ -296,10 +296,10 @@ func TestCancelAttemptReportsAnAttemptThatAlreadyStartedAJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CancelAttempt(t.Context(), "rc-linux-js", "running", "scale down"); !errors.Is(err, fleet.ErrAttemptRunning) {
+	if err := store.CancelAttempt(t.Context(), "erainfra-4vcpu-ubuntu-2404", "running", "scale down"); !errors.Is(err, fleet.ErrAttemptRunning) {
 		t.Fatalf("409 = %v, want ErrAttemptRunning", err)
 	}
-	if err := store.CancelAttempt(t.Context(), "rc-linux-js", "other", "scale down"); err == nil || errors.Is(err, fleet.ErrAttemptRunning) {
+	if err := store.CancelAttempt(t.Context(), "erainfra-4vcpu-ubuntu-2404", "other", "scale down"); err == nil || errors.Is(err, fleet.ErrAttemptRunning) {
 		t.Fatalf("500 = %v, want a plain error", err)
 	}
 }

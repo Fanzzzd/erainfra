@@ -6,8 +6,8 @@ func TestSpecAptMirrorIsHeldToItsRule(t *testing.T) {
 	spec := Spec{
 		Kind:         "ci",
 		AttemptID:    "attempt-1",
-		RunnerName:   "rc-linux-js-a",
-		Profile:      "rc-linux-js",
+		RunnerName:   "erainfra-4vcpu-ubuntu-2404-a",
+		Profile:      "erainfra-4vcpu-ubuntu-2404",
 		ImageRelease: "ghcr.io/fanzzzd/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		VCPUs:        4,
 		MemoryMiB:    8192,

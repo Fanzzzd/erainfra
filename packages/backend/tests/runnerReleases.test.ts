@@ -171,8 +171,8 @@ describe("erainfra_profile_runner_release_cutoff_seconds", () => {
 
 async function firecrackerWorker(t: Harness, token: string) {
   await t.mutation(internal.controllerApi.registerProfile, {
-    name: "rc-linux-js",
-    scaleSetName: "rc-linux-js",
+    name: "erainfra-4vcpu-ubuntu-2404",
+    scaleSetName: "erainfra-4vcpu-ubuntu-2404",
     executor: "firecracker",
     imageRelease: IMAGE,
     vcpus: 2,
@@ -196,7 +196,7 @@ async function firecrackerWorker(t: Harness, token: string) {
 function failedReport(token: string, runnerVersion?: string) {
   return {
     token,
-    profile: "rc-linux-js",
+    profile: "erainfra-4vcpu-ubuntu-2404",
     executor: "firecracker" as const,
     imageRelease: IMAGE,
     state: "failed" as const,
@@ -253,7 +253,7 @@ describe("runnerVersion readiness fact", () => {
 
     const [breach, ...rest] = await breaches();
     expect(rest).toEqual([]);
-    expect(breach?.subject).toBe("rc-linux-js");
+    expect(breach?.subject).toBe("erainfra-4vcpu-ubuntu-2404");
     expect(breach?.summary).toContain("actions/runner 2.336.0");
     expect(breach?.summary).toContain("GitHub published 2.337.0 on 2026-10-05");
     expect(breach?.summary).toContain("stopped sending jobs to 2.336.0 on 2026-11-04");
