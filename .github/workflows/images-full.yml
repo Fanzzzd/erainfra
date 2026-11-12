@@ -21,6 +21,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Test recipe.py before the long build
+        run: python3 -I images/ubuntu-24.04-full/recipe_test.py
       - name: Record the ubuntu-24.04 baseline before cleanup
         run: |
           mkdir -p "$RUNNER_TEMP/hosted-baseline"
