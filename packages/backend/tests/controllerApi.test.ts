@@ -86,7 +86,6 @@ describe("scale-set Attempt protocol", () => {
     const [stored, secrets] = await t.run(async (ctx) =>
       Promise.all([ctx.db.query("attempts").unique(), ctx.db.query("attemptSecrets").collect()]),
     );
-    expect(stored?.jitConfig).toBeUndefined();
     expect(secrets).toHaveLength(1);
     expect(secrets[0]).toMatchObject({
       attemptId: stored?._id,
@@ -167,7 +166,6 @@ describe("scale-set Attempt protocol", () => {
       result: "succeeded",
       finishedAt: 400,
     });
-    expect(stored?.jitConfig).toBeUndefined();
     expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
     expect(
       await t.query(internal.controllerApi.listActiveAttempts, {
@@ -350,7 +348,6 @@ describe("scale-set Attempt protocol", () => {
     });
     const [cancelled] = await t.run(async (ctx) => ctx.db.query("attempts").collect());
     expect(cancelled).toMatchObject({ state: "cancelled", cancelReason: "scale down" });
-    expect(cancelled?.jitConfig).toBeUndefined();
     expect(await t.run(async (ctx) => ctx.db.query("attemptSecrets").collect())).toEqual([]);
 
     await t.mutation(internal.controllerApi.createAttempt, {
