@@ -118,6 +118,20 @@ slot is either parked or claimed and the parked VMs remain healthy. A pool
 that cannot reach or maintain its target degrades the worker's readiness and
 fails closed for warm claims.
 
+**Amended: a claim during a replacement boot waits for the replacement.** After
+a claimed VM is torn down, the pool owns `N-1` VMs until its replacement boots.
+The runtime used to treat that window as an unhealthy pool and fail the
+attempt, so a job placed on a slot freed a moment earlier failed. A claim now
+has three outcomes. If all `N` VMs are claimed, the claim is a miss and the
+attempt cold-boots, as for any demand above `N`. If fewer than `N` are claimed
+and no parked VM is free, the claim waits for the replacement, bounded by the
+attempt's boot timeout. It does not cold-boot, because placement counted the
+attempt against the pool's reservation, and a cold boot beside the replacement
+would put `N+1` VMs where `N` slots were reserved. If the pool has recorded a
+failure, such as a replacement that failed to boot, a parked VM that exited or
+a profile changed under a claim, the claim fails and so does the attempt. A
+broken pool is not hidden behind cold boots.
+
 The runtime owns pool state and teardown. Graceful shutdown destroys parked
 and claimed VMs. After an agent crash the runtime keeps the pool alive and a
 new agent process reconciles the declared target. After a runtime crash,

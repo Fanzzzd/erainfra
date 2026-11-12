@@ -310,3 +310,176 @@ func eventually(t *testing.T, condition func() bool) {
 	}
 	t.Fatal("condition did not become true")
 }
+
+// gatedWarmFactory parks the first `ready` slots at once and holds every later
+// boot until the test releases it, so a test can act inside the window in which
+// the pool boots a replacement.
+type gatedWarmFactory struct {
+	mu      sync.Mutex
+	ready   int
+	created []*fakeWarmSlot
+	booting chan struct{}
+	release chan error
+}
+
+func newGatedWarmFactory(ready int) *gatedWarmFactory {
+	return &gatedWarmFactory{ready: ready, booting: make(chan struct{}, 8), release: make(chan error)}
+}
+
+func (f *gatedWarmFactory) boot(ctx context.Context, _ executor.Profile, _ uint64) (warmSlot, error) {
+	f.mu.Lock()
+	gated := len(f.created) >= f.ready
+	f.mu.Unlock()
+	if gated {
+		f.booting <- struct{}{}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case err := <-f.release:
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	slot := newFakeWarmSlot()
+	f.mu.Lock()
+	f.created = append(f.created, slot)
+	f.mu.Unlock()
+	return slot, nil
+}
+
+// replacementWindow configures a pool of target, claims one guest and tears it
+// down, and returns once the pool is booting that guest's replacement.
+func replacementWindow(t *testing.T, ready, target int) (*warmPoolManager, *gatedWarmFactory) {
+	t.Helper()
+	factory := newGatedWarmFactory(ready)
+	pool := newWarmPoolManager(factory.boot)
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+	if _, err := pool.Configure(t.Context(), testProfile(target)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := pool.Claim(t.Context(), testAttempt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Cancel(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	<-factory.booting
+	return pool, factory
+}
+
+type claimOutcome struct {
+	lease executor.Lease
+	err   error
+}
+
+func claimAsync(ctx context.Context, pool *warmPoolManager, attemptID string) <-chan claimOutcome {
+	outcome := make(chan claimOutcome, 1)
+	go func() {
+		spec := testAttempt()
+		spec.AttemptID = attemptID
+		lease, err := pool.Claim(ctx, spec)
+		outcome <- claimOutcome{lease: lease, err: err}
+	}()
+	return outcome
+}
+
+func assertClaimPending(t *testing.T, outcome <-chan claimOutcome) {
+	t.Helper()
+	select {
+	case got := <-outcome:
+		t.Fatalf("claim returned during the replacement boot: lease=%v err=%v", got.lease, got.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func awaitClaim(t *testing.T, outcome <-chan claimOutcome) claimOutcome {
+	t.Helper()
+	select {
+	case got := <-outcome:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("claim did not return")
+		return claimOutcome{}
+	}
+}
+
+// A claim within the pool's target, made while the pool boots the replacement
+// for a torn-down guest, is demand the pool owns. It gets the replacement. It
+// neither fails the Attempt nor cold-boots a guest the host has no slot for.
+func TestWarmPoolClaimDuringReplacementWaitsForTheReplacement(t *testing.T) {
+	pool, factory := replacementWindow(t, 1, 1)
+	assertWarmStatus(t, pool.Status("linux"), 1, 0, 0, false)
+
+	outcome := claimAsync(t.Context(), pool, "attempt-2")
+	assertClaimPending(t, outcome)
+	factory.release <- nil
+	if got := awaitClaim(t, outcome); got.err != nil {
+		t.Fatalf("claim during the replacement boot failed: %v", got.err)
+	}
+	factory.mu.Lock()
+	replacement := factory.created[1]
+	factory.mu.Unlock()
+	if replacement.claims != 1 {
+		t.Fatalf("claim did not take the replacement: claims=%d", replacement.claims)
+	}
+	assertWarmStatus(t, pool.Status("linux"), 1, 0, 1, true)
+}
+
+// A parked guest that is already waiting serves a claim at once, even while the
+// pool boots a replacement for another slot.
+func TestWarmPoolClaimDuringReplacementTakesAParkedGuestAtOnce(t *testing.T) {
+	pool, _ := replacementWindow(t, 2, 2)
+	if _, err := pool.Claim(t.Context(), testAttempt()); err != nil {
+		t.Fatalf("claim with a parked guest during the replacement boot failed: %v", err)
+	}
+	assertWarmStatus(t, pool.Status("linux"), 2, 0, 1, false)
+}
+
+// Demand above the target is a miss even inside the replacement window: once
+// the replacement is claimed, the other waiting claim cold-boots.
+func TestWarmPoolClaimAboveTargetDuringReplacementMisses(t *testing.T) {
+	pool, factory := replacementWindow(t, 1, 1)
+	left := claimAsync(t.Context(), pool, "attempt-2")
+	right := claimAsync(t.Context(), pool, "attempt-3")
+	assertClaimPending(t, left)
+	factory.release <- nil
+	var warm, missed int
+	for _, outcome := range []claimOutcome{awaitClaim(t, left), awaitClaim(t, right)} {
+		switch {
+		case outcome.err == nil:
+			warm++
+		case errors.Is(outcome.err, errWarmPoolMiss):
+			missed++
+		default:
+			t.Fatalf("claim failed: %v", outcome.err)
+		}
+	}
+	if warm != 1 || missed != 1 {
+		t.Fatalf("warm=%d missed=%d, want one warm claim and one miss", warm, missed)
+	}
+}
+
+// A replacement that fails to boot leaves a broken pool. The waiting claim
+// fails the Attempt rather than hiding the failure behind a cold boot.
+func TestWarmPoolClaimDuringFailedReplacementFailsClosed(t *testing.T) {
+	pool, factory := replacementWindow(t, 1, 1)
+	outcome := claimAsync(t.Context(), pool, "attempt-2")
+	assertClaimPending(t, outcome)
+	factory.release <- errors.New("thin pool is full")
+	got := awaitClaim(t, outcome)
+	if got.err == nil || errors.Is(got.err, errWarmPoolMiss) {
+		t.Fatalf("claim on a failed replacement = %v, want a warm pool failure", got.err)
+	}
+}
+
+// The Attempt's boot deadline bounds the wait.
+func TestWarmPoolClaimDuringReplacementHonorsTheBootDeadline(t *testing.T) {
+	pool, _ := replacementWindow(t, 1, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := pool.Claim(ctx, testAttempt()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("claim past the boot deadline = %v, want deadline exceeded", err)
+	}
+}
