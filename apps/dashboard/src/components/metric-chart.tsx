@@ -10,7 +10,7 @@ import { formatElapsed } from "@/lib/metrics";
  * The two series colours were checked with the dataviz palette validator against the card
  * surface (#0d0d0f, dark): both inside the lightness band, deutan separation ΔE 23.
  */
-export const SERIES_COLORS = ["#059669", "#8b5cf6"] as const;
+const SERIES_COLORS = ["#059669", "#8b5cf6"] as const;
 
 /** The first series is drawn as an area, a second one as a line over it. */
 export type ChartSeries = {

@@ -8,8 +8,7 @@
 import { ConvexError, v } from "convex/values";
 
 import type { Id } from "../_generated/dataModel";
-import { internalMutation, query, type MutationCtx, type QueryCtx } from "../_generated/server";
-import { requirePermission } from "./access";
+import { internalMutation, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { convexWrite, provenanceFor, type HubOrigin, type Provenance } from "./hubProvenance";
 import { appOfPortKey, firstFreePort, PORT_RANGE_END, PORT_RANGE_START } from "./policy";
 
@@ -137,17 +136,4 @@ export const releaseApp = internalMutation({
   args: { app: v.string() },
   returns: v.number(),
   handler: async (ctx, args) => await releaseAppPorts(ctx, args.app),
-});
-
-export const listForNode = query({
-  args: { nodeId: v.id("nodes") },
-  returns: v.array(v.object({ key: v.string(), port: v.number() })),
-  handler: async (ctx, args) => {
-    await requirePermission(ctx, "app.read");
-    const rows = await ctx.db
-      .query("portAllocations")
-      .withIndex("by_node_port", (q) => q.eq("nodeId", args.nodeId))
-      .collect();
-    return rows.map((row) => ({ key: row.key, port: row.port }));
-  },
 });

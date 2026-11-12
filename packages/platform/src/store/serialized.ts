@@ -27,7 +27,7 @@ export type SerializedQuery = {
 };
 
 /** Decodes a value Convex encoded with convexOrUndefinedToJson. */
-export function fromJsonOrUndefined(json: JSONValue): Value | undefined {
+function fromJsonOrUndefined(json: JSONValue): Value | undefined {
   if (typeof json === "object" && json !== null && !Array.isArray(json) && "$undefined" in json) {
     return undefined;
   }
