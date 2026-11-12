@@ -46,8 +46,9 @@ type Entry struct {
 	Version    string `json:"version"`
 	Repository string `json:"repository"`
 	// RepositoryID is GitHub's ID for the repository that saved the entry,
-	// from the job's facts. Zero for an entry saved before it was recorded or
-	// by a job whose facts carried none; ownership.go says whose those are.
+	// from the job's facts. Commit refuses an entry without one. An entry
+	// stored before the ID was recorded has none, and no token reads it
+	// (ownership.go); the sweep removes it.
 	RepositoryID int64  `json:"repositoryId,omitempty"`
 	Ref          string `json:"ref"`
 	Blob         string `json:"blob"`
@@ -201,9 +202,13 @@ func (i *Index) LookupExact(ctx context.Context, claims cachetoken.Claims, key, 
 
 // newest lists one scope and returns the most recently created match that the
 // token's repository saved. Another repository's entry under the same name is
-// read past, as if it were not there: a token whose facts carry GitHub's
-// repository ID never restores an entry saved under a different one.
+// read past, as if it were not there: a token never restores an entry saved
+// under a different GitHub repository ID, or without one. A token without an
+// ID restores nothing.
 func (i *Index) newest(ctx context.Context, claims cachetoken.Claims, ref, versionSegment, encodedKey, version string) (*Entry, error) {
+	if claims.RepositoryID <= 0 {
+		return nil, nil
+	}
 	repository := claims.Repository
 	prefix := scopePrefix(repository, ref, versionSegment) + encodedKey
 	objects, truncated, err := i.store.List(ctx, prefix, i.maxCandidates())
@@ -235,14 +240,10 @@ func (i *Index) newest(ctx context.Context, claims cachetoken.Claims, ref, versi
 			return nil, err
 		}
 		if entry != nil {
-			owned, err := i.ownedBy(ctx, claims, entry)
-			if err != nil {
-				return nil, err
-			}
-			if owned {
+			if ownedBy(claims, entry) {
 				return i.servable(ctx, entry, repository)
 			}
-			i.logger.Info("cache lookup read past an entry another repository saved under this name",
+			i.logger.Info("cache lookup read past an entry another repository saved, or one without a repository ID",
 				"repository", repository, "repositoryId", claims.RepositoryID,
 				"savedBy", entry.RepositoryID, "ref", ref, "key", entry.Key)
 		}
@@ -363,8 +364,7 @@ func (i *Index) NewBlob(ctx context.Context, repository string) (string, objects
 
 // Commit publishes an entry. Everything it needs is already in the bucket; this
 // is the write that makes it findable. The entry carries the saving
-// repository's ID when the job's facts had one, and from then on only a token
-// for that ID, or one with no ID at all, restores it.
+// repository's ID, and from then on only a token for that ID restores it.
 func (i *Index) Commit(ctx context.Context, entry Entry) error {
 	if err := cachetoken.ValidateRepository(entry.Repository); err != nil {
 		return err
@@ -372,8 +372,8 @@ func (i *Index) Commit(ctx context.Context, entry Entry) error {
 	if entry.Ref == "" {
 		return errors.New("a cache entry needs a ref to be scoped by")
 	}
-	if entry.RepositoryID < 0 {
-		return errors.New("a repository ID is positive, or zero when unknown")
+	if entry.RepositoryID <= 0 {
+		return ErrNoRepositoryID
 	}
 	// A save that did not start at Exists takes the name here. For one that
 	// did, the name is already this ID's and this is a memo read, unless a

@@ -61,8 +61,8 @@ const (
 // gitSeedRefusal is one repository's refusal record.
 type gitSeedRefusal struct {
 	Repository string `json:"repository"`
-	// RepositoryID is GitHub's ID for the repository whose seed was refused,
-	// zero when the job's facts carried none.
+	// RepositoryID is GitHub's ID for the repository whose seed was refused.
+	// A record without one stops no seed being built.
 	RepositoryID int64 `json:"repositoryId,omitempty"`
 	// Ref is the scope whose seed was refused. A record without one was
 	// written before refusals were scoped, by a job on any ref.

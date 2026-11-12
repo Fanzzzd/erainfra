@@ -31,13 +31,10 @@ The caches of `actions/cache`, `setup-node` and `setup-go` all take this path.
   ID. A repository deleted or renamed away and then created again under the same name is a new
   repository with a new ID: it restores none of the old one's entries, and its first save removes
   them. This covers `actions/cache`, BuildKit, Turborepo, the Go build cache and the git seed.
-  Two cases still match by name alone. A job from a controller that pushes no ID reads every
-  entry under the name, for as long as such a controller runs. An entry saved before the cache
-  service recorded IDs has none: it belongs to the first ID that saves under its name after the
-  upgrade, and another ID that later takes the name gets none of it. So for each name the
-  by-name window ends at the first save from an upgraded controller. If the name changed hands
-  before that save, the new repository adopts the old one's entries, because nothing stored can
-  tell the two apart. A job of the old repository that was already running when the name moved
+  Nothing matches by name alone. The cache service refuses job facts without an ID unless they
+  grant nothing, as the controller's cold facts do. An entry stored before the service recorded
+  IDs belongs to no repository: no job reads it, and the next sweep removes it. A job of the old
+  repository that was already running when the name moved
   cannot take it back: for six hours after a newer repository (a larger ID) takes the name, saves
   from a smaller ID are refused and leave the new holder's entries alone.
   `erainfra-cache-service admin list` shows each entry's ID and the ID that holds the

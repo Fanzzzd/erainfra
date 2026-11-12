@@ -123,6 +123,9 @@ func parseFactsPush(body []byte) (string, cachetoken.JobFacts, time.Time, error)
 	// Reject facts that could never authorize anything rather than store a runner
 	// entry that would fail every request it scopes.
 	if _, err := cachetoken.Scope(facts); err != nil {
+		if errors.Is(err, cachetoken.ErrNoRepositoryID) {
+			return "", cachetoken.JobFacts{}, time.Time{}, errFactsUnusable("facts carry no repository ID")
+		}
 		return "", cachetoken.JobFacts{}, time.Time{}, errFactsUnusable("facts do not scope a cache")
 	}
 	if req.ExpiresUnix <= 0 {

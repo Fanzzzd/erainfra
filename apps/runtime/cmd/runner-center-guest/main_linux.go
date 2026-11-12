@@ -487,6 +487,11 @@ func run(ctx context.Context) error {
 	if err := configureResolver(); err != nil {
 		return err
 	}
+	// Best-effort: a guest on the kernel defaults runs every job as before,
+	// it only writes more to the host's disk.
+	if err := configureLazyWriteback(procSysVM); err != nil {
+		fmt.Fprintf(os.Stderr, "runner-center-guest: %v; keeping the kernel's writeback defaults\n", err)
+	}
 	if err := reportWarmReady(); err != nil {
 		return err
 	}
@@ -625,13 +630,17 @@ func run(ctx context.Context) error {
 		// then sits at "reboot: System halted" with the VMM still alive -- the
 		// Attempt only ends when its job timeout expires, hours later. A reset is
 		// what the VMM listens for: with reboot=k on the command line the kernel
-		// pulses the i8042 reset line, Firecracker sees it and exits. systemd
-		// still stops every unit and unmounts the root first.
-		// Without cancel: a SIGTERM that lands after the runner has exited must
-		// not stop the reset, since the reset is what ends the VMM.
-		reset := exec.CommandContext(context.WithoutCancel(ctx), "systemctl", "reboot", "--no-block")
-		if resetErr := reset.Run(); resetErr != nil {
-			return fmt.Errorf("reset the microVM after runner exit: %w", resetErr)
+		// pulses the i8042 reset line, Firecracker sees it and exits.
+		// resetWithoutSync resets at once, without the sync and unmount that
+		// systemd performs first. If the system call is refused, systemd resets
+		// in order instead. Without cancel: a SIGTERM that lands after the
+		// runner has exited must not stop that reset, since it ends the VMM.
+		if resetErr := resetWithoutSync(); resetErr != nil {
+			fmt.Fprintf(os.Stderr, "runner-center-guest: reset without sync: %v; resetting through systemd\n", resetErr)
+			reset := exec.CommandContext(context.WithoutCancel(ctx), "systemctl", "reboot", "--no-block")
+			if resetErr := reset.Run(); resetErr != nil {
+				return fmt.Errorf("reset the microVM after runner exit: %w", resetErr)
+			}
 		}
 	}
 	if metadata.Kind == "experiment" {

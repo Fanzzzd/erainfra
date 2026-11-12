@@ -56,7 +56,7 @@ func TestUnknownRunnerIsUnauthorized(t *testing.T) {
 func TestFactsPushRequiresTheSigningKey(t *testing.T) {
 	h := newHarness(t, nil)
 	body := jsonBody(map[string]any{
-		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910,
 		"event": "push", "ref": "refs/heads/main", "expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
 
@@ -86,17 +86,52 @@ func TestFactsPushRejectsUnusableInput(t *testing.T) {
 		"no repository": jsonBody(map[string]any{
 			"runner": "rc-a", "event": "push", "ref": "refs/heads/main", "expiresUnix": expires}),
 		"no ref": jsonBody(map[string]any{
-			"runner": "rc-a", "repository": "Fanzzzd/erainfra", "event": "push", "expiresUnix": expires}),
+			"runner": "rc-a", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910, "event": "push", "expiresUnix": expires}),
 		"invalid runner": jsonBody(map[string]any{
-			"runner": "../escape", "repository": "Fanzzzd/erainfra", "ref": "refs/heads/main", "expiresUnix": expires}),
+			"runner": "../escape", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910, "ref": "refs/heads/main", "expiresUnix": expires}),
 		"no expiry": jsonBody(map[string]any{
-			"runner": "rc-a", "repository": "Fanzzzd/erainfra", "event": "push", "ref": "refs/heads/main"}),
+			"runner": "rc-a", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910, "event": "push", "ref": "refs/heads/main"}),
 	} {
 		response := h.pushFacts(body, adminSign(body))
 		_ = response.Body.Close()
 		if response.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: push = %d, want 400", name, response.StatusCode)
 		}
+	}
+}
+
+// Facts that would grant a cache by the repository's name alone are refused
+// with a message that says why. The controller's cold facts carry no ID and
+// grant nothing, so they are taken: the job's requests are then misses.
+func TestFactsPushWithoutARepositoryIDIsRefused(t *testing.T) {
+	h := newHarness(t, nil)
+	expires := h.now().Add(time.Hour).Unix()
+
+	body := jsonBody(map[string]any{
+		"runner": "rc-no-id", "repository": "Fanzzzd/erainfra", "event": "push",
+		"ref": "refs/heads/main", "defaultBranch": "refs/heads/main", "expiresUnix": expires,
+	})
+	response := h.pushFacts(body, adminSign(body))
+	var refused map[string]string
+	decodeInto(t, response, &refused)
+	if response.StatusCode != http.StatusBadRequest || refused["message"] != "facts carry no repository ID" {
+		t.Fatalf("push without an ID = %d %v, want 400 naming the missing ID", response.StatusCode, refused)
+	}
+	if restore := h.restoreStatus(h.runnerToken("rc-no-id"), "k", "v"); restore != http.StatusUnauthorized {
+		t.Fatalf("restore for the refused runner = %d, want 401", restore)
+	}
+
+	cold := jsonBody(map[string]any{
+		"runner": "rc-cold", "repository": "Fanzzzd/erainfra", "headRepository": "(unverified)",
+		"event": "push", "ref": "(unresolved)", "expiresUnix": expires,
+	})
+	pushed := h.pushFacts(cold, adminSign(cold))
+	_ = pushed.Body.Close()
+	if pushed.StatusCode != http.StatusNoContent {
+		t.Fatalf("cold facts push = %d, want 204", pushed.StatusCode)
+	}
+	if restore := h.restoreStatus(h.runnerToken("rc-cold"), "k", "v"); restore != http.StatusNoContent {
+		t.Fatalf("restore for cold facts = %d, want a 204 miss", restore)
 	}
 }
 
@@ -115,7 +150,7 @@ func TestFactsPushRejectsWrongMethod(t *testing.T) {
 func TestScopedAccessAfterEndpointPush(t *testing.T) {
 	h := newHarness(t, nil)
 	body := jsonBody(map[string]any{
-		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910,
 		"event": "push", "ref": "refs/heads/main", "defaultBranch": "refs/heads/main",
 		"expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
@@ -141,7 +176,7 @@ func TestScopedAccessAfterEndpointPush(t *testing.T) {
 func TestPushedFactsSurviveARestart(t *testing.T) {
 	h := newHarness(t, nil)
 	body := jsonBody(map[string]any{
-		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910,
 		"event": "push", "ref": "refs/heads/main", "defaultBranch": "refs/heads/main",
 		"expiresUnix": h.now().Add(time.Hour).Unix(),
 	})

@@ -14,7 +14,7 @@ import (
 func (h *harness) pushRunnerFacts(runner string, expires time.Time) string {
 	h.t.Helper()
 	body := jsonBody(map[string]any{
-		"runner": runner, "repository": "Fanzzzd/erainfra",
+		"runner": runner, "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910,
 		"event": "push", "ref": "refs/heads/main", "defaultBranch": "refs/heads/main",
 		"expiresUnix": expires.Unix(),
 	})
@@ -90,7 +90,7 @@ func TestFactsPushThatCannotBePersistedIsRetryable(t *testing.T) {
 		return 0
 	})
 	body := jsonBody(map[string]any{
-		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra",
+		"runner": "erainfra-4vcpu-ubuntu-2404-a", "repository": "Fanzzzd/erainfra", "repositoryId": 1313003910,
 		"event": "push", "ref": "refs/heads/main", "expiresUnix": h.now().Add(time.Hour).Unix(),
 	})
 	pushed := h.pushFacts(body, adminSign(body))
