@@ -1,5 +1,13 @@
 # @erainfra/runtime
 
+## 0.2.0-rc.17
+
+### Patch Changes
+
+- [#324](https://github.com/Fanzzzd/erainfra/pull/324) [`ee39c1c`](https://github.com/Fanzzzd/erainfra/commit/ee39c1c5833de876ba25093a9005af2074e20c0d) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Guests mount their root filesystem with `nobarrier,data=writeback,journal_async_commit,commit=30`, the root mount options of GitHub's hosted image. Our image dropped them together with GRUB. Each Attempt's root is a throwaway snapshot, so each small write saved also saves a 64 KiB copy-on-write or zeroing write in the Worker's thin pool. The image boot test now fails if the guest's root mount lacks any of them.
+
+- [#323](https://github.com/Fanzzzd/erainfra/pull/323) [`3c87ca2`](https://github.com/Fanzzzd/erainfra/commit/3c87ca2b2b5d4acbbc36eef9fcc2dc5c91d173a2) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The thin pool now zeroes every new block. Before this change the pool was created with `skip_block_zeroing`, so a guest that wrote part of a fresh 64 KiB block could read the rest of it, which could hold an earlier Attempt's data. Host setup reloads an existing pool's table in place. A new readiness check, `snapshot-block-zeroing`, fails while the pool skips zeroing, and the control plane requires it on every Firecracker Worker. Update the runtime on each Worker before deploying the control plane, or Workers on an older runtime are refused.
+
 ## 0.2.0-rc.16
 
 ### Minor Changes

@@ -1,5 +1,21 @@
 # @erainfra/backend
 
+## 0.2.0-rc.17
+
+### Minor Changes
+
+- [#320](https://github.com/Fanzzzd/erainfra/pull/320) [`4107de7`](https://github.com/Fanzzzd/erainfra/commit/4107de78e590ed78f680918d3ce287cbd3a1895e) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The control plane no longer knows the legacy image labels `rc-linux`, `rc-mac` and `rc-win`. A job that names no image gets `ubuntu-24.04`, `macos-15` or `windows-2025`, the same images the aliases pointed at. A pre-Profile job that still asks for an old name now needs a Worker with that host label. `/runs-on?labels=` takes the real labels, such as `labels=ubuntu-24.04`.
+
+### Patch Changes
+
+- [#317](https://github.com/Fanzzzd/erainfra/pull/317) [`f8232bb`](https://github.com/Fanzzzd/erainfra/commit/f8232bbb3c8d4745fdcb47cd82e828a0f4ed9ffb) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A scale-set job's start is GitHub's runner assignment time, the clock its finish time is on, and a job is never recorded as finishing before it started. Before, a JobStarted that reached the control plane after the job finished gave it a start later than its finish and a zero duration.
+
+- [#321](https://github.com/Fanzzzd/erainfra/pull/321) [`2c53b30`](https://github.com/Fanzzzd/erainfra/commit/2c53b30905973622849063d50cddfdada2b6545e) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - `erainfra jobs list --since 720h --all` no longer fails on page 2 with "cursor is not valid for these filters". The CLI turns a `--since` span into a time once, before the first page, and its hint for the next page names that time. The operator API's refusal now says when a `since` span sent with a cursor is the likely cause.
+
+- [#317](https://github.com/Fanzzzd/erainfra/pull/317) [`f8232bb`](https://github.com/Fanzzzd/erainfra/commit/f8232bbb3c8d4745fdcb47cd82e828a0f4ed9ffb) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - When GitHub sends no queue time, queue wait counts from when GitHub assigned the job to the Profile's scale set. GitHub's scale-set messages have so far carried no queue time, so `queueWaitMs` was null on every scale-set Attempt. `queuedAt` stays null. The API returns the new start as `scaleSetAssignedAt`, and `erainfra jobs view` prints it as "On scale set".
+
+- [#323](https://github.com/Fanzzzd/erainfra/pull/323) [`3c87ca2`](https://github.com/Fanzzzd/erainfra/commit/3c87ca2b2b5d4acbbc36eef9fcc2dc5c91d173a2) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The thin pool now zeroes every new block. Before this change the pool was created with `skip_block_zeroing`, so a guest that wrote part of a fresh 64 KiB block could read the rest of it, which could hold an earlier Attempt's data. Host setup reloads an existing pool's table in place. A new readiness check, `snapshot-block-zeroing`, fails while the pool skips zeroing, and the control plane requires it on every Firecracker Worker. Update the runtime on each Worker before deploying the control plane, or Workers on an older runtime are refused.
+
 ## 0.2.0-rc.16
 
 ### Minor Changes
