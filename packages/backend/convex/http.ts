@@ -1018,7 +1018,7 @@ function runsOnResponse(label: string | string[]) {
 // go to the deployment log, not to the caller. Each answer is stored as a
 // routerDecisions row, with the optional `repo=OWNER/NAME` the caller sent.
 //
-// The legacy form `?labels=rc-linux[,…]` still answers from the pre-Profile
+// The legacy form `?labels=ubuntu-24.04[,…]` still answers from the pre-Profile
 // `machines`/`jobs` path (machines.hasCapacity), which webhook-intake jobs
 // still use.
 http.route({
