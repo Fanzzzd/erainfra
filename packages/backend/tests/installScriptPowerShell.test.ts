@@ -427,7 +427,7 @@ type WinSandbox = {
 };
 
 function createWinSandbox(release: AgentRelease, options: { withNode?: boolean } = {}): WinSandbox {
-  const root = mkdtempSync(path.join(tmpdir(), "rc-win-install-"));
+  const root = mkdtempSync(path.join(tmpdir(), "erainfra-win-install-"));
   sandboxes.push(root);
   const home = path.join(root, "home");
   const binDir = path.join(root, "bin");
@@ -966,7 +966,7 @@ describeAnalyzer("PSScriptAnalyzer", () => {
     ).stdout.trim() === "yes";
 
   function scriptFile() {
-    const root = mkdtempSync(path.join(tmpdir(), "rc-win-lint-"));
+    const root = mkdtempSync(path.join(tmpdir(), "erainfra-win-lint-"));
     sandboxes.push(root);
     const file = path.join(root, "install.ps1");
     writeFileSync(file, renderWindowsInstallScript(SITE_URL, AGENT_RELEASE));

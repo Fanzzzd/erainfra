@@ -235,7 +235,7 @@ func TestScalerCapsDemandAndKeepsRunningAttempts(t *testing.T) {
 	issuer := &fakeIssuer{}
 	scaler, err := NewScaler(
 		func() Config {
-			config := validConfig("rc-macos-15", 2)
+			config := validConfig("erainfra-2vcpu-macos-15", 2)
 			config.Executor = "tart"
 			return config
 		}(),

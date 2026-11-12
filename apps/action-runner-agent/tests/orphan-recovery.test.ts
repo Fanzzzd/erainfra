@@ -5,7 +5,7 @@ import { recoverFirecrackerOrphans } from "../orphan-recovery.ts";
 import type { ProfileSpec } from "../readiness.ts";
 
 const FIRECRACKER_PROFILE: ProfileSpec = {
-  profile: "rc-linux-firecracker",
+  profile: "erainfra-2vcpu-ubuntu-2404",
   executor: "firecracker",
   imageRelease: `ghcr.io/example/image@sha256:${"a".repeat(64)}`,
   vcpus: 2,

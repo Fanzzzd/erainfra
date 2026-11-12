@@ -287,7 +287,7 @@ describe("readiness-gated Attempt scheduling", () => {
   it("reserves parked slots against unrelated Profile work", async () => {
     const t = convexTest(schema, modules);
     const machineId = await addWorker(t, "warm", 2, 2);
-    const other = { ...CONTRACT, profile: "rc-linux-other" };
+    const other = { ...CONTRACT, profile: "erainfra-2vcpu-ubuntu-2404" };
     await t.mutation(internal.controllerApi.registerProfile, {
       name: other.profile,
       scaleSetName: other.profile,

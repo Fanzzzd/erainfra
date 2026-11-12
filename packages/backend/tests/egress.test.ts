@@ -19,7 +19,7 @@ const modules = import.meta.glob("../convex/**/*.ts");
 type Harness = TestConvex<typeof schema>;
 
 const IMAGE = `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`;
-const PROFILE = "rc-linux-locked";
+const PROFILE = "erainfra-4vcpu-ubuntu-2404-locked";
 const GITHUB_ALLOWLIST: ProfileEgress = {
   mode: "allowlist",
   presets: ["github"],
