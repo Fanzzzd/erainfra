@@ -62,7 +62,7 @@ if [ -z "$ACTIONS_RUNNER_INPUT_JITCONFIG" ]; then
   exit 1
 fi
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/rc-linux-XXXXXXXX")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/erainfra-linux-XXXXXXXX")"
 chmod 700 "$WORKDIR"
 DOCKER_PID=""
 WATCHDOG_PID=""

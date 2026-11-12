@@ -70,11 +70,6 @@ export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
     image: ACTIONS_RUNNER_IMAGE,
     description: "Ubuntu 24.04-based minimal GitHub Actions runner image.",
   },
-  "rc-linux": {
-    os: "linux",
-    image: ACTIONS_RUNNER_IMAGE,
-    description: "Alias for the default Linux runner image.",
-  },
   "macos-15": {
     os: "mac",
     image: MACOS_SEQUOIA_IMAGE,
@@ -87,11 +82,6 @@ export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
       "Preview: macOS Tahoe base image for Tart. No Tahoe image has been pulled, booted or run a job on.",
     preview: true,
   },
-  "rc-mac": {
-    os: "mac",
-    image: MACOS_SEQUOIA_IMAGE,
-    description: "Alias for the default macOS runner image.",
-  },
   "windows-2022": {
     os: "win",
     image: WINDOWS_2022_IMAGE,
@@ -102,17 +92,15 @@ export const IMAGE_CATALOG: Record<string, ImageCatalogEntry> = {
     image: WINDOWS_2025_IMAGE,
     description: "Windows Server 2025 parent VHDX for Hyper-V.",
   },
-  "rc-win": {
-    os: "win",
-    image: WINDOWS_2025_IMAGE,
-    description: "Alias for the default Windows runner image.",
-  },
 };
 
+// The image a job gets when its labels name none, such as `[self-hosted, gpu]`: per OS, the
+// production image a job has run on. These point at the same images the removed legacy aliases
+// did, so no machine's default changed.
 const DEFAULT_IMAGE_LABEL_BY_OS: Record<CatalogOs, string> = {
-  linux: "rc-linux",
-  mac: "rc-mac",
-  win: "rc-win",
+  linux: "ubuntu-24.04",
+  mac: "macos-15",
+  win: "windows-2025",
 };
 
 export function findImageLabel(labels: readonly string[]) {
