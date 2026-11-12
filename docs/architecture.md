@@ -73,7 +73,7 @@ dashboard shows the real boundary, `guest kernel` or `shared kernel`, next to ev
 - Image and product releases are immutable and checksum/provenance verified.
 - The Linux guest obtains workload metadata through MMDSv2; it has no host SSH path.
 - Worker cancellation terminates the complete executor process group and destroys VM state.
-- A minute reconciliation repairs slots across legacy Jobs, scale-set Attempts, and Experiments,
+- A minute reconciliation repairs slots across scale-set Attempts and Experiments,
   requeues only unclaimed work, and fails abandoned claimed work.
 - Profile readiness expires operationally when a Worker heartbeat is older than two minutes.
 - Secrets are never written into workflow files, process arguments, image layers, or logs.

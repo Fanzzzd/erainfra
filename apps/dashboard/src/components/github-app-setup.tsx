@@ -104,8 +104,7 @@ function DisconnectConfirm({
           GitHub, and it keeps sending webhooks.
         </li>
         <li>
-          Those deliveries will no longer verify, so App-authenticated jobs stop reaching this
-          deployment and queued work can stall.
+          Those deliveries will no longer verify. Nothing here acts on them, so no job is affected.
         </li>
         <li>
           The private key cannot be recovered from GitHub. Reconnecting registers a second App.
@@ -186,7 +185,8 @@ export function GithubAppSetup() {
                 <code className="font-mono">{app.clientId}</code>
               </p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Webhook and JIT runner credentials are stored in this deployment and never leave it.
+                Its credentials are stored in this deployment and never leave it. Convex uses the
+                App only for a token to read the actions/runner release list.
               </p>
             </div>
           </div>
@@ -246,9 +246,9 @@ export function GithubAppSetup() {
             {status.configured ? "Connect a GitHub App" : "Connect GitHub"}
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            EraInfra registers the App for you: one click sets up the webhook, the minimum
-            permissions, and the private key. No app form to fill in and no environment variables to
-            copy.
+            EraInfra registers the App for you: one click sets up the webhook, the permissions, and
+            the private key. Convex uses the App only for a token to read the actions/runner release
+            list, and uses the controller App when none is connected.
           </p>
           {note !== undefined && (
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{note}</p>
