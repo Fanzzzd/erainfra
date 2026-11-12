@@ -48,7 +48,7 @@ RC_RUNNER_SHA256_DEFAULT="25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b12
 
 # Pinned by digest for the same reason the runner tarball is: `:latest` moves.
 # This is the image the end-to-end runs were executed against, and it must track
-# the macos-15/rc-mac entries in packages/backend/convex/catalog.ts. It is only a
+# the macos-15 entry in packages/backend/convex/catalog.ts. It is only a
 # fallback -- a catalog-backed command always passes IMAGE explicitly.
 RC_DEFAULT_IMAGE="ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed"
 
@@ -831,7 +831,7 @@ main() {
 
   install_traps
 
-  WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/rc-mac-XXXXXXXX")"
+  WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/erainfra-mac-XXXXXXXX")"
   chmod 700 "$WORKDIR"
 
   umask 077

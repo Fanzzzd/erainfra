@@ -115,18 +115,18 @@ describe("machine indexed policies", () => {
     const offline = await seedMachine(t, "offline", "offline-token", Date.now() - 10 * 60_000);
 
     expect(
-      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "rc-linux"] }),
+      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "ubuntu-24.04"] }),
     ).toBe(true);
     await t.run(async (ctx) => {
       await ctx.db.patch(online, { lastSeen: Date.now() - 10 * 60_000 });
       await ctx.db.patch(offline, { lastSeen: Date.now() });
     });
     expect(
-      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "rc-linux"] }),
+      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "ubuntu-24.04"] }),
     ).toBe(true);
     await t.run((ctx) => ctx.db.patch(offline, { lastSeen: Date.now() - 10 * 60_000 }));
     expect(
-      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "rc-linux"] }),
+      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "ubuntu-24.04"] }),
     ).toBe(false);
   });
 });

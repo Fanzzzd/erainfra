@@ -3,13 +3,10 @@ name: EraInfra disk contention benchmark
 # Runs .github/bench/contention.sh once on a guest alone, then on eight guests
 # at the same time on the same Profile. If the crowd is much slower than the
 # solo run, the Worker's storage path (thin-pool, loop device, host disk) is
-# the shared bottleneck, not the guest. Triggers only when the benchmark
-# itself changes, or by hand once this file is on the default branch.
+# the shared bottleneck, not the guest. It runs only by hand: nine guests on
+# the canary Profile share the Worker's disk with production Profiles, so a
+# pull request that edits this file must not start it.
 on:
-  pull_request:
-    paths:
-      - .github/bench/contention.sh
-      - .github/workflows/bench-contention.yml
   workflow_dispatch:
     inputs:
       profile:

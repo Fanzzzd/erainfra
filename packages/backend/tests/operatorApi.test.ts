@@ -387,6 +387,29 @@ describe("operator API reads", () => {
     expect((await response.json()).error.code).toBe("invalid_cursor");
   });
 
+  // `erainfra jobs list --since 720h --all` sent the span with every page. Convex refused page 2
+  // because the span resolved to a later time than the one the cursor was issued for. convex-test
+  // does not bind a cursor to its index range, so a malformed cursor stands in for the refusal.
+  it("says why a cursor sent with a since span is refused", async () => {
+    const { t, token } = await fleet();
+    await seedAttempt(t, T0);
+    const refusal = async (query: string) => {
+      const response = await get(t, `/api/v1/attempts?${query}&cursor=garbage`, token);
+      expect(response.status, query).toBe(400);
+      return (await response.json()).error;
+    };
+
+    expect(await refusal("since=720h")).toEqual({
+      code: "invalid_cursor",
+      message:
+        "cursor is not valid for these filters: a since span moves with each request, so send the RFC 3339 time it meant on the first page",
+    });
+    expect(await refusal(`since=${new Date(T0 - 86_400_000).toISOString()}`)).toEqual({
+      code: "invalid_cursor",
+      message: "cursor is not valid for these filters",
+    });
+  });
+
   it("shows one Attempt with queue wait and duration, and never its JIT config", async () => {
     const { t, token, machineId } = await fleet();
     const id = await seedAttempt(t, T0, {

@@ -142,7 +142,7 @@ describe("prepareProfile", () => {
     process.env.TART = process.execPath;
     try {
       const result = await prepareProfile({
-        profile: "rc-mac",
+        profile: "erainfra-macos-15",
         executor: "tart",
         imageRelease: "ghcr.io/cirruslabs/macos-tahoe-base:latest",
         vcpus: 2,
@@ -172,7 +172,7 @@ describe("prepareProfile", () => {
     process.env.TART = "/nonexistent/tart";
     try {
       const result = await prepareProfile({
-        profile: "rc-mac",
+        profile: "erainfra-macos-15",
         executor: "tart",
         imageRelease: `ghcr.io/cirruslabs/macos-sequoia-base${DIGEST}`,
         vcpus: 2,
@@ -193,7 +193,7 @@ describe("prepareProfile", () => {
     // runs on macOS/Linux CI, where readiness must still fail loudly instead
     // of pretending a Hyper-V Profile could run here.
     const result = await prepareProfile({
-      profile: "rc-win",
+      profile: "erainfra-windows-2025",
       executor: "hyperv",
       imageRelease: "rc-win2025",
       vcpus: 2,
@@ -209,7 +209,7 @@ describe("prepareProfile", () => {
     // The image name becomes %RC_HOME%\images\<name>.vhdx on the Worker; a
     // path-traversal name must die at readiness, not at provision time.
     const result = await prepareProfile({
-      profile: "rc-win",
+      profile: "erainfra-windows-2025",
       executor: "hyperv",
       imageRelease: "..\\..\\evil",
       vcpus: 2,
