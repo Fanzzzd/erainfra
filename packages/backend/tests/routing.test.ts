@@ -290,7 +290,7 @@ describe("routing.profileRoute", () => {
     await registerProfile(t);
     await addReadyWorker(t, "worker-a");
 
-    expect(await route(t, "rc-linux-typo")).toEqual({
+    expect(await route(t, "erainfra-4vcpu-ubuntu-2044")).toEqual({
       route: "fallback",
       reason: "unknown-profile",
     });

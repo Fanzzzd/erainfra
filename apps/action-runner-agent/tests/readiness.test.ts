@@ -78,7 +78,7 @@ describe("prepareProfile", () => {
 
   it("never reports a guest-kernel boundary for the Docker executor", async () => {
     const result = await prepareProfile({
-      profile: "rc-linux-docker",
+      profile: "erainfra-2vcpu-ubuntu-2404-docker",
       executor: "docker",
       // A digest that cannot be pulled: the point is the reported boundary, not
       // whether this host happens to have Docker.
@@ -448,7 +448,7 @@ describe("Profile egress readiness", () => {
         cidrs: [],
       };
       const result = await prepareProfile({
-        profile: "rc-linux-locked",
+        profile: "erainfra-2vcpu-ubuntu-2404-locked",
         executor: "firecracker",
         imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
         vcpus: 2,

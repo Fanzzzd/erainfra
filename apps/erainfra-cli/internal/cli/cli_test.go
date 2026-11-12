@@ -389,12 +389,12 @@ func TestProfilesListRendersTableAndPassesJSONThrough(t *testing.T) {
 func TestWorkersListTable(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	h.api.on("GET /api/v1/workers", 200, `{"workers":[
-		{"id":"m1","name":"ubuntu0","os":"linux","arch":"x64","labels":["gpu","nvme"],"online":true,"lastHeartbeatAt":"2026-11-05T11:59:30.000Z","slots":{"max":3,"used":1,"policy":"auto","recommended":3},"readiness":[{"profile":"rc-linux-js","state":"ready"},{"profile":"erainfra-4vcpu-ubuntu-2404","state":"preparing"}],"activeAttempts":[]},
+		{"id":"m1","name":"ubuntu0","os":"linux","arch":"x64","labels":["gpu","nvme"],"online":true,"lastHeartbeatAt":"2026-11-05T11:59:30.000Z","slots":{"max":3,"used":1,"policy":"auto","recommended":3},"readiness":[{"profile":"erainfra-canary-4vcpu-ubuntu-2404","state":"ready"},{"profile":"erainfra-4vcpu-ubuntu-2404","state":"preparing"}],"activeAttempts":[]},
 		{"id":"m2","name":"mac1","os":"mac","arch":null,"online":false,"lastHeartbeatAt":null,"slots":{"max":1,"used":0,"policy":"fixed","recommended":null},"readiness":[],"activeAttempts":[]}]}`)
 	h.expect(ExitOK, "workers", "list")
 	want := "" +
 		"NAME     STATUS   HEARTBEAT  PLATFORM   SLOTS  LABELS    PROFILES\n" +
-		"ubuntu0  online   30s ago    linux/x64  1/3    gpu,nvme  erainfra-4vcpu-ubuntu-2404=preparing, rc-linux-js=ready\n" +
+		"ubuntu0  online   30s ago    linux/x64  1/3    gpu,nvme  erainfra-4vcpu-ubuntu-2404=preparing, erainfra-canary-4vcpu-ubuntu-2404=ready\n" +
 		"mac1     offline  -          mac        0/1    -         -\n"
 	if h.stdout.String() != want {
 		t.Errorf("table:\n%s\nwant:\n%s", h.stdout.String(), want)

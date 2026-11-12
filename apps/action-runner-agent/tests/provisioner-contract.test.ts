@@ -379,7 +379,7 @@ describe("scale-set Attempt invocation", () => {
     const { env } = attemptInvocation({
       attemptId: "attempt-1",
       runnerName: "runner-a",
-      profile: "rc-linux-locked",
+      profile: "erainfra-4vcpu-ubuntu-2404-locked",
       executor: "firecracker",
       imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
       vcpus: 4,
@@ -396,7 +396,7 @@ describe("scale-set Attempt invocation", () => {
     const experiment = experimentInvocation({
       experimentId: "experiment-1",
       name: "benchmark",
-      profile: "rc-linux-locked",
+      profile: "erainfra-4vcpu-ubuntu-2404-locked",
       executor: "firecracker",
       imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
       vcpus: 4,
@@ -657,7 +657,7 @@ describe("scale-set Attempt invocation", () => {
     const invocation = attemptInvocation({
       attemptId: "attempt-2",
       runnerName: "runner-b",
-      profile: "rc-macos-15",
+      profile: "erainfra-4vcpu-macos-15",
       executor: "tart",
       imageRelease:
         "ghcr.io/cirruslabs/macos-sequoia-base@sha256:fdd8b72a6ee46fc8ad35dc1b9f3b1f162b6607b82a584947d20bb28d3dcb99ed",

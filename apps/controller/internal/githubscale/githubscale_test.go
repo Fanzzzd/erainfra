@@ -72,12 +72,12 @@ func TestEnsureScaleSetCreatesDurableContract(t *testing.T) {
 func TestEnsureScaleSetUpdatesDriftButLeavesMatchingSetAlone(t *testing.T) {
 	client := &fakeClient{existing: &scaleset.RunnerScaleSet{
 		ID:            17,
-		Name:          "rc-macos-15",
+		Name:          "erainfra-4vcpu-macos-15",
 		RunnerGroupID: 1,
 		Labels:        []scaleset.Label{{Name: "old"}},
 		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: false},
 	}}
-	updated, err := EnsureScaleSet(t.Context(), client, ScaleSetSpec{Name: "rc-macos-15"})
+	updated, err := EnsureScaleSet(t.Context(), client, ScaleSetSpec{Name: "erainfra-4vcpu-macos-15"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestEnsureScaleSetUpdatesDriftButLeavesMatchingSetAlone(t *testing.T) {
 
 	client.existing = updated
 	client.updated = nil
-	if _, err := EnsureScaleSet(t.Context(), client, ScaleSetSpec{Name: "rc-macos-15"}); err != nil {
+	if _, err := EnsureScaleSet(t.Context(), client, ScaleSetSpec{Name: "erainfra-4vcpu-macos-15"}); err != nil {
 		t.Fatal(err)
 	}
 	if client.updated != nil {

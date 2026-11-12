@@ -124,8 +124,8 @@ describe("controller payloads", () => {
     ).toMatchObject({ fitPolicy: "balanced", warmPool: 0 });
     expect(
       parseRegisterProfile({
-        name: "rc-linux-warm",
-        scaleSetName: "rc-linux-warm",
+        name: "erainfra-2vcpu-ubuntu-2404-warm",
+        scaleSetName: "erainfra-2vcpu-ubuntu-2404-warm",
         executor: "firecracker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus: 2,
@@ -137,8 +137,8 @@ describe("controller payloads", () => {
     ).toMatchObject({ warmPool: 2 });
     expect(
       parseRegisterProfile({
-        name: "rc-linux-invalid-warm",
-        scaleSetName: "rc-linux-invalid-warm",
+        name: "erainfra-2vcpu-ubuntu-2404-docker",
+        scaleSetName: "erainfra-2vcpu-ubuntu-2404-docker",
         executor: "docker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus: 2,
@@ -150,8 +150,8 @@ describe("controller payloads", () => {
     ).toBeNull();
     expect(
       parseRegisterProfile({
-        name: "rc-linux-cpu",
-        scaleSetName: "rc-linux-cpu",
+        name: "erainfra-8vcpu-ubuntu-2404-8gb",
+        scaleSetName: "erainfra-8vcpu-ubuntu-2404-8gb",
         executor: "firecracker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
         vcpus: 8,
@@ -163,8 +163,8 @@ describe("controller payloads", () => {
     ).toMatchObject({ fitPolicy: "cpu" });
     expect(
       parseRegisterProfile({
-        name: "rc-linux-trusted",
-        scaleSetName: "rc-linux-trusted",
+        name: "erainfra-4vcpu-ubuntu-2404-trusted",
+        scaleSetName: "erainfra-4vcpu-ubuntu-2404-trusted",
         executor: "docker",
         imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"b".repeat(64)}`,
         vcpus: 4,
