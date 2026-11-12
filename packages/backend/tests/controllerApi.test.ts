@@ -274,7 +274,7 @@ describe("scale-set Attempt protocol", () => {
     ] as const) {
       await t.mutation(internal.controllerApi.createAttempt, {
         ...CONTRACT,
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         runnerName,
         runnerId,
         encodedJITConfig: "secret",
@@ -282,7 +282,7 @@ describe("scale-set Attempt protocol", () => {
     }
     const finishedAt = Date.now() - 700;
     const runnerAssignedAt = finishedAt - 25_000;
-    const started = { profile: "rc-linux-js", displayName: "test", workflowRunId: 99 };
+    const started = { profile: "erainfra-4vcpu-ubuntu-2404", displayName: "test", workflowRunId: 99 };
     const stored = async (runnerName: string) =>
       t.run(async (ctx) =>
         ctx.db
@@ -299,7 +299,7 @@ describe("scale-set Attempt protocol", () => {
       runnerAssignedAt,
     });
     await t.mutation(internal.controllerApi.markJobCompleted, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "assigned",
       result: "succeeded",
       finishedAt,
@@ -317,7 +317,7 @@ describe("scale-set Attempt protocol", () => {
     });
     expect((await stored("unassigned"))?.startedAt).toBeGreaterThan(finishedAt);
     await t.mutation(internal.controllerApi.markJobCompleted, {
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       runnerName: "unassigned",
       result: "succeeded",
       finishedAt,
