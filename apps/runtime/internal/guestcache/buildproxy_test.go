@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetest"
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // lines collects what the proxy logs.

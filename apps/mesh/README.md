@@ -6,9 +6,9 @@ listens on a local port and forwards each TCP connection, end-to-end encrypted, 
 Node, which connects it to the service. Nodes behind NAT connect directly when hole punching works
 and through a relay when it does not.
 
-It implements [ADR 0016](../../docs/adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md)
-phase 1: the sidecar that replaces dumbpipe. The Infra Agent uses it only after an explicit,
-pinned installation; see [the opt-in runbook](../../docs/runbooks/secure-node-mesh.md).
+It is the sidecar from [ADR 0016](../../docs/adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md)
+that replaces dumbpipe. Every Convex-mode Node runs it: `/install --role node --convex` installs
+`erainfra-mesh.service` from the release pin, and the Infra Agent's `connect-convex` drives it.
 
 What it does that dumbpipe did not:
 
@@ -264,8 +264,10 @@ names such as `localhost` are refused (`invalid_target`), as is every other addr
 `allowed_peers` is an explicit list of consumer EndpointIds. Both current fleet membership and
 membership in this list are required on every stream, before the target TCP connection opens.
 Omitting the field or sending `[]` denies everyone; there is no wildcard or all-fleet default.
-The future controller/Hub integration will derive grants from declared mesh links. This daemon
-never infers grants from its fleet list or local link configuration.
+On a Convex-mode Node the grants come from Convex: the Node's state snapshot
+(`packages/backend/convex/infra/nodeState.ts`) lists, for each exposure, the EndpointIds of the
+Nodes whose links name it, and the Infra Agent (`apps/infra-agent/internal/convexnode/meshsync.go`)
+sends them here. This daemon never infers grants from its fleet list or local link configuration.
 
 Replacing the list closes removed peers' existing streams immediately. Retained peers' streams
 and counters continue. A malformed EndpointId rejects the whole request without changing grants.

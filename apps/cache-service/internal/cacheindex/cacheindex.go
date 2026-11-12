@@ -25,8 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // maxEntryMetadataBytes bounds what a metadata read will pull into memory. The

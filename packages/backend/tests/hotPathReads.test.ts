@@ -27,10 +27,6 @@ const justifiedFullScans: Record<string, FullScanAllowance> = {
     occurrences: 1,
     reason: "Setup states are operator-authored, short-lived, and swept only when setup begins.",
   },
-  "infra/access.ts:users": {
-    occurrences: 1,
-    reason: "The account list is the complete set of operator-invited people, shown in full.",
-  },
   "infra/apps.ts:apps": {
     occurrences: 1,
     reason: "The App list is operator-deployed and shown in full, as the Hub showed it.",

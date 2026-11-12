@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/config"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore/fakes3"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 // signingKey is long enough to be a secret and fixed so a test can forge with

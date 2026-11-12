@@ -38,9 +38,10 @@ changing the live rules:
 )
 ```
 
-On the Ubuntu 20.04 Worker with kernel 5.4.0-216 and nftables 0.9.3, the rc.12 policy fails this
-probe with `concatenated types not supported in interval sets`. Its old live table also lacks the
-Profile egress rules. Replacing only the daemon does not update that table.
+An older kernel or nftables userspace fails it. On Ubuntu 20.04 (kernel 5.4, nftables 0.9.3) the
+rc.12 policy failed with `concatenated types not supported in interval sets`. A live table
+installed before the Profile egress rules also lacks them, and replacing only the daemon does not
+update that table.
 
 If the probe fails, keep the old runtime. Upgrade the host's kernel and nftables userspace in a
 maintenance window with out-of-band console access. Do not remove isolation rules or weaken

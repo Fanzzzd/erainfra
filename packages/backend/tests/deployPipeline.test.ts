@@ -12,6 +12,7 @@ import { isRouteLabel } from "../convex/infra/ingress";
 import { FAILOVER_GRACE_MS, NODE_SILENCE_MS } from "../convex/infra/policy";
 import { implicitSpec, parseSpec } from "../convex/infra/spec";
 import schema from "../convex/schema";
+import { sign } from "./support/webhookSignature.ts";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const T0 = Date.parse("2026-11-06T00:00:00Z");
@@ -568,18 +569,6 @@ describe("adopting a container (erainfra deploy --adopt)", () => {
     }
   });
 });
-
-async function sign(secret: string, body: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  return `sha256=${Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, "0")).join("")}`;
-}
 
 const SOLO = `
 services:

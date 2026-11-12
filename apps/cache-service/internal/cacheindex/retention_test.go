@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fanzzzd/erainfra/apps/cache-service/cachetoken"
 	"github.com/Fanzzzd/erainfra/apps/cache-service/internal/objectstore/fakes3"
+	"github.com/Fanzzzd/erainfra/internal/cachetoken"
 )
 
 var retentionStart = time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
