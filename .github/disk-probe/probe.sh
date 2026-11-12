@@ -3,7 +3,7 @@
 # small modules, the shape of a test that loads a bundler's whole
 # configuration at once. Run by .github/workflows/disk-probe.yml.
 #
-#   bash .github/bench/diskprobe.sh <variant>
+#   bash .github/disk-probe/probe.sh <variant>
 #
 # <variant> is one or more of these words joined by `+`:
 #
@@ -27,7 +27,7 @@
 # beside it. The summary prints load times and the peak pressure per phase.
 set -euo pipefail
 
-variant=${1:?usage: diskprobe.sh <variant>}
+variant=${1:?usage: probe.sh <variant>}
 repeats=${PROBE_REPEATS:-3}
 target=${PROBE_MODULES:-750}
 here=$(cd "$(dirname "$0")" && pwd)
