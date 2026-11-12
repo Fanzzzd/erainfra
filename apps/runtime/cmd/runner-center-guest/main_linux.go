@@ -89,7 +89,7 @@ func main() {
 // resolvers into the image.
 //
 // The options line is decided here rather than inherited, and it is the
-// Docker executor's decision (provision-docker.sh): edns0, because
+// Docker executor's too (testdata/resolver-options.json): edns0, because
 // ubuntu-latest sets it and without it glibc advertises a 512-byte UDP limit,
 // so a large TXT, SRV or DNSSEC-signed answer comes back truncated and is
 // retried over TCP. trust-ad is deliberately left out even though
@@ -114,9 +114,16 @@ func resolverConfig(published []byte) (string, error) {
 			"the guest kernel published no resolver, so the Profile's nameservers never reached this VM",
 		)
 	}
-	directives = append(directives, "options edns0")
+	directives = append(directives, "options "+strings.Join(resolverOptions, " "))
 	return strings.Join(directives, "\n") + "\n", nil
 }
+
+// resolverOptions is the guest's half of testdata/resolver-options.json, which
+// the Docker executor shares; main_linux_test.go fails when the two differ.
+// timeout:1 attempts:3 because the Profile's resolvers sit across the Worker's
+// uplink, where glibc's default 5 s timeout made one lost UDP query a 5 s stall
+// (#149).
+var resolverOptions = []string{"edns0", "timeout:1", "attempts:3"}
 
 func configureResolver() error {
 	published, err := os.ReadFile(publishedResolvers)

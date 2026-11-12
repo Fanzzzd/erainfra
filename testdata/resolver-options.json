@@ -1,0 +1,4 @@
+{
+  "_comment": "The resolv.conf options line every job gets, in order. Two implementations must write exactly this list: the Firecracker guest (apps/runtime/cmd/runner-center-guest, resolverOptions) and the Docker executor (apps/action-runner-agent/provisioners/provision-docker.sh, --dns-option). Their tests read this file. edns0: advertise more than 512 bytes of UDP payload, as ubuntu-latest does. timeout:1 attempts:3: the resolvers sit across the Worker's uplink, and glibc's default 5 s timeout turned each lost UDP query into a 5 s stall (erainfra #149, measured 2026-11-12). trust-ad is deliberately absent: the resolvers are not local and not trusted.",
+  "options": ["edns0", "timeout:1", "attempts:3"]
+}
