@@ -188,8 +188,11 @@ job ends when it restarts the runtime. The `worker-host` role has no such option
 
 Each repin pulls a new Image Release into the runtime's containerd, about 10 GiB unpacked for the
 full image. Once an hour, after a readiness pass, the Agent sends the runtime the Image Releases
-of this Worker's Firecracker Profiles. The runtime keeps those, its warm pools' and the newest
-other one, so a rollback to the previous release needs no pull, and deletes the rest. It logs each
+of this Worker's Firecracker Profiles. The runtime keeps those, its warm pools' and the other
+one a VM booted from most recently, so a rollback to the previous release needs no pull, and
+deletes the rest. Each boot stamps `erainfra.io/last-used` on the image record. An image no VM
+booted counts from its pull, so a canary candidate pulled after the release the other Profiles ran
+does not take the rollback slot. It logs each
 deletion as `deleted an Image Release no Profile uses`. A running Attempt or parked guest holds
 a containerd lease on its own snapshot, so deleting its image's name never breaks it.
 `runner-center-runtime prune-images` does the same by hand; it reads the Image Releases to keep
