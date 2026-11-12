@@ -97,6 +97,8 @@ import type * as recovery from "../recovery.js";
 import type * as retry from "../retry.js";
 import type * as rightsize from "../rightsize.js";
 import type * as rightsizeModel from "../rightsizeModel.js";
+import type * as routerDecisions from "../routerDecisions.js";
+import type * as routerDecisionsModel from "../routerDecisionsModel.js";
 import type * as routing from "../routing.js";
 import type * as runnerReleaseModel from "../runnerReleaseModel.js";
 import type * as runnerReleases from "../runnerReleases.js";
@@ -207,6 +209,8 @@ declare const fullApi: ApiFromModules<{
   retry: typeof retry;
   rightsize: typeof rightsize;
   rightsizeModel: typeof rightsizeModel;
+  routerDecisions: typeof routerDecisions;
+  routerDecisionsModel: typeof routerDecisionsModel;
   routing: typeof routing;
   runnerReleaseModel: typeof runnerReleaseModel;
   runnerReleases: typeof runnerReleases;

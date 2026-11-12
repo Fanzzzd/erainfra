@@ -44,6 +44,7 @@ import { renderWindowsInstallScript } from "./installScriptPowerShell";
 import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 import { registerTestRoutes } from "./operatorTestsHttp";
+import { recordRouterDecision } from "./routerDecisions";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
@@ -985,6 +986,8 @@ const HOSTED_RUNNER_BY_EXECUTOR = {
 // A runs-on label as GitHub-hosted, larger-runner and scale-set names spell
 // them. The probe echoes `fallback` back, so it accepts nothing else.
 const RUNS_ON_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+// The optional `repo=OWNER/NAME` the router stores with each decision, in GitHub's name alphabet.
+const RUNS_ON_REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 
 function runsOnResponse(label: string | string[]) {
   return new Response(JSON.stringify({ "runs-on": label }), {
@@ -1012,7 +1015,8 @@ function runsOnResponse(label: string | string[]) {
 // anonymous caller learns only whether that Profile has room now. The probe
 // makes no GitHub API call, so callers cannot spend the App's rate limit, and
 // its reads are index-bounded by live work and Worker count. Fallback reasons
-// go to the deployment log, not to the caller.
+// go to the deployment log, not to the caller. Each answer is stored as a
+// routerDecisions row, with the optional `repo=OWNER/NAME` the caller sent.
 //
 // The legacy form `?labels=rc-linux[,…]` still answers from the pre-Profile
 // `machines`/`jobs` path (machines.hasCapacity), which webhook-intake jobs
@@ -1022,6 +1026,10 @@ http.route({
   method: "GET",
   handler: httpAction(async (ctx, request) => {
     const url = new URL(request.url);
+    const repo = url.searchParams.get("repo") ?? undefined;
+    if (repo !== undefined && !RUNS_ON_REPO.test(repo)) {
+      return jsonResponse({ error: "repo must be OWNER/NAME" }, 400);
+    }
     const profile = url.searchParams.get("profile");
     if (profile !== null) {
       if (url.searchParams.has("labels")) {
@@ -1036,11 +1044,19 @@ http.route({
       }
       const decision = await ctx.runQuery(internal.routing.profileRoute, { profile });
       if (decision.route === "profile") {
+        await recordRouterDecision(ctx, { profile, answer: profile, route: "profile", repo });
         return runsOnResponse(profile);
       }
       const fallback =
         fallbackParam ?? HOSTED_RUNNER_BY_EXECUTOR[decision.executor ?? "firecracker"];
       console.info(`/runs-on: Profile ${profile} → ${fallback} (${decision.reason})`);
+      await recordRouterDecision(ctx, {
+        profile,
+        answer: fallback,
+        route: "fallback",
+        reason: decision.reason,
+        repo,
+      });
       return runsOnResponse(fallback);
     }
 
@@ -1057,7 +1073,14 @@ http.route({
     const available = await ctx.runQuery(internal.machines.hasCapacity, {
       labels: selfHostedLabels,
     });
-    return jsonResponse({ "runs-on": available ? selfHostedLabels : fallback }, 200);
+    const answer = available ? selfHostedLabels : fallback;
+    await recordRouterDecision(ctx, {
+      labels: selfHostedLabels,
+      answer,
+      route: available ? "profile" : "fallback",
+      repo,
+    });
+    return jsonResponse({ "runs-on": answer }, 200);
   }),
 });
 

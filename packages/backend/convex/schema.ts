@@ -12,6 +12,7 @@ import {
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
+import { routerDecisionFields } from "./routerDecisionsModel";
 import { scaleSetJobFields } from "./strandedJobsModel";
 import {
   flakyTestFields,
@@ -851,6 +852,12 @@ export default defineSchema({
     .index("by_runnerRequestId", ["runnerRequestId"])
     .index("by_state_acquiredAt", ["state", "acquiredAt"])
     .index("by_workflowRunId", ["workflowRunId"]),
+
+  // One row per `/runs-on` answer (routerDecisions.ts), for billing reconciliation per day and
+  // repository. by_createdAt drives the 90-day retention purge.
+  routerDecisions: defineTable(routerDecisionFields)
+    .index("by_createdAt", ["createdAt"])
+    .index("by_repo_createdAt", ["repo", "createdAt"]),
 
   // One row: GitHub's actions/runner releases, for the runner-release-expiring alert
   // (runnerReleases.ts). `fetchedAt` is the last successful fetch; a failed one sets only

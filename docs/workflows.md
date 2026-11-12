@@ -117,6 +117,7 @@ jobs:
           # Any failure (control plane down, timeout, unexpected body) routes to FALLBACK.
           label=$(curl --fail --silent --show-error --max-time 10 --retry 2 --get \
             --data-urlencode "profile=$PROFILE" --data-urlencode "fallback=$FALLBACK" \
+            --data-urlencode "repo=$GITHUB_REPOSITORY" \
             "$CONTROL_PLANE/runs-on" | jq -er '."runs-on" | strings') || label=$FALLBACK
           echo "routing to $label"
           echo "runs-on=$label" >> "$GITHUB_OUTPUT"
@@ -136,6 +137,13 @@ caller learns whether that Profile has room right now and nothing else; the reas
 goes to the deployment's log. It makes no GitHub API call, so callers cannot spend the GitHub
 App's rate limit, and it reads only indexed rows bounded by live work and Worker count. It
 rejects labels outside `[A-Za-z0-9._-]` (up to 100 characters) rather than echo them.
+
+The control plane stores each answer as a row in `routerDecisions`: the Profile (or labels), the
+returned label, the route (`profile` or `fallback`) and the fallback reason (`unknown-profile`,
+`paused`, `no-ready-worker` or `saturated`). Add `repo=OWNER/NAME` to the query to store the
+repository with it, as the router step above does. The parameter is optional and does not change the answer; a value that is not
+`OWNER/NAME` gets a 400. Rows are kept 90 days. `internal.routerDecisions.counts` counts them per
+UTC day, route and reason for a repository and time range, for billing reconciliation.
 
 The answer covers one job. Jobs that share it, such as a matrix, all go to the Profile on a "yes"
 even when only one slot was free; the rest queue there. The router itself runs on a GitHub-hosted

@@ -50,6 +50,15 @@ crons.interval(
 // JUnit results are kept 30 days, and a flaky test not seen for 30 days drops off the list.
 crons.interval("purge expired test results", { hours: 1 }, internal.testReports.purgeExpired, {});
 
+// `/runs-on` decisions are kept 90 days. Hourly keeps each run's batch small; the purge
+// reschedules itself while it finds full batches.
+crons.interval(
+  "purge expired router decisions",
+  { hours: 1 },
+  internal.routerDecisions.purgeExpired,
+  {},
+);
+
 // App deploy runs whose lease lapsed can never finish; mark them failed so pollers see a terminal
 // state. This replaces the Hub's failStale-at-boot. With no run in flight it is a few indexed reads.
 crons.interval(
