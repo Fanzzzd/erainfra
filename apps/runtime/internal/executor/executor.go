@@ -107,6 +107,12 @@ func (p Profile) Validate() error {
 
 // WarmPoolStatus is resident capacity, so Target is always Parked + Claimed
 // for a healthy pool.
+// ImagePrune is what one Image Release prune kept and deleted, each sorted by name.
+type ImagePrune struct {
+	Kept    []string `json:"kept"`
+	Deleted []string `json:"deleted"`
+}
+
 type WarmPoolStatus struct {
 	Target  int    `json:"target"`
 	Parked  int    `json:"parked"`

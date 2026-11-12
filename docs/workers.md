@@ -163,6 +163,17 @@ sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
 /usr/local/lib/runner-center/runner-center-runtime preflight
 ```
 
+### Old Image Releases
+
+Each repin pulls a new Image Release into the runtime's containerd, about 10 GiB unpacked for the
+full image. Once an hour, after a readiness pass, the Agent sends the runtime the Image Releases
+of this Worker's Firecracker Profiles. The runtime keeps those, its warm pools' and the newest
+other one, so a rollback to the previous release needs no pull, and deletes the rest. It logs each
+deletion as `deleted an Image Release no Profile uses`. A running Attempt or parked guest holds
+a containerd lease on its own snapshot, so deleting its image's name never breaks it.
+`runner-center-runtime prune-images` does the same by hand; it reads the Image Releases to keep
+as a JSON array on stdin and refuses an empty one.
+
 ### Start budget
 
 Every guest on a Worker shares its disk. Six Attempts starting together on ubuntu0's spinning-disk

@@ -23,6 +23,7 @@ import {
   withCores,
 } from "./cpuset.js";
 import { dualEnv } from "./dual-env.js";
+import { pruneImageReleases } from "./image-prune.js";
 import { startAttemptMetrics, type AttemptMetrics, type MetricsReport } from "./job-metrics.js";
 import { recoverFirecrackerOrphans } from "./orphan-recovery.js";
 import {
@@ -707,6 +708,8 @@ let discoveredProfiles: ProfileSpec[] = [];
 let refreshAgain = false;
 let readinessTimer: ReturnType<typeof setTimeout> | undefined;
 const preparedFirecrackerProfiles = new Set<string>();
+// The first prune runs after the first full readiness pass, once every Profile was prepared.
+let lastImagePruneAt = Number.NEGATIVE_INFINITY;
 
 function scheduleReadinessRefresh(delayMs: number) {
   if (shuttingDown) return;
@@ -809,6 +812,9 @@ async function refreshProfiles() {
         ),
       );
       if (!refreshAgain || shuttingDown) break;
+    }
+    if (preparedFirecrackerProfiles.size > 0) {
+      lastImagePruneAt = await pruneImageReleases(discoveredProfiles, lastImagePruneAt, Date.now());
     }
   } catch (error) {
     console.error("Refreshing Profile readiness failed", error);

@@ -338,6 +338,17 @@ func (p *warmPoolManager) Status(profileName string) executor.WarmPoolStatus {
 	return statusOf(state)
 }
 
+// imageReleases lists the Image Release of every Profile the pool manages.
+func (p *warmPoolManager) imageReleases() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	releases := make([]string, 0, len(p.profiles))
+	for _, state := range p.profiles {
+		releases = append(releases, state.profile.ImageRelease)
+	}
+	return releases
+}
+
 func (p *warmPoolManager) totalTargetWith(profile executor.Profile) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
