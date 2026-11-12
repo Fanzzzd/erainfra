@@ -1,5 +1,15 @@
 # @erainfra/backend
 
+## 0.2.0-rc.20
+
+### Patch Changes
+
+- [#356](https://github.com/Fanzzzd/erainfra/pull/356) [`8598496`](https://github.com/Fanzzzd/erainfra/commit/8598496848f8a12324d7f4c4283ebfa88e60091c) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Drop the empty `hubImportTombstones` table, which nothing has written since the Hub importer left main.
+
+- [#341](https://github.com/Fanzzzd/erainfra/pull/341) [`3d94215`](https://github.com/Fanzzzd/erainfra/commit/3d9421566361d21db9d7447900349a4cb45937da) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Webhook intake no longer stores a `workflow_job` delivery that the pre-Profile job path would not act on. It answers such a delivery 200 `Ignored`. `/runs-on?labels=` now answers 400 with an error that names `profile=`.
+
+- [#344](https://github.com/Fanzzzd/erainfra/pull/344) [`d1fcdf3`](https://github.com/Fanzzzd/erainfra/commit/d1fcdf33aa6acafaab7f75617ec12b0bc2edaa8e) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The control plane no longer reads three storage shapes that predate v0.2.0-rc.5: a full benchmark report on the `machines` row, readiness evidence on the `workerReadiness` row, and a JIT config on the `attempts` row. The schema refuses them now. The Worker API is unchanged.
+
 ## 0.2.0-rc.19
 
 No changes in this release.

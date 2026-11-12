@@ -1,5 +1,15 @@
 # @erainfra/runtime
 
+## 0.2.0-rc.20
+
+### Minor Changes
+
+- [#353](https://github.com/Fanzzzd/erainfra/pull/353) [`087d56e`](https://github.com/Fanzzzd/erainfra/commit/087d56e7719e62f4e8a38d7591ceed19ecca1be7) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The guest keeps a job's writes in memory (lazy writeback) and resets the VM without syncing, so a job no longer loads the Worker's shared disk with writes to a snapshot that is deleted after the Attempt.
+
+### Patch Changes
+
+- [#357](https://github.com/Fanzzzd/erainfra/pull/357) [`27df7a9`](https://github.com/Fanzzzd/erainfra/commit/27df7a920c1fc598fad72b433abea4dce0355cef) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Image Release pruning keeps the release a VM booted from most recently as the rollback, not the one pulled last.
+
 ## 0.2.0-rc.19
 
 ### Patch Changes

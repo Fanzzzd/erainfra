@@ -1,5 +1,15 @@
 # @erainfra/agent
 
+## 0.2.0-rc.20
+
+### Minor Changes
+
+- [#350](https://github.com/Fanzzzd/erainfra/pull/350) [`6130f39`](https://github.com/Fanzzzd/erainfra/commit/6130f390d4406db4aeddeedbd2a1196a70428db4) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The retired Hub leaves the product (ADR 0020). The Infra Agent drops its Hub mode (`connect`) and its dumbpipe links, and runs only `connect-convex`. `/install --role node` installs only Convex mode and refuses `--token`, `--hub` and `--name`, and `/install.ps1` has no Node role. `erainfra nodes list` loses its TRANSPORT column, and the `hub` App status and the `legacy` link transport are gone. The Hub, its web UI, the `portless` CLI and the Hub-era installers are no longer built. To run a Hub again, use the `v0.2.0-rc.19` release.
+
+### Patch Changes
+
+- [#347](https://github.com/Fanzzzd/erainfra/pull/347) [`90c88a1`](https://github.com/Fanzzzd/erainfra/commit/90c88a1ddd16875b121a8958a5b5535a6b00479a) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The Action Runner Agent no longer subscribes to `agentApi:pendingCommands` or calls `agentApi:claim` and `agentApi:report`. Those served the pre-Profile webhook job path, which has created no command in production. It still sends `agentApi:heartbeat`.
+
 ## 0.2.0-rc.19
 
 ### Patch Changes
