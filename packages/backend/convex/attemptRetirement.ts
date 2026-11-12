@@ -68,7 +68,6 @@ export async function retireAttempt(
   if (attempt.retirement !== undefined) return false;
   await deleteAttemptSecret(ctx, attempt._id);
   await ctx.db.patch(attempt._id, {
-    jitConfig: undefined,
     runnerCleanupPending: true,
     retirement: { outcome, reason: reason.slice(0, 500), requestedAt: Date.now() },
   });
@@ -188,7 +187,6 @@ export async function finishRetirement(
   await deleteAttemptSecret(ctx, attempt._id);
   await ctx.db.patch(attempt._id, {
     state: retirement.outcome,
-    jitConfig: undefined,
     finishedAt: Date.now(),
     runnerCleanupPending: unconfirmed ? true : undefined,
     retirement: undefined,
@@ -215,7 +213,6 @@ export async function cancelUnclaimedAttempt(
   await deleteAttemptSecret(ctx, attempt._id);
   await ctx.db.patch(attempt._id, {
     state: "cancelled",
-    jitConfig: undefined,
     cancelReason: reason.slice(0, 500),
     finishedAt: Date.now(),
     runnerCleanupPending: true,
