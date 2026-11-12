@@ -14,6 +14,20 @@ Attempt, Runner, Hub) means exactly what `CONTEXT.md` says, in code, comments, d
   names and download paths. `CONTEXT.md` naming rule 4 has the full list. CI fails a pull request
   that removes a frozen `portless` identifier from the tree.
 
+## Where a rule lives
+
+Every rule, name list and constant has one owner. Find the owner and extend it; tests import it.
+
+- Within one language, one module owns the rule behind a small interface (`convex/hostLabels.ts`).
+- A rule enforced in two languages: a case file in `testdata/` that each side runs as a table test
+  (`testdata/egress-policy-cases.json`).
+- A wire shape: the producer writes a golden file and the consumer's test reads it
+  (`apps/runtime/internal/testreport/testdata/report.golden.json`, `ERAINFRA_UPDATE_GOLDEN=1`).
+- Code shared by Go programs: a package under the root `internal/`, such as `internal/dualenv`.
+- `*.generated.ts`: edit the source and run its embed script. Versions and digests: `scripts/pinbump`.
+
+A comment saying "change both together" marks a rule with two owners. Give it one owner.
+
 ## Checks before a pull request
 
 - JavaScript and TypeScript: `pnpm check` (Oxlint, Oxfmt, type check, tests).
