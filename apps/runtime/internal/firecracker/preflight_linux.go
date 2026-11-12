@@ -121,6 +121,7 @@ func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.Profile
 	r.checkAddressReservations(ctx, &report)
 
 	storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
+	storage.PoolReserveMiB = r.config.MinPoolFreeMiB
 	report.Storage = storage
 	switch {
 	case err != nil:

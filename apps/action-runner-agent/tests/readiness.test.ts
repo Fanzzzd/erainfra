@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,7 @@ import {
   processBound,
   readinessRefreshDelay,
   UNHEALTHY_READINESS_REFRESH_MS,
+  usableHostCapacity,
   WARM_POOL_READINESS_REFRESH_MS,
   warmPoolCapacityError,
 } from "../readiness.ts";
@@ -392,6 +394,35 @@ describe("warm pool readiness", () => {
     assert.match(warmPoolCapacityError([profile], 2, 8, 4_096) ?? "", /MiB/);
     assert.equal(warmPoolCapacityError([profile], 2, 8, 32_768), undefined);
   });
+
+  it("admits a warm guest sized exactly for the host, as placement does", () => {
+    const whole = {
+      profile: "whole-host",
+      executor: "firecracker" as const,
+      imageRelease: `ghcr.io/example/image${DIGEST}`,
+      vcpus: 8,
+      memoryMiB: 16_384,
+      warmPool: 1,
+    };
+    assert.equal(warmPoolCapacityError([whole], 1, 8, 16_384), undefined);
+    // Two half-host guests do not earn the exception: placement measures each against 90%.
+    const half = { ...whole, profile: "half-host", vcpus: 4, memoryMiB: 4_096, warmPool: 2 };
+    assert.match(warmPoolCapacityError([half], 2, 8, 32_768) ?? "", /vCPUs/);
+  });
+});
+
+// The control plane runs the same file (packages/backend/tests/workerPolicy.test.ts), so a change
+// to the envelope on one side alone turns one suite red.
+const hostEnvelope = JSON.parse(
+  readFileSync(new URL("../../../testdata/host-envelope-cases.json", import.meta.url), "utf8"),
+) as { cases: { name: string; hostTotal: number; guestSize: number; usable: number }[] };
+
+describe("usableHostCapacity", () => {
+  for (const { name, hostTotal, guestSize, usable } of hostEnvelope.cases) {
+    it(name, () => {
+      assert.equal(usableHostCapacity(hostTotal, guestSize), usable);
+    });
+  }
 });
 
 // A stand-in runtime that reports what it was asked: the egress policy each

@@ -7,6 +7,7 @@ import { recordAttemptMetrics } from "./attemptMetrics";
 import { metricsSnapshotValidator } from "./attemptMetricsModel";
 import { releaseAttemptSlot, releaseMachineSlot } from "./attemptScheduler";
 import { deleteAttemptSecret } from "./attemptSecrets";
+import { ACTIVE_ATTEMPT_STATES, ACTIVE_EXPERIMENT_STATES } from "./attemptStates";
 import {
   benchmarkRecommendedSlots,
   benchmarkReportValidator,
@@ -28,8 +29,6 @@ import { testReportValidator } from "./testReportsModel";
 import { largestServedProfileMemoryMiB, servedProfiles } from "./workerPolicy";
 
 const completedExecutorDrainMs = 30_000;
-const liveAttemptStates = ["pending", "preparing", "ready", "running"] as const;
-const liveExperimentStates = ["queued", "preparing", "running"] as const;
 
 const executorValidator = v.union(
   v.literal("docker"),
@@ -217,7 +216,7 @@ export const pendingAttempts = query({
     // drain window matters, while the machine's full completed history grows
     // without limit.
     const ranges = await Promise.all([
-      ...liveAttemptStates.map((state) =>
+      ...ACTIVE_ATTEMPT_STATES.map((state) =>
         ctx.db
           .query("attempts")
           .withIndex("by_machine_state_finishedAt", (q) =>
@@ -270,7 +269,7 @@ export const pendingExperiments = query({
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
     const ranges = await Promise.all(
-      liveExperimentStates.map((state) =>
+      ACTIVE_EXPERIMENT_STATES.map((state) =>
         ctx.db
           .query("experiments")
           .withIndex("by_machine_state", (q) => q.eq("machineId", machine._id).eq("state", state))
@@ -727,6 +726,7 @@ export const reportReadiness = mutation({
           : {
               poolTotalMiB: args.storage.poolTotalMiB,
               poolFreeMiB: args.storage.poolFreeMiB,
+              poolReserveMiB: args.storage.poolReserveMiB,
             },
       warmPool: args.warmPool ?? (sameContract ? existing?.warmPool : undefined),
     };

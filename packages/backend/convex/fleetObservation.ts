@@ -2,6 +2,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { queueWaitMs } from "./attempts";
 import { isSchedulableReadiness } from "./attemptScheduler";
+import { ACTIVE_ATTEMPT_STATES, type ActiveAttemptState } from "./attemptStates";
 import { controllerLiveness, type ControllerLiveness } from "./controllerLiveness";
 import { profileEgressOf, type ProfileEgress } from "./egress";
 import { pinDetail } from "./hostLabels";
@@ -32,8 +33,6 @@ export const RECENT_ATTEMPT_SAMPLE = 200;
 /** Controller heartbeat rows read per Profile: one per host that has run its controller. */
 export const CONTROLLER_ROW_LIMIT = 50;
 
-export const LIVE_ATTEMPT_STATES = ["pending", "preparing", "ready", "running"] as const;
-export type LiveAttemptState = (typeof LIVE_ATTEMPT_STATES)[number];
 export const READINESS_STATES = ["preparing", "ready", "degraded", "failed"] as const;
 export type ReadinessState = (typeof READINESS_STATES)[number];
 
@@ -120,7 +119,7 @@ export type ObservedProfile = {
   labelConflicts: string[];
   /** Readiness rows for this Profile's current executor and Image Release only. */
   workers: ObservedWorker[];
-  liveAttempts: Record<LiveAttemptState, number>;
+  liveAttempts: Record<ActiveAttemptState, number>;
   liveAttemptsTruncated: boolean;
   oldestPendingCreatedAt?: number;
   /** Running Attempts, oldest first. */
@@ -231,7 +230,7 @@ export async function loadFleetObservation(
           ),
         ),
         Promise.all(
-          LIVE_ATTEMPT_STATES.map((state) =>
+          ACTIVE_ATTEMPT_STATES.map((state) =>
             ctx.db
               .query("attempts")
               .withIndex("by_profile_state", (q) =>

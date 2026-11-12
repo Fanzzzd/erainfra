@@ -517,6 +517,7 @@ export default defineSchema({
       v.object({
         poolTotalMiB: v.optional(v.number()),
         poolFreeMiB: v.optional(v.number()),
+        poolReserveMiB: v.optional(v.number()),
       }),
     ),
   })
@@ -568,6 +569,7 @@ export default defineSchema({
         poolName: v.optional(v.string()),
         poolTotalMiB: v.optional(v.number()),
         poolFreeMiB: v.optional(v.number()),
+        poolReserveMiB: v.optional(v.number()),
       }),
     ),
     network: v.optional(

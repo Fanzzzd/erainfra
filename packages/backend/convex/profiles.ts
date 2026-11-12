@@ -93,6 +93,7 @@ export const list = query({
               poolName: v.optional(v.string()),
               poolTotalMiB: v.optional(v.number()),
               poolFreeMiB: v.optional(v.number()),
+              poolReserveMiB: v.optional(v.number()),
             }),
           ),
           network: v.optional(

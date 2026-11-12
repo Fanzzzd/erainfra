@@ -14,13 +14,9 @@
 // reads as a reset. So outcomes are counts over the last hour, durations are quantiles over the
 // same hour, and the HELP text of each says so.
 
+import { ACTIVE_ATTEMPT_STATES } from "./attemptStates";
 import type { BenchmarkDimension, FleetObservation, ObservedProfile } from "./fleetObservation";
-import {
-  ATTEMPT_OUTCOMES,
-  BENCHMARK_DIMENSIONS,
-  LIVE_ATTEMPT_STATES,
-  READINESS_STATES,
-} from "./fleetObservation";
+import { ATTEMPT_OUTCOMES, BENCHMARK_DIMENSIONS, READINESS_STATES } from "./fleetObservation";
 import { runnerReleaseStanding } from "./runnerReleaseModel";
 
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -173,7 +169,7 @@ export function buildMetricFamilies(
       value: profile.workers.filter((worker) => worker.schedulable).length,
     });
     labelConflicts.samples.push({ labels, value: profile.labelConflicts.length });
-    for (const state of LIVE_ATTEMPT_STATES) {
+    for (const state of ACTIVE_ATTEMPT_STATES) {
       attempts.samples.push({
         labels: { profile: profile.name, state },
         value: profile.liveAttempts[state],

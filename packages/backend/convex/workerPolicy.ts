@@ -7,6 +7,17 @@ import { carriesHostLabels } from "./hostLabels";
 export const WORKER_OFFLINE_AFTER_MS = 2 * 60_000;
 
 /**
+ * How much of a Worker's measured CPUs or memory guests may reserve: 90%, rounded down, so the
+ * host keeps room for its own processes. A guest that needs the whole host is measured against the
+ * whole host, so a Worker sized exactly for one guest can still run it. `hostTotal` and
+ * `guestSize` share a unit, vCPUs or MiB. The rule is owned by `testdata/host-envelope-cases.json`;
+ * the Action Runner Agent's warm-pool check runs the same cases (apps/action-runner-agent/readiness.ts).
+ */
+export function usableHostCapacity(hostTotal: number, guestSize: number) {
+  return guestSize >= hostTotal ? hostTotal : Math.floor(hostTotal * 0.9);
+}
+
+/**
  * The active Profiles a Worker serves: an executor its OS can run, and every
  * label the Profile is pinned to (ADR 0017). This is the list the Worker reads
  * to prepare images and report readiness, and the list its slot envelope is

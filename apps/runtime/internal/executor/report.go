@@ -76,6 +76,10 @@ type Storage struct {
 	PoolName     string `json:"poolName"`
 	PoolTotalMiB int64  `json:"poolTotalMiB"`
 	PoolFreeMiB  int64  `json:"poolFreeMiB"`
+	// PoolReserveMiB is the copy-on-write room this Worker requires for each
+	// guest (RC_MIN_POOL_FREE_MIB). The control plane places Attempts against
+	// the reported value, so the Worker's setting is the only one to change.
+	PoolReserveMiB int64 `json:"poolReserveMiB"`
 }
 
 // Network is the job network contract the Worker is enforcing right now, for

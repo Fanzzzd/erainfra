@@ -35,7 +35,8 @@ boundary, network policy and cache contract.
 | Experiment    | Operator-authored, time-bounded command using the same Profile and capacity as CI.         |
 
 Scheduling first requires an exact ready Profile/Image Release match, then admits work within the
-Worker slot limit, a 90% CPU/memory envelope, and snapshot-storage headroom. Among candidates with
+Worker slot limit, a 90% CPU/memory envelope, and the snapshot-storage headroom each guest needs,
+which the Worker reports from its `RC_MIN_POOL_FREE_MIB`. Among candidates with
 equal resource pressure, a Profile's `balanced`, `cpu`, `network`, or `io` fit policy ranks fresh
 Worker benchmarks. Missing or seven-day-stale observations score neutrally and never exclude a
 Worker. Linux automatic capacity is bounded at 16 slots, macOS at two Tart VMs, and Windows at one;
@@ -43,6 +44,8 @@ measured bottlenecks can reduce that resource ceiling, while a fixed `--slots` o
 operator's explicit effective capacity. The 90% envelope deliberately uses a full host dimension
 when its total CPU or memory is no greater than one work item's request: an exactly sized small host
 can run one item instead of becoming unusable, while an undersized host still fails admission.
+The Action Runner Agent's warm-pool check applies the same rule; `testdata/host-envelope-cases.json`
+owns it.
 
 ## Executors
 

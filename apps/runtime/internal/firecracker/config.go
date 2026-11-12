@@ -37,6 +37,9 @@ type Config struct {
 	// MinPoolFreeMiB is the copy-on-write headroom a Worker must still have
 	// before it may accept another Attempt. A thin-pool that fills mid-job fails
 	// the job with an unhelpful I/O error, so it is admission, not monitoring.
+	// It is required once per guest: a warm pool needs it for every parked VM.
+	// Preflight reports it as storage.poolReserveMiB and the control plane
+	// places Attempts against that number, so this field is its only owner.
 	MinPoolFreeMiB int64
 	// StartBudget is how much starting this Worker allows at once. An Attempt
 	// over it waits in Start, for at most StartBudget.MaxHold.
