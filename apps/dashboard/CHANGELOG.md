@@ -1,5 +1,12 @@
 # @erainfra/dashboard
 
+## 0.2.0-rc.17
+
+### Patch Changes
+
+- Updated dependencies [[`f8232bb`](https://github.com/Fanzzzd/erainfra/commit/f8232bbb3c8d4745fdcb47cd82e828a0f4ed9ffb), [`2c53b30`](https://github.com/Fanzzzd/erainfra/commit/2c53b30905973622849063d50cddfdada2b6545e), [`f8232bb`](https://github.com/Fanzzzd/erainfra/commit/f8232bbb3c8d4745fdcb47cd82e828a0f4ed9ffb), [`4107de7`](https://github.com/Fanzzzd/erainfra/commit/4107de78e590ed78f680918d3ce287cbd3a1895e), [`3c87ca2`](https://github.com/Fanzzzd/erainfra/commit/3c87ca2b2b5d4acbbc36eef9fcc2dc5c91d173a2)]:
+  - @erainfra/backend@0.2.0-rc.17
+
 ## 0.2.0-rc.16
 
 ### Patch Changes
