@@ -40,15 +40,27 @@ type warmPoolManager struct {
 	factory     warmSlotFactory
 	nextID      uint64
 	closed      bool
-	ctx         context.Context
-	cancel      context.CancelFunc
+	// changed is closed and replaced whenever a Profile's pool gains a parked
+	// guest, records a failure or changes its target, which wakes the claims
+	// waiting for a replacement.
+	changed chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 func newWarmPoolManager(factory warmSlotFactory) *warmPoolManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &warmPoolManager{
 		profiles: make(map[string]*warmPoolState), factory: factory, ctx: ctx, cancel: cancel,
+		changed: make(chan struct{}),
 	}
+}
+
+// changedLocked wakes every waiting claim so it rereads the pool. The caller
+// holds p.mu.
+func (p *warmPoolManager) changedLocked() {
+	close(p.changed)
+	p.changed = make(chan struct{})
 }
 
 func (p *warmPoolManager) Configure(
@@ -80,6 +92,7 @@ func (p *warmPoolManager) Configure(
 	} else if !sameWarmProfile(state.profile, profile) {
 		if len(state.claimed) > 0 {
 			state.lastErr = errors.New("profile changed while a warm microVM is claimed")
+			p.changedLocked()
 			status := statusOf(state)
 			p.mu.Unlock()
 			return status, state.lastErr
@@ -92,10 +105,18 @@ func (p *warmPoolManager) Configure(
 	}
 	state.profile.WarmPool = profile.WarmPool
 	state.lastErr = nil
+	p.changedLocked()
 	p.mu.Unlock()
 	for _, slot := range obsolete {
 		if err := slot.Close(context.WithoutCancel(ctx)); err != nil {
-			return p.Status(profile.Name), fmt.Errorf("replace stale parked microVM: %w", err)
+			err = fmt.Errorf("replace stale parked microVM: %w", err)
+			p.mu.Lock()
+			if current := p.profiles[profile.Name]; current != nil {
+				current.lastErr = err
+			}
+			p.changedLocked()
+			p.mu.Unlock()
+			return p.Status(profile.Name), err
 		}
 	}
 
@@ -153,6 +174,7 @@ func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) err
 					"%d claimed microVMs exceed the reduced warm pool target %d",
 					len(state.claimed), target,
 				)
+				p.changedLocked()
 				err := state.lastErr
 				p.mu.Unlock()
 				return err
@@ -180,6 +202,7 @@ func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) err
 			if current := p.profiles[profileName]; current != nil {
 				current.lastErr = fmt.Errorf("create parked microVM: %w", err)
 			}
+			p.changedLocked()
 			p.mu.Unlock()
 			return fmt.Errorf("create parked microVM: %w", err)
 		}
@@ -194,6 +217,7 @@ func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) err
 		}
 		state.idle[id] = slot
 		state.lastErr = nil
+		p.changedLocked()
 		p.mu.Unlock()
 		go p.watchIdle(profileName, id, slot)
 	}
@@ -215,37 +239,68 @@ func (p *warmPoolManager) watchIdle(profileName string, id uint64, slot warmSlot
 		err = errors.New("parked microVM exited")
 	}
 	state.lastErr = err
+	p.changedLocked()
 	p.mu.Unlock()
 	go func() { _ = p.reconcile(context.Background(), profileName) }()
 }
 
+// Claim hands the Attempt a parked guest of its Profile. The error tells Start
+// what to do next:
+//
+//   - errWarmPoolMiss: the Profile has no pool, or every guest the pool owns is
+//     already claimed. That is demand above the target, and Start cold-boots.
+//   - any other error: the pool is broken (a guest failed to boot or exited
+//     while parked) or the Attempt does not match it. The Attempt fails, so a
+//     broken pool is not hidden behind cold boots.
+//
+// While the pool boots the replacement for a torn-down guest, it owns fewer
+// guests than its target. A claim within the target then waits for that
+// replacement instead of failing or cold-booting: the slot is the pool's, and a
+// cold boot beside the replacement would put one guest more on the host than
+// placement reserved. ctx, the Attempt's boot deadline, bounds the wait.
 func (p *warmPoolManager) Claim(
 	ctx context.Context,
 	spec executor.Spec,
 ) (executor.Lease, error) {
 	p.mu.Lock()
-	state := p.profiles[spec.Profile]
-	if state == nil || state.profile.WarmPool == 0 {
-		p.mu.Unlock()
-		return nil, errWarmPoolMiss
-	}
-	if state.lastErr != nil || len(state.idle)+len(state.claimed) != state.profile.WarmPool {
-		status := statusOf(state)
-		p.mu.Unlock()
-		return nil, fmt.Errorf("warm pool is unhealthy: %s", status.Detail)
-	}
-	if !sameSpecProfile(spec, state.profile) {
-		p.mu.Unlock()
-		return nil, errors.New("Attempt does not match its prepared warm pool contract") //nolint:staticcheck // ST1005: Attempt is a CONTEXT.md domain term
-	}
+	var state *warmPoolState
 	var id uint64
 	var slot warmSlot
-	for id, slot = range state.idle {
-		break
-	}
-	if slot == nil {
+	for {
+		state = p.profiles[spec.Profile]
+		if state == nil || state.profile.WarmPool == 0 {
+			p.mu.Unlock()
+			return nil, errWarmPoolMiss
+		}
+		if state.lastErr != nil {
+			status := statusOf(state)
+			p.mu.Unlock()
+			return nil, fmt.Errorf("warm pool is unhealthy: %s", status.Detail)
+		}
+		if !sameSpecProfile(spec, state.profile) {
+			p.mu.Unlock()
+			return nil, errors.New("Attempt does not match its prepared warm pool contract") //nolint:staticcheck // ST1005: Attempt is a CONTEXT.md domain term
+		}
+		if len(state.claimed) >= state.profile.WarmPool {
+			p.mu.Unlock()
+			return nil, errWarmPoolMiss
+		}
+		for id, slot = range state.idle {
+			break
+		}
+		if slot != nil {
+			break
+		}
+		changed := p.changed
 		p.mu.Unlock()
-		return nil, errWarmPoolMiss
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for the warm pool to replace a torn-down microVM: %w", ctx.Err())
+		case <-p.ctx.Done():
+			return nil, errors.New("warm pool is shutting down")
+		}
+		p.mu.Lock()
 	}
 	delete(state.idle, id)
 	state.claimed[id] = slot
@@ -259,6 +314,7 @@ func (p *warmPoolManager) Claim(
 			if state := p.profiles[spec.Profile]; state != nil {
 				state.lastErr = errors.Join(err, closeErr)
 			}
+			p.changedLocked()
 			p.mu.Unlock()
 			return nil, fmt.Errorf(
 				"inject single-use metadata and destroy failed parked microVM: %w",
@@ -394,6 +450,7 @@ func (p *warmPoolManager) Remove(ctx context.Context, profileName string) error 
 	if len(state.claimed) == 0 {
 		delete(p.profiles, profileName)
 	}
+	p.changedLocked()
 	p.mu.Unlock()
 	var cleanupErrors []error
 	for _, slot := range slots {
