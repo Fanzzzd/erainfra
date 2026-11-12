@@ -165,9 +165,9 @@ sudo /usr/local/lib/runner-center/runner-center-runtime verify-network
 
 ### Start budget
 
-Every guest on a Worker shares its disk. Six Attempts starting together on ubuntu0's spinning-disk
-array held the host's I/O stall (io "some") at 40 to 60% for minutes, and every job on the Worker
-slowed. The runtime therefore spaces starts out. An Attempt waits in `Start`, warm claims
+Every guest on a Worker shares its disk. ubuntu0's thin pool sits on a RAID1 of two SATA SSDs
+behind a RAID controller with write-through cache. Six Attempts starting together there held the
+host's I/O stall (io "some") at 40 to 60% for minutes, and every job on the Worker slowed. The runtime therefore spaces starts out. An Attempt waits in `Start`, warm claims
 included, while either limit is reached:
 
 | Setting (`ERAINFRA_` or `RC_`) | Default | Limit                                                    |
