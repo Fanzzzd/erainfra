@@ -40,7 +40,7 @@ func PrivateDir(path string) error {
 }
 
 // Lock is held for the controller's lifetime, across reconnects. Kernel locks disappear on crash;
-// PID files do not. Separate Hub and Convex modes use the same path and cannot both drive a daemon.
+// PID files do not. Two Infra Agents configured with the same path cannot both drive a daemon.
 type Lock struct{ f *os.File }
 
 func Acquire(path string) (*Lock, error) {
@@ -60,9 +60,9 @@ func Acquire(path string) (*Lock, error) {
 
 // AcquireSocket takes the controller lock of the sidecar listening on socket. It locks the
 // directory that holds the socket, so every controller of one sidecar contends on the same inode
-// whatever control directory it was configured with: a Hub-mode and a Convex-mode agent, or two
-// agents with different ERAINFRA_MESH_CONTROL_DIR values, cannot both drive it. Opening the
-// directory needs only read access, which an agent in the sidecar's group already has.
+// whatever control directory it was configured with: two Infra Agents with different
+// ERAINFRA_MESH_CONTROL_DIR values cannot both drive it. Opening the directory needs only read
+// access, which an Infra Agent in the sidecar's group already has.
 func AcquireSocket(socket string) (*Lock, error) {
 	f, err := os.Open(filepath.Dir(socket))
 	if err != nil {

@@ -55,10 +55,14 @@ node_fail() {
 }
 
 node_usage() {
-  printf '%s\n' 'Usage: bash -s -- --role node --token <hub token> --hub wss://<hub>/agent [--name NAME]'
-  printf '%s\n' '                  [--source <url|file:///path>] [--mesh] [--mesh-source <url|file:///path>] [--no-docker]'
-  printf '%s\n' '       bash -s -- --role node --convex --credential-file <path> [--replace-hub-agent]'
+  printf '%s\n' 'Usage: bash -s -- --role node --credential-file <path> [--replace-hub-agent]'
   printf '%s\n' '                  [--source <url|file:///path>] [--mesh-source <url|file:///path>] [--no-docker]'
+}
+
+# The Node role installs systemd units, so every host that lacks Linux with systemd gets this one
+# refusal.
+node_need_systemd() {
+  node_fail 'The Node role installs systemd units, so it needs Linux with systemd. Elsewhere, start connect-convex by hand as "Set up a Node" in docs/infra-management.md describes.'
 }
 
 # Every Infra Agent digest this deployment pins, one line per published target. A target that is
@@ -83,9 +87,9 @@ node_sha256_file() {
 
 __MESH_INSTALL_FUNCTIONS__
 
-# Bring up a container runtime if there is not one, exactly as deploy/infra/agent.sh does: distro
-# packages only, and a failure warns rather than aborts so the box still enrolls. Apps cannot deploy
-# until a runtime is on PATH, but a Node with no runtime is still a Node the Hub can see.
+# Bring up a container runtime if there is not one: distro packages only, and a failure warns
+# rather than aborts so the Node still connects. Apps cannot deploy until a runtime is on PATH, but
+# a Node with no runtime is still a Node this deployment can see.
 node_ensure_runtime() {
   if [ "$NODE_WANT_DOCKER" -ne 1 ]; then
     node_log 'Skipping the container runtime install (--no-docker).'
@@ -93,10 +97,6 @@ node_ensure_runtime() {
   fi
   if command -v docker >/dev/null 2>&1; then
     node_log "Container runtime present: $(docker --version 2>/dev/null || printf 'docker')"
-    return 0
-  fi
-  if [ "$NODE_OS_NAME" = 'darwin' ]; then
-    node_warn 'No container runtime — install Docker Desktop by hand; this Node still enrolls.'
     return 0
   fi
   node_log 'Installing a container runtime from the distro repositories…'
@@ -124,8 +124,8 @@ node_ensure_runtime() {
   fi
 }
 
-# The bytes may come from anywhere. --source moves the payload's origin — a hub mirror, a file on a
-# USB stick — and never the script's: this script and the digest below it arrived from this
+# The bytes may come from anywhere. --source moves the payload's origin, such as a mirror or a file
+# on a USB stick, and never the script's: this script and the digest below it arrived from this
 # deployment over TLS, which is what makes an untrusted byte source safe to read from.
 node_fetch() {
   case "$1" in
@@ -142,56 +142,6 @@ node_fetch() {
   esac
 }
 
-# The unit, its name, the environment file and the download path are all identifiers a running Node
-# already holds. Renaming any of them disconnects live Nodes, so this installer writes exactly the
-# names deploy/infra/agent.sh writes; retiring them is its own staged migration.
-node_install_service() {
-  command -v systemctl >/dev/null 2>&1 || return 1
-  $NODE_SUDO test -d /run/systemd/system || return 1
-  # Only the directory holding agent.env may have moved already, and only if something else moved
-  # it: this installer creates neither name. The unit name, the file name and the variable names
-  # inside it all stay frozen, because a second unit would leave the first one enabled.
-  NODE_ENV_DIR=/etc/portless
-  [ -d /etc/erainfra ] && NODE_ENV_DIR=/etc/erainfra
-  $NODE_SUDO mkdir -p "$NODE_ENV_DIR" || return 1
-  # 0600 before the token is written, not after: creating it world-readable and chmodding afterwards
-  # leaves a window in which any local user can read the Hub credential.
-  $NODE_SUDO install -m 600 /dev/null "$NODE_ENV_DIR/agent.env" || return 1
-  printf 'PORTLESS_HUB=%s\nPORTLESS_TOKEN=%s\n' "$NODE_HUB" "$NODE_TOKEN" |
-    $NODE_SUDO tee "$NODE_ENV_DIR/agent.env" >/dev/null || return 1
-  printf '%s\n' \
-    '[Unit]' \
-    'Description=Portless deploy agent' \
-    'After=network-online.target docker.service' \
-    'Wants=network-online.target' \
-    "$NODE_MESH_UNIT_REQUIRES" \
-    "$NODE_MESH_UNIT_AFTER" \
-    '[Service]' \
-    "EnvironmentFile=$NODE_ENV_DIR/agent.env" \
-    "Environment=HOME=$HOME" \
-    "$NODE_MESH_SERVICE_ENV" \
-    "$NODE_MESH_SERVICE_CONTROL" \
-    "$NODE_MESH_SERVICE_GROUP" \
-    "ExecStart=$NODE_BIN_DIR/portless-agent connect --name $NODE_MACHINE_NAME" \
-    'Restart=always' \
-    'RestartSec=3' \
-    '[Install]' \
-    'WantedBy=multi-user.target' |
-    $NODE_SUDO tee /etc/systemd/system/portless-agent.service >/dev/null || return 1
-  $NODE_SUDO systemctl daemon-reload
-  $NODE_SUDO systemctl enable --now portless-agent >/dev/null 2>&1 || return 1
-  # "enable --now" starts a stopped unit and does nothing to a running one, so on a re-install the
-  # old process keeps executing the bytes it was started with while is-active happily reports
-  # success. Restart explicitly: this installer's whole claim is that what runs was verified.
-  $NODE_SUDO systemctl restart portless-agent || return 1
-  sleep 1
-  $NODE_SUDO systemctl is-active --quiet portless-agent || {
-    $NODE_SUDO journalctl -u portless-agent -n 8 --no-pager >&2 || true
-    return 1
-  }
-  return 0
-}
-
 # True when a unit is running, starting or stopping, or enabled to start at boot. It reads the state
 # systemctl prints rather than its exit status, so an unknown unit reads as not live.
 node_unit_live() {
@@ -203,20 +153,19 @@ node_unit_live() {
   return 1
 }
 
-# --convex installs the Infra Agent in connect-convex mode (ADR 0016): Convex is its control
-# channel, and erainfra-mesh.service is required, so it installs only where that unit can run.
+# The Node role installs the Infra Agent in connect-convex mode (ADR 0016): Convex is its control
+# channel, and erainfra-mesh.service is required, so it installs only where that unit can run. It
+# has no other mode. Hub mode retired on 2026-11-08; the installer of release v0.2.0-rc.19 still
+# has it.
 #
-# The unit is erainfra-node.service, a name no deployed Node holds yet. portless-agent.service and
-# erainfra-agent.service are both Hub-mode units a Node may already have (deploy/infra/agent.sh and
-# this installer refuse a box holding both). A Convex unit under either name would be taken for a
-# Hub agent, and would overwrite the unit a rollback to Hub mode re-enables. erainfra-node matches
-# the credential file and state directory the unit uses. Once a Node holds these three names, they
-# are frozen like the Hub-mode ones (CONTEXT.md rule 4).
+# The unit is erainfra-node.service. portless-agent.service and erainfra-agent.service are Hub-mode
+# units a Node may still hold from an earlier installer. A Convex unit under either name would be
+# taken for a Hub-mode Infra Agent, and would overwrite the unit a rollback to Hub mode re-enables.
+# erainfra-node matches the credential file and state directory the unit uses. All of these names
+# are held by running Nodes, so they are frozen (CONTEXT.md rule 4).
 node_convex_preflight() {
-  if [ "$NODE_OS_NAME" != 'linux' ] || ! command -v systemctl >/dev/null 2>&1 ||
-     ! $NODE_SUDO test -d /run/systemd/system; then
-    node_fail '--convex installs systemd units, so it needs Linux with systemd. Elsewhere, start connect-convex by hand as "Set up a Node" in docs/infra-management.md describes.'
-  fi
+  command -v systemctl >/dev/null 2>&1 && $NODE_SUDO test -d /run/systemd/system ||
+    node_need_systemd
   # Read through sudo: the file may already be /etc/erainfra-node.credential, readable only by root.
   NODE_CREDENTIAL=$($NODE_SUDO cat "$NODE_CREDENTIAL_SOURCE" 2>/dev/null | tr -d '\r') ||
     node_fail "Cannot read the Node credential file $NODE_CREDENTIAL_SOURCE"
@@ -238,8 +187,8 @@ node_convex_install_service() {
   $NODE_SUDO install -m 600 -o root -g root /dev/null /etc/erainfra-node.credential.new || return 1
   printf '%s\n' "$NODE_CREDENTIAL" | $NODE_SUDO tee /etc/erainfra-node.credential.new >/dev/null || return 1
   $NODE_SUDO mv /etc/erainfra-node.credential.new /etc/erainfra-node.credential || return 1
-  # UnsetEnvironment drops any Hub setting the service manager carries: connect-convex refuses to
-  # start beside one.
+  # The credential comes from the file only. connect-convex refuses to start when the service
+  # manager also carries one in ERAINFRA_NODE_CREDENTIAL, so the unit drops that variable.
   printf '%s\n' \
     '[Unit]' \
     'Description=EraInfra Infra Agent (connect-convex)' \
@@ -247,7 +196,7 @@ node_convex_install_service() {
     'Wants=network-online.target' \
     'Requires=erainfra-mesh.service' \
     '[Service]' \
-    'UnsetEnvironment=PORTLESS_HUB ERAINFRA_HUB PORTLESS_TOKEN ERAINFRA_TOKEN ERAINFRA_NODE_CREDENTIAL' \
+    'UnsetEnvironment=ERAINFRA_NODE_CREDENTIAL' \
     "Environment=HOME=$HOME" \
     "Environment=ERAINFRA_CONVEX_SITE=$NODE_SITE" \
     'Environment=ERAINFRA_MESH_SOCKET=/run/erainfra-mesh/control.sock' \
@@ -271,9 +220,9 @@ node_convex_install_service() {
   return 0
 }
 
-# Where --convex installs the Infra Agent. Never the Hub-mode agent's $NODE_BIN_DIR/portless-agent:
-# portless-agent.service runs that file, and a rollback to Hub mode must start the bytes it ran
-# before, not this release in Hub mode. Root-owned and world-readable beside erainfra-mesh, so
+# Where the Node role installs the Infra Agent. Never the Hub-mode Infra Agent's
+# $PORTLESS_PREFIX/bin/portless-agent (~/.portless/bin by default): portless-agent.service runs that
+# file, and a rollback to Hub mode must start the bytes it ran before. Root-owned and world-readable beside erainfra-mesh, so
 # deploy/infra/gateway.sh finds it without reading root's home.
 NODE_CONVEX_BIN=/usr/local/lib/erainfra/erainfra-node
 
@@ -296,7 +245,8 @@ node_on_exit() {
   rm -rf "$NODE_TMP_DIR"
 }
 
-# Runs only past both checksum verifications, so bad bytes leave a Hub-mode agent running.
+# Runs only past both checksum verifications, so bad bytes leave the Infra Agent that runs now, in
+# either mode, untouched.
 node_convex_install() {
   node_ensure_runtime
   for node_unit in $NODE_HUB_UNITS; do
@@ -315,10 +265,9 @@ node_convex_install() {
   NODE_HUB_STOPPED=''
   node_log "systemd service 'erainfra-node' is active: connect-convex to $NODE_SITE through erainfra-mesh.service."
   printf '%s\n' "   Logs:  journalctl -u erainfra-node -f   (expect 'published mesh endpoint', then 'applied mesh snapshot')"
-  printf '%s\n' '   Check: erainfra nodes list   (this Node shows transport convex, online, MESH proven)'
+  printf '%s\n' '   Check: erainfra nodes list   (this Node shows online and MESH proven)'
   printf '%s\n' '   Relays or gateway routes: systemctl edit erainfra-node, add the Environment= lines, then systemctl restart erainfra-node'
   printf '%s\n' '   Roll back to Hub mode: systemctl disable --now erainfra-node, then systemctl enable --now portless-agent'
-  printf '%s\n' '   (or re-run this installer with --token and --hub instead of --convex).'
   if [ "$NODE_CREDENTIAL_SOURCE" != '/etc/erainfra-node.credential' ]; then
     printf '%s\n' "   The credential is now in /etc/erainfra-node.credential. Delete $NODE_CREDENTIAL_SOURCE."
   fi
@@ -326,29 +275,17 @@ node_convex_install() {
 }
 
 node_install() {
-  NODE_TOKEN=""
-  NODE_HUB=""
-  NODE_NAME=""
   NODE_SOURCE=""
-  NODE_MESH=0
   NODE_MESH_SOURCE=""
-  NODE_MESH_UNIT=""
-  NODE_MESH_SOCKET=""
-  NODE_MESH_BIN=""
-  NODE_MESH_UNIT_REQUIRES="# no erainfra-mesh dependency"
-  NODE_MESH_UNIT_AFTER="# no erainfra-mesh ordering"
-  NODE_MESH_SERVICE_ENV="# no erainfra-mesh socket"
-  NODE_MESH_SERVICE_CONTROL="# no erainfra-mesh controller"
-  NODE_MESH_SERVICE_GROUP="# no erainfra-mesh group"
   NODE_WANT_DOCKER=1
-  NODE_CONVEX=0
   NODE_CREDENTIAL_SOURCE=""
   NODE_REPLACE_HUB=0
   NODE_HUB_UNITS=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --convex)
-        NODE_CONVEX=1
+      # connect-convex is the only mode, and it always runs the mesh sidecar, so --convex and
+      # --mesh change nothing. They stay accepted so install commands already in runbooks still work.
+      --convex|--mesh)
         shift
         ;;
       --credential-file)
@@ -360,33 +297,16 @@ node_install() {
         NODE_REPLACE_HUB=1
         shift
         ;;
-      --token)
-        [ "$#" -ge 2 ] || node_fail '--token requires a value'
-        NODE_TOKEN=$2
-        shift 2
-        ;;
-      --hub)
-        [ "$#" -ge 2 ] || node_fail '--hub requires a value'
-        NODE_HUB=$2
-        shift 2
-        ;;
-      --name)
-        [ "$#" -ge 2 ] || node_fail '--name requires a value'
-        NODE_NAME=$2
-        shift 2
+      --token|--hub|--name)
+        node_fail "$1 is a Hub-mode flag, and Hub mode retired on 2026-11-08. Enroll this Node with 'erainfra nodes enroll <name>' and pass --credential-file <path>, a file holding its output. To run a Hub-mode Node, use the installer of release v0.2.0-rc.19."
         ;;
       --source)
         [ "$#" -ge 2 ] || node_fail '--source requires a url or file:// path'
         NODE_SOURCE=$2
         shift 2
         ;;
-      --mesh)
-        NODE_MESH=1
-        shift
-        ;;
       --mesh-source)
         [ "$#" -ge 2 ] || node_fail '--mesh-source requires a url or file:// path'
-        NODE_MESH=1
         NODE_MESH_SOURCE=$2
         shift 2
         ;;
@@ -405,67 +325,26 @@ node_install() {
     esac
   done
 
-  if [ "$NODE_CONVEX" -eq 1 ]; then
-    # Hub and Convex modes are mutually exclusive, in the agent and here.
-    [ -z "$NODE_TOKEN" ] && [ -z "$NODE_HUB" ] ||
-      { node_usage >&2; node_fail '--convex takes no --token or --hub: a Convex Node reports to this deployment, not to a Hub. Drop them, or drop --convex for Hub mode.'; }
-    [ -z "$NODE_NAME" ] ||
-      node_fail '--convex takes no --name: a Convex Node is named when it is enrolled (erainfra nodes enroll <name>).'
-    [ -n "$NODE_CREDENTIAL_SOURCE" ] ||
-      { node_usage >&2; node_fail '--convex requires --credential-file <path>, a file holding the output of erainfra nodes enroll <name>.'; }
-    NODE_MESH=1
-  else
-    [ -z "$NODE_CREDENTIAL_SOURCE" ] || node_fail '--credential-file is for --convex. Add --convex, or drop it for Hub mode.'
-    [ "$NODE_REPLACE_HUB" -eq 0 ] || node_fail '--replace-hub-agent is for --convex.'
-    [ -n "$NODE_TOKEN" ] || { node_usage >&2; node_fail 'A Hub enrollment token is required'; }
-    [ -n "$NODE_HUB" ] || { node_usage >&2; node_fail 'The Hub URL is required, e.g. --hub wss://hub.example.com/agent'; }
-  fi
+  [ -n "$NODE_CREDENTIAL_SOURCE" ] ||
+    { node_usage >&2; node_fail '--credential-file <path> is required: a file holding the output of erainfra nodes enroll <name>.'; }
 
-  case "$(uname -s)" in
-    Linux) NODE_OS_NAME='linux' ;;
-    Darwin) NODE_OS_NAME='darwin' ;;
-    *) node_fail 'On Windows, run the PowerShell installer this deployment serves at /install.ps1' ;;
-  esac
+  [ "$(uname -s)" = 'Linux' ] || node_need_systemd
   case "$(uname -m)" in
     x86_64|amd64) NODE_ARCH_NAME='x86_64' ;;
     arm64|aarch64) NODE_ARCH_NAME='arm64' ;;
     *) node_fail "Unsupported CPU architecture: $(uname -m)" ;;
   esac
-  NODE_TARGET="$NODE_OS_NAME-$NODE_ARCH_NAME"
+  NODE_TARGET="linux-$NODE_ARCH_NAME"
   NODE_ASSET="infra-agent-$NODE_TARGET"
 
   NODE_EXPECTED_SHA=$(node_pinned_digest "$NODE_TARGET")
   [ -n "$NODE_EXPECTED_SHA" ] ||
     node_fail "This EraInfra deployment pins no Infra Agent build for $NODE_TARGET, so there is nothing to verify the download against. Deploy a backend whose AGENT_RELEASE pins a release that publishes it."
+  NODE_MESH_EXPECTED=$(node_mesh_digest "$NODE_TARGET")
+  [ -n "$NODE_MESH_EXPECTED" ] || node_fail "This EraInfra deployment pins no erainfra-mesh build for $NODE_TARGET. Deploy a backend whose AGENT_RELEASE pins all mesh targets; dumbpipe is not installed."
 
-  if [ "$NODE_MESH" -eq 1 ]; then
-    NODE_MESH_EXPECTED=$(node_mesh_digest "$NODE_TARGET")
-    [ -n "$NODE_MESH_EXPECTED" ] || node_fail "This EraInfra deployment pins no erainfra-mesh build for $NODE_TARGET. Deploy a backend whose AGENT_RELEASE pins all mesh targets; dumbpipe is not installed."
-  fi
   if [ "$(id -u)" = '0' ]; then NODE_SUDO=''; else NODE_SUDO='sudo'; fi
-  if [ "$NODE_CONVEX" -eq 1 ]; then
-    node_convex_preflight
-  elif node_unit_live erainfra-node; then
-    node_fail 'erainfra-node.service runs this Node in Convex mode (connect-convex), and one sidecar must never have two controllers. To go back to Hub mode, stop it first: systemctl disable --now erainfra-node'
-  fi
-  # $PORTLESS_PREFIX and the paths under it are identifiers a running Node already holds (rule 4).
-  # Stage 1 of retiring the name (ADR 0004) reads both and prefers the new one; it writes neither,
-  # so with nothing set and no ~/.erainfra directory this resolves to exactly the old path.
-  NODE_PREFIX=$(printenv ERAINFRA_PREFIX || true)
-  if [ -z "$NODE_PREFIX" ]; then
-    NODE_PREFIX=$(printenv PORTLESS_PREFIX || true)
-    [ -z "$NODE_PREFIX" ] ||
-      node_warn 'PORTLESS_PREFIX is a retired name — use ERAINFRA_PREFIX. The old name still works.'
-  fi
-  if [ -z "$NODE_PREFIX" ]; then
-    if [ -d "$HOME/.erainfra" ]; then NODE_PREFIX="$HOME/.erainfra"; else NODE_PREFIX="$HOME/.portless"; fi
-  fi
-  NODE_BIN_DIR="$NODE_PREFIX/bin"
-  NODE_RUN_DIR="$NODE_PREFIX/run"
-  NODE_MACHINE_NAME=$NODE_NAME
-  if [ -z "$NODE_MACHINE_NAME" ]; then
-    NODE_MACHINE_NAME=$(hostname -s 2>/dev/null || hostname)
-  fi
+  node_convex_preflight
 
   NODE_TMP_DIR=$(mktemp -d)
   NODE_HUB_STOPPED=''
@@ -492,66 +371,12 @@ node_install() {
   fi
   node_log "Verified $NODE_ASSET against the checksum pinned by this EraInfra deployment."
   node_mesh_prepare
-  [ "$NODE_CONVEX" -eq 0 ] || node_convex_install
-
-  # Only past the verification does anything on this machine change. A mismatch above leaves an
-  # already-installed agent running on the bytes it was installed with.
-  # Detect and report, never rename (ADR 0004 stage 1). A second unit under a new name would leave
-  # portless-agent.service ENABLED and running, so the Node would hold two agents dialling this Hub.
-  # Checked here rather than inside node_install_service, whose output is discarded on the way to the
-  # nohup fallback — which would then start a third.
-  if [ -f /etc/systemd/system/erainfra-agent.service ] &&
-     [ -f /etc/systemd/system/portless-agent.service ]; then
-    node_fail 'This Node has both portless-agent.service and erainfra-agent.service; two agents would dial the same Hub. Disable one first: systemctl disable --now erainfra-agent'
-  fi
-
-  node_ensure_runtime
-  mkdir -p "$NODE_BIN_DIR"
-  node_mesh_install
-  chmod +x "$NODE_DOWNLOAD"
-  mv "$NODE_DOWNLOAD" "$NODE_BIN_DIR/portless-agent"
-  node_log "Installed $NODE_BIN_DIR/portless-agent."
-
-  if node_install_service 2>/dev/null; then
-    node_log "systemd service 'portless-agent' is active; it reconnects and survives reboot."
-    printf '   Stop and remove it with: systemctl disable --now portless-agent\n'
-    exit 0
-  fi
-
-  mkdir -p "$NODE_RUN_DIR"
-  NODE_PID_FILE="$NODE_RUN_DIR/agent.pid"
-  NODE_LOG_FILE="$NODE_RUN_DIR/agent.log"
-  if [ -f "$NODE_PID_FILE" ]; then
-    kill "$(cat "$NODE_PID_FILE")" 2>/dev/null || true
-  fi
-  : > "$NODE_LOG_FILE"
-  # The token goes in the environment, never in argv: /proc/<pid>/cmdline is world-readable on
-  # Linux, so a token passed as a flag is a Hub credential any local user can read for as long as
-  # the agent runs. The agent reads PORTLESS_TOKEN and PORTLESS_HUB as its flag defaults, which is
-  # the same channel the systemd unit uses through /etc/portless/agent.env.
-  if [ -n "$NODE_MESH_BIN" ]; then
-    ERAINFRA_MESH_BIN="$NODE_MESH_BIN" PORTLESS_HUB="$NODE_HUB" PORTLESS_TOKEN="$NODE_TOKEN" nohup "$NODE_BIN_DIR/portless-agent" \
-      connect --name "$NODE_MACHINE_NAME" \
-      >>"$NODE_LOG_FILE" 2>&1 &
-  else
-    PORTLESS_HUB="$NODE_HUB" PORTLESS_TOKEN="$NODE_TOKEN" nohup "$NODE_BIN_DIR/portless-agent" \
-      connect --name "$NODE_MACHINE_NAME" \
-      >>"$NODE_LOG_FILE" 2>&1 &
-  fi
-  printf '%s\n' "$!" > "$NODE_PID_FILE"
-  sleep 1
-  kill -0 "$(cat "$NODE_PID_FILE")" 2>/dev/null || {
-    tail -n 5 "$NODE_LOG_FILE" >&2 || true
-    node_fail 'The Infra Agent exited on startup.'
-  }
-  node_log "Infra Agent connecting to $NODE_HUB (pid $(cat "$NODE_PID_FILE"), logs: $NODE_LOG_FILE)."
-  node_warn 'Not reboot-persistent — re-run as root on a systemd box for a service.'
-  exit 0
+  node_convex_install
 }
 
 NODE_REPO='__AGENT_REPO__'
 NODE_VERSION='__AGENT_VERSION__'
-# The site origin this script was served from: what a --convex Node's agent calls.
+# The site origin this script was served from: what a Node's Infra Agent calls.
 NODE_SITE='__ERAINFRA_SITE_URL__'
 
 # --role worker-host turns a bare Linux box into a Firecracker microVM host in the one curl that

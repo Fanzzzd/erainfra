@@ -2,7 +2,7 @@ package agent
 
 import (
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 )
 
@@ -79,18 +79,23 @@ func TestValidateDockerArgsRejectsEmptyCombinedValueWithoutConsumingNextToken(t 
 	}
 }
 
-func TestRunCmdRejectsHostSentinelMountBeforeRunner(t *testing.T) {
-	sentinel := t.TempDir() + "/host-secret"
-	const secret = "HOST_SENTINEL_DO_NOT_EXPOSE"
-	if err := os.WriteFile(sentinel, []byte(secret), 0o600); err != nil {
+func TestDeployRejectsHostSentinelMountBeforeDocker(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "host-secret")
+	if err := os.WriteFile(sentinel, []byte("HOST_SENTINEL_DO_NOT_EXPOSE"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	called := false
-	reply := RunCmd(t.Context(),
-		cmdMsg{ID: "sentinel", Cmd: "deploy", Image: "busybox", Name: "probe", Args: []string{"-v", sentinel + ":/sentinel"}},
-		fakeRunner{depOut: secret, deployCalled: &called},
-	)
-	if reply.OK || called || strings.Contains(reply.Output, secret) {
-		t.Fatalf("host sentinel path reached the runner: reply=%+v called=%v", reply, called)
+	called := filepath.Join(dir, "docker-called")
+	docker := filepath.Join(dir, "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\ntouch "+shellQuote(called)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ShellRunner{Docker: docker}.DeployAppAdopting(t.Context(), "probe",
+		[]Service{{Name: "main", Image: "busybox", Args: []string{"-v", sentinel + ":/sentinel"}}}, nil)
+	if err == nil {
+		t.Fatal("a host path mount was accepted")
+	}
+	if _, statErr := os.Stat(called); !os.IsNotExist(statErr) {
+		t.Fatalf("docker ran before the mount was refused: %v", statErr)
 	}
 }

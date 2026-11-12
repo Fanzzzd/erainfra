@@ -5,7 +5,7 @@
 #
 # A green conformance job that has never been observed failing is
 # indistinguishable from one that is vacuous, and this repository has already
-# been bitten by exactly that: deploy/infra/rename.test.sh exited 0 while four
+# been bitten by exactly that: the since-deleted deploy/infra/rename.test.sh exited 0 while four
 # assertions failed, because the counter was incremented inside a subshell and
 # thrown away on the closing paren. So this file does two things, and the
 # second is the important one.

@@ -155,11 +155,10 @@ function NodesPage() {
       </Card>
 
       <Card className="overflow-hidden">
-        <Table className="min-w-[960px]">
+        <Table className="min-w-[840px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[180px]">Node</TableHead>
-              <TableHead className="w-[120px]">Transport</TableHead>
               <TableHead className="w-[160px]">Heartbeat</TableHead>
               <TableHead>Mesh endpoint</TableHead>
               <TableHead className="w-[150px]">Placement roles</TableHead>
@@ -171,14 +170,14 @@ function NodesPage() {
           </TableHeader>
           <TableBody>
             {nodes === undefined ? (
-              <TableRowsSkeleton columns={7} rows={3} />
+              <TableRowsSkeleton columns={6} rows={3} />
             ) : nodes.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={7} className="p-0">
+                <TableCell colSpan={6} className="p-0">
                   <EmptyState
                     icon={HardDrive}
                     title="No Nodes yet"
-                    description="Enroll one above, or run the Hub importer to copy the Nodes a Hub knows."
+                    description="Enroll one above."
                   />
                 </TableCell>
               </TableRow>
@@ -194,13 +193,6 @@ function NodesPage() {
                         {node.infraAgentVersion !== null && ` · ${node.infraAgentVersion}`}
                       </p>
                     </TableCell>
-                    <TableCell>
-                      {node.transport === "convex" ? (
-                        <Badge variant="info">Convex</Badge>
-                      ) : (
-                        <Badge variant="outline">Hub</Badge>
-                      )}
-                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       <span className="flex items-center gap-2">
                         <StatusDot
@@ -209,7 +201,7 @@ function NodesPage() {
                           }
                         />
                         {node.lastSeenAt === null
-                          ? "Never on Convex"
+                          ? "Never connected"
                           : `${online ? "Online" : "Offline"} · ${formatRelativeTime(node.lastSeenAt, now)}`}
                       </span>
                       <CommandHealth commands={node.commands} now={now} />

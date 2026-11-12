@@ -35,7 +35,6 @@
     "print-mesh-pin": "node --experimental-strip-types scripts/print-mesh-pin.ts",
     "embed-firecracker-provisioner": "node --experimental-strip-types scripts/embed-firecracker-provisioner.ts",
     "embed-controller-unit": "node --experimental-strip-types scripts/embed-controller-unit.ts",
-    "import-hub-state": "node --experimental-strip-types scripts/import-hub-state.ts",
     "profile-label-conflicts": "node --experimental-strip-types scripts/profile-label-conflicts.ts"
   },
   "dependencies": {

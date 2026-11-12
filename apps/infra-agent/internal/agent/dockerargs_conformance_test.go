@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// The same fixture is read by apps/hub/test/dockerargs.test.ts. It lives at the repository root
+// The same fixture is read by packages/backend/tests/nodeTransport.test.ts. It lives at the repository root
 // rather than under either app because it belongs to neither: it is the definition of the
 // boundary, and the two validators are implementations of it.
 const conformanceFixture = "../../../../testdata/dockerargs-cases.json"
@@ -63,7 +63,7 @@ func TestValidateDockerArgsMatchesTheSharedConformanceFixture(t *testing.T) {
 // the fixture reaches Go as the five bytes 61 ef bf bd 62 — while JavaScript's JSON.parse keeps
 // the lone surrogate and hands its validator a three-unit string. A row spelled that way would
 // look shared and would in fact be testing two different inputs on the two sides, which is worse
-// than not testing it. apps/hub/test/dockerargs.test.ts pins the JavaScript half of this.
+// than not testing it. packages/backend/tests/nodeTransport.test.ts pins the JavaScript half.
 //
 // What both sides must do is agree in KIND: the control check is an ASCII byte predicate and is
 // deliberately blind to whether the surrounding text is well-formed, so ill-formed bytes with no

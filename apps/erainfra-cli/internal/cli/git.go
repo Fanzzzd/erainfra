@@ -10,9 +10,9 @@ import (
 )
 
 // Push-to-deploy bindings, through /api/v1/git/bindings
-// (packages/backend/convex/infra/operatorGitRoutes.ts). These replace `portless bind` and
-// `portless repos`. A binding is named by repository and branch, and a branch may contain `/`,
-// so unbind sends both as query parameters, never as path segments.
+// (packages/backend/convex/infra/operatorGitRoutes.ts). A binding is named by repository and
+// branch, and a branch may contain `/`, so unbind sends both as query parameters, never as path
+// segments.
 
 var repoPattern = regexp.MustCompile(`^[\w.-]+/[\w.-]+$`)
 

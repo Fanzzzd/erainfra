@@ -63,25 +63,25 @@ func (c *capture) last(t *testing.T) captured {
 	return c.requests[len(c.requests)-1]
 }
 
-func TestNodesListShowsTransportAndMeshProof(t *testing.T) {
+func TestNodesListShowsLivenessAndMeshProof(t *testing.T) {
 	h := newHarness(t).loggedIn()
 	h.api.on("GET /api/v1/nodes", 200, `{"nodes":[
-	  {"name":"edge-1","transport":"convex","online":true,"lastSeenAt":"2026-11-05T11:59:30Z","infraAgentVersion":"0.3.0",
+	  {"name":"edge-1","online":true,"lastSeenAt":"2026-11-05T11:59:30Z","infraAgentVersion":"0.3.0",
 	   "endpoint":{"id":"abcdef0123456789","proven":true},"placementRoles":["gateway"],"liveCredentials":1},
-	  {"name":"edge-2","transport":"convex","online":true,"lastSeenAt":"2026-11-05T11:59:30Z","infraAgentVersion":"0.3.1",
+	  {"name":"edge-2","online":true,"lastSeenAt":"2026-11-05T11:59:30Z","infraAgentVersion":"0.3.1",
 	   "endpoint":{"id":null,"proven":false},"liveCredentials":1,
 	   "commands":{"blocked":"journal_full","blockedSince":"2026-11-05T11:00:00Z","journalKeys":10000,"journalKeyLimit":10000}},
-	  {"name":"old-box","transport":"hub","online":false,"lastSeenAt":null,"infraAgentVersion":null,
+	  {"name":"old-box","online":false,"lastSeenAt":null,"infraAgentVersion":null,
 	   "endpoint":{"id":null,"proven":false},"liveCredentials":0}]}`)
 	h.expect(ExitOK, "nodes", "list")
 	out := h.stdout.String()
-	for _, want := range []string{"TRANSPORT", "edge-1", "convex", "online", "30s ago", "proven abcdef0123…", "gateway", "online, blocked: journal_full", "old-box", "hub", "offline", "none"} {
+	for _, want := range []string{"STATUS", "edge-1", "online", "30s ago", "proven abcdef0123…", "gateway", "online, blocked: journal_full", "old-box", "offline", "none"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("nodes list lacks %q:\n%s", want, out)
 		}
 	}
 	h.expect(ExitOK, "nodes", "list", "--json")
-	if !strings.Contains(h.stdout.String(), `"transport": "convex"`) {
+	if !strings.Contains(h.stdout.String(), `"infraAgentVersion": "0.3.0"`) {
 		t.Errorf("json is not the API's body: %s", h.stdout.String())
 	}
 }
@@ -213,9 +213,9 @@ func TestLinksAddListRemove(t *testing.T) {
 	h.api.on("DELETE /api/v1/links/db", 200, `{"link":{"name":"db"}}`)
 	h.api.on("GET /api/v1/links", 200, `{"links":[
 	  {"name":"db","kind":"standalone","app":null,"createdBy":"user","provider":"node-a","providerPort":5432,"consumer":"node-b",
-	   "localPort":15432,"listen":"127.0.0.1:15432","transport":"mesh","state":"active","reason":null},
+	   "localPort":15432,"listen":"127.0.0.1:15432","state":"active","reason":null},
 	  {"name":"shop-cache","kind":"app","app":"shop","createdBy":"deploy","provider":"node-c","providerPort":62001,"consumer":"node-b",
-	   "localPort":62001,"listen":"bridge:62001","transport":"legacy","state":"pending","reason":"node-c has no proven mesh endpoint"}]}`)
+	   "localPort":62001,"listen":"bridge:62001","state":"pending","reason":"node-c has no proven mesh endpoint"}]}`)
 
 	h.expect(ExitOK, "links", "add", "node-a:5432", "node-b:15432", "--name", "db")
 	body := add.last(t).body
@@ -224,7 +224,7 @@ func TestLinksAddListRemove(t *testing.T) {
 		t.Errorf("POST body = %v", body)
 	}
 	h.expect(ExitOK, "links", "list")
-	for _, want := range []string{"TRANSPORT", "node-a:5432", "node-b @127.0.0.1:15432", "mesh", "active", "legacy", "pending", "app:shop"} {
+	for _, want := range []string{"STATE", "node-a:5432", "node-b @127.0.0.1:15432", "active", "pending", "app:shop"} {
 		if !strings.Contains(h.stdout.String(), want) {
 			t.Errorf("links list lacks %q:\n%s", want, h.stdout.String())
 		}

@@ -12,7 +12,8 @@ import (
 )
 
 // defaultGatewayListen is the loopback port cloudflared points at on a gateway Node. Outside the
-// Hub's 61050/61080 and the ingress link range 61100-61999 (packages/backend/convex/infra/ingress.ts).
+// registry's 61050, the retired Hub's 61080 and the ingress link range 61100-61999
+// (packages/backend/convex/infra/ingress.ts).
 const defaultGatewayListen = "127.0.0.1:61090"
 
 // runGateway is the ingress proxy of a gateway Node (ADR 0016 phase 3b). It is the same binary as

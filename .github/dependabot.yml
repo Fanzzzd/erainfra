@@ -74,8 +74,7 @@ updates:
         update-types: [minor, patch]
     ignore:
       # @types/node follows the Node.js major the repository runs on (22), and
-      # a TypeScript major is a migration: apps/docs is held on TypeScript 5 by
-      # the next-compat catalog for a reason pnpm-workspace.yaml records.
+      # a TypeScript major is a migration.
       - dependency-name: "@types/node"
         update-types: [version-update:semver-major]
       - dependency-name: typescript

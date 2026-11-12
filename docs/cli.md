@@ -9,7 +9,7 @@ the commands, and the HTTP API it uses.
 operator API, the way the Blacksmith CLI and actuated-cli read theirs, and prints a table or stable
 JSON. It also runs infrastructure management against Convex: Nodes, Apps, deploys, env, mesh links
 and log tails (`erainfra nodes|apps|deploy|deployments|env|links|logs`; see
-[docs/infra-management.md](infra-management.md#operate-from-the-erainfra-cli-phase-3c)). It is a single static binary with no dependencies. `rc` on a Worker remains the tool for that
+[docs/infra-management.md](infra-management.md#operate-from-the-erainfra-cli)). It is a single static binary with no dependencies. `rc` on a Worker remains the tool for that
 one machine (`rc status`, `rc logs -f`, `rc update`), and `erainfra worker <command>` runs it from
 this CLI on the Worker; [ADR 0011](adr/0011-one-erainfra-cli-over-an-operator-api.md)
 explains the split.

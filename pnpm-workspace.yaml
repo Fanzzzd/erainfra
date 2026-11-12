@@ -11,15 +11,6 @@ catalog:
   convex: 1.49.0
   typescript: 7.0.2
 
-# apps/docs only. next@16 resolves `typescript/lib/typescript.js` during `next typegen`, and the
-# native TypeScript 7 package does not ship that file. Locally the failure hides — typegen shells out
-# to `pnpm install` mid-typecheck and then passes on a stale .next/types/ — but on a clean CI checkout
-# it throws, exits 0 anyway, and surfaces as four TS2304s. Pin the docs site to the last TS 6-era
-# release Next.js can resolve, in a NAMED catalog so nothing else can drift onto it.
-catalogs:
-  next-compat:
-    typescript: 5.9.3
-
 # pnpm 11 raises ERR_PNPM_IGNORED_BUILDS for any dependency with an install script that is not
 # listed here, and `pnpm run` re-checks dependency status before it runs anything — so one missing
 # entry fails every script in the repo, not just `pnpm install`.
@@ -28,8 +19,3 @@ allowBuilds:
   # workerd is the Workers runtime wrangler runs locally and bundles against (packages/backend,
   # ADR 0019); its postinstall fetches the platform binary.
   workerd: true
-  # sharp arrives with apps/docs, whose Next.js lists it as an optional dependency, and powers
-  # next/image optimisation. The docs site imports no next/image and ships no raster assets, so the
-  # native binary is dead weight — denied explicitly rather than left silent, because silence is what
-  # pnpm 11 turns into ERR_PNPM_IGNORED_BUILDS and every script in the repo exiting 1.
-  sharp: false

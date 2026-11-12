@@ -1,7 +1,7 @@
 {
   "note": [
     "One conformance fixture, read as a table test by both implementations of this security boundary:",
-    "apps/hub/src/runtime/dockerargs.ts (TypeScript, the Hub) and",
+    "packages/backend/convex/infra/dockerArgs.ts (TypeScript, Convex) and",
     "apps/infra-agent/internal/agent/dockerargs.go (Go, the Infra Agent).",
     "They enforce the same rule — which `docker run` arguments a customer-supplied App spec may contain —",
     "and they were written separately, back when the two halves of the platform were separate products.",

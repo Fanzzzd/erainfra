@@ -20,7 +20,6 @@ import {
 import { apiCallerValidator, requirePermission, requireTokenPermission } from "./access";
 import { isSingleContainerRoute, loadRouteOwner, ownerOfRoute, upsertMeshLink } from "./apps";
 import { appendAudit } from "./auditLog";
-import { recordTombstone } from "./hubProvenance";
 import { INGRESS_PORT_END, INGRESS_PORT_START } from "./ingress";
 import { insertNodeCommand } from "./nodeCommands";
 import {
@@ -87,9 +86,6 @@ async function nodeView(ctx: QueryCtx, node: Node, now: number) {
     id: node._id,
     name: node.name,
     source: node.source,
-    // `convex` once the Node has heartbeated over the Node API (connect-convex); before that it is
-    // a Node the Hub still drives, which Convex knows only from the importer or enrollment.
-    transport: node.lastSeenAt === undefined ? ("hub" as const) : ("convex" as const),
     online: isNodeLive(node.lastSeenAt, now),
     lastSeenAt: node.lastSeenAt ?? null,
     infraAgentVersion: node.infraAgentVersion ?? null,
@@ -152,8 +148,8 @@ export type AppView = Awaited<ReturnType<typeof appView>>;
 /**
  * One App, from its `apps` row, or from a single-container route the Hub deployed without one
  * (`kind: "container"`). `status` is what Convex can tell: `deploying` while a run is in flight,
- * `hub` when a Node it runs on has never connected to Convex (only the Hub sees it),
- * `node-offline` when such a Node stopped heartbeating, and otherwise `running`.
+ * `node-offline` when a Node it runs on is gone, has never connected or stopped heartbeating, and
+ * otherwise `running`.
  */
 async function appView(
   ctx: QueryCtx,
@@ -189,12 +185,10 @@ async function appView(
   const hosts = [...new Set(services.map((s) => s.nodeId))];
   const hostNodes = await Promise.all(hosts.map(nodeOf));
   const run = await latestRun(ctx, name);
-  let status: "deploying" | "running" | "node-offline" | "hub" = "running";
+  let status: "deploying" | "running" | "node-offline" = "running";
   if (run !== null && run.operation !== undefined && !isTerminalStage(run.stage)) {
     status = "deploying";
-  } else if (hostNodes.some((n) => n === null || n.lastSeenAt === undefined)) {
-    status = "hub";
-  } else if (hostNodes.some((n) => !isNodeLive(n!.lastSeenAt, now))) {
+  } else if (hostNodes.some((n) => n === null || !isNodeLive(n.lastSeenAt, now))) {
     status = "node-offline";
   }
   const primary = "app" in input ? input.app.nodeId : input.route.nodeId;
@@ -277,11 +271,10 @@ export type LinkView = Awaited<ReturnType<typeof listLinkViews>>[number];
 /**
  * Every link Convex derives mesh state from: standalone links, and each App's dependency links.
  *
- * `transport` is `mesh` when both Nodes have a proven endpoint and a live credential, so Convex
- * grants the link over erainfra-mesh. Otherwise it is `legacy`: Convex grants nothing for it, and
- * only a Hub still driving one of the Nodes can carry it (over its own mesh or dumbpipe).
- * `state` is derived, not observed: Convex does not see traffic, only endpoint proofs and
- * heartbeats. `active` means both ends are on the mesh and heartbeating.
+ * Convex grants a link over erainfra-mesh only when both Nodes have a proven endpoint and a live
+ * credential; until then it is `pending`. `state` is derived, not observed: Convex does not see
+ * traffic, only endpoint proofs and heartbeats. `active` means both ends are on the mesh and
+ * heartbeating.
  */
 const nodeLabel = (n: Node | null) => n?.name ?? "a removed Node";
 
@@ -318,13 +311,12 @@ export async function listLinkViews(ctx: QueryCtx, now: number) {
   for (const link of rows) {
     const provider = await about(link.providerNodeId);
     const consumer = await about(link.consumerNodeId);
-    const transport = provider.ready && consumer.ready ? ("mesh" as const) : ("legacy" as const);
     let state: "active" | "degraded" | "pending" = "active";
     let reason: string | null = null;
-    if (transport === "legacy") {
+    if (!provider.ready || !consumer.ready) {
       state = "pending";
       const missing = [provider, consumer].filter((e) => !e.ready).map((e) => nodeLabel(e.node));
-      reason = `${missing.join(" and ")} ${missing.length > 1 ? "have" : "has"} no proven mesh endpoint (Hub mode, no sidecar, or credential revoked)`;
+      reason = `${missing.join(" and ")} ${missing.length > 1 ? "have" : "has"} no proven mesh endpoint (never connected, no sidecar, or credential revoked)`;
     } else {
       const silent = [provider, consumer].filter((e) => !isNodeLive(e.node?.lastSeenAt, now));
       if (silent.length > 0) {
@@ -344,7 +336,6 @@ export async function listLinkViews(ctx: QueryCtx, now: number) {
       // Where the consumer listens: a standalone link on loopback, an App link on the Docker
       // bridge gateway its containers reach as host.docker.internal (nodeState.ts).
       listen: link.kind === "app" ? `bridge:${link.localPort}` : `127.0.0.1:${link.localPort}`,
-      transport,
       state,
       reason,
     });
@@ -471,7 +462,6 @@ export async function removeLink(ctx: MutationCtx, input: { name: string; actor:
     .unique();
   if (row === null) throw new ConvexError(`No standalone link named ${input.name}`);
   await ctx.db.delete(row._id);
-  await recordTombstone(ctx, "link", input.name);
   await appendAudit(ctx, {
     actor: input.actor,
     action: "mesh.unlink",
@@ -490,11 +480,8 @@ export async function removeLink(ctx: MutationCtx, input: { name: string; actor:
  * on every Node it runs on, then forget its routes, its App row and its ports. The App's secrets
  * and git bindings stay, as on the Hub; unset or unbind them separately.
  *
- * Refused while a deploy or failover of the App is queued or holds its lease, and when a Node the
- * App runs on has never connected to Convex: that Node only takes commands from the Hub, so the
- * App must be removed there (`portless remove`) until the Node switches to connect-convex. The
- * removal commands run whenever each Node next polls; one that is offline removes the containers
- * when it comes back.
+ * Refused while a deploy or failover of the App is queued or holds its lease. The removal commands
+ * run whenever each Node next polls; one that is offline removes the containers when it comes back.
  */
 export async function removeApp(ctx: MutationCtx, input: { app: string; actor: string }) {
   const name = input.app;
@@ -551,11 +538,6 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
   for (const [nodeId, containers] of byNode) {
     const node = await ctx.db.get(nodeId);
     if (node === null) continue;
-    if (node.lastSeenAt === undefined) {
-      throw new ConvexError(
-        `${name} runs on ${node.name}, which has not connected to Convex; remove it on the Hub (portless remove ${name})`,
-      );
-    }
     const pending = await ctx.db
       .query("nodeCommands")
       .withIndex("by_node_status", (q) => q.eq("nodeId", nodeId).eq("status", "pending"))
@@ -610,8 +592,6 @@ export async function removeApp(ctx: MutationCtx, input: { app: string; actor: s
   }
   if (app !== null) await ctx.db.delete(app._id);
   const ports = await releaseAppPorts(ctx, name);
-  // A later Hub import must not bring the App, its routes or its ports back.
-  await recordTombstone(ctx, "app", name);
   await appendAudit(ctx, {
     actor: input.actor,
     action: "apps.remove",

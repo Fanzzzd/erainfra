@@ -79,7 +79,7 @@ function AppsPage() {
                   <EmptyState
                     icon={Boxes}
                     title="No Apps yet"
-                    description="Deploy one with erainfra deploy, or run the Hub importer to copy the Hub's Apps."
+                    description="Deploy one with erainfra deploy."
                   />
                 </TableCell>
               </TableRow>
@@ -154,17 +154,13 @@ function AppsPage() {
                             variant="ghost"
                             size="icon"
                             aria-label={`Remove ${app.name}`}
-                            disabled={app.status === "deploying" || app.status === "hub"}
+                            disabled={app.status === "deploying"}
                             onClick={() => void removeApp(app.name)}
                           >
                             <Trash2 />
                           </Button>
                         </TooltipTrigger>
-                        <TooltipContent side="left">
-                          {app.status === "hub"
-                            ? "Runs on a Node the Hub still drives; remove it on the Hub"
-                            : "Remove this App everywhere"}
-                        </TooltipContent>
+                        <TooltipContent side="left">Remove this App everywhere</TooltipContent>
                       </Tooltip>
                     </TableCell>
                   </TableRow>

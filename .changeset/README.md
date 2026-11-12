@@ -19,7 +19,7 @@ The product packages share one version and are always released together (`fixed`
 
 Name the one closest to the change. Naming any of them bumps all of them, and the release copies the version to the root `package.json`, the mesh crate, the agent lockfile and `AGENT_RELEASE.version`. Code without its own package (`apps/infra-agent`, `apps/mesh`, `apps/cache-service`, `apps/erainfra-cli`, `deploy/`, `images/`) ships in the product, so name the closest product package for it too: `@erainfra/runtime` for host and guest work, `@erainfra/agent` for Node and Worker work.
 
-`portless` (`packages/cli`) is versioned on its own. The retired Hub, the docs site and internal tooling are ignored.
+Internal tooling (`@erainfra/release`, `@erainfra/typescript-config`) is ignored.
 
 ## Bump
 

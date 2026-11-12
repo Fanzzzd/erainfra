@@ -1,5 +1,5 @@
-// Hub Docker-argument policy, adapted to the Convex isolate (no Buffer). The shared
-// testdata/dockerargs-cases.json fixture checks conformance with Hub and Go.
+// The Docker-argument policy, adapted to the Convex isolate (no Buffer). The shared
+// testdata/dockerargs-cases.json fixture checks conformance with the Infra Agent's Go copy.
 const VOLUME_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // C0 except TAB, plus DEL. Deliberately NOT the Unicode control category: `\p{Cc}` and Go's
@@ -22,7 +22,7 @@ const PORT_DIGITS = /^[0-9]+$/;
 // trust boundary, so a bypass or mixed caller cannot turn this validation into remote root access.
 //
 // "Repeats the same policy" is asserted, not assumed: testdata/dockerargs-cases.json is read as a
-// table test by test/dockerargs.test.ts here and by dockerargs_conformance_test.go there. Any rule
+// table test by tests/nodeTransport.test.ts here and by dockerargs_conformance_test.go there. Any rule
 // changed in this file has to be changed in both, or the fixture goes red.
 export function validateDockerArgs(args: readonly string[]): string | null {
   if (args.length > 64) return "docker args: at most 64 tokens";

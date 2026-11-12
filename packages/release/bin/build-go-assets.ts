@@ -25,8 +25,9 @@ function parseOutDirectory(argv: readonly string[]) {
 const releaseOut = parseOutDirectory(process.argv.slice(2));
 
 type Target = {
-  // The Infra Agent runs on a Node, and a Node is any box a customer owns — including the Windows
-  // ones deploy/infra/agent.ps1 already onboards.
+  // The Infra Agent runs on a Node. /install sets one up only on Linux with systemd; the darwin and
+  // windows builds are for starting connect-convex by hand ("Set up a Node" in
+  // docs/infra-management.md).
   os: "linux" | "darwin" | "windows";
   arch: "amd64" | "arm64";
   output: string;
