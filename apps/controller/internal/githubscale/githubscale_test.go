@@ -51,8 +51,8 @@ func (f *fakeClient) RemoveRunner(context.Context, int64) error { return f.remov
 func TestEnsureScaleSetCreatesDurableContract(t *testing.T) {
 	client := &fakeClient{}
 	result, err := EnsureScaleSet(t.Context(), client, ScaleSetSpec{
-		Name:   "rc-linux-js",
-		Labels: []string{"rc-linux-js", "x64", "rc-linux-js"},
+		Name:   "erainfra-4vcpu-ubuntu-2404",
+		Labels: []string{"erainfra-4vcpu-ubuntu-2404", "x64", "erainfra-4vcpu-ubuntu-2404"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestEnsureScaleSetCreatesDurableContract(t *testing.T) {
 	if result.ID != 5 || client.created == nil {
 		t.Fatalf("result = %#v, created = %#v", result, client.created)
 	}
-	wantLabels := []scaleset.Label{{Name: "rc-linux-js", Type: "System"}, {Name: "x64", Type: "System"}}
+	wantLabels := []scaleset.Label{{Name: "erainfra-4vcpu-ubuntu-2404", Type: "System"}, {Name: "x64", Type: "System"}}
 	if !reflect.DeepEqual(client.created.Labels, wantLabels) {
 		t.Fatalf("labels = %#v, want %#v", client.created.Labels, wantLabels)
 	}
@@ -156,11 +156,11 @@ func TestIssuerSeparatesAGoneRunnerFromABusyOne(t *testing.T) {
 }
 
 func TestRunnerNameIsSafeAndBounded(t *testing.T) {
-	name, err := RunnerName("RC Linux/JS @ arm64 with a very very very very long suffix")
+	name, err := RunnerName("EraInfra 4vCPU Ubuntu/2404 @ arm64 with a very very very very long suffix")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(name) > 56 || !strings.HasPrefix(name, "rc-rc-linux-js---arm64") {
+	if len(name) > 56 || !strings.HasPrefix(name, "rc-erainfra-4vcpu-ubuntu-2404---arm64") {
 		t.Fatalf("runner name = %q", name)
 	}
 }

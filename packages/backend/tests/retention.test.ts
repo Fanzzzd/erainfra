@@ -15,7 +15,7 @@ describe("Attempt and Experiment retention", () => {
     const staleAt = now - TERMINAL_WORK_RETENTION_MS - 1;
     const ids = await t.run(async (ctx) => {
       const attempt = {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker" as const,
         imageRelease: IMAGE,
         vcpus: 2,
@@ -55,7 +55,7 @@ describe("Attempt and Experiment retention", () => {
       });
 
       const experiment = {
-        profile: "rc-linux-js",
+        profile: "erainfra-4vcpu-ubuntu-2404",
         executor: "firecracker" as const,
         imageRelease: IMAGE,
         vcpus: 2,

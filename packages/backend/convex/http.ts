@@ -1002,8 +1002,8 @@ function runsOnResponse(label: string | string[]) {
 
 // Capacity probe for drop-in fallback. A router job at the top of a workflow
 // calls it and sends the real jobs to the fleet or to a GitHub-hosted fallback:
-//   GET /runs-on?profile=rc-linux-js&fallback=ubuntu-24.04
-// → {"runs-on": "rc-linux-js"} or {"runs-on": "ubuntu-24.04"}
+//   GET /runs-on?profile=erainfra-4vcpu-ubuntu-2404&fallback=ubuntu-24.04
+// → {"runs-on": "erainfra-4vcpu-ubuntu-2404"} or {"runs-on": "ubuntu-24.04"}
 // The Profile is the answer when a job sent to it now would start without
 // waiting (routing.profileRoute has the rule). `fallback` defaults to the
 // latest GitHub-hosted runner for the Profile's OS.
@@ -1018,7 +1018,7 @@ function runsOnResponse(label: string | string[]) {
 // go to the deployment log, not to the caller. Each answer is stored as a
 // routerDecisions row, with the optional `repo=OWNER/NAME` the caller sent.
 //
-// The legacy form `?labels=rc-linux[,…]` still answers from the pre-Profile
+// The legacy form `?labels=ubuntu-24.04[,…]` still answers from the pre-Profile
 // `machines`/`jobs` path (machines.hasCapacity), which webhook-intake jobs
 // still use.
 http.route({

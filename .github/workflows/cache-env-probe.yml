@@ -4,16 +4,17 @@
 # that variable from the job message; it says nothing about what happens to a
 # value already present in the process environment."
 #
-# This is the instrument for that, on a REAL Attempt: `rc-e2e` is the only scale
-# set measured to pick work up on this repository (.github/actionlint.yaml), so
-# a job here is the pinned actions-runner composing a real environment.
+# This is the instrument for that, on a REAL Attempt:
+# `erainfra-canary-4vcpu-ubuntu-2404` is the only scale set registered on this
+# repository (.github/actionlint.yaml), so a job here is the pinned
+# actions-runner composing a real environment.
 #
 # The first live run (32108617455) answered less than it appeared to, and how it
 # was wrong is now built into the instrument. It found all four variables UNSET
 # in a `run:` step and both overrides surviving there, and `actions/cache` then
 # reported a restore without sending the probe a single request. Read on its
 # own that says the fleet injects nothing. It cannot: `actions/upload-artifact`
-# uploads from rc-e2e in the same hour, and it cannot do that without
+# uploads from rc-e2e (now erainfra-canary-4vcpu-ubuntu-2404) in the same hour, and it cannot do that without
 # ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN. The credentials exist, and a
 # SCRIPT step does not see them.
 #
@@ -66,7 +67,7 @@ env:
 jobs:
   probe:
     name: which environment does a real step get
-    runs-on: rc-e2e
+    runs-on: erainfra-canary-4vcpu-ubuntu-2404
     timeout-minutes: 20
     permissions:
       contents: read
@@ -320,7 +321,7 @@ jobs:
   # script steps rather than about the fleet.
   artifacts:
     name: do the runtime credentials an action step gets actually work
-    runs-on: rc-e2e
+    runs-on: erainfra-canary-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: read

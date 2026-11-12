@@ -387,10 +387,10 @@ func TestRunRunnersListsAssignedUnfinishedJobs(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"total_count": 4, "jobs": [
-			{"status": "in_progress", "runner_name": "rc-linux-js-a"},
+			{"status": "in_progress", "runner_name": "erainfra-4vcpu-ubuntu-2404-a"},
 			{"status": "queued", "runner_name": null},
-			{"status": "completed", "runner_name": "rc-linux-js-old"},
-			{"status": "queued", "runner_name": "rc-linux-js-b"}
+			{"status": "completed", "runner_name": "erainfra-4vcpu-ubuntu-2404-old"},
+			{"status": "queued", "runner_name": "erainfra-4vcpu-ubuntu-2404-b"}
 		]}`))
 	}))
 	defer server.Close()
@@ -402,7 +402,7 @@ func TestRunRunnersListsAssignedUnfinishedJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(runners, ",") != "rc-linux-js-a,rc-linux-js-b" {
+	if strings.Join(runners, ",") != "erainfra-4vcpu-ubuntu-2404-a,erainfra-4vcpu-ubuntu-2404-b" {
 		t.Fatalf("runners = %q", runners)
 	}
 }

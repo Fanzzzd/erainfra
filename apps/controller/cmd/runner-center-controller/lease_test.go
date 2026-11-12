@@ -45,7 +45,7 @@ func TestHolderReportsLeaseAndInitializationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{Profile: "rc-linux-js", MachineToken: "0123456789abcdef0123456789abcdef"}
+	cfg := config.Config{Profile: "erainfra-4vcpu-ubuntu-2404", MachineToken: "0123456789abcdef0123456789abcdef"}
 	if err := runHolder(t.Context(), cfg, store.WithLease(7, nil), "worker", 7, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
 		t.Fatal("missing credentials should fail holder initialization")
 	}

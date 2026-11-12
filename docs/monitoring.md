@@ -192,13 +192,13 @@ A generic webhook receives:
     "name": "Queue backlog",
     "kind": "queue-backlog",
     "condition": "Oldest queued Attempt older than 15m",
-    "profile": "rc-linux-js"
+    "profile": "erainfra-4vcpu-ubuntu-2404"
   },
   "incident": {
     "id": "…",
     "status": "firing",
-    "subject": "rc-linux-js",
-    "summary": "3 Attempts queued on Profile rc-linux-js; the oldest has waited 16m.",
+    "subject": "erainfra-4vcpu-ubuntu-2404",
+    "summary": "3 Attempts queued on Profile erainfra-4vcpu-ubuntu-2404; the oldest has waited 16m.",
     "since": "2026-11-05T11:44:00.000Z",
     "firedAt": "2026-11-05T12:00:00.000Z",
     "resolvedAt": null

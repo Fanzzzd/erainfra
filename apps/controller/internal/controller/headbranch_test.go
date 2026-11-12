@@ -116,7 +116,7 @@ func TestJobStartedHeadBranchWithoutACache(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{}
-			scaler, err := NewScaler(validConfig("rc-linux-js", 1), store, &fakeIssuer{}, names("unused"), tc.opts...)
+			scaler, err := NewScaler(validConfig("erainfra-4vcpu-ubuntu-2404", 1), store, &fakeIssuer{}, names("unused"), tc.opts...)
 			if err != nil {
 				t.Fatal(err)
 			}

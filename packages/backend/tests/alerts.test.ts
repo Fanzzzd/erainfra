@@ -130,7 +130,7 @@ describe("alert lifecycle", () => {
       firingNotifiedAt: NOW,
     });
     expect(rows[0]?.summary).toBe(
-      "2 Attempts queued on Profile rc-linux-js; the oldest has waited 5m.",
+      "2 Attempts queued on Profile erainfra-4vcpu-ubuntu-2404; the oldest has waited 5m.",
     );
     expect(await deliveries(t)).toEqual([
       expect.objectContaining({ event: "firing", status: "pending", attempts: 0 }),
@@ -335,11 +335,11 @@ describe("alert lifecycle", () => {
     // The fixture's newest finished Attempts are a control-plane failure then a GitHub failure;
     // 2 of 4 decided Attempts in the hour failed. ubuntu0 is ready, so no-ready stays quiet.
     expect(firing).toEqual([
-      "degraded:rc-linux-js/mac-mini",
-      "failures:rc-linux-js",
+      "degraded:erainfra-4vcpu-ubuntu-2404/mac-mini",
+      "failures:erainfra-4vcpu-ubuntu-2404",
       "offline:gone-box",
-      "rate:rc-linux-js",
-      "slow:rc-linux-js",
+      "rate:erainfra-4vcpu-ubuntu-2404",
+      "slow:erainfra-4vcpu-ubuntu-2404",
     ]);
   });
 });
@@ -504,7 +504,7 @@ describe("alert delivery", () => {
     expect(sent[0]?.headers.get("X-EraInfra-Signature")).toBeNull();
     const body = JSON.parse(sent[0]?.body ?? "{}") as { text: string; blocks: unknown[] };
     expect(body.text).toBe(
-      ":rotating_light: Firing: Queue backlog: 2 Attempts queued on Profile rc-linux-js; the oldest has waited 5m.",
+      ":rotating_light: Firing: Queue backlog: 2 Attempts queued on Profile erainfra-4vcpu-ubuntu-2404; the oldest has waited 5m.",
     );
     expect(body.blocks).toHaveLength(1);
   });

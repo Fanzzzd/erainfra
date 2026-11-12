@@ -1,5 +1,10 @@
 # Runbook: cut `rc-linux-js` over to Firecracker
 
+This cutover ran on 2026-08-20 under the Profile's old name. `rc-linux-js` is now
+`erainfra-4vcpu-ubuntu-2404`
+([ADR 0010](../adr/0010-name-profiles-the-way-runner-vendors-name-labels.md)). To cut over another
+Profile, put its name wherever `rc-linux-js` appears below.
+
 Moving a Profile from the trusted-only Docker executor to the strong Firecracker executor. Every
 command here is meant to be run as written. Nothing in it is reversible only forwards: the last
 section rolls the whole thing back.

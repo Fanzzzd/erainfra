@@ -294,11 +294,11 @@ describe("acquired jobs", () => {
   it("parses the controller's report and refuses a bad one", () => {
     expect(
       parseJobsAcquired({
-        profile: " rc-linux-js ",
+        profile: " erainfra-4vcpu-ubuntu-2404 ",
         jobs: [{ runnerRequestId: "9007199254740993", workflowRunId: 7, repository: " payable " }],
       }),
     ).toEqual({
-      profile: "rc-linux-js",
+      profile: "erainfra-4vcpu-ubuntu-2404",
       jobs: [
         {
           runnerRequestId: "9007199254740993",

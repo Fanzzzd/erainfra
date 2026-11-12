@@ -10,7 +10,7 @@ const OPERATOR = { subject: "operator", issuer: "https://example.test" };
 type Harness = TestConvex<typeof schema>;
 
 const CONTRACT = {
-  profile: "rc-linux-js",
+  profile: "erainfra-4vcpu-ubuntu-2404",
   executor: "firecracker" as const,
   imageRelease: `ghcr.io/fanzzzd/runner@sha256:${"a".repeat(64)}`,
   vcpus: 2,

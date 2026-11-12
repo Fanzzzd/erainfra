@@ -333,7 +333,10 @@ describe("operator API reads", () => {
     await seedAttempt(t, T0 - 3 * 86_400_000, { repo: "acme/web" });
     await seedAttempt(t, T0 - 1_000, { repo: "web", owner: "acme", state: "failed" });
     await seedAttempt(t, T0 - 500, { repo: "acme/api" });
-    await seedAttempt(t, T0 - 100, { profile: "rc-linux-js", repo: "acme/web" });
+    await seedAttempt(t, T0 - 100, {
+      profile: "erainfra-canary-4vcpu-ubuntu-2404",
+      repo: "acme/web",
+    });
     vi.setSystemTime(T0);
 
     const repos = async (query: string) => {
@@ -345,15 +348,17 @@ describe("operator API reads", () => {
       );
     };
 
-    expect(await repos("profile=rc-linux-js")).toEqual(["rc-linux-js:acme/web:completed"]);
+    expect(await repos("profile=erainfra-canary-4vcpu-ubuntu-2404")).toEqual([
+      "erainfra-canary-4vcpu-ubuntu-2404:acme/web:completed",
+    ]);
     expect(await repos("state=failed")).toEqual(["erainfra-4vcpu-ubuntu-2404:acme/web:failed"]);
     expect(await repos("repo=acme/web")).toEqual([
-      "rc-linux-js:acme/web:completed",
+      "erainfra-canary-4vcpu-ubuntu-2404:acme/web:completed",
       "erainfra-4vcpu-ubuntu-2404:acme/web:failed",
       "erainfra-4vcpu-ubuntu-2404:acme/web:completed",
     ]);
     expect(await repos("repo=acme/web&since=1d")).toEqual([
-      "rc-linux-js:acme/web:completed",
+      "erainfra-canary-4vcpu-ubuntu-2404:acme/web:completed",
       "erainfra-4vcpu-ubuntu-2404:acme/web:failed",
     ]);
     expect(await repos("profile=erainfra-4vcpu-ubuntu-2404&state=completed&since=1h")).toEqual([
@@ -380,6 +385,29 @@ describe("operator API reads", () => {
     const response = await get(t, "/api/v1/attempts?cursor=garbage", token);
     expect(response.status).toBe(400);
     expect((await response.json()).error.code).toBe("invalid_cursor");
+  });
+
+  // `erainfra jobs list --since 720h --all` sent the span with every page. Convex refused page 2
+  // because the span resolved to a later time than the one the cursor was issued for. convex-test
+  // does not bind a cursor to its index range, so a malformed cursor stands in for the refusal.
+  it("says why a cursor sent with a since span is refused", async () => {
+    const { t, token } = await fleet();
+    await seedAttempt(t, T0);
+    const refusal = async (query: string) => {
+      const response = await get(t, `/api/v1/attempts?${query}&cursor=garbage`, token);
+      expect(response.status, query).toBe(400);
+      return (await response.json()).error;
+    };
+
+    expect(await refusal("since=720h")).toEqual({
+      code: "invalid_cursor",
+      message:
+        "cursor is not valid for these filters: a since span moves with each request, so send the RFC 3339 time it meant on the first page",
+    });
+    expect(await refusal(`since=${new Date(T0 - 86_400_000).toISOString()}`)).toEqual({
+      code: "invalid_cursor",
+      message: "cursor is not valid for these filters",
+    });
   });
 
   it("shows one Attempt with queue wait and duration, and never its JIT config", async () => {
