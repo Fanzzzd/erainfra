@@ -47,5 +47,5 @@ squash-merged, so the pull request title becomes the commit subject. `CONTRIBUTI
 
 ## Writing
 
-English only. Short sentences with active verbs. State limits and unshipped behavior plainly. No
+English only, except `README.zh-CN.md` and Unicode test inputs (`CONTRIBUTING.md`, Writing). Short sentences with active verbs. State limits and unshipped behavior plainly. No
 marketing words, no em dashes, no slogans as headings.
