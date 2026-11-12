@@ -282,7 +282,11 @@ describe("scale-set Attempt protocol", () => {
     }
     const finishedAt = Date.now() - 700;
     const runnerAssignedAt = finishedAt - 25_000;
-    const started = { profile: "erainfra-4vcpu-ubuntu-2404", displayName: "test", workflowRunId: 99 };
+    const started = {
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      displayName: "test",
+      workflowRunId: 99,
+    };
     const stored = async (runnerName: string) =>
       t.run(async (ctx) =>
         ctx.db
