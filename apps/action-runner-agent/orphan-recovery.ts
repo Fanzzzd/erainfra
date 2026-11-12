@@ -18,7 +18,7 @@ type RecoveryOptions = {
   ) => Promise<unknown>;
 };
 
-export function runtimeSocketPath() {
+function runtimeSocketPath() {
   return dualEnv("RC_RUNTIME_SOCKET")?.trim() || DEFAULT_RUNTIME_SOCKET;
 }
 

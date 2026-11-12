@@ -212,21 +212,7 @@ export function firecrackerReadinessError(
 
 type ReadinessRow = Pick<
   Doc<"workerReadiness">,
-  | "machineId"
-  | "profile"
-  | "executor"
-  | "imageRelease"
-  | "vcpus"
-  | "memoryMiB"
-  | "checkedAt"
-  | "isolation"
-  | "boundary"
-  | "checks"
-  | "cacheScope"
-  | "cacheSharedWritable"
-  | "hardware"
-  | "storage"
-  | "network"
+  "machineId" | "profile" | "executor" | "imageRelease" | "vcpus" | "memoryMiB" | "checkedAt"
 >;
 
 type EvidenceRow = Pick<
@@ -260,27 +246,21 @@ export function readinessAdmissionError(
   profileEgress: ProfileEgress,
 ): string | undefined {
   if (readiness.executor !== "firecracker") return undefined;
-  let facts: ReadinessFacts;
   if (evidence === undefined) {
-    // Historical rows stored facts inline. They remain schema-valid, but the
-    // same completeness check applies and normally explains exactly what their
-    // older evidence did not prove.
-    facts = readiness;
-  } else {
-    const exactCurrentEvidence =
-      evidence.machineId === readiness.machineId &&
-      evidence.profile === readiness.profile &&
-      evidence.executor === readiness.executor &&
-      evidence.imageRelease === readiness.imageRelease &&
-      evidence.vcpus === readiness.vcpus &&
-      evidence.memoryMiB === readiness.memoryMiB &&
-      evidence.checkedAt === readiness.checkedAt;
-    if (!exactCurrentEvidence) {
-      return "current readinessEvidence does not match this Worker, Profile contract, and checkedAt";
-    }
-    facts = evidence;
+    return "no readinessEvidence for this Worker and Profile";
   }
-  const problem = firecrackerReadinessError(facts, profileEgress);
+  const exactCurrentEvidence =
+    evidence.machineId === readiness.machineId &&
+    evidence.profile === readiness.profile &&
+    evidence.executor === readiness.executor &&
+    evidence.imageRelease === readiness.imageRelease &&
+    evidence.vcpus === readiness.vcpus &&
+    evidence.memoryMiB === readiness.memoryMiB &&
+    evidence.checkedAt === readiness.checkedAt;
+  if (!exactCurrentEvidence) {
+    return "current readinessEvidence does not match this Worker, Profile contract, and checkedAt";
+  }
+  const problem = firecrackerReadinessError(evidence, profileEgress);
   return problem === undefined
     ? undefined
     : `Firecracker readiness evidence is incomplete: ${problem}`;

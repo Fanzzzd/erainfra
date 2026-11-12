@@ -279,10 +279,8 @@ export async function loadFleetObservation(
         const detail =
           pinDetail(profile.workerLabels, machine.labels) ??
           currentEvidence?.lastError ??
-          row.lastError ??
           readinessAdmissionError(row, rowEvidence, profileEgressOf(profile)) ??
-          currentEvidence?.statusDetail ??
-          row.statusDetail;
+          currentEvidence?.statusDetail;
         return [
           {
             machineId: row.machineId,

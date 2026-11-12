@@ -195,7 +195,3 @@ func (s *Service) Metric(series string) int64 {
 	}
 	return -1
 }
-
-// Close stops the service before the test ends, which is how a test makes the
-// cache unreachable mid-job.
-func (s *Service) Close() { s.http.Close() }

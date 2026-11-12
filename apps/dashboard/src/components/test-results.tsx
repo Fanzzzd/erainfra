@@ -5,7 +5,7 @@ import { formatDuration } from "@/lib/time";
 // only as React text children: React escapes them, and nothing here builds HTML or a URL from
 // them. Long values wrap or truncate with the full text in a title attribute.
 
-export type TestStatus = "passed" | "failed" | "errored" | "skipped" | "flaky";
+type TestStatus = "passed" | "failed" | "errored" | "skipped" | "flaky";
 
 export type TestCaseView = {
   testId: string;
@@ -36,7 +36,7 @@ const statusVariant = {
   flaky: "warning",
 } as const;
 
-export function TestStatusBadge({ status }: { status: TestStatus }) {
+function TestStatusBadge({ status }: { status: TestStatus }) {
   return (
     <Badge variant={statusVariant[status]} className="capitalize">
       {status}

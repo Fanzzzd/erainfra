@@ -1,6 +1,8 @@
 # Hosted Ubuntu 24.04 software image
 
-Status: candidate build. No Profile has been repinned.
+Status: shipped. On 2026-11-12 the production `profiles` table pins `erainfra-4vcpu-ubuntu-2404`,
+`erainfra-16vcpu-ubuntu-2404` and `erainfra-canary-4vcpu-ubuntu-2404` to
+`ghcr.io/fanzzzd/runner-center-ubuntu-24.04-full`.
 
 ## Decision
 

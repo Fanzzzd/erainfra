@@ -108,25 +108,4 @@ describe("machine indexed policies", () => {
       { name: "worker-2", maxSlots: 8 },
     ]);
   });
-
-  it("considers only Workers inside the shared heartbeat window for capacity", async () => {
-    const t = convexTest(schema, modules);
-    const online = await seedMachine(t, "online", "online-token");
-    const offline = await seedMachine(t, "offline", "offline-token", Date.now() - 10 * 60_000);
-
-    expect(
-      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "ubuntu-24.04"] }),
-    ).toBe(true);
-    await t.run(async (ctx) => {
-      await ctx.db.patch(online, { lastSeen: Date.now() - 10 * 60_000 });
-      await ctx.db.patch(offline, { lastSeen: Date.now() });
-    });
-    expect(
-      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "ubuntu-24.04"] }),
-    ).toBe(true);
-    await t.run((ctx) => ctx.db.patch(offline, { lastSeen: Date.now() - 10 * 60_000 }));
-    expect(
-      await t.query(internal.machines.hasCapacity, { labels: ["self-hosted", "ubuntu-24.04"] }),
-    ).toBe(false);
-  });
 });

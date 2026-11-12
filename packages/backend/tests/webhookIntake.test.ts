@@ -6,6 +6,7 @@ import { parseWorkflowJob } from "../convex/http";
 import schema from "../convex/schema";
 import { DELIVERY_RETRY_AFTER_MS, MAX_DELIVERY_ATTEMPTS } from "../convex/webhooks";
 import { githubMock } from "./support/githubMock.ts";
+import { sign } from "./support/webhookSignature.ts";
 
 // The real `github` module is swapped out: convex-test executes scheduled
 // functions, so tryAssign/reconcile would otherwise drive Octokit at the
@@ -45,7 +46,7 @@ type Harness = TestConvex<typeof schema>;
 
 /** Record a delivery and run its scheduled processor, as the HTTP route does. */
 async function deliver(t: Harness, deliveryId: string, event: WorkflowJob) {
-  const { duplicate } = await t.mutation(internal.webhooks.recordDelivery, {
+  const { outcome } = await t.mutation(internal.webhooks.recordDelivery, {
     deliveryId,
     event: "workflow_job",
     workflowJob: event,
@@ -59,7 +60,7 @@ async function deliver(t: Harness, deliveryId: string, event: WorkflowJob) {
   if (delivery !== null && delivery.status === "pending") {
     await t.mutation(internal.webhooks.processDelivery, { deliveryId: delivery._id });
   }
-  return { duplicate };
+  return { outcome };
 }
 
 function jobs(t: Harness) {
@@ -167,9 +168,9 @@ describe("delivery idempotency", () => {
     const second = await deliver(t, "delivery-a", event);
     const third = await deliver(t, "delivery-a", event);
 
-    expect(first.duplicate).toBe(false);
-    expect(second.duplicate).toBe(true);
-    expect(third.duplicate).toBe(true);
+    expect(first.outcome).toBe("accepted");
+    expect(second.outcome).toBe("duplicate");
+    expect(third.outcome).toBe("duplicate");
     expect(await jobs(t)).toHaveLength(1);
     expect(await deliveries(t)).toHaveLength(1);
   });
@@ -243,6 +244,64 @@ describe("out-of-order delivery", () => {
       workflowJob({ action: "completed", labels: ["ubuntu-latest"], conclusion: "success" }),
     );
     expect(await jobs(t)).toHaveLength(0);
+  });
+});
+
+// The App delivers a workflow_job for every job of every installed repository. Only the
+// pre-Profile path reads a stored one, so intake keeps just what that path acts on.
+describe("deliveries the pre-Profile path would not take", () => {
+  it("are dropped unstored, before the allowlist is consulted", async () => {
+    const t = convexTest(schema, modules);
+    const dropped = await deliver(
+      t,
+      "d-1",
+      workflowJob({ repo: "other/repo", labels: ["erainfra-4vcpu-ubuntu-2404"] }),
+    );
+
+    expect(dropped.outcome).toBe("dropped");
+    expect(await deliveries(t)).toEqual([]);
+    expect(await jobs(t)).toEqual([]);
+  });
+
+  it("are still stored once the job is the legacy path's own, whatever the labels say", async () => {
+    const t = convexTest(schema, modules);
+    await deliver(t, "d-1", workflowJob());
+    const later = await deliver(
+      t,
+      "d-2",
+      workflowJob({ action: "completed", labels: ["ubuntu-24.04"], conclusion: "success" }),
+    );
+
+    expect(later.outcome).toBe("accepted");
+    expect((await deliveries(t)).map((delivery) => delivery.status)).toEqual([
+      "processed",
+      "processed",
+    ]);
+    expect((await jobs(t)).map((job) => job.status)).toEqual(["done"]);
+  });
+
+  it("answer 200 Ignored over HTTP, so GitHub records them delivered", async () => {
+    vi.stubEnv("GITHUB_WEBHOOK_SECRET", "ci-secret");
+    const t = convexTest(schema, modules);
+    const body = JSON.stringify({
+      action: "queued",
+      repository: { full_name: "acme/app", private: true },
+      installation: { id: 42 },
+      workflow_job: { id: 99, labels: ["erainfra-4vcpu-ubuntu-2404"], workflow_name: "CI" },
+    });
+    const response = await t.fetch("/github/webhook", {
+      method: "POST",
+      headers: {
+        "X-GitHub-Event": "workflow_job",
+        "X-GitHub-Delivery": "d-http",
+        "X-Hub-Signature-256": await sign("ci-secret", body),
+      },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("Ignored");
+    expect(await deliveries(t)).toEqual([]);
   });
 });
 

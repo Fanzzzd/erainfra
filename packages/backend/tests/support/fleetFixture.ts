@@ -94,26 +94,40 @@ export async function insertMachine(
 }
 
 /**
- * Readiness for CONTRACT. The facts sit inline on the row, the form admission still accepts from
- * rows that predate separate evidence rows.
+ * Readiness for CONTRACT: the hot row the scheduler reads and the readinessEvidence row that proves
+ * it, both with the same checkedAt.
  */
 export async function insertReadiness(
   t: Harness,
   machineId: Id<"machines">,
   fields: Partial<Doc<"workerReadiness">> = {},
 ) {
-  return t.run((ctx) =>
-    ctx.db.insert("workerReadiness", {
+  return t.run(async (ctx) => {
+    const readiness = {
       machineId,
       ...CONTRACT,
-      state: "ready",
+      state: "ready" as const,
       checkedAt: NOW - MINUTE,
       preparedAt: NOW - 2 * MINUTE,
-      ...FIRECRACKER_FACTS,
       warmPool: { target: 0, parked: 0, claimed: 0 },
+      storage: {
+        poolTotalMiB: FIRECRACKER_FACTS.storage.poolTotalMiB,
+        poolFreeMiB: FIRECRACKER_FACTS.storage.poolFreeMiB,
+      },
       ...fields,
-    }),
-  );
+    };
+    await ctx.db.insert("readinessEvidence", {
+      machineId,
+      profile: readiness.profile,
+      executor: readiness.executor,
+      imageRelease: readiness.imageRelease,
+      vcpus: readiness.vcpus,
+      memoryMiB: readiness.memoryMiB,
+      checkedAt: readiness.checkedAt,
+      ...FIRECRACKER_FACTS,
+    });
+    return ctx.db.insert("workerReadiness", readiness);
+  });
 }
 
 let attemptSequence = 0;
@@ -161,15 +175,20 @@ export async function seedFleet(t: Harness) {
   await insertMachine(t, "never-seen", { lastSeen: 0, usedSlots: 0 });
 
   await insertReadiness(t, ready);
-  await t.run((ctx) =>
-    ctx.db.insert("workerReadiness", {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("workerReadiness", {
       machineId: degraded,
       ...CONTRACT,
       state: "degraded",
       checkedAt: NOW - MINUTE,
+    });
+    await ctx.db.insert("readinessEvidence", {
+      machineId: degraded,
+      ...CONTRACT,
+      checkedAt: NOW - MINUTE,
       lastError: 'thin pool "runner" is 97% full',
-    }),
-  );
+    });
+  });
 
   // Two queued Attempts; the older has waited five minutes.
   await insertAttempt(t, { state: "pending", createdAt: NOW - 5 * MINUTE });

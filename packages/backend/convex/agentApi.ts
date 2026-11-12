@@ -18,6 +18,8 @@ async function machineForToken(ctx: QueryCtx, token: string) {
   return machine;
 }
 
+// pendingCommands, claim and report serve the pre-Profile job path. The Action Runner Agent stopped
+// calling them after v0.2.0-rc.19; they stay until every Worker runs a newer release.
 export const pendingCommands = query({
   args: { token: v.string() },
   returns: v.object({

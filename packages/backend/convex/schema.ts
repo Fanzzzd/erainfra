@@ -108,10 +108,8 @@ export default defineSchema({
     configuredSlots: v.optional(v.number()),
     resourceRecommendedSlots: v.optional(v.number()),
     recommendedSlots: v.optional(v.number()),
-    // No migration: the next benchmark report writes the compact summary and
-    // its evidence row. The legacy full report remains accepted for one Agent
-    // refresh cycle so a mixed deployment keeps validating throughout rollout.
-    benchmark: v.optional(v.union(benchmarkSummaryValidator, storedBenchmarkValidator)),
+    // The compact summary of the latest benchmark. The full report lives in benchmarkEvidence.
+    benchmark: v.optional(benchmarkSummaryValidator),
     maxSlots: v.number(),
     usedSlots: v.number(),
     lastSeen: v.number(),
@@ -452,10 +450,6 @@ export default defineSchema({
     ),
     machineId: v.optional(v.id("machines")),
     selectionReason: v.optional(v.string()),
-    // Legacy-cycle compatibility only. New Attempts put this single-use value
-    // in attemptSecrets; claim/terminal paths still tolerate and erase an
-    // inline value written immediately before this schema reaches an Agent.
-    jitConfig: v.optional(v.string()),
     createdAt: v.number(),
     claimedAt: v.optional(v.number()),
     readyAt: v.optional(v.number()),
@@ -607,12 +601,9 @@ export default defineSchema({
   // executor and immutable Image Release locally. Online heartbeats alone are
   // never enough to advertise capacity.
   //
-  // The fields below `lastError` describe what the Worker actually proved:
-  // which isolation boundary it enforces, which named prerequisite failed, what
-  // hardware and storage it measured, and what — if anything — survives between
-  // Jobs. They are optional because rows written by an earlier deployment must
-  // keep validating; `boundary` being absent means "not yet reported", which
-  // readiness treats as unproven rather than as a guest kernel.
+  // This hot row carries only what scheduling reads. What the Worker proved
+  // (isolation boundary, checks, hardware, storage, network) lives in the
+  // readinessEvidence row with the same machineId, profile and checkedAt.
   workerReadiness: defineTable({
     machineId: v.id("machines"),
     profile: v.string(),
@@ -634,50 +625,10 @@ export default defineSchema({
     checkedAt: v.number(),
     preparedAt: v.optional(v.number()),
     warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
-    // No migration: these optional evidence fields stay in the validator for
-    // one Agent refresh cycle. reportReadiness writes the new evidence row and
-    // removes them from this hot row on the Worker's next report.
-    statusDetail: v.optional(v.string()),
-    lastError: v.optional(v.string()),
-    isolation: v.optional(v.string()),
-    boundary: v.optional(v.union(v.literal("guest-kernel"), v.literal("shared-kernel"))),
-    checks: v.optional(
-      v.array(
-        v.object({
-          name: v.string(),
-          passed: v.boolean(),
-          detail: v.optional(v.string()),
-        }),
-      ),
-    ),
-    // The sharing domain of anything that outlives a Job, and whether two Jobs
-    // can write to it. A Profile that promises isolation must report false.
-    cacheScope: v.optional(v.string()),
-    cacheSharedWritable: v.optional(v.boolean()),
-    hardware: v.optional(
-      v.object({
-        arch: v.optional(v.string()),
-        cpus: v.optional(v.number()),
-        memoryMiB: v.optional(v.number()),
-        cpuModel: v.optional(v.string()),
-        virtualization: v.optional(v.string()),
-        kvm: v.optional(v.boolean()),
-      }),
-    ),
     storage: v.optional(
       v.object({
-        snapshotter: v.optional(v.string()),
-        poolName: v.optional(v.string()),
         poolTotalMiB: v.optional(v.number()),
         poolFreeMiB: v.optional(v.number()),
-      }),
-    ),
-    network: v.optional(
-      v.object({
-        policyName: v.optional(v.string()),
-        policyHash: v.optional(v.string()),
-        subnet: v.optional(v.string()),
-        egressMode: v.optional(v.string()),
       }),
     ),
   })
