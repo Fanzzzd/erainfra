@@ -5,7 +5,9 @@ name: EraInfra egress probe
 # github.com:443 one second apart. Issue #149 needs it: the office uplink drops
 # the first SYN of some flows to GitHub's Singapore git edge, and a change to
 # that path (for example routing it through a tunnel) must be proven from a
-# guest, whose MTU and NAT differ from the host's. The job fails when any
+# guest, whose MTU and NAT differ from the host's. The connect time includes
+# the name lookup, so the probe also prints the guest's resolv.conf and the
+# slowest lookup: a lost DNS answer costs the resolver timeout. The job fails when any
 # connect takes longer than the limit, so a red run is the measurement.
 on:
   workflow_dispatch:
@@ -43,13 +45,15 @@ jobs:
         run: |
           ip -4 route get 20.205.243.166 || true
           echo "mtu $(cat /sys/class/net/eth0/mtu 2>/dev/null || echo unknown)"
+          cat /etc/resolv.conf
           : > connects.txt
           for _ in $(seq 1 "$COUNT"); do
             curl -so /dev/null --connect-timeout 20 --max-time 30 \
-              -w '%{time_connect} %{time_appconnect} %{http_code}\n' https://github.com/ >> connects.txt \
+              -w '%{time_connect} %{time_appconnect} %{http_code} %{time_namelookup}\n' https://github.com/ >> connects.txt \
               || echo "fail fail $?" >> connects.txt
             sleep 1
           done
+          sort -n -k4 connects.txt | awk '{ d = $4 } END { printf "slowest name lookup %s s\n", d }'
           sort -n connects.txt | awk -v limit="$LIMIT" '
             { n++; c[n] = $1 }
             $1 == "fail" || $1 + 0 > limit + 0 { bad++ }
