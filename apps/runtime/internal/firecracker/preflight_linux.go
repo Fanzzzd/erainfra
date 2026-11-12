@@ -137,6 +137,14 @@ func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.Profile
 		))
 	}
 
+	if table, err := exec.CommandContext(ctx, "dmsetup", "table", r.config.ThinPoolName).Output(); err != nil {
+		report.Fail(executor.CheckBlockZeroing, fmt.Errorf("read thin-pool %q table: %w", r.config.ThinPoolName, err))
+	} else if err := checkThinPoolZeroing(string(table)); err != nil {
+		report.Fail(executor.CheckBlockZeroing, err)
+	} else {
+		report.Pass(executor.CheckBlockZeroing, fmt.Sprintf("thin-pool %q zeroes every new block", r.config.ThinPoolName))
+	}
+
 	// Never a failure: Sync is a slower engine, not a broken one. The check
 	// exists so the choice is visible on the readiness report instead of being
 	// inferred from job timings.

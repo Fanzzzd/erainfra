@@ -500,7 +500,28 @@ set -euo pipefail
 
 . /etc/runner-center/thinpool.env
 
+# 128 sectors (64 KiB) data blocks and a 32768-sector low-water mark are the
+# values containerd's devmapper snapshotter documents. Its documented table also
+# passes skip_block_zeroing; this one must not. Without zeroing, a guest that
+# writes part of a newly provisioned block reads the rest of it, which can hold
+# an earlier Attempt's data.
+pool_table() {
+  printf '0 %s thin-pool %s %s 128 32768 0' "$1" "$2" "$3"
+}
+
+# A pool brought up by an older version of this script skips zeroing. Reload its
+# table in place: the kernel keeps the pool, its metadata and every open thin
+# device, and zeroes blocks provisioned from then on.
 if dmsetup info "$RC_THIN_POOL" >/dev/null 2>&1; then
+  live=$(dmsetup table "$RC_THIN_POOL")
+  case " $live " in
+    *' skip_block_zeroing '*)
+      read -r _ length _ meta data _ <<<"$live"
+      dmsetup reload "$RC_THIN_POOL" --table "$(pool_table "$length" "$meta" "$data")"
+      dmsetup suspend "$RC_THIN_POOL"
+      dmsetup resume "$RC_THIN_POOL"
+      ;;
+  esac
   exit 0
 fi
 
@@ -575,10 +596,7 @@ if [ "$new_files" -ne 1 ] && ! thin_check -q "$meta_device"; then
 fi
 
 sectors=$(blockdev --getsz "$data_device")
-# 128 sectors (64 KiB) data blocks and a 32768-sector low-water mark are the
-# values containerd's devmapper snapshotter documents.
-dmsetup create "$RC_THIN_POOL" \
-  --table "0 $sectors thin-pool $meta_device $data_device 128 32768 1 skip_block_zeroing"
+dmsetup create "$RC_THIN_POOL" --table "$(pool_table "$sectors" "$meta_device" "$data_device")"
 THINPOOL
 chmod 0755 "$RC_LIB_DIR/thinpool-setup.sh"
 
