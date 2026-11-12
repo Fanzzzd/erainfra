@@ -342,7 +342,7 @@ func (r *Runtime) Start(ctx context.Context, spec executor.Spec) (_ executor.Lea
 	if err != nil {
 		return nil, fmt.Errorf("wait for the start budget: %w", err)
 	}
-	if decision.Held > 0 {
+	if decision.Reason != "" {
 		slog.Info("held Attempt for the start budget",
 			"attempt", spec.AttemptID, "held", decision.Held.Round(time.Second).String(),
 			"reason", decision.Reason, "forced", decision.Forced)
