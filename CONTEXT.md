@@ -39,7 +39,7 @@ one behind NAT with no public IP.
 claims Attempts, and drives a provisioner that creates and destroys one isolation boundary per
 Attempt. It has three claim paths, not one: `workerApi:claimAttempt`, `workerApi:claimExperiment`,
 and the still-live `agentApi:claim` for legacy commands
-(`apps/action-runner-agent/index.ts:93`). Machines install it with plain `npm install` from an
+(`apps/action-runner-agent/index.ts`). Machines install it with plain `npm install` from an
 archive pinned by SHA-256, which is why it deliberately does not use the `catalog:` or
 `workspace:` protocols. Read the name as "the agent that serves Action Runners": **it is not
 itself a Runner.**
@@ -63,7 +63,7 @@ terms are not interchangeable.
 
 **Profile**: the immutable contract a Worker advertises capacity against. Not just a size: it
 carries `executor`, `imageRelease`, `vcpus`, `memoryMiB`, `warmPool`, `fitPolicy`, `minRunners` and
-`maxRunners` (`convex/schema.ts:70-82`), and its `egress` (public, audit or allowlist; see
+`maxRunners` (the `profiles` table in `convex/schema.ts`), and its `egress` (public, audit or allowlist; see
 [ADR 0015](docs/adr/0015-egress-is-a-property-of-the-profile.md)), and the `workerLabels` it is pinned
 to. Readiness is per Worker _and_ Profile.
 

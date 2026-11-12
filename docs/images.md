@@ -4,6 +4,12 @@ An Image Release is the immutable OS image a Profile runs, pinned by `sha256`. T
 what the default Linux image contains, how it is built and checked against GitHub's runners, and
 how its toolchain pins move.
 
+`images/ubuntu-24.04-full` is the second Linux image, published as
+`ghcr.io/fanzzzd/runner-center-ubuntu-24.04-full`. It builds GitHub's complete hosted
+`ubuntu-24.04` recipe from `actions/runner-images`. The `erainfra-4vcpu-ubuntu-2404` and
+`erainfra-16vcpu-ubuntu-2404` Profiles run it.
+[Hosted Ubuntu 24.04 software image](design/hosted-ubuntu-2404-image.md) has its design.
+
 ## Publish an Image Release
 
 `images/ubuntu-24.04-js` is the default minimal Linux image, published as
