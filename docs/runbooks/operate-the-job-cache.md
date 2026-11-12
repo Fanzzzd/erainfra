@@ -865,7 +865,7 @@ the command line was wrong and nothing was sent.
 
 Entries record the GitHub repository ID that saved them, and every listed entry shows it as
 `repository_id`. A name can belong to two repositories over time: one deleted or renamed away, and
-a new one created under the same name. When the entry and the job both carry an ID, a restore never returns an entry another ID saved, and the
+a new one created under the same name. A restore never returns an entry another ID saved, and the
 new repository's first save removes the earlier ID's entries. `--repository-id n` narrows `list`,
 `delete` and `clear` to one ID, for example to see what is left of the old repository before that
 first save:
@@ -874,9 +874,10 @@ first save:
 cache list --repo Fanzzzd/erainfra --repository-id 1001 --format table
 ```
 
-Entries saved before the service recorded IDs, and saves from a controller too old to send one,
-carry no ID. They belong to the first ID that saves under the name after the upgrade, and a job from
-a controller that sends no ID still reads by name alone.
+The service refuses job facts without an ID, with `400 facts carry no repository ID`, unless they
+grant nothing: the controller's cold facts carry no ID and leave the job read-only with nothing to
+read. An entry stored before the service recorded IDs shows `-` as its ID. No job reads it, and the
+next sweep removes it and logs `cache entry evicted` with reason `no repository ID`.
 
 A job of the old repository that was already running when the name moved still has facts naming
 it, for up to six hours. Its saves do not take the name back. GitHub assigns repository IDs in
@@ -1185,8 +1186,7 @@ The Worker must already run the Firecracker interceptor cache (§8): the runtime
 1. Deploy a cache service with the seed endpoint (this release or later). An older service answers
    the seed path with a 404 that names no repository, and the guest then leaves every fetch to
    GitHub. Run a controller from the same release too: it pushes the repository ID that seeds are
-   keyed by. An older controller pushes none, and its jobs read and save seeds by name alone, as
-   before.
+   keyed by, and the service refuses facts without one.
 2. Repin the Profile to an Image Release whose guest carries the mirror, as in §8 step 2.
 3. On each Worker, add the switch to `runner-center-runtime.service`'s environment and restart the
    runtime:

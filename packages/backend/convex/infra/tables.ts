@@ -116,21 +116,16 @@ export const deployPlanValidator = v.object({
 });
 
 /**
- * Who last wrote a row the Hub importer also writes (infra/hubImport.ts). While the Hub and Convex
- * both hold state, each such row records its writer: `hub` with the SHA-256 of the Hub row the
- * importer copied, or `convex` once anything in Convex writes it. A `convex` row is Convex's for
- * good: the importer skips it. A row without the field was written before provenance was recorded
- * and counts as the Hub's, except an App with a stored spec, which only a Convex deploy writes.
- * `at` equals the row's `updatedAt` where the row has one, so a later writer that did not claim the
- * row still shows up. An env variable carries no hash: a hash of a secret value would let anyone
- * holding a database export test guesses against it, so the importer decrypts and compares instead.
+ * Who last wrote a row while the Hub importer copied Hub state into Convex: `hub` with the SHA-256
+ * of the Hub row it copied, or `convex`. Nothing writes this field since the importer left main;
+ * existing rows still carry it, so the schema keeps it, and a later release may drop it.
  */
 export const provenanceValidator = v.union(
   v.object({ by: v.literal("hub"), hash: v.optional(v.string()), at: v.number() }),
   v.object({ by: v.literal("convex"), at: v.number() }),
 );
 
-/** What a Convex delete leaves behind so the importer does not bring the row back. */
+/** The kinds of `hubImportTombstones` rows. Nothing writes them since the importer left main. */
 export const hubTombstoneKindValidator = v.union(
   v.literal("app"),
   v.literal("link"),
@@ -302,8 +297,7 @@ export const infraTables = {
     createdAt: v.number(),
     legacyId: v.optional(v.string()),
     provenance: v.optional(provenanceValidator),
-    // Last write, set with `provenance.at` by every writer (hubProvenance.ts `writtenByConvex`).
-    // Absent on rows written before it existed.
+    // Last write. Absent on rows written before it existed.
     updatedAt: v.optional(v.number()),
   })
     .index("by_repoKey_branch", ["repoKey", "branch"])
@@ -422,19 +416,19 @@ export const infraTables = {
     expiresAt: v.number(),
   }).index("by_command", ["commandId"]),
 
-  // Rows Convex deleted that the Hub still has: a removed App, link or Hub account, an unset env
-  // variable, an unbound branch. The importer reads these and does not bring the row back. `key`
-  // is the importer's key for the row (hubProvenance.ts). Written only by deletes, so the table
-  // holds at most what operators removed.
+  // Rows Convex deleted while the Hub importer could still copy them back: a removed App, link or
+  // Hub account, an unset env variable, an unbound branch. Nothing writes or reads this table since
+  // the importer left main. The schema keeps it so a deploy does not fail on existing rows, and a
+  // later release may drop it.
   hubImportTombstones: defineTable({
     kind: hubTombstoneKindValidator,
     key: v.string(),
     at: v.number(),
   }).index("by_kind_key", ["kind", "key"]),
 
-  // Named counters:`auditSeq` (last audit sequence issued), `deployments` (rows retained in
-  // appDeployments) and `hubAuditImportedThrough` (highest Hub audit seq imported). One row each,
-  // so an audit append and a deploy never contend on the same document.
+  // Named counters:`auditSeq` (last audit sequence issued) and `deployments` (rows retained in
+  // appDeployments). One row each, so an audit append and a deploy never contend on the same
+  // document. A `hubAuditImportedThrough` row the Hub importer wrote may remain; nothing reads it.
   infraCounters: defineTable({
     name: v.string(),
     value: v.number(),

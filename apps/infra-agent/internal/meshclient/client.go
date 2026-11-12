@@ -1,5 +1,5 @@
 // Package meshclient drives one erainfra-mesh endpoint over its local NDJSON v1 API.
-// It knows neither the Hub nor Convex. No request, key or relay token is logged or passed to a shell.
+// It knows nothing of Convex. No request, key or relay token is logged or passed to a shell.
 package meshclient
 
 import (
@@ -17,9 +17,8 @@ import (
 
 const MaxMessage = 4 * 1024 * 1024
 const Timeout = 10 * time.Second
-const Capability = "erainfra-mesh/v1"
 
-var ErrUnsupported = errors.New("secure mesh unsupported on this Node: install the verified erainfra-mesh sidecar (/install --role node --mesh)")
+var ErrUnsupported = errors.New("secure mesh unsupported on this Node: install the verified erainfra-mesh sidecar (/install --role node --credential-file <path>)")
 
 type Peer struct {
 	ID          string   `json:"id"`

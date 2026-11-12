@@ -18,7 +18,6 @@ import {
 } from "../_generated/server";
 import { requirePermission } from "./access";
 import { appendAudit } from "./auditLog";
-import { provenanceFor, recordTombstone, type HubOrigin } from "./hubProvenance";
 import { createRun } from "./pipeline";
 import { MAX_GIT_BINDINGS, repoKey } from "./policy";
 
@@ -29,11 +28,8 @@ export async function findBinding(ctx: QueryCtx, repo: string, branch: string) {
     .unique();
 }
 
-/**
- * Why `insertBinding` would refuse to bind `repo@branch`, or null. The Hub importer asks before it
- * creates the binding's Nodes, so a refused row writes nothing.
- */
-export async function bindingRefusal(ctx: QueryCtx, repo: string, branch: string) {
+/** Why `insertBinding` would refuse to bind `repo@branch`, or null. */
+async function bindingRefusal(ctx: QueryCtx, repo: string, branch: string) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return "Name the repository as owner/name";
   if (branch.length === 0) return "Name a branch";
   if ((await findBinding(ctx, repo, branch)) !== null) return `Already bound: ${repo}@${branch}`;
@@ -52,11 +48,7 @@ export async function insertBinding(
     buildNodeId?: Id<"nodes">;
     deployNodeId?: Id<"nodes">;
     port?: number;
-    createdAt?: number;
-    legacyId?: string;
-    lastStatus?: { at: number; sha: string; ok: boolean; stage: string; error?: string };
   },
-  hub?: HubOrigin,
 ) {
   const refusal = await bindingRefusal(ctx, input.repo, input.branch);
   if (refusal !== null) throw new ConvexError(refusal);
@@ -64,8 +56,7 @@ export async function insertBinding(
   return await ctx.db.insert("gitBindings", {
     ...input,
     repoKey: repoKey(input.repo),
-    createdAt: input.createdAt ?? now,
-    provenance: provenanceFor(now, hub),
+    createdAt: now,
     updatedAt: now,
   });
 }
@@ -153,16 +144,9 @@ export async function bindBranch(
   return id;
 }
 
-/** The tombstone key of a branch: a Hub import does not bind a branch Convex unbound. */
-export const bindingKey = (repo: string, branch: string) => `${repoKey(repo)}@${branch}`;
-
-/**
- * Delete a binding and audit it as `git.unbind`. Pushes to the branch then deploy nothing, and a
- * later Hub import does not bind the branch again (hubProvenance.ts).
- */
+/** Delete a binding and audit it as `git.unbind`. Pushes to the branch then deploy nothing. */
 export async function unbindBranch(ctx: MutationCtx, binding: Doc<"gitBindings">, actor: string) {
   await ctx.db.delete(binding._id);
-  await recordTombstone(ctx, "gitBinding", bindingKey(binding.repo, binding.branch));
   await appendAudit(ctx, {
     actor,
     action: "git.unbind",

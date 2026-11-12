@@ -345,16 +345,7 @@ func TestFullJournalRefusesExecution(t *testing.T) {
 	}
 }
 
-func TestModeAndPollingBounds(t *testing.T) {
-	if ValidateMode("connect", "wss://hub", "", "") != nil {
-		t.Fatal("legacy mode changed")
-	}
-	if ValidateMode("connect", "wss://hub", "https://site", "") == nil {
-		t.Fatal("mixed mode admitted")
-	}
-	if ValidateMode("connect-convex", "wss://hub", "https://site", "node") == nil {
-		t.Fatal("mixed mode admitted")
-	}
+func TestPollingBounds(t *testing.T) {
 	delay := time.Duration(0)
 	for i := 0; i < 20; i++ {
 		delay = idleDelay(delay, false)

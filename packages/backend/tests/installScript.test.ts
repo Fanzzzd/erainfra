@@ -127,9 +127,8 @@ exit 0
 `;
 
 /**
- * An unprivileged box. Every privileged step the Node installer attempts is refused, which keeps a
- * test from writing /etc/portless or a systemd unit on the machine running the suite, and exercises
- * the fallback the installer takes on a box where the operator is not root.
+ * An unprivileged box. Every privileged step is refused, which keeps a test from writing under /etc
+ * or a systemd unit on the machine running the suite.
  */
 const SUDO_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$RC_TEST_SUDO_LOG"
@@ -210,7 +209,7 @@ function createSandbox(release: AgentRelease): Sandbox {
 
 /**
  * Let this sandbox's installer succeed at being root. /etc/systemd/system is created because every
- * box that has systemd already has it — the installer creates /etc/portless and nothing else.
+ * box that has systemd already has it.
  */
 function grantRoot(sandbox: Sandbox) {
   writeExecutable(path.join(sandbox.root, "bin", "sudo"), ROOT_SUDO_STUB);
@@ -318,30 +317,12 @@ function spawnOptions(sandbox: Sandbox, options: { connect?: boolean; npmFails?:
       RC_TEST_CONNECT: options.connect === false ? "0" : "1",
       RC_TEST_SUDO_LOG: path.join(sandbox.root, "sudo.log"),
       RC_TEST_SUDO_ROOT: sandbox.sudoRoot,
-      RC_TEST_AGENT_LOG: path.join(sandbox.root, "infra-agent.log"),
     },
   };
 }
 
 function readLog(filePath: string) {
   return existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
-}
-
-/**
- * Reads a log written by a process the installer started in the background. The installer returns
- * as soon as it has launched `nohup … &`, so the child may not have written its first line yet; on
- * a loaded machine that gap is long enough for a single read to see an empty file. Polls until
- * `expected` matches or the deadline passes, then returns whatever is there, so the caller's
- * assertion still reports the real content when the line never arrives.
- */
-async function waitForLog(filePath: string, expected: RegExp, timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs;
-  let contents = readLog(filePath);
-  while (!expected.test(contents) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    contents = readLog(filePath);
-  }
-  return contents;
 }
 
 function agentMarker(sandbox: Sandbox, directory = "agent") {
@@ -720,276 +701,6 @@ describe("rendered script", () => {
   });
 });
 
-function nodeArgs(extra: readonly string[] = []) {
-  return [
-    "--role",
-    "node",
-    "--token",
-    "plt_node_token",
-    "--hub",
-    "wss://hub.example.com/agent",
-    "--name",
-    "node-01",
-    // The runtime install shells out to the distro package manager, which a test has no business
-    // doing; the flag it is skipped with is the same one an operator uses.
-    "--no-docker",
-    ...extra,
-  ];
-}
-
-/** Where a Node's agent lands — the prefix and binary name a running Node already holds. */
-function installedAgent(sandbox: Sandbox) {
-  return path.join(sandbox.home, ".portless", "bin", "portless-agent");
-}
-
-// The Node half of ADR 0006. A Node's binary used to arrive with no integrity check of any kind, so
-// the tests that matter most here are the ones where verification says no: a path whose failure
-// branch is untested is a path nobody has seen work.
-describe("--role node", () => {
-  const HOST_TARGET = `${process.platform === "darwin" ? "darwin" : "linux"}-${
-    process.arch === "arm64" ? "arm64" : "x86_64"
-  }`;
-
-  /** A stand-in for the Infra Agent: runnable, so the installer can actually start it. */
-  const FAKE_AGENT = `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$RC_TEST_AGENT_LOG"
-sleep 5
-`;
-
-  function publishInfraAgent(sandbox: Sandbox, release: AgentRelease, body = FAKE_AGENT) {
-    const asset = `infra-agent-${HOST_TARGET}`;
-    const binaryPath = path.join(sandbox.fixtures, asset);
-    writeFileSync(binaryPath, body);
-    const sha256 = createHash("sha256").update(readFileSync(binaryPath)).digest("hex");
-    route(
-      sandbox,
-      `https://github.com/${release.repo}/releases/download/v${release.version}/${asset}`,
-      binaryPath,
-    );
-    return { sha256, binaryPath, asset };
-  }
-
-  function pinned(release: AgentRelease, digest: string): AgentRelease {
-    return { ...release, infraAgent: { [HOST_TARGET]: digest } };
-  }
-
-  it("installs the binary this deployment pins, and says what it verified it against", async () => {
-    const sandbox = createSandbox(CURRENT);
-    const published = publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, published.sha256));
-
-    const result = run(sandbox, nodeArgs());
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stdout).toMatch(
-      new RegExp(
-        `Verified infra-agent-${HOST_TARGET} against the checksum pinned by this EraInfra deployment`,
-      ),
-    );
-
-    expect(existsSync(installedAgent(sandbox))).toBeTruthy();
-    expect(readFileSync(installedAgent(sandbox), "utf8")).toBe(FAKE_AGENT);
-    expect(statSync(installedAgent(sandbox)).mode & 0o111).not.toBe(0);
-    expect(readLog(sandbox.curlLog)).toMatch(
-      new RegExp(`releases/download/v1\\.4\\.2/infra-agent-${HOST_TARGET}$`, "m"),
-    );
-    // It runs, with the name it was given, under the frozen binary name — and the Hub credential
-    // is not on that command line. /proc/<pid>/cmdline is world-readable, so a token in argv is a
-    // token every local user can read for as long as the agent runs; the agent takes it from
-    // PORTLESS_TOKEN instead, the same channel the systemd unit uses.
-    const argv = await waitForLog(
-      path.join(sandbox.root, "infra-agent.log"),
-      /^connect --name node-01$/m,
-    );
-    expect(argv).toMatch(/^connect --name node-01$/m);
-    expect(argv).not.toMatch(/plt_node_token/);
-  });
-
-  it("refuses bytes that do not match the pin, and installs nothing", () => {
-    const sandbox = createSandbox(CURRENT);
-    publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, "0".repeat(64)));
-
-    const result = run(sandbox, nodeArgs());
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/checksum verification failed/);
-    expect(result.stderr).toMatch(/Nothing was installed/);
-    expect(existsSync(installedAgent(sandbox))).toBe(false);
-    expect(existsSync(path.join(sandbox.home, ".portless", "run", "agent.pid"))).toBe(false);
-  });
-
-  it("leaves an already-installed agent running when the new bytes do not match", () => {
-    const sandbox = createSandbox(CURRENT);
-    publishInfraAgent(sandbox, CURRENT, "#!/usr/bin/env bash\nsleep 5\n");
-    repin(sandbox, pinned(CURRENT, "f".repeat(64)));
-    mkdirSync(path.dirname(installedAgent(sandbox)), { recursive: true });
-    writeExecutable(
-      installedAgent(sandbox),
-      "#!/usr/bin/env bash\n# the agent already installed\n",
-    );
-
-    expect(run(sandbox, nodeArgs()).status).not.toBe(0);
-    expect(readFileSync(installedAgent(sandbox), "utf8")).toMatch(/the agent already installed/);
-  });
-
-  it("verifies a --source install exactly as it verifies a release install", () => {
-    const sandbox = createSandbox(CURRENT);
-    const published = publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, published.sha256));
-
-    // An air-gapped box: the bytes come off local disk, the digest still decides.
-    const result = run(sandbox, nodeArgs(["--source", `file://${published.binaryPath}`]));
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(existsSync(installedAgent(sandbox))).toBeTruthy();
-    // Nothing was fetched over the network for the agent itself.
-    expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent/);
-  });
-
-  it("refuses a --source whose bytes do not match, exactly as it refuses a release", () => {
-    const sandbox = createSandbox(CURRENT);
-    const published = publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, published.sha256));
-    // One byte of an otherwise good binary, which is the whole point of pinning a digest.
-    const corrupted = path.join(sandbox.fixtures, "corrupted-infra-agent");
-    writeFileSync(corrupted, `${FAKE_AGENT}#\n`);
-
-    const result = run(sandbox, nodeArgs(["--source", `file://${corrupted}`]));
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/checksum verification failed/);
-    expect(existsSync(installedAgent(sandbox))).toBe(false);
-  });
-
-  it("refuses a target this deployment pins no digest for", () => {
-    const sandbox = createSandbox(CURRENT);
-    publishInfraAgent(sandbox, CURRENT);
-    // The pin covers a target that is not this host's.
-    repin(sandbox, { ...CURRENT, infraAgent: { "solaris-sparc": "a".repeat(64) } });
-
-    const result = run(sandbox, nodeArgs());
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(new RegExp(`pins no Infra Agent build for ${HOST_TARGET}`));
-    expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent/);
-    expect(existsSync(installedAgent(sandbox))).toBe(false);
-  });
-
-  function publishMesh(
-    sandbox: Sandbox,
-    release: AgentRelease,
-    body = "#!/usr/bin/env bash\nexit 0\n",
-  ) {
-    const asset = `erainfra-mesh-${HOST_TARGET}`;
-    const binaryPath = path.join(sandbox.fixtures, asset);
-    writeExecutable(binaryPath, body);
-    const sha256 = createHash("sha256").update(readFileSync(binaryPath)).digest("hex");
-    const sidecar = `${binaryPath}.sha256`;
-    writeFileSync(sidecar, `${sha256}  ${asset}\n`);
-    const url = `https://github.com/${release.repo}/releases/download/v${release.version}/${asset}`;
-    route(sandbox, url, binaryPath);
-    route(sandbox, `${url}.sha256`, sidecar);
-    return { sha256, binaryPath, sidecar };
-  }
-
-  it("refuses --mesh without a deployment pin before downloading or replacing the agent", () => {
-    const sandbox = createSandbox(CURRENT);
-    const agent = publishInfraAgent(sandbox, CURRENT);
-    publishMesh(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, agent.sha256));
-    const result = run(sandbox, nodeArgs(["--mesh"]));
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(new RegExp(`pins no erainfra-mesh build for ${HOST_TARGET}`));
-    expect(result.stderr).toMatch(/dumbpipe is not installed/);
-    expect(readLog(sandbox.curlLog)).not.toMatch(/infra-agent|erainfra-mesh|dumbpipe/);
-    expect(existsSync(installedAgent(sandbox))).toBe(false);
-  });
-
-  it("requires both mesh deployment and release checksums and installs no dumbpipe", () => {
-    const sandbox = createSandbox(CURRENT);
-    const agent = publishInfraAgent(sandbox, CURRENT);
-    const mesh = publishMesh(sandbox, CURRENT);
-    const release = { ...pinned(CURRENT, agent.sha256), mesh: { [HOST_TARGET]: mesh.sha256 } };
-    repin(sandbox, release);
-    writeFileSync(mesh.sidecar, `${"0".repeat(64)}  erainfra-mesh-${HOST_TARGET}\n`);
-    const result = run(sandbox, nodeArgs(["--mesh"]));
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/Mesh checksum verification failed/);
-    expect(result.stderr).toMatch(/Nothing was installed/);
-    expect(readLog(sandbox.curlLog)).not.toMatch(/dumbpipe/);
-    expect(existsSync(installedAgent(sandbox))).toBe(false);
-
-    writeFileSync(mesh.sidecar, `${mesh.sha256}  erainfra-mesh-${HOST_TARGET}\n`);
-    const ok = run(sandbox, nodeArgs(["--mesh"]));
-    expect(ok.status, `${ok.stdout}\n${ok.stderr}`).toBe(0);
-    expect(ok.stdout).toMatch(/against both release and deployment checksums/);
-    expect(existsSync(path.join(sandbox.home, ".portless", "bin", "erainfra-mesh"))).toBe(true);
-    expect(readLog(sandbox.curlLog)).not.toMatch(/dumbpipe/);
-  });
-
-  it("refuses without the Hub the Node reports to", () => {
-    const sandbox = createSandbox(CURRENT);
-    const published = publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, published.sha256));
-
-    const result = run(sandbox, ["--role", "node", "--token", "plt_node_token", "--no-docker"]);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/Hub URL is required/);
-    expect(existsSync(installedAgent(sandbox))).toBe(false);
-  });
-
-  it("refuses a role it does not serve", () => {
-    const sandbox = createSandbox(CURRENT);
-    const result = run(sandbox, ["--role", "gateway", "--token", "plt_node_token"]);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/Unknown --role: gateway/);
-  });
-
-  it("restarts the unit on a re-install, so what runs is what was just verified", () => {
-    const sandbox = createSandbox(CURRENT);
-    const published = publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, published.sha256));
-    grantRoot(sandbox);
-
-    const first = run(sandbox, nodeArgs(), { connect: false });
-    expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
-    expect(first.stdout).toMatch(/systemd service 'portless-agent' is active/);
-
-    const second = run(sandbox, nodeArgs(), { connect: false });
-    expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
-
-    // "enable --now" starts a stopped unit and does nothing to a running one, so without an
-    // explicit restart the second install would leave the old process on the old bytes while
-    // is-active reported success. Both installs restart; the restart follows the enable.
-    const service = readLog(path.join(sandbox.root, "service.log")).trimEnd().split("\n");
-    expect(service.filter((line) => line === "restart portless-agent")).toHaveLength(2);
-    expect(service.indexOf("restart portless-agent")).toBeGreaterThan(
-      service.indexOf("enable --now portless-agent"),
-    );
-  });
-
-  it("writes the Hub credential to a file no other local user can read", () => {
-    const sandbox = createSandbox(CURRENT);
-    const published = publishInfraAgent(sandbox, CURRENT);
-    repin(sandbox, pinned(CURRENT, published.sha256));
-    grantRoot(sandbox);
-
-    expect(run(sandbox, nodeArgs(), { connect: false }).status).toBe(0);
-
-    // Created 0600 and then written, not created and chmodded afterwards: the second order leaves a
-    // window in which any local user can read the Hub credential. The order is what is asserted,
-    // because the end state is identical either way.
-    const sudo = readLog(path.join(sandbox.root, "sudo.log")).trimEnd().split("\n");
-    const restricted = sudo.findIndex((line) => line.includes("install -m 600"));
-    const written = sudo.findIndex((line) => line === "tee /etc/portless/agent.env");
-    expect(restricted, sudo.join(" / ")).toBeGreaterThanOrEqual(0);
-    expect(restricted).toBeLessThan(written);
-
-    const envFile = path.join(sandbox.sudoRoot, "etc", "portless", "agent.env");
-    expect(statSync(envFile).mode & 0o077).toBe(0);
-    expect(readFileSync(envFile, "utf8")).toMatch(/^PORTLESS_TOKEN=plt_node_token$/m);
-    const unit = path.join(sandbox.sudoRoot, "etc", "systemd", "system", "portless-agent.service");
-    expect(readFileSync(unit, "utf8")).toMatch(/^EnvironmentFile=\/etc\/portless\/agent\.env$/m);
-    expect(readFileSync(unit, "utf8")).not.toMatch(/plt_node_token/);
-  });
-});
-
 /**
  * A systemctl that keeps per-unit active and enabled state as marker files in `stateDir`, so a test
  * can seed a running Hub-mode unit and see what the installer stopped, enabled and restarted.
@@ -1026,20 +737,25 @@ exit 0
 `;
 }
 
-function convexArgs(credential: string, extra: readonly string[] = []) {
-  return ["--role", "node", "--convex", "--credential-file", credential, "--no-docker", ...extra];
+function nodeArgs(credential: string, extra: readonly string[] = []) {
+  // The runtime install shells out to the distro package manager, which a test has no business
+  // doing; the flag it is skipped with is the same one an operator uses.
+  return ["--role", "node", "--credential-file", credential, "--no-docker", ...extra];
 }
 
-// connect-convex mode needs Linux with systemd and the systemd sidecar, so this sandbox pretends to
-// be one: uname reports Linux, sudo redirects every system path under the sandbox (and drops -o/-g,
-// since the sandbox has no erainfra-mesh account), and systemctl keeps per-unit active and enabled
-// state so a test can seed a running Hub-mode unit.
-describe("--role node --convex", () => {
+// The Node half of ADR 0006, in connect-convex mode, the only mode the Node role has. It needs Linux
+// with systemd and the systemd sidecar, so this sandbox pretends to be one: uname reports Linux,
+// sudo redirects every system path under the sandbox (and drops -o/-g, since the sandbox has no
+// erainfra-mesh account), and systemctl keeps per-unit active and enabled state so a test can seed a
+// running Hub-mode unit. A Node's binary used to arrive with no integrity check of any kind, so the
+// tests that matter most here are the ones where verification says no.
+describe("--role node", () => {
   const TARGET = `linux-${process.arch === "arm64" ? "arm64" : "x86_64"}`;
   const CREDENTIAL = `erainfra_node_${"ab".repeat(32)}`;
+  const FAKE_AGENT = "#!/usr/bin/env bash\nexit 0\n";
 
   const UNAME_STUB = `#!/usr/bin/env bash
-if [ "$1" = "-s" ]; then printf 'Linux\\n'; exit 0; fi
+if [ "$1" = "-s" ]; then printf '%s\\n' "\${RC_TEST_UNAME:-Linux}"; exit 0; fi
 PATH=/usr/bin:/bin exec uname "$@"
 `;
 
@@ -1062,7 +778,7 @@ done
 exec "$@"
 `;
 
-  function convexSandbox() {
+  function nodeSandbox() {
     const sandbox = createSandbox(CURRENT);
     grantRoot(sandbox);
     const bin = path.join(sandbox.root, "bin");
@@ -1074,26 +790,38 @@ exec "$@"
 
     const base = `https://github.com/${CURRENT.repo}/releases/download/v${CURRENT.version}`;
     const agent = path.join(sandbox.fixtures, `infra-agent-${TARGET}`);
-    writeExecutable(agent, "#!/usr/bin/env bash\nexit 0\n");
+    writeExecutable(agent, FAKE_AGENT);
     route(sandbox, `${base}/infra-agent-${TARGET}`, agent);
     const mesh = path.join(sandbox.fixtures, `erainfra-mesh-${TARGET}`);
     writeExecutable(mesh, "#!/usr/bin/env bash\nexit 0\n");
     const meshSha = createHash("sha256").update(readFileSync(mesh)).digest("hex");
-    writeFileSync(`${mesh}.sha256`, `${meshSha}  erainfra-mesh-${TARGET}\n`);
+    const meshSidecar = `${mesh}.sha256`;
+    writeFileSync(meshSidecar, `${meshSha}  erainfra-mesh-${TARGET}\n`);
     route(sandbox, `${base}/erainfra-mesh-${TARGET}`, mesh);
-    route(sandbox, `${base}/erainfra-mesh-${TARGET}.sha256`, `${mesh}.sha256`);
+    route(sandbox, `${base}/erainfra-mesh-${TARGET}.sha256`, meshSidecar);
     const agentSha = createHash("sha256").update(readFileSync(agent)).digest("hex");
-    repin(sandbox, {
-      ...CURRENT,
-      infraAgent: { [TARGET]: agentSha },
-      mesh: { [TARGET]: meshSha },
-    });
+    const pin = (infraAgent: AgentRelease["infraAgent"], meshPin: AgentRelease["mesh"]) =>
+      repin(sandbox, { ...CURRENT, infraAgent, mesh: meshPin });
+    pin({ [TARGET]: agentSha }, { [TARGET]: meshSha });
 
     const credential = path.join(sandbox.fixtures, "edge-1.credential");
     writeFileSync(credential, `${CREDENTIAL}\n`);
     return {
       sandbox,
       credential,
+      agent,
+      agentSha,
+      meshSha,
+      meshSidecar,
+      pin,
+      installedAgent: path.join(
+        sandbox.sudoRoot,
+        "usr",
+        "local",
+        "lib",
+        "erainfra",
+        "erainfra-node",
+      ),
       unitFile: (name: string) => path.join(sandbox.sudoRoot, "etc", "systemd", "system", name),
       seed: (unit: string, ...states: Array<"active" | "enabled">) => {
         for (const state of states) writeFileSync(path.join(units, `${unit}.${state}`), "");
@@ -1105,23 +833,24 @@ exec "$@"
   }
 
   it("installs connect-convex as erainfra-node.service, with the sidecar and no Hub", () => {
-    const box = convexSandbox();
-    const result = run(box.sandbox, convexArgs(box.credential));
+    const box = nodeSandbox();
+    const result = run(box.sandbox, nodeArgs(box.credential));
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(
+      new RegExp(
+        `Verified infra-agent-${TARGET} against the checksum pinned by this EraInfra deployment`,
+      ),
+    );
+    expect(readLog(box.sandbox.curlLog)).toMatch(
+      new RegExp(`releases/download/v1\\.4\\.2/infra-agent-${TARGET}$`, "m"),
+    );
 
     const unit = readFileSync(box.unitFile("erainfra-node.service"), "utf8");
     expect(unit).toContain(
       "ExecStart=/usr/local/lib/erainfra/erainfra-node connect-convex --credential-file /etc/erainfra-node.credential --state-dir /var/lib/erainfra-node\n",
     );
-    const agent = path.join(
-      box.sandbox.sudoRoot,
-      "usr",
-      "local",
-      "lib",
-      "erainfra",
-      "erainfra-node",
-    );
-    expect(statSync(agent).mode & 0o777).toBe(0o755);
+    expect(readFileSync(box.installedAgent, "utf8")).toBe(FAKE_AGENT);
+    expect(statSync(box.installedAgent).mode & 0o777).toBe(0o755);
     expect(unit).toMatch(/^Environment=ERAINFRA_CONVEX_SITE=https:\/\/example\.convex\.site$/m);
     expect(unit).toMatch(/^Environment=ERAINFRA_MESH_SOCKET=\/run\/erainfra-mesh\/control\.sock$/m);
     expect(unit).toMatch(
@@ -1129,10 +858,14 @@ exec "$@"
     );
     expect(unit).toMatch(/^Requires=erainfra-mesh\.service$/m);
     expect(unit).toMatch(/^SupplementaryGroups=erainfra-mesh$/m);
+    // The credential comes from the file only: connect-convex refuses a second one in the
+    // environment.
+    expect(unit).toMatch(/^UnsetEnvironment=ERAINFRA_NODE_CREDENTIAL$/m);
     expect(unit).not.toMatch(/^(Environment=(PORTLESS|ERAINFRA)_(HUB|TOKEN)|EnvironmentFile)/m);
     expect(unit).not.toContain(CREDENTIAL);
     expect(existsSync(box.unitFile("erainfra-mesh.service"))).toBe(true);
     expect(existsSync(box.unitFile("portless-agent.service"))).toBe(false);
+    expect(existsSync(path.join(box.sandbox.sudoRoot, "etc", "portless"))).toBe(false);
 
     const stored = path.join(box.sandbox.sudoRoot, "etc", "erainfra-node.credential");
     expect(readFileSync(stored, "utf8")).toBe(`${CREDENTIAL}\n`);
@@ -1145,15 +878,164 @@ exec "$@"
     expect(box.isLive("erainfra-node", "active")).toBe(true);
     expect(box.isLive("erainfra-node", "enabled")).toBe(true);
     expect(result.stdout).toMatch(/journalctl -u erainfra-node/);
-    expect(result.stdout).toMatch(/erainfra nodes list .*transport convex.*MESH proven/);
+    expect(result.stdout).toMatch(/erainfra nodes list .*online and MESH proven/);
     expect(result.stdout).toMatch(/Roll back to Hub mode: systemctl disable --now erainfra-node/);
+    expect(result.stdout).not.toMatch(/--token|--hub/);
     expect(result.stdout).toMatch(/Delete .*edge-1\.credential/);
   });
 
+  // Install commands already in runbooks pass --convex and --mesh. Both name what is now the only
+  // mode, so they still work and change nothing.
+  it("still accepts --convex and --mesh, and installs exactly the same way", () => {
+    const box = nodeSandbox();
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--convex", "--mesh"]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(box.isLive("erainfra-node", "active")).toBe(true);
+    expect(existsSync(box.unitFile("erainfra-mesh.service"))).toBe(true);
+  });
+
+  it("refuses each retired Hub-mode flag, says what to do instead, and changes nothing", () => {
+    for (const extra of [
+      ["--token", "plt_node_token"],
+      ["--hub", "wss://hub.example.com/agent"],
+      ["--name", "node-01"],
+    ]) {
+      const box = nodeSandbox();
+      const result = run(box.sandbox, nodeArgs(box.credential, extra));
+      expect(result.status, extra.join(" ")).not.toBe(0);
+      expect(result.stderr).toContain(
+        `${extra[0]} is a Hub-mode flag, and Hub mode retired on 2026-11-08.`,
+      );
+      expect(result.stderr).toMatch(/erainfra nodes enroll <name>.*--credential-file/);
+      expect(result.stderr).toMatch(/release v0\.2\.0-rc\.19/);
+      expect(readLog(box.sandbox.curlLog)).toBe("");
+      expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
+    }
+  });
+
+  it("refuses bytes that do not match the pin, and installs nothing", () => {
+    const box = nodeSandbox();
+    box.pin({ [TARGET]: "0".repeat(64) }, { [TARGET]: box.meshSha });
+    const result = run(box.sandbox, nodeArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/);
+    expect(result.stderr).toMatch(/Nothing was installed/);
+    expect(existsSync(box.installedAgent)).toBe(false);
+    expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
+    expect(existsSync(box.unitFile("erainfra-mesh.service"))).toBe(false);
+  });
+
+  it("leaves an already-installed Infra Agent in place when the new bytes do not match", () => {
+    const box = nodeSandbox();
+    box.pin({ [TARGET]: "f".repeat(64) }, { [TARGET]: box.meshSha });
+    mkdirSync(path.dirname(box.installedAgent), { recursive: true });
+    writeExecutable(
+      box.installedAgent,
+      "#!/usr/bin/env bash\n# the Infra Agent already installed\n",
+    );
+
+    expect(run(box.sandbox, nodeArgs(box.credential)).status).not.toBe(0);
+    expect(readFileSync(box.installedAgent, "utf8")).toMatch(/the Infra Agent already installed/);
+  });
+
+  it("verifies a --source install exactly as it verifies a release install", () => {
+    const box = nodeSandbox();
+    // An air-gapped box: the bytes come off local disk, the digest still decides.
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--source", `file://${box.agent}`]));
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(box.installedAgent, "utf8")).toBe(FAKE_AGENT);
+    // Nothing was fetched over the network for the Infra Agent itself.
+    expect(readLog(box.sandbox.curlLog)).not.toMatch(/infra-agent/);
+  });
+
+  it("refuses a --source whose bytes do not match, exactly as it refuses a release", () => {
+    const box = nodeSandbox();
+    // One byte of an otherwise good binary, which is the whole point of pinning a digest.
+    const corrupted = path.join(box.sandbox.fixtures, "corrupted-infra-agent");
+    writeFileSync(corrupted, `${FAKE_AGENT}#\n`);
+
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--source", `file://${corrupted}`]));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/checksum verification failed/);
+    expect(existsSync(box.installedAgent)).toBe(false);
+  });
+
+  it("refuses a target this deployment pins no digest for", () => {
+    const box = nodeSandbox();
+    // The pin covers a target that is not this host's.
+    box.pin({ "solaris-sparc": "a".repeat(64) }, { [TARGET]: box.meshSha });
+    const result = run(box.sandbox, nodeArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(new RegExp(`pins no Infra Agent build for ${TARGET}`));
+    expect(readLog(box.sandbox.curlLog)).toBe("");
+    expect(existsSync(box.installedAgent)).toBe(false);
+  });
+
+  it("refuses a deployment with no mesh pin before downloading or replacing anything", () => {
+    const box = nodeSandbox();
+    box.pin({ [TARGET]: box.agentSha }, {});
+    const result = run(box.sandbox, nodeArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(new RegExp(`pins no erainfra-mesh build for ${TARGET}`));
+    expect(result.stderr).toMatch(/dumbpipe is not installed/);
+    expect(readLog(box.sandbox.curlLog)).toBe("");
+    expect(existsSync(box.installedAgent)).toBe(false);
+  });
+
+  it("requires both mesh deployment and release checksums and installs no dumbpipe", () => {
+    const box = nodeSandbox();
+    writeFileSync(box.meshSidecar, `${"0".repeat(64)}  erainfra-mesh-${TARGET}\n`);
+    const result = run(box.sandbox, nodeArgs(box.credential));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Mesh checksum verification failed/);
+    expect(result.stderr).toMatch(/Nothing was installed/);
+    expect(readLog(box.sandbox.curlLog)).not.toMatch(/dumbpipe/);
+    expect(existsSync(box.installedAgent)).toBe(false);
+
+    writeFileSync(box.meshSidecar, `${box.meshSha}  erainfra-mesh-${TARGET}\n`);
+    const ok = run(box.sandbox, nodeArgs(box.credential));
+    expect(ok.status, `${ok.stdout}\n${ok.stderr}`).toBe(0);
+    expect(ok.stdout).toMatch(/against both release and deployment checksums/);
+    const mesh = path.join(
+      box.sandbox.sudoRoot,
+      "usr",
+      "local",
+      "lib",
+      "erainfra",
+      "erainfra-mesh",
+    );
+    expect(existsSync(mesh)).toBe(true);
+    expect(readLog(box.sandbox.curlLog)).not.toMatch(/dumbpipe/);
+  });
+
+  it("restarts the unit on a re-install, so what runs is what was just verified", () => {
+    const box = nodeSandbox();
+    const first = run(box.sandbox, nodeArgs(box.credential));
+    expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
+    const second = run(box.sandbox, nodeArgs(box.credential));
+    expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+
+    // "enable" does nothing to a running unit, so without an explicit restart the second install
+    // would leave the old process on the old bytes while is-active reported success. Both installs
+    // restart; the restart follows the enable.
+    const service = box.serviceLog();
+    expect(service.filter((line) => line === "restart erainfra-node")).toHaveLength(2);
+    expect(service.indexOf("restart erainfra-node")).toBeGreaterThan(
+      service.indexOf("enable erainfra-node"),
+    );
+  });
+
+  it("refuses a role it does not serve", () => {
+    const sandbox = createSandbox(CURRENT);
+    const result = run(sandbox, ["--role", "gateway", "--token", "plt_node_token"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Unknown --role: gateway/);
+  });
+
   it("refuses while portless-agent.service is live, names the flag, and changes nothing", () => {
-    const box = convexSandbox();
+    const box = nodeSandbox();
     box.seed("portless-agent", "active", "enabled");
-    const result = run(box.sandbox, convexArgs(box.credential));
+    const result = run(box.sandbox, nodeArgs(box.credential));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/portless-agent\.service runs this Node in Hub mode/);
     expect(result.stderr).toMatch(/--replace-hub-agent/);
@@ -1163,17 +1045,17 @@ exec "$@"
   });
 
   it("refuses an enabled erainfra-agent.service the same way", () => {
-    const box = convexSandbox();
+    const box = nodeSandbox();
     box.seed("erainfra-agent", "enabled");
-    const result = run(box.sandbox, convexArgs(box.credential));
+    const result = run(box.sandbox, nodeArgs(box.credential));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/erainfra-agent\.service runs this Node in Hub mode/);
   });
 
   it("stops and disables the Hub-mode unit first with --replace-hub-agent", () => {
-    const box = convexSandbox();
+    const box = nodeSandbox();
     box.seed("portless-agent", "active", "enabled");
-    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(box.isLive("portless-agent", "active")).toBe(false);
     expect(box.isLive("portless-agent", "enabled")).toBe(false);
@@ -1182,28 +1064,28 @@ exec "$@"
     const stopped = service.indexOf("disable --now portless-agent");
     expect(stopped, service.join(" / ")).toBeGreaterThanOrEqual(0);
     // Before the sidecar restarts: portless-agent.service requires it, so a restart would bounce
-    // the Hub agent too.
+    // the Hub-mode Infra Agent too.
     expect(stopped).toBeLessThan(service.indexOf("restart erainfra-mesh"));
     expect(stopped).toBeLessThan(service.indexOf("restart erainfra-node"));
   });
 
   // portless-agent.service runs $PREFIX/bin/portless-agent. A rollback to Hub mode starts that
-  // unit again, so it must find the bytes it ran before, not this release's connect-convex agent.
-  it("keeps the Hub-mode agent's binary for a rollback", () => {
-    const box = convexSandbox();
+  // unit again, so it must find the bytes it ran before, not this release's connect-convex binary.
+  it("keeps the Hub-mode Infra Agent's binary for a rollback", () => {
+    const box = nodeSandbox();
     box.seed("portless-agent", "active", "enabled");
     const hubAgent = path.join(box.sandbox.home, ".portless", "bin", "portless-agent");
     mkdirSync(path.dirname(hubAgent), { recursive: true });
     writeExecutable(hubAgent, "#!/usr/bin/env bash\n# the Hub-mode agent\n");
-    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(readFileSync(hubAgent, "utf8")).toBe("#!/usr/bin/env bash\n# the Hub-mode agent\n");
   });
 
   // --replace-hub-agent stops the Hub unit before the sidecar (re)starts. Any failure after that,
-  // here the sidecar failing to restart under set -e, must not leave the Node with no agent.
-  it("puts the Hub-mode agent back when the install fails after stopping it", () => {
-    const box = convexSandbox();
+  // here the sidecar failing to restart under set -e, must not leave the Node with no Infra Agent.
+  it("puts the Hub-mode Infra Agent back when the install fails after stopping it", () => {
+    const box = nodeSandbox();
     box.seed("portless-agent", "active", "enabled");
     const bin = path.join(box.sandbox.root, "bin");
     const real = path.join(bin, "systemctl.real");
@@ -1212,7 +1094,7 @@ exec "$@"
       path.join(bin, "systemctl"),
       `#!/usr/bin/env bash\nif [ "$1" = restart ] && [ "$2" = erainfra-mesh ]; then printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"; exit 1; fi\nexec "${real}" "$@"\n`,
     );
-    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
     expect(result.status).not.toBe(0);
     expect(box.isLive("portless-agent", "active")).toBe(true);
     expect(box.isLive("portless-agent", "enabled")).toBe(true);
@@ -1222,7 +1104,7 @@ exec "$@"
   });
 
   it("does not touch a Hub-mode unit it did not stop when the install fails", () => {
-    const box = convexSandbox();
+    const box = nodeSandbox();
     const bin = path.join(box.sandbox.root, "bin");
     const real = path.join(bin, "systemctl.real");
     renameSync(path.join(bin, "systemctl"), real);
@@ -1230,71 +1112,57 @@ exec "$@"
       path.join(bin, "systemctl"),
       `#!/usr/bin/env bash\nif [ "$1" = restart ] && [ "$2" = erainfra-mesh ]; then exit 1; fi\nexec "${real}" "$@"\n`,
     );
-    const result = run(box.sandbox, convexArgs(box.credential));
+    const result = run(box.sandbox, nodeArgs(box.credential));
     expect(result.status).not.toBe(0);
     expect(box.isLive("portless-agent", "active")).toBe(false);
     expect(result.stderr).not.toMatch(/Hub-mode agent/);
   });
 
   it("leaves the Hub-mode unit running when the new bytes do not match the pin", () => {
-    const box = convexSandbox();
+    const box = nodeSandbox();
     box.seed("portless-agent", "active", "enabled");
-    repin(box.sandbox, {
-      ...CURRENT,
-      infraAgent: { [TARGET]: "0".repeat(64) },
-      mesh: { [TARGET]: "0".repeat(64) },
-    });
-    const result = run(box.sandbox, convexArgs(box.credential, ["--replace-hub-agent"]));
+    box.pin({ [TARGET]: "0".repeat(64) }, { [TARGET]: "0".repeat(64) });
+    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/checksum verification failed/);
     expect(box.isLive("portless-agent", "active")).toBe(true);
     expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
   });
 
-  it("refuses --hub or --token together with --convex", () => {
-    for (const extra of [
-      ["--hub", "wss://hub.example.com/agent"],
-      ["--token", "plt_node_token"],
-    ]) {
-      const box = convexSandbox();
-      const result = run(box.sandbox, convexArgs(box.credential, extra));
-      expect(result.status, extra.join(" ")).not.toBe(0);
-      expect(result.stderr).toMatch(/--convex takes no --token or --hub/);
-      expect(readLog(box.sandbox.curlLog)).toBe("");
-    }
-  });
-
-  it("refuses --convex without a credential file, and a file that holds no Node credential", () => {
-    const box = convexSandbox();
-    const missing = run(box.sandbox, ["--role", "node", "--convex", "--no-docker"]);
+  it("refuses without a credential file, and a file that holds no Node credential", () => {
+    const box = nodeSandbox();
+    const missing = run(box.sandbox, ["--role", "node", "--no-docker"]);
     expect(missing.status).not.toBe(0);
-    expect(missing.stderr).toMatch(/--convex requires --credential-file/);
+    expect(missing.stderr).toMatch(/--credential-file <path> is required/);
 
     writeFileSync(box.credential, "plt_node_token\n");
-    const wrong = run(box.sandbox, convexArgs(box.credential));
+    const wrong = run(box.sandbox, nodeArgs(box.credential));
     expect(wrong.status).not.toBe(0);
     expect(wrong.stderr).toMatch(/does not hold one Node credential/);
     expect(readLog(box.sandbox.curlLog)).toBe("");
   });
 
   it("refuses without systemd", () => {
-    const box = convexSandbox();
+    const box = nodeSandbox();
     rmSync(path.join(box.sandbox.sudoRoot, "run", "systemd"), { recursive: true });
-    const result = run(box.sandbox, convexArgs(box.credential));
+    const result = run(box.sandbox, nodeArgs(box.credential));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/needs Linux with systemd/);
+    expect(result.stderr).toMatch(/"Set up a Node" in docs\/infra-management\.md/);
     expect(readLog(box.sandbox.curlLog)).toBe("");
   });
 
-  it("makes the Hub-mode path refuse while erainfra-node.service is live", () => {
-    const box = convexSandbox();
-    box.seed("erainfra-node", "active", "enabled");
-    const result = run(box.sandbox, nodeArgs());
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/erainfra-node\.service runs this Node in Convex mode/);
-    expect(result.stderr).toMatch(/systemctl disable --now erainfra-node/);
-    expect(readLog(box.sandbox.curlLog)).toBe("");
-    expect(existsSync(box.unitFile("portless-agent.service"))).toBe(false);
+  it("refuses a host that is not Linux, with the same message", () => {
+    for (const system of ["Darwin", "MINGW64_NT-10.0"]) {
+      const box = nodeSandbox();
+      const result = spawnSync("bash", [box.sandbox.scriptPath, ...nodeArgs(box.credential)], {
+        ...spawnOptions(box.sandbox),
+        env: { ...spawnOptions(box.sandbox).env, RC_TEST_UNAME: system },
+      });
+      expect(result.status, system).not.toBe(0);
+      expect(result.stderr).toMatch(/needs Linux with systemd/);
+      expect(readLog(box.sandbox.curlLog)).toBe("");
+    }
   });
 });
 

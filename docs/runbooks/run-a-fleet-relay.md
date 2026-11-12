@@ -202,8 +202,7 @@ first. Its journal names the bad entry, for example `ERAINFRA_MESH_RELAYS entry 
 https://relay.on99.ai: "quic_port" must be a port number from 1 to 65535, not 0`.
 
 A change to the relay policy rebinds the sidecar, so the Node's links drop for a few seconds and
-its peers reconnect once it has published its new address. A Node still in Hub mode takes its
-relay policy from the Hub's environment instead
+its peers reconnect once it has published its new address
 ([secure-node-mesh.md](secure-node-mesh.md#relays)).
 
 A new Node, or one that just reset its endpoint, is refused by the relay until its key is proven.
@@ -244,7 +243,7 @@ A Node showing `https://relay.on99.ai/` homes on the fleet relay. One showing an
 n0 as faster, as described above. If every Node shows n0, check that the relay's QUIC port is
 open in the cloud firewall and that the Nodes list the same port (step 2). `0 relay` means it
 reaches no relay at all: check its `ERAINFRA_MESH_RELAYS`, and on the relay host the access check
-in step 5. Last, `erainfra links list` shows every link as `transport mesh`, and an App served
+in step 5. Last, `erainfra links list` shows every link as `active`, and an App served
 through a gateway answers.
 
 ## Rotate the secret

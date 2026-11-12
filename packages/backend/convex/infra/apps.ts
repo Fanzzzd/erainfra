@@ -5,7 +5,6 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import { query, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { requirePermission } from "./access";
-import { provenanceFor, type HubOrigin } from "./hubProvenance";
 import { appLinkValidator, appServiceValidator } from "./tables";
 
 type AppService = Infer<typeof appServiceValidator>;
@@ -14,10 +13,7 @@ type AppLink = Infer<typeof appLinkValidator>;
 /** The fleet's App bound: the mesh snapshot (nodeState.ts) refuses more. */
 export const MAX_APPS = 500;
 
-/**
- * Write an App row whole. Convex's writers pass no `hub` and claim the row for Convex; only the
- * Hub importer passes the hash of the Hub row it copied (hubProvenance.ts).
- */
+/** Write an App row whole. */
 export async function upsertApp(
   ctx: MutationCtx,
   input: {
@@ -27,14 +23,13 @@ export async function upsertApp(
     links: AppLink[];
     spec?: Doc<"apps">["spec"];
   },
-  hub?: HubOrigin,
 ) {
   const existing = await ctx.db
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", input.name))
     .unique();
   const now = Date.now();
-  const fields = { ...input, provenance: provenanceFor(now, hub), updatedAt: now };
+  const fields = { ...input, updatedAt: now };
   if (existing === null) return await ctx.db.insert("apps", fields);
   await ctx.db.replace(existing._id, fields);
   return existing._id;
@@ -103,7 +98,6 @@ export async function upsertRoute(
     app: string;
     service?: string;
   },
-  hub?: HubOrigin,
 ) {
   const refusal = await routeRefusal(ctx, input.name, input.app);
   if (refusal !== null) throw new ConvexError(refusal);
@@ -112,7 +106,7 @@ export async function upsertRoute(
     .withIndex("by_name", (q) => q.eq("name", input.name))
     .unique();
   const now = Date.now();
-  const fields = { ...input, provenance: provenanceFor(now, hub), updatedAt: now };
+  const fields = { ...input, updatedAt: now };
   if (existing === null) return await ctx.db.insert("appRoutes", fields);
   await ctx.db.replace(existing._id, fields);
   return existing._id;
@@ -128,14 +122,13 @@ export async function upsertMeshLink(
     localPort: number;
     createdBy?: "user" | "deploy";
   },
-  hub?: HubOrigin,
 ) {
   const existing = await ctx.db
     .query("meshLinks")
     .withIndex("by_name", (q) => q.eq("name", input.name))
     .unique();
   const now = Date.now();
-  const fields = { ...input, provenance: provenanceFor(now, hub), updatedAt: now };
+  const fields = { ...input, updatedAt: now };
   if (existing === null) return await ctx.db.insert("meshLinks", fields);
   await ctx.db.replace(existing._id, fields);
   return existing._id;

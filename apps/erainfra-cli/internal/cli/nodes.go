@@ -11,7 +11,6 @@ import (
 
 type nodeRow struct {
 	Name              string  `json:"name"`
-	Transport         string  `json:"transport"`
 	Online            bool    `json:"online"`
 	LastSeenAt        *string `json:"lastSeenAt"`
 	InfraAgentVersion *string `json:"infraAgentVersion"`
@@ -29,11 +28,11 @@ type nodeRow struct {
 
 var nodesListCommand = command{
 	path:    "nodes list",
-	summary: "List Nodes with transport, liveness and mesh endpoint proof",
+	summary: "List Nodes with liveness and mesh endpoint proof",
 	long: `
-TRANSPORT is convex once the Node's Infra Agent has heartbeated in connect-convex
-mode, and hub while only the Hub drives it. MESH is proven when the Node signed a
-challenge with its erainfra-mesh key; only a proven Node is granted mesh links.
+STATUS is offline until the Node's Infra Agent heartbeats. MESH is proven when
+the Node signed a challenge with its erainfra-mesh key; only a proven Node is
+granted mesh links.
 CREDS counts live Node credentials; a Node with none is out of the mesh.
 STATUS "online, blocked: <reason>" is a Node that heartbeats but cannot run its
 builds, deploys or operations, for example journal_full (see "When the journal
@@ -62,7 +61,7 @@ is full" in docs/infra-management.md).`,
 		}
 		now := a.Now()
 		tw := newTable(a.Stdout)
-		row(tw, "NAME", "TRANSPORT", "STATUS", "HEARTBEAT", "VERSION", "MESH", "ROLES", "CREDS")
+		row(tw, "NAME", "STATUS", "HEARTBEAT", "VERSION", "MESH", "ROLES", "CREDS")
 		for _, n := range page.Nodes {
 			status := "offline"
 			if n.Online {
@@ -81,7 +80,7 @@ is full" in docs/infra-management.md).`,
 			if roles == "" {
 				roles = "-"
 			}
-			row(tw, n.Name, n.Transport, status, ago(n.LastSeenAt, now), orDash(n.InfraAgentVersion), mesh, roles, strconv.Itoa(n.LiveCredentials))
+			row(tw, n.Name, status, ago(n.LastSeenAt, now), orDash(n.InfraAgentVersion), mesh, roles, strconv.Itoa(n.LiveCredentials))
 		}
 		return tw.Flush()
 	},
@@ -225,7 +224,7 @@ var nodesSetRolesCommand = command{
 	long: `
 The roles given replace the Node's roles. A Node marked gateway is sent the route
 table and a mesh link to every routed App on its next snapshot, and serves public
-ingress through its cloudflared (docs/runbooks/move-ingress-to-gateways.md).
+ingress through its cloudflared (docs/infra-management.md, "Gateway ingress").
 --clear removes every role; a former gateway's links and grants go on its next
 snapshot. A Node cannot set its own roles.`,
 	flags: []flagSpec{{name: "clear", usage: "remove every role"}},

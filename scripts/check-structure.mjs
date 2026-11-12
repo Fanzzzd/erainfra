@@ -30,10 +30,6 @@ const EXCEPTIONS = new Map([
     "the Linux and macOS installer is one bash template string; splitting it means assembling the served script from parts",
   ],
   [
-    "packages/backend/convex/installScriptPowerShell.ts",
-    "PowerShell allows one param() block per script, so both roles share one template (see its header)",
-  ],
-  [
     "packages/backend/convex/http.ts",
     "every Convex HTTP route is registered on one router; route groups can move out, the router stays",
   ],
@@ -57,11 +53,6 @@ const EXCEPTIONS = new Map([
     "apps/action-runner-agent/readiness.ts",
     "the Docker, Firecracker and Hyper-V readiness probes share one module; each can move to its own",
   ],
-  [
-    "apps/hub/src/router.ts",
-    "the Hub's tRPC router; the Hub is being retired (docs/runbooks/retire-the-hub.md)",
-  ],
-  ["packages/cli/portless.mjs", "the retiring portless CLI ships as one dependency-free file"],
   ["apps/mesh/src/daemon.rs", "the mesh daemon; not split yet"],
 ]);
 

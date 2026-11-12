@@ -13,6 +13,10 @@ import (
 
 var retentionStart = time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 
+// testRepositoryID is the GitHub repository ID every test save and lookup carries
+// unless a test is about IDs.
+const testRepositoryID int64 = 1313003910
+
 // fixture is an index over a fake store with a clock the test moves.
 type fixture struct {
 	t     *testing.T
@@ -42,7 +46,7 @@ func (f *fixture) save(repository, ref, key, version string, size int) Entry {
 	f.t.Helper()
 	blob := "blobs/" + repositorySegment(repository) + "/" + strings.ReplaceAll(ref+"-"+key+"-"+version, "/", "_")
 	f.store.Overwrite(blob, make([]byte, size))
-	entry := Entry{Key: key, Version: version, Repository: repository, Ref: ref, Blob: blob, Size: int64(size)}
+	entry := Entry{Key: key, Version: version, Repository: repository, RepositoryID: testRepositoryID, Ref: ref, Blob: blob, Size: int64(size)}
 	if err := f.index.Commit(context.Background(), entry); err != nil {
 		f.t.Fatal(err)
 	}
@@ -53,7 +57,7 @@ func (f *fixture) save(repository, ref, key, version string, size int) Entry {
 // written the way the service's loop writes it.
 func (f *fixture) restore(repository, key, version string) *Entry {
 	f.t.Helper()
-	claims := cachetoken.Claims{Repository: repository, Ref: "refs/heads/main"}
+	claims := cachetoken.Claims{Repository: repository, RepositoryID: testRepositoryID, Ref: "refs/heads/main"}
 	entry, err := f.index.Lookup(context.Background(), claims, []string{key}, version)
 	if err != nil {
 		f.t.Fatal(err)
@@ -270,7 +274,10 @@ func TestEvictedBytesOutliveTheirEntryForTheGracePeriod(t *testing.T) {
 		t.Fatalf("sweep after the grace period = %+v, want the blob and its tombstone gone", report)
 	}
 	for _, key := range f.store.Keys() {
-		t.Errorf("left behind: %s", key)
+		// The name record is not cache data; the lifecycle rule ages it out.
+		if !strings.HasPrefix(key, namesRoot) {
+			t.Errorf("left behind: %s", key)
+		}
 	}
 }
 
@@ -336,12 +343,15 @@ func TestAnEntryWhoseBlobIsGoneIsAMiss(t *testing.T) {
 	if report.EvictedDangling != 1 {
 		t.Fatalf("report = %+v, want the dangling entry evicted", report)
 	}
-	exists, err := f.index.Exists(context.Background(), cachetoken.Claims{Repository: repo, Ref: main}, "k", "v1")
+	exists, err := f.index.Exists(context.Background(), cachetoken.Claims{Repository: repo, RepositoryID: testRepositoryID, Ref: main}, "k", "v1")
 	if err != nil || exists {
 		t.Fatalf("Exists after the dangling entry went = %v, %v; want the key free to save", exists, err)
 	}
 	for _, key := range f.store.Keys() {
-		t.Errorf("left behind: %s", key)
+		// The name record is not cache data; the lifecycle rule ages it out.
+		if !strings.HasPrefix(key, namesRoot) {
+			t.Errorf("left behind: %s", key)
+		}
 	}
 }
 

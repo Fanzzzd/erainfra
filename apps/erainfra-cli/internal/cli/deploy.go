@@ -28,7 +28,7 @@ const deployWait = 45 * time.Minute
 
 var appNameFromDir = regexp.MustCompile(`[^a-z0-9-]`)
 
-// deriveAppName names an App after its directory the way `portless deploy` does.
+// deriveAppName names an App after its directory.
 func deriveAppName(dir string) string {
 	name := appNameFromDir.ReplaceAllString(strings.ToLower(filepath.Base(dir)), "-")
 	return strings.Trim(name, "-")
@@ -149,7 +149,7 @@ var deployCommand = command{
 	summary: "Deploy a directory or a repository branch and follow it (admin token)",
 	long: `
 Packs the directory (default: the current one), uploads it, starts a deploy and
-prints each stage until the run ends, like ` + "`portless deploy`" + ` does against a Hub.
+prints each stage until the run ends.
 A git repository is packed with ` + "`git archive HEAD`" + `, so uncommitted changes are left
 out; any other directory is packed without node_modules, .git, dist and .turbo.
 The run reads erainfra.yaml or portless.yaml from the source; without one it needs

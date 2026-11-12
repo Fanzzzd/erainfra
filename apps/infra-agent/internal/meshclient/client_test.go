@@ -172,7 +172,7 @@ func TestReconcileRevokesBeforeOpeningNewListeners(t *testing.T) {
 	})
 	r := Reconciler{Client: c}
 	d := Desired{V: 1, Exposures: []Exposure{{Name: "db", Target: "127.0.0.1:5432"}}, Links: []Link{{Name: "db", Peer: testID, Service: "db", Listen: "15432"}}}
-	if _, err := r.Apply(t.Context(), d, ""); err != nil {
+	if _, err := r.Apply(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}
 	want := "status unexpose unlink set_relays set_fleet expose set_fleet link status"
@@ -181,7 +181,7 @@ func TestReconcileRevokesBeforeOpeningNewListeners(t *testing.T) {
 	}
 	ops = nil
 	d.Exposures[0].Target = "192.168.1.10:5432"
-	if _, err := r.Apply(t.Context(), d, ""); err == nil {
+	if _, err := r.Apply(t.Context(), d); err == nil {
 		t.Fatal("nonloopback accepted")
 	}
 	if len(ops) != 0 {

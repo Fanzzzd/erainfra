@@ -15,12 +15,6 @@
   "access": "restricted",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [
-    "@erainfra/hub",
-    "@erainfra/hub-web",
-    "@erainfra/docs",
-    "@erainfra/release",
-    "@erainfra/typescript-config"
-  ],
+  "ignore": ["@erainfra/release", "@erainfra/typescript-config"],
   "privatePackages": { "version": true, "tag": false }
 }

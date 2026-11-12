@@ -7,8 +7,8 @@ Node, which connects it to the service. Nodes behind NAT connect directly when h
 and through a relay when it does not.
 
 It is the sidecar from [ADR 0016](../../docs/adr/0016-nodes-meet-over-iroh-and-keep-state-in-convex.md)
-that replaces dumbpipe. Every Convex-mode Node runs it: `/install --role node --convex` installs
-`erainfra-mesh.service` from the release pin, and the Infra Agent's `connect-convex` drives it.
+that replaces dumbpipe. Every Node runs it: `/install --role node` installs `erainfra-mesh.service`
+from the release pin, and the Infra Agent's `connect-convex` drives it.
 
 What it does that dumbpipe did not:
 

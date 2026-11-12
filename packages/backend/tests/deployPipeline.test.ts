@@ -1053,8 +1053,8 @@ describe("mesh links from the pipeline", () => {
     process.env.ERAINFRA_REGISTRY = "http://127.0.0.1:61050";
     expect(await attempt()).toContain("is not a registry address");
 
-    // The registry Node has never proven a mesh endpoint (it is still in Hub mode), so no other
-    // Node can reach the registry it runs.
+    // The registry Node has never proven a mesh endpoint, so no other Node can reach the registry
+    // it runs.
     process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
     process.env.ERAINFRA_REGISTRY_NODE = "node-c";
     expect(await attempt()).toContain("the registry Node node-c (ERAINFRA_REGISTRY_NODE)");
@@ -1312,12 +1312,11 @@ describe("failover", () => {
 });
 
 // Only a Node that builds, or pulls an image from ERAINFRA_REGISTRY, needs the registry Node. An
-// image-only App deploys and fails over while the registry Node is away or still in Hub mode
-// (retire-the-hub.md runs its canary in exactly that state).
+// image-only App deploys and fails over while the registry Node is away or has never connected.
 describe("the registry Node is needed only by Nodes that use the registry", () => {
-  it("deploys an image-only App on another Node while the registry Node is in Hub mode", async () => {
+  it("deploys an image-only App on another Node while the registry Node never connected", async () => {
     process.env.ERAINFRA_REGISTRY = "127.0.0.1:61050";
-    process.env.ERAINFRA_REGISTRY_NODE = "node-c"; // Hub mode: never heartbeats
+    process.env.ERAINFRA_REGISTRY_NODE = "node-c"; // never heartbeats
     const s = await setup();
     await s.beat("node-a", "node-b");
     const spec =
@@ -1345,72 +1344,6 @@ describe("the registry Node is needed only by Nodes that use the registry", () =
     const run = await s.deployment(id);
     expect(run.stage).toBe("failed");
     expect(run.error).toContain("the registry Node node-c (ERAINFRA_REGISTRY_NODE)");
-  });
-});
-
-// The Hub fails an App over by its primary Node and leaves services[].node where it was, while the
-// App's node and its routes move. A redeploy that names no Node keeps each service where it runs.
-describe("redeploy of an imported App the Hub had failed over", () => {
-  it("keeps each service on the Node it actually runs on (its route's Node)", async () => {
-    const s = await setup(["aliyun", "work-remote"]);
-    await s.beat();
-    await s.t.action(internal.infra.hubImport.run, {
-      batches: [
-        {
-          kind: "routes",
-          rows: [
-            {
-              name: "shop",
-              node: "work-remote",
-              image: "reg/shop:1",
-              port: 62001,
-              app: "shop",
-              service: "web",
-            },
-          ],
-        },
-        {
-          kind: "apps",
-          rows: [
-            {
-              name: "shop",
-              node: "work-remote",
-              services: [
-                {
-                  name: "web",
-                  image: "reg/shop:1",
-                  args: [],
-                  port: 62001,
-                  route: "shop",
-                  node: "aliyun",
-                },
-              ],
-              links: [],
-            },
-          ],
-        },
-        { kind: "ports", rows: [{ node: "work-remote", key: "shop/web", port: 62001 }] },
-      ],
-    });
-    const spec = "services:\n  web:\n    image: reg/shop:2\n    port: 3000\n    route: shop\n";
-    const res = await s.operator("deployments", s.admin, { app: "shop", upload: await s.upload() });
-    expect(res.status).toBe(202);
-    const id = ((await res.json()) as { deployment: { id: string } }).deployment.id;
-    await s.settle();
-    for (let i = 0; i < 4; i++)
-      for (const n of ["aliyun", "work-remote"])
-        await s.agent(n, (_p, c) =>
-          c.kind === "spec" ? { outcome: "success", spec } : { outcome: "success" },
-        );
-    const app = await s.t.run((ctx) =>
-      ctx.db
-        .query("apps")
-        .withIndex("by_name", (q) => q.eq("name", "shop"))
-        .unique(),
-    );
-    const run = await s.deployment(id);
-    expect({ stage: run.stage, error: run.error }).toEqual({ stage: "done", error: undefined });
-    expect(app!.services[0].nodeId).toBe(s.nodes["work-remote"].nodeId);
   });
 });
 

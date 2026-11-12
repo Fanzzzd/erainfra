@@ -17,7 +17,7 @@ pnpm run deploy --skip-convex
 `pnpm run deploy:control-plane` at the root runs both halves, but `convex deploy` inside it asks
 for confirmation on a dev deployment and fails in a shell that cannot prompt. The root script is
 not called `deploy` on purpose: a workspace-root script by that name shadows pnpm's built-in
-`pnpm deploy`, which `deploy/infra/build-hub-bundle.sh` needs, and pnpm refuses the built-in while
+`pnpm deploy`, and pnpm refuses the built-in while
 such a script exists (`ERR_PNPM_SCRIPT_OVERRIDE_IN_WORKSPACE_ROOT`). For the same reason, run the
 backend's script as `pnpm run deploy`, never a bare `pnpm deploy`. For production, follow
 [Runbook: deploy the control plane](runbooks/deploy-control-plane.md).

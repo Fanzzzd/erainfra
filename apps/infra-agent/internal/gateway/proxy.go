@@ -30,7 +30,7 @@ const (
 type Config struct {
 	// Zones are the domains whose first-level labels are routed: `web.example.com` with zone
 	// `example.com` routes label `web`. Deeper names (`a.web.example.com`) are not routed, the
-	// same rule Cloudflare's free wildcard certificate imposes (deploy/infra/hub.sh).
+	// same rule Cloudflare's free wildcard certificate imposes.
 	Zones []string
 	// RoutesFile is the table the Infra Agent writes.
 	RoutesFile string

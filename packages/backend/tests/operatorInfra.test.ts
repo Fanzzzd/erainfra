@@ -176,7 +176,7 @@ describe("scopes", () => {
 });
 
 describe("Nodes", () => {
-  it("enrolls, lists with transport and endpoint proof, and revokes, all audited", async () => {
+  it("enrolls, lists with liveness and endpoint proof, and revokes, all audited", async () => {
     const f = await fixture();
     const created = await f.call("POST", "/nodes", f.admin, { name: "edge-1" });
     expect(created.status).toBe(201);
@@ -186,7 +186,6 @@ describe("Nodes", () => {
     expect(list.body.nodes).toEqual([
       expect.objectContaining({
         name: "edge-1",
-        transport: "hub",
         online: false,
         lastSeenAt: null,
         endpoint: expect.objectContaining({ id: null, proven: false, provenAt: null }),
@@ -203,7 +202,6 @@ describe("Nodes", () => {
     await prove(f, created.body.node.id, "ab".repeat(32));
     list = await f.call("GET", "/nodes", f.read);
     expect(list.body.nodes[0]).toMatchObject({
-      transport: "convex",
       online: true,
       infraAgentVersion: "1.2.3",
       lastSeenAt: new Date(T0 + 1_000).toISOString(),
@@ -354,7 +352,7 @@ describe("env", () => {
 });
 
 describe("links", () => {
-  it("declares, shows transport and state from endpoint proofs, and removes", async () => {
+  it("declares, shows state from endpoint proofs, and removes", async () => {
     const f = await fixture();
     const a = await liveNode(f, "node-a");
     const b = await liveNode(f, "node-b");
@@ -377,7 +375,6 @@ describe("links", () => {
       provider: "node-a",
       consumer: "node-b",
       listen: "127.0.0.1:8080",
-      transport: "legacy",
       state: "pending",
     });
     expect(link.reason).toContain("node-a and node-b have no proven mesh endpoint");
@@ -385,7 +382,7 @@ describe("links", () => {
     await prove(f, a.id, "a1".repeat(32));
     await prove(f, b.id, "b1".repeat(32));
     [link] = (await f.call("GET", "/links", f.read)).body.links;
-    expect(link).toMatchObject({ transport: "mesh", state: "active", reason: null });
+    expect(link).toMatchObject({ state: "active", reason: null });
 
     // The consumer's snapshot now carries it, so the declared link reaches the Node.
     const snapshot = await (await f.node("state", b.credential)).json();
@@ -395,7 +392,7 @@ describe("links", () => {
 
     vi.setSystemTime(T0 + 10 * 60_000);
     [link] = (await f.call("GET", "/links", f.read)).body.links;
-    expect(link).toMatchObject({ transport: "mesh", state: "degraded" });
+    expect(link).toMatchObject({ state: "degraded" });
 
     expect((await f.call("DELETE", "/links/node-a-8080-node-b", f.admin)).status).toBe(200);
     expect((await f.call("GET", "/links", f.read)).body.links).toEqual([]);
@@ -523,17 +520,14 @@ describe("Apps", () => {
     expect(row).toMatchObject({ actor: "token:ci-admin", target: "shop", outcome: "success" });
   });
 
-  it("refuses to remove an App while it deploys or while its Node is still on the Hub", async () => {
+  it("refuses to remove an App while it deploys, and queues the removal on a silent Node", async () => {
     const f = await fixture();
-    const enrolled = await f.call("POST", "/nodes", f.admin, { name: "hub-node" });
+    const enrolled = await f.call("POST", "/nodes", f.admin, { name: "new-node" });
     await seedApp(f, enrolled.body.node.id);
-    const hub = await f.call("DELETE", "/apps/shop", f.admin);
-    expect(hub.status).toBe(400);
-    expect(hub.body.error.message).toContain("remove it on the Hub");
-    expect((await f.call("GET", "/apps", f.read)).body.apps[0].status).toBe("hub");
+    // A Node that never heartbeated is offline.
+    expect((await f.call("GET", "/apps", f.read)).body.apps[0].status).toBe("node-offline");
 
-    await f.node("heartbeat", enrolled.body.credential, { version: "t" });
-    await f.t.run((ctx) =>
+    const lease = await f.t.run((ctx) =>
       ctx.db.insert("appLeases", {
         app: "shop",
         holder: "deployment:x",
@@ -548,8 +542,13 @@ describe("Apps", () => {
     expect(await f.t.run((ctx) => ctx.db.query("nodeCommands").collect())).toEqual([]);
     expect(
       (await f.audit()).filter((r) => r.action === "apps.remove").map((r) => r.outcome),
-    ).toEqual(["deny", "deny"]);
+    ).toEqual(["deny"]);
     expect((await f.call("DELETE", "/apps/ghost", f.admin)).status).toBe(404);
+
+    // Once the deploy ends, the removal queues for the Node to run when it first polls.
+    await f.t.run((ctx) => ctx.db.delete(lease));
+    expect((await f.call("DELETE", "/apps/shop", f.admin)).status).toBe(202);
+    expect(await f.t.run((ctx) => ctx.db.query("nodeCommands").collect())).not.toEqual([]);
   });
 });
 
@@ -644,11 +643,11 @@ describe("log tails", () => {
     );
     expect((await request(f, { app: "shop", service: "web", argv: "x" })).status).toBe(400);
 
-    // A Node that never connected to Convex (still on the Hub) is refused up front.
-    await f.call("POST", "/nodes", f.admin, { name: "hub-node" });
-    const hub = await request(f, { node: "hub-node", unit: "portless-agent" });
-    expect(hub.status).toBe(400);
-    expect(hub.body.error.message).toContain("portless logs");
+    // A Node that never connected to Convex is refused up front.
+    await f.call("POST", "/nodes", f.admin, { name: "new-node" });
+    const silent = await request(f, { node: "new-node", unit: "portless-agent" });
+    expect(silent.status).toBe(400);
+    expect(silent.body.error.message).toContain("new-node has not connected to Convex");
 
     const asked = await request(f, { node: "node-a", unit: "erainfra-mesh.service", lines: 1000 });
     expect(asked.status).toBe(202);

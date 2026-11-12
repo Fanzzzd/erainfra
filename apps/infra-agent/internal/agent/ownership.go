@@ -68,7 +68,7 @@ func (r ShellRunner) inspect(ctx context.Context, kind, name string, out any) (b
 }
 
 // ownContainer refuses unless the container `name`, if there is one, was created for this App's
-// service (`service` is empty for a single-container App the Hub deploys by name).
+// service.
 //
 // A labelled container must carry exactly this App and service. A container without the labels
 // predates them; it was created by the Hub, and it is this App's only when it carries the shape the
@@ -93,13 +93,8 @@ func (r ShellRunner) ownContainer(ctx context.Context, name, app, service string
 		return fmt.Errorf("container %s belongs to %s, not %s; refusing to replace it", name,
 			describeOwner(owner, info.Config.Labels[LabelService]), describeOwner(app, service))
 	}
-	if adopted || hubShaped(name, info, app, service == "") {
+	if adopted || hubShaped(name, info, app, false) {
 		return nil
-	}
-	if service == "" {
-		return fmt.Errorf("container %s has no %s label and is not shaped like %s's, so it may be another App's; "+
-			"refusing to replace it. If it is %s's, remove it on this Node (docker rm -f %s) and deploy again "+
-			"(docs/infra-management.md, \"Names and ownership\")", name, LabelApp, describeOwner(app, service), app, name)
 	}
 	return fmt.Errorf("container %s has no %s label and is not shaped like %s's (on network %s-net with alias %s), "+
 		"so it may be another App's; refusing to replace it. If it is %s's, deploy again with "+
@@ -137,13 +132,10 @@ func hubShaped(name string, info containerInfo, app string, single bool) bool {
 // is recorded on this Node instead (VolumeOwners), and from then on the record refuses every other
 // App exactly as a label would, even after this App's containers are gone.
 //
-// `single` is true for the Hub's single-container deploy (Deploy) and false for an App's services
-// (DeployApp).
-//
 // adoptedContainers names the unlabelled containers the operator adopted for this deploy
 // (ownContainer). This deploy replaces them, so a volume they mount counts as mounted by this
 // App's own containers.
-func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, args, adoptedContainers []string) error {
+func (r ShellRunner) ownVolumes(ctx context.Context, app string, args, adoptedContainers []string) error {
 	var create, adopt []string
 	for _, name := range mountedVolumes(args) {
 		if slices.Contains(create, name) || slices.Contains(adopt, name) {
@@ -164,12 +156,12 @@ func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, ar
 			}
 			// The label names the App, not the deploy kind: the Hub's single container `db` and
 			// App db's services both label what they create erainfra.app=db. The users decide.
-			if err := r.checkVolumeUsers(ctx, name, app, single, true, adoptedContainers); err != nil {
+			if err := r.checkVolumeUsers(ctx, name, app, true, adoptedContainers); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := r.ownUnlabelledVolume(ctx, name, app, single, adoptedContainers); err != nil {
+		if err := r.ownUnlabelledVolume(ctx, name, app, adoptedContainers); err != nil {
 			return err
 		}
 		adopt = append(adopt, name)
@@ -196,11 +188,12 @@ func (r ShellRunner) ownVolumes(ctx context.Context, app string, single bool, ar
 // Hub gave the App's containers). A volume no container mounts is adopted by the first App to
 // mount it; the recorded adoption, when there is one, wins over that.
 //
-// The test is also held to this deploy's kind. The App's services may share a volume, and a
+// The test is also held to the deploy's kind. The App's services may share a volume, and a
 // redeploy replaces its own container, but the Hub's single container `db` and App db's services
 // are not each other's replacements: deploying the services while the single container still runs
-// would put two databases on one data directory, the same harm with one App name.
-func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, single bool, adoptedContainers []string) error {
+// would put two databases on one data directory, the same harm with one App name. Convex deploys
+// only services, so a single container is always the other kind.
+func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, adoptedContainers []string) error {
 	owner, recorded, err := r.recordedVolumeOwner(name)
 	if err != nil {
 		return err
@@ -209,14 +202,14 @@ func (r ShellRunner) ownUnlabelledVolume(ctx context.Context, name, app string, 
 		return fmt.Errorf("volume %s was adopted by App %q on this Node, not App %q; refusing to mount it "+
 			"(docs/infra-management.md, \"Names and ownership\")", name, owner, app)
 	}
-	return r.checkVolumeUsers(ctx, name, app, single, false, adoptedContainers)
+	return r.checkVolumeUsers(ctx, name, app, false, adoptedContainers)
 }
 
 // checkVolumeUsers refuses the volume unless every container that mounts it, running or stopped,
-// is one this deploy may share it with: a container of this App and of this deploy's kind. It runs
+// is one this deploy may share it with: one of this App's service containers. It runs
 // for a volume labelled for this App as well as an unlabelled one, since the label says nothing
 // about which of the App's deploy kinds wrote the data.
-func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, single, volumeLabelled bool, adoptedContainers []string) error {
+func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, volumeLabelled bool, adoptedContainers []string) error {
 	ids, err := r.volumeUsers(ctx, name)
 	if err != nil {
 		return err
@@ -240,23 +233,19 @@ func (r ShellRunner) checkVolumeUsers(ctx context.Context, name, app string, sin
 		}
 		var sameKind, otherKind bool
 		if labelled {
-			sameKind = (info.Config.Labels[LabelService] == "") == single
+			sameKind = info.Config.Labels[LabelService] != ""
 			otherKind = !sameKind
 		} else {
-			sameKind = slices.Contains(adoptedContainers, container) || hubShaped(container, info, app, single)
-			otherKind = !sameKind && hubShaped(container, info, app, !single)
+			sameKind = slices.Contains(adoptedContainers, container) || hubShaped(container, info, app, false)
+			otherKind = !sameKind && hubShaped(container, info, app, true)
 		}
 		switch {
 		case sameKind:
 			continue
 		case otherKind:
-			kind := "service container"
-			if !single {
-				kind = "single-container deployment"
-			}
-			return fmt.Errorf("volume %s is mounted by container %s, App %q's %s, which this deploy does not replace; "+
+			return fmt.Errorf("volume %s is mounted by container %s, App %q's single-container deployment, which this deploy does not replace; "+
 				"refusing to mount it, since two containers would write one data directory. Once nothing needs %s, "+
-				"remove it on this Node (docker rm -f %s) and deploy again", name, container, app, kind, container, container)
+				"remove it on this Node (docker rm -f %s) and deploy again", name, container, app, container, container)
 		case volumeLabelled:
 			return fmt.Errorf("volume %s is App %q's but is mounted by container %s, which is not; refusing to mount it, "+
 				"since two containers would write one data directory. Once nothing needs %s, remove it on this Node "+

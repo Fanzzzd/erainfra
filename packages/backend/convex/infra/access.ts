@@ -3,7 +3,6 @@ import { ConvexError, v, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import { mutation, type MutationCtx, type QueryCtx } from "../_generated/server";
 import { appendAudit } from "./auditLog";
-import { recordTombstone } from "./hubProvenance";
 import {
   can,
   effectiveRole,
@@ -175,8 +174,6 @@ export const removeUser = mutation({
     await assertNotLastOwner(ctx, target, "remove");
     await deleteUserCredentials(ctx, target._id);
     await ctx.db.delete(target._id);
-    // A Hub import must not bring the account back with its Hub password.
-    if (target.legacyHubId !== undefined) await recordTombstone(ctx, "user", target.legacyHubId);
     await appendAudit(ctx, {
       actor,
       action: "account.users.remove",

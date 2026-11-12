@@ -202,8 +202,8 @@ type Entry struct {
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at"`
 	// RepositoryID is GitHub's ID for the repository that saved the entry.
-	// Absent for an entry saved before IDs were recorded, or by a job whose
-	// controller pushed none.
+	// Absent for an entry stored before IDs were recorded. No job reads such
+	// an entry, and the next sweep removes it.
 	RepositoryID int64 `json:"repository_id,omitempty"`
 }
 
@@ -212,8 +212,7 @@ type ListResponse struct {
 	Repository string `json:"repository"`
 	// RepositoryID is the GitHub repository ID that holds this name: the last
 	// one that saved under it. Jobs of any other ID restore nothing listed
-	// here, and entries without an ID belong to this one. Absent while no save
-	// with an ID has been made under the name.
+	// here. Absent while the name has no record.
 	RepositoryID int64   `json:"repository_id,omitempty"`
 	TotalCount   int     `json:"total_count"`
 	TotalBytes   int64   `json:"total_bytes"`

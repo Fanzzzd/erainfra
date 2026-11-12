@@ -18,8 +18,8 @@
 export const INGRESS_PORT_START = 61100;
 export const INGRESS_PORT_END = 61999;
 /**
- * Loopback ports the fleet keeps for host services: the Hub's registry and API (deploy/infra/hub.sh,
- * 61050 and 61080), the gateway proxy (61090, apps/infra-agent/gateway.go), the gateway's ingress
+ * Loopback ports the fleet keeps for host services: the image registry and the retired Hub's API
+ * (61050 and 61080, where the Hub's installer put them), the gateway proxy (61090, apps/infra-agent/gateway.go), the gateway's ingress
  * links, and the registry ERAINFRA_REGISTRY names, which every Node that pulls reaches over a mesh
  * link on its own loopback. A single-container route at one of these ports is not served on any
  * Node. Where the service runs, the row has outlived its container (the Hub could not publish a
@@ -49,7 +49,7 @@ export const INGRESS_ROUTE_READ_LIMIT = 1000;
 /** Per ingress link and exposure. Browsers open several connections and WebSockets stay open. */
 export const INGRESS_MAX_CONNECTIONS = 1024;
 
-/** A first-level DNS label: what Cloudflare's free wildcard certificate covers (hub.sh). */
+/** A first-level DNS label: what Cloudflare's free wildcard certificate covers. */
 const ROUTE_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 export function isRouteLabel(name: string) {
   return ROUTE_LABEL.test(name);

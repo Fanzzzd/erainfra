@@ -10,8 +10,8 @@ import (
 	"sync"
 )
 
-// Desired is control-plane neutral. The Hub supplies it now; connect-convex can use the same
-// adapter later, under the same controller lock. Grants come only from declared consumer links.
+// Desired is the whole mesh view for one Node. Convex builds it from declared links
+// (convexnode.decodeSnapshot). Grants come only from declared consumer links.
 type Desired struct {
 	V         int        `json:"v"`
 	Fleet     []Peer     `json:"fleet"`
@@ -83,15 +83,11 @@ type Reconciler struct {
 	mu     sync.Mutex
 }
 
-// Apply authoritatively removes absent names. The Hub uses authorize then links stages across
-// all Nodes: revoke old grants first, apply provider grants, refresh endpoint addresses after
-// relay changes, then open consumer listeners. An empty stage performs both for one controller.
-func (r *Reconciler) Apply(ctx context.Context, d Desired, stage string) (Status, error) {
+// Apply authoritatively removes absent names. It revokes old grants first, applies provider
+// grants, refreshes endpoint addresses after relay changes, then opens consumer listeners.
+func (r *Reconciler) Apply(ctx context.Context, d Desired) (Status, error) {
 	if err := d.Validate(); err != nil {
 		return Status{}, err
-	}
-	if stage != "" && stage != "authorize" && stage != "links" {
-		return Status{}, errors.New("invalid mesh reconciliation stage")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -99,51 +95,47 @@ func (r *Reconciler) Apply(ctx context.Context, d Desired, stage string) (Status
 	if err != nil {
 		return Status{}, err
 	}
-	if stage != "links" {
-		wanted := map[string]bool{}
-		for _, e := range d.Exposures {
-			wanted[e.Name] = true
-		}
-		// Revocation does not wait for a subsequent connect operation or a daemon restart.
-		for _, e := range current.Exposures {
-			if !wanted[e.Name] {
-				if err := r.Client.Unexpose(ctx, e.Name); err != nil {
-					return Status{}, err
-				}
-			}
-		}
-		wanted = map[string]bool{}
-		for _, l := range d.Links {
-			wanted[l.Name] = true
-		}
-		for _, l := range current.Links {
-			if !wanted[l.Name] {
-				if err := r.Client.Unlink(ctx, l.Name); err != nil {
-					return Status{}, err
-				}
-			}
-		}
-		if err := r.Client.SetRelays(ctx, d.Relays); err != nil {
-			return Status{}, err
-		}
-		if err := r.Client.SetFleet(ctx, d.Fleet); err != nil {
-			return Status{}, err
-		}
-		for _, e := range d.Exposures {
-			if err := r.Client.Expose(ctx, e); err != nil {
+	wanted := map[string]bool{}
+	for _, e := range d.Exposures {
+		wanted[e.Name] = true
+	}
+	// Revocation does not wait for a subsequent connect operation or a daemon restart.
+	for _, e := range current.Exposures {
+		if !wanted[e.Name] {
+			if err := r.Client.Unexpose(ctx, e.Name); err != nil {
 				return Status{}, err
 			}
 		}
 	}
-	if stage != "authorize" {
-		// Authorization can rebind endpoints. The Hub refreshes every address between stages.
-		if err := r.Client.SetFleet(ctx, d.Fleet); err != nil {
-			return Status{}, err
-		}
-		for _, l := range d.Links {
-			if _, err := r.Client.Link(ctx, l); err != nil {
+	wanted = map[string]bool{}
+	for _, l := range d.Links {
+		wanted[l.Name] = true
+	}
+	for _, l := range current.Links {
+		if !wanted[l.Name] {
+			if err := r.Client.Unlink(ctx, l.Name); err != nil {
 				return Status{}, err
 			}
+		}
+	}
+	if err := r.Client.SetRelays(ctx, d.Relays); err != nil {
+		return Status{}, err
+	}
+	if err := r.Client.SetFleet(ctx, d.Fleet); err != nil {
+		return Status{}, err
+	}
+	for _, e := range d.Exposures {
+		if err := r.Client.Expose(ctx, e); err != nil {
+			return Status{}, err
+		}
+	}
+	// Authorization can rebind endpoints, so every address is refreshed before the links open.
+	if err := r.Client.SetFleet(ctx, d.Fleet); err != nil {
+		return Status{}, err
+	}
+	for _, l := range d.Links {
+		if _, err := r.Client.Link(ctx, l); err != nil {
+			return Status{}, err
 		}
 	}
 	return r.Client.Status(ctx)

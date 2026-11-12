@@ -30,17 +30,15 @@
   },
   "overrides": [
     {
-      "files": ["apps/dashboard/**", "apps/hub-web/**", "apps/docs/**"],
+      "files": ["apps/dashboard/**"],
       "env": { "browser": true }
     },
     {
       "files": [
         ".github/probes/**",
         "apps/action-runner-agent/**",
-        "apps/hub/**",
         "packages/backend/scripts/**",
         "packages/backend/tests/**",
-        "packages/cli/**",
         "packages/release/**"
       ],
       "env": { "node": true }
@@ -51,15 +49,6 @@
       // runs once.
       "files": ["**/tests/**", "**/test/**", "**/*.test.*"],
       "rules": { "unicorn/consistent-function-scoping": "off" }
-    },
-    {
-      // The Hub's web app is retired (docs/runbooks/retire-the-hub.md) and kept only as the
-      // rollback source, so its behaviour is frozen. These two React Compiler rules, new in
-      // oxlint 1.90, flag its polling refreshes, its default-select effects and a
-      // location.hash write in a click handler. Rewriting them would change a UI nobody runs
-      // any more for no gain. The live dashboard keeps both rules.
-      "files": ["apps/hub-web/**"],
-      "rules": { "react/set-state-in-effect": "off", "react/immutability": "off" }
     }
   ]
 }
