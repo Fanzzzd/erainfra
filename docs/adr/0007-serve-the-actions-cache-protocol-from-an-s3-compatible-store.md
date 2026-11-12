@@ -200,11 +200,11 @@ before it is a feature.
    repository is deleted or renamed away and another is created under it, and GitHub deletes the
    first one's cache with it. The object prefix stays the name, which deployed buckets already
    hold and lifecycle rules are written against. Each entry document also records GitHub's
-   repository ID from the job facts, and a token with an ID reads only entries saved under that
-   ID. A `names/<owner>/<name>` record holds the ID that last saved under the name. The first save
-   under a different ID removes the earlier ID's entries before it moves the record. Entries
-   saved before IDs were recorded belong to the ID in that record. Tokens without an ID, from an
-   older controller, keep matching by name (`internal/cacheindex/ownership.go`).
+   repository ID from the job facts, and a token reads only entries saved under its own ID. A
+   `names/<owner>/<name>` record holds the ID that last saved under the name. The first save
+   under a different ID removes the earlier ID's entries before it moves the record. Facts
+   without an ID are refused unless they grant nothing, and an entry without one belongs to no
+   repository (`internal/cacheindex/ownership.go`).
 
    A job of the repository that gave the name up keeps facts naming it until they expire, six
    hours after its JobStarted. If its save took the name back, the two repositories would remove

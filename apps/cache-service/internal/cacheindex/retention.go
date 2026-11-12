@@ -470,6 +470,7 @@ type SweepReport struct {
 	EvictedIdle       int
 	EvictedQuota      int
 	EvictedDangling   int
+	EvictedUnowned    int
 	EvictedBytes      int64
 	EntriesAdopted    int
 	BlobsDeleted      int
@@ -483,6 +484,7 @@ func (r *SweepReport) add(other SweepReport) {
 	r.EvictedIdle += other.EvictedIdle
 	r.EvictedQuota += other.EvictedQuota
 	r.EvictedDangling += other.EvictedDangling
+	r.EvictedUnowned += other.EvictedUnowned
 	r.EvictedBytes += other.EvictedBytes
 	r.EntriesAdopted += other.EntriesAdopted
 	r.BlobsDeleted += other.BlobsDeleted
@@ -589,9 +591,13 @@ func (i *Index) sweepSnapshot(ctx context.Context, snap *snapshot) (SweepReport,
 		// entry listing has really lost its bytes (see scan). Restores already
 		// answer it as a miss, but it would still make Exists refuse a fresh
 		// save of the same key, so it goes now rather than after the idle TTL.
+		//
+		// An entry without a repository ID belongs to no repository, so no
+		// token reads it (ownership.go). It goes now as well.
 		_, hasBlob := snap.blobs[record.Blob]
 		idle := record.marked && record.idleSince.Before(idleBefore)
-		if !hasBlob || idle {
+		unowned := record.RepositoryID <= 0
+		if !hasBlob || idle || unowned {
 			if err := i.evict(ctx, record); err != nil {
 				return report, nil, err
 			}
@@ -600,10 +606,15 @@ func (i *Index) sweepSnapshot(ctx context.Context, snap *snapshot) (SweepReport,
 			// once if it does not.
 			snap.tombstones[record.Blob] = objectstore.Object{Key: record.Blob, LastModified: now}
 			reason := "idle"
-			if !hasBlob {
+			switch {
+			case !hasBlob:
 				reason = "blob missing"
 				report.EvictedDangling++
-			} else {
+			case unowned:
+				reason = "no repository ID"
+				report.EvictedUnowned++
+				report.EvictedBytes += record.Size
+			default:
 				report.EvictedIdle++
 				report.EvictedBytes += record.Size
 			}
@@ -748,7 +759,7 @@ type Match struct {
 	// Ref matches the scope an entry was saved under, such as refs/heads/main.
 	Ref string
 	// RepositoryID matches entries saved by that GitHub repository ID. Zero
-	// matches any; entries saved without an ID never match a non-zero one.
+	// matches any.
 	RepositoryID int64
 	// All is the explicit "every entry", for clearing a repository.
 	All bool

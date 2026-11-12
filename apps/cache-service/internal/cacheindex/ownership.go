@@ -7,18 +7,18 @@ package cacheindex
 // already holds. A name is not a repository, though. One deleted, or renamed
 // away, and then created again under the same name is a different repository,
 // and GitHub deletes a repository's Actions cache with it. So every entry also
-// records GitHub's ID for the repository that saved it, and a token whose facts
-// carry an ID reads only entries saved under that ID.
+// records GitHub's ID for the repository that saved it, and a token reads only
+// entries saved under its own ID.
 //
-// Entries saved before the ID was recorded carry none, and a controller from
-// before the ID was pushed issues facts with none. Both keep working by name.
-// For those entries the name record below says whose they are: the first
-// repository ID that saves under a name after this change adopts every entry
-// already there, and a different ID saving later removes them along with the
-// earlier ID's own. That is the whole window in which a name's entries can
-// reach a different repository: it is open only until the first save that
-// carries an ID, and a token without an ID (an older controller) reads by name
-// for as long as it is in use.
+// The rule has no exception. Claims without an ID grant nothing (cachetoken
+// refuses facts that would grant a cache without one), so they read nothing
+// and save nothing. An entry without an ID belongs to no repository: no token
+// reads it, the first save under a new ID removes it, and the sweep removes it
+// (retention.go).
+//
+// The name record below says which ID took the name last. The first save under
+// a different ID removes every entry the name holds from another ID, so a key
+// the earlier repository saved does not refuse the new repository's save.
 //
 // A job of the repository that gave the name up can still save under it: its
 // facts were issued while the repository had the name, and they stay valid
@@ -34,15 +34,13 @@ package cacheindex
 //
 // The layout, beside entries/ and blobs/:
 //
-//	names/<owner>/<name>   one per repository name that has been saved under
-//	                       with an ID: {"repository", "repositoryId", "since"}.
+//	names/<owner>/<name>   one per repository name that has been saved under:
+//	                       {"repository", "repositoryId", "since"}.
 //
 // The bucket's backstop lifecycle rule ages these out with everything else
-// below the prefix. That is safe for the entries saved before IDs were
-// recorded: the record was written after them, so the rule has removed them
-// by the time it removes the record. The holder's next save writes the record
-// again. Until it does, claimName also refuses a smaller ID when the name
-// holds a larger ID's entries from within staleSaveWindow.
+// below the prefix. The holder's next save writes the record again. Until it
+// does, claimName also refuses a smaller ID when the name holds a larger ID's
+// entries from within staleSaveWindow.
 
 import (
 	"context"
@@ -86,6 +84,11 @@ const (
 // handlers skip it the way they skip any save that is not needed.
 var ErrNameHeldByNewerRepository = errors.New("this repository name now belongs to a newer repository; the save was not stored")
 
+// ErrNoRepositoryID is a save refused because it names no GitHub repository
+// ID. cachetoken.Scope already refuses facts that would grant such a save, so
+// this is the index's own check of the same rule.
+var ErrNoRepositoryID = errors.New("a cache save needs the GitHub repository ID of the repository that saves it")
+
 // nameRecord is the ID a repository name's entries belong to.
 type nameRecord struct {
 	Repository   string `json:"repository"`
@@ -124,9 +127,8 @@ func (m *nameMemo) put(segment string, holder nameRecord, now time.Time) {
 }
 
 // nameLocks serializes the claims on one name within this process. The first
-// save under a new ID reads every entry the name has, which after an upgrade
-// is every entry saved before IDs were recorded. Without the lock each of a
-// matrix's first saves would read them all at once. With it, the first one
+// save under a new ID reads every entry the name has. Without the lock each of
+// a matrix's first saves would read them all at once. With it, the first one
 // claims and the rest find the name already theirs in the memo. Saves under
 // different names do not wait for each other. Replicas are not serialized:
 // each reads the name once.
@@ -180,7 +182,7 @@ func nameRecordObject(repository string) string {
 }
 
 // nameHolder is the record of the repository ID that holds a name, with a zero
-// ID when no save with an ID has been made under it.
+// ID when the name has no record.
 func (i *Index) nameHolder(ctx context.Context, repository string) (nameRecord, error) {
 	segment := repositorySegment(repository)
 	if holder, ok := i.names.get(segment, i.now()); ok {
@@ -197,8 +199,8 @@ func (i *Index) nameHolder(ctx context.Context, repository string) (nameRecord, 
 	var record nameRecord
 	if err := json.Unmarshal(body, &record); err != nil || record.RepositoryID < 0 {
 		// A record this service cannot read says nothing about whose the
-		// entries are. Answering zero keeps today's by-name behaviour for
-		// entries without an ID; entries with one are still checked against it.
+		// entries are. Answering zero leaves ownership to the entries' own
+		// IDs, and the next save writes the record again.
 		i.logger.Warn("repository name record does not parse", "repository", repository, "error", err)
 		i.names.put(segment, nameRecord{}, i.now())
 		return nameRecord{}, nil
@@ -207,29 +209,10 @@ func (i *Index) nameHolder(ctx context.Context, repository string) (nameRecord, 
 	return record, nil
 }
 
-// nameOwner is the repository ID that holds a name, or zero when no save with
-// an ID has been made under it.
-func (i *Index) nameOwner(ctx context.Context, repository string) (int64, error) {
-	holder, err := i.nameHolder(ctx, repository)
-	return holder.RepositoryID, err
-}
-
 // ownedBy reports whether an entry was saved by the repository a token is for.
-func (i *Index) ownedBy(ctx context.Context, claims cachetoken.Claims, entry *Entry) (bool, error) {
-	if claims.RepositoryID == 0 {
-		// An older controller pushed no ID. Its jobs read by name, as before.
-		return true, nil
-	}
-	owner := entry.RepositoryID
-	if owner == 0 {
-		// Saved before IDs were recorded, or by a job whose facts had none:
-		// it belongs to whichever ID holds the name.
-		var err error
-		if owner, err = i.nameOwner(ctx, claims.Repository); err != nil {
-			return false, err
-		}
-	}
-	return owner == 0 || owner == claims.RepositoryID, nil
+// An entry or a token without an ID owns nothing (see the top of this file).
+func ownedBy(claims cachetoken.Claims, entry *Entry) bool {
+	return claims.RepositoryID > 0 && entry.RepositoryID == claims.RepositoryID
 }
 
 // supersedes reports whether the holder's claim on a name refuses a save from
@@ -277,9 +260,8 @@ func (i *Index) refuseStaleSave(repository string, id int64, holder nameRecord, 
 // claimName makes sure the name's entries belong to id before id saves one.
 //
 // The first save under a new ID is where a name changes hands. It removes every
-// entry another ID saved, and, when the name was already held by another ID,
-// the entries without one too: those were adopted by that ID. Only then is the
-// name record moved, so that a lookup in between still answers the old entries
+// entry another ID saved, and every entry without an ID. Only then is the name
+// record moved, so that a lookup in between still answers the old entries
 // as a miss rather than as this ID's. A crash in between leaves the record
 // where it was, and the next save does the whole of it again.
 //
@@ -288,7 +270,7 @@ func (i *Index) refuseStaleSave(repository string, id int64, holder nameRecord, 
 // file).
 func (i *Index) claimName(ctx context.Context, repository string, id int64) error {
 	if id <= 0 {
-		return nil
+		return ErrNoRepositoryID
 	}
 	holder, err := i.nameHolder(ctx, repository)
 	if err != nil {
@@ -337,12 +319,6 @@ func (i *Index) claimName(ctx context.Context, repository string, id int64) erro
 		if record.RepositoryID == id {
 			continue
 		}
-		if record.RepositoryID == 0 && held == 0 {
-			// Nobody has claimed the name with an ID yet, so these are
-			// adopted rather than removed: they were saved by name, by the
-			// repository that held the name before IDs were recorded.
-			continue
-		}
 		if err := i.evict(ctx, record); err != nil {
 			return err
 		}
@@ -370,8 +346,9 @@ func (i *Index) claimName(ctx context.Context, repository string, id int64) erro
 	return nil
 }
 
-// NameOwner is the repository ID a name's entries belong to, or zero when no
-// save with an ID has been made under it. The admin API reports it.
+// NameOwner is the repository ID that last took the name, or zero when the
+// name has no record. The admin API reports it.
 func (i *Index) NameOwner(ctx context.Context, repository string) (int64, error) {
-	return i.nameOwner(ctx, repository)
+	holder, err := i.nameHolder(ctx, repository)
+	return holder.RepositoryID, err
 }

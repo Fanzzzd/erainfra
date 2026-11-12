@@ -61,11 +61,16 @@ const runnerTokenPrefix = "erainfra-cache-runner-v1"
 const MinSigningKeyLen = 32
 
 var (
-	ErrMalformed       = errors.New("cache token is malformed")
-	ErrSignature       = errors.New("cache token signature does not verify")
-	ErrExpired         = errors.New("cache token has expired")
-	ErrNoRepository    = errors.New("cache token carries no repository claim")
-	ErrNoRunner        = errors.New("cache runner token carries no runner claim")
+	ErrMalformed    = errors.New("cache token is malformed")
+	ErrSignature    = errors.New("cache token signature does not verify")
+	ErrExpired      = errors.New("cache token has expired")
+	ErrNoRepository = errors.New("cache token carries no repository claim")
+	ErrNoRunner     = errors.New("cache runner token carries no runner claim")
+	// ErrNoRepositoryID is facts that would grant a cache but carry no GitHub
+	// repository ID. A name alone is not a repository (see
+	// apps/cache-service/internal/cacheindex/ownership.go), so such facts
+	// grant nothing.
+	ErrNoRepositoryID  = errors.New("cache facts carry no repository ID")
 	ErrShortSigningKey = fmt.Errorf("cache signing key must be at least %d bytes", MinSigningKeyLen)
 )
 
@@ -87,9 +92,10 @@ type Claims struct {
 	// on that stability: a per-Attempt identifier would give every Attempt its
 	// own object prefix and the cache would never hit.
 	Repository string `json:"repository"`
-	// RepositoryID is GitHub's ID for Repository, zero when the controller did
-	// not push one. It tells apart repositories that had the same name at
-	// different times, and the git checkout seed is keyed by it.
+	// RepositoryID is GitHub's ID for Repository. It tells apart repositories
+	// that had the same name at different times: an entry is read only by the
+	// ID that saved it, and the git checkout seed is keyed by it. Zero only on
+	// claims that grant nothing (see Scope).
 	RepositoryID int64 `json:"repositoryId,omitempty"`
 	// Ref is the scope writes land in, and the first scope reads look in.
 	Ref string `json:"ref"`
@@ -180,7 +186,8 @@ type JobFacts struct {
 	// that is the base repository, which is exactly the one whose cache is at
 	// stake.
 	Repository string
-	// RepositoryID is GitHub's ID for Repository, or zero when unknown.
+	// RepositoryID is GitHub's ID for Repository. Scope refuses facts without
+	// one unless they grant nothing.
 	RepositoryID int64
 	// HeadRepository is where the code that will run comes from. Empty for
 	// events that have no head repository, which is most of them.
@@ -326,6 +333,15 @@ func Scope(facts JobFacts) (Claims, error) {
 		claims.BaseRef = ""
 	} else if event != "" {
 		claims.Permission = PermissionReadWrite
+	}
+
+	// Facts without GitHub's repository ID name a repository by its name
+	// alone, and a name can belong to two repositories over time. They are
+	// refused unless they grant nothing: the controller's cold facts, pushed
+	// when it could not read the job's workflow run, carry no ID and leave the
+	// job read-only with no scope, so its requests are misses and not 401s.
+	if claims.RepositoryID == 0 && (claims.CanWrite() || len(claims.ReadScopes()) > 0) {
+		return Claims{}, ErrNoRepositoryID
 	}
 
 	return claims, nil

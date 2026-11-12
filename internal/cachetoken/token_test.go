@@ -10,6 +10,8 @@ import (
 var (
 	testKey = []byte("erainfra-cache-service-test-signing-key-0123456789")
 	testNow = time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	// testRepositoryID is GitHub's ID for the repository the facts name.
+	testRepositoryID int64 = 1313003910
 )
 
 func newTestIssuer(t *testing.T) *Issuer {
@@ -34,7 +36,7 @@ func newTestVerifier(t *testing.T) *Verifier {
 func TestIssueAndVerifyRoundTrip(t *testing.T) {
 	issuer := newTestIssuer(t)
 	token, minted, err := issuer.Issue(JobFacts{
-		Repository: "Fanzzzd/erainfra", Event: "push", Ref: "refs/heads/main",
+		Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "push", Ref: "refs/heads/main",
 		DefaultBranch: "refs/heads/main", Attempt: "attempt-1",
 	})
 	if err != nil {
@@ -67,53 +69,53 @@ func TestIssueGrantsWriteOnlyForCodeTheRepositoryControls(t *testing.T) {
 		write bool
 	}{
 		"branch push": {JobFacts{
-			Repository: "Fanzzzd/erainfra", Event: "push", Ref: "refs/heads/main"}, true},
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "push", Ref: "refs/heads/main"}, true},
 		"schedule": {JobFacts{
-			Repository: "Fanzzzd/erainfra", Event: "schedule", Ref: "refs/heads/main"}, true},
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "schedule", Ref: "refs/heads/main"}, true},
 		"merge group": {JobFacts{
-			Repository: "Fanzzzd/erainfra", Event: "merge_group", Ref: "refs/heads/gh-readonly-queue/main/x"}, true},
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "merge_group", Ref: "refs/heads/gh-readonly-queue/main/x"}, true},
 		"same-repository pull request": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "Fanzzzd/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "Fanzzzd/erainfra",
 			Event: "pull_request", Ref: "refs/pull/3/merge", BaseRef: "refs/heads/main"}, true},
 		"same repository in another case": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "fanzzzd/ERAINFRA",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "fanzzzd/ERAINFRA",
 			Event: "pull_request", Ref: "refs/pull/3/merge", BaseRef: "refs/heads/main"}, true},
 		"fork pull request": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 			Event: "pull_request", Ref: "refs/pull/7/merge", BaseRef: "refs/heads/main"}, false},
 		// pull_request_target runs with the base repository's permissions and
 		// a workflow is free to check out the fork's code in it, so it is
 		// treated as a fork here. That is stricter than GitHub, deliberately.
 		"fork pull_request_target": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 			Event: "pull_request_target", Ref: "refs/heads/main", BaseRef: "refs/heads/main"}, false},
 		"pull request review from a fork": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 			Event: "pull_request_review", Ref: "refs/pull/7/merge", BaseRef: "refs/heads/main"}, false},
 		"pull request with an unknown head repository": {JobFacts{
-			Repository: "Fanzzzd/erainfra", Event: "pull_request",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "pull_request",
 			Ref: "refs/pull/9/merge", BaseRef: "refs/heads/main"}, false},
 		"no event at all": {JobFacts{
-			Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"}, false},
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Ref: "refs/heads/main"}, false},
 		// issue_comment fires in the BASE repository for a comment on a fork's
 		// pull request, and the /ok-to-test pattern it exists to serve then
 		// checks the fork's head out and runs it. It is not a pull-request
 		// event, so a fork test written as a list of event names grants it
 		// write to the base repository's cache.
 		"issue_comment on a fork's pull request": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 			Event: "issue_comment", Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"}, false},
 		"issue_comment with no fork behind it": {JobFacts{
-			Repository: "Fanzzzd/erainfra", Event: "issue_comment",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "issue_comment",
 			Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"}, true},
 		// workflow_run is the same shape one step removed: it runs on the base
 		// repository's default branch after a fork's workflow finished, with
 		// that workflow's artifacts to hand.
 		"workflow_run after a fork's workflow": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 			Event: "workflow_run", Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"}, false},
 		"an event nobody here has heard of, from a fork": {JobFacts{
-			Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+			Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 			Event: "some_event_invented_in_2027", Ref: "refs/heads/main",
 			DefaultBranch: "refs/heads/main"}, false},
 	} {
@@ -135,7 +137,7 @@ func TestIssueGrantsWriteOnlyForCodeTheRepositoryControls(t *testing.T) {
 // open.
 func TestIssueCollapsesAForkToTheBaseBranchScope(t *testing.T) {
 	_, claims, err := newTestIssuer(t).Issue(JobFacts{
-		Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+		Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 		Event: "pull_request", Ref: "refs/pull/7/merge",
 		BaseRef: "refs/heads/main", DefaultBranch: "refs/heads/main",
 	})
@@ -161,7 +163,7 @@ func TestIssueCollapsesAForkToTheBaseBranchScope(t *testing.T) {
 // permission — including on an event that is not a pull request.
 func TestIssueCollapsesAnyForeignHeadToTheBaseBranchScope(t *testing.T) {
 	_, claims, err := newTestIssuer(t).Issue(JobFacts{
-		Repository: "Fanzzzd/erainfra", HeadRepository: "attacker/erainfra",
+		Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, HeadRepository: "attacker/erainfra",
 		Event: "issue_comment", Ref: "refs/heads/main", DefaultBranch: "refs/heads/main",
 	})
 	if err != nil {
@@ -221,7 +223,7 @@ func TestVerifyRejectsATokenWithoutARepositoryClaim(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			token, err := sign(testKey, Claims{
-				Repository: repository, Ref: "refs/heads/main",
+				Repository: repository, RepositoryID: testRepositoryID, Ref: "refs/heads/main",
 				Permission: PermissionReadWrite, ExpiresAt: testNow.Add(time.Hour).Unix(),
 			})
 			if err != nil {
@@ -237,7 +239,7 @@ func TestVerifyRejectsATokenWithoutARepositoryClaim(t *testing.T) {
 func TestVerifyRejectsForgedTamperedAndExpiredTokens(t *testing.T) {
 	issuer := newTestIssuer(t)
 	token, _, err := issuer.Issue(JobFacts{
-		Repository: "Fanzzzd/erainfra", Event: "push", Ref: "refs/heads/main"})
+		Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "push", Ref: "refs/heads/main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +279,7 @@ func TestVerifyRejectsForgedTamperedAndExpiredTokens(t *testing.T) {
 // A permission string the issuer never mints must not be readable as write.
 func TestUnknownPermissionIsRead(t *testing.T) {
 	token, err := sign(testKey, Claims{
-		Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main",
+		Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Ref: "refs/heads/main",
 		Permission: "admin", ExpiresAt: testNow.Add(time.Hour).Unix(),
 	})
 	if err != nil {
@@ -308,12 +310,45 @@ func TestIssueRefusesFactsItCannotScope(t *testing.T) {
 	issuer := newTestIssuer(t)
 	for name, facts := range map[string]JobFacts{
 		"no repository":  {Event: "push", Ref: "refs/heads/main"},
-		"bad repository": {Repository: "erainfra", Event: "push", Ref: "refs/heads/main"},
-		"no ref":         {Repository: "Fanzzzd/erainfra", Event: "push"},
+		"bad repository": {Repository: "erainfra", RepositoryID: testRepositoryID, Event: "push", Ref: "refs/heads/main"},
+		"no ref":         {Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "push"},
 	} {
 		if _, _, err := issuer.Issue(facts); err == nil {
 			t.Errorf("%s: Issue succeeded, want a refusal", name)
 		}
+	}
+}
+
+// A name can belong to two repositories over time, so facts that would grant
+// any cache must carry GitHub's repository ID.
+func TestScopeRefusesFactsWithoutARepositoryID(t *testing.T) {
+	for name, facts := range map[string]JobFacts{
+		"a branch push": {Repository: "Fanzzzd/erainfra", Event: "push",
+			Ref: "refs/heads/main", DefaultBranch: "refs/heads/main"},
+		"a read-only job with a scope": {Repository: "Fanzzzd/erainfra", Ref: "refs/heads/main"},
+		"a fork pull request reading its base": {Repository: "Fanzzzd/erainfra",
+			HeadRepository: "attacker/erainfra", Event: "pull_request",
+			Ref: "refs/pull/9/merge", BaseRef: "refs/heads/main"},
+		"a negative ID": {Repository: "Fanzzzd/erainfra", RepositoryID: -1, Event: "push",
+			Ref: "refs/heads/main"},
+	} {
+		if claims, err := Scope(facts); !errors.Is(err, ErrNoRepositoryID) {
+			t.Errorf("%s: Scope = %+v, %v; want ErrNoRepositoryID", name, claims, err)
+		}
+	}
+}
+
+// The controller's cold facts carry no ID and grant nothing: read-only, no
+// scope. They are accepted, so the job's requests are misses and not 401s.
+func TestScopeAcceptsColdFactsWithoutARepositoryID(t *testing.T) {
+	claims, err := Scope(JobFacts{
+		Repository: "Fanzzzd/erainfra", HeadRepository: "(unverified)", Event: "push", Ref: "(unresolved)",
+	})
+	if err != nil {
+		t.Fatalf("cold facts refused: %v", err)
+	}
+	if claims.CanWrite() || len(claims.ReadScopes()) != 0 || claims.RepositoryID != 0 {
+		t.Fatalf("cold facts granted %+v", claims)
 	}
 }
 
@@ -386,7 +421,7 @@ func TestRunnerAndAuthorizationTokensDoNotCross(t *testing.T) {
 	verifier := newTestVerifier(t)
 
 	authToken, _, err := issuer.Issue(JobFacts{
-		Repository: "Fanzzzd/erainfra", Event: "push", Ref: "refs/heads/main"})
+		Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Event: "push", Ref: "refs/heads/main"})
 	if err != nil {
 		t.Fatal(err)
 	}
