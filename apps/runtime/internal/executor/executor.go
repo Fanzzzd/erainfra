@@ -105,14 +105,18 @@ func (p Profile) Validate() error {
 	return nil
 }
 
-// WarmPoolStatus is resident capacity, so Target is always Parked + Claimed
-// for a healthy pool.
 // ImagePrune is what one Image Release prune kept and deleted, each sorted by name.
 type ImagePrune struct {
 	Kept    []string `json:"kept"`
 	Deleted []string `json:"deleted"`
 }
 
+// WarmPoolStatus is a Profile's resident capacity, as `runner-center-runtime
+// prepare` prints it for the Action Runner Agent. Healthy is false only for a
+// pool that does not own its target or that recorded a failure, and Detail
+// then says which. Build one with NoWarmPool, WarmPoolFailed or from a live
+// pool: the zero value reads as an unhealthy pool with no reason, which is
+// how v0.2.0-rc.22 reported every Profile without a pool.
 type WarmPoolStatus struct {
 	Target  int    `json:"target"`
 	Parked  int    `json:"parked"`
@@ -124,6 +128,19 @@ type WarmPoolStatus struct {
 	// never affects readiness: the control plane uses it only to warn before
 	// GitHub stops serving that release.
 	RunnerVersion string `json:"runnerVersion,omitempty"`
+}
+
+// NoWarmPool is the status of a Profile that keeps no parked guests and has
+// none claimed. Its target is zero and it owns zero guests, so it is healthy.
+func NoWarmPool() WarmPoolStatus {
+	return WarmPoolStatus{Healthy: true}
+}
+
+// WarmPoolFailed is the status of a prepare that failed before a pool could
+// report its counts. The counts stay zero because they are unknown, and Detail
+// carries the failure.
+func WarmPoolFailed(err error) WarmPoolStatus {
+	return WarmPoolStatus{Detail: err.Error()}
 }
 
 func (s Spec) Validate() error {

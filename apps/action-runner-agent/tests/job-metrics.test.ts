@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { describe, it } from "node:test";
 
@@ -273,5 +274,23 @@ describe("Attempt metrics on the Worker", () => {
     assert.equal(parseMetricsReport("null"), undefined);
     assert.equal(parseMetricsReport('{"final":false,"snapshot":null}'), undefined);
     assert.equal(parseMetricsReport('{"final":false}'), undefined);
+  });
+
+  // The runtime writes these lines with the sampler's own output path (report_golden_test.go).
+  it("parses every line the runtime's sampler writes", () => {
+    const lines = readFileSync(
+      new URL("../../runtime/internal/jobmetrics/testdata/sample.golden.jsonl", import.meta.url),
+      "utf8",
+    )
+      .trim()
+      .split("\n");
+    const reports = lines.map((line) => parseMetricsReport(line));
+    assert.deepEqual(
+      reports.map((report) => [report?.final, report?.snapshot.samples]),
+      [
+        [false, 3],
+        [true, 5],
+      ],
+    );
   });
 });

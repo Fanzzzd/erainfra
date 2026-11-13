@@ -1,13 +1,12 @@
 package firecracker
 
 import (
-	"bytes"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/executor"
+	"github.com/Fanzzzd/erainfra/internal/golden"
 )
 
 // The control plane places Attempts against the storage a default Worker
@@ -31,20 +30,5 @@ func TestStorageJSONMatchesTheGoldenFileTheControlPlaneReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded = append(encoded, '\n')
-	golden := filepath.Join("testdata", "storage.golden.json")
-	if os.Getenv("ERAINFRA_UPDATE_GOLDEN") == "1" {
-		if err := os.MkdirAll("testdata", 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(golden, encoded, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("storage JSON changed; regenerate %s and check the control plane still accepts it:\n%s", golden, encoded)
-	}
+	golden.Check(t, filepath.Join("testdata", "storage.golden.json"), encoded, "the control plane's tests")
 }

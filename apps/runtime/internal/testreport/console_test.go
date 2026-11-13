@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/Fanzzzd/erainfra/internal/golden"
 )
 
 func sampleReport(t *testing.T) *Report {
@@ -226,17 +228,5 @@ func TestReportJSONMatchesTheGoldenFileTheControlPlaneReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded = append(encoded, '\n')
-	golden := filepath.Join("testdata", "report.golden.json")
-	if os.Getenv("ERAINFRA_UPDATE_GOLDEN") == "1" {
-		if err := os.WriteFile(golden, encoded, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("report JSON changed; regenerate %s and check the control plane still accepts it:\n%s", golden, encoded)
-	}
+	golden.Check(t, filepath.Join("testdata", "report.golden.json"), encoded, "the control plane's tests")
 }

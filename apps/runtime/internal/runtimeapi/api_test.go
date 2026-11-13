@@ -118,7 +118,7 @@ func unixClient(t *testing.T, runtime executor.Executor) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &http.Server{Handler: handler(runtime, jobmetrics.NewRegistry(time.Hour))}
+	server := &http.Server{Handler: NewHandler(runtime, jobmetrics.NewRegistry(time.Hour))}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {
 		_ = server.Close()
@@ -296,7 +296,7 @@ func TestInvalidRequestDoesNotEchoJITSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler(runtime, nil).ServeHTTP(response, request)
+	NewHandler(runtime, nil).ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", response.Code)
 	}
