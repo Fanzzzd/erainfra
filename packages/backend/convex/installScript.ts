@@ -7,6 +7,7 @@ import {
   FIRECRACKER_RUNTIME_UNIT_B64,
   FIRECRACKER_RUNTIME_UNIT_SHA256,
 } from "./provisionerFirecrackerHost.generated.ts";
+import { UPDATE_READINESS_JS, UPDATE_READY_TIMEOUT_SECONDS } from "./updateHealthCheck.ts";
 
 const INSTALL_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail
@@ -1310,11 +1311,9 @@ UPDATE=0
 TMP_DIR=""
 RC_CLI_TMP=""
 SERVICE_KIND=""
-# How long an update waits for each Profile that was ready before it to report ready again. A
-# cached Image Release prepares in about a second, but ubuntu0 took about 3 minutes after the
-# v0.2.0-rc.22 update, and the runtime gives one warm-pool guest up to 15 minutes to boot
-# (warmBootTimeout), so 15 minutes rolls back a broken Agent without failing a slow healthy one.
-READY_TIMEOUT=900
+# How long an update waits for each Profile that was ready before it to report ready again
+# (UPDATE_READY_TIMEOUT_SECONDS in updateHealthCheck.ts, which says why).
+READY_TIMEOUT=__UPDATE_READY_TIMEOUT__
 READY_BEFORE=""
 READINESS_SINCE=""
 READINESS_AUTH=""
@@ -1538,48 +1537,15 @@ wait_for_connection() {
 
 # The update health check reads the control plane's readiness for each Profile this Worker
 # serves: GET /agents/readiness, answered by workerApi.readiness the way the scheduler judges it.
-# Usage: "now FILE" prints the control plane's clock; "ready FILE" prints each ready Profile, one
-# per line; "verdict FILE SINCE PROFILE..." judges the named Profiles on reports newer than SINCE
-# and prints "ready", "fail <why>" or "wait <profile> <why>". A named Profile this Worker no longer
-# serves is not waited for.
+# UPDATE_READINESS_JS in updateHealthCheck.ts owns the program that reads the answer, and lists its
+# modes: "now FILE", "ready FILE" and "verdict FILE SINCE PROFILE...".
 READINESS_JS='
-const fs = require("node:fs");
-const [mode, file, since, ...wanted] = process.argv.slice(1);
-const answer = JSON.parse(fs.readFileSync(file, "utf8"));
-const profiles = Array.isArray(answer.profiles) ? answer.profiles : [];
-if (mode === "now") {
-  if (!Number.isFinite(answer.now)) process.exit(1);
-  process.stdout.write(String(Math.trunc(answer.now)));
-} else if (mode === "ready") {
-  for (const row of profiles) if (row.state === "ready") process.stdout.write(row.profile + "\n");
-} else {
-  const why = (row) => {
-    const reasons = Array.isArray(row.failedChecks) ? row.failedChecks.slice() : [];
-    if (reasons.length === 0 && typeof row.detail === "string") reasons.push(row.detail);
-    return reasons.length === 0 ? "" : ": " + reasons.join("; ");
-  };
-  let verdict = "ready";
-  for (const name of wanted) {
-    const row = profiles.find((candidate) => candidate.profile === name);
-    if (row === undefined) continue;
-    const fresh = typeof row.checkedAt === "number" && row.checkedAt > Number(since);
-    if (fresh && row.state === "ready") continue;
-    if (fresh && (row.state === "degraded" || row.state === "failed")) {
-      verdict = "fail Profile " + name + " reported " + row.state + why(row);
-      break;
-    }
-    if (verdict === "ready") {
-      verdict = fresh
-        ? "wait " + name + " it last reported " + row.state + why(row)
-        : "wait " + name + " it has not reported since the Agent restarted";
-    }
-  }
-  process.stdout.write(verdict + "\n");
-}
+__UPDATE_READINESS_JS__
 '
 
+# The program goes in on stdin, the way the Windows installer runs it too.
 readiness_eval() {
-  "$NODE_BIN" -e "$READINESS_JS" "$@"
+  "$NODE_BIN" - "$@" <<<"$READINESS_JS"
 }
 
 # Save the control plane's readiness answer to $1, and note its clock against the local one so
@@ -2318,6 +2284,8 @@ export function renderInstallScript(siteUrl: string, release: AgentRelease) {
     .replaceAll("__AGENT_VERSION__", release.version)
     .replaceAll("__AGENT_SHA256__", release.sha256)
     .replaceAll("__MESH_INSTALL_FUNCTIONS__", MESH_INSTALL_FUNCTIONS)
+    .replaceAll("__UPDATE_READY_TIMEOUT__", String(UPDATE_READY_TIMEOUT_SECONDS))
+    .replaceAll("__UPDATE_READINESS_JS__", () => UPDATE_READINESS_JS)
     .replaceAll("__MESH_DIGESTS__", renderPinnedDigests(release.mesh, "Mesh"))
     .replaceAll("__INFRA_AGENT_DIGESTS__", renderPinnedDigests(release.infraAgent, "Infra Agent"))
     .replaceAll(

@@ -1,4 +1,6 @@
 import type { AgentRelease } from "./agentRelease";
+import { WINDOWS_UPDATE_HEALTH_CHECK } from "./installScriptPowerShellUpdate.ts";
+import { UPDATE_READY_TIMEOUT_SECONDS } from "./updateHealthCheck.ts";
 
 /**
  * `/install.ps1`: the Windows installer. It installs the Worker role only.
@@ -46,7 +48,8 @@ param(
   [string]$Slots = "",
   [switch]$Update,
   [string]$Version = "",
-  [string]$Sha256 = ""
+  [string]$Sha256 = "",
+  [string]$ReadyTimeout = ""
 )
 $ErrorActionPreference = "Stop"
 # param() has no [CmdletBinding()], so PowerShell puts an argument it cannot bind into $args instead
@@ -163,7 +166,7 @@ function Install-Worker {
 
   function Show-Usage {
     Write-Host 'Usage: -Role worker -Token rcreg_xxx [-Name NAME] [-Labels a,b] [-Slots N]'
-    Write-Host '       -Role worker -Update [-Version vX.Y.Z] [-Sha256 HEX]'
+    Write-Host '       -Role worker -Update [-Version vX.Y.Z] [-Sha256 HEX] [-ReadyTimeout SECONDS]'
   }
 
   # -Hub, -Source and -Install belonged to the retired Windows Node role. They are no longer in
@@ -194,6 +197,16 @@ function Install-Worker {
   }
   if ($Sha256 -and $Sha256 -notmatch '^[0-9a-f]{64}$') {
     Fail '-Sha256 must be a 64-character lowercase hex digest'
+  }
+  # How long an update waits for each Profile that was ready before it to report ready again
+  # (UPDATE_READY_TIMEOUT_SECONDS in updateHealthCheck.ts, which says why). Nine digits at most, so
+  # [int] cannot overflow on a typo.
+  $readyTimeoutSeconds = __UPDATE_READY_TIMEOUT__
+  if ($ReadyTimeout) {
+    if ($ReadyTimeout -notmatch '^[0-9]{1,9}$' -or [int]$ReadyTimeout -lt 1) {
+      Fail '-ReadyTimeout must be a positive number of seconds'
+    }
+    $readyTimeoutSeconds = [int]$ReadyTimeout
   }
 
   # PROCESSOR_ARCHITEW6432 is what a 32-bit PowerShell on a 64-bit host reports the real machine as;
@@ -262,6 +275,25 @@ function Install-Worker {
     Move-Item -LiteralPath $previousDir -Destination $agentDir -Force
     return $true
   }
+
+  # Wait up to 20 seconds for the agent of version $version to publish that it reached the control
+  # plane.
+  function Wait-ForConnection($version) {
+    foreach ($second in 1..20) {
+      $signal = ''
+      if (Test-Path -LiteralPath $readyFile) {
+        # A file that exists but is empty makes Get-Content return nothing, and .Trim() on nothing
+        # is a terminating error under -ErrorAction Stop. An empty signal is "not connected yet".
+        $firstReadyLine = Get-Content -LiteralPath $readyFile -TotalCount 1 -ErrorAction SilentlyContinue
+        if ($firstReadyLine) { $signal = $firstReadyLine.Trim() }
+      }
+      if ($signal -eq $version) { return $true }
+      Start-Sleep -Seconds 1
+    }
+    return $false
+  }
+
+__WINDOWS_UPDATE_HEALTH_CHECK__
 
   $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
   $cpus = [int]$computerSystem.NumberOfLogicalProcessors
@@ -440,6 +472,25 @@ function Install-Worker {
     Pop-Location
   }
 
+  # An update is health-checked: the Profiles the control plane sees ready now must report ready
+  # again from the new agent, or the update rolls back.
+  if ($Update) {
+    $tokenLine = Get-Content -LiteralPath $envFile | Where-Object { $_.StartsWith('MACHINE_TOKEN=') } | Select-Object -Last 1
+    if ($tokenLine) { $readinessHeaders['Authorization'] = 'Bearer ' + $tokenLine.Substring('MACHINE_TOKEN='.Length) }
+    $readinessFile = Join-Path $tmpDir 'readiness.json'
+    $readinessBeforeFile = Join-Path $tmpDir 'readiness-before.json'
+    if (-not (Read-Readiness $readinessBeforeFile)) {
+      Fail "Could not read this Worker's Profile readiness from $siteUrl/agents/readiness; the running agent was left in place"
+    }
+    $readyBefore = Invoke-ReadinessReader @('ready', $readinessBeforeFile)
+    if ($null -eq $readyBefore) {
+      Fail "Could not read this Worker's Profile readiness from $siteUrl/agents/readiness; the running agent was left in place"
+    }
+    if ($readyBefore.Count -gt 0) {
+      Say "Ready before the update: $($readyBefore -join ', ')."
+    }
+  }
+
   # --- the swap --------------------------------------------------------------------------------
   Say 'Replacing the installed agent.'
   Stop-Agent
@@ -573,6 +624,7 @@ function Install-Worker {
     '  [Parameter(Position = 0)][string]$Command = "status",',
     '  [string]$Version = "",',
     '  [string]$Sha256 = "",',
+    '  [string]$ReadyTimeout = "",',
     '  [switch]$Follow',
     ')',
     '$ErrorActionPreference = "Stop"',
@@ -650,6 +702,7 @@ function Install-Worker {
     '    $forward = @{ Role = "worker"; Update = $true }',
     '    if ($Version) { $forward["Version"] = $Version }',
     '    if ($Sha256) { $forward["Sha256"] = $Sha256 }',
+    '    if ($ReadyTimeout) { $forward["ReadyTimeout"] = $ReadyTimeout }',
     '    & $installer @forward',
     '  }',
     '  "uninstall" {',
@@ -666,7 +719,7 @@ function Install-Worker {
     '    Write-Host "EraInfra was removed. Delete the machine from the dashboard to remove its registration."',
     '  }',
     '  default {',
-    '    Write-Host "Usage: rc.ps1 status | doctor | logs [-Follow] | restart | stop | update [-Version vX.Y.Z] [-Sha256 HEX] | uninstall"',
+    '    Write-Host "Usage: rc.ps1 status | doctor | logs [-Follow] | restart | stop | update [-Version vX.Y.Z] [-Sha256 HEX] [-ReadyTimeout SECONDS] | uninstall"',
     '  }',
     '}'
   )
@@ -720,25 +773,14 @@ function Install-Worker {
 
   Set-Content -LiteralPath $logFile -Value '' -Encoding ASCII
   Remove-Item -LiteralPath $readyFile -Force -ErrorAction SilentlyContinue
+  if ($readyBefore.Count -gt 0) {
+    # The old agent is stopped, so any report after this moment comes from the new one.
+    $readinessSince = Get-ControlPlaneNow
+  }
   Start-Agent $serviceKind
   Say "Started the EraInfra agent with $serviceKind."
 
-  $connected = $false
-  foreach ($second in 1..20) {
-    $signal = ''
-    if (Test-Path -LiteralPath $readyFile) {
-      # A file that exists but is empty makes Get-Content return nothing, and .Trim() on nothing is
-      # a terminating error under -ErrorAction Stop. An empty signal is "not connected yet".
-      $firstReadyLine = Get-Content -LiteralPath $readyFile -TotalCount 1 -ErrorAction SilentlyContinue
-      if ($firstReadyLine) { $signal = $firstReadyLine.Trim() }
-    }
-    if ($signal -eq $installVersion) {
-      $connected = $true
-      break
-    }
-    Start-Sleep -Seconds 1
-  }
-  if (-not $connected) {
+  if (-not (Wait-ForConnection $installVersion)) {
     $lastLog = Get-Content -LiteralPath $logFile -Tail 1 -ErrorAction SilentlyContinue
     # Only an update can roll back: a fresh install has just registered a new machine, and the
     # preserved directory holds the previous machine's identity.
@@ -751,6 +793,14 @@ function Install-Worker {
     Fail "Agent did not connect within 20 seconds; check $logFile"
   }
 
+  if ($readyBefore.Count -gt 0) {
+    Say "Waiting up to $readyTimeoutSeconds seconds for the $($readyBefore.Count) Profile(s) that were ready before the update to report ready again (-ReadyTimeout)."
+    $healthFailure = Wait-ForReady $readinessSince $readyBefore
+    if ($healthFailure) { Undo-Update $healthFailure }
+    Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    Say "EraInfra $installVersion is connected, and the $($readyBefore.Count) Profile(s) that were ready before the update are ready again. Dashboard: $siteUrl"
+    exit 0
+  }
   Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
   Say "EraInfra $installVersion is connected. Dashboard: $siteUrl"
   Say 'This Worker is scheduled onto once readiness proves the Hyper-V module, the VM switch, a parent VHDX under the images directory and its credential file. Build one with provisioners/build-image.ps1; rc.ps1 doctor shows what is missing.'
@@ -782,8 +832,14 @@ export function renderWindowsInstallScript(siteUrl: string, release: AgentReleas
   if (origin.includes("'") || /[\r\n]/.test(origin)) {
     throw new Error("The site URL cannot be rendered into the Windows installer safely");
   }
-  return WINDOWS_INSTALL_SCRIPT.replaceAll("__ERAINFRA_SITE_URL__", origin)
+  // A function, because a replacement string reads "$'" (in the fragment's "^[0-9]+$'") as a pattern.
+  return WINDOWS_INSTALL_SCRIPT.replaceAll(
+    "__WINDOWS_UPDATE_HEALTH_CHECK__",
+    () => WINDOWS_UPDATE_HEALTH_CHECK,
+  )
+    .replaceAll("__ERAINFRA_SITE_URL__", origin)
     .replaceAll("__AGENT_REPO__", release.repo)
     .replaceAll("__AGENT_VERSION__", release.version)
-    .replaceAll("__AGENT_SHA256__", release.sha256);
+    .replaceAll("__AGENT_SHA256__", release.sha256)
+    .replaceAll("__UPDATE_READY_TIMEOUT__", String(UPDATE_READY_TIMEOUT_SECONDS));
 }

@@ -1398,7 +1398,7 @@ describe("--role worker", () => {
     const workerBody = script.slice(script.indexOf("SITE_URL='"));
     expect(workerBody).toMatch(/^SITE_URL='https:\/\/example\.convex\.site'\nAGENT_REPO=/);
     expect(workerBody).not.toMatch(/INSTALL_ROLE|node_install|node_pinned_digest|--role/);
-    expect(Buffer.byteLength(workerBody)).toBe(34_616);
+    expect(Buffer.byteLength(workerBody)).toBe(34_330);
   });
 });
 

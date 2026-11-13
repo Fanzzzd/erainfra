@@ -36,8 +36,11 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { AGENT_RELEASE, type AgentRelease } from "../convex/agentRelease.ts";
+import { renderInstallScript } from "../convex/installScript.ts";
 import { renderWindowsInstallScript } from "../convex/installScriptPowerShell.ts";
+import { WINDOWS_UPDATE_HEALTH_CHECK } from "../convex/installScriptPowerShellUpdate.ts";
 import { resolveSiteUrl } from "../convex/siteUrl.ts";
+import { UPDATE_READINESS_JS, UPDATE_READY_TIMEOUT_SECONDS } from "../convex/updateHealthCheck.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";
@@ -243,6 +246,37 @@ describe("the rendered Windows installer", () => {
     expect(script).toMatch(/scheduled onto once readiness proves the Hyper-V module/);
     expect(script).not.toMatch(/preview-gated/);
   });
+
+  // updateHealthCheck.ts owns the update health check's deadline and its reader of the readiness
+  // answer. Both installers embed them, so a change there reaches Windows and POSIX Workers alike.
+  it("embeds the update health check both installers share", () => {
+    const bash = renderInstallScript(SITE_URL, AGENT_RELEASE);
+    expect(script).toContain(`$readyTimeoutSeconds = ${UPDATE_READY_TIMEOUT_SECONDS}\n`);
+    expect(bash).toContain(`READY_TIMEOUT=${UPDATE_READY_TIMEOUT_SECONDS}\n`);
+    expect(script).toContain(`$readinessReader = @'\n${UPDATE_READINESS_JS}\n'@`);
+    // Embedded once and verbatim: a replacement string would read the fragment's "$'" as a pattern.
+    expect(script).toContain(`\n${WINDOWS_UPDATE_HEALTH_CHECK}\n`);
+    expect(script.match(/function Undo-Update/g)).toHaveLength(1);
+    expect(bash).toContain(`READINESS_JS='\n${UPDATE_READINESS_JS}\n'`);
+    // Both quote the program literally, and this script must stay pure ASCII.
+    expect(UPDATE_READINESS_JS).not.toContain("'");
+    expect(UPDATE_READINESS_JS).toMatch(/^[\x20-\x7e\n]*$/);
+    expect(script).toMatch(/^[\t\n\r\x20-\x7e]*$/);
+  });
+
+  // bash keeps the machine token in a 0600 header file. Here it lives only in a hashtable handed
+  // to Invoke-WebRequest, so no file, log line or child process's argv carries it.
+  it("sends the machine token only in an in-process request header", () => {
+    expect(script).toMatch(
+      /\$readinessHeaders\['Authorization'\] = 'Bearer ' \+ \$tokenLine\.Substring/,
+    );
+    expect(script).toMatch(
+      /Invoke-WebRequest -Uri "\$siteUrl\/agents\/readiness" -Headers \$readinessHeaders/,
+    );
+    expect(script.match(/\$readinessHeaders/g)).toHaveLength(3);
+    expect(script.match(/\$tokenLine/g)).toHaveLength(3);
+    expect(script).toMatch(/\$readinessReader \| & \$nodeExe - @readerArgs/);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -275,18 +309,25 @@ function Invoke-WebRequest {
     [string]$Uri,
     [string]$OutFile,
     [switch]$UseBasicParsing,
+    [switch]$PassThru,
     [string]$Method,
     [string]$ContentType,
+    [hashtable]$Headers,
+    [int]$TimeoutSec,
     $Body
   )
   Add-Content -LiteralPath $env:RC_TEST_REQUEST_LOG -Value $Uri
   if ($Body) { Add-Content -LiteralPath $env:RC_TEST_REQUEST_LOG -Value ('BODY ' + $Body) }
+  if ($Headers -and $Headers['Authorization']) {
+    Add-Content -LiteralPath $env:RC_TEST_REQUEST_LOG -Value ('AUTHORIZATION ' + $Headers['Authorization'])
+  }
   $route = Read-Route $Uri
   if (-not $route) { throw "no route for $Uri" }
   $status = [int]$route[1]
   if ($status -ge 400) { throw "HTTP $status for $Uri" }
   if ($OutFile) {
     Copy-Item -LiteralPath $route[2] -Destination $OutFile -Force
+    if ($PassThru) { return [pscustomobject]@{ StatusCode = $status } }
     return
   }
   return [pscustomobject]@{ StatusCode = $status; Content = (Get-Content -Raw -LiteralPath $route[2]) }
@@ -347,6 +388,8 @@ function Stop-ScheduledTask {
 # out whether it reads install-meta, resolves NODE_BIN and appends to agent.log. Publishing the
 # versioned readiness signal is the agent's job, and the stub node.exe does not do it, so this
 # stands in for it. RC_TEST_CONNECT=0 is a machine where the agent starts and never connects.
+# A started version with a file in RC_TEST_READINESS_DIR then becomes what GET /agents/readiness
+# answers, which is how a test plays the control plane seeing the new, or the restored, Agent report.
 function Start-ScheduledTask {
   [CmdletBinding()] param([string]$TaskName)
   Add-Content -LiteralPath $env:RC_TEST_SERVICE_LOG -Value "start $TaskName"
@@ -362,6 +405,10 @@ function Start-ScheduledTask {
   if (-not (Test-Path -LiteralPath $manifest)) { return }
   $version = (Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json).version
   Set-Content -LiteralPath (Join-Path $rcHome 'agent.ready') -Value $version
+  $reported = Join-Path $env:RC_TEST_READINESS_DIR "$version.json"
+  if (Test-Path -LiteralPath $reported) {
+    Copy-Item -LiteralPath $reported -Destination (Join-Path $env:RC_TEST_READINESS_DIR 'current.json') -Force
+  }
 }
 
 
@@ -369,8 +416,13 @@ function Start-ScheduledTask {
 exit $LASTEXITCODE
 `;
 
-/** A Node.js that answers the one question the installer asks it, and an npm that records its argv. */
+/**
+ * A Node.js that answers the version question the installer asks it, and an npm that records its
+ * argv. The update health check's readiness reader (`node - MODE FILE ...`, the program on stdin)
+ * runs on the suite's own Node.js, because what it prints is what the installer acts on.
+ */
 const NODE_STUB = `#!/usr/bin/env bash
+if [ "$1" = "-" ]; then exec "$RC_TEST_REAL_NODE" "$@"; fi
 if [ "$1" = "-p" ]; then printf '22\\n'; exit 0; fi
 if [ "$1" = "--version" ]; then printf 'v22.0.0\\n'; exit 0; fi
 printf 'agent stub running %s\\n' "$1"
@@ -406,6 +458,7 @@ type WinSandbox = {
   npmLog: string;
   serviceLog: string;
   icaclsLog: string;
+  readinessDir: string;
 };
 
 function createWinSandbox(release: AgentRelease, options: { withNode?: boolean } = {}): WinSandbox {
@@ -414,7 +467,8 @@ function createWinSandbox(release: AgentRelease, options: { withNode?: boolean }
   const home = path.join(root, "home");
   const binDir = path.join(root, "bin");
   const fixtures = path.join(root, "fixtures");
-  for (const directory of [home, binDir, fixtures]) {
+  const readinessDir = path.join(root, "readiness");
+  for (const directory of [home, binDir, fixtures, readinessDir]) {
     mkdirSync(directory, { recursive: true });
   }
   expect(home, "the sandbox must not be the real home directory").not.toBe(homedir());
@@ -446,6 +500,7 @@ function createWinSandbox(release: AgentRelease, options: { withNode?: boolean }
     npmLog: path.join(root, "npm.log"),
     serviceLog: path.join(root, "service.log"),
     icaclsLog: path.join(root, "icacls.log"),
+    readinessDir,
   };
 }
 
@@ -497,7 +552,49 @@ function publishRegistration(sandbox: WinSandbox) {
   route(sandbox, `${SITE_URL}/agents/register`, responsePath);
 }
 
-function seedExistingInstall(sandbox: WinSandbox, version: string, marker: string) {
+/** One Profile row of GET /agents/readiness (workerApi.readiness). */
+type ProfileReadiness = {
+  profile: string;
+  state: "preparing" | "ready" | "degraded" | "failed" | "unreported";
+  checkedAt?: number;
+  failedChecks?: string[];
+  detail?: string;
+};
+
+/** The control plane's clock in the readiness answer the installer reads before the update. */
+const CONTROL_PLANE_NOW = 1_800_000_000_000;
+/** When the agent the update started reports, an hour after CONTROL_PLANE_NOW. */
+const REPORTED_AFTER_RESTART = CONTROL_PLANE_NOW + 3_600_000;
+/** When the agent a rollback restored reports, an hour after that. */
+const REPORTED_AFTER_ROLLBACK = REPORTED_AFTER_RESTART + 3_600_000;
+
+/**
+ * What GET /agents/readiness answers once the agent of `version` has started. The control plane's
+ * clock reads the time of the latest report in it.
+ */
+function readinessAfterStart(sandbox: WinSandbox, version: string, profiles: ProfileReadiness[]) {
+  const now = Math.max(CONTROL_PLANE_NOW, ...profiles.map((row) => row.checkedAt ?? 0));
+  writeFileSync(
+    path.join(sandbox.readinessDir, `${version}.json`),
+    JSON.stringify({ now, profiles }),
+  );
+}
+
+/**
+ * Pretend an older agent is already installed and running on this machine. `readiness` is what
+ * the control plane answers for it before the update; null serves no readiness route at all.
+ */
+function seedExistingInstall(
+  sandbox: WinSandbox,
+  version: string,
+  marker: string,
+  readiness: ProfileReadiness[] | null = [],
+) {
+  if (readiness !== null) {
+    const current = path.join(sandbox.readinessDir, "current.json");
+    writeFileSync(current, JSON.stringify({ now: CONTROL_PLANE_NOW, profiles: readiness }));
+    route(sandbox, `${SITE_URL}/agents/readiness`, current);
+  }
   const agentDir = path.join(sandbox.rcHome, "agent");
   mkdirSync(path.join(agentDir, "dist"), { recursive: true });
   writeFileSync(path.join(agentDir, "dist", "index.js"), `// ${marker}\n`);
@@ -543,6 +640,8 @@ function run(
       RC_TEST_ICACLS_LOG: sandbox.icaclsLog,
       RC_TEST_NPM_FAIL: options.npmFails === true ? "1" : "0",
       RC_TEST_CONNECT: options.connect === false ? "0" : "1",
+      RC_TEST_READINESS_DIR: sandbox.readinessDir,
+      RC_TEST_REAL_NODE: process.execPath,
     },
   });
 }
@@ -937,9 +1036,204 @@ describeExecuted("the Windows installer, executed", () => {
 
     const cli = readFileSync(rcCli, "utf8");
     expect(cli).toMatch(/\$forward = @\{ Role = "worker"; Update = \$true \}/);
+    expect(cli).toMatch(/if \(\$ReadyTimeout\) \{ \$forward\["ReadyTimeout"\] = \$ReadyTimeout \}/);
     expect(cli).toMatch(/& \$installer @forward/);
     expect(cli).not.toMatch(/@Rest/);
     expect(cli).not.toMatch(/ValueFromRemainingArguments/);
+  });
+});
+
+// The same cases `installScript.test.ts` runs against the bash installer's --update.
+describeExecuted("the Windows installer's update health check", { timeout: 120_000 }, () => {
+  const SMALL = "erainfra-4vcpu-windows-2022";
+  const LARGE = "erainfra-16vcpu-windows-2022";
+  const BEFORE: ProfileReadiness[] = [
+    { profile: SMALL, state: "ready", checkedAt: CONTROL_PLANE_NOW - 60_000, failedChecks: [] },
+    { profile: LARGE, state: "ready", checkedAt: CONTROL_PLANE_NOW - 60_000, failedChecks: [] },
+    {
+      profile: "rc-windows-e2e",
+      state: "failed",
+      checkedAt: CONTROL_PLANE_NOW - 60_000,
+      failedChecks: ["image-release: not pinned"],
+    },
+  ];
+  const fresh = (
+    profile: string,
+    state: ProfileReadiness["state"],
+    checkedAt = REPORTED_AFTER_RESTART,
+  ): ProfileReadiness => ({ profile, state, checkedAt, failedChecks: [] });
+  const restored = (profile: string, state: ProfileReadiness["state"]) =>
+    fresh(profile, state, REPORTED_AFTER_ROLLBACK);
+
+  function updateFrom(before: ProfileReadiness[] | null) {
+    const sandbox = createWinSandbox(CURRENT);
+    const published = publishRelease(sandbox, CURRENT, "new agent");
+    repin(sandbox, { ...CURRENT, sha256: published.sha256 });
+    seedExistingInstall(sandbox, OLDER.version, "older agent", before);
+    // The restored agent reports every Profile ready again unless a test says otherwise.
+    readinessAfterStart(sandbox, OLDER.version, [
+      restored(SMALL, "ready"),
+      restored(LARGE, "ready"),
+    ]);
+    return sandbox;
+  }
+
+  function starts(sandbox: WinSandbox) {
+    return readLog(sandbox.serviceLog)
+      .split("\n")
+      .filter((line) => line.startsWith("start "));
+  }
+
+  function expectRolledBack(sandbox: WinSandbox) {
+    expect(agentMarker(sandbox)).toBe("// older agent");
+    expect(metaField(sandbox, "AGENT_VERSION")).toBe(OLDER.version);
+    expect(existsSync(path.join(sandbox.rcHome, "agent.previous"))).toBe(false);
+    // Started twice: the new agent, then the restored one.
+    expect(starts(sandbox)).toHaveLength(2);
+  }
+
+  it("rolls back an update whose new Agent reports a ready Profile degraded", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "ready"),
+      {
+        ...fresh(LARGE, "degraded"),
+        failedChecks: ["hyperv-switch: no external VM switch"],
+        detail: "no external VM switch",
+      },
+      fresh("rc-windows-e2e", "failed"),
+    ]);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update"]);
+    const output = result.stdout + result.stderr;
+    expect(result.status, output).not.toBe(0);
+    expect(output).toContain(`Ready before the update: ${SMALL}, ${LARGE}.`);
+    expect(output).toContain(
+      `Agent 1.4.2 failed the update health check: Profile ${LARGE} reported degraded: hyperv-switch: no external VM switch`,
+    );
+    expect(output).toContain("Rolled back to 1.3.0, which reports every Profile ready again.");
+    expectRolledBack(sandbox);
+  });
+
+  it("keeps an update whose new Agent reports every ready Profile ready again", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "ready"),
+      fresh(LARGE, "ready"),
+      // Failed before the update, so it is not the new Agent's to fix.
+      fresh("rc-windows-e2e", "failed"),
+    ]);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update"]);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      "Waiting up to 900 seconds for the 2 Profile(s) that were ready before the update to report ready again (-ReadyTimeout).",
+    );
+    expect(result.stdout).toContain(
+      "2 Profile(s) that were ready before the update are ready again",
+    );
+    expect(agentMarker(sandbox)).toBe("// new agent");
+    expect(agentMarker(sandbox, "agent.previous")).toBe("// older agent");
+    expect(metaField(sandbox, "AGENT_VERSION")).toBe(CURRENT.version);
+    expect(starts(sandbox)).toHaveLength(1);
+  });
+
+  it("rolls back an update whose Profile is still preparing at the deadline", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "ready"),
+      { ...fresh(LARGE, "preparing"), detail: "Checking hyperv and preparing the parent VHDX" },
+    ]);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update", "-ReadyTimeout", "2"]);
+    expect(result.status, result.stdout + result.stderr).not.toBe(0);
+    expect(result.stdout).toContain(
+      `Waiting for Profile ${LARGE}; it last reported preparing: Checking hyperv`,
+    );
+    expect(result.stdout).toContain(
+      `Profile ${LARGE} did not report ready within 2 seconds; it last reported preparing: Checking hyperv`,
+    );
+    expectRolledBack(sandbox);
+  });
+
+  it("does not count a ready report from before the restart", () => {
+    const sandbox = updateFrom(BEFORE);
+    // The control plane never hears from the new Agent: it still holds the old reports.
+
+    const result = run(sandbox, ["-Role", "worker", "-Update", "-ReadyTimeout", "2"]);
+    expect(result.status, result.stdout + result.stderr).not.toBe(0);
+    expect(result.stdout).toContain(
+      `Profile ${SMALL} did not report ready within 2 seconds; it has not reported since the Agent restarted`,
+    );
+    expectRolledBack(sandbox);
+  });
+
+  it("says so when the restored Agent does not report ready either", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "degraded"),
+      fresh(LARGE, "ready"),
+    ]);
+    readinessAfterStart(sandbox, OLDER.version, [
+      restored(SMALL, "degraded"),
+      restored(LARGE, "ready"),
+    ]);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update", "-ReadyTimeout", "2"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain(`Profile ${SMALL} reported degraded`);
+    expect(result.stdout).toContain("Rolled back to 1.3.0, but it has not reported ready either");
+    expectRolledBack(sandbox);
+  });
+
+  it("keeps an update on a Worker that had no ready Profile, as before", () => {
+    const sandbox = updateFrom([BEFORE[2]]);
+    readinessAfterStart(sandbox, CURRENT.version, [fresh("rc-windows-e2e", "degraded")]);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update"]);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain("EraInfra 1.4.2 is connected. Dashboard:");
+    expect(result.stdout).not.toContain("Waiting up to");
+    expect(agentMarker(sandbox)).toBe("// new agent");
+  });
+
+  it("leaves the running agent in place when it cannot read readiness before the update", () => {
+    const sandbox = updateFrom(null);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain(
+      `Could not read this Worker's Profile readiness from ${SITE_URL}/agents/readiness; the running agent was left in place`,
+    );
+    expect(agentMarker(sandbox)).toBe("// older agent");
+    expect(existsSync(path.join(sandbox.rcHome, "agent.previous"))).toBe(false);
+    expect(readLog(sandbox.serviceLog)).toBe("");
+  });
+
+  it("rejects a deadline that is not a positive number of seconds", () => {
+    const sandbox = updateFrom(BEFORE);
+    for (const value of ["0", "ten", "-5", "1234567890"]) {
+      const result = run(sandbox, ["-Role", "worker", "-Update", "-ReadyTimeout", value]);
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain("-ReadyTimeout must be a positive number of seconds");
+    }
+    expect(agentMarker(sandbox)).toBe("// older agent");
+    expect(readLog(sandbox.requestLog)).toBe("");
+  });
+
+  it("sends the machine token as a bearer header, and prints it nowhere", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [fresh(SMALL, "ready"), fresh(LARGE, "ready")]);
+
+    const result = run(sandbox, ["-Role", "worker", "-Update"]);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const requests = readLog(sandbox.requestLog).split("\n");
+    const readiness = requests.flatMap((line, index) =>
+      line === `${SITE_URL}/agents/readiness` ? [requests[index + 1]] : [],
+    );
+    expect(readiness.length).toBeGreaterThanOrEqual(2);
+    for (const header of readiness) expect(header).toBe(`AUTHORIZATION Bearer ${MACHINE_TOKEN}`);
+    expect(result.stdout + result.stderr).not.toContain(MACHINE_TOKEN);
   });
 });
 
@@ -950,7 +1244,9 @@ describeExecuted("the Windows installer, executed", () => {
  */
 const describeAnalyzer = PWSH === undefined ? describe.skip : describe;
 
-describeAnalyzer("PSScriptAnalyzer", () => {
+// The 5.1 compatibility pass loads every command profile first: about 17 s alone on a laptop, and
+// past the 30 s default while `pnpm check` runs every package's tests at once.
+describeAnalyzer("PSScriptAnalyzer", { timeout: 120_000 }, () => {
   function analyze(command: string) {
     const result = spawnSync(PWSH ?? "pwsh", ["-NoProfile", "-Command", command], {
       encoding: "utf8",
