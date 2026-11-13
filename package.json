@@ -1,6 +1,6 @@
 {
   "name": "erainfra",
-  "version": "0.2.0-rc.22",
+  "version": "0.2.0-rc.23",
   "private": true,
   "type": "module",
   "scripts": {
