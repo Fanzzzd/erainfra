@@ -6,9 +6,8 @@
 //   ERAINFRA_GH_APP_KEY         its private key, PEM (literal newlines or \n-escaped)
 //   ERAINFRA_GH_WEBHOOK_SECRET  its webhook secret; the App's webhook URL is <site>/github/webhook
 //
-// It is not the CI App the dashboard's Manifest flow creates: that App has no Contents permission
-// and does not subscribe to `push`, and widening it would grant the CI webhook path permissions it
-// does not use. A deployment with no deploy App still deploys public repositories, unauthenticated.
+// Its webhook secret is the only one /github/webhook accepts. A deployment with no deploy App still
+// deploys public repositories, unauthenticated.
 //
 // The token is minted per build step, after the Node proved it holds the step's live claim, and is
 // narrowed to the one repository and to Contents read. It is never stored in Convex; the Node
@@ -24,23 +23,14 @@ export function deployAppConfig(env: Record<string, string | undefined>): Deploy
   return { appId, privateKey };
 }
 
-const present = (value: string | null | undefined): value is string =>
-  value !== null && value !== undefined && value.length > 0;
-
 /**
- * The secrets a delivery of `event` may be signed with, chosen before verification. A `push`
- * deploys, so only the deploy App's secret signs it. Any other event, `workflow_job` included, is
- * acknowledged and ignored, so either App's secret may sign it (GitHub's `ping` comes from both):
- * the CI App's (the Manifest record, then GITHUB_WEBHOOK_SECRET) or the deploy App's.
+ * The secret every delivery to /github/webhook must be signed with: the deploy App's. A `push`
+ * deploys; any other event, GitHub's `ping` included, is acknowledged and ignored. Null when unset,
+ * and then every delivery is refused.
  */
-export function webhookSecretsFor(
-  event: string,
-  configured: { ciStored: string | null; ciEnv?: string; deploy?: string },
-): string[] {
-  const ci = [configured.ciStored, configured.ciEnv].filter(present);
-  const deploy = [configured.deploy].filter(present);
-  if (event === "push") return deploy;
-  return [...ci, ...deploy];
+export function deployWebhookSecret(env: Record<string, string | undefined>): string | null {
+  const secret = env.ERAINFRA_GH_WEBHOOK_SECRET;
+  return secret === undefined || secret.length === 0 ? null : secret;
 }
 
 export type PushEvent = { repo: string; branch: string; sha: string };

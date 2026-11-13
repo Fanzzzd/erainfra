@@ -30,7 +30,12 @@ import {
 } from "./_generated/server";
 import { cancelUnclaimedAttempt } from "./attemptRetirement";
 import { loadSchedulerSnapshot, type SchedulerSnapshot } from "./attemptScheduler";
-import { githubApiBase, githubJson, mintInstallationToken } from "./controllerGithubToken";
+import {
+  controllerApp,
+  githubApiBase,
+  githubJson,
+  mintInstallationToken,
+} from "./controllerGithubToken";
 import { schedulableWorkers } from "./routing";
 import { strandedOutcomeValidator } from "./strandedJobsModel";
 
@@ -368,14 +373,12 @@ async function callGitHub(
   if (target.githubConfigUrl === undefined) {
     return { detail: "The Profile has no GitHub config URL registered" };
   }
-  const clientId = process.env.CONTROLLER_GITHUB_APP_CLIENT_ID?.trim() ?? "";
-  const privateKey = process.env.CONTROLLER_GITHUB_APP_PRIVATE_KEY?.trim() ?? "";
-  if (clientId.length === 0 || privateKey.length === 0) {
+  const app = controllerApp(process.env);
+  if (app === null) {
     return { detail: "This deployment holds no controller GitHub App" };
   }
   const minted = await mintInstallationToken({
-    clientId,
-    privateKey,
+    ...app,
     githubConfigUrl: target.githubConfigUrl,
     cacheFacts: false,
     now: Date.now(),

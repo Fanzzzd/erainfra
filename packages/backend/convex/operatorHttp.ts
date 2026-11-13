@@ -12,7 +12,6 @@ import {
   shouldTouchLastUsed,
 } from "./apiTokenPolicy";
 import { queueWaitMs, workflowRunUrl } from "./attempts";
-import { resolveSiteUrl } from "./githubAppConfig";
 import type { listMachines } from "./machines";
 import type { OperatorAttempt } from "./operatorApi";
 import type { listProfiles } from "./profiles";
@@ -29,6 +28,7 @@ import {
   runsOnMap,
 } from "./rightsizeModel";
 import { runnerCause } from "./runnerCauses";
+import { resolveSiteUrl } from "./siteUrl";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 // The operator API: what the `erainfra` CLI and anyone's scripts read the fleet

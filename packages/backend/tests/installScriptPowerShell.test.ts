@@ -36,8 +36,8 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { AGENT_RELEASE, type AgentRelease } from "../convex/agentRelease.ts";
-import { resolveSiteUrl } from "../convex/githubAppConfig.ts";
 import { renderWindowsInstallScript } from "../convex/installScriptPowerShell.ts";
+import { resolveSiteUrl } from "../convex/siteUrl.ts";
 
 const SITE_URL = "https://example.convex.site";
 const TEST_REPO = "runner-center-tests/runner-center";

@@ -18,7 +18,6 @@ import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { EmptyState } from "@/components/empty-state";
-import { GithubAppSetup } from "@/components/github-app-setup";
 import { PageHeader } from "@/components/page-header";
 import { StatusDot } from "@/components/status";
 import { TableRowsSkeleton } from "@/components/table-skeleton";
@@ -641,19 +640,6 @@ function MachinesPage() {
       </Card>
 
       <InviteOperator />
-
-      <Card>
-        <CardContent className="px-0 pb-0">
-          <details className="group">
-            <summary className="cursor-pointer select-none px-4 py-3.5 text-sm font-medium text-secondary-foreground">
-              Legacy webhook runner migration
-            </summary>
-            <div className="space-y-4 border-t border-border px-4 py-4">
-              <GithubAppSetup />
-            </div>
-          </details>
-        </CardContent>
-      </Card>
     </div>
   );
 }

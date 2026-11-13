@@ -80,9 +80,11 @@ arbiter.
   process deliberately activates a paused Profile only on its first grant after startup; after a
   live retirement it stays in standby until restarted.
 - The controller App uses new Convex environment variables, `CONTROLLER_GITHUB_APP_CLIENT_ID` and
-  `CONTROLLER_GITHUB_APP_PRIVATE_KEY`. The dashboard's `githubApp` table belongs to the webhook
-  App, whose manifest lacks organization runner management and Contents read. Reusing it would
-  widen that path's permissions. Tokens are scoped to the registered repository or organization's
+  `CONTROLLER_GITHUB_APP_PRIVATE_KEY`. The dashboard's `githubApp` table belonged to the webhook
+  App, whose manifest lacked organization runner management and Contents read. Reusing it would
+  have widened that path's permissions. That App, its Manifest flow and its tables are since
+  retired with the webhook job path; the controller App is the only GitHub App Convex holds for CI.
+  Tokens are scoped to the registered repository or organization's
   installation and the README's permission table. Cache-facts read permissions also require the
   registered Profile setting. Convex rechecks the lease after minting and never returns the key
   or App JWT. Enterprise runner registrations remain on the dedicated PAT path because GitHub

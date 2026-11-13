@@ -4,39 +4,30 @@ import { v } from "convex/values";
 import { App, Octokit, RequestError } from "octokit";
 
 import { internal } from "./_generated/api";
-import { internalAction, type ActionCtx } from "./_generated/server";
-import { normalizePrivateKey, resolveAppCredentials } from "./githubAppConfig";
+import { internalAction } from "./_generated/server";
+import { controllerApp, normalizePrivateKey } from "./controllerGithubToken";
 import { parseRunnerReleases, RUNNER_RELEASE_PAGE } from "./runnerReleaseModel";
 
 /**
- * A client for reading a public repository with the best credential at hand: an installation token
- * of the CI App, else of the controller's App (controllerGithubToken.ts), else none. Any of them
- * can read actions/runner's releases. A credential only lifts the anonymous limit of 60 requests an
- * hour, which other tenants on Convex's shared egress addresses may already have spent.
+ * A client for reading a public repository: an installation token of the controller's App
+ * (controllerGithubToken.ts) when this deployment holds one, else none. A token only lifts the
+ * anonymous limit of 60 requests an hour, which other tenants on Convex's shared egress addresses
+ * may already have spent.
  */
-async function publicReadOctokit(ctx: ActionCtx): Promise<Octokit> {
-  const stored = await ctx.runQuery(internal.githubApp.credentials, {});
-  const ciApp = resolveAppCredentials(stored, {
-    appId: process.env.GITHUB_APP_ID,
-    privateKey: process.env.GITHUB_APP_PRIVATE_KEY,
-  });
-  const controllerClientId = process.env.CONTROLLER_GITHUB_APP_CLIENT_ID?.trim() ?? "";
-  const controllerKey = process.env.CONTROLLER_GITHUB_APP_PRIVATE_KEY?.trim() ?? "";
-  const apps: Array<{ appId: number | string; privateKey: string }> = [];
-  if (ciApp.ok) apps.push({ appId: ciApp.appId, privateKey: ciApp.privateKey });
-  if (controllerClientId !== "" && controllerKey !== "") {
-    apps.push({ appId: controllerClientId, privateKey: normalizePrivateKey(controllerKey) });
-  }
-  for (const credentials of apps) {
-    try {
-      const app = new App(credentials);
-      const installations = await app.octokit.request("GET /app/installations", { per_page: 1 });
-      const installation = installations.data[0];
-      if (installation !== undefined) return await app.getInstallationOctokit(installation.id);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn(`Reading the actions/runner releases without an App's token: ${reason}`);
-    }
+async function publicReadOctokit(): Promise<Octokit> {
+  const controller = controllerApp(process.env);
+  if (controller === null) return new Octokit();
+  try {
+    const app = new App({
+      appId: controller.clientId,
+      privateKey: normalizePrivateKey(controller.privateKey),
+    });
+    const installations = await app.octokit.request("GET /app/installations", { per_page: 1 });
+    const installation = installations.data[0];
+    if (installation !== undefined) return await app.getInstallationOctokit(installation.id);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`Reading the actions/runner releases without an App's token: ${reason}`);
   }
   return new Octokit();
 }
@@ -54,7 +45,7 @@ export const refreshRunnerReleases = internalAction({
     const now = Date.now();
     if (!(await ctx.runQuery(internal.runnerReleases.refreshDue, { now }))) return null;
     try {
-      const octokit = await publicReadOctokit(ctx);
+      const octokit = await publicReadOctokit();
       const response = await octokit.request("GET /repos/{owner}/{repo}/releases", {
         owner: "actions",
         repo: "runner",

@@ -855,13 +855,11 @@ for a deploy expires after an hour; the file is not deleted.
 
 ### Push-to-deploy
 
-Create a GitHub App for deploys (not the CI App the dashboard creates, which has no Contents
-permission): Repository Contents read, subscribed to `push`, webhook URL `<site>/github/webhook`.
-Install it on the repositories you deploy, then set its credentials in the Convex environment under
-these names. Its webhook secret must differ from the CI App's: `/github/webhook` picks
-the secret by event type before it checks the signature, so a `push` verifies only against
-`ERAINFRA_GH_WEBHOOK_SECRET`. A holder of the CI App's secret cannot trigger a deploy. Every other
-event, `workflow_job` included, is acknowledged and ignored. With no deploy secret set, every push
+Create a GitHub App for deploys: Repository Contents read, subscribed to `push`, webhook URL
+`<site>/github/webhook`. Install it on the repositories you deploy, then set its credentials in the
+Convex environment under these names. `/github/webhook` verifies every delivery against
+`ERAINFRA_GH_WEBHOOK_SECRET` and refuses any other signature with 401. A verified `push` deploys;
+every other verified event is acknowledged and ignored. With no deploy secret set, every delivery
 is refused.
 
 ```sh

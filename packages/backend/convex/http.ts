@@ -5,7 +5,7 @@ import { components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { AGENT_RELEASE } from "./agentRelease";
 import { auth } from "./auth";
-import { mintInstallationToken } from "./controllerGithubToken";
+import { controllerApp, mintInstallationToken } from "./controllerGithubToken";
 import {
   controllerAuthorization,
   LEASE_EPOCH_HEADER,
@@ -26,15 +26,8 @@ import { LEASE_LOST_STATUS, refusalOf, type ControllerCaller } from "./controlle
 
 /** A Worker's machine token: 32 hex characters (machines.ts, apps/action-runner-agent/config.ts). */
 const MACHINE_TOKEN_PATTERN = /^[0-9a-f]{32}$/i;
-import {
-  describeSetupState,
-  parseManifestConversion,
-  renderManifestForm,
-  resolveSiteUrl,
-  type SetupStateStatus,
-} from "./githubAppConfig";
 import { registerDeployRoutes } from "./infra/deployHttp";
-import { parsePush, webhookSecretsFor } from "./infra/githubDeploy";
+import { deployWebhookSecret, parsePush } from "./infra/githubDeploy";
 import { registerNodeRoutes } from "./infra/nodeHttp";
 import { registerInfraRoutes } from "./infra/operatorRoutes";
 import { registerRelayRoutes } from "./infra/relayAccess";
@@ -44,6 +37,7 @@ import { METRICS_CONTENT_TYPE } from "./metricsFormat";
 import { authenticateBearer, registerOperatorRoutes } from "./operatorHttp";
 import { registerTestRoutes } from "./operatorTestsHttp";
 import { recordRouterDecision } from "./routerDecisions";
+import { resolveSiteUrl } from "./siteUrl";
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
@@ -171,26 +165,12 @@ async function hmacHex(secret: string, rawBody: ArrayBuffer) {
   return bytesToHex(new Uint8Array(digest));
 }
 
-// Accepts any configured secret. During a PAT-to-App migration both delivery
-// paths are live at once — the App signs with the secret GitHub generated,
-// while any remaining repository webhook still signs with
-// GITHUB_WEBHOOK_SECRET. Both are operator-configured, so this is secret
-// rotation rather than a weakening. Every candidate is checked even after a
-// match so the work does not depend on which secret verified.
-async function verifySignature(secrets: string[], rawBody: ArrayBuffer, signature: string) {
+async function verifySignature(secret: string, rawBody: ArrayBuffer, signature: string) {
   const match = /^sha256=([0-9a-f]{64})$/i.exec(signature);
   if (match === null) {
     return false;
   }
-  const expected = match[1].toLowerCase();
-
-  let verified = false;
-  for (const secret of secrets) {
-    if (timingSafeHexEqual(await hmacHex(secret, rawBody), expected)) {
-      verified = true;
-    }
-  }
-  return verified;
+  return timingSafeHexEqual(await hmacHex(secret, rawBody), match[1].toLowerCase());
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -263,10 +243,9 @@ function parseRegistrationRequest(payload: unknown) {
   };
 }
 
-// Any URL this deployment publishes — the agent installer's SITE_URL, and
-// everything the GitHub App Manifest flow hands to GitHub — is built from the
-// deployment's own configured origin, never from the request. See
-// resolveSiteUrl for why that distinction matters.
+// Any URL this deployment publishes, such as the installer's SITE_URL, is built
+// from the deployment's own configured origin, never from the request. See
+// resolveSiteUrl (siteUrl.ts) for why that distinction matters.
 function misconfiguredSiteUrlResponse(context: string, error: string) {
   console.error(`${context}: ${error}. Check the deployment's Convex configuration.`);
   return new Response(
@@ -461,9 +440,8 @@ http.route({
     if (target === null) {
       return jsonResponse({ error: "The Profile has no GitHub config URL registered" }, 409);
     }
-    const clientId = process.env.CONTROLLER_GITHUB_APP_CLIENT_ID?.trim() ?? "";
-    const privateKey = process.env.CONTROLLER_GITHUB_APP_PRIVATE_KEY?.trim() ?? "";
-    if (clientId.length === 0 || privateKey.length === 0) {
+    const app = controllerApp(process.env);
+    if (app === null) {
       return jsonResponse(
         {
           error:
@@ -473,8 +451,7 @@ http.route({
       );
     }
     const minted = await mintInstallationToken({
-      clientId,
-      privateKey,
+      ...app,
       githubConfigUrl: target.githubConfigUrl,
       // The operator registered whether this Profile publishes cache facts. A Worker cannot
       // widen its repository permissions merely by asking for those reads.
@@ -819,8 +796,8 @@ http.route({
 // failed delivery and never retries it on its own, so the handler does the
 // minimum. Only `push` does anything (push-to-deploy, infra/git.ts); its
 // delivery row is keyed by X-GitHub-Delivery, which makes a redelivery a no-op.
-// Every other verified event, `workflow_job` included, is acknowledged and
-// ignored: Profiles learn about jobs from their scale-set controller.
+// Every other verified event is acknowledged and ignored. Nothing here acts on
+// `workflow_job`: Profiles learn about jobs from their scale-set controller.
 http.route({
   path: "/github/webhook",
   method: "POST",
@@ -828,25 +805,16 @@ http.route({
     const rawBody = await request.arrayBuffer();
     const signature = request.headers.get("X-Hub-Signature-256") ?? "";
 
-    // One secret per purpose (infra/githubDeploy.ts, webhookSecretsFor): the event type picks the
-    // secrets before anything is verified, so a holder of the CI App's secret cannot sign a push
-    // that deploys.
+    // Only the deploy App's secret verifies a delivery (infra/githubDeploy.ts).
     const event = request.headers.get("X-GitHub-Event") ?? "";
-    const storedSecret = await ctx.runQuery(internal.githubApp.webhookSecret, {});
-    const secrets = webhookSecretsFor(event, {
-      ciStored: storedSecret,
-      ciEnv: process.env.GITHUB_WEBHOOK_SECRET,
-      deploy: process.env.ERAINFRA_GH_WEBHOOK_SECRET,
-    });
-    if (secrets.length === 0) {
+    const secret = deployWebhookSecret(process.env);
+    if (secret === null) {
       console.error(
-        event === "push"
-          ? "Rejecting push webhook: ERAINFRA_GH_WEBHOOK_SECRET is not set (docs/infra-management.md, Push-to-deploy)."
-          : "Rejecting webhook: no secret is configured. Connect a GitHub App from the dashboard, or set GITHUB_WEBHOOK_SECRET.",
+        "Rejecting webhook: ERAINFRA_GH_WEBHOOK_SECRET is not set (docs/infra-management.md, Push-to-deploy).",
       );
       return new Response("Invalid signature", { status: 401 });
     }
-    if (!(await verifySignature(secrets, rawBody, signature))) {
+    if (!(await verifySignature(secret, rawBody, signature))) {
       return new Response("Invalid signature", { status: 401 });
     }
 
@@ -997,119 +965,6 @@ http.route({
       status: 200,
       headers: { "Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store" },
     });
-  }),
-});
-
-// Step 1 of the GitHub App Manifest flow. The dashboard mints a single-use
-// state and sends the operator here; GitHub only accepts a manifest as a form
-// POST, so this returns a self-submitting form rather than a redirect.
-http.route({
-  path: "/github/app/new",
-  method: "GET",
-  handler: httpAction(async (ctx, request) => {
-    const site = resolveSiteUrl(process.env.CONVEX_SITE_URL);
-    if (!site.ok) {
-      return misconfiguredSiteUrlResponse("Refusing to build a GitHub App manifest", site.error);
-    }
-
-    const url = new URL(request.url);
-    const state = url.searchParams.get("state") ?? "";
-    const org = url.searchParams.get("org") ?? undefined;
-
-    const stateStatus = await ctx.runQuery(internal.githubApp.setupStateStatus, { state });
-    if (stateStatus !== "valid") {
-      return new Response(describeSetupState(stateStatus), {
-        status: 400,
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cache-Control": "no-store",
-        },
-      });
-    }
-
-    return new Response(renderManifestForm(site.siteUrl, state, org), {
-      status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    });
-  }),
-});
-
-const SETUP_ERROR_REASON: Record<Exclude<SetupStateStatus, "valid">, string> = {
-  unknown: "state_unknown",
-  consumed: "state_consumed",
-  expired: "state_expired",
-};
-
-// Step 3 of the Manifest flow: exchange the temporary code for the App's id,
-// client id, private key, and webhook secret, then hand the operator back to
-// the dashboard. The code is single-use and expires one hour after step 1.
-http.route({
-  path: "/github/app/callback",
-  method: "GET",
-  handler: httpAction(async (ctx, request) => {
-    // Resolved before the state is consumed: a misconfigured deployment must
-    // not burn the operator's single-use setup state on a request it cannot
-    // finish, and the redirect target itself has to be trusted.
-    const site = resolveSiteUrl(process.env.CONVEX_SITE_URL);
-    if (!site.ok) {
-      return misconfiguredSiteUrlResponse("Cannot complete GitHub App setup", site.error);
-    }
-
-    const url = new URL(request.url);
-    const dashboard = (params: string) =>
-      new Response(null, {
-        status: 302,
-        headers: { Location: `${site.siteUrl}/?${params}`, "Cache-Control": "no-store" },
-      });
-
-    const code = url.searchParams.get("code") ?? "";
-    const state = url.searchParams.get("state") ?? "";
-    if (code.length === 0) {
-      return dashboard("setup=error&reason=missing_code");
-    }
-
-    const stateStatus = await ctx.runMutation(internal.githubApp.consumeSetupState, { state });
-    if (stateStatus !== "valid") {
-      return dashboard(`setup=error&reason=${SETUP_ERROR_REASON[stateStatus]}`);
-    }
-
-    const response = await fetch(
-      `https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": "erainfra",
-        },
-      },
-    );
-    if (!response.ok) {
-      // Status only: a conversion response body carries the private key and
-      // webhook secret, so it must never reach the logs.
-      console.error(
-        `GitHub App manifest conversion failed with HTTP ${response.status}. The setup code is single-use and expires one hour after it is issued; start again from the dashboard.`,
-      );
-      return dashboard("setup=error&reason=conversion_failed");
-    }
-
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
-    const credentials = parseManifestConversion(payload);
-    if (credentials === null) {
-      console.error("GitHub App manifest conversion returned unexpected fields");
-      return dashboard("setup=error&reason=conversion_failed");
-    }
-
-    await ctx.runMutation(internal.githubApp.store, credentials);
-    return dashboard("setup=created");
   }),
 });
 

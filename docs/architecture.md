@@ -109,7 +109,8 @@ the start.
 
 `/github/webhook` acts only on `push`, for push-to-deploy (`convex/infra/git.ts`). It records each
 push by its `X-GitHub-Delivery` id in `webhookDeliveries`, so a redelivery deploys nothing twice.
-Every other verified event, `workflow_job` included, is answered 200 and ignored. The webhook job
+Only the deploy App's secret, `ERAINFRA_GH_WEBHOOK_SECRET`, verifies a delivery; any other
+signature is answered 401. Every other verified event is answered 200 and ignored. The webhook job
 path that stored `workflow_job` events, assigned them to Workers as `commands` and redelivered
 missed events is removed (ADR 0005); Profiles learn about jobs from their scale-set controller.
 
