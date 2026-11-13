@@ -8,7 +8,7 @@ import { encodeKey, prefixEnd } from "./keys.ts";
 export type Doc = Record<string, Value | undefined>;
 
 export function fieldValue(doc: Doc, path: string): Value | undefined {
-  let current: Value | undefined = doc as Value;
+  let current: Value | undefined = doc;
   for (const part of path.split(".")) {
     if (typeof current !== "object" || current === null || Array.isArray(current)) return undefined;
     if (current instanceof ArrayBuffer) return undefined;
@@ -174,7 +174,7 @@ export function evaluate(e: Expression, doc: Doc): Value | undefined {
   if (e.op === "field") return fieldValue(doc, (e as { path: string }).path);
   if (e.op === "literal") return (e as { value: Value | undefined }).value;
   const args = (e as { args: Expression[] }).args;
-  const v = (i: number) => evaluate(args[i] as Expression, doc);
+  const v = (i: number) => evaluate(args[i], doc);
   switch (e.op) {
     case "eq":
       return compareValues(v(0), v(1)) === 0;

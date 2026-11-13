@@ -51,7 +51,7 @@ async function load(modules: ModuleMap): Promise<Modules> {
         rel.startsWith("convex.config.")
       )
         return;
-      loaded[rel] = typeof m === "function" ? await (m as Loader)() : m;
+      loaded[rel] = typeof m === "function" ? await m() : m;
     }),
   );
   return modulesFrom(loaded);

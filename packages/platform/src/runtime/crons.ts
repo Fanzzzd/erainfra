@@ -34,7 +34,7 @@ export function cronSpecs(modules: Modules): CronSpec[] {
       ((s.seconds as number | undefined) ?? 0) * 1000 +
       ((s.minutes as number | undefined) ?? 0) * 60_000 +
       ((s.hours as number | undefined) ?? 0) * 3_600_000;
-    return { name, udfPath: spec.name, args: jsonToConvex(spec.args[0] as JSONValue), everyMs };
+    return { name, udfPath: spec.name, args: jsonToConvex(spec.args[0]), everyMs };
   });
 }
 

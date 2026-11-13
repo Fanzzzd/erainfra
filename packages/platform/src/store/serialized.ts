@@ -39,8 +39,8 @@ type FilterJson = Record<string, JSONValue>;
 function evaluateJson(expr: JSONValue, doc: Doc): Value | undefined {
   const e = expr as FilterJson;
   const [op] = Object.keys(e);
-  const arg = e[op as string] as JSONValue;
-  const at = (i: number) => evaluateJson((arg as JSONValue[])[i] as JSONValue, doc);
+  const arg = e[op];
+  const at = (i: number) => evaluateJson((arg as JSONValue[])[i], doc);
   switch (op) {
     case "$literal":
       return fromJsonOrUndefined(arg);
@@ -66,7 +66,7 @@ function evaluateJson(expr: JSONValue, doc: Doc): Value | undefined {
       return evaluateJson(arg, doc) !== true;
     case "$neg": {
       const x = evaluateJson(arg, doc);
-      if (typeof x === "number" || typeof x === "bigint") return -x as Value;
+      if (typeof x === "number" || typeof x === "bigint") return -x;
       throw new Error("filter: $neg needs a number or a bigint");
     }
     case "$add":
@@ -82,17 +82,15 @@ function evaluateJson(expr: JSONValue, doc: Doc): Value | undefined {
       if (!both) throw new Error(`filter: ${op} needs two numbers or two bigints`);
       const x = a as number;
       const y = b as number;
-      return (
-        op === "$add"
-          ? x + y
-          : op === "$sub"
-            ? x - y
-            : op === "$mul"
-              ? x * y
-              : op === "$div"
-                ? x / y
-                : x % y
-      ) as Value;
+      return op === "$add"
+        ? x + y
+        : op === "$sub"
+          ? x - y
+          : op === "$mul"
+            ? x * y
+            : op === "$div"
+              ? x / y
+              : x % y;
     }
     default:
       throw new Error(`filter: unsupported operator ${op}`);

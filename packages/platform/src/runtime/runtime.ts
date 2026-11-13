@@ -178,7 +178,7 @@ export class Runtime {
 
   private resolve(udfPath: string): { fn: RegisteredFunction; path: string } {
     const [modulePart, exportName = "default"] = udfPath.split(":");
-    const path = normalizeModulePath(modulePart as string);
+    const path = normalizeModulePath(modulePart);
     const mod = this.options.modules[path];
     const fn = mod?.[exportName] as RegisteredFunction | undefined;
     if (!fn || (typeof fn.exportArgs !== "function" && !fn.isHttp)) {
@@ -288,7 +288,7 @@ export class Runtime {
       | undefined;
     if (!router) return new Response("No HTTP routes", { status: 404 });
     const url = new URL(request.url);
-    const match = router.lookup(url.pathname, request.method as never);
+    const match = router.lookup(url.pathname, request.method);
     // With `staticCatchAll`, the root prefix route "/*" belongs to Convex's static-hosting
     // component, whose job the host's static files do; treat it as no match.
     const isStaticCatchAll = this.options.staticCatchAll === true && match?.[2] === "/*";
@@ -500,38 +500,35 @@ export class Runtime {
       // -- database --
       case "1.0/get": {
         const tx = this.requireTx(inv, op);
-        const id = jsonToConvex(args.id as JSONValue) as string;
+        const id = jsonToConvex(args.id) as string;
         const table = args.table as string | undefined;
         const doc = await (table ? tx.get(table, id) : tx.get(id));
         if (doc && !args.isSystem && this.tableOfId(id, tx)?.startsWith("_")) return null;
-        return doc === null ? null : convexToJson(doc as Value);
+        return doc === null ? null : convexToJson(doc);
       }
       case "1.0/insert": {
         const tx = this.requireMutation(inv, op);
-        const id = await tx.insert(
-          args.table as string,
-          jsonToConvex(args.value as JSONValue) as never,
-        );
+        const id = await tx.insert(args.table as string, jsonToConvex(args.value) as never);
         return { _id: id };
       }
       case "1.0/shallowMerge": {
         const tx = this.requireMutation(inv, op);
         const value = patchFromJson(args.value as Record<string, JSONValue>);
-        if (args.table) await tx.patch(args.table as string, args.id as string, value);
-        else await tx.patch(args.id as string, value);
+        if (args.table) await tx.patch(args.table, args.id, value);
+        else await tx.patch(args.id, value);
         return {};
       }
       case "1.0/replace": {
         const tx = this.requireMutation(inv, op);
-        const value = jsonToConvex(args.value as JSONValue) as never;
-        if (args.table) await tx.replace(args.table as string, args.id as string, value);
-        else await tx.replace(args.id as string, value);
+        const value = jsonToConvex(args.value) as never;
+        if (args.table) await tx.replace(args.table, args.id, value);
+        else await tx.replace(args.id, value);
         return {};
       }
       case "1.0/remove": {
         const tx = this.requireMutation(inv, op);
-        if (args.table) await tx.delete(args.table as string, args.id as string);
-        else await tx.delete(args.id as string);
+        if (args.table) await tx.delete(args.table, args.id);
+        else await tx.delete(args.id);
         return {};
       }
       case "1.0/queryStreamNext": {
@@ -540,7 +537,7 @@ export class Runtime {
         const next = stream.next();
         return next.done
           ? { value: null, done: true }
-          : { value: convexToJson(next.value.doc as Value), done: false };
+          : { value: convexToJson(next.value.doc), done: false };
       }
       case "1.0/queryPage": {
         const tx = this.requireTx(inv, op);
@@ -603,7 +600,7 @@ export class Runtime {
       // -- nested calls --
       case "1.0/runUdf": {
         const udfPath = this.udfPathOf(args);
-        const udfArgs = jsonToConvex(args.args as JSONValue);
+        const udfArgs = jsonToConvex(args.args);
         const udfType = args.udfType as string;
         const kind: Kind = udfType === "mutation" ? "mutation" : "query";
         return convexToJson(await this.nested(inv, kind, udfPath, udfArgs));
@@ -614,7 +611,7 @@ export class Runtime {
         if (inv.kind !== "action") throw new Error(`${op} is only available in actions`);
         const kind = op.slice("1.0/actions/".length) as Kind;
         const udfPath = this.udfPathOf(args);
-        const udfArgs = jsonToConvex(args.args as JSONValue);
+        const udfArgs = jsonToConvex(args.args);
         const { fn, path } = this.resolve(udfPath);
         const calleeKind = this.kindOf(fn);
         if (calleeKind !== kind) throw new Error(`"${udfPath}" is a ${calleeKind}, not a ${kind}`);
@@ -643,12 +640,12 @@ export class Runtime {
           return id;
         });
       case "1.0/cancel_job":
-        this.cancel(this.requireMutation(inv, op), args.id as JSONValue);
+        this.cancel(this.requireMutation(inv, op), args.id);
         return {};
       case "1.0/actions/cancel_job":
         await this.serialized(async () => {
           const tx = this.store.begin();
-          this.cancel(tx, args.id as JSONValue);
+          this.cancel(tx, args.id);
           tx.commit();
           this.armAlarm();
         });
@@ -727,7 +724,7 @@ export class Runtime {
       throw new Error(`"${udfPath}" is not a mutation or an action`);
     const id = tx.insertSystem(SCHEDULED, {
       name: udfPath,
-      args: [jsonToConvex(args.args as JSONValue)],
+      args: [jsonToConvex(args.args)],
       scheduledTime: (args.ts as number) * 1000,
       state: { kind: "pending" },
     });
@@ -816,11 +813,7 @@ export class Runtime {
       });
       if (!due) break;
       ran++;
-      await this.runScheduled(
-        due._id as string,
-        due.name as string,
-        (due.args as Value[])[0] as Value,
-      );
+      await this.runScheduled(due._id as string, due.name as string, (due.args as Value[])[0]);
     }
     this.armAlarm();
     return ran;
