@@ -109,7 +109,11 @@ fi
 exit 0
 `;
 
-/** Both service managers "start" the agent by publishing its versioned readiness file. */
+/**
+ * Both service managers "start" the agent by publishing its versioned readiness file. A started
+ * version with a file in RC_TEST_READINESS_DIR then becomes what GET /agents/readiness answers,
+ * which is how a test plays the control plane seeing the new, or the restored, Agent report.
+ */
 const SERVICE_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"
 for arg in "$@"; do
@@ -118,6 +122,9 @@ for arg in "$@"; do
       if [ "$RC_TEST_CONNECT" = "1" ]; then
         version=$(node -p "require(process.env.HOME + '/.runner-center/agent/package.json').version")
         printf '%s\\n' "$version" > "$HOME/.runner-center/agent.ready"
+        if [ -f "$RC_TEST_READINESS_DIR/$version.json" ]; then
+          cp "$RC_TEST_READINESS_DIR/$version.json" "$RC_TEST_READINESS_DIR/current.json"
+        fi
       fi
       ;;
   esac
@@ -270,8 +277,54 @@ function publishRegistration(sandbox: Sandbox) {
   route(sandbox, `${SITE_URL}/agents/register`, responsePath);
 }
 
-/** Pretend an older agent is already installed and running on this machine. */
-function seedExistingInstall(sandbox: Sandbox, version: string, marker: string) {
+/** One Profile row of GET /agents/readiness (workerApi.readiness). */
+type ProfileReadiness = {
+  profile: string;
+  state: "preparing" | "ready" | "degraded" | "failed" | "unreported";
+  checkedAt?: number;
+  failedChecks?: string[];
+  detail?: string;
+};
+
+/** The control plane's clock in the readiness answer the installer reads before the update. */
+const CONTROL_PLANE_NOW = 1_800_000_000_000;
+/** When the agent the update started reports, an hour after CONTROL_PLANE_NOW. */
+const REPORTED_AFTER_RESTART = CONTROL_PLANE_NOW + 3_600_000;
+/** When the agent a rollback restored reports, an hour after that. */
+const REPORTED_AFTER_ROLLBACK = REPORTED_AFTER_RESTART + 3_600_000;
+
+function readinessDir(sandbox: Sandbox) {
+  return path.join(sandbox.root, "readiness");
+}
+
+/**
+ * What GET /agents/readiness answers once the agent of `version` has started. The control plane's
+ * clock reads the time of the latest report in it.
+ */
+function readinessAfterStart(sandbox: Sandbox, version: string, profiles: ProfileReadiness[]) {
+  const now = Math.max(CONTROL_PLANE_NOW, ...profiles.map((row) => row.checkedAt ?? 0));
+  writeFileSync(
+    path.join(readinessDir(sandbox), `${version}.json`),
+    JSON.stringify({ now, profiles }),
+  );
+}
+
+/**
+ * Pretend an older agent is already installed and running on this machine. `readiness` is what
+ * the control plane answers for it before the update; null serves no readiness route at all.
+ */
+function seedExistingInstall(
+  sandbox: Sandbox,
+  version: string,
+  marker: string,
+  readiness: ProfileReadiness[] | null = [],
+) {
+  mkdirSync(readinessDir(sandbox), { recursive: true });
+  if (readiness !== null) {
+    const current = path.join(readinessDir(sandbox), "current.json");
+    writeFileSync(current, JSON.stringify({ now: CONTROL_PLANE_NOW, profiles: readiness }));
+    route(sandbox, `${SITE_URL}/agents/readiness`, current);
+  }
   const agentDir = path.join(sandbox.rcHome, "agent");
   mkdirSync(path.join(agentDir, "dist"), { recursive: true });
   writeFileSync(path.join(agentDir, "dist", "index.js"), `// ${marker}\n`);
@@ -316,6 +369,7 @@ function spawnOptions(sandbox: Sandbox, options: { connect?: boolean; npmFails?:
       RC_TEST_CONNECT: options.connect === false ? "0" : "1",
       RC_TEST_SUDO_LOG: path.join(sandbox.root, "sudo.log"),
       RC_TEST_SUDO_ROOT: sandbox.sudoRoot,
+      RC_TEST_READINESS_DIR: readinessDir(sandbox),
     },
   };
 }
@@ -580,6 +634,173 @@ describe("rollback", { timeout: 120_000 }, () => {
   });
 });
 
+describe("update health check", { timeout: 120_000 }, () => {
+  const SMALL = "erainfra-4vcpu-ubuntu-2404";
+  const LARGE = "erainfra-16vcpu-ubuntu-2404";
+  const BEFORE: ProfileReadiness[] = [
+    { profile: SMALL, state: "ready", checkedAt: CONTROL_PLANE_NOW - 60_000, failedChecks: [] },
+    { profile: LARGE, state: "ready", checkedAt: CONTROL_PLANE_NOW - 60_000, failedChecks: [] },
+    {
+      profile: "rc-e2e",
+      state: "failed",
+      checkedAt: CONTROL_PLANE_NOW - 60_000,
+      failedChecks: ["image-release: not pinned"],
+    },
+  ];
+  const fresh = (
+    profile: string,
+    state: ProfileReadiness["state"],
+    checkedAt = REPORTED_AFTER_RESTART,
+  ): ProfileReadiness => ({ profile, state, checkedAt, failedChecks: [] });
+  const restored = (profile: string, state: ProfileReadiness["state"]) =>
+    fresh(profile, state, REPORTED_AFTER_ROLLBACK);
+
+  function updateFrom(before: ProfileReadiness[] | null) {
+    const sandbox = createSandbox(CURRENT);
+    publishRelease(sandbox, CURRENT, "new agent");
+    seedExistingInstall(sandbox, OLDER.version, "older agent", before);
+    // The restored agent reports every Profile ready again unless a test says otherwise.
+    readinessAfterStart(sandbox, OLDER.version, [
+      restored(SMALL, "ready"),
+      restored(LARGE, "ready"),
+    ]);
+    return sandbox;
+  }
+
+  function expectRolledBack(sandbox: Sandbox) {
+    expect(agentMarker(sandbox)).toBe("// older agent");
+    expect(metaField(sandbox, "AGENT_VERSION")).toBe(OLDER.version);
+    expect(existsSync(path.join(sandbox.rcHome, "agent.previous"))).toBe(false);
+    // Started twice: the new agent, then the restored one.
+    const starts = readLog(path.join(sandbox.root, "service.log"))
+      .split("\n")
+      .filter((line) => /\b(kickstart|restart)\b/.test(line));
+    expect(starts).toHaveLength(2);
+  }
+
+  it("rolls back an update whose new Agent reports a ready Profile degraded", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "ready"),
+      {
+        ...fresh(LARGE, "degraded"),
+        failedChecks: ["warm-pool: warm pool owns 2 of 1 microVMs"],
+        detail: "warm pool owns 2 of 1 microVMs",
+      },
+      fresh("rc-e2e", "failed"),
+    ]);
+
+    const result = run(sandbox, ["--update"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    expect(result.stderr).toMatch(
+      new RegExp(`Profile ${LARGE} reported degraded: warm-pool: warm pool owns 2 of 1 microVMs`),
+    );
+    expect(result.stderr).toMatch(
+      /Rolled back to 1\.3\.0, which reports every Profile ready again/,
+    );
+    expectRolledBack(sandbox);
+  });
+
+  it("keeps an update whose new Agent reports every ready Profile ready again", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "ready"),
+      fresh(LARGE, "ready"),
+      // Failed before the update, so it is not the new Agent's to fix.
+      fresh("rc-e2e", "failed"),
+    ]);
+
+    const result = run(sandbox, ["--update"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(
+      /2 Profile\(s\) that were ready before the update are ready again/,
+    );
+    expect(agentMarker(sandbox)).toBe("// new agent");
+    expect(agentMarker(sandbox, "agent.previous")).toBe("// older agent");
+    expect(metaField(sandbox, "AGENT_VERSION")).toBe(CURRENT.version);
+  });
+
+  it("rolls back an update whose Profile is still preparing at the deadline", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "ready"),
+      { ...fresh(LARGE, "preparing"), detail: "Checking firecracker and prewarming the image" },
+    ]);
+
+    const result = run(sandbox, ["--update", "--ready-timeout", "2"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `Profile ${LARGE} did not report ready within 2 seconds; it last reported preparing: Checking firecracker`,
+      ),
+    );
+    expectRolledBack(sandbox);
+  });
+
+  it("does not count a ready report from before the restart", () => {
+    const sandbox = updateFrom(BEFORE);
+    // The control plane never hears from the new Agent: it still holds the old reports.
+
+    const result = run(sandbox, ["--update", "--ready-timeout", "2"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    expect(result.stderr).toMatch(
+      new RegExp(
+        `Profile ${SMALL} did not report ready within 2 seconds; it has not reported since the Agent restarted`,
+      ),
+    );
+    expectRolledBack(sandbox);
+  });
+
+  it("says so when the restored Agent does not report ready either", () => {
+    const sandbox = updateFrom(BEFORE);
+    readinessAfterStart(sandbox, CURRENT.version, [
+      fresh(SMALL, "degraded"),
+      fresh(LARGE, "ready"),
+    ]);
+    readinessAfterStart(sandbox, OLDER.version, [
+      restored(SMALL, "degraded"),
+      restored(LARGE, "ready"),
+    ]);
+
+    const result = run(sandbox, ["--update", "--ready-timeout", "2"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(new RegExp(`Profile ${SMALL} reported degraded`));
+    expect(result.stderr).toMatch(/Rolled back to 1\.3\.0, but it has not reported ready either/);
+    expectRolledBack(sandbox);
+  });
+
+  it("keeps an update on a Worker that had no ready Profile, as before", () => {
+    const sandbox = updateFrom([BEFORE[2]!]);
+    readinessAfterStart(sandbox, CURRENT.version, [fresh("rc-e2e", "degraded")]);
+
+    const result = run(sandbox, ["--update"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/Profiles are prewarming in the background/);
+    expect(agentMarker(sandbox)).toBe("// new agent");
+  });
+
+  it("leaves the running agent in place when it cannot read readiness before the update", () => {
+    const sandbox = updateFrom(null);
+
+    const result = run(sandbox, ["--update"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Could not read this Worker's Profile readiness/);
+    expect(agentMarker(sandbox)).toBe("// older agent");
+    expect(existsSync(path.join(sandbox.rcHome, "agent.previous"))).toBe(false);
+    expect(readLog(path.join(sandbox.root, "service.log"))).toBe("");
+  });
+
+  it("rejects a deadline that is not a positive number of seconds", () => {
+    const sandbox = updateFrom(BEFORE);
+    for (const value of ["0", "ten", "-5"]) {
+      const result = run(sandbox, ["--update", "--ready-timeout", value]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/--ready-timeout must be a positive number of seconds/);
+    }
+    expect(agentMarker(sandbox)).toBe("// older agent");
+  });
+});
+
 describe("rendered script", () => {
   const script = renderInstallScript(SITE_URL, AGENT_RELEASE);
 
@@ -630,7 +851,7 @@ describe("rendered script", () => {
   it("waits for a fresh readiness signal from the exact installed version", () => {
     expect(script).toMatch(/rm -f "\$RC_HOME\/agent\.ready"/);
     expect(script).toMatch(/cat "\$RC_HOME\/agent\.ready"/);
-    expect(script).toMatch(/= "\$VERSION"/);
+    expect(script).toMatch(/wait_for_connection "\$VERSION"/);
     expect(script).not.toMatch(/grep -Fq 'EraInfra agent connected'/);
   });
 
@@ -1177,7 +1398,7 @@ describe("--role worker", () => {
     const workerBody = script.slice(script.indexOf("SITE_URL='"));
     expect(workerBody).toMatch(/^SITE_URL='https:\/\/example\.convex\.site'\nAGENT_REPO=/);
     expect(workerBody).not.toMatch(/INSTALL_ROLE|node_install|node_pinned_digest|--role/);
-    expect(Buffer.byteLength(workerBody)).toBe(26_103);
+    expect(Buffer.byteLength(workerBody)).toBe(34_616);
   });
 });
 
