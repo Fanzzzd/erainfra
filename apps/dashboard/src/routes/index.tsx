@@ -435,7 +435,7 @@ function MachinesPage() {
             immutable image automatically.
           </CardDescription>
           <CardAction>
-            <code className="rounded-md border border-border bg-sunken px-2.5 py-1.5 text-xs text-primary">
+            <code className="whitespace-nowrap rounded-md border border-border bg-sunken px-2.5 py-1.5 text-xs text-primary">
               runs-on: {profiles?.[0]?.name ?? "erainfra-4vcpu-ubuntu-2404"}
             </code>
           </CardAction>
@@ -792,9 +792,13 @@ function ProfileReadiness({
         if (detail === undefined || detail === "") return <div key={entry.profile}>{badge}</div>;
 
         return (
+          // The detail also shows in the Worker row under the expanded Profile, so this trigger
+          // stays out of the tab order; the group name and the tooltip still reach a screen reader.
           <Tooltip key={entry.profile}>
             <TooltipTrigger asChild>
-              <div>{badge}</div>
+              <div role="group" aria-label={`${entry.profile}, ${entry.state}`}>
+                {badge}
+              </div>
             </TooltipTrigger>
             <TooltipContent side="top">{detail}</TooltipContent>
           </Tooltip>
@@ -936,10 +940,15 @@ function ProfileRow({
           <ControllerStatus liveness={controller} paused={profile.state === "paused"} now={now} />
         </TableCell>
         <TableCell>
+          {/* A button, so the keyboard reaches the explanation, which shows nowhere else. */}
           <Tooltip>
-            <TooltipTrigger asChild>
+            <TooltipTrigger className="rounded-sm">
               <Badge variant={guestKernel ? "success" : "warning"} className="text-[11px]">
-                {guestKernel ? <ShieldCheck /> : <ShieldAlert />}
+                {guestKernel ? (
+                  <ShieldCheck aria-hidden="true" />
+                ) : (
+                  <ShieldAlert aria-hidden="true" />
+                )}
                 {boundary.label}
               </Badge>
             </TooltipTrigger>
@@ -1090,9 +1099,7 @@ function ControllerStatus({
   if (liveness.status === "unknown") {
     return (
       <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-muted-foreground">Not reporting</span>
-        </TooltipTrigger>
+        <TooltipTrigger className="rounded-sm text-muted-foreground">Not reporting</TooltipTrigger>
         <TooltipContent side="top" className="max-w-xs">
           No controller has ever reported a heartbeat for this Profile. Controllers built before the
           heartbeat do not send one; liveness is tracked from the first report on.
@@ -1113,23 +1120,24 @@ function ControllerStatus({
   const tone = paused && liveness.status !== "online" ? "muted" : copy.tone;
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <div className="min-w-0">
-          <span className="inline-flex items-center gap-2">
-            <StatusDot tone={tone} live={liveness.status === "online"} />
-            <span className={cn(tone === "muted" ? "text-muted-foreground" : "text-foreground")}>
-              {copy.label}
-            </span>
+      {/* A button, so the keyboard reaches the job counts and controller rows in the tooltip. */}
+      <TooltipTrigger className="block min-w-0 max-w-full rounded-sm text-left">
+        <span className="inline-flex items-center gap-2">
+          <StatusDot tone={tone} live={liveness.status === "online"} />
+          <span className={cn(tone === "muted" ? "text-muted-foreground" : "text-foreground")}>
+            {copy.label}
           </span>
-          {primary !== undefined && (
-            <p className="mt-0.5 truncate font-mono text-[10px] text-subtle-foreground">
-              {primary.hostname} · {primary.version}
-            </p>
-          )}
-          {detail !== undefined && (
-            <p className="mt-0.5 tabular-nums text-[10px] text-subtle-foreground">{detail}</p>
-          )}
-        </div>
+        </span>
+        {primary !== undefined && (
+          <span className="mt-0.5 block truncate font-mono text-[10px] text-subtle-foreground">
+            {primary.hostname} · {primary.version}
+          </span>
+        )}
+        {detail !== undefined && (
+          <span className="mt-0.5 block tabular-nums text-[10px] text-subtle-foreground">
+            {detail}
+          </span>
+        )}
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-sm space-y-1">
         {liveness.primary?.lastError !== undefined && (
