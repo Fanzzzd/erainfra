@@ -41,7 +41,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
-import { experimentView, type ExperimentState } from "@/lib/states";
+import { experimentStates, type ExperimentState } from "@/lib/states";
 import { formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -81,12 +81,9 @@ const columns = column.columns([
     enableSorting: false,
     cell: (cell) => {
       const experiment = cell.row.original;
-      const view = experimentView(experiment.state);
       return (
         <div>
-          <Status state={view.state} className="font-medium">
-            {view.label}
-          </Status>
+          <Status states={experimentStates} state={experiment.state} className="font-medium" />
           {experiment.exitCode !== undefined && (
             <p
               className={cn(
@@ -319,14 +316,14 @@ function ExperimentsPage() {
                 />
               </Field>
               {linuxProfiles.length === 0 && profiles !== undefined && (
-                <Alert className="text-warning lg:col-span-4">
-                  <AlertDescription className="text-warning">
+                <Alert variant="warning" className="lg:col-span-4">
+                  <AlertDescription>
                     Register an active Linux Firecracker Profile before running Experiments.
                   </AlertDescription>
                 </Alert>
               )}
               {error && (
-                <Alert variant="destructive" className="lg:col-span-4">
+                <Alert variant="danger" className="lg:col-span-4">
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
               )}

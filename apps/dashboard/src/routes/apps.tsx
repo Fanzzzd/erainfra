@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DataTable, createDataTableColumns } from "@/components/data-table";
+import { DeployStageStatus } from "@/components/deploy-stage";
 import {
   EmptyState,
   EmptyStateDescription,
@@ -26,7 +27,7 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { appStatus, heartbeatsByName } from "@/lib/infra";
-import { type AppStatus, appView, deployStageView } from "@/lib/states";
+import { type AppStatus, appStates } from "@/lib/states";
 import { formatRelativeTime } from "@/lib/time";
 
 export const Route = createFileRoute("/apps")({ component: AppsPage });
@@ -57,8 +58,7 @@ const columns = column.columns([
   column.accessor("liveStatus", {
     header: "Status",
     cell: (cell) => {
-      const view = appView(cell.getValue());
-      return <Status state={view.state}>{view.label}</Status>;
+      return <Status states={appStates} state={cell.getValue()} />;
     },
   }),
   column.display({
@@ -96,7 +96,6 @@ const columns = column.columns([
       const app = cell.row.original;
       const last = app.lastDeployment;
       if (last === null) return <span className="text-muted-foreground">None in Convex</span>;
-      const view = deployStageView(last.stage);
       return (
         <Link
           to="/deployments"
@@ -104,7 +103,7 @@ const columns = column.columns([
           className="block rounded-sm hover:underline hover:underline-offset-4"
         >
           <span className="flex items-center gap-2">
-            <Status state={view.state}>{view.label}</Status>
+            <DeployStageStatus stage={last.stage} />
             {last.operation === "failover" && <Badge variant="warning">failover</Badge>}
           </span>
           <span className="block text-xs text-muted-foreground">

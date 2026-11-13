@@ -10,17 +10,32 @@ type CodeBlockProps = Omit<React.ComponentProps<"figure">, "children"> & {
   code: string;
   /** A caption above the code, such as a file name or "Install". */
   title?: React.ReactNode;
+  /** The toast text after a successful copy. Defaults to "Copied to clipboard". */
+  copiedMessage?: string;
+  /**
+   * Wrap long lines instead of scrolling sideways, for a long token or a log
+   * line that should be read whole. The copied text is unchanged.
+   */
+  wrap?: boolean;
 };
 
 /**
  * A block of code or shell commands with a copy button. Copying shows a toast
- * when a `Toaster` is mounted. The code scrolls sideways and its scroll area is
- * focusable, so keyboard users can read long lines.
+ * when a `Toaster` is mounted. Long lines scroll sideways, and the scroll area
+ * is focusable so keyboard users can read them; set `wrap` to wrap them.
  */
-function CodeBlock({ code, title, className, ...props }: CodeBlockProps) {
+function CodeBlock({
+  code,
+  title,
+  copiedMessage = "Copied to clipboard",
+  wrap = false,
+  className,
+  ...props
+}: CodeBlockProps) {
   return (
     <figure
       data-slot="code-block"
+      data-wrap={wrap || undefined}
       className={cn(
         "group/code-block relative overflow-hidden rounded-lg border bg-subtle",
         className,
@@ -36,15 +51,17 @@ function CodeBlock({ code, title, className, ...props }: CodeBlockProps) {
         value={code}
         className="absolute top-1.5 right-1.5"
         onCopy={(ok) => {
-          if (ok) toast.success("Copied to clipboard");
+          if (ok) toast.success(copiedMessage);
           else
             toast.error("Could not copy", { description: "Select the text and copy it by hand." });
         }}
       />
       <pre
-        tabIndex={0}
+        // Only a scrolling block needs focus, so keyboard users can scroll it.
+        tabIndex={wrap ? undefined : 0}
         className={cn(
-          "overflow-x-auto p-4 text-[13px] leading-6 focus-visible:-outline-offset-2",
+          "p-4 text-[13px] leading-6 focus-visible:-outline-offset-2",
+          wrap ? "break-words whitespace-pre-wrap" : "overflow-x-auto",
           !title && "pr-12",
         )}
       >

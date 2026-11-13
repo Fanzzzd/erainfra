@@ -17,15 +17,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
@@ -48,8 +49,6 @@ const SCOPES: { value: Scope; label: string; description: string }[] = [
     description: "Prometheus scrapes of /metrics, nothing else",
   },
 ];
-
-const SCOPE_ITEMS = SCOPES.map((option) => ({ value: option.value, label: option.label }));
 
 const SCOPE_BADGE = { read: "secondary", admin: "warning", metrics: "info" } as const;
 
@@ -197,8 +196,6 @@ export function ApiTokens() {
         ? created.token
         : `erainfra auth login --url ${convexSiteUrl()} --token ${created.token}`;
 
-  const scopeDescription = SCOPES.find((option) => option.value === scope)?.description;
-
   return (
     <>
       <Card className="gap-0 py-0">
@@ -211,11 +208,8 @@ export function ApiTokens() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 py-4">
-          <form
-            className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-start"
-            onSubmit={(event) => void submit(event)}
-          >
-            <Field>
+          <form className="flex flex-col gap-4" onSubmit={(event) => void submit(event)}>
+            <Field className="max-w-md">
               <FieldLabel>Name</FieldLabel>
               <Input
                 placeholder="laptop, prometheus, nightly-report"
@@ -225,33 +219,30 @@ export function ApiTokens() {
                 onChange={(event) => setName(event.target.value)}
               />
             </Field>
-            <Field>
-              <FieldLabel>Scope</FieldLabel>
-              <Select
-                items={SCOPE_ITEMS}
+            <FieldSet>
+              <FieldLegend>Scope</FieldLegend>
+              <RadioGroup
                 value={scope}
                 onValueChange={(value) => {
-                  if (value !== null) setScope(value);
+                  const next = SCOPES.find((option) => option.value === value);
+                  if (next) setScope(next.value);
                 }}
+                className="sm:grid-cols-3"
               >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SCOPES.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FieldDescription>For {scopeDescription}.</FieldDescription>
-            </Field>
-            <Button
-              type="submit"
-              className="sm:mt-[1.375rem]"
-              disabled={pending || name.trim().length === 0}
-            >
+                {SCOPES.map((option) => (
+                  <Field key={option.value} orientation="horizontal">
+                    <RadioGroupItem value={option.value} id={`token-scope-${option.value}`} />
+                    <FieldContent>
+                      <FieldLabel htmlFor={`token-scope-${option.value}`}>
+                        {option.label}
+                      </FieldLabel>
+                      <FieldDescription>For {option.description}.</FieldDescription>
+                    </FieldContent>
+                  </Field>
+                ))}
+              </RadioGroup>
+            </FieldSet>
+            <Button type="submit" className="w-fit" disabled={pending || name.trim().length === 0}>
               {pending ? (
                 <Spinner data-icon="inline-start" />
               ) : (
@@ -274,7 +265,7 @@ export function ApiTokens() {
           )}
 
           {error !== undefined && (
-            <Alert variant="destructive">
+            <Alert variant="danger">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}

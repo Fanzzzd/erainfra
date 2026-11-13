@@ -5,6 +5,7 @@ import type { FunctionReturnType } from "convex/server";
 import { RocketIcon } from "lucide-react";
 
 import { DataTable, createDataTableColumns } from "@/components/data-table";
+import { DeployStageStatus } from "@/components/deploy-stage";
 import {
   EmptyState,
   EmptyStateDescription,
@@ -17,12 +18,11 @@ import {
   PageHeaderDescription,
   PageHeaderTitle,
 } from "@/components/page-header";
-import { LiveIndicator, Status } from "@/components/status";
+import { LiveIndicator } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useNow } from "@/hooks/use-now";
-import { deployStageView } from "@/lib/states";
 import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 
 type Search = { app?: string };
@@ -49,10 +49,9 @@ const columns = column.columns([
     header: "Stage",
     cell: (cell) => {
       const run = cell.row.original;
-      const view = deployStageView(run.stage);
       return (
         <div className="flex flex-col items-start gap-1">
-          <Status state={view.state}>{view.label}</Status>
+          <DeployStageStatus stage={run.stage} />
           {run.operation === "failover" && <Badge variant="warning">failover</Badge>}
         </div>
       );

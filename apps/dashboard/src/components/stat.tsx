@@ -3,14 +3,29 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-/** Lays out stats in a row that wraps on narrow containers. */
-function StatGroup({ className, ...props }: React.ComponentProps<"div">) {
+/**
+ * Lays out 2, 3 or 4 stats so that no row has an empty slot or a lone stat.
+ * It measures its own width: one column on a narrow container; 2 stats go
+ * side by side from 28rem; 3 stats go in a row from 36rem; 4 stats make a
+ * 2 by 2 grid from 28rem and a row from 56rem. 5 or more fill columns of at
+ * least 14rem.
+ */
+function StatGroup({ className, children, ...props }: React.ComponentProps<"div">) {
   return (
-    <div
-      data-slot="stat-group"
-      className={cn("grid gap-3 @lg:grid-cols-2 @3xl:grid-cols-3 @5xl:grid-cols-4", className)}
-      {...props}
-    />
+    <div data-slot="stat-group" className={cn("@container", className)} {...props}>
+      <div
+        data-slot="stat-group-grid"
+        className={cn(
+          "grid gap-3",
+          "@md:has-[>:nth-child(2):last-child]:grid-cols-2",
+          "@xl:has-[>:nth-child(3):last-child]:grid-cols-3",
+          "@md:has-[>:nth-child(4):last-child]:grid-cols-2 @4xl:has-[>:nth-child(4):last-child]:grid-cols-4",
+          "@md:has-[>:nth-child(5)]:grid-cols-[repeat(auto-fit,minmax(14rem,1fr))]",
+        )}
+      >
+        {children}
+      </div>
+    </div>
   );
 }
 

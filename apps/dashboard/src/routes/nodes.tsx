@@ -33,7 +33,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { nodeOnline } from "@/lib/infra";
-import { onlineView } from "@/lib/states";
+import { onlineState, onlineStates } from "@/lib/states";
 import { formatRelativeTime } from "@/lib/time";
 
 export const Route = createFileRoute("/nodes")({ component: NodesPage });
@@ -75,9 +75,11 @@ const columns = column.columns([
       return (
         <div>
           {node.lastSeenAt === null ? (
-            <Status state="offline">Never connected</Status>
+            <Status states={onlineStates} state="offline">
+              Never connected
+            </Status>
           ) : (
-            <Status state={onlineView(node.online).state} />
+            <Status states={onlineStates} state={onlineState(node.online)} />
           )}
           {node.lastSeenAt !== null && (
             <div className="text-xs text-muted-foreground">
@@ -223,7 +225,7 @@ function NodesPage() {
       </PageHeader>
 
       {rows !== undefined && rows.length > 0 && (
-        <StatGroup className="@5xl:grid-cols-3">
+        <StatGroup>
           <Stat>
             <StatLabel>Nodes online</StatLabel>
             <StatValue>
@@ -290,7 +292,7 @@ function NodesPage() {
             </div>
           )}
           {error !== undefined && (
-            <Alert variant="destructive">
+            <Alert variant="danger">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}

@@ -49,7 +49,8 @@ type ConfirmDialogProps = {
 /**
  * A confirmation for a destructive or irreversible action, built on
  * `AlertDialog`. Focus starts on Cancel, or on the text field when typed
- * confirmation is on.
+ * confirmation is on. The typed text and the error clear each time it opens,
+ * also when you control `open` and close it yourself.
  *
  * @example
  * <ConfirmDialog
@@ -81,12 +82,20 @@ function ConfirmDialog({
   const input = React.useRef<HTMLInputElement>(null);
   const open = openProp ?? openState;
 
-  const setOpen = (next: boolean) => {
-    if (pending) return;
-    if (!next) {
+  // Start empty on every open, however the dialog opened or closed. Base UI
+  // calls onOpenChange only for changes it makes, not when the parent sets
+  // `open`, so a reset there would miss a dialog the parent closed itself.
+  const [wasOpen, setWasOpen] = React.useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
       setTyped("");
       setError(null);
     }
+  }
+
+  const setOpen = (next: boolean) => {
+    if (pending) return;
     setOpenState(next);
     onOpenChange?.(next);
   };
@@ -100,7 +109,6 @@ function ConfirmDialog({
     try {
       await onConfirm();
       setPending(false);
-      setTyped("");
       setOpenState(false);
       onOpenChange?.(false);
     } catch (cause) {

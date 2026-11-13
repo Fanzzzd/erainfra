@@ -2,7 +2,13 @@ import { api } from "@erainfra/backend/api";
 import type { Id } from "@erainfra/backend/dataModel";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { ArrowLeftIcon, GaugeIcon, OctagonAlertIcon, TestTubeDiagonalIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChevronRightIcon,
+  GaugeIcon,
+  OctagonAlertIcon,
+  TestTubeDiagonalIcon,
+} from "lucide-react";
 
 import {
   DescriptionDetails,
@@ -31,6 +37,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -50,7 +57,7 @@ import {
   type MetricsRow,
   type MetricsSummary,
 } from "@/lib/metrics";
-import { attemptView } from "@/lib/states";
+import { attemptStates } from "@/lib/states";
 import { formatAbsoluteTime, formatDuration } from "@/lib/time";
 
 export const Route = createFileRoute("/attempts_/$attemptId")({ component: AttemptPage });
@@ -115,7 +122,6 @@ function AttemptPage() {
         : `${attempt.owner}/${attempt.repo}`;
   const end = attempt.finishedAt;
   const rows = series === null ? [] : metricsRows(series);
-  const view = attemptView(attempt.state);
 
   return (
     <>
@@ -131,7 +137,7 @@ function AttemptPage() {
           <Badge variant="outline" className="font-mono">
             {attempt.executor}
           </Badge>
-          <StatusBadge state={view.state}>{view.label}</StatusBadge>
+          <StatusBadge states={attemptStates} state={attempt.state} />
         </PageHeaderActions>
       </PageHeader>
 
@@ -294,7 +300,7 @@ function AttemptTests({ attemptId, executor }: { attemptId: Id<"attempts">; exec
 function OomNotice({ summary, executor }: { summary: MetricsSummary; executor: string }) {
   if (summary.oomKills === null || summary.oomKills === 0) return null;
   return (
-    <Alert variant="destructive">
+    <Alert variant="danger">
       <OctagonAlertIcon />
       <AlertTitle>
         {summary.oomKills} process{summary.oomKills === 1 ? " was" : "es were"} killed for running
@@ -394,35 +400,41 @@ const POINT_HEADINGS = [
 /** The table view every chart's values are reachable through without hovering. */
 function PointsTable({ rows }: { rows: MetricsRow[] }) {
   return (
-    <details className="group overflow-hidden rounded-xl border bg-card">
-      <summary className="cursor-pointer px-4 py-3 text-sm text-muted-foreground hover:text-foreground focus-visible:-outline-offset-2">
+    <Collapsible className="overflow-hidden rounded-xl border bg-card">
+      <CollapsibleTrigger className="group/trigger flex w-full items-center gap-1.5 text-left px-4 py-3 text-sm text-muted-foreground hover:text-foreground focus-visible:-outline-offset-2">
+        <ChevronRightIcon
+          aria-hidden="true"
+          className="size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90"
+        />
         Show the {rows.length} points as a table
-      </summary>
-      <div className="border-t">
-        <Table aria-label="Resource points" containerClassName="max-h-96">
-          <TableHeader className="sticky top-0 bg-card">
-            <TableRow className="hover:bg-transparent">
-              {POINT_HEADINGS.map((heading) => (
-                <TableHead key={heading}>{heading}</TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((row) => (
-              <TableRow key={row.seconds}>
-                <TableCell>{formatElapsed(row.seconds)}</TableCell>
-                <TableCell>{formatVcpus(row.cpuAvg)}</TableCell>
-                <TableCell>{formatVcpus(row.cpuMax)}</TableCell>
-                <TableCell>{formatBytes(row.memory)}</TableCell>
-                <TableCell>{cell(row.netRx, formatRate)}</TableCell>
-                <TableCell>{cell(row.netTx, formatRate)}</TableCell>
-                <TableCell>{cell(row.diskRead, formatRate)}</TableCell>
-                <TableCell>{cell(row.diskWrite, formatRate)}</TableCell>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="border-t">
+          <Table aria-label="Resource points" containerClassName="max-h-96">
+            <TableHeader className="sticky top-0 bg-card">
+              <TableRow className="hover:bg-transparent">
+                {POINT_HEADINGS.map((heading) => (
+                  <TableHead key={heading}>{heading}</TableHead>
+                ))}
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </details>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.seconds}>
+                  <TableCell>{formatElapsed(row.seconds)}</TableCell>
+                  <TableCell>{formatVcpus(row.cpuAvg)}</TableCell>
+                  <TableCell>{formatVcpus(row.cpuMax)}</TableCell>
+                  <TableCell>{formatBytes(row.memory)}</TableCell>
+                  <TableCell>{cell(row.netRx, formatRate)}</TableCell>
+                  <TableCell>{cell(row.netTx, formatRate)}</TableCell>
+                  <TableCell>{cell(row.diskRead, formatRate)}</TableCell>
+                  <TableCell>{cell(row.diskWrite, formatRate)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

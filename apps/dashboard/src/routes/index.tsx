@@ -13,7 +13,7 @@ import {
   ShieldCheckIcon,
   UserPlusIcon,
 } from "lucide-react";
-import { type MouseEvent, type ReactNode, useId, useMemo, useState } from "react";
+import { type MouseEvent, useId, useMemo, useState } from "react";
 
 import { CodeBlock } from "@/components/code-block";
 import { CopyButton, copyText } from "@/components/copy-button";
@@ -38,7 +38,7 @@ import {
   PageHeaderTitle,
 } from "@/components/page-header";
 import { Stat, StatGroup, StatHint, StatLabel, StatUnit, StatValue } from "@/components/stat";
-import { LiveIndicator, Status, StatusDot, statusStates } from "@/components/status";
+import { LiveIndicator, Status, StatusDot } from "@/components/status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -78,7 +79,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { describeProfileEgress, egressTooltip } from "@/lib/egress";
-import { attemptView, experimentView, onlineView, type StateView } from "@/lib/states";
+import {
+  attemptStates,
+  controllerStates,
+  experimentStates,
+  onlineState,
+  onlineStates,
+} from "@/lib/states";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -122,8 +129,6 @@ type MachineRole = "worker" | "node";
 type Machine = (typeof api.machines.list)["_returnType"][number];
 
 // Long install commands wrap inside the code block instead of scrolling a narrow dialog sideways.
-const WRAP_CODE = "[&_pre]:break-all [&_pre]:whitespace-pre-wrap";
-
 function copyFailed() {
   toast.error("Clipboard access was blocked", {
     description: "Select the text above and copy it by hand.",
@@ -304,7 +309,7 @@ function MachinesPage() {
                             <CodeBlock
                               title={`${INSTALL_OS_SHELL[value]}, run on the new machine`}
                               code={registration.commands[value]}
-                              className={WRAP_CODE}
+                              wrap
                             />
                           </TabsContent>
                         ))}
@@ -322,7 +327,7 @@ function MachinesPage() {
                       </div>
 
                       {connectedMachine ? (
-                        <Alert className="text-success">
+                        <Alert variant="success">
                           <CheckIcon />
                           <AlertTitle>{connectedMachine.name} connected</AlertTitle>
                           <AlertDescription>
@@ -331,7 +336,7 @@ function MachinesPage() {
                           </AlertDescription>
                         </Alert>
                       ) : expired ? (
-                        <Alert className="text-warning">
+                        <Alert variant="warning">
                           <AlertTitle>This command has expired</AlertTitle>
                           <AlertDescription>
                             Generate a new command before installing.
@@ -343,39 +348,47 @@ function MachinesPage() {
                         </div>
                       )}
 
-                      <details className="rounded-lg border bg-subtle px-3 py-2.5 text-xs text-muted-foreground">
-                        <summary className="cursor-pointer font-medium text-foreground select-none">
+                      <Collapsible className="rounded-lg border bg-subtle px-3 py-2.5 text-xs text-muted-foreground">
+                        <CollapsibleTrigger className="group/trigger flex w-full items-center gap-1.5 text-left font-medium text-foreground select-none">
+                          <ChevronRightIcon
+                            aria-hidden="true"
+                            className="size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90"
+                          />
                           Advanced options
-                        </summary>
-                        <div className="mt-3 flex flex-col gap-2">
-                          <p>
-                            Append{" "}
-                            <code className="text-foreground">
-                              {installOs === "win" ? "-Name build-win-01" : "--name build-linux-01"}
-                            </code>{" "}
-                            to override the hostname.
-                          </p>
-                          <p>
-                            Append{" "}
-                            <code className="text-foreground">
-                              {installOs === "win" ? "-Labels gpu,hyperv" : "--labels gpu,docker"}
-                            </code>{" "}
-                            for host labels, which pin Profiles to this Worker.
-                          </p>
-                          <p>
-                            Append{" "}
-                            <code className="text-foreground">
-                              {installOs === "win" ? "-Slots 2" : "--slots 2"}
-                            </code>{" "}
-                            to override detected concurrency.
-                          </p>
-                        </div>
-                      </details>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <div className="mt-3 flex flex-col gap-2">
+                            <p>
+                              Append{" "}
+                              <code className="text-foreground">
+                                {installOs === "win"
+                                  ? "-Name build-win-01"
+                                  : "--name build-linux-01"}
+                              </code>{" "}
+                              to override the hostname.
+                            </p>
+                            <p>
+                              Append{" "}
+                              <code className="text-foreground">
+                                {installOs === "win" ? "-Labels gpu,hyperv" : "--labels gpu,docker"}
+                              </code>{" "}
+                              for host labels, which pin Profiles to this Worker.
+                            </p>
+                            <p>
+                              Append{" "}
+                              <code className="text-foreground">
+                                {installOs === "win" ? "-Slots 2" : "--slots 2"}
+                              </code>{" "}
+                              to override detected concurrency.
+                            </p>
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
                     </>
                   )}
 
                   {error && (
-                    <Alert variant="destructive">
+                    <Alert variant="danger">
                       <AlertDescription>{error}</AlertDescription>
                     </Alert>
                   )}
@@ -414,7 +427,7 @@ function MachinesPage() {
         </PageHeaderActions>
       </PageHeader>
 
-      <StatGroup className="@5xl:grid-cols-3">
+      <StatGroup>
         <Stat>
           <StatLabel>Machines online</StatLabel>
           <StatValue>
@@ -546,42 +559,34 @@ function MachinesPage() {
           </CardAction>
         </CardHeader>
 
-        {machines !== undefined && machines.length > 0 && (
-          <ul aria-label="Registered fleet" className="divide-y md:hidden">
-            {machines.map((machine) => (
-              <MachineListItem key={machine._id} machine={machine} now={now} />
-            ))}
-          </ul>
-        )}
-        <div className={cn(machines !== undefined && machines.length > 0 && "hidden md:block")}>
-          <DataTable
-            aria-label="Registered fleet"
-            className="min-w-[860px] text-[13px]"
-            columns={fleetColumns}
-            data={machines ?? []}
-            loading={machines === undefined}
-            loadingRows={3}
-            getRowId={(machine) => machine._id}
-            rowActions={machineActions}
-            empty={
-              <EmptyState>
-                <EmptyStateMedia>
-                  <ServerIcon />
-                </EmptyStateMedia>
-                <EmptyStateTitle>No machines registered</EmptyStateTitle>
-                <EmptyStateDescription>
-                  Add a host to make capacity available to the scheduler.
-                </EmptyStateDescription>
-                <EmptyStateActions>
-                  <Button size="sm" onClick={() => changeDialog(true)}>
-                    <PlusIcon data-icon="inline-start" />
-                    Add machine
-                  </Button>
-                </EmptyStateActions>
-              </EmptyState>
-            }
-          />
-        </div>
+        <DataTable
+          aria-label="Registered fleet"
+          className="min-w-[860px] text-[13px]"
+          columns={fleetColumns}
+          data={machines ?? []}
+          loading={machines === undefined}
+          loadingRows={3}
+          getRowId={(machine) => machine._id}
+          rowActions={machineActions}
+          stackBelow="2xl"
+          empty={
+            <EmptyState>
+              <EmptyStateMedia>
+                <ServerIcon />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No machines registered</EmptyStateTitle>
+              <EmptyStateDescription>
+                Add a host to make capacity available to the scheduler.
+              </EmptyStateDescription>
+              <EmptyStateActions>
+                <Button size="sm" onClick={() => changeDialog(true)}>
+                  <PlusIcon data-icon="inline-start" />
+                  Add machine
+                </Button>
+              </EmptyStateActions>
+            </EmptyState>
+          }
+        />
       </Card>
 
       <InviteOperator />
@@ -596,7 +601,7 @@ function buildFleetColumns(now: number) {
   return machineColumn.columns([
     machineColumn.accessor("name", {
       header: "Machine",
-      meta: { headerClassName: "w-[240px] pl-4", cellClassName: "pl-4" },
+      meta: { headerClassName: "w-[240px] pl-4", cellClassName: "pl-4", mobile: "primary" },
       cell: (cell) => {
         const machine = cell.row.original;
         const online = isMachineOnline(machine.lastSeen, now);
@@ -659,30 +664,6 @@ const machineActions = {
   ),
 };
 
-/** One machine as a stacked row, for screens too narrow for the fleet table. */
-function MachineListItem({ machine, now }: { machine: Machine; now: number }) {
-  const online = isMachineOnline(machine.lastSeen, now);
-  return (
-    <li className="flex flex-col gap-2 px-4 py-3 text-[13px]">
-      <div className="flex items-center justify-between gap-3">
-        <span className="flex min-w-0 items-center gap-2">
-          <MachineStatus online={online} label={false} />
-          <span className="truncate font-medium">{machine.name}</span>
-          <span className="sr-only">, {online ? "online" : "offline"}</span>
-        </span>
-        <LastSeen lastSeen={machine.lastSeen} now={now} />
-      </div>
-      <div className="text-xs text-muted-foreground">
-        {formatOs(machine.os)}
-        {machine.arch && `, ${hardwareLine(machine)}`}
-      </div>
-      <MachineSlots machine={machine} compact />
-      <ProfileReadiness readiness={machine.readiness} />
-      <ActiveRuns attempts={machine.currentAttempts} experiments={machine.currentExperiments} />
-    </li>
-  );
-}
-
 function hardwareLine(machine: Machine) {
   return [
     machine.arch,
@@ -704,7 +685,7 @@ function LastSeen({ lastSeen, now }: { lastSeen: number; now: number }) {
   );
 }
 
-function MachineSlots({ machine, compact = false }: { machine: Machine; compact?: boolean }) {
+function MachineSlots({ machine }: { machine: Machine }) {
   const full = machine.usedSlots >= machine.maxSlots;
   return (
     <div>
@@ -718,10 +699,9 @@ function MachineSlots({ machine, compact = false }: { machine: Machine; compact?
         />
         <span className="tabular-nums">
           {machine.usedSlots}/{machine.maxSlots}
-          {compact && " slots"}
         </span>
       </div>
-      {!compact && machine.recommendedSlots !== undefined && (
+      {machine.recommendedSlots !== undefined && (
         <p className="mt-1 max-w-52 text-xs whitespace-normal text-muted-foreground">
           {machine.slotPolicy === "fixed" ? "fixed" : "auto"}, configured{" "}
           {machine.configuredSlots ?? "auto"}, resource{" "}
@@ -729,7 +709,7 @@ function MachineSlots({ machine, compact = false }: { machine: Machine; compact?
           {machine.recommendedSlots}, effective {machine.maxSlots}
         </p>
       )}
-      {!compact && machine.benchmark && (
+      {machine.benchmark && (
         <p
           className="mt-1 text-xs text-muted-foreground"
           title={`CPU ${machine.benchmark.cpuSha256MiBps?.toFixed(0) ?? "n/a"} MiB/s · memory ${machine.benchmark.memoryCopyMiBps?.toFixed(0) ?? "n/a"} MiB/s · disk ${machine.benchmark.diskWriteMiBps?.toFixed(0) ?? "n/a"}/${machine.benchmark.diskReadMiBps?.toFixed(0) ?? "n/a"} MiB/s · fsync ${machine.benchmark.diskFsyncLatencyMs?.toFixed(1) ?? "n/a"} ms · package-link ${machine.benchmark.packageLinkOpsPerSec?.toFixed(0) ?? "n/a"} files/s · ${machine.benchmark.network.map((observation) => `${observation.target} ${observation.ttfbMs?.toFixed(0) ?? "n/a"} ms/${observation.throughputMbps?.toFixed(1) ?? "n/a"} Mbps`).join(" · ")} · measured ${formatAbsoluteTime(machine.benchmark.measuredAt)} · ${machine.benchmark.confidence}${machine.benchmark.errors.length > 0 ? ` · ${machine.benchmark.errors.join("; ")}` : ""}`}
@@ -758,7 +738,7 @@ function AddNodeInstructions() {
         root can read (<code className="text-foreground">chmod 600</code>). On the Node, which must
         run Linux with systemd:
       </p>
-      <CodeBlock title="Shell, run on the Node" code={command} className={WRAP_CODE} />
+      <CodeBlock title="Shell, run on the Node" code={command} wrap />
 
       <p className="text-xs text-muted-foreground">
         This deployment serves the installer and the checksum; the binary itself comes from the
@@ -767,33 +747,39 @@ function AddNodeInstructions() {
         saved afterwards.
       </p>
 
-      <details className="rounded-lg border bg-subtle px-3 py-2.5 text-xs text-muted-foreground">
-        <summary className="cursor-pointer font-medium text-foreground select-none">
+      <Collapsible className="rounded-lg border bg-subtle px-3 py-2.5 text-xs text-muted-foreground">
+        <CollapsibleTrigger className="group/trigger flex w-full items-center gap-1.5 text-left font-medium text-foreground select-none">
+          <ChevronRightIcon
+            aria-hidden="true"
+            className="size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90"
+          />
           Air-gapped
-        </summary>
-        <div className="mt-3 flex flex-col gap-2">
-          <p>
-            Append <code className="text-foreground">--source file:///path/to/infra-agent</code> to
-            take the bytes off local disk instead of the release.
-          </p>
-          <p>
-            Verification is identical either way: the digest arrives with this script over TLS from
-            this deployment, so where the bytes come from does not have to be trusted.
-          </p>
-          <p>
-            Append <code className="text-foreground">--no-docker</code> to skip the
-            container-runtime install.
-          </p>
-        </div>
-      </details>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-3 flex flex-col gap-2">
+            <p>
+              Append <code className="text-foreground">--source file:///path/to/infra-agent</code>{" "}
+              to take the bytes off local disk instead of the release.
+            </p>
+            <p>
+              Verification is identical either way: the digest arrives with this script over TLS
+              from this deployment, so where the bytes come from does not have to be trusted.
+            </p>
+            <p>
+              Append <code className="text-foreground">--no-docker</code> to skip the
+              container-runtime install.
+            </p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }
 
 function MachineStatus({ online, label = true }: { online: boolean; label?: boolean }) {
-  const view = onlineView(online);
-  if (label) return <Status state={view.state}>{view.label}</Status>;
-  const def = statusStates[view.state];
+  const state = onlineState(online);
+  if (label) return <Status states={onlineStates} state={state} />;
+  const def = onlineStates[state];
   return <StatusDot tone={def.tone} hollow={"hollow" in def && def.hollow} />;
 }
 
@@ -838,16 +824,6 @@ function ProfileReadiness({ readiness }: { readiness: Readiness[] }) {
   );
 }
 
-/** A state, with the dashboard's label, followed by what it belongs to. */
-function StateLine({ view, children }: { view: StateView; children: ReactNode }) {
-  return (
-    <Status state={view.state} className="min-w-0 text-xs">
-      {children}
-      <span className="text-muted-foreground">{view.label ?? statusStates[view.state].label}</span>
-    </Status>
-  );
-}
-
 function ActiveRuns({
   attempts,
   experiments,
@@ -862,17 +838,26 @@ function ActiveRuns({
   return (
     <div className="flex flex-col gap-1.5">
       {attempts.map((attempt) => (
-        <StateLine key={attempt._id} view={attemptView(attempt.state)}>
+        <Status
+          key={attempt._id}
+          states={attemptStates}
+          state={attempt.state}
+          className="min-w-0 text-xs"
+        >
           <span className="max-w-44 truncate font-mono text-foreground">{attempt.profile}</span>
-        </StateLine>
+          <span className="text-muted-foreground">{attemptStates[attempt.state].label}</span>
+        </Status>
       ))}
       {experiments.map((experiment) => (
-        <StateLine
+        <Status
           key={experiment._id}
-          view={{ ...experimentView(experiment.state), label: "experiment" }}
+          states={experimentStates}
+          state={experiment.state}
+          className="min-w-0 text-xs"
         >
           <span className="max-w-44 truncate text-foreground">{experiment.name}</span>
-        </StateLine>
+          <span className="text-muted-foreground">experiment</span>
+        </Status>
       ))}
     </div>
   );
@@ -1095,13 +1080,6 @@ const TOKEN_SLOT_COPY = {
   machine: "Worker credential",
 } as const;
 
-/** A controller's liveness in the registry's state map. A dead controller is a fault. */
-const CONTROLLER_VIEW: Record<"online" | "waiting" | "offline", StateView> = {
-  online: { state: "online" },
-  waiting: { state: "connecting", label: "Waiting for session" },
-  offline: { state: "unhealthy", label: "Offline" },
-};
-
 /**
  * Whether anything is listening for the Profile's jobs. A dead controller creates no Attempts, so
  * without this column it reads exactly like an idle Profile. Status is computed here against the
@@ -1134,12 +1112,8 @@ function ControllerStatus({
       </Tooltip>
     );
   }
-  const base = CONTROLLER_VIEW[liveness.status];
   // A retired Profile's controller is meant to be stopped, so it reads as quiet, not as a fault.
-  const view: StateView =
-    paused && liveness.status !== "online"
-      ? { state: "offline", label: base.label ?? statusStates[base.state].label }
-      : base;
+  const state = paused && liveness.status !== "online" ? "paused" : liveness.status;
   const primary = liveness.primary;
   const lastHeartbeatAt = liveness.lastHeartbeatAt;
   const detail =
@@ -1155,7 +1129,9 @@ function ControllerStatus({
         className="block max-w-full min-w-0 rounded-sm text-left"
         onClick={(event: MouseEvent) => event.stopPropagation()}
       >
-        <Status state={view.state}>{view.label}</Status>
+        <Status states={controllerStates} state={state}>
+          {controllerStates[liveness.status].label}
+        </Status>
         {primary !== undefined && (
           <span className="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
             {primary.hostname}, {primary.version}
@@ -1418,7 +1394,7 @@ function InviteOperator() {
         <CardContent className="flex flex-col gap-3">
           {grant !== undefined && (
             <>
-              <CodeBlock title="Invitation" code={grant.token} className={WRAP_CODE} />
+              <CodeBlock title="Invitation" code={grant.token} wrap />
               <p className="text-xs text-muted-foreground">
                 Expires {formatAbsoluteTime(grant.expiresAt)}. The recipient enters it on the
                 sign-in page under “Accept an invitation”.
@@ -1426,7 +1402,7 @@ function InviteOperator() {
             </>
           )}
           {error !== undefined && (
-            <Alert variant="destructive">
+            <Alert variant="danger">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}

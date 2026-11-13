@@ -12,6 +12,12 @@ import { cn } from "@/lib/utils";
  * form. Focus moves inside on open, stays there, and returns to the trigger on
  * close; Escape closes it. For a destructive confirmation use `AlertDialog`
  * or `ConfirmDialog`.
+ *
+ * When you control `open`, `onOpenChange` runs only for changes the dialog
+ * makes (a trigger, Escape, an outside click, a close button), not when you
+ * set `open` yourself. Keep form state in a component inside `DialogContent`,
+ * which mounts on each open, or reset it in `onOpenChangeComplete`, which
+ * runs for every change.
  */
 function Dialog(props: DialogPrimitive.Root.Props) {
   return <DialogPrimitive.Root {...props} />;

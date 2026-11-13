@@ -221,7 +221,7 @@ function RightsizePage() {
       </PageHeader>
 
       {error !== undefined && (
-        <Alert variant="destructive">
+        <Alert variant="danger">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}

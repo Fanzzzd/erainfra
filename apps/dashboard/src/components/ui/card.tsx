@@ -52,6 +52,11 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** The classes of {@link CardTitle}, in cva so a prefixed install prefixes them. */
+const cardTitleClasses = cva(
+  "font-heading text-base leading-snug font-semibold tracking-title group-data-[size=sm]/card:text-sm",
+);
+
 /**
  * The card title. It renders a `div`; pass `render={<h2 />}` to put it in
  * the page outline at the right level.
@@ -61,10 +66,7 @@ function CardTitle({ className, render, ...props }: useRender.ComponentProps<"di
     defaultTagName: "div",
     props: mergeProps<"div">(
       {
-        className: cn(
-          "font-heading text-base leading-snug font-semibold tracking-title group-data-[size=sm]/card:text-sm",
-          className,
-        ),
+        className: cn(cardTitleClasses(), className),
       },
       props,
     ),

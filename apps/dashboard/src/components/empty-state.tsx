@@ -52,6 +52,9 @@ function EmptyStateMedia({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** The classes of {@link EmptyStateTitle}, in cva so a prefixed install prefixes them. */
+const emptyStateTitleClasses = cva("font-heading text-sm font-semibold tracking-title");
+
 /**
  * The title, for example "No machines yet". It renders a `div`; pass
  * `render={<h2 />}` when it should be in the page outline.
@@ -59,10 +62,7 @@ function EmptyStateMedia({ className, ...props }: React.ComponentProps<"div">) {
 function EmptyStateTitle({ className, render, ...props }: useRender.ComponentProps<"div">) {
   return useRender({
     defaultTagName: "div",
-    props: mergeProps<"div">(
-      { className: cn("font-heading text-sm font-semibold tracking-title", className) },
-      props,
-    ),
+    props: mergeProps<"div">({ className: cn(emptyStateTitleClasses(), className) }, props),
     render,
     state: { slot: "empty-state-title" },
   });

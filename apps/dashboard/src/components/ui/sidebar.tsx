@@ -18,6 +18,9 @@ const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_KEYBOARD_SHORTCUT = "b";
 
+/** Flips an open state, for the functional form of a state setter. */
+const flip = (open: boolean) => !open;
+
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
   open: boolean;
@@ -81,7 +84,7 @@ function SidebarProvider({
 
   // Helper to toggle the sidebar.
   const toggleSidebar = React.useCallback(() => {
-    return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
+    return isMobile ? setOpenMobile(flip) : setOpen(flip);
   }, [isMobile, setOpen, setOpenMobile]);
 
   // Adds a keyboard shortcut to toggle the sidebar.
@@ -152,7 +155,10 @@ function Sidebar({
   label = "Navigation",
   ...props
 }: React.ComponentProps<"div"> & {
-  /** The name of the mobile navigation sheet, read by screen readers. */
+  /**
+   * The name screen readers read for the sidebar: the `aside` landmark on
+   * desktop and the navigation sheet on mobile.
+   */
   label?: string;
   side?: "left" | "right";
   variant?: "sidebar" | "floating" | "inset";
@@ -162,8 +168,9 @@ function Sidebar({
 
   if (collapsible === "none") {
     return (
-      <div
+      <aside
         data-slot="sidebar"
+        aria-label={label}
         className={cn(
           "flex h-full w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground",
           className,
@@ -171,7 +178,7 @@ function Sidebar({
         {...props}
       >
         {children}
-      </div>
+      </aside>
     );
   }
 
@@ -200,8 +207,10 @@ function Sidebar({
     );
   }
 
+  // An aside, so the brand and everything else in the sidebar sit in a landmark.
   return (
-    <div
+    <aside
+      aria-label={label}
       className="group peer hidden text-sidebar-foreground md:block"
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
@@ -242,7 +251,7 @@ function Sidebar({
           {children}
         </div>
       </div>
-    </div>
+    </aside>
   );
 }
 
@@ -385,6 +394,11 @@ function SidebarGroup({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** The classes of {@link SidebarGroupLabel}, in cva so a prefixed install prefixes them. */
+const sidebarGroupLabelClasses = cva(
+  "flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 focus-visible:-outline-offset-2 transition-[margin,opacity] duration-200 ease-linear group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 [&>svg]:size-4 [&>svg]:shrink-0",
+);
+
 /** The visible name of a section. */
 function SidebarGroupLabel({
   className,
@@ -395,10 +409,7 @@ function SidebarGroupLabel({
     defaultTagName: "div",
     props: mergeProps<"div">(
       {
-        className: cn(
-          "flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 focus-visible:-outline-offset-2 transition-[margin,opacity] duration-200 ease-linear group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 [&>svg]:size-4 [&>svg]:shrink-0",
-          className,
-        ),
+        className: cn(sidebarGroupLabelClasses(), className),
       },
       props,
     ),
@@ -410,6 +421,11 @@ function SidebarGroupLabel({
   });
 }
 
+/** The classes of {@link SidebarGroupAction}, in cva so a prefixed install prefixes them. */
+const sidebarGroupActionClasses = cva(
+  "absolute top-3.5 right-3 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground focus-visible:-outline-offset-2 transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:after:hidden [&>svg]:size-4 [&>svg]:shrink-0",
+);
+
 /** An icon button at the end of a group label, such as Add. */
 function SidebarGroupAction({
   className,
@@ -420,10 +436,7 @@ function SidebarGroupAction({
     defaultTagName: "button",
     props: mergeProps<"button">(
       {
-        className: cn(
-          "absolute top-3.5 right-3 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground focus-visible:-outline-offset-2 transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:after:hidden [&>svg]:size-4 [&>svg]:shrink-0",
-          className,
-        ),
+        className: cn(sidebarGroupActionClasses(), className),
       },
       props,
     ),
@@ -549,6 +562,20 @@ function SidebarMenuButton({
   );
 }
 
+/** The classes of {@link SidebarMenuAction}, in cva so a prefixed install prefixes them. */
+const sidebarMenuActionVariants = cva(
+  "absolute top-1.5 right-1 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground focus-visible:-outline-offset-2 transition-transform group-data-[collapsible=icon]:hidden peer-hover/menu-button:text-sidebar-accent-foreground peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 after:absolute after:-inset-2 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:after:hidden [&>svg]:size-4 [&>svg]:shrink-0",
+  {
+    variants: {
+      showOnHover: {
+        true: "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 peer-data-active/menu-button:text-sidebar-accent-foreground aria-expanded:opacity-100 md:opacity-0",
+        false: "",
+      },
+    },
+    defaultVariants: { showOnHover: false },
+  },
+);
+
 /** An icon button at the end of an item. `showOnHover` hides it until the item is hovered or focused. */
 function SidebarMenuAction({
   className,
@@ -563,12 +590,7 @@ function SidebarMenuAction({
     defaultTagName: "button",
     props: mergeProps<"button">(
       {
-        className: cn(
-          "absolute top-1.5 right-1 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground focus-visible:-outline-offset-2 transition-transform group-data-[collapsible=icon]:hidden peer-hover/menu-button:text-sidebar-accent-foreground peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 after:absolute after:-inset-2 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground md:after:hidden [&>svg]:size-4 [&>svg]:shrink-0",
-          showOnHover &&
-            "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 peer-data-active/menu-button:text-sidebar-accent-foreground aria-expanded:opacity-100 md:opacity-0",
-          className,
-        ),
+        className: cn(sidebarMenuActionVariants({ showOnHover }), className),
       },
       props,
     ),
@@ -656,6 +678,11 @@ function SidebarMenuSubItem({ className, ...props }: React.ComponentProps<"li">)
   );
 }
 
+/** The classes of {@link SidebarMenuSubButton}, in cva so a prefixed install prefixes them. */
+const sidebarMenuSubButtonClasses = cva(
+  "flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 text-sidebar-foreground focus-visible:-outline-offset-2 group-data-[collapsible=icon]:hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[size=md]:text-sm data-[size=sm]:text-xs data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-sidebar-accent-foreground",
+);
+
 /** A nested navigation link. */
 function SidebarMenuSubButton({
   render,
@@ -672,10 +699,7 @@ function SidebarMenuSubButton({
     defaultTagName: "a",
     props: mergeProps<"a">(
       {
-        className: cn(
-          "flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 text-sidebar-foreground focus-visible:-outline-offset-2 group-data-[collapsible=icon]:hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[size=md]:text-sm data-[size=sm]:text-xs data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-sidebar-accent-foreground",
-          className,
-        ),
+        className: cn(sidebarMenuSubButtonClasses(), className),
       },
       props,
     ),

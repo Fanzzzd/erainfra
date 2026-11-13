@@ -9,18 +9,19 @@
  * `data-era-root`. An app puts it on <html>; an embedded library puts it on
  * its own root element, so the host page keeps its styles.
  *
- * Theme: light and dark follow the system through light-dark(). Force one
- * with `data-theme="light|dark"` or the class `light` or `dark`, on the root,
- * an ancestor or any element inside it. Nested themes work because every
- * colour resolves where it is used.
+ * Theme: light and dark follow the system through `prefers-color-scheme`.
+ * Force one with `data-theme="light|dark"` or the class `light` or `dark`, on
+ * the root, an ancestor or any element inside it. A forced light theme wins
+ * over a dark system. Nested themes work because each block below also
+ * matches the elements inside the scope that set a theme.
  *
  * Product: `data-product="mesh|db|infra"` on any element sets `--product`
  * for everything inside it.
  *
  * Fonts: Geist Sans and Geist Mono from the @fontsource-variable packages.
  *
- * Browser floor: light-dark() needs Chrome 123, Edge 123, Firefox 120 or
- * Safari 17.5.
+ * Browser floor: the Tailwind CSS 4 floor, Safari 16.4, Chrome and Edge 111,
+ * Firefox 128. The theme does not use `light-dark()`, which needs Safari 17.5.
  */
 
 @import "tw-animate-css";
@@ -157,90 +158,249 @@
 }
 
 /*
- * Tokens: light-dark(light, dark). `:root[data-era-root]` outranks the
- * `:root` and `.dark` blocks that `shadcn init` writes, whatever the order.
+ * Tokens. The first block holds the values that are the same in both themes,
+ * then come the light values, the dark values for a dark system, and the dark
+ * values for a forced dark theme, as shadcn does. `:root[data-era-root]`
+ * outranks the `:root` and `.dark` blocks that `shadcn init` writes, whatever
+ * the order.
  *
- * The rule also matches every element inside the scope that sets a theme.
- * A colour token is resolved where it is declared, and Lightning CSS (which
- * Vite uses) rewrites light-dark() into variables for older browsers, so a
- * nested theme only takes effect if the tokens are declared again there.
+ * Each block also matches the elements inside the scope that set a theme. A
+ * token such as `--destructive: var(--danger)` resolves where it is declared,
+ * so a nested theme only takes effect if the tokens are declared again there.
  */
 :root[data-era-root],
 [data-era-root],
 [data-era-root] :is([data-theme], .light, .dark) {
+  /* Fonts, radius, and tokens that point at other tokens. */
   --font-geist: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-geist-mono:
     "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --radius: 0.5rem;
-
-  /* Surfaces and text. */
-  --background: light-dark(#ffffff, #0a0a0a);
-  --foreground: light-dark(#0a0a0a, #ededed);
-  --subtle: light-dark(#fafafa, #111111);
-  --card: light-dark(#ffffff, #0a0a0a);
-  --card-foreground: light-dark(#0a0a0a, #ededed);
-  --popover: light-dark(#ffffff, #161616);
-  --popover-foreground: light-dark(#0a0a0a, #ededed);
-  --primary: light-dark(#0a0a0a, #ededed);
-  --primary-foreground: light-dark(#ffffff, #0a0a0a);
-  --secondary: light-dark(#f2f2f2, #1f1f1f);
-  --secondary-foreground: light-dark(#0a0a0a, #ededed);
-  --muted: light-dark(#f2f2f2, #1a1a1a);
-  --muted-foreground: light-dark(#666666, #a1a1a1);
-  --accent: light-dark(#f2f2f2, #1f1f1f);
-  --accent-foreground: light-dark(#0a0a0a, #ededed);
-
-  /* Lines and controls. `--input` and `--ring` meet 3:1 on every surface. */
-  --border: light-dark(#eaeaea, #242424);
-  --input: light-dark(#8f8f8f, #6b6b6b);
-  --field: light-dark(#ffffff, #141414);
-  --ring: light-dark(#0a0a0a, #ededed);
-
-  /* Product signals. Each meets 4.5:1 as text; `-foreground` is text on it. */
-  --mesh: light-dark(#7c3aed, #a78bfa);
-  --mesh-foreground: light-dark(#ffffff, #0a0a0a);
-  --db: light-dark(#2461e6, #60a5fa);
-  --db-foreground: light-dark(#ffffff, #0a0a0a);
-  --infra: light-dark(#157a3a, #4ade80);
-  --infra-foreground: light-dark(#ffffff, #0a0a0a);
-
-  /* Status. Same contract as the product signals. */
-  --success: light-dark(#157a3a, #4ade80);
-  --success-foreground: light-dark(#ffffff, #0a0a0a);
-  --warning: light-dark(#a65108, #fbbf24);
-  --warning-foreground: light-dark(#ffffff, #0a0a0a);
-  --danger: light-dark(#c42b30, #f87171);
-  --danger-foreground: light-dark(#ffffff, #0a0a0a);
-  --info: light-dark(#0369a1, #38bdf8);
-  --info-foreground: light-dark(#ffffff, #0a0a0a);
   --destructive: var(--danger);
   --destructive-foreground: var(--danger-foreground);
+  --chart-1: var(--product);
+  --sidebar-ring: var(--ring);
+}
+
+/* Light: the default, and forced on the root or an element inside it. */
+:root[data-era-root],
+[data-era-root],
+[data-era-root]:is(.light, [data-theme="light"]),
+[data-era-root] :is(.light, [data-theme="light"]) {
+  /* Surfaces and text. */
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --subtle: #fafafa;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f2;
+  --secondary-foreground: #0a0a0a;
+  --muted: #f2f2f2;
+  --muted-foreground: #666666;
+  --accent: #f2f2f2;
+  --accent-foreground: #0a0a0a;
+
+  /* Lines and controls. `--input` and `--ring` meet 3:1 on every surface. */
+  --border: #eaeaea;
+  --input: #8f8f8f;
+  --field: #ffffff;
+  --ring: #0a0a0a;
+
+  /* Product signals. Each meets 4.5:1 as text; `-foreground` is text on it. */
+  --mesh: #7c3aed;
+  --mesh-foreground: #ffffff;
+  --db: #2461e6;
+  --db-foreground: #ffffff;
+  --infra: #157a3a;
+  --infra-foreground: #ffffff;
+
+  /* Status. Same contract as the product signals. */
+  --success: #157a3a;
+  --success-foreground: #ffffff;
+  --warning: #a65108;
+  --warning-foreground: #ffffff;
+  --danger: #c42b30;
+  --danger-foreground: #ffffff;
+  --info: #0369a1;
+  --info-foreground: #ffffff;
 
   /* Charts. Series 1 is the product; the rest meet 3:1 on every surface. */
-  --chart-1: var(--product);
-  --chart-2: light-dark(#737373, #a1a1a1);
-  --chart-3: light-dark(#0e7490, #22d3ee);
-  --chart-4: light-dark(#a16207, #facc15);
-  --chart-5: light-dark(#be185d, #f472b6);
+  --chart-2: #737373;
+  --chart-3: #0e7490;
+  --chart-4: #a16207;
+  --chart-5: #be185d;
 
   /* Sidebar. */
-  --sidebar: light-dark(#fafafa, #0f0f0f);
-  --sidebar-foreground: light-dark(#0a0a0a, #ededed);
-  --sidebar-primary: light-dark(#0a0a0a, #ededed);
-  --sidebar-primary-foreground: light-dark(#ffffff, #0a0a0a);
-  --sidebar-accent: light-dark(#efefef, #1c1c1c);
-  --sidebar-accent-foreground: light-dark(#0a0a0a, #ededed);
-  --sidebar-border: light-dark(#eaeaea, #242424);
-  --sidebar-ring: var(--ring);
+  --sidebar: #fafafa;
+  --sidebar-foreground: #0a0a0a;
+  --sidebar-primary: #0a0a0a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #efefef;
+  --sidebar-accent-foreground: #0a0a0a;
+  --sidebar-border: #eaeaea;
 
   /* The scrim behind dialogs and sheets. */
-  --overlay: light-dark(rgb(0 0 0 / 0.2), rgb(0 0 0 / 0.6));
+  --overlay: rgb(0 0 0 / 0.2);
 
   /* The raised frame of an app window on a marketing page. */
   --window-shadow:
-    0 0 0 1px light-dark(#e5e5e5, #2a2a2a),
-    0 1px 2px light-dark(rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.4)),
-    0 24px 64px -16px light-dark(rgb(0 0 0 / 0.16), rgb(0 0 0 / 0.7));
+    0 0 0 1px #e5e5e5, 0 1px 2px rgb(0 0 0 / 0.04), 0 24px 64px -16px rgb(0 0 0 / 0.16);
+
+  /* Chart colours from `ChartConfig.theme` read these two switches. */
+  --era-on-light: initial;
+  --era-on-dark: ;
+}
+
+/* Dark from the system, unless the root or one of its ancestors forces light. */
+@media (prefers-color-scheme: dark) {
+  [data-era-root]:not(.light, [data-theme="light"], :is(.light, [data-theme="light"]) *) {
+    /* Surfaces and text. */
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    --subtle: #111111;
+    --card: #0a0a0a;
+    --card-foreground: #ededed;
+    --popover: #161616;
+    --popover-foreground: #ededed;
+    --primary: #ededed;
+    --primary-foreground: #0a0a0a;
+    --secondary: #1f1f1f;
+    --secondary-foreground: #ededed;
+    --muted: #1a1a1a;
+    --muted-foreground: #a1a1a1;
+    --accent: #1f1f1f;
+    --accent-foreground: #ededed;
+
+    /* Lines and controls. `--input` and `--ring` meet 3:1 on every surface. */
+    --border: #242424;
+    --input: #6b6b6b;
+    --field: #141414;
+    --ring: #ededed;
+
+    /* Product signals. Each meets 4.5:1 as text; `-foreground` is text on it. */
+    --mesh: #a78bfa;
+    --mesh-foreground: #0a0a0a;
+    --db: #60a5fa;
+    --db-foreground: #0a0a0a;
+    --infra: #4ade80;
+    --infra-foreground: #0a0a0a;
+
+    /* Status. Same contract as the product signals. */
+    --success: #4ade80;
+    --success-foreground: #0a0a0a;
+    --warning: #fbbf24;
+    --warning-foreground: #0a0a0a;
+    --danger: #f87171;
+    --danger-foreground: #0a0a0a;
+    --info: #38bdf8;
+    --info-foreground: #0a0a0a;
+
+    /* Charts. Series 1 is the product; the rest meet 3:1 on every surface. */
+    --chart-2: #a1a1a1;
+    --chart-3: #22d3ee;
+    --chart-4: #facc15;
+    --chart-5: #f472b6;
+
+    /* Sidebar. */
+    --sidebar: #0f0f0f;
+    --sidebar-foreground: #ededed;
+    --sidebar-primary: #ededed;
+    --sidebar-primary-foreground: #0a0a0a;
+    --sidebar-accent: #1c1c1c;
+    --sidebar-accent-foreground: #ededed;
+    --sidebar-border: #242424;
+
+    /* The scrim behind dialogs and sheets. */
+    --overlay: rgb(0 0 0 / 0.6);
+
+    /* The raised frame of an app window on a marketing page. */
+    --window-shadow:
+      0 0 0 1px #2a2a2a, 0 1px 2px rgb(0 0 0 / 0.4), 0 24px 64px -16px rgb(0 0 0 / 0.7);
+
+    /* Chart colours from `ChartConfig.theme` read these two switches. */
+    --era-on-light: ;
+    --era-on-dark: initial;
+  }
+}
+
+/*
+ * Dark forced on an ancestor of the root, on the root, or on an element inside
+ * it. The ancestor selector has no specificity, so a root that forces light
+ * itself stays light.
+ */
+:where(.dark, [data-theme="dark"]) [data-era-root],
+[data-era-root]:is(.dark, [data-theme="dark"]),
+[data-era-root] :is(.dark, [data-theme="dark"]) {
+  /* Surfaces and text. */
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --subtle: #111111;
+  --card: #0a0a0a;
+  --card-foreground: #ededed;
+  --popover: #161616;
+  --popover-foreground: #ededed;
+  --primary: #ededed;
+  --primary-foreground: #0a0a0a;
+  --secondary: #1f1f1f;
+  --secondary-foreground: #ededed;
+  --muted: #1a1a1a;
+  --muted-foreground: #a1a1a1;
+  --accent: #1f1f1f;
+  --accent-foreground: #ededed;
+
+  /* Lines and controls. `--input` and `--ring` meet 3:1 on every surface. */
+  --border: #242424;
+  --input: #6b6b6b;
+  --field: #141414;
+  --ring: #ededed;
+
+  /* Product signals. Each meets 4.5:1 as text; `-foreground` is text on it. */
+  --mesh: #a78bfa;
+  --mesh-foreground: #0a0a0a;
+  --db: #60a5fa;
+  --db-foreground: #0a0a0a;
+  --infra: #4ade80;
+  --infra-foreground: #0a0a0a;
+
+  /* Status. Same contract as the product signals. */
+  --success: #4ade80;
+  --success-foreground: #0a0a0a;
+  --warning: #fbbf24;
+  --warning-foreground: #0a0a0a;
+  --danger: #f87171;
+  --danger-foreground: #0a0a0a;
+  --info: #38bdf8;
+  --info-foreground: #0a0a0a;
+
+  /* Charts. Series 1 is the product; the rest meet 3:1 on every surface. */
+  --chart-2: #a1a1a1;
+  --chart-3: #22d3ee;
+  --chart-4: #facc15;
+  --chart-5: #f472b6;
+
+  /* Sidebar. */
+  --sidebar: #0f0f0f;
+  --sidebar-foreground: #ededed;
+  --sidebar-primary: #ededed;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #1c1c1c;
+  --sidebar-accent-foreground: #ededed;
+  --sidebar-border: #242424;
+
+  /* The scrim behind dialogs and sheets. */
+  --overlay: rgb(0 0 0 / 0.6);
+
+  /* The raised frame of an app window on a marketing page. */
+  --window-shadow:
+    0 0 0 1px #2a2a2a, 0 1px 2px rgb(0 0 0 / 0.4), 0 24px 64px -16px rgb(0 0 0 / 0.7);
+
+  /* Chart colours from `ChartConfig.theme` read these two switches. */
+  --era-on-light: ;
+  --era-on-dark: initial;
 }
 
 /* Zero specificity, so `data-product` and `data-theme` on the root win. */
@@ -286,7 +446,9 @@
 
 /*
  * Base styles, confined to the scope. They also stand in for the parts of
- * Tailwind's preflight that a library build leaves out.
+ * Tailwind's preflight that a library build leaves out: box sizing, borders,
+ * margins, headings, lists, links, tables and form controls. With preflight
+ * loaded as well, they set the same values.
  */
 @layer base {
   [data-era-root] {
@@ -298,11 +460,15 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
+  /*
+   * Borders: none until a utility sets a width, then solid in --border, as
+   * with preflight. Tailwind's `border` utilities set only the width.
+   */
   :where([data-era-root]) *,
   :where([data-era-root]) ::before,
   :where([data-era-root]) ::after {
     box-sizing: border-box;
-    border-color: var(--border);
+    border: 0 solid var(--border);
     outline-color: var(--ring);
   }
   :where([data-era-root]) :where(h1, h2, h3, h4, h5, h6, p, dl, dd, figure, pre, blockquote) {
@@ -312,9 +478,34 @@
     font-size: inherit;
     font-weight: inherit;
   }
-  :where([data-era-root]) :where(button, input, select, textarea) {
-    font: inherit;
+  /* Lists, links and tables: no browser styling, as with preflight. */
+  :where([data-era-root]) :where(ol, ul, menu) {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  :where([data-era-root]) :where(a) {
     color: inherit;
+    text-decoration: inherit;
+  }
+  :where([data-era-root]) :where(table) {
+    border-collapse: collapse;
+    border-color: inherit;
+    text-indent: 0;
+  }
+  /* Form controls take the text styles of the page and lose the browser's chrome. */
+  :where([data-era-root]) :where(button, input, select, textarea, optgroup) {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background-color: transparent;
+  }
+  :where([data-era-root])
+    :where(button, input:is([type="button"], [type="reset"], [type="submit"])) {
+    appearance: button;
   }
   :where([data-era-root]) :where(code, kbd, pre, samp) {
     font-family: var(--font-geist-mono);

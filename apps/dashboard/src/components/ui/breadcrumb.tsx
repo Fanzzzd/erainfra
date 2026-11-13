@@ -1,5 +1,6 @@
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
+import { cva } from "class-variance-authority";
 import { MoreHorizontalIcon } from "lucide-react";
 import * as React from "react";
 
@@ -37,13 +38,16 @@ function BreadcrumbItem({ className, ...props }: React.ComponentProps<"li">) {
   );
 }
 
+/** The classes of {@link BreadcrumbLink}, in cva so a prefixed install prefixes them. */
+const breadcrumbLinkClasses = cva("transition-colors hover:text-foreground");
+
 /** A link to a parent page. Pass `render` to use your router's link. */
 function BreadcrumbLink({ className, render, ...props }: useRender.ComponentProps<"a">) {
   return useRender({
     defaultTagName: "a",
     props: mergeProps<"a">(
       {
-        className: cn("transition-colors hover:text-foreground", className),
+        className: cn(breadcrumbLinkClasses(), className),
       },
       props,
     ),

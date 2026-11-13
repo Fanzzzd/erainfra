@@ -105,7 +105,15 @@ function AppShell({
       >
         {layout === "viewport" ? (
           <a
+            // The href is the fallback before hydration. The handler moves focus
+            // without changing location.hash, which a hash router reads as a route.
             href={`#${contentId}`}
+            onClick={(event) => {
+              const target = document.getElementById(contentId);
+              if (!target) return;
+              event.preventDefault();
+              target.focus();
+            }}
             className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:shadow-lg"
           >
             Skip to content
@@ -240,17 +248,22 @@ function AppShellSidebarFooter({ className, children, ...props }: React.Componen
 /** The main column on the subtle surface: `<main>` in the viewport layout, a `div` when contained. */
 function AppShellMain({ className, ...props }: React.ComponentProps<"div">) {
   const { layout } = useAppShell();
-  const classes = cn("min-w-0 bg-subtle", className);
   if (layout === "contained") {
     return (
       <div
         data-slot="app-shell-main"
-        className={cn("relative flex flex-1 flex-col overflow-hidden", classes)}
+        className={cn("relative flex min-w-0 flex-1 flex-col overflow-hidden bg-subtle", className)}
         {...props}
       />
     );
   }
-  return <SidebarInset data-slot="app-shell-main" className={classes} {...props} />;
+  return (
+    <SidebarInset
+      data-slot="app-shell-main"
+      className={cn("min-w-0 bg-subtle", className)}
+      {...props}
+    />
+  );
 }
 
 /** The bar at the top of the main column: the mobile menu button, a breadcrumb and actions. */
@@ -282,7 +295,11 @@ function AppShellTopBarActions({ className, ...props }: React.ComponentProps<"di
   );
 }
 
-/** The page area, padded and capped at a readable width. The skip link lands here. */
+/**
+ * The page area, padded and capped at a readable width. The skip link lands
+ * here. In the contained layout it scrolls when the page is taller than the
+ * shell.
+ */
 function AppShellContent({ className, children, ...props }: React.ComponentProps<"div">) {
   const { layout, contentId } = useAppShell();
   return (
@@ -292,7 +309,7 @@ function AppShellContent({ className, children, ...props }: React.ComponentProps
       data-slot="app-shell-content"
       className={cn(
         "@container flex-1 outline-none",
-        layout === "contained" ? "overflow-hidden p-6" : "p-4 sm:p-6 lg:p-8",
+        layout === "contained" ? "min-h-0 overflow-y-auto p-6" : "p-4 sm:p-6 lg:p-8",
         className,
       )}
       {...props}

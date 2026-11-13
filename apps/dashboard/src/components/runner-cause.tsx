@@ -14,7 +14,7 @@ export type RunnerCause = {
  */
 export function RunnerCauseNote({ cause }: { cause: RunnerCause }) {
   return (
-    <Alert className="*:[svg]:text-warning">
+    <Alert variant="warning">
       <ServerCrash />
       <AlertTitle>The runner failed this run</AlertTitle>
       <AlertDescription>

@@ -37,7 +37,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { heartbeatsByName, linkState } from "@/lib/infra";
-import { type LinkState, linkView } from "@/lib/states";
+import { type LinkState, linkStates } from "@/lib/states";
 
 export const Route = createFileRoute("/links")({ component: LinksPage });
 
@@ -89,11 +89,10 @@ const columns = column.columns([
   column.accessor("liveState", {
     header: "State",
     cell: (cell) => {
-      const view = linkView(cell.getValue());
       const reason = cell.row.original.reason;
       return (
         <div>
-          <Status state={view.state}>{view.label}</Status>
+          <Status states={linkStates} state={cell.getValue()} />
           {reason !== null && (
             <div className="max-w-xs text-xs whitespace-normal text-muted-foreground">{reason}</div>
           )}
@@ -277,7 +276,7 @@ function LinksPage() {
               {pending ? "Declaring" : "Declare"}
             </Button>
             {error !== undefined && (
-              <Alert variant="destructive" className="sm:col-span-2 lg:col-span-5">
+              <Alert variant="danger" className="sm:col-span-2 lg:col-span-5">
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}

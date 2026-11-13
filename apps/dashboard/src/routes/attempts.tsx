@@ -3,7 +3,7 @@ import type { Id } from "@erainfra/backend/dataModel";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { ActivityIcon, EllipsisIcon } from "lucide-react";
+import { ActivityIcon } from "lucide-react";
 import { createContext, useContext, useMemo, useState } from "react";
 
 import { copyText } from "@/components/copy-button";
@@ -22,7 +22,6 @@ import {
 } from "@/components/page-header";
 import { LiveIndicator, Status } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
@@ -32,19 +31,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { summaryLine, type MetricsSummary } from "@/lib/metrics";
-import { attemptView, type AttemptState } from "@/lib/states";
+import { attemptStates, type AttemptState } from "@/lib/states";
 import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -94,12 +90,9 @@ function timingLine(attempt: Attempt, now: number) {
 }
 
 function RunState({ attempt }: { attempt: Attempt }) {
-  const view = attemptView(attempt.state);
   return (
     <div>
-      <Status state={view.state} className="font-medium">
-        {view.label}
-      </Status>
+      <Status states={attemptStates} state={attempt.state} className="font-medium" />
       {attempt.result && (
         <p className="mt-0.5 pl-4 text-xs text-muted-foreground">{attempt.result}</p>
       )}
@@ -179,6 +172,7 @@ const columns = column.columns([
   column.accessor("state", {
     header: "State",
     enableSorting: false,
+    meta: { mobile: "primary" },
     cell: (cell) => <RunState attempt={cell.row.original} />,
   }),
   column.accessor("profile", {
@@ -193,6 +187,7 @@ const columns = column.columns([
     id: "job",
     header: "Repository and job",
     enableSorting: false,
+    meta: { mobile: "primary" },
     cell: (cell) => <RunJob attempt={cell.row.original} />,
   }),
   column.accessor((row) => row.machineName ?? "", {
@@ -280,55 +275,6 @@ const rowActions = {
   items: (run: RunRow) => <RunMenuItems run={run} />,
 };
 
-/** Narrow screens: one stacked row per run, from design option A. */
-function RunList({ runs }: { runs: RunRow[] }) {
-  const now = useContext(NowContext);
-  return (
-    <ul className="divide-y" aria-label="Runs">
-      {runs.map((run) => {
-        const view = attemptView(run.state);
-        const repository = repositoryOf(run);
-        return (
-          <li key={run._id} className="flex gap-2 py-3 pr-2 pl-4 text-[13px]">
-            <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <Status state={view.state} className="font-medium">
-                  {view.label}
-                </Status>
-                <span className="text-muted-foreground tabular-nums">{timingLine(run, now)}</span>
-              </div>
-              <p className="truncate font-medium">
-                {run.displayName ?? run.runnerName}
-                {repository !== undefined && (
-                  <span className="font-normal text-muted-foreground"> in {repository}</span>
-                )}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">{run.profile}</p>
-              <p className="truncate text-xs text-muted-foreground">
-                {run.machineName ?? "Unassigned"}, {run.executor}
-                {run.summary !== undefined && `, ${summaryLine(run.summary)}`}
-              </p>
-              {(run.lastError ?? run.cancelReason) && (
-                <p className="truncate text-xs text-danger">{run.lastError ?? run.cancelReason}</p>
-              )}
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={<Button variant="ghost" size="icon-sm" aria-label={runLabel(run)} />}
-              >
-                <EllipsisIcon aria-hidden="true" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <RunMenuItems run={run} />
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 function AttemptsPage() {
   const attempts = useQuery(api.attempts.list);
   const summaries = useQuery(
@@ -396,31 +342,17 @@ function AttemptsPage() {
               </TabsList>
             </div>
           </Tabs>
-          <div className="hidden @3xl:block">
-            <DataTable
-              aria-label="Runs"
-              columns={columns}
-              data={visible}
-              getRowId={(run) => run._id}
-              loading={rows === undefined}
-              loadingRows={4}
-              empty={empty}
-              rowActions={rowActions}
-            />
-          </div>
-          <div className="@3xl:hidden">
-            {rows === undefined ? (
-              <div className="space-y-3 p-4" aria-busy="true">
-                {[0, 1, 2].map((index) => (
-                  <Skeleton key={index} className="h-16" />
-                ))}
-              </div>
-            ) : visible.length === 0 ? (
-              empty
-            ) : (
-              <RunList runs={visible} />
-            )}
-          </div>
+          <DataTable
+            aria-label="Runs"
+            columns={columns}
+            data={visible}
+            getRowId={(run) => run._id}
+            loading={rows === undefined}
+            loadingRows={4}
+            empty={empty}
+            rowActions={rowActions}
+            stackBelow="2xl"
+          />
         </Card>
 
         <Dialog

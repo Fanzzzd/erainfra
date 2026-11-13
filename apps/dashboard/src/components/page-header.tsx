@@ -1,5 +1,6 @@
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
+import { cva } from "class-variance-authority";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
@@ -23,6 +24,11 @@ function PageHeader({ className, ...props }: React.ComponentProps<"header">) {
   );
 }
 
+/** The classes of {@link PageHeaderTitle}, in cva so a prefixed install prefixes them. */
+const pageHeaderTitleClasses = cva(
+  "font-heading text-2xl leading-tight font-semibold tracking-title text-balance @2xl/page-header:col-start-1",
+);
+
 /**
  * The page title. It renders an `h1`; pass `render={<h2 />}` when the page
  * sits inside another, such as a product window on a marketing page.
@@ -32,10 +38,7 @@ function PageHeaderTitle({ className, render, ...props }: useRender.ComponentPro
     defaultTagName: "h1",
     props: mergeProps<"h1">(
       {
-        className: cn(
-          "font-heading text-2xl leading-tight font-semibold tracking-title text-balance @2xl/page-header:col-start-1",
-          className,
-        ),
+        className: cn(pageHeaderTitleClasses(), className),
       },
       props,
     ),

@@ -17,7 +17,7 @@ import {
   EmptyStateTitle,
 } from "@/components/empty-state";
 import { PageHeader, PageHeaderDescription, PageHeaderTitle } from "@/components/page-header";
-import { Status, type StatusState } from "@/components/status";
+import { Status } from "@/components/status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -58,6 +58,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
+import { deliveryStates, incidentStates } from "@/lib/states";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
@@ -66,7 +67,6 @@ type Overview = (typeof api.alerts.overview)["_returnType"];
 type Incident = Overview["incidents"][number];
 type Rule = Overview["rules"][number];
 type Destination = Overview["destinations"][number];
-type Delivery = NonNullable<Destination["lastDelivery"]>;
 type Condition = Rule["condition"];
 type ConditionKind = Condition["kind"];
 
@@ -95,14 +95,20 @@ async function runOrReject(action: () => Promise<unknown>, failure: string) {
 }
 
 /** A dialog or confirmation opened from a row menu. The row outlives `open`, so the text stays while it closes. */
+/**
+ * A dialog opened from a row menu. `session` changes on every open; key the dialog on it so each
+ * open starts from the row's current values, with no error left over from the last one.
+ */
 function useRowDialog<T>() {
   const [row, setRow] = useState<T>();
   const [open, setOpen] = useState(false);
+  const [session, setSession] = useState(0);
   const show = useCallback((next: T) => {
     setRow(next);
+    setSession((current) => current + 1);
     setOpen(true);
   }, []);
-  return { row, open, setOpen, show };
+  return { row, open, setOpen, show, session };
 }
 
 function SettingsPage() {
@@ -151,20 +157,6 @@ function AlertsSettings() {
   );
 }
 
-// Incident and delivery states the registry's state map lacks borrow the closest registry state
-// and keep their own word.
-const INCIDENT_STATE: Record<Incident["status"], { state: StatusState; label: string }> = {
-  firing: { state: "unhealthy", label: "Firing" },
-  pending: { state: "degraded", label: "Pending" },
-  resolved: { state: "healthy", label: "Resolved" },
-};
-
-const DELIVERY_STATE: Record<Delivery["status"], { state: StatusState; label: string }> = {
-  delivered: { state: "succeeded", label: "Delivered" },
-  failed: { state: "failed", label: "Failed" },
-  pending: { state: "preparing", label: "Pending" },
-};
-
 function SectionHeader({
   title,
   description,
@@ -202,12 +194,9 @@ function incidentColumns(now: number) {
       enableSorting: false,
       cell: (cell) => {
         const incident = cell.row.original;
-        const view = INCIDENT_STATE[incident.status];
         return (
           <div>
-            <Status state={view.state} className="font-medium">
-              {view.label}
-            </Status>
+            <Status states={incidentStates} state={incident.status} className="font-medium" />
             {incident.status === "firing" && !incident.notified && (
               <p className="mt-1 text-xs text-muted-foreground">Not notified</p>
             )}
@@ -461,7 +450,7 @@ function RulesCard({
       />
       {editing.row === undefined ? null : (
         <RuleDialog
-          key={editing.row._id}
+          key={`${editing.row._id}-${editing.session}`}
           destinations={destinations}
           rule={editing.row}
           open={editing.open}
@@ -566,7 +555,7 @@ function buildCondition(kind: ConditionKind, form: ConditionForm): Condition {
 function FormError({ error }: { error: string | undefined }) {
   if (error === undefined) return null;
   return (
-    <Alert variant="destructive">
+    <Alert variant="danger">
       <AlertDescription>{error}</AlertDescription>
     </Alert>
   );
@@ -848,10 +837,9 @@ function destinationColumns(now: number) {
       cell: (cell) => {
         const last = cell.row.original.lastDelivery;
         if (last === undefined) return <span className="text-muted-foreground">Never</span>;
-        const view = DELIVERY_STATE[last.status];
         return (
           <div>
-            <Status state={view.state}>{view.label}</Status>
+            <Status states={deliveryStates} state={last.status} />
             <p className="text-xs text-muted-foreground">
               {last.event}, {formatRelativeTime(last.createdAt, now)}
             </p>
@@ -969,7 +957,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
       />
       {replacing.row === undefined ? null : (
         <ReplaceUrlDialog
-          key={replacing.row._id}
+          key={`${replacing.row._id}-${replacing.session}`}
           destination={replacing.row}
           open={replacing.open}
           onOpenChange={replacing.setOpen}
@@ -1219,7 +1207,7 @@ function SecretOnce({
       <KeyRoundIcon />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription className="flex flex-col gap-3">
-        <CodeBlock code={value} className="[&_pre]:break-all [&_pre]:whitespace-pre-wrap" />
+        <CodeBlock code={value} wrap />
         <p>{note}</p>
         {children}
         <Button type="button" size="sm" variant="outline" className="w-fit" onClick={onDismiss}>

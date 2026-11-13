@@ -33,6 +33,8 @@ type CopyButtonProps = Omit<React.ComponentProps<typeof Button>, "value" | "onCl
    * for example a toast; the button then skips its own live message.
    */
   onCopy?: (ok: boolean) => void;
+  /** What the button announces after a successful copy. Defaults to "Copied". */
+  copiedMessage?: string;
 };
 
 /**
@@ -43,6 +45,7 @@ type CopyButtonProps = Omit<React.ComponentProps<typeof Button>, "value" | "onCl
 function CopyButton({
   value,
   onCopy,
+  copiedMessage = "Copied",
   children,
   className,
   variant = "ghost",
@@ -64,7 +67,7 @@ function CopyButton({
   };
 
   const Icon = state === "copied" ? CheckIcon : CopyIcon;
-  const message = state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "";
+  const message = state === "copied" ? copiedMessage : state === "failed" ? "Copy failed" : "";
 
   return (
     <Button
