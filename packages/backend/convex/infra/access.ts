@@ -21,7 +21,7 @@ export async function currentUser(ctx: QueryCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (identity === null) return null;
   const userId = ctx.db.normalizeId("users", identity.subject.split("|")[0]);
-  return userId === null ? null : await ctx.db.get(userId);
+  return userId === null ? null : ctx.db.get(userId);
 }
 
 /**
@@ -102,7 +102,7 @@ export async function insertUser(
     .first();
   if (existing !== null) throw new ConvexError("An account with this email already exists");
   const first = (await ctx.db.query("users").first()) === null;
-  return await ctx.db.insert("users", {
+  return ctx.db.insert("users", {
     email,
     emailVerificationTime: undefined,
     role: first ? "owner" : input.role,

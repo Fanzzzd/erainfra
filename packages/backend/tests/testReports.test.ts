@@ -77,7 +77,7 @@ async function report(
 }
 
 async function setup(t: Harness) {
-  return await t.run(async (ctx) => {
+  return t.run(async (ctx) => {
     const machine = { os: "linux" as const, labels: [], maxSlots: 2, usedSlots: 1, lastSeen: T0 };
     const machineId = await ctx.db.insert("machines", {
       ...machine,
@@ -105,7 +105,7 @@ async function attempt(
   }> = {},
 ) {
   runnerCounter++;
-  return await t.run(async (ctx) =>
+  return t.run(async (ctx) =>
     ctx.db.insert("attempts", {
       profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
@@ -134,7 +134,7 @@ function send(t: Harness, attemptId: Id<"attempts">, body: TestReport, token = "
 }
 
 async function tables(t: Harness) {
-  return await t.run(async (ctx) => ({
+  return t.run(async (ctx) => ({
     reports: await ctx.db.query("testReports").collect(),
     cases: await ctx.db.query("testCases").collect(),
     flaky: await ctx.db.query("flakyTests").collect(),
@@ -170,7 +170,7 @@ describe("test report ingestion", () => {
     const hashes = await t.run(async (ctx) => ctx.db.query("testReportHashes").collect());
     expect(hashes).toEqual([
       expect.objectContaining({
-        reportId: reports[0]!._id,
+        reportId: reports[0]._id,
         passed: body.passed,
         failing: await passedHash("pkg::TestA"),
       }),
@@ -199,7 +199,7 @@ describe("test report ingestion", () => {
     const attemptId = await attempt(t, machineId);
     expect(await send(t, attemptId, golden)).toBe(true);
     const { reports, cases, flaky } = await tables(t);
-    expect(reports[0]!.totals).toEqual(golden.totals);
+    expect(reports[0].totals).toEqual(golden.totals);
     expect(cases).toHaveLength(golden.cases!.length);
     // Two cases the runners retried into a pass: gotestsum's rerun and Surefire's flakyFailure.
     expect(flaky.map((row) => row.testId).toSorted()).toEqual([
@@ -300,8 +300,8 @@ describe("flaky detection", () => {
     );
     ({ flaky } = await tables(t));
     expect(flaky).toHaveLength(1);
-    expect(flaky[0]!.occurrences).toBe(2);
-    expect(flaky[0]!.attemptIds).toEqual([third, rerun]);
+    expect(flaky[0].occurrences).toBe(2);
+    expect(flaky[0].attemptIds).toEqual([third, rerun]);
   });
 
   it("does not call a test flaky across different commits or repositories", async () => {
@@ -515,8 +515,8 @@ describe("flaky detection", () => {
     const attemptId = await attempt(t, machineId, { workflowRunId: 200, workflowRef, headBranch });
     await send(t, attemptId, await report([failed("pkg::TestA")], [], { commitSha: COMMIT_B }));
     const { reports, cases } = await tables(t);
-    expect(reports[0]!.branch).toBe(branch);
-    expect(cases[0]!.branch).toBe(branch);
+    expect(reports[0].branch).toBe(branch);
+    expect(cases[0].branch).toBe(branch);
   });
 
   it("compares a scheduled run with a push of the same commit on the same branch", async () => {
@@ -550,7 +550,7 @@ describe("flaky detection", () => {
 });
 
 function slow(id: string, durationMs: number): TestCase {
-  return { id, suite: id.split("::")[0], name: id.split("::")[1]!, status: "passed", durationMs };
+  return { id, suite: id.split("::")[0], name: id.split("::")[1], status: "passed", durationMs };
 }
 
 describe("test result views", () => {
@@ -593,7 +593,7 @@ describe("test result views", () => {
 
     const runs = await operator.query(api.testReports.runs, { repository: "acme/app" });
     expect(runs.map((run) => run.attemptId)).toEqual([red, expect.anything()]);
-    expect(runs[0]!.failures.map((failure) => failure.testId)).toEqual(["s::broken"]);
+    expect(runs[0].failures.map((failure) => failure.testId)).toEqual(["s::broken"]);
     const failedOnly = await operator.query(api.testReports.runs, { failedOnly: true });
     expect(failedOnly.map((run) => run.attemptId)).toEqual([red]);
 
@@ -720,7 +720,7 @@ describe("test report model", () => {
     const joined = sorted.join("");
     for (const hash of sorted) expect(hasPassed(joined, hash)).toBe(true);
     expect(hasPassed(joined, "000000000000")).toBe(false);
-    expect(hasPassed("", sorted[0]!)).toBe(false);
+    expect(hasPassed("", sorted[0])).toBe(false);
   });
 
   it("reads branches from workflow refs and names repositories", () => {

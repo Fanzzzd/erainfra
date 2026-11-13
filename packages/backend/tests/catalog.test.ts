@@ -119,7 +119,7 @@ describe("preview gating", () => {
       expect(entry, `${label} left the catalog`).toBeDefined();
       expect(entry?.preview, `${label} became preview-gated`).toBeUndefined();
       expect(
-        selectImageForMachine(["self-hosted", label], { os: entry!.os, labels: [] }),
+        selectImageForMachine(["self-hosted", label], { os: entry.os, labels: [] }),
         `${label} stopped scheduling without an opt-in`,
       ).toBeDefined();
     }

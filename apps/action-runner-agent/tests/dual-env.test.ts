@@ -150,7 +150,7 @@ describe("attemptEnvironment", () => {
         imageRelease: `ghcr.io/example/runner@sha256:${"a".repeat(64)}`,
         vcpus: 4,
         memoryMiB: 16384,
-      } as Parameters<typeof attemptInvocation>[0]);
+      });
       const child = attemptEnvironment(env);
       assert.equal(child.RC_PROFILE, "linux-js");
       assert.equal(child.RC_PROFILE_EGRESS, "");

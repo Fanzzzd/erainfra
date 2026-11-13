@@ -49,7 +49,7 @@ export const FIRECRACKER_FACTS = {
 /** A signed-in dashboard operator backed by a real users row. */
 export async function operator(t: Harness) {
   const userId = await t.run((ctx) => ctx.db.insert("users", { email: "ops@example.com" }));
-  return t.withIdentity({ subject: userId as Id<"users"> });
+  return t.withIdentity({ subject: userId });
 }
 
 export async function insertProfile(t: Harness, fields: Partial<Doc<"profiles">> = {}) {

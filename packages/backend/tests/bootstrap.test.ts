@@ -2,7 +2,6 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { api } from "../convex/_generated/api";
-import type { Id } from "../convex/_generated/dataModel";
 import { SIGNUP_REFUSED } from "../convex/bootstrap.ts";
 import {
   constantTimeEqual,
@@ -30,10 +29,10 @@ function harness() {
  * gate every new account passes through, so this is the surface that matters.
  */
 async function signUp(t: Harness, email: string, signupGrant?: string) {
-  return await t.run(async (ctx) => {
+  return t.run(async (ctx) => {
     const { consumeSignupGrant } = await import("../convex/bootstrap.ts");
     await consumeSignupGrant(ctx, signupGrant);
-    return await ctx.db.insert("users", { email, emailVerificationTime: undefined });
+    return ctx.db.insert("users", { email, emailVerificationTime: undefined });
   });
 }
 
@@ -102,7 +101,7 @@ describe("bootstrap.claim", () => {
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toBe("rejected");
 
-    const throttle = await t.run(async (ctx) => await ctx.db.query("bootstrapThrottle").first());
+    const throttle = await t.run(async (ctx) => ctx.db.query("bootstrapThrottle").first());
     expect(throttle?.failures).toBe(1);
   });
 
@@ -135,7 +134,7 @@ describe("bootstrap.claim", () => {
     expect(result.ok).toBe(true);
     expect(result.ok === true && result.grantToken).toMatch(/^[0-9a-f]{64}$/);
 
-    const throttle = await t.run(async (ctx) => await ctx.db.query("bootstrapThrottle").first());
+    const throttle = await t.run(async (ctx) => ctx.db.query("bootstrapThrottle").first());
     expect(throttle?.failures).toBe(0);
   });
 
@@ -144,9 +143,9 @@ describe("bootstrap.claim", () => {
     const result = await t.mutation(api.bootstrap.claim, { secret: SECRET });
     const token = result.ok === true ? result.grantToken : "";
 
-    const grants = await t.run(async (ctx) => await ctx.db.query("signupGrants").collect());
+    const grants = await t.run(async (ctx) => ctx.db.query("signupGrants").collect());
     expect(grants).toHaveLength(1);
-    expect(grants[0]!.tokenHash).not.toBe(token);
+    expect(grants[0].tokenHash).not.toBe(token);
     expect(JSON.stringify(grants)).not.toContain(token);
   });
 
@@ -180,7 +179,7 @@ describe("sign-up gate", () => {
     const t = harness();
     await expect(signUp(t, "attacker@example.com")).rejects.toThrow(SIGNUP_REFUSED);
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(0);
   });
 
@@ -197,7 +196,7 @@ describe("sign-up gate", () => {
     await signUp(t, "admin@example.com", token);
     await expect(signUp(t, "second@example.com", token)).rejects.toThrow(SIGNUP_REFUSED);
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 
@@ -249,7 +248,7 @@ describe("sign-up gate", () => {
     const created = outcomes.filter((outcome) => outcome.status === "fulfilled");
 
     expect(created).toHaveLength(1);
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 
@@ -272,7 +271,7 @@ describe("sign-up gate", () => {
     await expect(signUp(t, "late@example.com", token)).rejects.toThrow(SIGNUP_REFUSED);
     await expect(signUp(t, "late@example.com", token)).rejects.toThrow(SIGNUP_REFUSED);
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 });
@@ -285,21 +284,20 @@ describe("bootstrap.invite", () => {
 
   it("lets an authenticated admin open sign-up for exactly one more account", async () => {
     const t = harness();
-    const userId = await t.run(
-      async (ctx) =>
-        await ctx.db.insert("users", {
-          email: "admin@example.com",
-          emailVerificationTime: undefined,
-        }),
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        email: "admin@example.com",
+        emailVerificationTime: undefined,
+      }),
     );
 
     const { grantToken } = await t
-      .withIdentity({ subject: userId as Id<"users"> })
+      .withIdentity({ subject: userId })
       .mutation(api.bootstrap.invite, {});
 
     // An invite works after bootstrap, where a bootstrap grant would not.
     await signUp(t, "colleague@example.com", grantToken);
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(2);
 
     await expect(signUp(t, "third@example.com", grantToken)).rejects.toThrow(SIGNUP_REFUSED);
@@ -309,19 +307,18 @@ describe("bootstrap.invite", () => {
 describe("existing users", () => {
   it("leaves an existing account untouched and still able to sign in", async () => {
     const t = harness();
-    const userId = await t.run(
-      async (ctx) =>
-        await ctx.db.insert("users", {
-          email: "existing@example.com",
-          emailVerificationTime: undefined,
-        }),
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        email: "existing@example.com",
+        emailVerificationTime: undefined,
+      }),
     );
 
     // The gate only runs for *new* accounts; signing in resolves an existing
     // account before createOrUpdateUser is ever consulted.
-    const before = await t.run(async (ctx) => await ctx.db.get(userId));
+    const before = await t.run(async (ctx) => ctx.db.get(userId));
     await expect(signUp(t, "someone-else@example.com")).rejects.toThrow(SIGNUP_REFUSED);
-    const after = await t.run(async (ctx) => await ctx.db.get(userId));
+    const after = await t.run(async (ctx) => ctx.db.get(userId));
 
     expect(after).toEqual(before);
   });

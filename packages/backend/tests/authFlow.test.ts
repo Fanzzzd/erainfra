@@ -60,7 +60,7 @@ async function signUp(
   signupGrant?: string,
   password: string = PASSWORD,
 ) {
-  return await t.action(api.auth.signIn, {
+  return t.action(api.auth.signIn, {
     provider: "password",
     params: {
       email,
@@ -72,7 +72,7 @@ async function signUp(
 }
 
 async function signInAttempt(t: ReturnType<typeof harness>, email: string, password: string) {
-  return await t.action(api.auth.signIn, {
+  return t.action(api.auth.signIn, {
     provider: "password",
     params: { email, password, flow: "signIn" },
   });
@@ -103,7 +103,7 @@ describe("password sign-up, end to end", () => {
     const t = harness();
     await expect(signUp(t, "attacker@example.com")).rejects.toThrow();
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(0);
   });
 
@@ -111,7 +111,7 @@ describe("password sign-up, end to end", () => {
     const t = harness();
     await expect(signUp(t, "attacker@example.com", "f".repeat(64))).rejects.toThrow();
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(0);
   });
 
@@ -119,9 +119,9 @@ describe("password sign-up, end to end", () => {
     const t = harness();
     await signUp(t, "admin@example.com", await claimGrant(t));
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
-    expect(users[0]!.email).toBe("admin@example.com");
+    expect(users[0].email).toBe("admin@example.com");
   });
 
   it("does not persist the grant on the user row", async () => {
@@ -129,7 +129,7 @@ describe("password sign-up, end to end", () => {
     const grant = await claimGrant(t);
     await signUp(t, "admin@example.com", grant);
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(JSON.stringify(users)).not.toContain(grant);
   });
 
@@ -138,7 +138,7 @@ describe("password sign-up, end to end", () => {
     await signUp(t, "admin@example.com", await claimGrant(t));
 
     await expect(signUp(t, "second@example.com")).rejects.toThrow();
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 
@@ -154,7 +154,7 @@ describe("password sign-up, end to end", () => {
     await signUp(t, "colleague@example.com", grantToken);
     await expect(signUp(t, "third@example.com", grantToken)).rejects.toThrow();
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(2);
   });
 
@@ -169,7 +169,7 @@ describe("password sign-up, end to end", () => {
       params: { email: "admin@example.com", password: PASSWORD, flow: "signIn" },
     });
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 
@@ -234,7 +234,7 @@ describe("password policy, end to end", () => {
     );
 
     expect(message).toContain(PASSWORD_REQUIREMENTS);
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(0);
   });
 
@@ -246,7 +246,7 @@ describe("password policy, end to end", () => {
     await expect(signUp(t, "admin@example.com", grant, "short")).rejects.toThrow();
 
     await signUp(t, "admin@example.com", grant);
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 
@@ -254,7 +254,7 @@ describe("password policy, end to end", () => {
     const t = harness();
     await signUp(t, "admin@example.com", await claimGrant(t), "a".repeat(MIN_PASSWORD_LENGTH));
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users).toHaveLength(1);
   });
 

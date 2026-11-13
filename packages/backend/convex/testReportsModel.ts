@@ -440,7 +440,7 @@ export async function findFlaky<Ref>(
   const hashes = await Promise.all(failing.map((testCase) => passedHash(testCase.id)));
   failing.forEach((testCase, index) => {
     if (findings.size >= limit || findings.has(testCase.id)) return;
-    if (peers.some((peer) => hasPassed(peer.passed, hashes[index]!))) {
+    if (peers.some((peer) => hasPassed(peer.passed, hashes[index]))) {
       findings.set(testCase.id, { testCase, evidence: "rerun" });
     }
   });

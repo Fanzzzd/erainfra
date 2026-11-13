@@ -207,9 +207,7 @@ function failedReport(token: string, runnerVersion?: string) {
 }
 
 async function storedRunnerVersion(t: Harness) {
-  return await t.run(
-    async (ctx) => (await ctx.db.query("readinessEvidence").unique())?.runnerVersion,
-  );
+  return t.run(async (ctx) => (await ctx.db.query("readinessEvidence").unique())?.runnerVersion);
 }
 
 describe("runnerVersion readiness fact", () => {
@@ -236,7 +234,7 @@ describe("runnerVersion readiness fact", () => {
     await t.mutation(api.workerApi.reportReadiness, failedReport("token-a", "2.336.0"));
 
     const breaches = async () =>
-      await t.run(async (ctx) => {
+      t.run(async (ctx) => {
         const observation = await loadFleetObservation(ctx, NOW, { recentWindowMs: DAY });
         return evaluateCondition({ kind: "runner-release-expiring" }, undefined, observation);
       });

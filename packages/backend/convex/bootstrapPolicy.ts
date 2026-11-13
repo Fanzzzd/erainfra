@@ -82,7 +82,7 @@ export function constantTimeEqual(a: Uint8Array, b: Uint8Array) {
   }
   let difference = 0;
   for (const [index, byte] of a.entries()) {
-    difference |= byte ^ b[index]!;
+    difference |= byte ^ b[index];
   }
   return difference === 0;
 }

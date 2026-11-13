@@ -30,7 +30,7 @@ import { endpointAddrValidator, placementRoleValidator } from "./tables";
 const HINT_LENGTH = NODE_CREDENTIAL_PREFIX.length + 8;
 
 export async function nodeByName(ctx: MutationCtx, name: string) {
-  return await ctx.db
+  return ctx.db
     .query("nodes")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
@@ -45,7 +45,7 @@ export async function ensureNode(
 ) {
   const existing = await nodeByName(ctx, name);
   if (existing !== null) return existing._id;
-  return await ctx.db.insert("nodes", { name, source, createdAt });
+  return ctx.db.insert("nodes", { name, source, createdAt });
 }
 
 async function issueCredential(
@@ -93,7 +93,7 @@ export const enroll = mutation({
   returns: v.object({ nodeId: v.id("nodes"), credential: v.string() }),
   handler: async (ctx, args) => {
     const { user, actor } = await requirePermission(ctx, "node.admin");
-    return await enrollNode(ctx, { name: args.name, actor, createdBy: user._id });
+    return enrollNode(ctx, { name: args.name, actor, createdBy: user._id });
   },
 });
 
@@ -263,7 +263,7 @@ export const authenticate = internalQuery({
     v.object({ nodeId: v.id("nodes"), credentialId: v.id("nodeCredentials") }),
   ),
   handler: async (ctx, args) => {
-    return await authenticateNode(ctx, args.credential);
+    return authenticateNode(ctx, args.credential);
   },
 });
 
@@ -337,7 +337,7 @@ export const list = query({
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
     const nodes = await ctx.db.query("nodes").collect();
-    return await Promise.all(
+    return Promise.all(
       nodes.map(async (node) => {
         const credentials = await ctx.db
           .query("nodeCredentials")

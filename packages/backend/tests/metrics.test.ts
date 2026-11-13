@@ -65,20 +65,20 @@ function parseExposition(text: string): Parsed {
     const where = `line ${index + 1}: ${line}`;
     const helpMatch = HELP_LINE.exec(line);
     if (helpMatch !== null) {
-      const name = helpMatch[1] as string;
+      const name = helpMatch[1];
       expect(help.has(name), `duplicate HELP, ${where}`).toBe(false);
-      help.set(name, helpMatch[2] as string);
+      help.set(name, helpMatch[2]);
       continue;
     }
     const typeMatch = TYPE_LINE.exec(line);
     if (typeMatch !== null) {
-      const name = typeMatch[1] as string;
+      const name = typeMatch[1];
       expect(types.has(name), `duplicate TYPE, ${where}`).toBe(false);
       expect(
         series.some((sample) => sample.name === name),
         `TYPE after samples, ${where}`,
       ).toBe(false);
-      types.set(name, typeMatch[2] as string);
+      types.set(name, typeMatch[2]);
       current = name;
       continue;
     }
@@ -90,14 +90,11 @@ function parseExposition(text: string): Parsed {
     const labels: Record<string, string> = {};
     const labelText = line.slice(name.length).match(/^\{(.*)\} /)?.[1] ?? "";
     for (const label of labelText.matchAll(new RegExp(LABEL, "g"))) {
-      const key = label[1] as string;
+      const key = label[1];
       expect(key in labels, `duplicate label, ${where}`).toBe(false);
-      labels[key] = (label[2] as string)
-        .replace(/\\n/g, "\n")
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, "\\");
+      labels[key] = label[2].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
     }
-    const identity = `${name}${JSON.stringify(Object.entries(labels).toSorted())}`;
+    const identity = `${name}${JSON.stringify(Object.entries(labels).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))}`;
     expect(seen.has(identity), `duplicate series, ${where}`).toBe(false);
     seen.add(identity);
     const rawValue = sampleMatch?.at(-1) as string;
@@ -383,7 +380,7 @@ describe("GET /metrics exposition", () => {
     await t.run(async (ctx) => {
       const base = { createdAt: NOW - 60 * MINUTE, source: "enrolled" as const };
       const credential = async (nodeId: Id<"nodes">, revokedAt?: number) =>
-        await ctx.db.insert("nodeCredentials", {
+        ctx.db.insert("nodeCredentials", {
           nodeId,
           tokenHash: `hash-${nodeId}`,
           hint: "erainfra_node_abcd",

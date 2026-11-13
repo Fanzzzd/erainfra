@@ -30,7 +30,7 @@ export async function upsertApp(
     .unique();
   const now = Date.now();
   const fields = { ...input, updatedAt: now };
-  if (existing === null) return await ctx.db.insert("apps", fields);
+  if (existing === null) return ctx.db.insert("apps", fields);
   await ctx.db.replace(existing._id, fields);
   return existing._id;
 }
@@ -107,7 +107,7 @@ export async function upsertRoute(
     .unique();
   const now = Date.now();
   const fields = { ...input, updatedAt: now };
-  if (existing === null) return await ctx.db.insert("appRoutes", fields);
+  if (existing === null) return ctx.db.insert("appRoutes", fields);
   await ctx.db.replace(existing._id, fields);
   return existing._id;
 }
@@ -129,7 +129,7 @@ export async function upsertMeshLink(
     .unique();
   const now = Date.now();
   const fields = { ...input, updatedAt: now };
-  if (existing === null) return await ctx.db.insert("meshLinks", fields);
+  if (existing === null) return ctx.db.insert("meshLinks", fields);
   await ctx.db.replace(existing._id, fields);
   return existing._id;
 }

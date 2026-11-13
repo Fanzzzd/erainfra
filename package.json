@@ -14,8 +14,8 @@
     "convex": "pnpm --filter @erainfra/backend exec convex",
     "deploy:control-plane": "pnpm --filter @erainfra/backend run deploy",
     "release:package": "pnpm --filter @erainfra/release build-go-assets && turbo run build --filter=@erainfra/agent && pnpm --filter @erainfra/release package-agent",
-    "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --fix --deny-warnings",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "check:structure": "node scripts/check-structure.mjs",
@@ -26,8 +26,9 @@
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
-    "oxfmt": "0.76.0",
-    "oxlint": "1.91.0",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
+    "oxlint-tsgolint": "7.0.2007",
     "turbo": "2.11.10",
     "typescript": "catalog:"
   },

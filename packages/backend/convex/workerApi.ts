@@ -622,7 +622,7 @@ export const reportAttemptMetrics = mutation({
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    return await recordAttemptMetrics(ctx, machine._id, args);
+    return recordAttemptMetrics(ctx, machine._id, args);
   },
 });
 
@@ -639,7 +639,7 @@ export const reportAttemptTests = mutation({
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
-    return await recordAttemptTests(ctx, machine._id, args);
+    return recordAttemptTests(ctx, machine._id, args);
   },
 });
 
@@ -790,7 +790,7 @@ export const readiness = query({
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);
     const served = await servedProfiles(ctx, machine);
-    return await Promise.all(
+    return Promise.all(
       served.map(async (profile): Promise<Infer<typeof updateReadinessValidator>> => {
         const row = await ctx.db
           .query("workerReadiness")

@@ -194,7 +194,7 @@ function readVersion(packageJsonPath: string) {
   const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
   const version =
     typeof parsed === "object" && parsed !== null && "version" in parsed
-      ? (parsed as { version: unknown }).version
+      ? parsed.version
       : undefined;
   if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/.test(version)) {
     throw new Error(`${packageJsonPath} has no valid semver version`);

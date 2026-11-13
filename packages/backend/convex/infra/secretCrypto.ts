@@ -134,7 +134,7 @@ export async function unwrapDataKey(
     );
   }
   const raw = await open(master.key, { ciphertext: row.wrappedKey, iv: row.iv }, dataKeyAad(scope));
-  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 export async function encryptValue(
@@ -143,7 +143,7 @@ export async function encryptValue(
   name: string,
   value: string,
 ) {
-  return await seal(dataKey, encoder.encode(value), valueAad(scope, name));
+  return seal(dataKey, encoder.encode(value), valueAad(scope, name));
 }
 
 export async function decryptValue(

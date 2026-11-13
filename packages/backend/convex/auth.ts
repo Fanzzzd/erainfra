@@ -101,7 +101,7 @@ function withUniformFailures<Provider>(provider: Provider): Provider {
         }
       },
     },
-  } as Provider;
+  };
 }
 
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
@@ -134,7 +134,7 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       // insertUser makes the first account the owner and refuses a second account for an email.
       // An invite issued before roles existed carries none; the accounts those created could do
       // everything an admin can, so that is what they still get.
-      return await insertUser(ctx, {
+      return insertUser(ctx, {
         email: profile.email,
         role: grant.role ?? (grant.kind === "bootstrap" ? "owner" : "admin"),
       });

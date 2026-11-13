@@ -101,7 +101,7 @@ export const list = query({
   ),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    return await listProfiles(ctx);
+    return listProfiles(ctx);
   },
 });
 

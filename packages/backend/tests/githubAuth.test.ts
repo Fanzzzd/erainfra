@@ -102,7 +102,7 @@ describe("runner release read credential", () => {
     expect(constructedApps).toEqual([]);
     expect(anonymousClients).toEqual([undefined]);
     expect(releaseReadVia()).toBe("anonymous");
-    const row = await t.run(async (ctx) => await ctx.db.query("runnerReleases").first());
+    const row = await t.run(async (ctx) => ctx.db.query("runnerReleases").first());
     expect(row?.releases.map((release) => release.version)).toEqual(["2.330.0"]);
   });
 });

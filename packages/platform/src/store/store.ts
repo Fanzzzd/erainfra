@@ -10,7 +10,7 @@
 // A Transaction buffers its writes and applies them in one `transactionSync` at commit, so a
 // mutation that throws leaves nothing behind, as in Convex.
 
-import { convexToJson, jsonToConvex, type GenericValidator, type Value } from "convex/values";
+import { convexToJson, jsonToConvex, type GenericValidator } from "convex/values";
 
 import {
   evaluate,
@@ -66,7 +66,7 @@ function newId(): string {
   return out;
 }
 
-const serialize = (doc: Doc): string => JSON.stringify(convexToJson(doc as Value));
+const serialize = (doc: Doc): string => JSON.stringify(convexToJson(doc));
 const deserialize = (text: string): Doc => jsonToConvex(JSON.parse(text)) as Doc;
 
 type Write = { table: string; doc: Doc | null };
@@ -421,14 +421,14 @@ export class Transaction {
     let o = 0;
     for (const row of this.store.scan(plan.table, plan.index, lo, hi, plan.desc)) {
       if (touched.has(row.doc._id as string)) continue;
-      while (o < overlay.length && before(overlay[o] as Row, row, plan.desc)) {
-        const next = overlay[o++] as Row;
+      while (o < overlay.length && before(overlay[o], row, plan.desc)) {
+        const next = overlay[o++];
         if (plan.matches(next.doc)) yield { key: next.key, doc: clone(next.doc) };
       }
       if (plan.matches(row.doc)) yield row;
     }
     while (o < overlay.length) {
-      const next = overlay[o++] as Row;
+      const next = overlay[o++];
       if (plan.matches(next.doc)) yield { key: next.key, doc: clone(next.doc) };
     }
   }
@@ -530,7 +530,7 @@ export class Query {
     private readonly tx: Transaction,
     private readonly table: string,
   ) {
-    this.range = new IndexRangeBuilder(this.index, SYSTEM_INDEXES.by_creation_time as string[]);
+    this.range = new IndexRangeBuilder(this.index, SYSTEM_INDEXES.by_creation_time);
   }
 
   withIndex(name: string, build?: (q: IndexRangeBuilder) => IndexRangeBuilder): this {

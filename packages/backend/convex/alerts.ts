@@ -420,7 +420,7 @@ export const createRule = mutation({
     await requireDashboardAuth(ctx);
     const rule = await validateRule(ctx, args);
     const now = Date.now();
-    return await ctx.db.insert("alertRules", {
+    return ctx.db.insert("alertRules", {
       ...rule,
       enabled: true,
       createdAt: now,

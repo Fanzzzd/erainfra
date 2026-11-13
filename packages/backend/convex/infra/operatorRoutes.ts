@@ -164,7 +164,7 @@ function prefixRoute(
     const parts = segments(request, prefix);
     const route = parts === null ? null : pick(parts);
     if (route === null) return apiError(404, "not_found", "No such API route");
-    return await authorized(ctx, request, route.needed, route.handler);
+    return authorized(ctx, request, route.needed, route.handler);
   });
 }
 

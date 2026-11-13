@@ -233,7 +233,7 @@ export class SyncSession {
     );
     const mods: Modification[] = [];
     subs.forEach(([id, sub], i) => {
-      const outcome = outcomes[i] as QueryOutcome;
+      const outcome = outcomes[i];
       const mod = modificationFor(id, outcome);
       const text = JSON.stringify(mod);
       sub.reads = outcome.reads;

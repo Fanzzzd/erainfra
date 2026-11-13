@@ -42,7 +42,7 @@ const FIRECRACKER_FACTS = {
 };
 
 async function registerProfile(t: Harness, name: string, workerLabels?: string[]) {
-  return await t.mutation(internal.controllerApi.registerProfile, {
+  return t.mutation(internal.controllerApi.registerProfile, {
     name,
     scaleSetName: name,
     ...CONTRACT,
@@ -53,7 +53,7 @@ async function registerProfile(t: Harness, name: string, workerLabels?: string[]
 }
 
 async function addMachine(t: Harness, name: string, labels: string[]) {
-  return await t.run(async (ctx) =>
+  return t.run(async (ctx) =>
     ctx.db.insert("machines", {
       name,
       os: "linux",
@@ -67,7 +67,7 @@ async function addMachine(t: Harness, name: string, labels: string[]) {
 }
 
 async function reportReady(t: Harness, machine: string, profile: string) {
-  return await t.mutation(api.workerApi.reportReadiness, {
+  return t.mutation(api.workerApi.reportReadiness, {
     token: `token-${machine}`,
     profile,
     ...CONTRACT,
@@ -89,7 +89,7 @@ async function createAttempt(t: Harness, profile: string, runnerId: number) {
 }
 
 async function placements(t: Harness) {
-  return await t.run(async (ctx) => {
+  return t.run(async (ctx) => {
     const machines = new Map(
       (await ctx.db.query("machines").collect()).map((machine) => [machine._id, machine.name]),
     );

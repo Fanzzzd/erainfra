@@ -69,28 +69,28 @@ export const start = internalMutation({
       });
       return { ok: false as const, error };
     };
-    if (!APP.test(args.app)) return await refuse("app must be lowercase alphanumeric + dashes");
+    if (!APP.test(args.app)) return refuse("app must be lowercase alphanumeric + dashes");
     if ((args.upload === undefined) === (args.repo === undefined))
-      return await refuse("send exactly one of upload or repo");
+      return refuse("send exactly one of upload or repo");
     if (
       args.port !== undefined &&
       (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535)
     )
-      return await refuse("port must be an integer from 1 to 65535");
+      return refuse("port must be an integer from 1 to 65535");
     let source: NonNullable<Doc<"appDeployments">["source"]>;
     if (args.upload !== undefined) {
       const storageId = ctx.db.system.normalizeId("_storage", args.upload);
       const file = storageId === null ? null : await ctx.db.system.get(storageId);
-      if (storageId === null || file === null) return await refuse("no such upload");
+      if (storageId === null || file === null) return refuse("no such upload");
       if (file.size === 0 || file.size > MAX_UPLOAD_BYTES)
-        return await refuse(`an upload must be 1 byte to ${MAX_UPLOAD_BYTES} bytes`);
+        return refuse(`an upload must be 1 byte to ${MAX_UPLOAD_BYTES} bytes`);
       source = { kind: "upload", storageId };
     } else {
-      if (!REPO.test(args.repo!)) return await refuse("repo must be owner/name");
+      if (!REPO.test(args.repo!)) return refuse("repo must be owner/name");
       const branch = args.branch ?? "main";
-      if (!BRANCH.test(branch) || branch.includes("..")) return await refuse("invalid branch");
+      if (!BRANCH.test(branch) || branch.includes("..")) return refuse("invalid branch");
       if (args.sha !== undefined && !/^[0-9a-f]{40}$/.test(args.sha))
-        return await refuse("sha must be a full 40-character commit id");
+        return refuse("sha must be a full 40-character commit id");
       source = {
         kind: "git",
         repo: args.repo!,
@@ -99,19 +99,19 @@ export const start = internalMutation({
       };
     }
     const adopt = args.adopt ?? [];
-    if (adopt.length > 32) return await refuse("adopt names at most 32 containers");
+    if (adopt.length > 32) return refuse("adopt names at most 32 containers");
     for (const name of adopt) {
       if (!name.startsWith(`${args.app}-`) || !SERVICE.test(name.slice(args.app.length + 1)))
-        return await refuse(`adopt ${name}: name a container of this App, <app>-<service>`);
+        return refuse(`adopt ${name}: name a container of this App, <app>-<service>`);
     }
-    if (new Set(adopt).size !== adopt.length) return await refuse("adopt names a container twice");
+    if (new Set(adopt).size !== adopt.length) return refuse("adopt names a container twice");
     let buildNodeId: Id<"nodes"> | undefined;
     let defaultNodeId: Id<"nodes"> | undefined;
     try {
       buildNodeId = await nodeNamed(ctx, args.buildNode);
       defaultNodeId = await nodeNamed(ctx, args.node);
     } catch (e) {
-      return await refuse(e instanceof ConvexError ? String(e.data) : "unknown Node");
+      return refuse(e instanceof ConvexError ? String(e.data) : "unknown Node");
     }
     const deploymentId = await createRun(ctx, {
       app: args.app,
@@ -172,7 +172,7 @@ export const get = internalQuery({
   handler: async (ctx, args) => {
     const id = ctx.db.normalizeId("appDeployments", args.id);
     const row = id === null ? null : await ctx.db.get(id);
-    return row === null ? null : await view(ctx, row);
+    return row === null ? null : view(ctx, row);
   },
 });
 
@@ -191,6 +191,6 @@ export const list = internalQuery({
             .withIndex("by_app_startedAt", (q) => q.eq("app", args.app!))
             .order("desc")
             .take(args.limit);
-    return await Promise.all(rows.map((row) => view(ctx, row)));
+    return Promise.all(rows.map((row) => view(ctx, row)));
   },
 });

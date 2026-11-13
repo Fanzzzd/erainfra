@@ -127,13 +127,13 @@ describe("right-sizing math", () => {
 
   it("only moves a job between Profiles that boot the same way", () => {
     const [two, four] = FLEET;
-    expect(sameFamily(two!, four!)).toBe(true);
-    expect(sameFamily(four!, FLEET[4]!)).toBe(false); // canary
-    expect(sameFamily(four!, FLEET[5]!)).toBe(false); // arm
-    expect(sameFamily(four!, FLEET[6]!)).toBe(false); // docker
+    expect(sameFamily(two, four)).toBe(true);
+    expect(sameFamily(four, FLEET[4])).toBe(false); // canary
+    expect(sameFamily(four, FLEET[5])).toBe(false); // arm
+    expect(sameFamily(four, FLEET[6])).toBe(false); // docker
     // A legacy name falls back to the image it boots.
     const legacy = profile("rc-linux-js", 4, 16);
-    expect(sameFamily(legacy, two!)).toBe(true);
+    expect(sameFamily(legacy, two)).toBe(true);
     expect(
       sameFamily(
         legacy,
@@ -396,7 +396,7 @@ describe("right-sizing over stored metrics", () => {
   afterEach(() => vi.useRealTimers());
 
   async function seed(t: TestConvex<typeof schema>) {
-    return await t.run(async (ctx) => {
+    return t.run(async (ctx) => {
       const machineId = await ctx.db.insert("machines", {
         name: "worker-a",
         os: "linux",
@@ -510,7 +510,7 @@ describe("right-sizing over stored metrics", () => {
       ["acme/app", "build", "downsize", 6],
       ["acme/other", "lint", "insufficient_data", 1],
     ]);
-    expect(report.recommendations[0]!.recommendedProfile).toBe("erainfra-2vcpu-ubuntu-2404");
+    expect(report.recommendations[0].recommendedProfile).toBe("erainfra-2vcpu-ubuntu-2404");
 
     const filtered = await operator.query(api.rightsize.report, { repo: "other" });
     expect(filtered.recommendations.map((entry) => entry.repo)).toEqual(["acme/other"]);

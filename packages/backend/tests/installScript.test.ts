@@ -770,7 +770,7 @@ describe("update health check", { timeout: 120_000 }, () => {
   });
 
   it("keeps an update on a Worker that had no ready Profile, as before", () => {
-    const sandbox = updateFrom([BEFORE[2]!]);
+    const sandbox = updateFrom([BEFORE[2]]);
     readinessAfterStart(sandbox, CURRENT.version, [fresh("rc-e2e", "degraded")]);
 
     const result = run(sandbox, ["--update"]);

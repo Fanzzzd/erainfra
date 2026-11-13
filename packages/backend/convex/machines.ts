@@ -98,7 +98,7 @@ export const list = query({
   returns: v.array(machineListItemValidator),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    return await listMachines(ctx);
+    return listMachines(ctx);
   },
 });
 
@@ -270,7 +270,7 @@ export const createRegistrationToken = mutation({
   }),
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    return await issueRegistrationToken(ctx);
+    return issueRegistrationToken(ctx);
   },
 });
 

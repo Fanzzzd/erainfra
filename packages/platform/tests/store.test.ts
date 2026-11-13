@@ -44,7 +44,7 @@ const scores: (number | null | undefined)[] = [undefined, null, -1, 0, 1, 2.5, 1
 
 // Builds one random query and returns a function that runs it against a db.
 function randomQuery(r: () => number): { describe: string; run: (db: Db) => Promise<unknown> } {
-  const g = groups[Math.floor(r() * groups.length)] as string;
+  const g = groups[Math.floor(r() * groups.length)];
   const s = scores[2 + Math.floor(r() * 5)] as number;
   const order = r() < 0.5 ? "asc" : "desc";
   const kind = Math.floor(r() * 7);
@@ -169,7 +169,7 @@ describe("Store matches convex-test", () => {
             convexIds.length === 0 || r() < 0.6 ? "insert" : r() < 0.7 ? "patch" : "delete";
           const doc: Record<string, Value | undefined> = {
             n: n++,
-            group: groups[Math.floor(r() * groups.length)] as string,
+            group: groups[Math.floor(r() * groups.length)],
           };
           const score = scores[Math.floor(r() * scores.length)];
           if (score !== undefined || op === "patch") doc.score = score;
@@ -180,10 +180,10 @@ describe("Store matches convex-test", () => {
         const apply = async (db: Db, ids: string[]) => {
           for (const { op, at, doc } of ops) {
             if (op === "insert") ids.push(await db.insert("items", doc));
-            else if (op === "patch" && ids[at] && (await db.get(ids[at] as string)))
-              await db.patch(ids[at] as string, doc);
-            else if (op === "delete" && ids[at] && (await db.get(ids[at] as string)))
-              await db.delete(ids[at] as string);
+            else if (op === "patch" && ids[at] && (await db.get(ids[at])))
+              await db.patch(ids[at], doc);
+            else if (op === "delete" && ids[at] && (await db.get(ids[at])))
+              await db.delete(ids[at]);
           }
           // Queries inside the mutation see its own writes.
           return query.run(db);
@@ -238,11 +238,11 @@ describe("Store", () => {
 
   test("rejects documents that do not match the schema", async () => {
     const store = new Store(nodeSql(), schemaInfo(schema));
-    await expect(store.run((db) => db.insert("owners", { name: 1 } as never))).rejects.toThrow(
+    await expect(store.run((db) => db.insert("owners", { name: 1 }))).rejects.toThrow(
       /owners.name/,
     );
     await expect(
-      store.run((db) => db.insert("owners", { name: "a", extra: true } as never)),
+      store.run((db) => db.insert("owners", { name: "a", extra: true })),
     ).rejects.toThrow(/not in the schema/);
     await expect(store.run((db) => db.insert("nope", {}))).rejects.toThrow(/not in the schema/);
   });

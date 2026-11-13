@@ -22,13 +22,13 @@ function randomValue(r: () => number, depth = 0): Value | undefined {
     case 1:
       return null;
     case 2:
-      return [0n, -1n, 1n, 2n ** 62n, -(2n ** 63n), 2n ** 63n - 1n][Math.floor(r() * 6)] as bigint;
+      return [0n, -1n, 1n, 2n ** 62n, -(2n ** 63n), 2n ** 63n - 1n][Math.floor(r() * 6)];
     case 3:
-      return numbers[Math.floor(r() * numbers.length)] as number;
+      return numbers[Math.floor(r() * numbers.length)];
     case 4:
       return r() < 0.5;
     case 5:
-      return strings[Math.floor(r() * strings.length)] as string;
+      return strings[Math.floor(r() * strings.length)];
     case 6: {
       const bytes = new Uint8Array(Math.floor(r() * 3)).map(() => Math.floor(r() * 3));
       return bytes.buffer;

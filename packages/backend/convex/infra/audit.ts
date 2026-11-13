@@ -19,7 +19,7 @@ const auditEntryArgs = {
 export const append = internalMutation({
   args: auditEntryArgs,
   returns: v.number(),
-  handler: async (ctx, args) => await appendAudit(ctx, args),
+  handler: async (ctx, args) => appendAudit(ctx, args),
 });
 
 /**
@@ -72,7 +72,7 @@ export const list = query({
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 100), 1), 500);
     const rows = await ctx.db
       .query("auditEvents")
-      .withIndex("by_seq", (q) => (args.before === undefined ? q : q.lt("seq", args.before!)))
+      .withIndex("by_seq", (q) => (args.before === undefined ? q : q.lt("seq", args.before)))
       .order("desc")
       .take(limit);
     return rows.map((row) => ({

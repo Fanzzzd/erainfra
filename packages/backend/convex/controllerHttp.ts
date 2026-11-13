@@ -33,7 +33,7 @@ function constantTimeEqual(actual: string, expected: string) {
 export function controllerAuthorization(
   authorization: string | null,
   configuredToken: string | undefined,
-  nextToken?: string | undefined,
+  nextToken?: string,
 ): ControllerAuth {
   return sharedSecretAuthorization(authorization, configuredToken, nextToken);
 }
@@ -45,7 +45,7 @@ export function controllerAuthorization(
 export function sharedSecretAuthorization(
   authorization: string | null,
   configuredToken: string | undefined,
-  nextToken?: string | undefined,
+  nextToken?: string,
 ): ControllerAuth {
   const candidates: Array<{ slot: ControllerTokenSlot; token: string }> = [];
   const current = configuredToken?.trim() ?? "";
@@ -190,8 +190,8 @@ function parseRegistration(payload: Record<string, unknown>) {
   }
   return {
     githubConfigUrl: githubConfigUrl.trim(),
-    ...(githubCacheFacts === undefined ? {} : { githubCacheFacts: githubCacheFacts as boolean }),
-    ...(runnerGroup === undefined ? {} : { runnerGroup: (runnerGroup as string).trim() }),
+    ...(githubCacheFacts === undefined ? {} : { githubCacheFacts: githubCacheFacts }),
+    ...(runnerGroup === undefined ? {} : { runnerGroup: runnerGroup.trim() }),
     ...(labels === undefined ? {} : { labels: (labels as string[]).map((label) => label.trim()) }),
   };
 }
@@ -306,11 +306,13 @@ export function parseRegisterProfile(payload: unknown) {
     egress: egress.egress,
     name: payload.name.trim(),
     scaleSetName: payload.scaleSetName.trim(),
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- without it the object literal widens the narrowed literal to string
     executor: payload.executor as "docker" | "firecracker" | "tart" | "hyperv",
     imageRelease: payload.imageRelease.trim(),
     vcpus: payload.vcpus,
     memoryMiB: payload.memoryMiB,
     warmPool: payload.warmPool ?? 0,
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- without it the object literal widens the narrowed literal to string
     fitPolicy: (payload.fitPolicy ?? "balanced") as "balanced" | "cpu" | "network" | "io",
     minRunners: payload.minRunners,
     maxRunners: payload.maxRunners,
@@ -336,6 +338,7 @@ export function parseCreateAttempt(payload: unknown) {
   }
   return {
     profile: payload.profile.trim(),
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- without it the object literal widens the narrowed literal to string
     executor: payload.executor as "docker" | "firecracker" | "tart" | "hyperv",
     imageRelease: payload.imageRelease.trim(),
     vcpus: payload.vcpus,
