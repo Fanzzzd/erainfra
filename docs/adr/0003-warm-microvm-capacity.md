@@ -137,9 +137,13 @@ like a torn-down one, and a claim waits for the replacement. If that
 replacement also exits before any attempt claims it, the pool keeps failing:
 claims fail until the next readiness check prepares the profile again, also
 after a later replacement parks. A successful claim ends the chain, so the next
-exit counts as a one-off again. Lowering `N` below the number of claimed VMs is a planned drain, not a
-failure. Every VM the pool may own is claimed, so a claim is a miss and
-cold-boots, and each finished attempt shrinks the pool toward `N`. After the
+exit counts as a one-off again. Lowering `N` below the number of claimed VMs is
+a planned drain, not a failure. Every VM the pool may own is claimed, so a
+claim is a miss and cold-boots, and each finished attempt shrinks the pool
+toward `N`. The profile stays ready while the pool drains: the pool counts as
+owning its target when it owns exactly `N` VMs, or more than `N` with none
+parked. `testdata/warm-pool-ready-cases.json` owns that rule, and the runtime,
+the Action Runner Agent and the control plane run its cases. After the
 runtime's graceful shutdown, every claim fails, so no attempt cold-boots while
 the runtime stops.
 

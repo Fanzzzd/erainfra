@@ -13,6 +13,7 @@ import {
   isTrustedOnly,
   LEGACY_POOL_RESERVE_MIB,
   PLACEMENT_STORAGE_FIELDS,
+  warmPoolOwnsTarget,
 } from "../convex/isolation.ts";
 import schema from "../convex/schema";
 
@@ -54,6 +55,33 @@ function assertPublicContract(
 ) {
   assertReadinessContract(...args, PUBLIC_EGRESS);
 }
+
+// testdata/warm-pool-ready-cases.json owns which pool accounting is ready. The
+// runtime and the Action Runner Agent run the same cases, so a change to the
+// rule on one side alone turns one suite red.
+type WarmPoolCase = {
+  name: string;
+  target: number;
+  parked: number;
+  claimed: number;
+  ready: boolean;
+};
+const warmPoolCases = JSON.parse(
+  readFileSync(new URL("../../../testdata/warm-pool-ready-cases.json", import.meta.url), "utf8"),
+) as { cases: WarmPoolCase[] };
+
+describe("warmPoolOwnsTarget", () => {
+  it.each(warmPoolCases.cases)("$name", ({ target, parked, claimed, ready }) => {
+    expect(warmPoolOwnsTarget({ target, parked, claimed })).toBe(ready);
+    const report = () =>
+      assertPublicContract("ready", "firecracker", {
+        ...FIRECRACKER_FACTS,
+        warmPool: { target, parked, claimed },
+      });
+    if (ready) expect(report).not.toThrow();
+    else expect(report).toThrow(/warm pool/);
+  });
+});
 
 describe("EXECUTOR_BOUNDARY", () => {
   it("never claims a guest kernel for a shared-kernel executor", () => {

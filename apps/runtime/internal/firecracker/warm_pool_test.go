@@ -2,7 +2,9 @@ package firecracker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -486,7 +488,8 @@ func TestWarmPoolClaimDuringReplacementHonorsTheBootDeadline(t *testing.T) {
 
 // Lowering the target below the claimed count is a planned drain, not a broken
 // pool. Every guest the pool may own is claimed, so a claim is demand above the
-// target and cold-boots. Each release shrinks the pool toward the target.
+// target and cold-boots. The pool stays healthy, so its Profile stays ready,
+// and each release shrinks it toward the target.
 func TestWarmPoolTargetBelowClaimedDrainsAndMisses(t *testing.T) {
 	pool := newWarmPoolManager(func(context.Context, executor.Profile, uint64) (warmSlot, error) {
 		return newFakeWarmSlot(), nil
@@ -506,7 +509,7 @@ func TestWarmPoolTargetBelowClaimedDrainsAndMisses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lowering the target below the claimed count failed: %v", err)
 	}
-	assertWarmStatus(t, status, 1, 0, 2, false)
+	assertWarmStatus(t, status, 1, 0, 2, true)
 	if _, err := pool.Claim(t.Context(), testAttempt()); !errors.Is(err, errWarmPoolMiss) {
 		t.Fatalf("claim during the drain = %v, want a miss", err)
 	}
@@ -517,6 +520,50 @@ func TestWarmPoolTargetBelowClaimedDrainsAndMisses(t *testing.T) {
 		status := pool.Status("linux")
 		return status.Parked == 0 && status.Claimed == 1 && status.Healthy
 	})
+}
+
+// testdata/warm-pool-ready-cases.json owns which pool accounting is ready. The
+// Action Runner Agent and the control plane run the same cases, so a change to
+// the rule on one side alone turns one suite red.
+func TestWarmPoolOwnsTargetMatchesTheSharedCases(t *testing.T) {
+	contents, err := os.ReadFile("../../../../testdata/warm-pool-ready-cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared struct {
+		Cases []struct {
+			Name                    string
+			Target, Parked, Claimed int
+			Ready                   bool
+		}
+	}
+	if err := json.Unmarshal(contents, &shared); err != nil {
+		t.Fatal(err)
+	}
+	if len(shared.Cases) == 0 {
+		t.Fatal("no shared warm pool cases")
+	}
+	for _, c := range shared.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			if got := warmPoolOwnsTarget(c.Target, c.Parked, c.Claimed); got != c.Ready {
+				t.Fatalf("warmPoolOwnsTarget(%d, %d, %d) = %t, want %t", c.Target, c.Parked, c.Claimed, got, c.Ready)
+			}
+			state := newWarmPoolState(testProfile(c.Target))
+			for id := range c.Parked {
+				state.idle[uint64(id)] = newFakeWarmSlot()
+			}
+			for id := range c.Claimed {
+				state.claimed[uint64(c.Parked+id)] = newFakeWarmSlot()
+			}
+			if status := statusOf(state); status.Healthy != c.Ready {
+				t.Fatalf("status = %+v, want healthy=%t", status, c.Ready)
+			}
+			state.lastErr = errors.New("boot failed")
+			if status := statusOf(state); status.Healthy {
+				t.Fatalf("status with a recorded error = %+v, want unhealthy", status)
+			}
+		})
+	}
 }
 
 // parkedExitWindow configures a pool of one, makes its parked guest exit and

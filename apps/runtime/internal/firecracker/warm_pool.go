@@ -476,13 +476,20 @@ func (p *warmPoolManager) totalTargetWith(profile executor.Profile) int {
 	return total
 }
 
+// warmPoolOwnsTarget reports whether a pool's accounting lets its Profile be
+// ready. testdata/warm-pool-ready-cases.json owns the rule.
+func warmPoolOwnsTarget(target, parked, claimed int) bool {
+	return parked+claimed == target || parked == 0 && claimed > target
+}
+
 func statusOf(state *warmPoolState) executor.WarmPoolStatus {
 	status := executor.WarmPoolStatus{
 		Target:  state.profile.WarmPool,
 		Parked:  len(state.idle),
 		Claimed: len(state.claimed),
 	}
-	status.Healthy = status.Parked+status.Claimed == status.Target && state.lastErr == nil
+	status.Healthy = warmPoolOwnsTarget(status.Target, status.Parked, status.Claimed) &&
+		state.lastErr == nil
 	if state.lastErr != nil {
 		status.Detail = state.lastErr.Error()
 	} else if !status.Healthy {
