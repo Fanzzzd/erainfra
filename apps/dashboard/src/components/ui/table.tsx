@@ -1,73 +1,49 @@
-import { useEffect, useRef, useState, type ComponentProps, type RefObject } from "react";
+import type * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+/** Props for {@link Table}. */
+type TableProps = React.ComponentProps<"table"> & {
+  /** Classes for the scroll container around the table, for example a max height. */
+  containerClassName?: string | undefined;
+};
 
 /**
- * Whether a scroll box needs its own tab stop: it overflows sideways and holds nothing a
- * keyboard can focus, so without one the hidden columns are out of a keyboard user's reach.
- * Re-checked when the box or its table resizes, which live rows and window changes cause.
+ * A data table with a muted header, 1px row rules and tabular numbers. It
+ * sits in a horizontal scroll container that is focusable, so keyboard users
+ * can scroll a wide table with the arrow keys. Name the table with
+ * `aria-label` or a `TableCaption`; the container takes the same name.
  */
-function useKeyboardScroll(container: RefObject<HTMLDivElement | null>) {
-  const [needsTabStop, setNeedsTabStop] = useState(false);
-  useEffect(() => {
-    const box = container.current;
-    if (!box) return;
-    const check = () =>
-      setNeedsTabStop(box.scrollWidth > box.clientWidth && !box.querySelector(FOCUSABLE));
-    const observer = new ResizeObserver(check);
-    observer.observe(box);
-    if (box.firstElementChild) observer.observe(box.firstElementChild);
-    check();
-    return () => observer.disconnect();
-  }, [container]);
-  return needsTabStop;
-}
-
-/**
- * The container owns the horizontal scroll so a wide fleet table never widens
- * the page itself. `min-w-*` on the `<table>` is what pushes the scroll into
- * this box rather than onto the document. Identifiers in `<code>` stay on one
- * line, so a narrow screen scrolls the table instead of breaking a name at its
- * hyphens.
- */
-function Table({ className, ...props }: ComponentProps<"table">) {
-  const container = useRef<HTMLDivElement>(null);
-  const needsTabStop = useKeyboardScroll(container);
+function Table({ className, containerClassName, ...props }: TableProps) {
+  const label = props["aria-label"];
   return (
     <div
-      ref={container}
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
-      {...(needsTabStop
-        ? { tabIndex: 0, role: "region", "aria-label": "Table, scrolls sideways" }
-        : {})}
+      // A scroll container must be focusable to be scrollable by keyboard.
+      tabIndex={0}
+      role={label ? "region" : undefined}
+      aria-label={label}
+      className={cn(
+        "relative w-full overflow-auto focus-visible:-outline-offset-2",
+        containerClassName,
+      )}
     >
       <table
         data-slot="table"
-        className={cn(
-          "w-full caption-bottom text-(length:--era-text-md) tabular-nums [&_td_code:not(.block)]:whitespace-nowrap",
-          className,
-        )}
+        className={cn("w-full caption-bottom text-sm tabular-nums", className)}
         {...props}
       />
     </div>
   );
 }
 
-function TableHeader({ className, ...props }: ComponentProps<"thead">) {
-  return (
-    <thead
-      data-slot="table-header"
-      className={cn("[&_tr]:border-b [&_tr]:hover:bg-transparent", className)}
-      {...props}
-    />
-  );
+/** The header row group. Inside a scrolling container with a height, it sticks. */
+function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
+  return <thead data-slot="table-header" className={cn("[&_tr]:border-b", className)} {...props} />;
 }
 
-function TableBody({ className, ...props }: ComponentProps<"tbody">) {
+/** The body row group. */
+function TableBody({ className, ...props }: React.ComponentProps<"tbody">) {
   return (
     <tbody
       data-slot="table-body"
@@ -77,22 +53,24 @@ function TableBody({ className, ...props }: ComponentProps<"tbody">) {
   );
 }
 
-function TableFooter({ className, ...props }: ComponentProps<"tfoot">) {
+/** A totals row on the subtle surface. */
+function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   return (
     <tfoot
       data-slot="table-footer"
-      className={cn("border-t border-border bg-sunken font-medium", className)}
+      className={cn("border-t bg-subtle font-medium [&>tr]:last:border-b-0", className)}
       {...props}
     />
   );
 }
 
-function TableRow({ className, ...props }: ComponentProps<"tr">) {
+/** A row. Set `aria-selected` to highlight a selected row. */
+function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   return (
     <tr
       data-slot="table-row"
       className={cn(
-        "border-b border-border hover:bg-sunken/60 data-[state=selected]:bg-sunken",
+        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 aria-selected:bg-muted",
         className,
       )}
       {...props}
@@ -100,12 +78,13 @@ function TableRow({ className, ...props }: ComponentProps<"tr">) {
   );
 }
 
-function TableHead({ className, ...props }: ComponentProps<"th">) {
+/** A header cell: muted, sentence case, never wrapping. */
+function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   return (
     <th
       data-slot="table-head"
       className={cn(
-        "h-10 whitespace-nowrap px-4 text-left align-middle text-(length:--era-text-sm) font-medium text-muted-foreground",
+        "h-9 px-3 text-left align-middle text-xs font-medium whitespace-nowrap text-muted-foreground [&:has([role=checkbox])]:pr-0",
         className,
       )}
       {...props}
@@ -113,20 +92,39 @@ function TableHead({ className, ...props }: ComponentProps<"th">) {
   );
 }
 
-function TableCell({ className, ...props }: ComponentProps<"td">) {
+/** A body cell. */
+function TableCell({ className, ...props }: React.ComponentProps<"td">) {
   return (
-    <td data-slot="table-cell" className={cn("px-4 py-3 align-middle", className)} {...props} />
-  );
-}
-
-function TableCaption({ className, ...props }: ComponentProps<"caption">) {
-  return (
-    <caption
-      data-slot="table-caption"
-      className={cn("mt-4 text-(length:--era-text-sm) text-muted-foreground", className)}
+    <td
+      data-slot="table-cell"
+      className={cn(
+        "h-12 px-3 py-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
+        className,
+      )}
       {...props}
     />
   );
 }
 
-export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption };
+/** The table's visible name, under the table. */
+function TableCaption({ className, ...props }: React.ComponentProps<"caption">) {
+  return (
+    <caption
+      data-slot="table-caption"
+      className={cn("mt-4 text-sm text-muted-foreground", className)}
+      {...props}
+    />
+  );
+}
+
+export {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+  type TableProps,
+};

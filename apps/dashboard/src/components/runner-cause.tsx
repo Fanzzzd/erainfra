@@ -22,7 +22,7 @@ export function RunnerCauseNote({ cause }: { cause: RunnerCause }) {
         <ul className="list-disc pl-4">
           {cause.docs.map((doc) => (
             <li key={doc.url}>
-              <a href={doc.url} target="_blank" rel="noreferrer" className="underline">
+              <a href={doc.url} target="_blank" rel="noreferrer" className="text-foreground">
                 {doc.title}
               </a>
             </li>

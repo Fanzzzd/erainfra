@@ -1,39 +1,185 @@
 import { api } from "@erainfra/backend/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
-import { FlaskConical, Square } from "lucide-react";
-import { type FormEvent, useId, useState } from "react";
+import type { FunctionReturnType } from "convex/server";
+import { FlaskConicalIcon } from "lucide-react";
+import { createContext, type FormEvent, useContext, useState } from "react";
 
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { LiveBadge } from "@/components/status";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { copyText } from "@/components/copy-button";
+import { DataTable, createDataTableColumns } from "@/components/data-table";
+import {
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+} from "@/components/page-header";
+import { LiveIndicator, Status } from "@/components/status";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input, inputClass } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
+import { experimentStates, type ExperimentState } from "@/lib/states";
 import { formatDuration, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/experiments")({ component: ExperimentsPage });
 
-type ExperimentState = "queued" | "preparing" | "running" | "completed" | "cancelled" | "failed";
+type Experiment = FunctionReturnType<typeof api.experiments.list>[number];
 
 function isLive(state: ExperimentState) {
   return state === "queued" || state === "preparing" || state === "running";
 }
+
+/** The page's clock, so every row's timing ticks from one interval. */
+const NowContext = createContext(0);
+
+function ExperimentTiming({ experiment }: { experiment: Experiment }) {
+  const now = useContext(NowContext);
+  const end = experiment.finishedAt ?? now;
+  return (
+    <div className="whitespace-nowrap">
+      <p>
+        {experiment.startedAt === undefined
+          ? `queued ${formatDuration(end - experiment.createdAt)}`
+          : `ran ${formatDuration(end - experiment.startedAt)}`}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {formatRelativeTime(experiment.createdAt, now)}
+      </p>
+    </div>
+  );
+}
+
+const column = createDataTableColumns<Experiment>();
+
+const columns = column.columns([
+  column.accessor("state", {
+    header: "State",
+    enableSorting: false,
+    cell: (cell) => {
+      const experiment = cell.row.original;
+      return (
+        <div>
+          <Status states={experimentStates} state={experiment.state} className="font-medium" />
+          {experiment.exitCode !== undefined && (
+            <p
+              className={cn(
+                "mt-0.5 pl-4 text-xs tabular-nums",
+                experiment.exitCode === 0 ? "text-muted-foreground" : "text-danger",
+              )}
+            >
+              exit {experiment.exitCode}
+            </p>
+          )}
+        </div>
+      );
+    },
+  }),
+  column.accessor("name", {
+    header: "Name and command",
+    cell: (cell) => {
+      const experiment = cell.row.original;
+      return (
+        <div className="max-w-md min-w-0">
+          <p className="truncate font-medium">{experiment.name}</p>
+          <code
+            className="block truncate text-xs text-muted-foreground"
+            title={experiment.command.join(" ")}
+          >
+            {experiment.command.slice(2).join(" ")}
+          </code>
+          {experiment.lastError && (
+            <p className="text-xs break-words text-danger">
+              <span className="sr-only">Last error: </span>
+              {experiment.lastError}
+            </p>
+          )}
+        </div>
+      );
+    },
+  }),
+  column.accessor("profile", {
+    header: "Profile",
+    cell: (cell) => <span className="text-muted-foreground">{cell.getValue()}</span>,
+  }),
+  column.accessor((row) => row.machineName ?? "", {
+    id: "machine",
+    header: "Worker",
+    cell: (cell) => (
+      <span title={cell.row.original.selectionReason}>
+        {cell.row.original.machineName ?? <span className="text-muted-foreground">Unassigned</span>}
+      </span>
+    ),
+  }),
+  column.accessor("createdAt", {
+    header: "Timing",
+    enableSorting: false,
+    cell: (cell) => <ExperimentTiming experiment={cell.row.original} />,
+  }),
+]);
+
+/** Asks to cancel an Experiment; the page provides it. */
+const CancelContext = createContext<(experiment: Experiment) => void>(() => {});
+
+function ExperimentMenuItems({ experiment }: { experiment: Experiment }) {
+  const onCancel = useContext(CancelContext);
+  return (
+    <>
+      <DropdownMenuGroup>
+        <DropdownMenuItem
+          onClick={() =>
+            void copyText(experiment.command.join(" ")).then((ok) =>
+              ok
+                ? toast.success("Command copied")
+                : toast.error("Could not copy", {
+                    description: "Select the text and copy it by hand.",
+                  }),
+            )
+          }
+        >
+          Copy command
+        </DropdownMenuItem>
+      </DropdownMenuGroup>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem
+        variant="destructive"
+        disabled={!isLive(experiment.state)}
+        onClick={() => onCancel(experiment)}
+      >
+        Cancel Experiment
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+/** Module-level, so the menu items are not a new component on each render. */
+const rowActions = {
+  label: (experiment: Experiment) => `Actions for ${experiment.name}`,
+  items: (experiment: Experiment) => <ExperimentMenuItems experiment={experiment} />,
+};
 
 function ExperimentsPage() {
   const profiles = useQuery(api.profiles.list);
@@ -41,15 +187,21 @@ function ExperimentsPage() {
   const createExperiment = useMutation(api.experiments.create);
   const cancelExperiment = useMutation(api.experiments.cancel);
   const now = useNow();
-  const fieldId = useId();
   const [name, setName] = useState("");
   const [profile, setProfile] = useState("");
   const [command, setCommand] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState("900");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
+  const [cancelling, setCancelling] = useState<Experiment | undefined>(undefined);
   const linuxProfiles =
     profiles?.filter((item) => item.state === "active" && item.executor === "firecracker") ?? [];
+  const profileItems = Object.fromEntries(
+    linuxProfiles.map((item) => [
+      item.name,
+      `${item.name} · ${item.freeSlots}/${item.readySlots} free`,
+    ]),
+  );
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -64,6 +216,7 @@ function ExperimentsPage() {
       });
       setName("");
       setCommand("");
+      toast.success("Experiment queued", { description: name });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not queue Experiment");
     } finally {
@@ -71,239 +224,157 @@ function ExperimentsPage() {
     }
   }
 
-  async function cancel(experimentId: Parameters<typeof cancelExperiment>[0]["experimentId"]) {
-    setError(undefined);
-    try {
-      await cancelExperiment({ experimentId });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not cancel Experiment");
-    }
-  }
-
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Experiments"
-        description="Run an operator-authored command in the same immutable microVMs and shared capacity as CI."
-      >
-        <LiveBadge />
-      </PageHeader>
+    <NowContext.Provider value={now}>
+      <CancelContext.Provider value={setCancelling}>
+        <PageHeader>
+          <PageHeaderTitle>Experiments</PageHeaderTitle>
+          <PageHeaderDescription>
+            Run an operator-authored command in the same immutable microVMs and shared capacity as
+            CI.
+          </PageHeaderDescription>
+          <PageHeaderActions>
+            <LiveIndicator />
+          </PageHeaderActions>
+        </PageHeader>
 
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle>Queue an Experiment</CardTitle>
-          <CardDescription>
-            The command runs under <code>bash -lc</code> inside a guest-kernel microVM, and is
-            discarded with the snapshot when it exits.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <form
-            className="grid gap-4 lg:grid-cols-[1fr_1fr_140px_auto]"
-            onSubmit={(event) => void submit(event)}
-          >
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-name`}>Name</Label>
-              <Input
-                id={`${fieldId}-name`}
-                required
-                maxLength={80}
-                placeholder="dependency benchmark"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-profile`}>Profile</Label>
-              <select
-                id={`${fieldId}-profile`}
-                required
-                className={inputClass}
-                value={profile}
-                onChange={(event) => setProfile(event.target.value)}
-              >
-                <option value="" disabled>
-                  Select Profile
-                </option>
-                {linuxProfiles.map((item) => (
-                  <option key={item._id} value={item.name}>
-                    {item.name} · {item.freeSlots}/{item.readySlots} free
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-timeout`}>Timeout (seconds)</Label>
-              <Input
-                id={`${fieldId}-timeout`}
-                required
-                type="number"
-                min={1}
-                max={21_600}
-                value={timeoutSeconds}
-                onChange={(event) => setTimeoutSeconds(event.target.value)}
-              />
-            </div>
-            <Button
-              className="self-end"
-              type="submit"
-              disabled={submitting || linuxProfiles.length === 0}
+        <Card>
+          <CardHeader className="border-b">
+            <CardTitle render={<h2 />}>Queue an Experiment</CardTitle>
+            <CardDescription>
+              The command runs under <code className="text-foreground">bash -lc</code> inside a
+              guest-kernel microVM, and is discarded with the snapshot when it exits.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              className="grid gap-4 lg:grid-cols-[1fr_1fr_160px_auto]"
+              onSubmit={(event) => void submit(event)}
             >
-              <FlaskConical />
-              {submitting ? "Queuing…" : "Run"}
-            </Button>
-            <div className="space-y-1.5 lg:col-span-4">
-              <Label htmlFor={`${fieldId}-command`}>Command</Label>
-              <Input
-                id={`${fieldId}-command`}
-                required
-                className="font-mono"
-                placeholder="pnpm test"
-                value={command}
-                onChange={(event) => setCommand(event.target.value)}
-              />
-            </div>
-            {linuxProfiles.length === 0 && profiles !== undefined && (
-              <Alert variant="warning" className="lg:col-span-4">
-                <AlertDescription>
-                  Register an active Linux Firecracker Profile before running Experiments.
-                </AlertDescription>
-              </Alert>
-            )}
-            {error && (
-              <Alert variant="destructive" className="lg:col-span-4">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-          </form>
-        </CardContent>
-      </Card>
+              <Field>
+                <FieldLabel>Name</FieldLabel>
+                <Input
+                  required
+                  maxLength={80}
+                  placeholder="dependency benchmark"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>Profile</FieldLabel>
+                <Select
+                  required
+                  items={profileItems}
+                  value={profile === "" ? null : profile}
+                  onValueChange={(value) => setProfile(value ?? "")}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select Profile" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {linuxProfiles.map((item) => (
+                      <SelectItem key={item._id} value={item.name}>
+                        {item.name} · {item.freeSlots}/{item.readySlots} free
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field>
+                <FieldLabel>Timeout (seconds)</FieldLabel>
+                <Input
+                  required
+                  type="number"
+                  min={1}
+                  max={21_600}
+                  value={timeoutSeconds}
+                  onChange={(event) => setTimeoutSeconds(event.target.value)}
+                />
+              </Field>
+              <Button
+                className="self-end"
+                type="submit"
+                disabled={submitting || linuxProfiles.length === 0}
+                aria-busy={submitting || undefined}
+              >
+                {submitting ? (
+                  <Spinner data-icon="inline-start" />
+                ) : (
+                  <FlaskConicalIcon data-icon="inline-start" />
+                )}
+                {submitting ? "Queuing…" : "Run"}
+              </Button>
+              <Field className="lg:col-span-4">
+                <FieldLabel>Command</FieldLabel>
+                <Input
+                  required
+                  className="font-mono"
+                  placeholder="pnpm test"
+                  value={command}
+                  onChange={(event) => setCommand(event.target.value)}
+                />
+              </Field>
+              {linuxProfiles.length === 0 && profiles !== undefined && (
+                <Alert variant="warning" className="lg:col-span-4">
+                  <AlertDescription>
+                    Register an active Linux Firecracker Profile before running Experiments.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {error && (
+                <Alert variant="danger" className="lg:col-span-4">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+            </form>
+          </CardContent>
+        </Card>
 
-      <Card className="overflow-hidden">
-        <Table className="min-w-[900px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[120px]">State</TableHead>
-              <TableHead>Name / command</TableHead>
-              <TableHead className="w-[150px]">Profile</TableHead>
-              <TableHead className="w-[160px]">Worker</TableHead>
-              <TableHead className="w-[170px]">Timing</TableHead>
-              <TableHead className="w-[80px]">
-                <span className="sr-only">Actions</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {experiments === undefined ? (
-              <TableRowsSkeleton columns={6} rows={3} />
-            ) : experiments.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="p-0">
-                  <EmptyState
-                    icon={FlaskConical}
-                    title="No Experiments yet"
-                    description="Queue one above to run a command on the same capacity CI uses, without pushing a workflow."
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              experiments.map((experiment) => {
-                const end = experiment.finishedAt ?? now;
-                return (
-                  <TableRow key={experiment._id}>
-                    <TableCell>
-                      <StateBadge state={experiment.state} />
-                      {experiment.exitCode !== undefined && (
-                        <p
-                          className={cn(
-                            "tabular-nums mt-1 text-[10px]",
-                            experiment.exitCode === 0
-                              ? "text-subtle-foreground"
-                              : "text-destructive",
-                          )}
-                        >
-                          exit {experiment.exitCode}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <p className="text-xs font-medium text-secondary-foreground">
-                        {experiment.name}
-                      </p>
-                      <code
-                        className="mt-0.5 block max-w-[420px] truncate text-[10px] text-subtle-foreground"
-                        title={experiment.command.join(" ")}
-                      >
-                        {experiment.command.slice(2).join(" ")}
-                      </code>
-                      {experiment.lastError && (
-                        <p className="mt-0.5 break-words text-[10px] leading-4 text-destructive">
-                          <span className="sr-only">Last error: </span>
-                          {experiment.lastError}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <code className="text-xs text-secondary-foreground">
-                        {experiment.profile}
-                      </code>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      <span title={experiment.selectionReason}>
-                        {experiment.machineName ?? (
-                          <span className="text-subtle-foreground">Unassigned</span>
-                        )}
-                      </span>
-                    </TableCell>
-                    <TableCell className="tabular-nums text-xs text-muted-foreground">
-                      {experiment.startedAt === undefined
-                        ? `queued ${formatDuration(end - experiment.createdAt)}`
-                        : `ran ${formatDuration(end - experiment.startedAt)}`}
-                      <p className="mt-0.5 text-[10px] text-subtle-foreground">
-                        {formatRelativeTime(experiment.createdAt, now)}
-                      </p>
-                    </TableCell>
-                    <TableCell>
-                      {isLive(experiment.state) && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Cancel ${experiment.name}`}
-                              onClick={() => void cancel(experiment._id)}
-                            >
-                              <Square />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="left">Cancel this Experiment</TooltipContent>
-                        </Tooltip>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-      </Card>
-    </div>
-  );
-}
+        <Card className="gap-0 py-0">
+          <CardHeader className="border-b py-4">
+            <CardTitle render={<h2 />}>History</CardTitle>
+            <CardDescription>The last 100 Experiments, newest first.</CardDescription>
+          </CardHeader>
+          <DataTable
+            aria-label="Experiments"
+            columns={columns}
+            data={experiments ?? []}
+            getRowId={(experiment) => experiment._id}
+            loading={experiments === undefined}
+            loadingRows={3}
+            rowActions={rowActions}
+            empty={
+              <EmptyState>
+                <EmptyStateMedia>
+                  <FlaskConicalIcon />
+                </EmptyStateMedia>
+                <EmptyStateTitle>No Experiments yet</EmptyStateTitle>
+                <EmptyStateDescription>
+                  Queue one above to run a command on the same capacity CI uses, without pushing a
+                  workflow.
+                </EmptyStateDescription>
+              </EmptyState>
+            }
+          />
+        </Card>
 
-function StateBadge({ state }: { state: ExperimentState }) {
-  const variant =
-    state === "completed"
-      ? "success"
-      : state === "failed" || state === "cancelled"
-        ? "destructive"
-        : state === "running"
-          ? "info"
-          : "warning";
-  return (
-    <Badge variant={variant} className="capitalize">
-      {state}
-    </Badge>
+        <ConfirmDialog
+          open={cancelling !== undefined}
+          onOpenChange={(open) => {
+            if (!open) setCancelling(undefined);
+          }}
+          title={`Cancel ${cancelling?.name ?? "this Experiment"}?`}
+          description="The microVM stops and its work is discarded. The Experiment cannot be resumed."
+          confirmLabel="Cancel Experiment"
+          cancelLabel="Keep running"
+          onConfirm={async () => {
+            if (cancelling === undefined) return;
+            await cancelExperiment({ experimentId: cancelling._id });
+            toast.success("Experiment cancelled", { description: cancelling.name });
+          }}
+        />
+      </CancelContext.Provider>
+    </NowContext.Provider>
   );
 }
