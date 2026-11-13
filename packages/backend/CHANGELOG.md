@@ -1,5 +1,21 @@
 # @erainfra/backend
 
+## 0.2.0-rc.21
+
+### Patch Changes
+
+- [#359](https://github.com/Fanzzzd/erainfra/pull/359) [`e6bdde2`](https://github.com/Fanzzzd/erainfra/commit/e6bdde29ccd2e745587cb05114d449b062123f04) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The Node installer no longer tells operators to roll back to Hub mode, which ADR 0020 retired.
+
+- [#362](https://github.com/Fanzzzd/erainfra/pull/362) [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The Action Runner Agent's warm-pool capacity check now uses the same CPU and memory envelope as placement, including the whole-host exception: a warm guest that needs all of a Worker's CPUs or memory is measured against the whole host instead of 90%. Before, a Worker sized exactly for its warm pool passed placement but failed the warm-pool check. `testdata/host-envelope-cases.json` owns the rule, and both test suites run its cases.
+
+- [#362](https://github.com/Fanzzzd/erainfra/pull/362) [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A Worker now reports the thin-pool reserve it enforces for each guest as `storage.poolReserveMiB`, and placement uses that value. Before, the control plane hard-coded 8 GiB, so changing `RC_MIN_POOL_FREE_MIB` on a Worker changed its own preflight and warm-pool checks but not placement. A runtime that does not report the field is still placed against 8 GiB. Deploy the control plane before rolling out this runtime: an older control plane rejects readiness that carries the new field.
+
+- [#363](https://github.com/Fanzzzd/erainfra/pull/363) [`f1b5ba3`](https://github.com/Fanzzzd/erainfra/commit/f1b5ba3b628c64eeb06465225c72cda06465b508) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Retire the dashboard's CI GitHub App. The Manifest flow (`/github/app/new`, `/github/app/callback`), the dashboard panel "Legacy webhook runner migration" and the `githubApp` and `githubAppSetups` tables are removed, and the backend no longer reads `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or `GITHUB_WEBHOOK_SECRET`. `/github/webhook` now verifies every delivery against the deploy App's `ERAINFRA_GH_WEBHOOK_SECRET` only, so a leftover repository webhook signed with `GITHUB_WEBHOOK_SECRET` gets 401. The `actions/runner` release read uses the controller GitHub App's token, else none.
+
+- [#360](https://github.com/Fanzzzd/erainfra/pull/360) [`04d0757`](https://github.com/Fanzzzd/erainfra/commit/04d07572485d96ccecd4442e4dfc8a056f0c517f) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Remove the pre-Profile webhook job path. The backend no longer stores `workflow_job` deliveries, assigns them to Workers as commands, or asks GitHub to redeliver missed ones; `/github/webhook` acts only on `push`. `agentApi:pendingCommands`, `agentApi:claim` and `agentApi:report` are gone, so a Worker needs Action Runner Agent v0.2.0-rc.20 or later. The dashboard's Legacy jobs page and the `ALLOWED_REPOS`, `ALLOW_PUBLIC_REPOS` and `GITHUB_PAT` settings are removed. Reading the `actions/runner` release list now falls back to the controller GitHub App's token instead of `GITHUB_PAT`.
+
+  The `jobs`, `commands`, `runnerDeletions`, `webhookRecovery` and `webhookRecoveryState` tables leave the schema. Convex does not delete documents a removed table still holds; delete them from the Convex dashboard.
+
 ## 0.2.0-rc.20
 
 ### Patch Changes

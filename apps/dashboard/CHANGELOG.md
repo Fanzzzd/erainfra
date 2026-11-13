@@ -1,5 +1,18 @@
 # @erainfra/dashboard
 
+## 0.2.0-rc.21
+
+### Patch Changes
+
+- [#363](https://github.com/Fanzzzd/erainfra/pull/363) [`f1b5ba3`](https://github.com/Fanzzzd/erainfra/commit/f1b5ba3b628c64eeb06465225c72cda06465b508) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Retire the dashboard's CI GitHub App. The Manifest flow (`/github/app/new`, `/github/app/callback`), the dashboard panel "Legacy webhook runner migration" and the `githubApp` and `githubAppSetups` tables are removed, and the backend no longer reads `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or `GITHUB_WEBHOOK_SECRET`. `/github/webhook` now verifies every delivery against the deploy App's `ERAINFRA_GH_WEBHOOK_SECRET` only, so a leftover repository webhook signed with `GITHUB_WEBHOOK_SECRET` gets 401. The `actions/runner` release read uses the controller GitHub App's token, else none.
+
+- [#360](https://github.com/Fanzzzd/erainfra/pull/360) [`04d0757`](https://github.com/Fanzzzd/erainfra/commit/04d07572485d96ccecd4442e4dfc8a056f0c517f) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Remove the pre-Profile webhook job path. The backend no longer stores `workflow_job` deliveries, assigns them to Workers as commands, or asks GitHub to redeliver missed ones; `/github/webhook` acts only on `push`. `agentApi:pendingCommands`, `agentApi:claim` and `agentApi:report` are gone, so a Worker needs Action Runner Agent v0.2.0-rc.20 or later. The dashboard's Legacy jobs page and the `ALLOWED_REPOS`, `ALLOW_PUBLIC_REPOS` and `GITHUB_PAT` settings are removed. Reading the `actions/runner` release list now falls back to the controller GitHub App's token instead of `GITHUB_PAT`.
+
+  The `jobs`, `commands`, `runnerDeletions`, `webhookRecovery` and `webhookRecoveryState` tables leave the schema. Convex does not delete documents a removed table still holds; delete them from the Convex dashboard.
+
+- Updated dependencies [[`e6bdde2`](https://github.com/Fanzzzd/erainfra/commit/e6bdde29ccd2e745587cb05114d449b062123f04), [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b), [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b), [`f1b5ba3`](https://github.com/Fanzzzd/erainfra/commit/f1b5ba3b628c64eeb06465225c72cda06465b508), [`04d0757`](https://github.com/Fanzzzd/erainfra/commit/04d07572485d96ccecd4442e4dfc8a056f0c517f)]:
+  - @erainfra/backend@0.2.0-rc.21
+
 ## 0.2.0-rc.20
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @erainfra/runtime
 
+## 0.2.0-rc.21
+
+### Patch Changes
+
+- [#362](https://github.com/Fanzzzd/erainfra/pull/362) [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A Worker now reports the thin-pool reserve it enforces for each guest as `storage.poolReserveMiB`, and placement uses that value. Before, the control plane hard-coded 8 GiB, so changing `RC_MIN_POOL_FREE_MIB` on a Worker changed its own preflight and warm-pool checks but not placement. A runtime that does not report the field is still placed against 8 GiB. Deploy the control plane before rolling out this runtime: an older control plane rejects readiness that carries the new field.
+
+- [#361](https://github.com/Fanzzzd/erainfra/pull/361) [`e1731f4`](https://github.com/Fanzzzd/erainfra/commit/e1731f45def22c5dbda1c618e1a85bee50b1324a) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A job placed while its Profile's warm pool boots a replacement guest now waits for that guest. The runtime used to fail the job with `warm pool is unhealthy: warm pool owns N-1 of N microVMs`. A pool that has recorded a real failure still fails the job.
+
 ## 0.2.0-rc.20
 
 ### Minor Changes
