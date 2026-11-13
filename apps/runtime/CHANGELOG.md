@@ -1,5 +1,11 @@
 # @erainfra/runtime
 
+## 0.2.0-rc.24
+
+### Patch Changes
+
+- [#378](https://github.com/Fanzzzd/erainfra/pull/378) [`1f54d55`](https://github.com/Fanzzzd/erainfra/commit/1f54d552867acc063c12519287564fb766a7da6e) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A Worker without `/etc/protocols` (no `netbase` package) is ready again. nft prints `meta l4proto { 6, 17 }` there instead of `{ tcp, udp }`, and the runtime's `job-network-policy` check failed readiness on `rc:record-flows`. The check now reads 6 and 17 as tcp and udp; any other number still fails. Worker-host provisioning now requires `iptables`, which the CNI plugins and guest address recovery use, instead of failing readiness after install.
+
 ## 0.2.0-rc.23
 
 ### Patch Changes
