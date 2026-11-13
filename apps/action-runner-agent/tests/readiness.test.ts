@@ -29,6 +29,7 @@ import {
   usableHostCapacity,
   WARM_POOL_READINESS_REFRESH_MS,
   warmPoolCapacityError,
+  warmPoolOwnsTarget,
 } from "../readiness.ts";
 
 const DIGEST = `@sha256:${"a".repeat(64)}`;
@@ -425,9 +426,29 @@ describe("usableHostCapacity", () => {
   }
 });
 
+// testdata/warm-pool-ready-cases.json owns which pool accounting is ready. The
+// runtime and the control plane run the same cases, so a change to the rule on
+// one side alone turns one suite red.
+const warmPoolCases = JSON.parse(
+  readFileSync(new URL("../../../testdata/warm-pool-ready-cases.json", import.meta.url), "utf8"),
+) as {
+  cases: { name: string; target: number; parked: number; claimed: number; ready: boolean }[];
+};
+
+describe("warmPoolOwnsTarget", () => {
+  for (const { name, target, parked, claimed, ready } of warmPoolCases.cases) {
+    it(name, () => {
+      assert.equal(warmPoolOwnsTarget({ target, parked, claimed }), ready);
+    });
+  }
+});
+
 // A stand-in runtime that reports what it was asked: the egress policy each
 // command received, so the test sees exactly what the Agent hands over.
-async function fakeEgressRuntime(directory: string) {
+async function fakeEgressRuntime(
+  directory: string,
+  prepared = '{"target":0,"parked":0,"claimed":0,"healthy":true,"runnerVersion":"2.336.0"}',
+) {
   const script = join(directory, "runner-center-runtime");
   await writeFile(
     script,
@@ -458,13 +479,57 @@ async function fakeEgressRuntime(directory: string) {
       }),
       "JSON",
       "else",
-      `  printf '%s\\n' '{"target":0,"parked":0,"claimed":0,"healthy":true,"runnerVersion":"2.336.0"}'`,
+      `  printf '%s\\n' '${prepared}'`,
       "fi",
     ].join("\n"),
     { mode: 0o755 },
   );
   return script;
 }
+
+describe("warm pool prepare", () => {
+  async function prepareWarm(prepared: string) {
+    const directory = await mkdtemp(join(tmpdir(), "rc-agent-warm-"));
+    const previous = process.env.RC_RUNTIME_BINARY;
+    process.env.RC_RUNTIME_BINARY = await fakeEgressRuntime(directory, prepared);
+    try {
+      return await prepareProfile({
+        profile: "erainfra-2vcpu-ubuntu-2404",
+        executor: "firecracker",
+        imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+        warmPool: 1,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.RC_RUNTIME_BINARY;
+      else process.env.RC_RUNTIME_BINARY = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  it("keeps a Profile ready while its pool drains toward a lowered target", async () => {
+    const result = await prepareWarm('{"target":1,"parked":0,"claimed":2,"healthy":true}');
+    assert.equal(result.state, "ready", result.state === "failed" ? result.error : undefined);
+    assert.deepEqual(result.warmPool, { target: 1, parked: 0, claimed: 2 });
+  });
+
+  it("fails a pool short of its target", async () => {
+    const result = await prepareWarm(
+      '{"target":1,"parked":0,"claimed":0,"healthy":false,"detail":"warm pool owns 0 of 1 microVMs"}',
+    );
+    assert.equal(result.state, "failed");
+    assert.match(result.state === "failed" ? result.error : "", /owns 0 of 1/);
+  });
+
+  it("fails a pool whose runtime recorded an error, whatever its counts", async () => {
+    const result = await prepareWarm(
+      '{"target":1,"parked":1,"claimed":0,"healthy":false,"detail":"create parked microVM: thin pool is full"}',
+    );
+    assert.equal(result.state, "failed");
+    assert.match(result.state === "failed" ? result.error : "", /thin pool is full/);
+  });
+});
 
 describe("Profile egress readiness", () => {
   it("asks the runtime about the Profile's egress and forwards only what the control plane stores", async () => {

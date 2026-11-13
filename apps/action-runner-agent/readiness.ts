@@ -750,14 +750,17 @@ async function prepareFirecracker(profile: ProfileSpec): Promise<ReadinessResult
     const runnerVersion = parsePreparedRunnerVersion(prepared.stdout);
     if (runnerVersion !== undefined) facts.runnerVersion = runnerVersion;
     const warmPool = parseWarmPoolStatus(prepared.stdout);
+    const recorded = recordedWarmPoolError(prepared.stdout);
     if (
       prepared.exitCode !== 0 ||
       warmPool === undefined ||
       warmPool.target !== (profile.warmPool ?? 0) ||
-      warmPool.parked + warmPool.claimed !== warmPool.target
+      !warmPoolOwnsTarget(warmPool) ||
+      recorded !== undefined
     ) {
       const detail =
         prepared.stderr.trim() ||
+        recorded ||
         `warm pool owns ${warmPool === undefined ? "an unknown number" : warmPool.parked + warmPool.claimed} of ${profile.warmPool ?? 0} microVMs`;
       facts.checks.push({ name: "warm-pool", passed: false, detail });
       if (warmPool !== undefined) facts.warmPool = warmPool;
@@ -795,6 +798,35 @@ export function parsePreparedRunnerVersion(stdout: string): string | undefined {
     return typeof runnerVersion === "string" && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(runnerVersion)
       ? runnerVersion
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a warm pool's accounting lets its Profile be ready. `testdata/warm-pool-ready-cases.json`
+ * owns the rule; the runtime and the control plane run the same cases.
+ */
+export function warmPoolOwnsTarget(pool: { target: number; parked: number; claimed: number }) {
+  return (
+    pool.parked + pool.claimed === pool.target || (pool.parked === 0 && pool.claimed > pool.target)
+  );
+}
+
+/**
+ * The error the runtime recorded for the pool, when its status says `healthy: false`. The runtime
+ * sets that for a failure such as a guest that failed to boot, whatever the counts say. A status
+ * without the field leaves the decision to the counts.
+ */
+function recordedWarmPoolError(stdout: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(stdout.trim());
+    if (typeof parsed !== "object" || parsed === null || !("healthy" in parsed)) return undefined;
+    const { healthy, detail } = parsed as Record<string, unknown>;
+    if (healthy !== false) return undefined;
+    return typeof detail === "string" && detail !== ""
+      ? detail
+      : "the runtime reports the warm pool unhealthy";
   } catch {
     return undefined;
   }

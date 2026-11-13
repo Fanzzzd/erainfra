@@ -358,11 +358,23 @@ export function assertReadinessContract(
       target < 0 ||
       parked < 0 ||
       claimed < 0 ||
-      parked + claimed !== target
+      !warmPoolOwnsTarget(facts.warmPool)
     ) {
-      throw new ConvexError("A ready warm pool must report target = parked + claimed");
+      throw new ConvexError(
+        "A ready warm pool must own its target (parked + claimed) or drain toward it with every guest claimed",
+      );
     }
   }
+}
+
+/**
+ * Whether a warm pool's accounting lets its Profile be ready. `testdata/warm-pool-ready-cases.json`
+ * owns the rule; the runtime and the Action Runner Agent run the same cases.
+ */
+export function warmPoolOwnsTarget(pool: { target: number; parked: number; claimed: number }) {
+  return (
+    pool.parked + pool.claimed === pool.target || (pool.parked === 0 && pool.claimed > pool.target)
+  );
 }
 
 /**

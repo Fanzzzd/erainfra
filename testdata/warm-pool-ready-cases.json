@@ -1,0 +1,46 @@
+{
+  "_comment": "Whether a warm pool's accounting lets its Profile be ready. This file owns the rule. Three implementations run it as a table test: warmPoolOwnsTarget in apps/runtime/internal/firecracker/warm_pool.go (the runtime's healthy flag), warmPoolOwnsTarget in apps/action-runner-agent/readiness.ts (the Worker's readiness check) and in packages/backend/convex/isolation.ts (the control plane's check of a ready report). A pool is ready when it owns exactly its target (parked + claimed = target). It is also ready while it drains toward a lowered target: every guest is claimed, none is parked, and each finished Attempt shrinks the pool (ADR 0003). A pool short of its target is not ready, and neither is one above its target that still holds a parked guest. A recorded pool error is separate: the runtime reports it as healthy=false whatever the counts say.",
+  "cases": [
+    { "name": "every guest parked", "target": 2, "parked": 2, "claimed": 0, "ready": true },
+    { "name": "parked and claimed", "target": 2, "parked": 1, "claimed": 1, "ready": true },
+    { "name": "every guest claimed", "target": 2, "parked": 0, "claimed": 2, "ready": true },
+    { "name": "no pool", "target": 0, "parked": 0, "claimed": 0, "ready": true },
+    {
+      "name": "draining toward a lower target",
+      "target": 1,
+      "parked": 0,
+      "claimed": 2,
+      "ready": true
+    },
+    {
+      "name": "draining after the pool was turned off",
+      "target": 0,
+      "parked": 0,
+      "claimed": 1,
+      "ready": true
+    },
+    {
+      "name": "short while a replacement boots",
+      "target": 2,
+      "parked": 1,
+      "claimed": 0,
+      "ready": false
+    },
+    {
+      "name": "short with every guest claimed",
+      "target": 2,
+      "parked": 0,
+      "claimed": 1,
+      "ready": false
+    },
+    { "name": "empty", "target": 1, "parked": 0, "claimed": 0, "ready": false },
+    {
+      "name": "above the target with a parked guest left",
+      "target": 1,
+      "parked": 1,
+      "claimed": 1,
+      "ready": false
+    },
+    { "name": "parked above the target", "target": 1, "parked": 2, "claimed": 0, "ready": false }
+  ]
+}
