@@ -1,5 +1,13 @@
 # @erainfra/runtime
 
+## 0.2.0-rc.22
+
+### Patch Changes
+
+- [#368](https://github.com/Fanzzzd/erainfra/pull/368) [`aa8534e`](https://github.com/Fanzzzd/erainfra/commit/aa8534ede2e4e1998faa880c70bb508d8442a5ed) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Placement no longer charges a guest twice for thin-pool space it already wrote. A Worker now reports `storage.poolReserveUsedMiB`: how much of their reserves the guests live at the pool sample had already written, at most one reserve each. Placement admits while `poolFreeMiB + poolReserveUsedMiB >= poolReserveMiB * guests`. Before, a sample taken while guests ran lowered a Worker's disk capacity until its next readiness report, up to 6 hours later for a Profile without a warm pool. A runtime that does not report the field gets no credit, which is the old rule. Deploy the control plane before rolling out this runtime: an older control plane rejects readiness that carries the new field.
+
+- [#367](https://github.com/Fanzzzd/erainfra/pull/367) [`50b2488`](https://github.com/Fanzzzd/erainfra/commit/50b2488fae0e640ac66d6c38196c51ad41c61f81) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A job placed while its warm pool replaces a parked guest that exited now waits for the replacement instead of failing. If that replacement also exits before a job claims it, jobs fail until the next readiness check. Lowering `warmPool` below the number of running warm jobs no longer fails new jobs; they cold-boot while the pool drains. A job that reaches the runtime after it began shutting down now fails instead of cold-booting.
+
 ## 0.2.0-rc.21
 
 ### Patch Changes
