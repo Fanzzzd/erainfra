@@ -34,6 +34,33 @@ Where the [`erainfra` CLI](cli.md) is installed on the Worker,
 `erainfra worker <command>` runs the same commands: it runs `~/.runner-center/bin/rc` with the same
 arguments, output and exit code. `rc` keeps working unchanged and stays the stable path for scripts.
 
+### Updates roll back on their own
+
+`rc update` installs the release this deployment pins, or `--version vX.Y.Z --sha256 HEX`. It
+checks the new Action Runner Agent's health and puts the previous one back when the check fails.
+The same installer serves Linux (systemd) and macOS (launchd) Workers.
+
+1. Before it stops the running Agent, the installer asks the control plane which Profiles this
+   Worker is `ready` for (`GET /agents/readiness`). It reads the state the scheduler acts on, so a
+   ready report whose evidence fails admission counts as `degraded`. If the control plane does not
+   answer, the update stops and the running Agent stays in place.
+2. It replaces the Agent, keeps the old one in `~/.runner-center/agent.previous`, and starts the
+   new one. If the new Agent does not connect within 20 seconds, the update rolls back.
+3. It waits for each Profile that was ready to report `ready` again. Only reports made after the
+   old Agent stopped count. The default deadline is 900 seconds; change it with
+   `rc update --ready-timeout SECONDS`. A Profile with a cached Image Release prepares in about a
+   second, but ubuntu0 took about 3 minutes after the v0.2.0-rc.22 update, and the runtime allows a
+   warm-pool guest up to 15 minutes to boot.
+4. If one of those Profiles reports `degraded` or `failed`, or the deadline passes, the installer
+   stops the new Agent, restores `agent.previous`, starts it, and waits again for the same Profiles
+   to report ready. It then exits non-zero. The message names the Profile and its failed checks, or
+   the state it last reported, and says whether the restored Agent is ready again.
+
+A Profile that was not ready before the update is not checked, and a Worker with no ready Profile
+is updated without the check. A Profile the Worker stops serving during the update is not waited
+for. The Windows installer (`-Update`) does not run this check yet: it rolls back only when the new
+Agent fails to connect.
+
 A Worker that stops reporting for 10 minutes during a job may only have lost its link to Convex,
 so its job is not stopped. Its Attempt shows as `Retiring` in `erainfra jobs view`, and the
 controller deletes the Runner from GitHub once the job ends. When the Worker reports again, the
@@ -273,7 +300,9 @@ build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` 
 This is the same source and the same check the POSIX installer already uses when a host has no runtime.
 Everything lands under `%USERPROFILE%\.runner-center`, which is the `ERAINFRA_HOME` (or `RC_HOME`) the Hyper-V
 provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-Sha256`, and rollback
-through `agent.previous` work exactly as they do on POSIX, and `rc.ps1` under
+through `agent.previous` work as they do on POSIX, except that `-Update` does not run the Profile
+readiness check described under [Updates roll back on their own](#updates-roll-back-on-their-own),
+and `rc.ps1` under
 `%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
 
 Persistence is a Scheduled Task registered **for the installing account, at logon**, not a Windows
