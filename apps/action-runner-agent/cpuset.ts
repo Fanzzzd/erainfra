@@ -75,7 +75,7 @@ export function formatCpuset(cores: Iterable<number>): string {
   const parts: string[] = [];
   let index = 0;
   while (index < sorted.length) {
-    const first = sorted[index] as number;
+    const first = sorted[index];
     let last = first;
     while (index + 1 < sorted.length && sorted[index + 1] === last + 1) {
       index += 1;

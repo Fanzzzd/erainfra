@@ -249,7 +249,7 @@ export function parseRuntimeReport(stdout: string): RuntimeReport {
   if (trimmed === "") return {};
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    return typeof parsed === "object" && parsed !== null ? (parsed as RuntimeReport) : {};
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
   } catch {
     return {};
   }

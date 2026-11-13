@@ -362,8 +362,8 @@ async function runScaleSetAttempt(item: Extract<WorkItem, { kind: "attempt" }>) 
     if (runnerExit !== undefined) {
       console.log(
         `The runner of Attempt ${item.runnerName} exited with code ${runnerExit.exitCode}` +
-          `${runnerExit.ranJob ? " after a job" : " without taking a job"}` +
-          `${runnerExit.diagnostic === undefined ? "" : `: ${runnerExit.diagnostic}`}`,
+          (runnerExit.ranJob ? " after a job" : " without taking a job") +
+          (runnerExit.diagnostic === undefined ? "" : `: ${runnerExit.diagnostic}`),
       );
     }
     if (recordDirectory !== undefined) {

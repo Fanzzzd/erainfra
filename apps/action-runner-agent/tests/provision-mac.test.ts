@@ -12,7 +12,7 @@ const SENTINEL = "RC-FAKE-JIT-SENTINEL-DO-NOT-LEAK";
 const DEFAULT_IMAGE = (() => {
   const match = /^RC_DEFAULT_IMAGE="([^"]+)"$/m.exec(readFileSync(PROVISION_MAC, "utf8"));
   assert.ok(match, "provision-mac.sh no longer declares RC_DEFAULT_IMAGE");
-  return match[1] as string;
+  return match[1];
 })();
 
 // The runner release the script pins, read the same way, so a version bump
@@ -20,7 +20,7 @@ const DEFAULT_IMAGE = (() => {
 const RUNNER_VERSION = (() => {
   const match = /^RC_RUNNER_VERSION_DEFAULT="([^"]+)"$/m.exec(readFileSync(PROVISION_MAC, "utf8"));
   assert.ok(match, "provision-mac.sh no longer declares RC_RUNNER_VERSION_DEFAULT");
-  return match[1] as string;
+  return match[1];
 })();
 const RUNNER_TARBALL = `actions-runner-osx-arm64-${RUNNER_VERSION}.tar.gz`;
 
