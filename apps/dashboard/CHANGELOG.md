@@ -1,5 +1,17 @@
 # @erainfra/dashboard
 
+## 0.2.0-rc.22
+
+### Minor Changes
+
+- [#370](https://github.com/Fanzzzd/erainfra/pull/370) [`2f38fdd`](https://github.com/Fanzzzd/erainfra/commit/2f38fdd2e82d16c16b4e01622e443a43eb1634e6) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The dashboard uses the shared Era design: the Era colours, type and spacing, a light theme beside the dark one that follows the system setting, and the EraInfra wordmark in a header with a green accent band. Dialogs, menus, tooltips, tabs and toasts now run on ui-sdk instead of Radix and sonner, and deleting or revoking something asks in a dialog instead of the browser's confirm box.
+
+### Patch Changes
+
+- [#371](https://github.com/Fanzzzd/erainfra/pull/371) [`3d339b2`](https://github.com/Fanzzzd/erainfra/commit/3d339b2ebbbe83782dbf72127805b45c64c71656) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - On narrow screens, card headers stack their action under the description, and Profile and machine names in tables stay on one line while the table scrolls. A table that scrolls sideways with nothing focusable in it takes keyboard focus, and the isolation, controller and "Not reporting" hints on Machines open from the keyboard.
+- Updated dependencies [[`d5aae66`](https://github.com/Fanzzzd/erainfra/commit/d5aae6618abee8d7adb6e1fd8ab56c985c697ed7), [`aa8534e`](https://github.com/Fanzzzd/erainfra/commit/aa8534ede2e4e1998faa880c70bb508d8442a5ed)]:
+  - @erainfra/backend@0.2.0-rc.22
+
 ## 0.2.0-rc.21
 
 ### Patch Changes

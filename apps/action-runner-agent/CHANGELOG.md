@@ -1,5 +1,13 @@
 # @erainfra/agent
 
+## 0.2.0-rc.22
+
+### Patch Changes
+
+- [#368](https://github.com/Fanzzzd/erainfra/pull/368) [`aa8534e`](https://github.com/Fanzzzd/erainfra/commit/aa8534ede2e4e1998faa880c70bb508d8442a5ed) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Placement no longer charges a guest twice for thin-pool space it already wrote. A Worker now reports `storage.poolReserveUsedMiB`: how much of their reserves the guests live at the pool sample had already written, at most one reserve each. Placement admits while `poolFreeMiB + poolReserveUsedMiB >= poolReserveMiB * guests`. Before, a sample taken while guests ran lowered a Worker's disk capacity until its next readiness report, up to 6 hours later for a Profile without a warm pool. A runtime that does not report the field gets no credit, which is the old rule. Deploy the control plane before rolling out this runtime: an older control plane rejects readiness that carries the new field.
+
+- [#369](https://github.com/Fanzzzd/erainfra/pull/369) [`3785b21`](https://github.com/Fanzzzd/erainfra/commit/3785b21dbb30e6683be381c43b820f70c070a285) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A Firecracker Profile whose `warmPool` was lowered below the number of running warm jobs now stays ready while the pool drains. The Action Runner Agent and the control plane used to mark it failed until enough jobs finished. A pool short of its target still fails readiness, and so does a pool the runtime reports unhealthy, such as one whose replacement guest failed to boot.
+
 ## 0.2.0-rc.21
 
 ### Patch Changes
