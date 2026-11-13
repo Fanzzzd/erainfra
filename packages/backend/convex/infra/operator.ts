@@ -42,7 +42,7 @@ const LINK_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const APP_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export async function nodeNamed(ctx: QueryCtx, name: string) {
-  return await ctx.db
+  return ctx.db
     .query("nodes")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
@@ -136,7 +136,7 @@ function routeUrl(label: string) {
 }
 
 async function latestRun(ctx: QueryCtx, app: string) {
-  return await ctx.db
+  return ctx.db
     .query("appDeployments")
     .withIndex("by_app_startedAt", (q) => q.eq("app", app))
     .order("desc")
@@ -256,14 +256,14 @@ export async function appStatus(ctx: QueryCtx, name: string, now: number) {
     .query("apps")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
-  if (app !== null) return await appView(ctx, { app }, names, now);
+  if (app !== null) return appView(ctx, { app }, names, now);
   const route = await ctx.db
     .query("appRoutes")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
   if (route === null || !isSingleContainerRoute(route, await loadRouteOwner(ctx, route)))
     return null;
-  return await appView(ctx, { route }, names, now);
+  return appView(ctx, { route }, names, now);
 }
 
 export type LinkView = Awaited<ReturnType<typeof listLinkViews>>[number];
@@ -609,7 +609,7 @@ export const nodes = query({
   args: {},
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
-    return await listNodeViews(ctx, Date.now());
+    return listNodeViews(ctx, Date.now());
   },
 });
 
@@ -617,7 +617,7 @@ export const apps = query({
   args: {},
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
-    return await listAppViews(ctx, Date.now());
+    return listAppViews(ctx, Date.now());
   },
 });
 
@@ -625,7 +625,7 @@ export const links = query({
   args: {},
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
-    return await listLinkViews(ctx, Date.now());
+    return listLinkViews(ctx, Date.now());
   },
 });
 
@@ -639,7 +639,7 @@ export const link = mutation({
   },
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    return await declareLink(ctx, { ...args, actor });
+    return declareLink(ctx, { ...args, actor });
   },
 });
 
@@ -647,7 +647,7 @@ export const unlink = mutation({
   args: { name: v.string() },
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    return await removeLink(ctx, { ...args, actor });
+    return removeLink(ctx, { ...args, actor });
   },
 });
 
@@ -655,7 +655,7 @@ export const remove = mutation({
   args: { app: v.string() },
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    return await removeApp(ctx, { ...args, actor });
+    return removeApp(ctx, { ...args, actor });
   },
 });
 
@@ -694,7 +694,7 @@ export const apiNodes = internalQuery({
   args: { caller: apiCallerValidator },
   handler: async (ctx, args) => {
     requireTokenPermission(args.caller, "app.read");
-    return await listNodeViews(ctx, Date.now());
+    return listNodeViews(ctx, Date.now());
   },
 });
 
@@ -702,7 +702,7 @@ export const apiApps = internalQuery({
   args: { caller: apiCallerValidator },
   handler: async (ctx, args) => {
     requireTokenPermission(args.caller, "app.read");
-    return await listAppViews(ctx, Date.now());
+    return listAppViews(ctx, Date.now());
   },
 });
 
@@ -737,7 +737,7 @@ export const apiEnv = internalQuery({
   args: { caller: apiCallerValidator, app: v.string() },
   handler: async (ctx, args) => {
     requireTokenPermission(args.caller, "app.read");
-    return await appEnv(ctx, args.app);
+    return appEnv(ctx, args.app);
   },
 });
 
@@ -745,7 +745,7 @@ export const apiLinks = internalQuery({
   args: { caller: apiCallerValidator },
   handler: async (ctx, args) => {
     requireTokenPermission(args.caller, "app.read");
-    return await listLinkViews(ctx, Date.now());
+    return listLinkViews(ctx, Date.now());
   },
 });
 
@@ -753,7 +753,7 @@ export const apiEnroll = internalMutation({
   args: { caller: apiCallerValidator, name: v.string() },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "node.admin");
-    return await audited(ctx, { actor, action: "nodes.enroll", target: args.name }, async () => {
+    return audited(ctx, { actor, action: "nodes.enroll", target: args.name }, async () => {
       const enrolled = await enrollNode(ctx, { name: args.name, actor });
       return { ...enrolled, name: args.name.trim() };
     });
@@ -768,7 +768,7 @@ export const apiRevoke = internalMutation({
   args: { caller: apiCallerValidator, node: v.string(), credential: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "node.admin");
-    return await audited(
+    return audited(
       ctx,
       { actor, action: "nodes.revokeCredential", target: args.node },
       async () => {
@@ -797,15 +797,11 @@ export const apiResetEndpoint = internalMutation({
   args: { caller: apiCallerValidator, node: v.string() },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "node.admin");
-    return await audited(
-      ctx,
-      { actor, action: "nodes.resetEndpoint", target: args.node },
-      async () => {
-        const node = await requireNodeNamed(ctx, args.node);
-        await resetNodeEndpoint(ctx, node._id, actor);
-        return { node: node.name };
-      },
-    );
+    return audited(ctx, { actor, action: "nodes.resetEndpoint", target: args.node }, async () => {
+      const node = await requireNodeNamed(ctx, args.node);
+      await resetNodeEndpoint(ctx, node._id, actor);
+      return { node: node.name };
+    });
   },
 });
 
@@ -814,7 +810,7 @@ export const apiSetRoles = internalMutation({
   args: { caller: apiCallerValidator, node: v.string(), roles: v.array(v.string()) },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "node.admin");
-    return await audited(
+    return audited(
       ctx,
       { actor, action: "nodes.setPlacementRoles", target: args.node },
       async () => {
@@ -845,7 +841,7 @@ export const apiSetEnv = internalMutation({
   },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "app.deploy");
-    return await audited(ctx, { actor, action: "env.set", target: args.app }, async () => {
+    return audited(ctx, { actor, action: "env.set", target: args.app }, async () => {
       if (Object.keys(args.vars).length === 0) throw new ConvexError("Set at least one variable");
       await setSecrets(ctx, {
         app: args.app,
@@ -867,7 +863,7 @@ export const apiUnsetEnv = internalMutation({
   },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "app.deploy");
-    return await audited(ctx, { actor, action: "env.unset", target: args.app }, async () => ({
+    return audited(ctx, { actor, action: "env.unset", target: args.app }, async () => ({
       removed: await unsetSecret(ctx, {
         app: args.app,
         ...(args.service === undefined ? {} : { service: args.service }),
@@ -889,7 +885,7 @@ export const apiLink = internalMutation({
   },
   handler: async (ctx, { caller, ...args }) => {
     const { actor } = requireTokenPermission(caller, "app.deploy");
-    return await audited(ctx, { actor, action: "mesh.link", target: args.name }, () =>
+    return audited(ctx, { actor, action: "mesh.link", target: args.name }, () =>
       declareLink(ctx, { ...args, actor }),
     );
   },
@@ -899,7 +895,7 @@ export const apiUnlink = internalMutation({
   args: { caller: apiCallerValidator, name: v.string() },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "app.deploy");
-    return await audited(ctx, { actor, action: "mesh.unlink", target: args.name }, () =>
+    return audited(ctx, { actor, action: "mesh.unlink", target: args.name }, () =>
       removeLink(ctx, { name: args.name, actor }),
     );
   },
@@ -909,7 +905,7 @@ export const apiRemoveApp = internalMutation({
   args: { caller: apiCallerValidator, app: v.string() },
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "app.deploy");
-    return await audited(ctx, { actor, action: "apps.remove", target: args.app }, () =>
+    return audited(ctx, { actor, action: "apps.remove", target: args.app }, () =>
       removeApp(ctx, { app: args.app, actor }),
     );
   },

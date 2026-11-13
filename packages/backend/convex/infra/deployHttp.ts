@@ -53,7 +53,7 @@ function route(
         "Send a valid API token as Authorization: Bearer <token>",
       );
     }
-    return await handler(ctx, request, `token:${auth.caller.name}`);
+    return handler(ctx, request, `token:${auth.caller.name}`);
   });
 }
 
@@ -121,7 +121,7 @@ export function registerDeployRoutes(http: HttpRouter) {
         ...Object.fromEntries(
           Object.entries(strings).filter(([key, value]) => key !== "app" && value !== undefined),
         ),
-        ...(body.port === undefined ? {} : { port: body.port as number }),
+        ...(body.port === undefined ? {} : { port: body.port }),
         ...(body.adopt === undefined ? {} : { adopt: body.adopt as string[] }),
       });
       if (!started.ok) return apiError(400, "invalid_request", started.error);

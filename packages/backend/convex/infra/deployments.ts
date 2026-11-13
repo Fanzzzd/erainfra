@@ -356,6 +356,6 @@ export const retainedCount = query({
   returns: v.number(),
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
-    return await readCounter(ctx, "deployments");
+    return readCounter(ctx, "deployments");
   },
 });

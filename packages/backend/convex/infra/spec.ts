@@ -163,7 +163,7 @@ export function parseSpec(yamlText: string, fallbackApp: string): SpecResult {
   if (doc.app !== undefined && (typeof doc.app !== "string" || !LABEL.test(doc.app)))
     return fail("app", "lowercase alphanumeric + dashes");
   if (!isObject(doc.services)) return fail("services", "expected an object");
-  const app = (doc.app as string | undefined) ?? fallbackApp;
+  const app = doc.app ?? fallbackApp;
   if (!LABEL.test(app))
     return { ok: false, error: `app name "${app}" must be lowercase alphanumeric + dashes` };
 

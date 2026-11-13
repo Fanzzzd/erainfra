@@ -45,7 +45,7 @@ async function fixture() {
     return { status: response.status, body: text === "" ? null : JSON.parse(text) };
   };
   const audit = async () =>
-    await t.run(async (ctx) => {
+    t.run(async (ctx) => {
       const rows = await ctx.db.query("auditEvents").withIndex("by_seq").collect();
       return rows.map((r) => ({
         actor: r.actor,
@@ -56,9 +56,7 @@ async function fixture() {
       }));
     });
   const node = async (name: string) =>
-    await t.run((ctx) =>
-      ctx.db.insert("nodes", { name, createdAt: Date.now(), source: "enrolled" }),
-    );
+    t.run((ctx) => ctx.db.insert("nodes", { name, createdAt: Date.now(), source: "enrolled" }));
   return { t, owner, human, admin, read, metrics, call, audit, node };
 }
 

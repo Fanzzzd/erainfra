@@ -17,7 +17,7 @@ export const apiBindings = internalQuery({
   args: { caller: apiCallerValidator },
   handler: async (ctx, args) => {
     requireTokenPermission(args.caller, "app.read");
-    return await listBindings(ctx);
+    return listBindings(ctx);
   },
 });
 
@@ -34,7 +34,7 @@ export const apiBind = internalMutation({
   handler: async (ctx, { caller, buildNode, deployNode, ...args }) => {
     const { actor } = requireTokenPermission(caller, "app.deploy");
     const target = `${args.repo}@${args.branch}`;
-    return await audited(ctx, { actor, action: "git.bind", target }, async () => {
+    return audited(ctx, { actor, action: "git.bind", target }, async () => {
       const resolve = async (name: string | undefined) => {
         if (name === undefined) return undefined;
         const node = await nodeNamed(ctx, name);
@@ -62,7 +62,7 @@ export const apiUnbind = internalMutation({
   handler: async (ctx, args) => {
     const { actor } = requireTokenPermission(args.caller, "app.deploy");
     const target = `${args.repo}@${args.branch}`;
-    return await audited(ctx, { actor, action: "git.unbind", target }, async () => {
+    return audited(ctx, { actor, action: "git.unbind", target }, async () => {
       const binding = await findBinding(ctx, args.repo, args.branch);
       if (binding === null) throw new ConvexError(`No binding for ${target}`);
       await unbindBranch(ctx, binding, actor);

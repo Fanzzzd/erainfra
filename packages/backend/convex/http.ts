@@ -235,6 +235,7 @@ function parseRegistrationRequest(payload: unknown) {
   return {
     registrationToken: payload.registrationToken,
     name: payload.name,
+    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- without it the object literal widens the narrowed literal to string
     os: payload.os as "linux" | "mac" | "win",
     arch: payload.arch,
     cpus: payload.cpus,

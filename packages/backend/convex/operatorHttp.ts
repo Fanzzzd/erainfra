@@ -438,7 +438,7 @@ export function operatorRoute(
   needed: ApiTokenScope,
   handler: (ctx: ActionCtx, request: Request, caller: Caller) => Promise<Response>,
 ) {
-  return httpAction(async (ctx, request) => await authorized(ctx, request, needed, handler));
+  return httpAction(async (ctx, request) => authorized(ctx, request, needed, handler));
 }
 
 /** operatorRoute's check, for a route that picks its scope after reading the path. */
@@ -465,7 +465,7 @@ export async function authorized(
         );
     }
   }
-  return await handler(ctx, request, auth.caller);
+  return handler(ctx, request, auth.caller);
 }
 
 export function registerOperatorRoutes(http: HttpRouter) {

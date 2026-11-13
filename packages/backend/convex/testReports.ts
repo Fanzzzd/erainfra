@@ -277,7 +277,7 @@ async function readRuns(ctx: QueryCtx, filter: RunsFilter) {
   const reports = await reportsSince(ctx, filter)
     .order("desc")
     .take(Math.min(filter.limit, MAX_RUNS));
-  return await Promise.all(
+  return Promise.all(
     reports.map(async (report) => {
       const [attempt, failures] = await Promise.all([
         ctx.db.get(report.attemptId),
@@ -424,7 +424,7 @@ export const runs = query({
   args: { ...listArgs, failedOnly: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     await requireDashboardAuth(ctx);
-    return await readRuns(ctx, { ...args, limit: limitOf(args.limit) });
+    return readRuns(ctx, { ...args, limit: limitOf(args.limit) });
   },
 });
 
@@ -433,7 +433,7 @@ export const flaky = query({
   args: listArgs,
   handler: async (ctx, args) => {
     await requireDashboardAuth(ctx);
-    return await readFlaky(ctx, { ...args, limit: limitOf(args.limit) });
+    return readFlaky(ctx, { ...args, limit: limitOf(args.limit) });
   },
 });
 
@@ -442,7 +442,7 @@ export const slowest = query({
   args: listArgs,
   handler: async (ctx, args) => {
     await requireDashboardAuth(ctx);
-    return await readSlowest(ctx, { ...args, limit: limitOf(args.limit) });
+    return readSlowest(ctx, { ...args, limit: limitOf(args.limit) });
   },
 });
 
@@ -451,7 +451,7 @@ export const repositories = query({
   args: {},
   handler: async (ctx) => {
     await requireDashboardAuth(ctx);
-    return await readRepositories(ctx);
+    return readRepositories(ctx);
   },
 });
 
@@ -460,20 +460,20 @@ export const forAttempt = query({
   args: { attemptId: v.id("attempts") },
   handler: async (ctx, args) => {
     await requireDashboardAuth(ctx);
-    return await readAttempt(ctx, args.attemptId);
+    return readAttempt(ctx, args.attemptId);
   },
 });
 
 /** The operator API's `GET /api/v1/tests`. */
 export const operatorRuns = internalQuery({
   args: { ...listArgs, failedOnly: v.optional(v.boolean()) },
-  handler: async (ctx, args) => await readRuns(ctx, { ...args, limit: limitOf(args.limit) }),
+  handler: async (ctx, args) => readRuns(ctx, { ...args, limit: limitOf(args.limit) }),
 });
 
 /** The operator API's `GET /api/v1/tests/flaky`. */
 export const operatorFlaky = internalQuery({
   args: listArgs,
-  handler: async (ctx, args) => await readFlaky(ctx, { ...args, limit: limitOf(args.limit) }),
+  handler: async (ctx, args) => readFlaky(ctx, { ...args, limit: limitOf(args.limit) }),
 });
 
 /**

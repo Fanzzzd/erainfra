@@ -37,7 +37,7 @@ async function harness() {
 }
 
 async function mint(operator: ReturnType<Harness["withIdentity"]>, scope: "read" | "admin") {
-  return await operator.mutation(api.apiTokens.create, { name: `${scope} token`, scope });
+  return operator.mutation(api.apiTokens.create, { name: `${scope} token`, scope });
 }
 
 function get(t: Harness, path: string, token?: string) {
@@ -65,7 +65,7 @@ async function seedAttempt(
   }> = {},
 ) {
   vi.setSystemTime(at);
-  return await t.run(async (ctx) =>
+  return t.run(async (ctx) =>
     ctx.db.insert("attempts", {
       ...CONTRACT,
       profile: fields.profile ?? "erainfra-4vcpu-ubuntu-2404",

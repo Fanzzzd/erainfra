@@ -228,7 +228,7 @@ export const report = query({
     await requireDashboardAuth(ctx);
     const now = Date.now();
     const days = args.sinceDays;
-    return await rightsizeReport(
+    return rightsizeReport(
       ctx,
       {
         since: days === undefined || !Number.isFinite(days) ? undefined : now - days * 86_400_000,
@@ -243,5 +243,5 @@ export const report = query({
 export const operatorReport = internalQuery({
   args: { since: v.optional(v.number()), repo: v.optional(v.string()) },
   returns: reportValidator,
-  handler: async (ctx, args) => await rightsizeReport(ctx, args),
+  handler: async (ctx, args) => rightsizeReport(ctx, args),
 });

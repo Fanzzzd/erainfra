@@ -47,7 +47,7 @@ const FACTS = {
 };
 
 async function registerProfile(t: Harness, name: string, workerLabels?: string[]) {
-  return await t.mutation(internal.controllerApi.registerProfile, {
+  return t.mutation(internal.controllerApi.registerProfile, {
     name,
     scaleSetName: name,
     ...CONTRACT,
@@ -58,7 +58,7 @@ async function registerProfile(t: Harness, name: string, workerLabels?: string[]
 }
 
 async function addMachine(t: Harness, name: string, labels: string[], maxSlots = 4) {
-  return await t.run(async (ctx) =>
+  return t.run(async (ctx) =>
     ctx.db.insert("machines", {
       name,
       os: "linux",
@@ -119,7 +119,7 @@ async function attempt(
 }
 
 async function state(t: Harness, attemptId: Id<"attempts">) {
-  return await t.run(async (ctx) => {
+  return t.run(async (ctx) => {
     const row = await ctx.db.get(attemptId);
     const machine = row?.machineId === undefined ? null : await ctx.db.get(row.machineId);
     return {
@@ -132,7 +132,7 @@ async function state(t: Harness, attemptId: Id<"attempts">) {
 }
 
 async function usedSlots(t: Harness, name: string) {
-  return await t.run(
+  return t.run(
     async (ctx) =>
       (
         await ctx.db

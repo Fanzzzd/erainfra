@@ -125,7 +125,7 @@ export function weightedQuantile(
     cumulative += point.weight;
     if (cumulative >= quantile * total) return point.value;
   }
-  return sorted[sorted.length - 1]!.value;
+  return sorted[sorted.length - 1].value;
 }
 
 /**
@@ -225,10 +225,10 @@ export function assertValidSnapshot(snapshot: MetricsSnapshot, now: number) {
     fail("disk columns come in pairs");
   }
   for (let index = 0; index < length; index += 1) {
-    const offset = points.offset[index]!;
+    const offset = points.offset[index];
     if (offset % snapshot.bucketSeconds !== 0) fail("offsets must fall on bucket boundaries");
     if (offset >= MAX_METRIC_POINTS * snapshot.bucketSeconds)
       fail("offset beyond the bounded span");
-    if (index > 0 && offset <= points.offset[index - 1]!) fail("offsets must increase");
+    if (index > 0 && offset <= points.offset[index - 1]) fail("offsets must increase");
   }
 }

@@ -58,7 +58,7 @@ async function fixture() {
       ...(data === undefined ? {} : { body: JSON.stringify(data) }),
     });
   const audit = async () =>
-    await t.run(async (ctx) => {
+    t.run(async (ctx) => {
       const rows = await ctx.db.query("auditEvents").withIndex("by_seq").collect();
       return rows.map((r) => ({
         actor: r.actor,
@@ -553,7 +553,7 @@ describe("Apps", () => {
 });
 
 async function request(f: Fixture, body: Record<string, unknown>, token = f.admin) {
-  return await f.call("POST", "/logs", token, body);
+  return f.call("POST", "/logs", token, body);
 }
 
 /** Claim the one queued logs command as the Node, read its payload and report `report`. */

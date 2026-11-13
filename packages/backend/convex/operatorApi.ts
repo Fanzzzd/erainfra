@@ -42,12 +42,12 @@ async function withWorkerNames(ctx: QueryCtx, attempts: Doc<"attempts">[]) {
 
 export const profiles = internalQuery({
   args: {},
-  handler: async (ctx) => await listProfiles(ctx),
+  handler: async (ctx) => listProfiles(ctx),
 });
 
 export const workers = internalQuery({
   args: {},
-  handler: async (ctx) => await listMachines(ctx),
+  handler: async (ctx) => listMachines(ctx),
 });
 
 /**
@@ -131,5 +131,5 @@ export const attempt = internalQuery({
 export const createRegistrationToken = internalMutation({
   args: {},
   returns: v.object({ token: v.string(), expiresAt: v.number() }),
-  handler: async (ctx) => await issueRegistrationToken(ctx),
+  handler: async (ctx) => issueRegistrationToken(ctx),
 });

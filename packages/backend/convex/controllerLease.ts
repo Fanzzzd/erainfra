@@ -84,7 +84,7 @@ export function refusalOf(error: unknown): ControllerRefusal | undefined {
 type Ctx = QueryCtx | MutationCtx;
 
 async function leaseFor(ctx: Ctx, profile: string) {
-  return await ctx.db
+  return ctx.db
     .query("controllerLeases")
     .withIndex("by_profile", (q) => q.eq("profile", profile))
     .unique();
@@ -92,21 +92,21 @@ async function leaseFor(ctx: Ctx, profile: string) {
 
 async function machineFor(ctx: Ctx, token: string) {
   if (token.length === 0) return null;
-  return await ctx.db
+  return ctx.db
     .query("machines")
     .withIndex("by_token", (q) => q.eq("token", token))
     .unique();
 }
 
 async function profileFor(ctx: Ctx, name: string) {
-  return await ctx.db
+  return ctx.db
     .query("profiles")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();
 }
 
 async function readinessFor(ctx: Ctx, machineId: Id<"machines">, profile: string) {
-  return await ctx.db
+  return ctx.db
     .query("workerReadiness")
     .withIndex("by_machine_profile", (q) => q.eq("machineId", machineId).eq("profile", profile))
     .unique();

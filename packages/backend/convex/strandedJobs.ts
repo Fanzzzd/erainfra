@@ -393,7 +393,7 @@ async function callGitHub(
   const path =
     `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repository)}` +
     `/actions/runs/${target.workflowRunId}${suffix}`;
-  return await githubJson(
+  return githubJson(
     { fetch: fetchGitHub },
     method,
     githubApiBase(target.githubConfigUrl) + path,
