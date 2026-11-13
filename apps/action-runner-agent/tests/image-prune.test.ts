@@ -54,7 +54,7 @@ test("prunes at most once an hour", async () => {
 
 test("never prunes without a Firecracker Profile", async () => {
   let runs = 0;
-  const at = await pruneImageReleases([profiles[3]!], Number.NEGATIVE_INFINITY, 5, async () => {
+  const at = await pruneImageReleases([profiles[3]], Number.NEGATIVE_INFINITY, 5, async () => {
     runs += 1;
     return { exitCode: 0, stdout: "{}", stderr: "" };
   });

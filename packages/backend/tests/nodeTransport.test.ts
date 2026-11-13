@@ -143,7 +143,9 @@ describe("scoped Node HTTP API", () => {
       request("commands/claim", b.credential, { commandId: cmd, owner: "one" }),
       request("commands/claim", b.credential, { commandId: cmd, owner: "two" }),
     ]);
-    expect(outcomes.map((r) => r.status).toSorted()).toEqual([200, 409]);
+    expect(outcomes.map((r) => r.status).toSorted((left, right) => left - right)).toEqual([
+      200, 409,
+    ]);
     const owner = outcomes[0].status === 200 ? "one" : "two";
     vi.setSystemTime(T0 + COMMAND_TTL_MS + 1);
     expect(
@@ -398,7 +400,7 @@ describe("scoped Node HTTP API", () => {
         updatedAt: T0,
       });
       const { createDeployment } = await import("../convex/infra/deployments");
-      return await createDeployment(ctx, {
+      return createDeployment(ctx, {
         app: "shop",
         targetNodeIds: [a.nodeId, b.nodeId],
         trigger: { kind: "manual" },

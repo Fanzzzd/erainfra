@@ -496,7 +496,7 @@ async function servesPlacement(
     console.warn(`route ${route.name}: claimed by more than one App; serving it 503`);
     return false;
   }
-  if (owner === undefined) return await servesSingleContainer(ctx, route, appNames, listeners);
+  if (owner === undefined) return servesSingleContainer(ctx, route, appNames, listeners);
   if (owner.nodeId !== route.nodeId || owner.port !== route.port) return false;
   // A row that names its owner must name this one.
   if (

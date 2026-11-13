@@ -12,7 +12,7 @@ import { internalMutation, type MutationCtx, type QueryCtx } from "../_generated
 import { appOfPortKey, firstFreePort, PORT_RANGE_END, PORT_RANGE_START } from "./policy";
 
 async function byNodeKey(ctx: QueryCtx, nodeId: Id<"nodes">, key: string) {
-  return await ctx.db
+  return ctx.db
     .query("portAllocations")
     .withIndex("by_node_key", (q) => q.eq("nodeId", nodeId).eq("key", key))
     .unique();
@@ -78,11 +78,11 @@ export async function releaseAppPorts(ctx: MutationCtx, app: string) {
 export const allocate = internalMutation({
   args: { nodeId: v.id("nodes"), key: v.string() },
   returns: v.number(),
-  handler: async (ctx, args) => await allocatePort(ctx, args.nodeId, args.key),
+  handler: async (ctx, args) => allocatePort(ctx, args.nodeId, args.key),
 });
 
 export const releaseApp = internalMutation({
   args: { app: v.string() },
   returns: v.number(),
-  handler: async (ctx, args) => await releaseAppPorts(ctx, args.app),
+  handler: async (ctx, args) => releaseAppPorts(ctx, args.app),
 });

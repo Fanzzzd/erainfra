@@ -99,7 +99,7 @@ async function setup(names = ["node-a", "node-b", "node-c"]) {
         credential: nodes[name].credential,
         cursor: null,
       })
-    ).commands as Cmd[];
+    ).commands;
 
   /**
    * One poll of a simulated Infra Agent over the real Node HTTP API: claim each unsettled command,
@@ -131,7 +131,7 @@ async function setup(names = ["node-a", "node-b", "node-c"]) {
   const deployment = (id: string) =>
     t.run(async (ctx) => (await ctx.db.get(id as Id<"appDeployments">))!);
   const upload = async (bytes = "source-tarball") =>
-    await t.run((ctx) => ctx.storage.store(new Blob([bytes])));
+    t.run((ctx) => ctx.storage.store(new Blob([bytes])));
   const startUpload = async (app: string, storageId: string, extra: object = {}) => {
     const res = await operator("deployments", admin, {
       app,
@@ -737,7 +737,7 @@ describe("push-to-deploy", () => {
       repository: { full_name: "acme/shop" },
     });
     const deliver = async () =>
-      await s.t.fetch("/github/webhook", {
+      s.t.fetch("/github/webhook", {
         method: "POST",
         headers: {
           "X-GitHub-Event": "push",
@@ -817,7 +817,7 @@ describe("webhook secrets", () => {
     secret: string,
     body: string,
   ) =>
-    await s.t.fetch("/github/webhook", {
+    s.t.fetch("/github/webhook", {
       method: "POST",
       headers: {
         "X-GitHub-Event": event,
@@ -879,10 +879,7 @@ describe("webhook secrets", () => {
 
 type Key = { pair: CryptoKeyPair; id: string };
 async function newKey(): Promise<Key> {
-  const pair = (await crypto.subtle.generateKey("Ed25519", true, [
-    "sign",
-    "verify",
-  ])) as CryptoKeyPair;
+  const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   return { pair, id: Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("") };
 }

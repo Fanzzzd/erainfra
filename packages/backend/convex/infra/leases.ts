@@ -16,7 +16,7 @@ import { APP_LEASE_TTL_MS, decideLease, leaseAdmits } from "./policy";
 export type LeaseOperation = "deploy" | "failover";
 
 async function leaseRow(ctx: QueryCtx, app: string) {
-  return await ctx.db
+  return ctx.db
     .query("appLeases")
     .withIndex("by_app", (q) => q.eq("app", app))
     .unique();
@@ -82,7 +82,7 @@ const decisionValidator = v.union(
 export const acquire = internalMutation({
   args: { app: v.string(), holder: v.string(), operation: operationValidator },
   returns: decisionValidator,
-  handler: async (ctx, args) => await acquireAppLease(ctx, { ...args, now: Date.now() }),
+  handler: async (ctx, args) => acquireAppLease(ctx, { ...args, now: Date.now() }),
 });
 
 export const renew = internalMutation({

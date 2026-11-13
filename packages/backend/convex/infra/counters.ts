@@ -3,7 +3,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 export type CounterName = "auditSeq" | "deployments";
 
 async function counterRow(ctx: QueryCtx, name: CounterName) {
-  return await ctx.db
+  return ctx.db
     .query("infraCounters")
     .withIndex("by_name", (q) => q.eq("name", name))
     .unique();

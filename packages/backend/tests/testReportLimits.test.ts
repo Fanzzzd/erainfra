@@ -99,7 +99,7 @@ function body(cases: TestCase[], passed: string, commitSha?: string): TestReport
 }
 
 async function setup(t: Harness) {
-  return await t.run(async (ctx) =>
+  return t.run(async (ctx) =>
     ctx.db.insert("machines", {
       name: "linux-a",
       os: "linux",
@@ -115,7 +115,7 @@ async function setup(t: Harness) {
 let runner = 0;
 async function attempt(t: Harness, machineId: Id<"machines">, workflowRunId: number) {
   runner++;
-  return await t.run(async (ctx) =>
+  return t.run(async (ctx) =>
     ctx.db.insert("attempts", {
       profile: "erainfra-4vcpu-ubuntu-2404",
       executor: "firecracker",
@@ -247,7 +247,7 @@ describe("test reports inside Convex's transaction limits", () => {
       cases: await ctx.db.query("testCases").collect(),
     }));
     expect(left.reports.map((row) => row.attemptId)).toEqual([fresh]);
-    expect(left.hashes.map((row) => row.reportId)).toEqual([left.reports[0]!._id]);
+    expect(left.hashes.map((row) => row.reportId)).toEqual([left.reports[0]._id]);
     expect(left.cases).toHaveLength(1);
   }, 600_000);
 });

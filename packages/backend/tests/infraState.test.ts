@@ -48,8 +48,8 @@ afterEach(() => {
 });
 
 async function addUser(t: Harness, email: string, role?: PermissionRole) {
-  return await t.run(
-    async (ctx) => await ctx.db.insert("users", { email, ...(role === undefined ? {} : { role }) }),
+  return t.run(async (ctx) =>
+    ctx.db.insert("users", { email, ...(role === undefined ? {} : { role }) }),
   );
 }
 
@@ -58,14 +58,12 @@ function as(t: Harness, userId: Id<"users">) {
 }
 
 async function addNode(t: Harness, name: string) {
-  return await t.run(
-    async (ctx) => await ctx.db.insert("nodes", { name, source: "enrolled", createdAt: T0 }),
-  );
+  return t.run(async (ctx) => ctx.db.insert("nodes", { name, source: "enrolled", createdAt: T0 }));
 }
 
 async function auditRows(t: Harness) {
-  return await t.run(
-    async (ctx) => await ctx.db.query("auditEvents").withIndex("by_seq").order("asc").collect(),
+  return t.run(async (ctx) =>
+    ctx.db.query("auditEvents").withIndex("by_seq").order("asc").collect(),
   );
 }
 
@@ -79,7 +77,7 @@ const token = (scope: "read" | "admin" | "metrics") => ({
 async function deployingTo(t: Harness, nodeId: Id<"nodes">, app = "shop") {
   const deploymentId = await t.run(async (ctx) => {
     const { createDeployment } = await import("../convex/infra/deployments");
-    return await createDeployment(ctx, {
+    return createDeployment(ctx, {
       app,
       targetNodeIds: [nodeId],
       trigger: { kind: "manual" },
@@ -162,7 +160,7 @@ describe("port allocation", () => {
       await t.mutation(internal.infra.ports.allocate, { nodeId: nodeB, key: "shop/web" }),
     ).toBe(PORT_RANGE_START);
 
-    const rows = await t.run(async (ctx) => await ctx.db.query("portAllocations").collect());
+    const rows = await t.run(async (ctx) => ctx.db.query("portAllocations").collect());
     const pairs = rows.map((row) => `${row.nodeId}:${row.port}`);
     expect(new Set(pairs).size).toBe(pairs.length);
   });
@@ -190,17 +188,15 @@ describe("accounts", () => {
   it("makes the first account the owner and refuses a second account for an email", async () => {
     const t = convexTest(schema, modules);
     const { insertUser } = await import("../convex/infra/access");
-    const first = await t.run(
-      async (ctx) => await insertUser(ctx, { email: "A@x.dev", role: "viewer" }),
-    );
-    const second = await t.run(
-      async (ctx) => await insertUser(ctx, { email: "b@x.dev", role: "viewer" }),
+    const first = await t.run(async (ctx) => insertUser(ctx, { email: "A@x.dev", role: "viewer" }));
+    const second = await t.run(async (ctx) =>
+      insertUser(ctx, { email: "b@x.dev", role: "viewer" }),
     );
     await expect(
-      t.run(async (ctx) => await insertUser(ctx, { email: " a@X.DEV ", role: "admin" })),
+      t.run(async (ctx) => insertUser(ctx, { email: " a@X.DEV ", role: "admin" })),
     ).rejects.toThrow(/already exists/);
 
-    const users = await t.run(async (ctx) => await ctx.db.query("users").collect());
+    const users = await t.run(async (ctx) => ctx.db.query("users").collect());
     expect(users.find((u) => u._id === first)?.role).toBe("owner");
     expect(users.find((u) => u._id === second)?.role).toBe("viewer");
     expect(users.find((u) => u._id === first)?.email).toBe("a@x.dev");
@@ -588,7 +584,7 @@ describe("deployment retention", () => {
         });
       }
     });
-    const rows = await t.run(async (ctx) => await ctx.db.query("appDeployments").collect());
+    const rows = await t.run(async (ctx) => ctx.db.query("appDeployments").collect());
     expect(rows).toHaveLength(DEPLOYMENTS_KEPT);
     expect(Math.min(...rows.map((row) => row.startedAt))).toBe(T0 + 3);
     expect(await as(t, viewer).query(api.infra.deployments.retainedCount, {})).toBe(
@@ -742,7 +738,7 @@ describe("App secrets", () => {
         updatedAt: T0,
       });
       const { createDeployment } = await import("../convex/infra/deployments");
-      return await createDeployment(ctx, {
+      return createDeployment(ctx, {
         app: "shop",
         targetNodeIds: [webNode, dbNode, unusedTarget],
         trigger: { kind: "manual" },
@@ -844,7 +840,7 @@ describe("App secrets", () => {
     await expect(
       as(t, op).mutation(api.infra.secrets.set, { app: "shop", vars: { GOOD: "1", "1BAD": "2" } }),
     ).rejects.toThrow(/Invalid environment variable name: 1BAD/);
-    expect(await t.run(async (ctx) => await ctx.db.query("appSecrets").collect())).toEqual([]);
+    expect(await t.run(async (ctx) => ctx.db.query("appSecrets").collect())).toEqual([]);
   });
 
   it("holds App and service names to the naming rule before writing anything", async () => {

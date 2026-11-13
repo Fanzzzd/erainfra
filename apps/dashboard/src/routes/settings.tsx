@@ -204,6 +204,17 @@ function RulesCard({
   const remove = useMutation(api.alerts.deleteRule);
   const destinationName = new Map(destinations.map((item) => [item._id, item.name]));
 
+  async function deleteRule(rule: Rule) {
+    const confirmed = await confirmDestructive({
+      title: `Delete the rule "${rule.name}"?`,
+      description: "Its incidents are deleted with it.",
+      confirmLabel: "Delete",
+    });
+    if (confirmed) {
+      void runOrToast(() => remove({ id: rule._id }), "Could not delete the rule");
+    }
+  }
+
   return (
     <Card className="overflow-hidden">
       <CardHeader className="border-b">
@@ -339,19 +350,7 @@ function RulesCard({
                         size="sm"
                         variant="ghost"
                         aria-label={`Delete ${rule.name}`}
-                        onClick={async () => {
-                          const confirmed = await confirmDestructive({
-                            title: `Delete the rule "${rule.name}"?`,
-                            description: "Its incidents are deleted with it.",
-                            confirmLabel: "Delete",
-                          });
-                          if (confirmed) {
-                            void runOrToast(
-                              () => remove({ id: rule._id }),
-                              "Could not delete the rule",
-                            );
-                          }
-                        }}
+                        onClick={() => void deleteRule(rule)}
                       >
                         <Trash2 />
                       </Button>
@@ -658,6 +657,33 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
   const remove = useMutation(api.alerts.deleteDestination);
   const [revealed, setRevealed] = useState<{ name: string; secret: string }>();
 
+  async function rotateSecret(destination: Destination) {
+    const confirmed = await confirmDestructive({
+      title: `Rotate the signing secret for ${destination.name}?`,
+      description: "The old secret stops working at once.",
+      confirmLabel: "Rotate",
+    });
+    if (confirmed) {
+      void runOrToast(async () => {
+        const result = await rotate({ id: destination._id });
+        setRevealed({
+          name: destination.name,
+          secret: result.signingSecret,
+        });
+      }, "Could not rotate the secret");
+    }
+  }
+
+  async function deleteDestination(destination: Destination) {
+    const confirmed = await confirmDestructive({
+      title: `Delete the destination "${destination.name}"?`,
+      confirmLabel: "Delete",
+    });
+    if (confirmed) {
+      void runOrToast(() => remove({ id: destination._id }), "Could not delete the destination");
+    }
+  }
+
   return (
     <Card className="overflow-hidden">
       <CardHeader className="border-b">
@@ -764,22 +790,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={async () => {
-                            const confirmed = await confirmDestructive({
-                              title: `Rotate the signing secret for ${destination.name}?`,
-                              description: "The old secret stops working at once.",
-                              confirmLabel: "Rotate",
-                            });
-                            if (confirmed) {
-                              void runOrToast(async () => {
-                                const result = await rotate({ id: destination._id });
-                                setRevealed({
-                                  name: destination.name,
-                                  secret: result.signingSecret,
-                                });
-                              }, "Could not rotate the secret");
-                            }
-                          }}
+                          onClick={() => void rotateSecret(destination)}
                         >
                           <KeyRound />
                           Rotate
@@ -801,18 +812,7 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         size="sm"
                         variant="ghost"
                         aria-label={`Delete ${destination.name}`}
-                        onClick={async () => {
-                          const confirmed = await confirmDestructive({
-                            title: `Delete the destination "${destination.name}"?`,
-                            confirmLabel: "Delete",
-                          });
-                          if (confirmed) {
-                            void runOrToast(
-                              () => remove({ id: destination._id }),
-                              "Could not delete the destination",
-                            );
-                          }
-                        }}
+                        onClick={() => void deleteDestination(destination)}
                       >
                         <Trash2 />
                       </Button>

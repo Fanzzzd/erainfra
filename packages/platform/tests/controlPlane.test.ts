@@ -46,7 +46,7 @@ function setup() {
   };
   const object = new ControlPlane(state, { CONTROL_PLANE: null as never });
   const client = new ConvexHttpClient("https://cp.example", {
-    fetch: (input, init) => object.fetch(new Request(input as string, init)),
+    fetch: (input, init) => object.fetch(new Request(input, init)),
   });
   return { client };
 }

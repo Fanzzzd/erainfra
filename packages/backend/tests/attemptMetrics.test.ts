@@ -47,7 +47,7 @@ function snapshot(count: number, overrides: Partial<MetricsSnapshot> = {}): Metr
 }
 
 async function setup(t: TestConvex<typeof schema>) {
-  return await t.run(async (ctx) => {
+  return t.run(async (ctx) => {
     const machine = {
       os: "linux" as const,
       labels: [],
@@ -85,7 +85,7 @@ async function report(
   final = false,
   token = "machine-token",
 ) {
-  return await t.mutation(api.workerApi.reportAttemptMetrics, {
+  return t.mutation(api.workerApi.reportAttemptMetrics, {
     token,
     attemptId,
     final,
@@ -94,7 +94,7 @@ async function report(
 }
 
 async function stored(t: TestConvex<typeof schema>) {
-  return await t.run(async (ctx) => ({
+  return t.run(async (ctx) => ({
     series: await ctx.db.query("attemptMetrics").collect(),
     summaries: await ctx.db.query("attemptMetricSummaries").collect(),
   }));
@@ -114,7 +114,7 @@ describe("Attempt metrics ingestion", () => {
     const { series, summaries } = await stored(t);
     expect(series).toHaveLength(1);
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]!.seriesId).toBe(series[0]!._id);
+    expect(summaries[0].seriesId).toBe(series[0]._id);
   });
 
   it("keeps the dashboard queries behind dashboard authentication", async () => {
@@ -199,7 +199,7 @@ describe("Attempt metrics ingestion", () => {
     const t = convexTest(schema, modules);
     const { attemptId } = await setup(t);
     await report(t, attemptId, snapshot(1, { errors: 1, lastError: "x".repeat(5000) }));
-    expect((await stored(t)).series[0]!.lastError).toHaveLength(200);
+    expect((await stored(t)).series[0].lastError).toHaveLength(200);
   });
 
   it("treats uploads as idempotent whole snapshots ordered by sample count", async () => {
@@ -211,29 +211,29 @@ describe("Attempt metrics ingestion", () => {
     // A replay changes nothing.
     expect(await report(t, attemptId, snapshot(4))).toBe(true);
     const replayed = await stored(t);
-    expect(replayed.summaries[0]!.updatedAt).toBe(first.summaries[0]!.updatedAt);
+    expect(replayed.summaries[0].updatedAt).toBe(first.summaries[0].updatedAt);
     expect(replayed.series).toHaveLength(1);
 
     // An older upload that arrives late is ignored.
     expect(await report(t, attemptId, snapshot(2))).toBe(true);
-    expect((await stored(t)).series[0]!.points.offset).toHaveLength(4);
+    expect((await stored(t)).series[0].points.offset).toHaveLength(4);
 
     // A newer one replaces the series in place.
     expect(await report(t, attemptId, snapshot(6))).toBe(true);
     let current = await stored(t);
     expect(current.series).toHaveLength(1);
-    expect(current.series[0]!._id).toBe(first.series[0]!._id);
-    expect(current.series[0]!.points.offset).toHaveLength(6);
+    expect(current.series[0]._id).toBe(first.series[0]._id);
+    expect(current.series[0].points.offset).toHaveLength(6);
 
     // The final upload may carry no new sample and still marks the series final.
     expect(await report(t, attemptId, snapshot(6), true)).toBe(true);
     current = await stored(t);
-    expect(current.summaries[0]!.final).toBe(true);
+    expect(current.summaries[0].final).toBe(true);
 
     // Nothing replaces a final snapshot.
     expect(await report(t, attemptId, snapshot(9))).toBe(true);
     current = await stored(t);
-    expect(current.series[0]!.points.offset).toHaveLength(6);
+    expect(current.series[0].points.offset).toHaveLength(6);
     expect(current.summaries).toHaveLength(1);
   });
 
@@ -252,14 +252,14 @@ describe("Attempt metrics ingestion", () => {
     });
     const before = await stored(t);
     expect(await report(t, attemptId, snapshot(5), true)).toBe(false);
-    expect((await stored(t)).series[0]!.samples).toBe(before.series[0]!.samples);
+    expect((await stored(t)).series[0].samples).toBe(before.series[0].samples);
   });
 
   it("summarises against what the control plane allotted, not what the upload says", async () => {
     const t = convexTest(schema, modules);
     const { attemptId } = await setup(t);
     await report(t, attemptId, snapshot(4));
-    const summary = (await stored(t)).summaries[0]!;
+    const summary = (await stored(t)).summaries[0];
     expect(summary.vcpus).toBe(4);
     expect(summary.memoryLimitBytes).toBe(16 * GIB);
     expect(summary.cpuAvgVcpus).toBe(2);
@@ -304,7 +304,7 @@ describe("Attempt metrics retention", () => {
     const { series, summaries } = await stored(t);
     expect(series).toHaveLength(1);
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]!.seriesId).toBe(series[0]!._id);
+    expect(summaries[0].seriesId).toBe(series[0]._id);
   });
 });
 

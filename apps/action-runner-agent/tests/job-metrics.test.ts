@@ -8,7 +8,6 @@ import {
   parseMetricsReport,
   startAttemptMetrics,
   type MetricsReport,
-  type SamplerProcess,
   type SpawnSampler,
 } from "../job-metrics.ts";
 
@@ -48,7 +47,7 @@ function spawner(sampler: FakeSampler) {
   const calls: Array<{ file: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
   const spawnSampler: SpawnSampler = (file, args, options) => {
     calls.push({ file, args, env: options.env });
-    return sampler as unknown as SamplerProcess;
+    return sampler;
   };
   return { spawnSampler, calls };
 }

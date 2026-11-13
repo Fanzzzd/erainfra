@@ -60,7 +60,7 @@ export function MetricChart({
   const [hover, setHover] = useState<number | undefined>(undefined);
   const plotWidth = WIDTH - PAD.left - PAD.right;
   const plotHeight = HEIGHT - PAD.top - PAD.bottom;
-  const last = seconds.length > 0 ? seconds[seconds.length - 1]! : 0;
+  const last = seconds.length > 0 ? seconds[seconds.length - 1] : 0;
   const span = Math.max(last, 1);
   const peak = Math.max(
     reference?.value ?? 0,
@@ -73,7 +73,7 @@ export function MetricChart({
 
   const path = (values: Array<number | undefined>) =>
     values
-      .map((value, index) => `${index === 0 ? "M" : "L"}${x(seconds[index]!)},${y(value ?? 0)}`)
+      .map((value, index) => `${index === 0 ? "M" : "L"}${x(seconds[index])},${y(value ?? 0)}`)
       .join(" ");
 
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
@@ -83,8 +83,7 @@ export function MetricChart({
       ((((event.clientX - box.left) / box.width) * WIDTH - PAD.left) / plotWidth) * span;
     let nearest = 0;
     for (let index = 1; index < seconds.length; index += 1) {
-      if (Math.abs(seconds[index]! - second) < Math.abs(seconds[nearest]! - second))
-        nearest = index;
+      if (Math.abs(seconds[index] - second) < Math.abs(seconds[nearest] - second)) nearest = index;
     }
     setHover(nearest);
   };
@@ -158,7 +157,7 @@ export function MetricChart({
             {series[0] !== undefined && seconds.length > 0 && (
               <>
                 <path
-                  d={`${path(series[0].values)} L${x(seconds[seconds.length - 1]!)},${baseline} L${x(seconds[0]!)},${baseline} Z`}
+                  d={`${path(series[0].values)} L${x(seconds[seconds.length - 1])},${baseline} L${x(seconds[0])},${baseline} Z`}
                   fill={SERIES_COLORS[0]}
                   fillOpacity={0.22}
                 />
@@ -204,8 +203,8 @@ export function MetricChart({
           )}
           {hover !== undefined && (
             <line
-              x1={x(seconds[hover]!)}
-              x2={x(seconds[hover]!)}
+              x1={x(seconds[hover])}
+              x2={x(seconds[hover])}
               y1={PAD.top}
               y2={baseline}
               stroke="var(--muted-foreground)"
@@ -217,13 +216,13 @@ export function MetricChart({
           <div
             className="pointer-events-none absolute top-0 z-10 min-w-36 rounded-md border border-border bg-popover px-2.5 py-2 text-[11px] shadow-lg"
             style={
-              x(seconds[hover]!) > WIDTH / 2
-                ? { right: `${(1 - (x(seconds[hover]!) - 8) / WIDTH) * 100}%` }
-                : { left: `${((x(seconds[hover]!) + 8) / WIDTH) * 100}%` }
+              x(seconds[hover]) > WIDTH / 2
+                ? { right: `${(1 - (x(seconds[hover]) - 8) / WIDTH) * 100}%` }
+                : { left: `${((x(seconds[hover]) + 8) / WIDTH) * 100}%` }
             }
           >
             <p className="mb-1 tabular-nums text-subtle-foreground">
-              {formatElapsed(seconds[hover]!)}
+              {formatElapsed(seconds[hover])}
             </p>
             {series.map((line, index) => (
               <p key={line.name} className="flex items-center gap-2">
@@ -232,7 +231,7 @@ export function MetricChart({
                   style={{ backgroundColor: SERIES_COLORS[index] }}
                 />
                 <span className="font-medium tabular-nums text-foreground">
-                  {line.values[hover] === undefined ? "–" : format(line.values[hover]!)}
+                  {line.values[hover] === undefined ? "–" : format(line.values[hover])}
                 </span>
                 <span className="text-muted-foreground">{line.name}</span>
               </p>

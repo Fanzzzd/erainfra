@@ -112,7 +112,7 @@ export function nearestRank(values: readonly number[], quantile: number) {
   if (values.length === 0) return 0;
   const sorted = values.toSorted((left, right) => left - right);
   const rank = Math.max(1, Math.ceil(quantile * sorted.length));
-  return sorted[rank - 1]!;
+  return sorted[rank - 1];
 }
 
 export function qualifies(sample: RightsizeSample) {
@@ -148,7 +148,7 @@ export function parseProfileName(name: string): ParsedProfileName | null {
   return {
     canary: match[1] !== undefined,
     vcpus: Number(match[2]),
-    os: match[3]!,
+    os: match[3],
     arm: match[4] !== undefined,
     memoryGiB: match[5] === undefined ? null : Number(match[5]),
     flavour: match[6] ?? null,
@@ -172,7 +172,7 @@ export function profileName(
 
 /** The image repository without tag or digest: what two Profiles share when they boot alike. */
 function imageRepository(imageRelease: string) {
-  const withoutDigest = imageRelease.split("@")[0]!;
+  const withoutDigest = imageRelease.split("@")[0];
   const slash = withoutDigest.lastIndexOf("/");
   const colon = withoutDigest.lastIndexOf(":");
   return colon > slash ? withoutDigest.slice(0, colon) : withoutDigest;

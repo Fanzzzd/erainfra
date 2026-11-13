@@ -78,7 +78,7 @@ async function holdLease(t: Harness, expiresAt = Date.now() + 30_000) {
 }
 
 async function addWorker(t: Harness, name: string, maxSlots = 1) {
-  return await t.run((ctx) =>
+  return t.run((ctx) =>
     ctx.db.insert("machines", {
       name,
       os: "linux",
@@ -93,7 +93,7 @@ async function addWorker(t: Harness, name: string, maxSlots = 1) {
 
 /** Reports the Profile's readiness as the Worker's Action Runner Agent does. */
 async function reportReadiness(t: Harness, name: string, state: "preparing" | "ready" | "failed") {
-  return await t.mutation(api.workerApi.reportReadiness, {
+  return t.mutation(api.workerApi.reportReadiness, {
     token: `token-${name}`,
     profile: CONTRACT.profile,
     executor: CONTRACT.executor,
@@ -643,8 +643,6 @@ describe("start budget", () => {
     await registerProfile(t);
     await addReadyWorker(t, "worker-a");
 
-    await expect(
-      heartbeat(t, "worker-a", { ...overBudget, extra: 1 } as typeof overBudget),
-    ).rejects.toThrow();
+    await expect(heartbeat(t, "worker-a", { ...overBudget, extra: 1 })).rejects.toThrow();
   });
 });

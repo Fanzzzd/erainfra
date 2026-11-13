@@ -22,7 +22,7 @@ import { createRun } from "./pipeline";
 import { MAX_GIT_BINDINGS, repoKey } from "./policy";
 
 export async function findBinding(ctx: QueryCtx, repo: string, branch: string) {
-  return await ctx.db
+  return ctx.db
     .query("gitBindings")
     .withIndex("by_repoKey_branch", (q) => q.eq("repoKey", repoKey(repo)).eq("branch", branch))
     .unique();
@@ -53,7 +53,7 @@ export async function insertBinding(
   const refusal = await bindingRefusal(ctx, input.repo, input.branch);
   if (refusal !== null) throw new ConvexError(refusal);
   const now = Date.now();
-  return await ctx.db.insert("gitBindings", {
+  return ctx.db.insert("gitBindings", {
     ...input,
     repoKey: repoKey(input.repo),
     createdAt: now,
@@ -77,7 +77,8 @@ export function branchProblem(branch: string) {
   if (branch.length > 255) return "A branch name is at most 255 characters";
   if (branch.startsWith("refs/")) return "Name the branch without refs/heads/";
   if (
-    [...branch].some((ch) => ch.charCodeAt(0) <= 0x20 || ch.charCodeAt(0) === 0x7f) ||
+    // Only ASCII code units are refused here, so splitting into UTF-16 code units is exact.
+    branch.split("").some((ch) => ch.charCodeAt(0) <= 0x20 || ch.charCodeAt(0) === 0x7f) ||
     /[~^:?*[\\]/.test(branch) ||
     branch.includes("..") ||
     branch.includes("@{") ||
@@ -159,7 +160,7 @@ export async function unbindBranch(ctx: MutationCtx, binding: Doc<"gitBindings">
 /** Every binding, its Nodes by name, ordered by repository then branch. */
 export async function listBindings(ctx: QueryCtx) {
   // At most MAX_GIT_BINDINGS rows exist (insertBinding), so this reads them all.
-  return await bindingViews(ctx, await ctx.db.query("gitBindings").take(MAX_GIT_BINDINGS));
+  return bindingViews(ctx, await ctx.db.query("gitBindings").take(MAX_GIT_BINDINGS));
 }
 
 /** Bindings as callers see them: Nodes by name as well as by id, no internal keys. */
@@ -210,7 +211,7 @@ export const bind = mutation({
   returns: v.id("gitBindings"),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    return await bindBranch(ctx, { ...args, actor });
+    return bindBranch(ctx, { ...args, actor });
   },
 });
 
@@ -254,7 +255,7 @@ export const list = query({
   ),
   handler: async (ctx) => {
     await requirePermission(ctx, "app.read");
-    return await listBindings(ctx);
+    return listBindings(ctx);
   },
 });
 

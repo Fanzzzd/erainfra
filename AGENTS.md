@@ -31,7 +31,8 @@ A comment saying "change both together" marks a rule with two owners. Give it on
 
 ## Checks before a pull request
 
-- JavaScript and TypeScript: `pnpm check` (Oxlint, Oxfmt, type check, tests).
+- JavaScript and TypeScript: `pnpm check` (Oxlint with its type-aware pass, Oxfmt, type check,
+  tests).
 - Go: `go test ./...`, `go vet ./...`, `GOOS=linux golangci-lint run ./...` with golangci-lint
   v2.15.0, and `GOOS=linux govulncheck ./...`.
 - Rust, in `apps/mesh`: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,

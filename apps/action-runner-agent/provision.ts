@@ -312,7 +312,7 @@ export function spawnExperiment(experiment: ExperimentExecution) {
  * fails the report of the Attempt itself.
  */
 export async function readEgressRecord(path: string | undefined): Promise<unknown> {
-  return await readRecordFile(path, 1024 * 1024);
+  return readRecordFile(path, 1024 * 1024);
 }
 
 /**
@@ -323,7 +323,7 @@ export async function readEgressRecord(path: string | undefined): Promise<unknow
  * bounded JSON object.
  */
 export async function readTestReport(path: string | undefined): Promise<unknown> {
-  return await readRecordFile(path, 2 * 1024 * 1024);
+  return readRecordFile(path, 2 * 1024 * 1024);
 }
 
 /** How the guest's GitHub runner ended, as the control plane accepts it. */

@@ -151,7 +151,7 @@ export const invite = mutation({
     if (!mayAssignRole(inviterRole, role, role)) {
       throw new ConvexError(`The ${inviterRole} role cannot invite an ${role}`);
     }
-    return await issueGrant(ctx, "invite", await getAuthUserId(ctx), role);
+    return issueGrant(ctx, "invite", await getAuthUserId(ctx), role);
   },
 });
 

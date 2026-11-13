@@ -63,9 +63,9 @@ describe("Worker benchmark", () => {
         memoryCopies: 1,
         diskBytes: 1024,
         packageFiles: 2,
-        fetchImpl: (async () => {
+        fetchImpl: async () => {
           throw new Error("offline");
-        }) as typeof fetch,
+        },
         networkTargets: [{ target: "github", url: "https://example.test" }],
       });
       assert.equal(report.network[0]?.error, "offline");

@@ -41,7 +41,7 @@ export function secretScope(app: string, service?: string): SecretScope {
 const scopeArgs = { app: v.string(), service: v.optional(v.string()) };
 
 async function dataKeyRow(ctx: QueryCtx, scope: SecretScope) {
-  return await ctx.db
+  return ctx.db
     .query("appDataKeys")
     .withIndex("by_app_service", (q) => q.eq("app", scope.app).eq("service", scope.service))
     .unique();
@@ -55,7 +55,7 @@ function secretRows(ctx: QueryCtx, scope: SecretScope) {
 
 async function writableDataKey(ctx: MutationCtx, master: MasterKey, scope: SecretScope) {
   const row = await dataKeyRow(ctx, scope);
-  if (row !== null) return await unwrapDataKey(master, scope, row);
+  if (row !== null) return unwrapDataKey(master, scope, row);
   const created = await newDataKey(master, scope);
   await ctx.db.insert("appDataKeys", {
     ...scope,
@@ -173,7 +173,7 @@ export const unset = mutation({
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const { actor } = await requirePermission(ctx, "app.deploy");
-    return await unsetSecret(ctx, { ...args, actor });
+    return unsetSecret(ctx, { ...args, actor });
   },
 });
 
@@ -189,7 +189,7 @@ export const list = query({
   returns: v.array(v.object({ name: v.string(), preview: v.string(), updatedAt: v.number() })),
   handler: async (ctx, args) => {
     await requirePermission(ctx, "app.read");
-    return await maskedSecrets(ctx, args.app, args.service);
+    return maskedSecrets(ctx, args.app, args.service);
   },
 });
 
@@ -251,5 +251,5 @@ const values = v.record(v.string(), v.string());
 export const forNodeDeploy = internalQuery({
   args: { nodeId: v.id("nodes"), deploymentId: v.id("appDeployments") },
   returns: v.object({ appWide: values, services: v.record(v.string(), values) }),
-  handler: async (ctx, args) => await secretsForNodeDeploy(ctx, { ...args, now: Date.now() }),
+  handler: async (ctx, args) => secretsForNodeDeploy(ctx, { ...args, now: Date.now() }),
 });

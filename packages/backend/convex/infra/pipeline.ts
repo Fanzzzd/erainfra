@@ -312,37 +312,37 @@ async function runStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
         kind: "spec",
         deploymentId: run._id,
       });
-      if (state.kind !== "done") return state.kind === "wait" ? null : await fail(ctx, run, state);
+      if (state.kind !== "done") return state.kind === "wait" ? null : fail(ctx, run, state);
       const text = state.command.specText ?? "";
       let spec: AppSpec;
       if (text.trim().length > 0) {
         const parsed = parseSpec(text, run.app);
-        if (!parsed.ok) return await fail(ctx, run, { error: parsed.error });
+        if (!parsed.ok) return fail(ctx, run, { error: parsed.error });
         spec = parsed.spec;
       } else if (run.port !== undefined) {
         if (!isRouteLabel(run.app))
-          return await fail(ctx, run, { error: routeLabelError("web", run.app, true) });
+          return fail(ctx, run, { error: routeLabelError("web", run.app, true) });
         spec = implicitSpec(run.app, run.port);
       } else {
-        return await fail(ctx, run, {
+        return fail(ctx, run, {
           error: "the source has no erainfra.yaml or portless.yaml; add one, or set a port",
         });
       }
       if (spec.app !== run.app)
-        return await fail(ctx, run, {
+        return fail(ctx, run, {
           error: `the spec names App "${spec.app}", but this run deploys "${run.app}"`,
         });
       // --adopt may only name a container this run starts, so it never reaches another name.
       const starts = spec.services.map((s) => `${run.app}-${s.name}`);
       const stray = (run.adopt ?? []).find((name) => !starts.includes(name));
       if (stray !== undefined)
-        return await fail(ctx, run, {
+        return fail(ctx, run, {
           error: `--adopt ${stray}: this deploy starts no container of that name; it starts ${starts.join(", ")}`,
         });
-      return await moveTo(ctx, run, "planning", "planning placement and ports", { spec });
+      return moveTo(ctx, run, "planning", "planning placement and ports", { spec });
     }
     case "planning":
-      return await planStage(ctx, run);
+      return planStage(ctx, run);
     case "building": {
       const builds = run.plan!.builds;
       for (const [i, build] of builds.entries()) {
@@ -352,14 +352,14 @@ async function runStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
           deploymentId: run._id,
           service: build.service,
         });
-        if (state.kind === "failed") return await fail(ctx, run, state);
+        if (state.kind === "failed") return fail(ctx, run, state);
         if (state.kind === "wait") {
           const detail = `building ${build.service} (${i + 1}/${builds.length})`;
           if (run.detail !== detail) await ctx.db.patch(run._id, { detail });
           return null;
         }
       }
-      return await moveTo(ctx, run, "deploying", deployDetail(run.plan!));
+      return moveTo(ctx, run, "deploying", deployDetail(run.plan!));
     }
     case "deploying": {
       // Every Node's group at once; each Node runs its own commands one at a time.
@@ -370,11 +370,11 @@ async function runStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
           deploymentId: run._id,
           ...(run.operation === "failover" ? { operation: "failover" as const } : {}),
         });
-        if (state.kind === "failed") return await fail(ctx, run, state);
+        if (state.kind === "failed") return fail(ctx, run, state);
         if (state.kind === "wait") waiting = true;
       }
       if (waiting) return null;
-      return await moveTo(ctx, run, "linking", `recording ${run.plan!.links.length} link(s)`);
+      return moveTo(ctx, run, "linking", `recording ${run.plan!.links.length} link(s)`);
     }
     case "linking":
       await commit(ctx, run);
@@ -439,6 +439,10 @@ async function runStep(
       };
     case "cancelled":
       return { kind: "failed", error: `${step} on ${name} was cancelled` };
+    case "pending":
+    case "running":
+      // Still in flight: the liveness and timeout checks below decide whether to keep waiting.
+      break;
   }
   const now = Date.now();
   if (!isNodeLive(node?.lastSeenAt, now))
@@ -472,9 +476,9 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       .withIndex("by_name", (q) => q.eq("name", run.app))
       .unique();
     const lost = run.failover!.lostNodeId;
-    if (before === null) return await fail(ctx, run, { error: "the App no longer exists" });
+    if (before === null) return fail(ctx, run, { error: "the App no longer exists" });
     if (before.spec === undefined)
-      return await fail(ctx, run, {
+      return fail(ctx, run, {
         error:
           "the App has no stored spec (it was copied from the Hub); deploy it once through Convex to enable failover",
       });
@@ -487,7 +491,7 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       ? run.failover!.toNodeId
       : live.find((n) => n._id !== lost)?._id;
     if (survivor === undefined || survivor === lost)
-      return await fail(ctx, run, { error: "no surviving Node to move the App to" });
+      return fail(ctx, run, { error: "no surviving Node to move the App to" });
     if (survivor !== run.failover!.toNodeId)
       await ctx.db.patch(run._id, { failover: { lostNodeId: lost, toNodeId: survivor } });
     spec = before.spec;
@@ -531,7 +535,7 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
   const builds = spec.services.some((s) => s.image === undefined && images?.[s.name] === undefined);
   if (builds) {
     const refusal = registryRefusal(registry);
-    if (refusal !== null) return await fail(ctx, run, { error: refusal });
+    if (refusal !== null) return fail(ctx, run, { error: refusal });
   }
   let planned;
   try {
@@ -547,16 +551,16 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       allocate: (nodeId, key) => allocatePort(ctx, nodeId, key),
     });
   } catch (e) {
-    return await fail(ctx, run, {
+    return fail(ctx, run, {
       error: e instanceof ConvexError ? String(e.data) : "planning failed",
     });
   }
-  if (!planned.ok) return await fail(ctx, run, { error: planned.error });
+  if (!planned.ok) return fail(ctx, run, { error: planned.error });
   const plan = planned.plan;
   // Every name the plan derives (containers, volumes, network, links, routes) must be this App's
   // or nobody's (namespace.ts). Checked before anything reaches a Node.
   const taken = await namespaceRefusal(ctx, run.app, plan);
-  if (taken !== null) return await fail(ctx, run, { error: taken });
+  if (taken !== null) return fail(ctx, run, { error: taken });
   const deployNodeIds =
     before === null
       ? [...new Set(plan.services.map((s) => s.nodeId))]
@@ -566,7 +570,7 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
       const node = await ctx.db.get(nodeId);
       const name = node?.name ?? nodeId;
       const kept = run.keepsPlacement === true && Object.values(placement ?? {}).includes(nodeId);
-      return await fail(ctx, run, {
+      return fail(ctx, run, {
         error: kept ? notLiveRefusal(run.app, name) : `${name} is not connected to Convex`,
       });
     }
@@ -587,7 +591,7 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
     ),
     ...(plan.builds.length > 0 && run.buildNodeId !== undefined ? [run.buildNodeId] : []),
   ]);
-  if (registryError !== null) return await fail(ctx, run, { error: registryError });
+  if (registryError !== null) return fail(ctx, run, { error: registryError });
   // A container retirement queued for a Node by an earlier failover must not remove what this run
   // is about to start there.
   for (const nodeId of deployNodeIds)
@@ -598,11 +602,11 @@ async function planStage(ctx: MutationCtx, run: Run): Promise<Run | null> {
     );
   const stored = { ...plan, deployNodeIds, urls };
   if (plan.builds.length > 0)
-    return await moveTo(ctx, run, "building", `building ${plan.builds.length} service(s)`, {
+    return moveTo(ctx, run, "building", `building ${plan.builds.length} service(s)`, {
       plan: stored,
       targetNodeIds: deployNodeIds,
     });
-  return await moveTo(ctx, run, "deploying", deployDetail(stored), {
+  return moveTo(ctx, run, "deploying", deployDetail(stored), {
     plan: stored,
     targetNodeIds: deployNodeIds,
   });

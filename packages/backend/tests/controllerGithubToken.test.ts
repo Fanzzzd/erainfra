@@ -133,7 +133,7 @@ describe("server-side installation tokens", () => {
       const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
         if (!String(input).endsWith(stallAt)) return Response.json({ id: 42 });
         // Never answers: only the abort signal ends this request.
-        return await new Promise<Response>((_, reject) => {
+        return new Promise<Response>((_, reject) => {
           init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
         });
       });

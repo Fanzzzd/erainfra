@@ -150,7 +150,7 @@ async function importAppKey(privateKey: string) {
   const pkcs1 = pkcs8 === null ? pemBody(pem, "RSA PRIVATE KEY") : null;
   const der = pkcs8 ?? (pkcs1 === null ? null : pkcs1ToPkcs8(pkcs1));
   if (der === null) throw new Error("not a PEM RSA private key");
-  return await crypto.subtle.importKey(
+  return crypto.subtle.importKey(
     "pkcs8",
     der,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
