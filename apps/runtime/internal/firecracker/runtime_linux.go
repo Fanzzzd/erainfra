@@ -48,6 +48,9 @@ type Runtime struct {
 	recoveryMu sync.Mutex
 	activeMu   sync.Mutex
 	active     map[string]*machineLease
+	// roots names every live guest's root snapshot, for the pool reserve those
+	// guests already wrote (storage.poolReserveUsedMiB).
+	roots liveRoots
 }
 
 // cacheBearerTTL is how long a minted runner-auth bearer stays valid. It must

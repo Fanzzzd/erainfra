@@ -12,6 +12,7 @@ import {
   hasSnapshotHeadroomForGuests,
   isTrustedOnly,
   LEGACY_POOL_RESERVE_MIB,
+  PLACEMENT_STORAGE_FIELDS,
 } from "../convex/isolation.ts";
 import schema from "../convex/schema";
 
@@ -174,6 +175,43 @@ describe("hasSnapshotHeadroomForGuests", () => {
     expect(hasSnapshotHeadroomForGuests(undefined, 8)).toBe(true);
     expect(hasSnapshotHeadroomForGuests({}, 8)).toBe(true);
   });
+
+  it("does not charge a guest twice for the reserve it already wrote", () => {
+    // poolFreeMiB already lacks what guests had written when the Worker measured it. Those
+    // guests spent that part of their reserve, so only the rest is still owed.
+    const reserve = 8_192;
+    const storage = { poolFreeMiB: reserve * 2, poolReserveMiB: reserve };
+    expect(hasSnapshotHeadroomForGuests({ ...storage, poolReserveUsedMiB: reserve }, 3)).toBe(true);
+    expect(hasSnapshotHeadroomForGuests({ ...storage, poolReserveUsedMiB: reserve }, 4)).toBe(
+      false,
+    );
+  });
+
+  it("still owes a guest live at the sample the reserve it has not written", () => {
+    // A guest that had written nothing yet can still grow by a full reserve. Counting only
+    // guests started after the sample would admit a second guest here and fill the pool.
+    const reserve = 8_192;
+    const storage = { poolFreeMiB: reserve * 1.5, poolReserveMiB: reserve, poolReserveUsedMiB: 0 };
+    expect(hasSnapshotHeadroomForGuests(storage, 2)).toBe(false);
+  });
+
+  it("reads only the storage facts the hot readiness row carries", () => {
+    const read = new Set<string>();
+    const evidence = new Proxy(
+      { ...FIRECRACKER_FACTS.storage, poolReserveMiB: 8_192, poolReserveUsedMiB: 0 },
+      {
+        get(target, key, receiver) {
+          if (typeof key === "string") read.add(key);
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    hasSnapshotHeadroomForGuests(evidence, 2);
+    expect(read.size).toBeGreaterThan(0);
+    // A fact placement needs belongs in PLACEMENT_STORAGE_FIELDS, which reportReadiness copies
+    // onto the hot row. Read from anywhere else, it is undefined on that row and silently ignored.
+    expect([...read].filter((key) => !(key in PLACEMENT_STORAGE_FIELDS))).toEqual([]);
+  });
 });
 
 async function worker(t: Harness, token: string) {
@@ -230,6 +268,31 @@ describe("workerApi.reportReadiness", () => {
     expect(evidence?.network?.subnet).toBe("10.241.0.0/16");
     expect(evidence?.network?.policyHash).toBe(`sha256:${"b".repeat(64)}`);
     expect(evidence?.checks?.map((check) => check.name)).toContain("job-network-policy");
+  });
+
+  it("copies every storage fact placement reads onto the hot row", async () => {
+    const t = convexTest(schema, modules);
+    await worker(t, "token-p");
+    // Every placement field gets a distinct value, so a field left out of the copy or swapped
+    // with another fails here.
+    const placement = Object.fromEntries(
+      Object.keys(PLACEMENT_STORAGE_FIELDS).map((key, index) => [key, 1_024 * (index + 1)]),
+    );
+    const storage = { ...FIRECRACKER_FACTS.storage, ...placement, poolTotalMiB: 409_600 };
+    await t.mutation(api.workerApi.reportReadiness, {
+      token: "token-p",
+      profile: "erainfra-4vcpu-ubuntu-2404",
+      executor: "firecracker",
+      imageRelease: IMAGE,
+      state: "ready",
+      vcpus: 2,
+      memoryMiB: 4_096,
+      ...FIRECRACKER_FACTS,
+      storage,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.query("workerReadiness").unique());
+    expect(row?.storage).toEqual({ ...placement, poolTotalMiB: 409_600 });
   });
 
   it("refuses readiness whose own checks failed", async () => {
@@ -305,7 +368,7 @@ describe("workerApi.reportReadiness", () => {
         ),
         "utf8",
       ),
-    ) as typeof FIRECRACKER_FACTS.storage & { poolReserveMiB: number };
+    ) as typeof FIRECRACKER_FACTS.storage & { poolReserveMiB: number; poolReserveUsedMiB: number };
     const t = convexTest(schema, modules);
     await worker(t, "token-r");
     await t.mutation(api.workerApi.reportHostFacts, {
@@ -341,9 +404,12 @@ describe("workerApi.reportReadiness", () => {
       encodedJITConfig: "jit",
     });
 
-    // An operator who raises RC_MIN_POOL_FREE_MIB past the free space stops placement too.
-    expect(await assignWith(reported.poolFreeMiB + 1)).toBe(0);
-    expect(await assignWith(reported.poolReserveMiB)).toBe(1);
+    // An operator who raises RC_MIN_POOL_FREE_MIB past the free space stops placement too. The
+    // guests live at the sample have since ended, so what they wrote is free again.
+    const room = reported.poolFreeMiB + reported.poolReserveUsedMiB;
+    expect(reported.poolReserveUsedMiB).toBeGreaterThan(0);
+    expect(await assignWith(room + 1)).toBe(0);
+    expect(await assignWith(room)).toBe(1);
   });
 
   it("rejects a blank current Firecracker report at the write boundary", async () => {

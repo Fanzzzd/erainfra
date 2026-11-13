@@ -21,6 +21,10 @@ func TestStorageJSONMatchesTheGoldenFileTheControlPlaneReads(t *testing.T) {
 		PoolTotalMiB:   102_400,
 		PoolFreeMiB:    81_920,
 		PoolReserveMiB: DefaultConfig().MinPoolFreeMiB,
+		// Two live guests, one past its reserve and one that wrote 2 GiB.
+		PoolReserveUsedMiB: reserveUsedMiB(
+			[]int64{20 << 30, 2 << 30}, DefaultConfig().MinPoolFreeMiB,
+		),
 	}
 	encoded, err := json.MarshalIndent(storage, "", "  ")
 	if err != nil {

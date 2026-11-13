@@ -36,7 +36,9 @@ boundary, network policy and cache contract.
 
 Scheduling first requires an exact ready Profile/Image Release match, then admits work within the
 Worker slot limit, a 90% CPU/memory envelope, and the snapshot-storage headroom each guest needs,
-which the Worker reports from its `RC_MIN_POOL_FREE_MIB`. Among candidates with
+which the Worker reports from its `RC_MIN_POOL_FREE_MIB`. Guests that were running when the Worker
+sampled its thin-pool are credited the part of that headroom they had already written, so the
+sample does not charge them for it twice. Among candidates with
 equal resource pressure, a Profile's `balanced`, `cpu`, `network`, or `io` fit policy ranks fresh
 Worker benchmarks. Missing or seven-day-stale observations score neutrally and never exclude a
 Worker. Linux automatic capacity is bounded at 16 slots, macOS at two Tart VMs, and Windows at one;

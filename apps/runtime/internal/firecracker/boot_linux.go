@@ -94,6 +94,14 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 	if _, err := snapshotter.Prepare(leaseContext, snapshotKey, identity.ChainID(rootFS).String()); err != nil {
 		return nil, fmt.Errorf("prepare writable root snapshot: %w", err)
 	}
+	r.roots.add(snapshotKey)
+	defer func() {
+		// Deferred after the lease release above, so it runs first: the root
+		// leaves the live set before its blocks can return to the pool.
+		if returnedError != nil {
+			r.roots.remove(snapshotKey)
+		}
+	}()
 	mounts, err := snapshotter.Mounts(leaseContext, snapshotKey)
 	if err != nil {
 		return nil, fmt.Errorf("resolve root snapshot: %w", err)
@@ -211,6 +219,7 @@ func (r *Runtime) bootVM(ctx context.Context, definition vmDefinition) (_ *machi
 		client:       client,
 		namespace:    r.config.ContainerdNamespace,
 		releaseLease: releaseLease,
+		forgetRoot:   func() { r.roots.remove(snapshotKey) },
 		cancelVMM:    cancelVMM,
 		console:      console,
 		consolePath:  consolePath,

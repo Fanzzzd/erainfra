@@ -74,6 +74,7 @@ export type ReadinessFacts = {
     poolTotalMiB?: number;
     poolFreeMiB?: number;
     poolReserveMiB?: number;
+    poolReserveUsedMiB?: number;
   };
   network?: {
     policyName?: string;

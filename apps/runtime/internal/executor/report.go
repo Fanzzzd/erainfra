@@ -80,6 +80,11 @@ type Storage struct {
 	// guest (RC_MIN_POOL_FREE_MIB). The control plane places Attempts against
 	// the reported value, so the Worker's setting is the only one to change.
 	PoolReserveMiB int64 `json:"poolReserveMiB"`
+	// PoolReserveUsedMiB is how much of their reserves the guests live when
+	// PoolFreeMiB was sampled had already written, at most one reserve each.
+	// PoolFreeMiB already lacks it, so the control plane adds it back rather
+	// than charge those guests for it twice.
+	PoolReserveUsedMiB int64 `json:"poolReserveUsedMiB"`
 }
 
 // Network is the job network contract the Worker is enforcing right now, for

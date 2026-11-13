@@ -34,6 +34,9 @@ type machineLease struct {
 	// call and cleanup runs on a context the caller supplied.
 	namespace    string
 	releaseLease func(context.Context) error
+	// forgetRoot takes the guest's root out of the runtime's live roots. It
+	// runs before releaseLease, so a live root's blocks are always still held.
+	forgetRoot   func()
 	cancelVMM    context.CancelFunc
 	console      *os.File
 	consolePath  string
@@ -196,6 +199,9 @@ func (l *machineLease) cleanup(ctx context.Context, stop bool) error {
 		l.cancelVMM()
 		if err := l.console.Close(); err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("close console log: %w", err))
+		}
+		if l.forgetRoot != nil {
+			l.forgetRoot()
 		}
 		leaseContext := namespaces.WithNamespace(ctx, l.namespace)
 		if err := l.releaseLease(leaseContext); err != nil && !errdefs.IsNotFound(err) {

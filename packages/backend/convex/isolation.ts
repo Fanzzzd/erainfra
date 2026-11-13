@@ -1,4 +1,4 @@
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 
 import type { Doc } from "./_generated/dataModel";
 import {
@@ -45,6 +45,37 @@ export const readinessCheckValidator = v.object({
   detail: v.optional(v.string()),
 });
 
+/**
+ * The storage facts placement reads, and so the only ones the hot `workerReadiness` row carries.
+ * `reportReadiness` copies exactly these keys there through `placementStorageOf`; the rest of a
+ * report goes to `readinessEvidence`. A new admission fact goes here, or placement never sees it.
+ *
+ * - `poolFreeMiB`: free thin-pool data space when the Worker measured it.
+ * - `poolReserveMiB`: the copy-on-write room the Worker requires for each guest.
+ * - `poolReserveUsedMiB`: how much of their reserves the guests live at that measurement had
+ *   already written, at most one reserve per guest. `poolFreeMiB` already lacks it.
+ */
+export const PLACEMENT_STORAGE_FIELDS = {
+  poolTotalMiB: v.optional(v.number()),
+  poolFreeMiB: v.optional(v.number()),
+  poolReserveMiB: v.optional(v.number()),
+  poolReserveUsedMiB: v.optional(v.number()),
+};
+
+export const placementStorageValidator = v.object(PLACEMENT_STORAGE_FIELDS);
+
+export type PlacementStorage = Infer<typeof placementStorageValidator>;
+
+const PLACEMENT_STORAGE_KEYS = Object.keys(PLACEMENT_STORAGE_FIELDS) as (keyof PlacementStorage)[];
+
+/** The part of a readiness report's storage that goes onto the hot row. */
+export function placementStorageOf(
+  storage: PlacementStorage | undefined,
+): PlacementStorage | undefined {
+  if (storage === undefined) return undefined;
+  return Object.fromEntries(PLACEMENT_STORAGE_KEYS.map((key) => [key, storage[key]]));
+}
+
 export const readinessFactsValidator = {
   isolation: v.optional(v.string()),
   boundary: v.optional(boundaryValidator),
@@ -65,9 +96,7 @@ export const readinessFactsValidator = {
     v.object({
       snapshotter: v.optional(v.string()),
       poolName: v.optional(v.string()),
-      poolTotalMiB: v.optional(v.number()),
-      poolFreeMiB: v.optional(v.number()),
-      poolReserveMiB: v.optional(v.number()),
+      ...PLACEMENT_STORAGE_FIELDS,
     }),
   ),
   network: v.optional(
@@ -92,13 +121,7 @@ export type ReadinessFacts = {
   cacheScope?: string;
   cacheSharedWritable?: boolean;
   hardware?: { cpus?: number; memoryMiB?: number; kvm?: boolean };
-  storage?: {
-    snapshotter?: string;
-    poolName?: string;
-    poolTotalMiB?: number;
-    poolFreeMiB?: number;
-    poolReserveMiB?: number;
-  };
+  storage?: Infer<typeof readinessFactsValidator.storage>;
   network?: {
     policyName?: string;
     policyHash?: string;
@@ -177,6 +200,17 @@ export function firecrackerReadinessError(
     (!Number.isSafeInteger(poolReserveMiB) || poolReserveMiB < 0)
   ) {
     problems.push("storage.poolReserveMiB must be a non-negative integer when reported");
+  }
+  const poolReserveUsedMiB = facts.storage?.poolReserveUsedMiB;
+  if (
+    poolReserveUsedMiB !== undefined &&
+    (!Number.isSafeInteger(poolReserveUsedMiB) ||
+      poolReserveUsedMiB < 0 ||
+      (poolTotalMiB !== undefined && (poolFreeMiB ?? 0) + poolReserveUsedMiB > poolTotalMiB))
+  ) {
+    problems.push(
+      "storage.poolReserveUsedMiB must be a non-negative integer that fits in the pool with poolFreeMiB",
+    );
   }
   if (facts.network?.policyName?.trim() === "" || facts.network?.policyName === undefined) {
     problems.push("network.policyName is required");
@@ -348,16 +382,26 @@ export const LEGACY_POOL_RESERVE_MIB = 8 * 1024;
  * thin-pool that runs out mid-job does not reject the Attempt, it fails the
  * running Job with an I/O error after the work is already done.
  *
- * Each guest needs the reserve the Worker reports, so an operator changes it in one place, the
- * Worker's `RC_MIN_POOL_FREE_MIB`. A Worker that reports no pool at all, a Docker or Tart Profile or
- * an older Action Runner Agent, is not blocked. Admission tightens as evidence arrives; it never
- * invents a constraint from missing data.
+ * Each guest may write up to the reserve the Worker reports, so an operator changes it in one
+ * place, the Worker's `RC_MIN_POOL_FREE_MIB`. The rule is
+ * `poolFreeMiB + poolReserveUsedMiB >= poolReserveMiB * guests`. The Worker measured
+ * `poolFreeMiB` while some guests ran, and those guests had already written part of their
+ * reserves. That part is missing from `poolFreeMiB`, so charging those guests a full reserve
+ * again counts it twice. Adding it back holds whatever happened since the measurement: a guest
+ * live then and still running owes only the rest of its reserve, and one that finished has
+ * returned what it wrote. A guest started since then owes its full reserve. A runtime that does
+ * not report `poolReserveUsedMiB` gets no credit, which can only refuse more.
+ *
+ * A Worker that reports no pool at all, a Docker or Tart Profile or an older Action Runner Agent,
+ * is not blocked. Admission tightens as evidence arrives; it never invents a constraint from
+ * missing data.
  */
 export function hasSnapshotHeadroomForGuests(
-  storage: { poolFreeMiB?: number; poolReserveMiB?: number } | undefined,
+  storage: PlacementStorage | undefined,
   guests: number,
 ) {
   const free = storage?.poolFreeMiB;
   if (free === undefined) return true;
-  return free >= (storage?.poolReserveMiB ?? LEGACY_POOL_RESERVE_MIB) * guests;
+  const reserve = storage?.poolReserveMiB ?? LEGACY_POOL_RESERVE_MIB;
+  return free + (storage?.poolReserveUsedMiB ?? 0) >= reserve * guests;
 }
