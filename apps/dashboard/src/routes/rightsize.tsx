@@ -194,21 +194,17 @@ function RightsizePage() {
                     <p className="mt-0.5 break-all text-xs text-muted-foreground">{entry.job}</p>
                   </TableCell>
                   <TableCell className="align-top">
-                    <code className="break-all text-xs text-secondary-foreground">
-                      {entry.profile}
-                    </code>
+                    <code className="text-xs text-secondary-foreground">{entry.profile}</code>
                     <p className="mt-0.5 text-[11px] text-subtle-foreground">
                       {size(entry.current)}
                     </p>
                   </TableCell>
                   <TableCell className="align-top">
                     {entry.recommendedProfile !== null ? (
-                      <code className="break-all text-xs text-foreground">
-                        {entry.recommendedProfile}
-                      </code>
+                      <code className="text-xs text-foreground">{entry.recommendedProfile}</code>
                     ) : entry.suggestedProfile !== null ? (
                       <>
-                        <code className="break-all text-xs text-secondary-foreground">
+                        <code className="text-xs text-secondary-foreground">
                           {entry.suggestedProfile}
                         </code>
                         <p className="mt-0.5 text-[11px] text-warning">not registered</p>
