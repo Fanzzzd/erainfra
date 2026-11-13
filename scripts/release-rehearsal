@@ -530,9 +530,8 @@ if [ -z "$JOB_REPO" ]; then
 fi
 command -v gh >/dev/null || fail 'gh is not on PATH'
 WORKFLOW=erainfra-rehearsal.yml
-if ! gh api "repos/$JOB_REPO/contents/.github/workflows/$WORKFLOW" --silent 2>/dev/null; then
-  # [skip ci] keeps the commit from triggering the repository's push workflows.
-  IFS= read -r -d '' workflow <<'YAML' || true
+# [skip ci] keeps the commit from triggering the repository's push workflows.
+IFS= read -r -d '' workflow <<'YAML' || true
 name: erainfra-rehearsal
 on:
   workflow_dispatch:
@@ -549,12 +548,17 @@ jobs:
       - run: |
           echo "kernel: $(uname -r)"
           curl -fsS --max-time 20 https://api.github.com/zen
+          # A staging host's uplink can drop a registry request; a broken guest fails all three.
+          for try in 1 2 3; do docker pull hello-world && break; [ "$try" = 3 ] && exit 1; sleep 10; done
           docker run --rm hello-world
 YAML
+current=$(gh api "repos/$JOB_REPO/contents/.github/workflows/$WORKFLOW" --jq '[.sha, .content] | @tsv' 2>/dev/null || true)
+current_sha=${current%%$'\t'*}
+if [ "$(printf '%s' "${current#*$'\t'}" | tr -d '\n' | base64 -d 2>/dev/null)" != "$(printf '%s\n' "$workflow")" ]; then
   gh api -X PUT "repos/$JOB_REPO/contents/.github/workflows/$WORKFLOW" \
-    -f message='ci: add the EraInfra release rehearsal workflow [skip ci]' \
-    -f content="$(printf '%s\n' "$workflow" | base64 | tr -d '\n')" --silent ||
-    fail "could not add .github/workflows/$WORKFLOW to $JOB_REPO"
+    -f message='ci: update the EraInfra release rehearsal workflow [skip ci]' \
+    -f content="$(printf '%s\n' "$workflow" | base64 | tr -d '\n')" ${current:+-f sha="$current_sha"} --silent ||
+    fail "could not write .github/workflows/$WORKFLOW in $JOB_REPO"
 fi
 controller_token=$(convex_dev env get CONTROLLER_TOKEN 2>/dev/null || true)
 if [ -z "$controller_token" ]; then

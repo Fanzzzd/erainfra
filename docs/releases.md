@@ -94,8 +94,9 @@ It runs five steps and stops at the first failure:
    session; a job queued before the session opened waited 14 minutes for a second offer on
    2026-11-13. It then dispatches `.github/workflows/erainfra-rehearsal.yml` in that repository
    with `runs-on: rehearsal-2vcpu-wp0` and requires the run to succeed within `--queue-budget`
-   seconds (300 by default) of queue time. It adds the workflow with a `[skip ci]` commit when it
-   is missing. Without `--job-repo` the step is skipped.
+   seconds (300 by default) of queue time. It writes the workflow with a `[skip ci]` commit when
+   it is missing or differs from the script's copy. The job retries its Docker Hub pull three times,
+   because a staging uplink can drop one request. Without `--job-repo` the step is skipped.
 
 The script exits non-zero on any failure, prints at most 20 lines, and writes the full log to a
 scratch directory it names on the last line. Afterwards it pauses both staging Profiles and stops
