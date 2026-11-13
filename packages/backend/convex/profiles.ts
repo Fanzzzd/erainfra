@@ -14,6 +14,7 @@ import {
   readinessAdmissionError,
   readinessCheckValidator,
 } from "./isolation";
+import { readinessStateValidator } from "./readinessStates";
 import { conflictsOf } from "./scaleSetLabels";
 import { WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
@@ -60,12 +61,7 @@ export const list = query({
         v.object({
           machineId: v.id("machines"),
           machineName: v.string(),
-          state: v.union(
-            v.literal("preparing"),
-            v.literal("ready"),
-            v.literal("degraded"),
-            v.literal("failed"),
-          ),
+          state: readinessStateValidator,
           checkedAt: v.number(),
           preparedAt: v.optional(v.number()),
           statusDetail: v.optional(v.string()),

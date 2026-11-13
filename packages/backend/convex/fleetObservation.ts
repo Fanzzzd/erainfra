@@ -9,6 +9,7 @@ import { pinDetail } from "./hostLabels";
 import { hasLiveCredential } from "./infra/nodes";
 import { isNodeLive } from "./infra/policy";
 import { readinessAdmissionError } from "./isolation";
+import { READINESS_STATES, type ReadinessState } from "./readinessStates";
 import {
   compareRunnerVersions,
   runnerVersionFromImageRelease,
@@ -32,9 +33,6 @@ export const LIVE_ATTEMPT_LIMIT = 1_000;
 export const RECENT_ATTEMPT_SAMPLE = 200;
 /** Controller heartbeat rows read per Profile: one per host that has run its controller. */
 export const CONTROLLER_ROW_LIMIT = 50;
-
-export const READINESS_STATES = ["preparing", "ready", "degraded", "failed"] as const;
-export type ReadinessState = (typeof READINESS_STATES)[number];
 
 /**
  * How a finished Attempt ended, as a closed set so it can be a metric label and an alert input.

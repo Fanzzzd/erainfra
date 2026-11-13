@@ -23,6 +23,7 @@ import {
 } from "./egress";
 import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
 import { assertReadinessContract, readinessFactsValidator } from "./isolation";
+import { readinessStateValidator } from "./readinessStates";
 import { runnerVersionOf } from "./runnerReleaseModel";
 import { recordAttemptTests } from "./testReports";
 import { testReportValidator } from "./testReportsModel";
@@ -650,12 +651,7 @@ export const reportReadiness = mutation({
     ...readinessFactsValidator,
   },
   returns: v.object({
-    state: v.union(
-      v.literal("preparing"),
-      v.literal("ready"),
-      v.literal("degraded"),
-      v.literal("failed"),
-    ),
+    state: readinessStateValidator,
   }),
   handler: async (ctx, args) => {
     const machine = await machineForToken(ctx, args.token);

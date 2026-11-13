@@ -7,10 +7,10 @@ import { benchmarkScore, type FitPolicy } from "./benchmark";
 import { profileEgressOf, type ProfileEgress } from "./egress";
 import { carriesHostLabels } from "./hostLabels";
 import { hasSnapshotHeadroomForGuests, readinessAdmissionError } from "./isolation";
+import { READINESS_STATES } from "./readinessStates";
 import { usableHostCapacity, WORKER_OFFLINE_AFTER_MS } from "./workerPolicy";
 
 export const READINESS_STALE_AFTER_MS = 12 * 60 * 60_000;
-const READINESS_STATES = ["preparing", "ready", "degraded", "failed"] as const;
 
 export async function releaseMachineSlot(
   ctx: MutationCtx,

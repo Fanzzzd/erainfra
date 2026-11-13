@@ -15,6 +15,7 @@ import { profileEgressOf, PUBLIC_EGRESS } from "./egress";
 import { normalizeHostLabels, pinDetail } from "./hostLabels";
 import { readinessAdmissionError } from "./isolation";
 import { retireOffPinOnWorker } from "./pinnedAttempts";
+import { readinessStateValidator } from "./readinessStates";
 import { largestServedProfileMemoryMiB } from "./workerPolicy";
 
 const REGISTRATION_TOKEN_TTL_MS = 15 * 60 * 1_000;
@@ -67,12 +68,7 @@ const machineListItemValidator = v.object({
         v.literal("hyperv"),
       ),
       imageRelease: v.string(),
-      state: v.union(
-        v.literal("preparing"),
-        v.literal("ready"),
-        v.literal("degraded"),
-        v.literal("failed"),
-      ),
+      state: readinessStateValidator,
       checkedAt: v.number(),
       preparedAt: v.optional(v.number()),
       statusDetail: v.optional(v.string()),
