@@ -32,6 +32,7 @@ Options:
                          (or RELEASE_REHEARSAL_JOB_REPO); needs `gh auth token`
   --timeout SECONDS      how long Profiles may take to become ready (default 2400)
   --settle SECONDS       how long both must then stay ready (default 120)
+  --queue-budget SECONDS how long the job may wait for a Runner (default 300)
   --keep                 leave the Worker running and the staging Profiles active
 USAGE
 }
@@ -43,6 +44,7 @@ IMAGE_RELEASE=${RELEASE_REHEARSAL_IMAGE:-}
 JOB_REPO=${RELEASE_REHEARSAL_JOB_REPO:-}
 READY_TIMEOUT=2400
 SETTLE=120
+QUEUE_BUDGET=300
 KEEP=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -55,6 +57,7 @@ while [ "$#" -gt 0 ]; do
     --job-repo) JOB_REPO=${2:?--job-repo needs a value}; shift 2 ;;
     --timeout) READY_TIMEOUT=${2:?--timeout needs a value}; shift 2 ;;
     --settle) SETTLE=${2:?--settle needs a value}; shift 2 ;;
+    --queue-budget) QUEUE_BUDGET=${2:?--queue-budget needs a value}; shift 2 ;;
     --keep) KEEP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) usage >&2; exit 2 ;;
@@ -322,6 +325,22 @@ NFT"
     exit "$status"
     ;;
 
+  listening) # profile timeout: wait until the controller's listener polls GitHub
+    # GitHub offers a job to the scale set's open message session. A job queued before the
+    # session opens waits for GitHub to offer it again, which took 14 minutes on 2026-11-13.
+    unit="runner-center-controller@$1.service"
+    for _ in $(seq "$2"); do
+      since=$(root "systemctl show -p ActiveEnterTimestamp --value '$unit'")
+      if [ -n "$since" ] && root "journalctl -u '$unit' --since '$since' -o cat --no-pager" |
+        grep -q '"msg":"Getting next message"'; then
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "error: $unit did not start polling GitHub within $2s" >&2
+    exit 1
+    ;;
+
   cleanup) # keep [controller-profile]
     if [ -n "${2:-}" ]; then
       root "systemctl disable --now 'runner-center-controller@$2.service'; rm -rf '/etc/runner-center/secrets/$2' '/etc/runner-center/profiles/$2.env'" || true
@@ -550,6 +569,7 @@ printf '%s\n%s\n' "$controller_token" "$(gh auth token)" |
     --image-release "$IMAGE_RELEASE" --vcpus 2 --memory-mib 4096 --warm-pool 0 \
     --min-runners 0 --max-runners 1 || fail "the controller for $PROFILE_COLD did not install"
 controller_token=''
+remote listening "$PROFILE_COLD" 180 || fail "the controller for $PROFILE_COLD is not listening" "$(last_error)"
 dispatched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 gh workflow run "$WORKFLOW" --repo "$JOB_REPO" -f runs-on="$PROFILE_COLD" || fail "could not dispatch $WORKFLOW"
 run_id=''
@@ -569,4 +589,11 @@ while [ "$SECONDS" -lt "$deadline" ]; do
 done
 url="https://github.com/$JOB_REPO/actions/runs/$run_id"
 [ "$conclusion" = success ] || fail "job ${conclusion:-did not finish in 20m}: $url"
-ok "$url succeeded on $PROFILE_COLD"
+# A cold boot takes about a minute. A job that waits much longer for its Runner means a Profile
+# or controller is not taking work, even if it ran in the end.
+queued=$(gh run view "$run_id" --repo "$JOB_REPO" --json createdAt,jobs \
+  --jq '([.jobs[].startedAt | fromdate] | min) - (.createdAt | fromdate)')
+[ -n "$queued" ] || fail "could not read when the job started: $url"
+[ "$queued" -le "$QUEUE_BUDGET" ] ||
+  fail "the job waited $(elapsed "$queued") for a Runner, over the $(elapsed "$QUEUE_BUDGET") budget: $url"
+ok "$url succeeded on $PROFILE_COLD after $(elapsed "$queued") in the queue"

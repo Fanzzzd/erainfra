@@ -90,9 +90,12 @@ It runs five steps and stops at the first failure:
    Action Runner Agent restarted. Both must then stay ready for `--settle` seconds (120 by
    default). A `degraded` or `failed` state fails the rehearsal and prints the failed checks.
 5. **job**: with `--job-repo OWNER/NAME`, installs a controller for `rehearsal-2vcpu-wp0` on the
-   Worker, dispatches `.github/workflows/erainfra-rehearsal.yml` in that repository with
-   `runs-on: rehearsal-2vcpu-wp0`, and requires the run to succeed. It adds the workflow with a
-   `[skip ci]` commit when it is missing. Without `--job-repo` the step is skipped.
+   Worker and waits until its listener polls GitHub. GitHub offers a job only to an open message
+   session; a job queued before the session opened waited 14 minutes for a second offer on
+   2026-11-13. It then dispatches `.github/workflows/erainfra-rehearsal.yml` in that repository
+   with `runs-on: rehearsal-2vcpu-wp0` and requires the run to succeed within `--queue-budget`
+   seconds (300 by default) of queue time. It adds the workflow with a `[skip ci]` commit when it
+   is missing. Without `--job-repo` the step is skipped.
 
 The script exits non-zero on any failure, prints at most 20 lines, and writes the full log to a
 scratch directory it names on the last line. Afterwards it pauses both staging Profiles and stops
