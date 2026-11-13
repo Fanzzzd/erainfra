@@ -7,7 +7,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -703,7 +702,7 @@ describe("rendered script", () => {
 
 /**
  * A systemctl that keeps per-unit active and enabled state as marker files in `stateDir`, so a test
- * can seed a running Hub-mode unit and see what the installer stopped, enabled and restarted.
+ * can see what the installer enabled and restarted.
  */
 function statefulSystemctl(stateDir: string) {
   return `#!/usr/bin/env bash
@@ -746,8 +745,7 @@ function nodeArgs(credential: string, extra: readonly string[] = []) {
 // The Node half of ADR 0006, in connect-convex mode, the only mode the Node role has. It needs Linux
 // with systemd and the systemd sidecar, so this sandbox pretends to be one: uname reports Linux,
 // sudo redirects every system path under the sandbox (and drops -o/-g, since the sandbox has no
-// erainfra-mesh account), and systemctl keeps per-unit active and enabled state so a test can seed a
-// running Hub-mode unit. A Node's binary used to arrive with no integrity check of any kind, so the
+// erainfra-mesh account), and systemctl keeps per-unit active and enabled state. A Node's binary used to arrive with no integrity check of any kind, so the
 // tests that matter most here are the ones where verification says no.
 describe("--role node", () => {
   const TARGET = `linux-${process.arch === "arm64" ? "arm64" : "x86_64"}`;
@@ -823,9 +821,6 @@ exec "$@"
         "erainfra-node",
       ),
       unitFile: (name: string) => path.join(sandbox.sudoRoot, "etc", "systemd", "system", name),
-      seed: (unit: string, ...states: Array<"active" | "enabled">) => {
-        for (const state of states) writeFileSync(path.join(units, `${unit}.${state}`), "");
-      },
       isLive: (unit: string, state: "active" | "enabled") =>
         existsSync(path.join(units, `${unit}.${state}`)),
       serviceLog: () => readLog(path.join(sandbox.root, "service.log")).trimEnd().split("\n"),
@@ -1033,101 +1028,37 @@ exec "$@"
     expect(result.stderr).toMatch(/Unknown --role: gateway/);
   });
 
-  it("refuses while portless-agent.service is live, names the flag, and changes nothing", () => {
+  // Runbooks from before ADR 0020 pass --replace-hub-agent. The installer no longer migrates a
+  // Hub-mode Node, so it refuses the flag and says how to stop the old unit by hand.
+  it("refuses --replace-hub-agent, says what to do instead, and changes nothing", () => {
     const box = nodeSandbox();
-    box.seed("portless-agent", "active", "enabled");
-    const result = run(box.sandbox, nodeArgs(box.credential));
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/portless-agent\.service runs this Node in Hub mode/);
-    expect(result.stderr).toMatch(/--replace-hub-agent/);
-    expect(readLog(box.sandbox.curlLog)).not.toMatch(/infra-agent|erainfra-mesh/);
-    expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
-    expect(box.isLive("portless-agent", "active")).toBe(true);
-  });
-
-  it("refuses an enabled erainfra-agent.service the same way", () => {
-    const box = nodeSandbox();
-    box.seed("erainfra-agent", "enabled");
-    const result = run(box.sandbox, nodeArgs(box.credential));
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/erainfra-agent\.service runs this Node in Hub mode/);
-  });
-
-  it("stops and disables the Hub-mode unit first with --replace-hub-agent", () => {
-    const box = nodeSandbox();
-    box.seed("portless-agent", "active", "enabled");
     const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(box.isLive("portless-agent", "active")).toBe(false);
-    expect(box.isLive("portless-agent", "enabled")).toBe(false);
-    expect(box.isLive("erainfra-node", "active")).toBe(true);
-    const service = box.serviceLog();
-    const stopped = service.indexOf("disable --now portless-agent");
-    expect(stopped, service.join(" / ")).toBeGreaterThanOrEqual(0);
-    // Before the sidecar restarts: portless-agent.service requires it, so a restart would bounce
-    // the Hub-mode Infra Agent too.
-    expect(stopped).toBeLessThan(service.indexOf("restart erainfra-mesh"));
-    expect(stopped).toBeLessThan(service.indexOf("restart erainfra-node"));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/--replace-hub-agent is retired/);
+    expect(result.stderr).toMatch(/systemctl disable --now portless-agent/);
+    expect(readLog(box.sandbox.curlLog)).toBe("");
+    expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
   });
 
-  // portless-agent.service runs $PREFIX/bin/portless-agent. A rollback to Hub mode starts that
-  // unit again, so it must find the bytes it ran before, not this release's connect-convex binary.
-  it("keeps the Hub-mode Infra Agent's binary for a rollback", () => {
+  // A Node migrated from the Hub keeps its disabled portless-agent.service and the Hub-mode binary
+  // under ~/.portless/bin. A rollback from the v0.2.0-rc.19 tag starts them again, so an install or
+  // re-install on that Node must leave both exactly as they are.
+  it("leaves a migrated Node's Hub-mode unit and binary alone", () => {
     const box = nodeSandbox();
-    box.seed("portless-agent", "active", "enabled");
+    const hubUnit = box.unitFile("portless-agent.service");
+    mkdirSync(path.dirname(hubUnit), { recursive: true });
+    writeFileSync(hubUnit, "[Service]\nExecStart=/root/.portless/bin/portless-agent connect\n");
     const hubAgent = path.join(box.sandbox.home, ".portless", "bin", "portless-agent");
     mkdirSync(path.dirname(hubAgent), { recursive: true });
     writeExecutable(hubAgent, "#!/usr/bin/env bash\n# the Hub-mode agent\n");
-    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(readFileSync(hubAgent, "utf8")).toBe("#!/usr/bin/env bash\n# the Hub-mode agent\n");
-  });
 
-  // --replace-hub-agent stops the Hub unit before the sidecar (re)starts. Any failure after that,
-  // here the sidecar failing to restart under set -e, must not leave the Node with no Infra Agent.
-  it("puts the Hub-mode Infra Agent back when the install fails after stopping it", () => {
-    const box = nodeSandbox();
-    box.seed("portless-agent", "active", "enabled");
-    const bin = path.join(box.sandbox.root, "bin");
-    const real = path.join(bin, "systemctl.real");
-    renameSync(path.join(bin, "systemctl"), real);
-    writeExecutable(
-      path.join(bin, "systemctl"),
-      `#!/usr/bin/env bash\nif [ "$1" = restart ] && [ "$2" = erainfra-mesh ]; then printf '%s\\n' "$*" >> "$RC_TEST_SERVICE_LOG"; exit 1; fi\nexec "${real}" "$@"\n`,
-    );
-    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
-    expect(result.status).not.toBe(0);
-    expect(box.isLive("portless-agent", "active")).toBe(true);
-    expect(box.isLive("portless-agent", "enabled")).toBe(true);
-    expect(box.isLive("erainfra-node", "active")).toBe(false);
-    expect(result.stderr).toMatch(/failed after it stopped the Hub-mode agent/);
-    expect(result.stderr).toMatch(/systemctl enable --now portless-agent/);
-  });
-
-  it("does not touch a Hub-mode unit it did not stop when the install fails", () => {
-    const box = nodeSandbox();
-    const bin = path.join(box.sandbox.root, "bin");
-    const real = path.join(bin, "systemctl.real");
-    renameSync(path.join(bin, "systemctl"), real);
-    writeExecutable(
-      path.join(bin, "systemctl"),
-      `#!/usr/bin/env bash\nif [ "$1" = restart ] && [ "$2" = erainfra-mesh ]; then exit 1; fi\nexec "${real}" "$@"\n`,
-    );
     const result = run(box.sandbox, nodeArgs(box.credential));
-    expect(result.status).not.toBe(0);
-    expect(box.isLive("portless-agent", "active")).toBe(false);
-    expect(result.stderr).not.toMatch(/Hub-mode agent/);
-  });
-
-  it("leaves the Hub-mode unit running when the new bytes do not match the pin", () => {
-    const box = nodeSandbox();
-    box.seed("portless-agent", "active", "enabled");
-    box.pin({ [TARGET]: "0".repeat(64) }, { [TARGET]: "0".repeat(64) });
-    const result = run(box.sandbox, nodeArgs(box.credential, ["--replace-hub-agent"]));
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/checksum verification failed/);
-    expect(box.isLive("portless-agent", "active")).toBe(true);
-    expect(existsSync(box.unitFile("erainfra-node.service"))).toBe(false);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(hubUnit, "utf8")).toBe(
+      "[Service]\nExecStart=/root/.portless/bin/portless-agent connect\n",
+    );
+    expect(readFileSync(hubAgent, "utf8")).toBe("#!/usr/bin/env bash\n# the Hub-mode agent\n");
+    expect(box.serviceLog().filter((line) => line.includes("portless-agent"))).toEqual([]);
   });
 
   it("refuses without a credential file, and a file that holds no Node credential", () => {

@@ -202,16 +202,14 @@ one is never named as a peer.
      `ERAINFRA_MESH_CONTROL_DIR=/var/lib/erainfra/mesh-control`.
 
    The Node's name comes from its enrollment. `--convex` and `--mesh` are accepted and change
-   nothing. `--token`, `--hub` and `--name` were Hub-mode flags and fail.
+   nothing. `--token`, `--hub`, `--name` and `--replace-hub-agent` were Hub-era flags and fail with
+   a message that says what to use instead.
 
-   A Node migrated from the Hub may still hold `portless-agent.service` or
-   `erainfra-agent.service`. The installer refuses while either is running or enabled, because two
-   Infra Agents must not drive one sidecar. Add `--replace-hub-agent` to stop and disable that unit
-   first; it does so only after both downloads verify, and it keeps the unit file, `agent.env` and
-   the binary, which a rollback from the `v0.2.0-rc.19` tag needs. If anything fails after that,
-   the sidecar or `erainfra-node.service` not starting for example, the installer disables
-   `erainfra-node`, enables and starts the old unit again, and says so on stderr before it exits
-   non-zero.
+   The installer does not migrate a Node that still runs in Hub mode. Stop its Infra Agent first
+   (`systemctl disable --now portless-agent`), because two Infra Agents must not drive one sidecar.
+   On a Node migrated from the Hub, the installer leaves the disabled `portless-agent.service`,
+   `/etc/portless/agent.env` and the Hub-mode binary under `~/.portless/bin` untouched. A rollback
+   from the `v0.2.0-rc.19` tag needs them.
 
 4. **Pick the relay policy.** Each Node reads it from its own environment:
    `ERAINFRA_MESH_RELAYS` (a JSON array of `https` relay URLs, default `[]`; an entry may instead
