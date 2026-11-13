@@ -1,5 +1,17 @@
 # @erainfra/backend
 
+## 0.2.0-rc.24
+
+### Patch Changes
+
+- [#384](https://github.com/Fanzzzd/erainfra/pull/384) [`79f4ced`](https://github.com/Fanzzzd/erainfra/commit/79f4ced466280e4a22c92c8565be67ee5515f8cb) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A macOS Worker's update or restart no longer kills its running jobs. The launchd plist now sets `ExitTimeOut` to 21600 s, so `launchctl bootout` and `kickstart -k` wait for the Action Runner Agent to drain instead of sending SIGKILL after launchd's default 5 s. The first update onto this version still stops under the old plist's timeout. `rc update` prints how to cancel the wait with `launchctl kill SIGKILL`.
+
+- [#378](https://github.com/Fanzzzd/erainfra/pull/378) [`1f54d55`](https://github.com/Fanzzzd/erainfra/commit/1f54d552867acc063c12519287564fb766a7da6e) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A Worker without `/etc/protocols` (no `netbase` package) is ready again. nft prints `meta l4proto { 6, 17 }` there instead of `{ tcp, udp }`, and the runtime's `job-network-policy` check failed readiness on `rc:record-flows`. The check now reads 6 and 17 as tcp and udp; any other number still fails. Worker-host provisioning now requires `iptables`, which the CNI plugins and guest address recovery use, instead of failing readiness after install.
+
+- [#381](https://github.com/Fanzzzd/erainfra/pull/381) [`ebd1eda`](https://github.com/Fanzzzd/erainfra/commit/ebd1edabb0d5c3f3b413f8ef6c57f5485f1d4f28) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The Windows installer's `-Update` (and `rc.ps1 update`) now runs the same health check as `rc update` on Linux and macOS. Before the swap, it records which Profiles `GET /agents/readiness` reports this Worker ready for. After the new Action Runner Agent starts, each of those Profiles must report ready again within `-ReadyTimeout` seconds (default 900). If one reports degraded or failed, or the deadline passes, the installer restores `agent.previous`, starts it, waits for the same Profiles to be ready, and exits non-zero, naming the Profile and its failed checks. If the readiness read fails before the swap, the update stops and leaves the running Agent in place. The machine token travels only in an in-process request header. Both installers now take the deadline and the readiness reader from one module, `updateHealthCheck.ts`.
+
+  The Windows scheduled task now runs as `DOMAIN\user`. A missing backslash had made the account name `DOMAINuser`.
+
 ## 0.2.0-rc.23
 
 ### Patch Changes

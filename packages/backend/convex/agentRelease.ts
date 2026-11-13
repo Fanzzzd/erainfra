@@ -66,7 +66,7 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.23",
+  version: "0.2.0-rc.24",
   // Filled at v0.2.0-rc.11, the first release to publish erainfra-mesh, from the sidecars the
   // release workflow's mesh jobs wrote after building each target twice and comparing.
   mesh: {
