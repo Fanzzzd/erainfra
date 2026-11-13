@@ -483,3 +483,140 @@ func TestWarmPoolClaimDuringReplacementHonorsTheBootDeadline(t *testing.T) {
 		t.Fatalf("claim past the boot deadline = %v, want deadline exceeded", err)
 	}
 }
+
+// Lowering the target below the claimed count is a planned drain, not a broken
+// pool. Every guest the pool may own is claimed, so a claim is demand above the
+// target and cold-boots. Each release shrinks the pool toward the target.
+func TestWarmPoolTargetBelowClaimedDrainsAndMisses(t *testing.T) {
+	pool := newWarmPoolManager(func(context.Context, executor.Profile, uint64) (warmSlot, error) {
+		return newFakeWarmSlot(), nil
+	})
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+	if _, err := pool.Configure(t.Context(), testProfile(2)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := pool.Claim(t.Context(), testAttempt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Claim(t.Context(), testAttempt()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := pool.Configure(t.Context(), testProfile(1))
+	if err != nil {
+		t.Fatalf("lowering the target below the claimed count failed: %v", err)
+	}
+	assertWarmStatus(t, status, 1, 0, 2, false)
+	if _, err := pool.Claim(t.Context(), testAttempt()); !errors.Is(err, errWarmPoolMiss) {
+		t.Fatalf("claim during the drain = %v, want a miss", err)
+	}
+	if err := first.Cancel(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool {
+		status := pool.Status("linux")
+		return status.Parked == 0 && status.Claimed == 1 && status.Healthy
+	})
+}
+
+// parkedExitWindow configures a pool of one, makes its parked guest exit and
+// returns once the pool is booting the replacement.
+func parkedExitWindow(t *testing.T) (*warmPoolManager, *gatedWarmFactory) {
+	t.Helper()
+	factory := newGatedWarmFactory(1)
+	pool := newWarmPoolManager(factory.boot)
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+	if _, err := pool.Configure(t.Context(), testProfile(1)); err != nil {
+		t.Fatal(err)
+	}
+	factory.slot(0).done <- errors.New("VMM exited")
+	<-factory.booting
+	return pool, factory
+}
+
+func (f *gatedWarmFactory) slot(index int) *fakeWarmSlot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.created[index]
+}
+
+// A parked guest that exits once is replaced like a torn-down one. A claim in
+// that window waits for the replacement instead of failing the Attempt. Once a
+// replacement is claimed, the pool has shown it works, so the next exit is a
+// one-off again.
+func TestWarmPoolClaimAfterAParkedGuestExitsWaitsForTheReplacement(t *testing.T) {
+	pool, factory := parkedExitWindow(t)
+	assertWarmStatus(t, pool.Status("linux"), 1, 0, 0, false)
+
+	outcome := claimAsync(t.Context(), pool, "attempt-2")
+	assertClaimPending(t, outcome)
+	factory.release <- nil
+	got := awaitClaim(t, outcome)
+	if got.err != nil {
+		t.Fatalf("claim after a parked guest exited failed: %v", got.err)
+	}
+	assertWarmStatus(t, pool.Status("linux"), 1, 0, 1, true)
+
+	if err := got.lease.Cancel(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	<-factory.booting
+	factory.release <- nil
+	eventually(t, func() bool { return pool.Status("linux").Parked == 1 })
+	factory.slot(2).done <- errors.New("VMM exited")
+	<-factory.booting
+	outcome = claimAsync(t.Context(), pool, "attempt-3")
+	assertClaimPending(t, outcome)
+	factory.release <- nil
+	if got := awaitClaim(t, outcome); got.err != nil {
+		t.Fatalf("claim after a later one-off exit failed: %v", got.err)
+	}
+}
+
+// A replacement that also exits while parked means the pool keeps failing. A
+// claim fails the Attempt, also after the next replacement parks, until
+// Configure retries the pool.
+func TestWarmPoolClaimAfterAReplacementExitsTooFailsClosed(t *testing.T) {
+	pool, factory := parkedExitWindow(t)
+	factory.release <- nil
+	eventually(t, func() bool { return pool.Status("linux").Parked == 1 })
+
+	factory.slot(1).done <- errors.New("VMM exited again")
+	<-factory.booting
+	if _, err := pool.Claim(t.Context(), testAttempt()); err == nil || errors.Is(err, errWarmPoolMiss) {
+		t.Fatalf("claim after a replacement exited = %v, want a warm pool failure", err)
+	}
+	factory.release <- nil
+	eventually(t, func() bool { return pool.Status("linux").Parked == 1 })
+	if _, err := pool.Claim(t.Context(), testAttempt()); err == nil || errors.Is(err, errWarmPoolMiss) {
+		t.Fatalf("claim after the next replacement parked = %v, want a warm pool failure", err)
+	}
+	if status := pool.Status("linux"); status.Healthy {
+		t.Fatalf("status = %+v, want an unhealthy pool", status)
+	}
+
+	if _, err := pool.Configure(t.Context(), testProfile(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Claim(t.Context(), testAttempt()); err != nil {
+		t.Fatalf("claim after Configure retried the pool failed: %v", err)
+	}
+}
+
+// After Shutdown the runtime is stopping and has destroyed every guest it owns.
+// A claim fails the Attempt; a miss would make Start cold-boot a guest while
+// the runtime stops.
+func TestWarmPoolClaimAfterShutdownFails(t *testing.T) {
+	pool := newWarmPoolManager(func(context.Context, executor.Profile, uint64) (warmSlot, error) {
+		return newFakeWarmSlot(), nil
+	})
+	if _, err := pool.Configure(t.Context(), testProfile(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Claim(t.Context(), testAttempt()); err == nil || errors.Is(err, errWarmPoolMiss) {
+		t.Fatalf("claim after shutdown = %v, want a failure", err)
+	}
+}
