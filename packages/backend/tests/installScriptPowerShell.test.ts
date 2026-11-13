@@ -1006,6 +1006,8 @@ describeExecuted("the Windows installer, executed", () => {
       expect(parse.status, `${generated}: ${parse.stderr}`).toBe(0);
     }
     expect(readLog(sandbox.serviceLog)).toContain("register erainfra-action-runner-agent");
+    // The task runs as DOMAIN\user; a lost backslash once made it "WIN-TEST-01rcbuilder".
+    expect(readLog(sandbox.serviceLog)).toContain("principal WIN-TEST-01\\rcbuilder Interactive");
     expect(readLog(sandbox.serviceLog)).not.toContain("launcher failed");
     // Both service kinds have to produce one agent.log, because that is the file rc.ps1 reads and
     // the file the connection wait quotes back. A Scheduled Task redirects nothing at all, so the

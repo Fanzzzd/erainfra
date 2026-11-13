@@ -757,7 +757,7 @@ __WINDOWS_UPDATE_HEALTH_CHECK__
     Fail 'USERNAME is not set, so this installer cannot name the account the agent has to run as.'
   }
   $taskUser = $env:USERNAME
-  if ($env:USERDOMAIN) { $taskUser = $env:USERDOMAIN + '' + $env:USERNAME }
+  if ($env:USERDOMAIN) { $taskUser = $env:USERDOMAIN + '\' + $env:USERNAME }
   # Highest, because the Hyper-V provisioner needs elevation to create and destroy a VM. On an
   # account that is not a local administrator the task registers and then cannot provision, which
   # rc.ps1 doctor reports.
