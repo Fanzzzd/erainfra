@@ -40,9 +40,11 @@ main reads.
    `~/.portless/bin`. The control plane rolls back with the tag's
    `docs/runbooks/deploy-control-plane.md`.
 3. **What a running system holds stays frozen** (CONTEXT.md rule 4). Main keeps reading or naming:
-   - `portless-agent.service` and `erainfra-agent.service`: `/install --role node` still refuses a
-     Node where either is live, unless `--replace-hub-agent` stops it, and restores it when the
-     install fails.
+   - `portless-agent.service` and `erainfra-agent.service`: a rollback from the tag starts them
+     again. `/install --role node` refused a Node where either was live, unless
+     `--replace-hub-agent` stopped it. That migration left the installer on 2026-11-13, after every
+     Node had moved to `connect-convex`. The installer now refuses the flag and never touches
+     either unit.
    - `~/.portless` and `PORTLESS_PREFIX`: the Infra Agent's default prefix for the mesh control
      directory.
    - The `portless-registry` container and volume: the fleet's image registry

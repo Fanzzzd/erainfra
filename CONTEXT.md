@@ -140,8 +140,8 @@ a bare "role" in code, a comment or a commit message is ambiguous. Qualify it.
    "NAT-traversing" describe both agents and therefore distinguish neither.
 4. **Renaming rule for the merge: repository paths and workspace package names may change; no
    identifier a running system already holds may change.** Frozen for that reason, on Nodes:
-   `portless-agent.service` and `erainfra-agent.service` (Hub-mode units the Node installer
-   detects), `/etc/portless/agent.env`, `~/.portless` and `PORTLESS_PREFIX`, and the names the
+   `portless-agent.service` and `erainfra-agent.service` (Hub-mode units that a rollback
+   from the `v0.2.0-rc.19` tag uses), `/etc/portless/agent.env`, `~/.portless` and `PORTLESS_PREFIX`, and the names the
    Convex-mode installer writes: `erainfra-node.service`, `/etc/erainfra-node.credential`,
    `/var/lib/erainfra-node`, `erainfra-mesh.service`, the `erainfra-mesh` user,
    `/var/lib/erainfra-mesh`, `/var/lib/erainfra/mesh-control` and `/usr/local/lib/erainfra`, and
