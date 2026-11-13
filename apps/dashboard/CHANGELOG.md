@@ -1,5 +1,12 @@
 # @erainfra/dashboard
 
+## 0.2.0-rc.23
+
+### Patch Changes
+
+- Updated dependencies [[`5abb7f0`](https://github.com/Fanzzzd/erainfra/commit/5abb7f09b0038a4b32f296130f7e6e0c24443d20)]:
+  - @erainfra/backend@0.2.0-rc.23
+
 ## 0.2.0-rc.22
 
 ### Minor Changes
