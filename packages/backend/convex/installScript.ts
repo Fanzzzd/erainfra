@@ -2156,6 +2156,8 @@ case "$SERVICE_KIND" in
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ExitTimeOut</key>
+  <integer>21600</integer>
   <key>StandardOutPath</key>
   <string>$LOG_FILE</string>
   <key>StandardErrorPath</key>
@@ -2197,10 +2199,16 @@ UNIT
     ;;
 esac
 
-if [ "$UPDATE" -eq 1 ] && [ "$SERVICE_KIND" = systemd ]; then
-  # The unit drains on stop (KillMode=mixed, TimeoutStopSec=infinity, #284),
-  # so the restart below returns only after running jobs finish.
-  printf '%s\n' 'Waiting for jobs running on this Worker to finish before the agent restarts. Run "systemctl --user kill runner-center-agent" to cancel them instead.'
+# Both service kinds drain on stop, so the restart below returns only after
+# running jobs finish. systemd: KillMode=mixed, TimeoutStopSec=infinity (#284).
+# launchd signals only the main process on bootout and waits ExitTimeOut before
+# SIGKILL (default 5 s, measured on macOS 26). 21600 s is GitHub's default job
+# timeout; 0 would mean forever and can stall logout (launchd.plist(5)).
+if [ "$UPDATE" -eq 1 ]; then
+  case "$SERVICE_KIND" in
+    systemd) printf '%s\n' 'Waiting for jobs running on this Worker to finish before the agent restarts. Run "systemctl --user kill runner-center-agent" to cancel them instead.' ;;
+    launchd) printf '%s\n' "Waiting for jobs running on this Worker to finish before the agent restarts. Run \"launchctl kill SIGKILL gui/$UID/center.runner.agent\" to cancel them instead." ;;
+  esac
 fi
 : > "$LOG_FILE"
 rm -f "$RC_HOME/agent.ready"
