@@ -1,0 +1,183 @@
+/*
+ * Era design tokens, version 1.
+ *
+ * Source of truth: design/era-tokens.css in the erasuite repository. Product
+ * interfaces (the EraInfra dashboard, the EraDB dashboard and the EraMesh
+ * desktop app) keep a byte-for-byte copy and do not edit it. To change a value,
+ * change it here, bump the version line above, and copy the file into each
+ * product in the same week. Rule 13 of docs/style-guide.md explains the rules.
+ *
+ * The palette comes from the erasuite.dev site: a cool grey-green paper, a
+ * blue-black ink, and one mineral colour per product. The tokens apply only
+ * to an element with `data-era-product="mesh" | "db" | "infra"`, usually
+ * <html>. Scoping them this way lets the EraDB dashboard embed in a host page
+ * without restyling it. The theme follows the system;
+ * `data-era-theme="light" | "dark"` on the same element overrides it.
+ *
+ * Every text colour below meets WCAG 2.2 AA (4.5:1) on --era-bg, --era-surface
+ * and --era-sunken in its theme, and --era-accent-ink meets it on --era-accent.
+ */
+
+[data-era-product] {
+  color-scheme: light dark;
+
+  /* Type. Interfaces use the system face; Archivo is for the wordmark and
+     page titles where the app ships the font file, and falls back otherwise. */
+  --era-font-ui:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --era-font-display: "Archivo", var(--era-font-ui);
+  --era-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --era-text-xs: 0.75rem;
+  --era-text-sm: 0.8125rem;
+  --era-text-md: 0.875rem;
+  --era-text-lg: 1rem;
+  --era-text-xl: 1.25rem;
+  --era-text-2xl: 1.5rem;
+  --era-leading: 1.5;
+  --era-leading-tight: 1.25;
+
+  /* Space, on a 4px grid. */
+  --era-space-1: 0.25rem;
+  --era-space-2: 0.5rem;
+  --era-space-3: 0.75rem;
+  --era-space-4: 1rem;
+  --era-space-5: 1.5rem;
+  --era-space-6: 2rem;
+  --era-space-7: 3rem;
+
+  /* Shape. Corners stay small: the site draws rock beds with square edges. */
+  --era-radius-sm: 3px;
+  --era-radius: 5px;
+  --era-radius-lg: 8px;
+  --era-border-width: 1px;
+  --era-control-height: 2rem;
+  --era-focus-width: 2px;
+  --era-focus-offset: 2px;
+
+  /* Motion. Products drop durations to 0 under prefers-reduced-motion. */
+  --era-duration: 120ms;
+  --era-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Light theme. */
+  --era-bg: #f3f5f4;
+  --era-surface: #ffffff;
+  --era-sunken: #e9edeb;
+  --era-raised: #ffffff;
+  --era-text: #1f272c;
+  --era-text-muted: #4a555b;
+  --era-text-subtle: #5d686d;
+  --era-border: #d3dad7;
+  --era-border-strong: #7d8a87;
+  --era-shadow: 0 1px 2px rgb(31 39 44 / 0.08), 0 4px 16px rgb(31 39 44 / 0.08);
+  --era-overlay: rgb(31 39 44 / 0.4);
+
+  --era-mesh: #6b4f86;
+  --era-db: #2e5e7e;
+  --era-infra: #4f6a24;
+
+  --era-success: #2c6a3c;
+  --era-success-soft: #e0efe3;
+  --era-warning: #855400;
+  --era-warning-soft: #f6ead2;
+  --era-danger: #a52f27;
+  --era-danger-soft: #f7e1de;
+  --era-info: #2e5e7e;
+  --era-info-soft: #dfeaf1;
+
+  /* Neutral accent until a product sets its own. */
+  --era-accent: var(--era-text);
+  --era-accent-ink: #ffffff;
+  --era-accent-soft: var(--era-sunken);
+  --era-focus: var(--era-accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-era-product]:not([data-era-theme="light"]) {
+    color-scheme: dark;
+    --era-bg: #111517;
+    --era-surface: #171c1f;
+    --era-sunken: #0c0f11;
+    --era-raised: #1e2427;
+    --era-text: #e3e9e6;
+    --era-text-muted: #a3aeab;
+    --era-text-subtle: #8e9a97;
+    --era-border: #2b3338;
+    --era-border-strong: #6e7a77;
+    --era-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+    --era-overlay: rgb(0 0 0 / 0.6);
+
+    --era-mesh: #b9a0d4;
+    --era-db: #84b5d6;
+    --era-infra: #a7c46c;
+
+    --era-success: #74c98a;
+    --era-success-soft: #16291c;
+    --era-warning: #e2b452;
+    --era-warning-soft: #2e2510;
+    --era-danger: #f08a7e;
+    --era-danger-soft: #331816;
+    --era-info: #84b5d6;
+    --era-info-soft: #13232e;
+
+    --era-accent-ink: #111517;
+  }
+}
+
+[data-era-product][data-era-theme="dark"] {
+  color-scheme: dark;
+  --era-bg: #111517;
+  --era-surface: #171c1f;
+  --era-sunken: #0c0f11;
+  --era-raised: #1e2427;
+  --era-text: #e3e9e6;
+  --era-text-muted: #a3aeab;
+  --era-text-subtle: #8e9a97;
+  --era-border: #2b3338;
+  --era-border-strong: #6e7a77;
+  --era-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+  --era-overlay: rgb(0 0 0 / 0.6);
+
+  --era-mesh: #b9a0d4;
+  --era-db: #84b5d6;
+  --era-infra: #a7c46c;
+
+  --era-success: #74c98a;
+  --era-success-soft: #16291c;
+  --era-warning: #e2b452;
+  --era-warning-soft: #2e2510;
+  --era-danger: #f08a7e;
+  --era-danger-soft: #331816;
+  --era-info: #84b5d6;
+  --era-info-soft: #13232e;
+
+  --era-accent-ink: #111517;
+}
+
+[data-era-product][data-era-theme="light"] {
+  color-scheme: light;
+}
+
+[data-era-product="mesh"] {
+  --era-accent: var(--era-mesh);
+}
+
+[data-era-product="db"] {
+  --era-accent: var(--era-db);
+}
+
+[data-era-product="infra"] {
+  --era-accent: var(--era-infra);
+}
+
+[data-era-product="mesh"],
+[data-era-product="db"],
+[data-era-product="infra"] {
+  --era-accent-soft: color-mix(in srgb, var(--era-accent) 14%, var(--era-surface));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-era-product] {
+    --era-duration: 0ms;
+  }
+}

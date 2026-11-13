@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * The container owns the horizontal scroll so a wide fleet table never widens
- * the page itself — `min-w-*` on the `<table>` is what pushes the scroll into
+ * the page itself. `min-w-*` on the `<table>` is what pushes the scroll into
  * this box rather than onto the document.
  */
 function Table({ className, ...props }: React.ComponentProps<"table">) {
@@ -12,7 +12,7 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
     <div data-slot="table-container" className="relative w-full overflow-x-auto">
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-[13px]", className)}
+        className={cn("w-full caption-bottom text-(length:--era-text-md) tabular-nums", className)}
         {...props}
       />
     </div>
@@ -23,7 +23,7 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn("bg-muted/60 [&_tr]:border-b [&_tr]:hover:bg-transparent", className)}
+      className={cn("[&_tr]:border-b [&_tr]:hover:bg-transparent", className)}
       {...props}
     />
   );
@@ -43,7 +43,7 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   return (
     <tfoot
       data-slot="table-footer"
-      className={cn("border-t border-border bg-muted font-medium", className)}
+      className={cn("border-t border-border bg-sunken font-medium", className)}
       {...props}
     />
   );
@@ -54,7 +54,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
     <tr
       data-slot="table-row"
       className={cn(
-        "border-b border-border/80 transition-colors duration-150 hover:bg-accent/50 data-[state=selected]:bg-accent",
+        "border-b border-border hover:bg-sunken/60 data-[state=selected]:bg-sunken",
         className,
       )}
       {...props}
@@ -67,7 +67,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "h-10 whitespace-nowrap px-4 text-left align-middle text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground",
+        "h-10 whitespace-nowrap px-4 text-left align-middle text-(length:--era-text-sm) font-medium text-muted-foreground",
         className,
       )}
       {...props}
@@ -85,7 +85,7 @@ function TableCaption({ className, ...props }: React.ComponentProps<"caption">) 
   return (
     <caption
       data-slot="table-caption"
-      className={cn("mt-4 text-sm text-muted-foreground", className)}
+      className={cn("mt-4 text-(length:--era-text-sm) text-muted-foreground", className)}
       {...props}
     />
   );

@@ -3,7 +3,6 @@ import type { Id } from "@erainfra/backend/dataModel";
 import { useMutation, useQuery } from "convex/react";
 import { Check, Clipboard, KeyRound } from "lucide-react";
 import { useId, useState } from "react";
-import { toast } from "sonner";
 
 import { EmptyState } from "@/components/empty-state";
 import { TableRowsSkeleton } from "@/components/table-skeleton";
@@ -11,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { confirmDestructive } from "@/components/ui/confirm";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -21,6 +21,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
@@ -79,9 +80,12 @@ export function ApiTokens() {
   }
 
   async function revokeToken(tokenId: Id<"apiTokens">, tokenName: string) {
-    if (!window.confirm(`Revoke "${tokenName}"? Anything using it stops working immediately.`)) {
-      return;
-    }
+    const confirmed = await confirmDestructive({
+      title: `Revoke "${tokenName}"?`,
+      description: "Anything using it stops working immediately.",
+      confirmLabel: "Revoke",
+    });
+    if (!confirmed) return;
     try {
       await revoke({ tokenId });
     } catch (caught) {

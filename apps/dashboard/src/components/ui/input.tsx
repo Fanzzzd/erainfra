@@ -2,18 +2,12 @@ import type * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+/** The shared Era input: control height and radius, the surface, a 1px strong border. */
+const inputClass =
+  "flex h-(--era-control-height) w-full min-w-0 rounded-md border border-input bg-card px-2.5 text-(length:--era-text-md) text-foreground placeholder:text-subtle-foreground file:h-6 file:border-0 file:bg-transparent file:text-(length:--era-text-md) file:font-medium disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive";
+
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
-  return (
-    <input
-      type={type}
-      data-slot="input"
-      className={cn(
-        "flex h-10 w-full min-w-0 rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground outline-none transition-[color,border-color,box-shadow] duration-150 placeholder:text-subtle-foreground selection:bg-primary/25 file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/25",
-        className,
-      )}
-      {...props}
-    />
-  );
+  return <input type={type} data-slot="input" className={cn(inputClass, className)} {...props} />;
 }
 
-export { Input };
+export { Input, inputClass };

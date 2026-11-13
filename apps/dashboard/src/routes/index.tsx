@@ -15,7 +15,6 @@ import {
   UserPlus,
 } from "lucide-react";
 import { useId, useMemo, useState } from "react";
-import { toast } from "sonner";
 
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
@@ -52,6 +51,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toast } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
@@ -585,7 +585,7 @@ function MachinesPage() {
                         >
                           <div
                             className={cn(
-                              "h-full rounded-full transition-[width] duration-150",
+                              "h-full rounded-full",
                               machine.usedSlots >= machine.maxSlots
                                 ? "bg-warning"
                                 : "bg-muted-foreground",
@@ -726,7 +726,7 @@ function StatTile({
 }) {
   return (
     <Card className="px-4 py-3.5">
-      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      <div className="flex items-center gap-2 text-(length:--era-text-sm) font-medium text-muted-foreground">
         {live && <StatusDot tone="success" live />}
         {label}
       </div>
@@ -913,17 +913,14 @@ function ProfileRow({
               type="button"
               aria-expanded={expanded}
               aria-controls={panelId}
-              className="mt-px grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+              className="mt-px grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
                 setExpanded((open) => !open);
               }}
             >
               <ChevronRight
-                className={cn(
-                  "size-3.5 transition-transform duration-150",
-                  expanded && "rotate-90",
-                )}
+                className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
               />
               <span className="sr-only">
                 {expanded ? "Hide" : "Show"} Worker readiness for {profile.name}
@@ -1301,7 +1298,7 @@ function WorkerReadiness({
           <dl className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
             {facts.map((fact) => (
               <div key={fact.label} className="min-w-0">
-                <dt className="text-[10px] uppercase tracking-[0.08em] text-subtle-foreground">
+                <dt className="text-(length:--era-text-xs) font-medium text-muted-foreground">
                   {fact.label}
                 </dt>
                 <dd

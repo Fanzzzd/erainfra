@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" data-era-product="infra">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0a0a0b" />
+    <!-- --era-bg for each theme; a meta tag cannot read a CSS variable. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f5f4" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111517" />
     <meta
       name="description"
       content="Control plane for ephemeral self-hosted GitHub Actions runners"

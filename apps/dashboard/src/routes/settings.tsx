@@ -5,7 +5,6 @@ import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { BellRing, Check, Clipboard, KeyRound, Plus, Send, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { toast } from "sonner";
 
 import { ApiTokens } from "@/components/api-tokens";
 import { EmptyState } from "@/components/empty-state";
@@ -23,6 +22,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { confirmDestructive } from "@/components/ui/confirm";
 import {
   Dialog,
   DialogContent,
@@ -32,7 +32,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { Input, inputClass } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -43,6 +43,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
@@ -68,9 +69,6 @@ async function runOrToast(action: () => Promise<unknown>, failure: string) {
     toast.error(errorMessage(caught, failure));
   }
 }
-
-const selectClass =
-  "flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25";
 
 function SettingsPage() {
   return (
@@ -341,8 +339,13 @@ function RulesCard({
                         size="sm"
                         variant="ghost"
                         aria-label={`Delete ${rule.name}`}
-                        onClick={() => {
-                          if (window.confirm(`Delete the rule "${rule.name}" and its incidents?`)) {
+                        onClick={async () => {
+                          const confirmed = await confirmDestructive({
+                            title: `Delete the rule "${rule.name}"?`,
+                            description: "Its incidents are deleted with it.",
+                            confirmLabel: "Delete",
+                          });
+                          if (confirmed) {
                             void runOrToast(
                               () => remove({ id: rule._id }),
                               "Could not delete the rule",
@@ -539,7 +542,7 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
           <Field label="Condition" id="rule-kind">
             <select
               id="rule-kind"
-              className={selectClass}
+              className={inputClass}
               value={kind}
               onChange={(event) => changeKind(event.target.value as ConditionKind)}
             >
@@ -573,7 +576,7 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
           <Field label="Profile" id="rule-profile">
             <select
               id="rule-profile"
-              className={selectClass}
+              className={inputClass}
               value={profile}
               onChange={(event) => setProfile(event.target.value)}
             >
@@ -761,12 +764,13 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `Rotate the signing secret for ${destination.name}? The old one stops working at once.`,
-                              )
-                            ) {
+                          onClick={async () => {
+                            const confirmed = await confirmDestructive({
+                              title: `Rotate the signing secret for ${destination.name}?`,
+                              description: "The old secret stops working at once.",
+                              confirmLabel: "Rotate",
+                            });
+                            if (confirmed) {
                               void runOrToast(async () => {
                                 const result = await rotate({ id: destination._id });
                                 setRevealed({
@@ -797,8 +801,12 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
                         size="sm"
                         variant="ghost"
                         aria-label={`Delete ${destination.name}`}
-                        onClick={() => {
-                          if (window.confirm(`Delete the destination "${destination.name}"?`)) {
+                        onClick={async () => {
+                          const confirmed = await confirmDestructive({
+                            title: `Delete the destination "${destination.name}"?`,
+                            confirmLabel: "Delete",
+                          });
+                          if (confirmed) {
                             void runOrToast(
                               () => remove({ id: destination._id }),
                               "Could not delete the destination",
@@ -868,7 +876,7 @@ function DestinationDialog({
           <Field label="Kind" id="destination-kind">
             <select
               id="destination-kind"
-              className={selectClass}
+              className={inputClass}
               value={kind}
               onChange={(event) => setKind(event.target.value as "webhook" | "slack")}
             >

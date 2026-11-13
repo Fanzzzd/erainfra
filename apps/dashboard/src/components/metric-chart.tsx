@@ -7,10 +7,11 @@ import { formatElapsed } from "@/lib/metrics";
  * series, an optional dashed reference line (what the Attempt was allotted), and a crosshair
  * that reads every series at the hovered bucket.
  *
- * The two series colours were checked with the dataviz palette validator against the card
- * surface (#0d0d0f, dark): both inside the lightness band, deutan separation ΔE 23.
+ * The two series use the product accent and the info colour from the Era tokens. Both meet
+ * WCAG AA as text on the card surface in each theme, so each also clears the 3:1 a chart mark
+ * needs, and the second series is drawn as a line over the first one's area.
  */
-const SERIES_COLORS = ["#059669", "#8b5cf6"] as const;
+const SERIES_COLORS = ["var(--era-accent)", "var(--era-info)"] as const;
 
 /** The first series is drawn as an area, a second one as a line over it. */
 export type ChartSeries = {

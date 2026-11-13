@@ -19,3 +19,9 @@ allowBuilds:
   # workerd is the Workers runtime wrangler runs locally and bundles against (packages/backend,
   # ADR 0019); its postinstall fetches the platform binary.
   workerd: true
+
+# pnpm 12 holds back a release younger than its minimum age. The dashboard pins ui-sdk's first
+# beta, published the day before it was adopted; drop these entries once the pin moves on.
+minimumReleaseAgeExclude:
+  - "@ui-sdk/core@0.1.0-beta.1"
+  - "@ui-sdk/react@0.1.0-beta.1"

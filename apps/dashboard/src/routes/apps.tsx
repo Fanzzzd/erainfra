@@ -2,7 +2,6 @@ import { api } from "@erainfra/backend/api";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { Boxes, Trash2 } from "lucide-react";
-import { toast } from "sonner";
 
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
@@ -19,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-now";
 import { APP_STATUS, appStatus, DEPLOY_STAGE_TONE, heartbeatsByName } from "@/lib/infra";

@@ -12,7 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Input, inputClass } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -34,11 +34,6 @@ type ExperimentState = "queued" | "preparing" | "running" | "completed" | "cance
 function isLive(state: ExperimentState) {
   return state === "queued" || state === "preparing" || state === "running";
 }
-
-// The native control keeps the keyboard and mobile behaviour a Radix listbox
-// would have to re-implement; it only needs the console's field styling.
-const selectClassName =
-  "flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none transition-[color,border-color,box-shadow] duration-150 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50";
 
 function ExperimentsPage() {
   const profiles = useQuery(api.profiles.list);
@@ -123,7 +118,7 @@ function ExperimentsPage() {
               <select
                 id={`${fieldId}-profile`}
                 required
-                className={selectClassName}
+                className={inputClass}
                 value={profile}
                 onChange={(event) => setProfile(event.target.value)}
               >

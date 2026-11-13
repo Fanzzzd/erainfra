@@ -16,8 +16,10 @@ export function PageHeader({
   return (
     <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-[-0.025em] text-foreground">{title}</h1>
-        <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>
+        <h1 className="font-display text-(length:--era-text-2xl) font-semibold leading-(--era-leading-tight) text-foreground">
+          {title}
+        </h1>
+        <p className="mt-1.5 text-(length:--era-text-md) text-muted-foreground">{description}</p>
       </div>
       {children !== undefined && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
