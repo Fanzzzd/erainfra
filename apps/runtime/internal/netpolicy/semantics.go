@@ -89,6 +89,9 @@ func normalizeExpression(value any) any {
 			}
 		}
 		if match, ok := result["match"].(map[string]any); ok {
+			if reflect.DeepEqual(match["left"], map[string]any{"meta": map[string]any{"key": "l4proto"}}) {
+				match["right"] = protocolNames(match["right"])
+			}
 			// nft encodes a conntrack state mask as an array rather than a set.
 			if reflect.DeepEqual(match["left"], map[string]any{"ct": map[string]any{"key": "state"}}) {
 				if members, ok := match["right"].([]any); ok {
@@ -100,6 +103,29 @@ func normalizeExpression(value any) any {
 	default:
 		return value
 	}
+}
+
+// protocolNames rewrites IANA protocol numbers to the names nft prints when
+// /etc/protocols exists. Without it (no netbase package) nft prints 6 and 17
+// for the same kernel rule. Other numbers stay numbers and fail the comparison.
+func protocolNames(value any) any {
+	names := map[float64]string{6: "tcp", 17: "udp"}
+	switch value := value.(type) {
+	case float64:
+		if name, ok := names[value]; ok {
+			return name
+		}
+	case map[string]any:
+		if members, ok := value["set"].([]any); ok {
+			renamed := make([]any, len(members))
+			for i, member := range members {
+				renamed[i] = protocolNames(member)
+			}
+			sortJSONValues(renamed)
+			return map[string]any{"set": renamed}
+		}
+	}
+	return value
 }
 
 // nft merges adjacent anonymous IP prefixes (224/4 + 240/4 becomes
