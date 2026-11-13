@@ -1,6 +1,6 @@
 {
   "name": "@erainfra/backend",
-  "version": "0.2.0-rc.20",
+  "version": "0.2.0-rc.21",
   "private": true,
   "type": "module",
   "exports": {

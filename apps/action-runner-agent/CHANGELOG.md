@@ -1,5 +1,13 @@
 # @erainfra/agent
 
+## 0.2.0-rc.21
+
+### Patch Changes
+
+- [#362](https://github.com/Fanzzzd/erainfra/pull/362) [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The Action Runner Agent's warm-pool capacity check now uses the same CPU and memory envelope as placement, including the whole-host exception: a warm guest that needs all of a Worker's CPUs or memory is measured against the whole host instead of 90%. Before, a Worker sized exactly for its warm pool passed placement but failed the warm-pool check. `testdata/host-envelope-cases.json` owns the rule, and both test suites run its cases.
+
+- [#362](https://github.com/Fanzzzd/erainfra/pull/362) [`cb38ae4`](https://github.com/Fanzzzd/erainfra/commit/cb38ae4d6a7817bda6391d594457aad7d8508a0b) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - A Worker now reports the thin-pool reserve it enforces for each guest as `storage.poolReserveMiB`, and placement uses that value. Before, the control plane hard-coded 8 GiB, so changing `RC_MIN_POOL_FREE_MIB` on a Worker changed its own preflight and warm-pool checks but not placement. A runtime that does not report the field is still placed against 8 GiB. Deploy the control plane before rolling out this runtime: an older control plane rejects readiness that carries the new field.
+
 ## 0.2.0-rc.20
 
 ### Minor Changes
