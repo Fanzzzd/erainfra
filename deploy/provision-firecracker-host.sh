@@ -346,8 +346,9 @@ else
 fi
 
 step 'Checking host prerequisites'
-# thin_check is provided by thin-provisioning-tools.
-for tool in curl tar sha256sum dmsetup nft systemctl blockdev pgrep thin_check cmp; do
+# thin_check is provided by thin-provisioning-tools. The CNI ptp and firewall plugins and the
+# runtime's guest address recovery drive iptables.
+for tool in curl tar sha256sum dmsetup nft iptables systemctl blockdev pgrep thin_check cmp; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool is required; install it first"
 done
 CONTAINERD_BIN=$(command -v containerd || true)
