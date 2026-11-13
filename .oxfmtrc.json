@@ -15,6 +15,7 @@
   "ignorePatterns": [
     "**/_generated/**",
     "**/routeTree.gen.ts",
+    "**/testdata/*.golden.json",
     "apps/erainfra-cli/internal/runsonmigrate/testdata/**"
   ]
 }

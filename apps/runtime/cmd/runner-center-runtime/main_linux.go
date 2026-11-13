@@ -131,7 +131,7 @@ func run(ctx context.Context, args []string) (int, error) {
 		report, err := client.Preflight(ctx, egress)
 		// The Worker parses this document to publish readiness, so it is written
 		// to stdout whether or not every check passed.
-		if encodeErr := json.NewEncoder(os.Stdout).Encode(report); encodeErr != nil {
+		if encodeErr := runtimeapi.WriteDocument(os.Stdout, report); encodeErr != nil {
 			return 1, fmt.Errorf("write readiness report: %w", encodeErr)
 		}
 		if err != nil {
@@ -144,7 +144,7 @@ func run(ctx context.Context, args []string) (int, error) {
 			return 2, err
 		}
 		status, err := client.PrepareProfile(ctx, profile)
-		if encodeErr := json.NewEncoder(os.Stdout).Encode(status); encodeErr != nil {
+		if encodeErr := runtimeapi.WriteDocument(os.Stdout, status); encodeErr != nil {
 			return 1, fmt.Errorf("write warm pool status: %w", encodeErr)
 		}
 		if err != nil {
@@ -176,7 +176,7 @@ func run(ctx context.Context, args []string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(state); err != nil {
+		if err := runtimeapi.WriteDocument(os.Stdout, state); err != nil {
 			return 1, fmt.Errorf("write start budget state: %w", err)
 		}
 		return 0, nil
@@ -203,7 +203,7 @@ func pruneImages(ctx context.Context, client *runtimeapi.Client) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+	if err := runtimeapi.WriteDocument(os.Stdout, result); err != nil {
 		return 1, fmt.Errorf("write prune result: %w", err)
 	}
 	return 0, nil

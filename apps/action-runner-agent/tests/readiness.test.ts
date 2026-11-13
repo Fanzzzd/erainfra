@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -448,38 +448,39 @@ describe("warmPoolOwnsTarget", () => {
 async function fakeEgressRuntime(
   directory: string,
   prepared = '{"target":0,"parked":0,"claimed":0,"healthy":true,"runnerVersion":"2.336.0"}',
+  preflight = JSON.stringify({
+    isolation: "firecracker-microvm",
+    boundary: "guest-kernel",
+    checks: [{ name: "egress-policy", passed: true, detail: "allowlist egress" }],
+    network: {
+      policyName: "runner-center",
+      policyHash: `sha256:${"d".repeat(64)}`,
+      subnet: "10.241.0.0/16",
+      egressMode: "allowlist",
+      allowedDestinations: ["192.168.50.10/32"],
+      egress: {
+        mode: "allowlist",
+        hostMode: "public",
+        profileMode: "allowlist",
+        presets: ["github"],
+        allowedDomainCount: 19,
+      },
+    },
+    cache: { scope: "immutable-image", sharedWritable: false },
+  }),
 ) {
   const script = join(directory, "runner-center-runtime");
+  await writeFile(join(directory, "preflight.json"), `${preflight}\n`);
+  await writeFile(join(directory, "prepare.json"), `${prepared}\n`);
   await writeFile(
     script,
     [
       "#!/bin/sh",
       `printf '%s\\n' "$1=$RC_PROFILE_EGRESS" >> "${join(directory, "calls")}"`,
       'if [ "$1" = preflight ]; then',
-      "  cat <<'JSON'",
-      JSON.stringify({
-        isolation: "firecracker-microvm",
-        boundary: "guest-kernel",
-        checks: [{ name: "egress-policy", passed: true, detail: "allowlist egress" }],
-        network: {
-          policyName: "runner-center",
-          policyHash: `sha256:${"d".repeat(64)}`,
-          subnet: "10.241.0.0/16",
-          egressMode: "allowlist",
-          allowedDestinations: ["192.168.50.10/32"],
-          egress: {
-            mode: "allowlist",
-            hostMode: "public",
-            profileMode: "allowlist",
-            presets: ["github"],
-            allowedDomainCount: 19,
-          },
-        },
-        cache: { scope: "immutable-image", sharedWritable: false },
-      }),
-      "JSON",
+      `  cat "${join(directory, "preflight.json")}"`,
       "else",
-      `  printf '%s\\n' '${prepared}'`,
+      `  cat "${join(directory, "prepare.json")}"`,
       "fi",
     ].join("\n"),
     { mode: 0o755 },
@@ -488,7 +489,7 @@ async function fakeEgressRuntime(
 }
 
 describe("warm pool prepare", () => {
-  async function prepareWarm(prepared: string) {
+  async function prepareWarm(prepared: string, warmPool = 1) {
     const directory = await mkdtemp(join(tmpdir(), "rc-agent-warm-"));
     const previous = process.env.RC_RUNTIME_BINARY;
     process.env.RC_RUNTIME_BINARY = await fakeEgressRuntime(directory, prepared);
@@ -499,7 +500,7 @@ describe("warm pool prepare", () => {
         imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
         vcpus: 2,
         memoryMiB: 4096,
-        warmPool: 1,
+        warmPool,
       });
     } finally {
       if (previous === undefined) delete process.env.RC_RUNTIME_BINARY;
@@ -529,6 +530,40 @@ describe("warm pool prepare", () => {
     assert.equal(result.state, "failed");
     assert.match(result.state === "failed" ? result.error : "", /thin pool is full/);
   });
+
+  // The 2026-11-13 incident: the v0.2.0-rc.22 runtime prints this for every Profile without a pool.
+  it("keeps a Profile without a pool ready when the runtime reports it unhealthy with no detail", async () => {
+    const result = await prepareWarm('{"target":0,"parked":0,"claimed":0,"healthy":false}', 0);
+    assert.equal(result.state, "ready", result.state === "failed" ? result.error : undefined);
+  });
+
+  it("still fails a pool with a target that the runtime reports unhealthy with no detail", async () => {
+    const result = await prepareWarm('{"target":1,"parked":1,"claimed":0,"healthy":false}');
+    assert.equal(result.state, "failed");
+  });
+
+  // The runtime writes what `prepare` prints for each warm-pool state, and names each file for the
+  // readiness it intends (prepare_golden_test.go). Every file must yield that readiness here, from
+  // stdout alone: the stand-in runtime exits zero even for the failed states.
+  const goldenDirectory = new URL("../../runtime/internal/firecracker/testdata/", import.meta.url);
+  const goldens = readdirSync(goldenDirectory).filter(
+    (name) => name.startsWith("prepare-") && name.endsWith(".golden.json"),
+  );
+
+  it("reads a golden for every warm-pool state the runtime records", () => {
+    assert.ok(goldens.length >= 6, `found ${goldens.join(", ")}`);
+  });
+
+  for (const name of goldens) {
+    const intended = /^prepare-(ready|failed)-/.exec(name)?.[1];
+    it(`turns ${name} into the readiness the runtime intends`, async () => {
+      assert.ok(intended !== undefined, `${name} does not say ready or failed`);
+      const prepared = readFileSync(new URL(name, goldenDirectory), "utf8").trim();
+      const { target } = JSON.parse(prepared) as { target: number };
+      const result = await prepareWarm(prepared, target);
+      assert.equal(result.state, intended, result.state === "failed" ? result.error : undefined);
+    });
+  }
 });
 
 describe("Profile egress readiness", () => {
@@ -574,6 +609,42 @@ describe("Profile egress readiness", () => {
         cidrs: [],
         allowedDomainCount: 19,
       });
+    } finally {
+      if (previous === undefined) delete process.env.RC_RUNTIME_BINARY;
+      else process.env.RC_RUNTIME_BINARY = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // The runtime writes what `preflight` prints (apps/runtime/internal/runtimeapi/stdout_golden_test.go).
+  it("forwards every fact of the report the runtime prints", async () => {
+    const preflight = readFileSync(
+      new URL("../../runtime/internal/runtimeapi/testdata/preflight.golden.json", import.meta.url),
+      "utf8",
+    ).trim();
+    const report = JSON.parse(preflight) as Record<string, any>;
+    const directory = await mkdtemp(join(tmpdir(), "rc-agent-preflight-"));
+    const previous = process.env.RC_RUNTIME_BINARY;
+    process.env.RC_RUNTIME_BINARY = await fakeEgressRuntime(directory, undefined, preflight);
+    try {
+      const result = await prepareProfile({
+        profile: "erainfra-2vcpu-ubuntu-2404-locked",
+        executor: "firecracker",
+        imageRelease: `ghcr.io/fanzzzd/runner${DIGEST}`,
+        vcpus: 2,
+        memoryMiB: 4096,
+        egress: { mode: "allowlist", presets: ["github"], domains: [], cidrs: [] },
+      });
+      assert.equal(result.state, "ready", result.state === "failed" ? result.error : undefined);
+      assert.equal(result.isolation, report.isolation);
+      assert.equal(result.boundary, report.boundary);
+      assert.equal(result.cacheScope, report.cache.scope);
+      assert.equal(result.cacheSharedWritable, report.cache.sharedWritable);
+      assert.deepEqual(result.hardware, report.hardware);
+      assert.deepEqual(result.storage, report.storage);
+      const { allowedDestinations: _, ...network } = report.network;
+      assert.deepEqual(result.network, network);
+      assert.deepEqual(result.checks.slice(0, report.checks.length), report.checks);
     } finally {
       if (previous === undefined) delete process.env.RC_RUNTIME_BINARY;
       else process.env.RC_RUNTIME_BINARY = previous;

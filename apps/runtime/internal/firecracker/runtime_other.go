@@ -29,7 +29,7 @@ func (*Runtime) Preflight(context.Context, netpolicy.ProfileEgress) (executor.Re
 }
 
 func (*Runtime) PrepareProfile(context.Context, executor.Profile) (executor.WarmPoolStatus, error) {
-	return executor.WarmPoolStatus{}, errUnsupported
+	return executor.WarmPoolFailed(errUnsupported), errUnsupported
 }
 
 func (*Runtime) RemoveProfile(context.Context, string) error { return errUnsupported }

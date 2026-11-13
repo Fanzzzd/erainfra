@@ -21,8 +21,14 @@ import {
   boundedEgressRecord,
   profileEgressValidator,
 } from "./egress";
+import { effectiveReadinessState } from "./fleetObservation";
 import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
-import { assertReadinessContract, placementStorageOf, readinessFactsValidator } from "./isolation";
+import {
+  assertReadinessContract,
+  placementStorageOf,
+  readinessAdmissionError,
+  readinessFactsValidator,
+} from "./isolation";
 import { readinessStateValidator } from "./readinessStates";
 import { runnerVersionOf } from "./runnerReleaseModel";
 import { recordAttemptTests } from "./testReports";
@@ -760,5 +766,69 @@ export const reportReadiness = mutation({
       await ctx.scheduler.runAfter(0, internal.attemptScheduler.tryAssign, {});
     }
     return { state };
+  },
+});
+
+const updateReadinessValidator = v.object({
+  profile: v.string(),
+  // "unreported": the Worker has no report for the Profile's current executor and Image Release.
+  state: v.union(readinessStateValidator, v.literal("unreported")),
+  checkedAt: v.optional(v.number()),
+  failedChecks: v.array(v.string()),
+  detail: v.optional(v.string()),
+});
+
+/**
+ * This Worker's readiness for every Profile it serves, judged the way the scheduler and the
+ * dashboard judge it: a ready report whose evidence fails admission reads as degraded. The Worker
+ * installer reads it through GET /agents/readiness before and after it replaces the Action Runner
+ * Agent, and rolls the update back when a Profile that was ready does not report ready again.
+ */
+export const readiness = query({
+  args: { token: v.string() },
+  returns: v.array(updateReadinessValidator),
+  handler: async (ctx, args) => {
+    const machine = await machineForToken(ctx, args.token);
+    const served = await servedProfiles(ctx, machine);
+    return await Promise.all(
+      served.map(async (profile): Promise<Infer<typeof updateReadinessValidator>> => {
+        const row = await ctx.db
+          .query("workerReadiness")
+          .withIndex("by_machine_profile", (q) =>
+            q.eq("machineId", machine._id).eq("profile", profile.name),
+          )
+          .unique();
+        if (
+          row === null ||
+          row.executor !== profile.executor ||
+          row.imageRelease !== profile.imageRelease
+        ) {
+          return { profile: profile.name, state: "unreported", failedChecks: [] };
+        }
+        const evidence =
+          (await ctx.db
+            .query("readinessEvidence")
+            .withIndex("by_machine_profile", (q) =>
+              q.eq("machineId", machine._id).eq("profile", profile.name),
+            )
+            .unique()) ?? undefined;
+        const current = evidence?.checkedAt === row.checkedAt ? evidence : undefined;
+        const egress = profileEgressOf(profile);
+        const failedChecks = (current?.checks ?? [])
+          .filter((check) => !check.passed)
+          .map((check) => (check.detail ? `${check.name}: ${check.detail}` : check.name));
+        const detail =
+          current?.lastError ??
+          readinessAdmissionError(row, evidence, egress) ??
+          current?.statusDetail;
+        return {
+          profile: profile.name,
+          state: effectiveReadinessState(row, evidence, egress),
+          checkedAt: row.checkedAt,
+          failedChecks,
+          ...(detail === undefined ? {} : { detail }),
+        };
+      }),
+    );
   },
 });
