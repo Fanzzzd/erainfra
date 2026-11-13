@@ -3,6 +3,7 @@ package netpolicy
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -196,4 +197,24 @@ func TestVerifierRejectsInvalidAnonymousRanges(t *testing.T) {
 func stringJSON(value any) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
+}
+
+// Without /etc/protocols (Ubuntu's netbase package), nft prints layer 4
+// protocols as numbers. The kernel rule is the same, so readiness must hold.
+func TestVerifierAcceptsNumericLayer4Protocols(t *testing.T) {
+	body, err := os.ReadFile("testdata/nft-1.0.9-live-table.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	numeric := strings.ReplaceAll(string(body), `"set": ["tcp", "udp"]`, `"set": [6, 17]`)
+	if strings.Count(string(body), `"set": ["tcp", "udp"]`) != 6 || numeric == string(body) {
+		t.Fatal("fixture no longer holds the six tcp/udp protocol sets")
+	}
+	if err := DefaultPolicy("runner-center").VerifyNftables([]byte(numeric)); err != nil {
+		t.Fatalf("numeric protocols: %v", err)
+	}
+	icmp := strings.Replace(numeric, `"set": [6, 17]`, `"set": [1, 17]`, 1)
+	if err := DefaultPolicy("runner-center").VerifyNftables([]byte(icmp)); err == nil {
+		t.Fatal("a different protocol number must still fail readiness")
+	}
 }
