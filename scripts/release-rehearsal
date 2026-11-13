@@ -1,0 +1,572 @@
+#!/usr/bin/env bash
+# Rehearse an EraInfra release on a staging Worker before production sees it.
+#
+#   scripts/release-rehearsal v0.2.0-rc.23            # a published release tag
+#   scripts/release-rehearsal --candidate             # this checkout's HEAD, built locally
+#   scripts/release-rehearsal --candidate <ref>       # any commit, built locally
+#
+# It deploys the version's control plane to the dev Convex deployment named in the main
+# checkout's packages/backend/.env.local, installs that version's runtime and Action Runner Agent
+# on a Worker it keeps on --host, registers two staging Profiles (warmPool 0 and 1) and waits for
+# both to report ready. With --job-repo it also runs one real job through a staging controller.
+# Any degraded or failed readiness state fails the rehearsal. docs/releases.md has the runbook.
+#
+# Safety: it never passes --prod, refuses a .env.local whose CONVEX_DEPLOYMENT is not dev:,
+# names the dev deployment explicitly on every command that accepts --deployment, and ignores any
+# CONVEX_DEPLOY_KEY in the environment. Secrets travel on stdin and are never logged.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/release-rehearsal <tag> | --candidate [<ref>] [options]
+
+  <tag>                  a published release, such as v0.2.0-rc.23
+  --candidate [<ref>]    build <ref> (default HEAD) with `pnpm release:package` and rehearse
+                         those bytes; the dev deployment is pinned to them
+Options:
+  --host HOST            SSH host that runs the staging Worker (default: omarchy,
+                         or RELEASE_REHEARSAL_HOST)
+  --image-release REF    Image Release for the staging Profiles (default: the
+                         runner-center-ubuntu-24.04-js edge digest, or RELEASE_REHEARSAL_IMAGE)
+  --job-repo OWNER/NAME  run one real job in this repository through a staging controller
+                         (or RELEASE_REHEARSAL_JOB_REPO); needs `gh auth token`
+  --timeout SECONDS      how long Profiles may take to become ready (default 2400)
+  --settle SECONDS       how long both must then stay ready (default 120)
+  --keep                 leave the Worker running and the staging Profiles active
+USAGE
+}
+
+REF=''
+CANDIDATE=0
+HOST=${RELEASE_REHEARSAL_HOST:-omarchy}
+IMAGE_RELEASE=${RELEASE_REHEARSAL_IMAGE:-}
+JOB_REPO=${RELEASE_REHEARSAL_JOB_REPO:-}
+READY_TIMEOUT=2400
+SETTLE=120
+KEEP=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --candidate)
+      CANDIDATE=1
+      if [ "$#" -ge 2 ] && [ "${2#-}" = "$2" ]; then REF=$2; shift; fi
+      shift ;;
+    --host) HOST=${2:?--host needs a value}; shift 2 ;;
+    --image-release) IMAGE_RELEASE=${2:?--image-release needs a value}; shift 2 ;;
+    --job-repo) JOB_REPO=${2:?--job-repo needs a value}; shift 2 ;;
+    --timeout) READY_TIMEOUT=${2:?--timeout needs a value}; shift 2 ;;
+    --settle) SETTLE=${2:?--settle needs a value}; shift 2 ;;
+    --keep) KEEP=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; exit 2 ;;
+    *) [ -z "$REF" ] || { usage >&2; exit 2; }; REF=$1; shift ;;
+  esac
+done
+if [ "$CANDIDATE" -eq 0 ] && [ -z "$REF" ]; then usage >&2; exit 2; fi
+[ "$CANDIDATE" -eq 1 ] && [ -z "$REF" ] && REF=HEAD
+
+# Names the rehearsal owns on the dev deployment and on the Worker host.
+PROFILE_COLD=rehearsal-2vcpu-wp0
+PROFILE_WARM=rehearsal-2vcpu-wp1
+DEFAULT_IMAGE_REPO=fanzzzd/runner-center-ubuntu-24.04-js
+
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/erainfra-rehearsal.XXXXXX")
+LOG="$RUN_DIR/rehearsal.log"
+SRC="$RUN_DIR/src"
+STARTED=$SECONDS
+REPO_ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+MAIN_CHECKOUT=$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)")
+ENV_LOCAL=${RELEASE_REHEARSAL_ENV_FILE:-$MAIN_CHECKOUT/packages/backend/.env.local}
+
+# Console output stays short; everything else goes to the log.
+exec 3>&1 >>"$LOG" 2>&1
+say() { printf '%s\n' "$*" >&3; printf '%s\n' "$*"; }
+STEP=0
+STEP_NAME=''
+STEP_STARTED=0
+RESULT=''
+step() { STEP=$((STEP + 1)); STEP_NAME=$1; STEP_STARTED=$SECONDS; printf '\n=== [%d/5] %s\n' "$STEP" "$1"; }
+elapsed() { local s=$(($1)); if [ "$s" -ge 60 ]; then printf '%dm%02ds' $((s / 60)) $((s % 60)); else printf '%ds' "$s"; fi; }
+ok() { say "$(printf '[%d/5] %-13s ok    %s (%s)' "$STEP" "$STEP_NAME" "$1" "$(elapsed $((SECONDS - STEP_STARTED)))")"; }
+fail() {
+  say "$(printf '[%d/5] %-13s FAIL  %s' "$STEP" "$STEP_NAME" "$1")"
+  shift
+  local line
+  for line in "$@"; do say "      $line"; done
+  RESULT=FAIL
+  exit 1
+}
+
+# Every Convex CLI call goes through here: no --prod, no deploy key, the dev deployment by name.
+convex() {
+  local arg
+  for arg in "$@"; do
+    [ "$arg" != --prod ] || { say 'refusing to run a Convex command with --prod'; exit 1; }
+  done
+  (cd "$SRC/packages/backend" &&
+    env -u CONVEX_DEPLOY_KEY -u CONVEX_DEPLOYMENT -u CONVEX_SELF_HOSTED_URL \
+      -u CONVEX_SELF_HOSTED_ADMIN_KEY npx --no-install convex "$@")
+}
+# The last error line a remote step logged, for the summary.
+last_error() { grep -E '❌|^error:|^curl: ' "$LOG" | tail -n 1 | cut -c1-150; }
+convex_dev() { local sub=$1; shift; convex "$sub" --deployment "$DEV_NAME" "$@"; }
+# An empty table prints a sentence instead of JSON; keep only the JSON lines.
+table() { convex_dev data "$1" --format jsonl --limit "${2:-500}" | { grep '^{' || true; }; }
+
+# The Worker side is one program, sent whole on each call; see REMOTE below.
+remote() {
+  local encoded
+  encoded=$(printf '%s' "$REMOTE" | base64 | tr -d '\n')
+  # shellcheck disable=SC2029 # the command is meant to expand here, on this side
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" \
+    "bash -c \"\$(printf %s $encoded | base64 -d)\" release-rehearsal $(printf '%q ' "$@")"
+}
+
+cleanup() {
+  local status=$?
+  set +e
+  if [ -n "${DEV_NAME:-}" ] && [ "$KEEP" -eq 0 ] && [ -d "$SRC/packages/backend/node_modules" ]; then
+    for profile in $PROFILE_COLD $PROFILE_WARM; do
+      convex_dev run controllerApi:pauseProfile "{\"name\":\"$profile\"}" >/dev/null 2>&1
+    done
+  fi
+  if [ -n "${WORKER_TOUCHED:-}" ]; then
+    remote cleanup "$KEEP" ${CONTROLLER_PROFILE:+"$CONTROLLER_PROFILE"} >/dev/null 2>&1
+  fi
+  if [ -d "$SRC" ]; then git -C "$REPO_ROOT" worktree remove --force "$SRC" >/dev/null 2>&1; fi
+  if [ -z "$RESULT" ] && [ "$status" -ne 0 ]; then
+    say "$(printf '[%d/5] %-13s FAIL  stopped unexpectedly (exit %d); the log has the cause' "$STEP" "$STEP_NAME" "$status")"
+    RESULT=FAIL
+  fi
+  [ -n "$RESULT" ] || RESULT=PASS
+  say "Result: $RESULT in $(elapsed $((SECONDS - STARTED))). Log: $LOG"
+  [ "$RESULT" = PASS ] || status=1
+  exit "$status"
+}
+trap cleanup EXIT
+
+# read, not $(cat <<...): bash 3.2 misparses case patterns in a heredoc inside $( ).
+IFS= read -r -d '' REMOTE <<'REMOTE' || true
+# Runs on the rehearsal host. The Worker is an Ubuntu 24.04 systemd container with /dev/kvm and
+# host devices passed through, so the provisioner and installer run unchanged on any Linux host
+# with Docker, Arch included. Its own network namespace keeps the job network policy off the host.
+set -euo pipefail
+C=erainfra-rehearsal-worker
+BASE="$HOME/erainfra-rehearsal"
+cmd=$1
+shift
+root() { docker exec -i "$C" bash -c "$1"; }
+wuid() { docker exec "$C" id -u worker; }
+as_worker() {
+  local uid
+  uid=$(wuid)
+  docker exec -i -u worker -w /home/worker -e XDG_RUNTIME_DIR="/run/user/$uid" \
+    -e DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$C" bash -lc "$1"
+}
+# Candidate builds are not on GitHub yet. Serve them from the assets directory instead; every
+# other line of the installer runs as the deployment serves it.
+fetch_installer() { # site candidate destination
+  root "curl -fsSL --retry 3 '$1/install' -o '$3'"
+  if [ "$2" = 1 ]; then
+    root "n=\$(grep -c 'https://github.com/\\\$[A-Z_]*REPO/releases/download/v\\\$[A-Z_]*VERSION' '$3'); [ \"\$n\" -ge 3 ] || { echo 'the installer download URLs changed; update scripts/release-rehearsal' >&2; exit 1; }
+      sed -i 's#https://github.com/\\\$[A-Z_]*REPO/releases/download/v\\\$[A-Z_]*VERSION#file:///opt/rehearsal-assets#g' '$3'"
+  fi
+  root "chmod 0755 '$3'"
+}
+
+case "$cmd" in
+  ensure-container) # tc-redirect-tap commit
+    dockerfile=$(cat <<'DOCKERFILE'
+FROM golang:1.24-bookworm AS tap
+ARG TC_REDIRECT_TAP_COMMIT
+RUN GOBIN=/out go install "github.com/awslabs/tc-redirect-tap/cmd/tc-redirect-tap@${TC_REDIRECT_TAP_COMMIT}"
+
+FROM node:22-bookworm-slim AS node
+
+FROM ubuntu:24.04
+ENV container=docker DEBIAN_FRONTEND=noninteractive
+# netbase gives nft the protocol names readiness compares; iptables is what CNI reservations read.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv dbus dbus-user-session libpam-systemd sudo ca-certificates curl \
+      containerd nftables iptables dmsetup thin-provisioning-tools kmod iproute2 procps \
+      util-linux e2fsprogs diffutils netbase jq tar gzip xz-utils git \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && systemctl mask systemd-udevd.service systemd-udevd-kernel.socket \
+         systemd-udevd-control.socket getty.target console-getty.service systemd-firstboot.service \
+    && systemctl disable containerd.service \
+    && userdel -r ubuntu && useradd -m -s /bin/bash worker
+COPY --from=tap /out/tc-redirect-tap /opt/runner-center/cni/bin/tc-redirect-tap
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+DOCKERFILE
+)
+    tag="erainfra-rehearsal-worker:$(printf '%s\n%s\n' "$dockerfile" "$1" | sha256sum | cut -c1-12)"
+    if ! docker image inspect "$tag" >/dev/null 2>&1; then
+      printf '%s\n' "$dockerfile" | docker build --build-arg TC_REDIRECT_TAP_COMMIT="$1" -t "$tag" -
+    fi
+    current=$(docker inspect -f '{{.Config.Image}}' "$C" 2>/dev/null || true)
+    if [ -n "$current" ] && [ "$current" != "$tag" ]; then
+      echo "recreating $C on $tag (was $current); volumes keep the Worker's state"
+      docker exec "$C" systemctl stop runner-center-runtime.service >/dev/null 2>&1 || true
+      docker rm -f "$C" >/dev/null
+      current=''
+    fi
+    if [ -z "$current" ]; then
+      mkdir -p "$BASE/pool" "$BASE/assets"
+      # btrfs: no copy-on-write under the thin-pool's backing files.
+      chattr +C "$BASE/pool" 2>/dev/null || true
+      docker run -d --name "$C" --hostname "$(hostname)-rehearsal" \
+        --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
+        -v /dev:/dev -v /lib/modules:/lib/modules:ro \
+        -v erainfra-rehearsal-state:/var/lib/runner-center \
+        -v erainfra-rehearsal-home:/home/worker \
+        -v "$BASE/pool:/var/lib/rehearsal-pool" \
+        -v "$BASE/assets:/opt/rehearsal-assets:ro" \
+        "$tag" >/dev/null
+    fi
+    docker start "$C" >/dev/null
+    # A volume keeps the owner it was created with; the image may give worker another uid.
+    docker exec "$C" sh -c '[ "$(stat -c %U /home/worker)" = worker ] || chown -R worker:worker /home/worker'
+    for _ in $(seq 60); do
+      state=$(docker exec "$C" systemctl is-system-running 2>/dev/null || true)
+      case "$state" in running|degraded) break ;; esac
+      sleep 1
+    done
+    echo "container $C on $tag: $state"
+    ;;
+
+  stage-assets) # reads a tar of the candidate's release assets on stdin
+    mkdir -p "$BASE/assets"
+    find "$BASE/assets" -mindepth 1 -delete
+    tar -xf - -C "$BASE/assets"
+    find "$BASE/assets" -type f | wc -l
+    ;;
+
+  provision) # site candidate
+    # Re-provisioning refuses while any guest runs: stop the Action Runner Agent and the runtime.
+    as_worker 'systemctl --user stop runner-center-agent.service' >/dev/null 2>&1 || true
+    root 'systemctl stop runner-center-runtime.service' >/dev/null 2>&1 || true
+    root 'pkill -x firecracker; for _ in $(seq 30); do pgrep -x firecracker >/dev/null || exit 0; sleep 1; done; exit 1' ||
+      { echo 'firecracker processes survived the runtime stop' >&2; exit 1; }
+    fetch_installer "$1" "$2" /root/rehearsal-install.sh
+    for attempt in 1 2 3; do
+      if root 'bash /root/rehearsal-install.sh --role worker-host --pool-gib 200 --pool-dir /var/lib/rehearsal-pool --worker-user worker'; then
+        root 'rm -f /root/rehearsal-install.sh'
+        # Fake-IP DNS proxies on the host (Clash, Mihomo) answer every port-53 query with an
+        # address in 198.18.0.0/15, which the job network policy denies. Public guests ask
+        # OpenDNS on 5353 instead. Observed (audit, allowlist) guests would lose their host
+        # resolver to this rule; the staging Profiles are public.
+        root "nft list table ip erainfra_rehearsal_dns >/dev/null 2>&1 && nft delete table ip erainfra_rehearsal_dns
+          nft -f - <<'NFT'
+table ip erainfra_rehearsal_dns {
+  chain prerouting {
+    type nat hook prerouting priority dstnat - 5; policy accept;
+    ip saddr 10.241.0.0/16 meta l4proto { tcp, udp } th dport 53 dnat to 208.67.222.222:5353
+  }
+}
+NFT"
+        root "loginctl enable-linger worker && systemctl restart user@\$(id -u worker).service"
+        root '/usr/local/lib/runner-center/runner-center-runtime version'
+        exit 0
+      fi
+      echo "worker-host provisioning attempt $attempt failed"
+      sleep 15
+    done
+    exit 1
+    ;;
+
+  agent-state) # prints the registered machine name, or nothing
+    root 'test -f /home/worker/.runner-center/agent/.env && sed -n "s/^MACHINE_NAME=//p" /home/worker/.runner-center/install-meta' || true
+    ;;
+
+  install-agent) # site candidate machine-name mode(register|update|reset); a registration token on stdin
+    IFS= read -r token || true
+    if [ "$4" = reset ]; then
+      root 'rm -rf /home/worker/.runner-center/agent /home/worker/.runner-center/install-meta'
+    fi
+    fetch_installer "$1" "$2" /tmp/rehearsal-install.sh
+    root 'chown worker /tmp/rehearsal-install.sh && chmod 0700 /tmp/rehearsal-install.sh'
+    for attempt in 1 2 3; do
+      if root 'test -f /home/worker/.runner-center/agent/.env'; then
+        as_worker 'bash /tmp/rehearsal-install.sh --update' </dev/null && break
+      else
+        [ -n "$token" ] || { echo 'no registration token for a Worker that is not registered' >&2; exit 1; }
+        printf '%s\n' "$token" |
+          as_worker "IFS= read -r t; bash /tmp/rehearsal-install.sh --token \"\$t\" --name '$3'" && break
+      fi
+      echo "Action Runner Agent install attempt $attempt failed"
+      [ "$attempt" -lt 3 ] || { root 'rm -f /tmp/rehearsal-install.sh'; exit 1; }
+      sleep 15
+    done
+    root 'rm -f /tmp/rehearsal-install.sh'
+    root 'sed -n "s/^AGENT_VERSION=//p" /home/worker/.runner-center/install-meta'
+    ;;
+
+  controller) # site candidate profile; stdin: controller token, then GitHub token; the rest are flags
+    site=$1 candidate=$2 profile=$3
+    shift 3
+    IFS= read -r controller_token
+    IFS= read -r github_token
+    root 'install -d -m 0700 /root/rehearsal-secrets'
+    printf '%s' "$controller_token" | root 'umask 077; cat > /root/rehearsal-secrets/controller-token'
+    printf '%s' "$github_token" | root 'umask 077; cat > /root/rehearsal-secrets/github-token'
+    fetch_installer "$site" "$candidate" /root/rehearsal-install.sh
+    status=0
+    root "bash /root/rehearsal-install.sh --role controller --no-prompt --reconfigure --profile '$profile' \
+      --controller-token-file /root/rehearsal-secrets/controller-token \
+      --github-token-file /root/rehearsal-secrets/github-token $*" || status=$?
+    # The installer copied both secrets under /etc/runner-center/secrets; cleanup removes those.
+    root 'rm -rf /root/rehearsal-secrets /root/rehearsal-install.sh'
+    exit "$status"
+    ;;
+
+  cleanup) # keep [controller-profile]
+    if [ -n "${2:-}" ]; then
+      root "systemctl disable --now 'runner-center-controller@$2.service'; rm -rf '/etc/runner-center/secrets/$2' '/etc/runner-center/profiles/$2.env'" || true
+    fi
+    [ "$1" = 1 ] || docker stop "$C" >/dev/null
+    ;;
+
+  *) echo "unknown remote command $cmd" >&2; exit 2 ;;
+esac
+REMOTE
+
+say "EraInfra release rehearsal: ${REF}$([ "$CANDIDATE" -eq 1 ] && printf ' (candidate)') on $HOST"
+
+# ---------------------------------------------------------------------------------------------
+step source
+for tool in git pnpm node jq ssh curl base64; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
+[ -f "$ENV_LOCAL" ] || fail "no $ENV_LOCAL; it names the dev deployment"
+DEPLOYMENT_VALUE=$(sed -n 's/^CONVEX_DEPLOYMENT=\([^ #]*\).*/\1/p' "$ENV_LOCAL")
+case "$DEPLOYMENT_VALUE" in
+  dev:?*) DEV_NAME=${DEPLOYMENT_VALUE#dev:} ;;
+  *) fail "CONVEX_DEPLOYMENT in $ENV_LOCAL is '$DEPLOYMENT_VALUE', not dev:<name>; refusing" ;;
+esac
+if [ -n "${RELEASE_REHEARSAL_DEPLOYMENT:-}" ] && [ "$RELEASE_REHEARSAL_DEPLOYMENT" != "$DEV_NAME" ]; then
+  fail "$ENV_LOCAL names $DEV_NAME, but RELEASE_REHEARSAL_DEPLOYMENT expects $RELEASE_REHEARSAL_DEPLOYMENT"
+fi
+SITE="https://$DEV_NAME.convex.site"
+git -C "$REPO_ROOT" fetch --quiet --tags origin || true
+COMMIT=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "$REF^{commit}") || fail "no commit or tag $REF"
+git -C "$REPO_ROOT" worktree add --detach "$SRC" "$COMMIT" >/dev/null
+cp "$ENV_LOCAL" "$SRC/packages/backend/.env.local"
+(cd "$SRC" && pnpm install --frozen-lockfile) || fail 'pnpm install failed'
+pin_field() { # field: prints AGENT_RELEASE.<field> from the checkout's agentRelease.ts
+  (cd "$SRC" && node --experimental-strip-types -e \
+    "import('./packages/backend/convex/agentRelease.ts').then(m => console.log(JSON.stringify(m.AGENT_RELEASE.$1)))")
+}
+VERSION=$(pin_field version | jq -r .)
+if [ "$CANDIDATE" -eq 0 ]; then
+  [ "$REF" = "v$VERSION" ] || fail "$REF pins AGENT_RELEASE.version $VERSION; rehearse a release tag or use --candidate"
+  gh release view "$REF" --repo "$(pin_field repo | jq -r .)" --json assets --jq '.assets[].name' \
+    >"$RUN_DIR/assets.txt" || fail "release $REF is not published"
+  grep -qx "erainfra-agent-$VERSION.tar.gz" "$RUN_DIR/assets.txt" || fail "release $REF has no agent archive"
+  ok "$REF ($VERSION) at $(git -C "$SRC" rev-parse --short HEAD)"
+else
+  (cd "$SRC" && pnpm release:package) || fail 'pnpm release:package failed'
+  built=$(cut -d ' ' -f 1 <"$SRC/dist/release/erainfra-agent-$VERSION.tar.gz.sha256")
+  pinned=$(pin_field sha256 | jq -r .)
+  match=yes
+  if [ "$built" != "$pinned" ]; then
+    match=no
+    # Pin the dev deployment to these bytes, the way a release commit pins its own build.
+    controller_pin=$(cd "$SRC" && pnpm --silent --filter @erainfra/backend print-controller-pin)
+    # shellcheck disable=SC2016 # JavaScript template literals, not shell expansions
+    BUILT="$built" CONTROLLER_PIN="$controller_pin" node -e '
+      const fs = require("node:fs");
+      const file = process.argv[1];
+      let text = fs.readFileSync(file, "utf8");
+      const next = text
+        .replace(/^  sha256: "[0-9a-f]{64}",$/m, `  sha256: "${process.env.BUILT}",`)
+        .replace(/^  controller: \{\n[\s\S]*?\n  \},\n/m, process.env.CONTROLLER_PIN);
+      if (!next.includes(process.env.BUILT)) throw new Error("could not repin " + file);
+      fs.writeFileSync(file, next);
+    ' "$SRC/packages/backend/convex/agentRelease.ts" || fail 'could not pin the dev deployment to the candidate build'
+  fi
+  # The Worker and controller installers read only these four.
+  (cd "$SRC/dist/release" && COPYFILE_DISABLE=1 tar -cf - "erainfra-agent-$VERSION.tar.gz" \
+    "erainfra-agent-$VERSION.tar.gz.sha256" runner-center-controller-linux-x86_64 \
+    runner-center-controller-linux-x86_64.sha256) | remote stage-assets >/dev/null ||
+    fail "could not copy the build to $HOST"
+  ok "$VERSION at $(git -C "$SRC" rev-parse --short HEAD), built; committed pin matches build: $match"
+fi
+PINNED_SHA=$(pin_field sha256 | jq -r .)
+
+# ---------------------------------------------------------------------------------------------
+step 'control plane'
+convex dev --once --codegen disable --typecheck disable || fail "pushing $VERSION to dev deployment $DEV_NAME failed"
+served=$(curl -fsSL --retry 3 "$SITE/install" | sed -nE "s/^PINNED_(VERSION|SHA256)='(.*)'$/\1=\2/p")
+grep -qx "VERSION=$VERSION" <<<"$served" || fail "$SITE/install serves $(grep VERSION <<<"$served"), not $VERSION"
+grep -qx "SHA256=$PINNED_SHA" <<<"$served" || fail "$SITE/install pins another agent archive than $PINNED_SHA"
+ok "$DEV_NAME serves $VERSION, agent archive ${PINNED_SHA:0:12}"
+
+# ---------------------------------------------------------------------------------------------
+step worker
+TC_COMMIT=$(sed -n "s/^TC_REDIRECT_TAP_COMMIT='\([0-9a-f]*\)'$/\1/p" "$SRC/deploy/provision-firecracker-host.sh")
+[ -n "$TC_COMMIT" ] || fail 'deploy/provision-firecracker-host.sh no longer pins TC_REDIRECT_TAP_COMMIT'
+WORKER_TOUCHED=1
+remote ensure-container "$TC_COMMIT" || fail "could not start the Worker container on $HOST" "$(last_error)"
+runtime=$(remote provision "$SITE" "$CANDIDATE" | tee /dev/stderr | tail -n 1) || fail 'worker-host provisioning failed' \
+  "$(last_error)"
+[ "$runtime" = "runner-center-runtime $VERSION" ] || fail "the Worker runs '$runtime', not $VERSION"
+machines_by_name() { table machines | jq -c --arg n "$1" 'select(.name == $n) | {_id, lastSeen}'; }
+MACHINE=$(remote agent-state)
+WANTED_NAME="$HOST-rehearsal"
+mode=update
+token=''
+if [ -z "$MACHINE" ] || [ -z "$(machines_by_name "$MACHINE")" ]; then
+  # Not registered with this deployment: register under one stable name, replacing a stale row.
+  [ -z "$MACHINE" ] || mode=reset
+  [ -n "$MACHINE" ] || mode=register
+  stale=$(machines_by_name "$WANTED_NAME" | jq -r ._id)
+  for id in $stale; do convex_dev run admin:deleteMachine "{\"machineId\":\"$id\"}" >/dev/null; done
+  token=$(convex_dev run machines:createRegistrationToken '{}' \
+    --identity '{"subject":"release-rehearsal","issuer":"https://release-rehearsal.invalid"}' | jq -r .token) ||
+    fail 'could not mint a registration token on the dev deployment'
+fi
+AGENT_STARTED_MS=$(($(date +%s) * 1000))
+agent=$(printf '%s\n' "$token" | remote install-agent "$SITE" "$CANDIDATE" "$WANTED_NAME" "$mode" | tee /dev/stderr | tail -n 1) ||
+  fail 'Action Runner Agent install failed' "$(last_error)"
+token=''
+[ "$agent" = "$VERSION" ] || fail "the Worker runs Action Runner Agent '$agent', not $VERSION"
+MACHINE=$(remote agent-state)
+MACHINE_ID=$(machines_by_name "$MACHINE" | jq -r ._id)
+[ -n "$MACHINE_ID" ] || fail "Worker $MACHINE is not registered with $DEV_NAME"
+ok "$MACHINE: runtime and Action Runner Agent $VERSION ($mode)"
+
+# ---------------------------------------------------------------------------------------------
+step profiles
+if [ -z "$IMAGE_RELEASE" ]; then
+  ghcr_token=$(curl -fsS "https://ghcr.io/token?scope=repository:$DEFAULT_IMAGE_REPO:pull" | jq -r .token)
+  digest=$(curl -fsS -o /dev/null -D - -H "Authorization: Bearer $ghcr_token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json' \
+    "https://ghcr.io/v2/$DEFAULT_IMAGE_REPO/manifests/edge" | tr -d '\r' |
+    awk 'tolower($1) == "docker-content-digest:" { print $2 }')
+  ghcr_token=''
+  [ -n "$digest" ] || fail "could not resolve ghcr.io/$DEFAULT_IMAGE_REPO:edge"
+  IMAGE_RELEASE="ghcr.io/$DEFAULT_IMAGE_REPO@$digest"
+fi
+for profile in $PROFILE_COLD $PROFILE_WARM; do
+  warm=${profile##*wp}
+  convex_dev run controllerApi:registerProfile "$(jq -nc --arg n "$profile" --arg i "$IMAGE_RELEASE" --argjson w "$warm" \
+    '{name: $n, scaleSetName: $n, executor: "firecracker", imageRelease: $i, vcpus: 2, memoryMiB: 4096,
+      warmPool: $w, minRunners: 0, maxRunners: 1}')" >/dev/null ||
+    fail "could not register $profile on $DEV_NAME"
+done
+# One row per staging Profile, from this Worker, checked since its Action Runner Agent restarted.
+readiness() {
+  local rows evidence
+  rows=$(table workerReadiness 1000)
+  evidence=$(table readinessEvidence 1000)
+  jq -nc --arg m "$MACHINE_ID" --argjson since "$AGENT_STARTED_MS" \
+    --arg a "$PROFILE_COLD" --arg b "$PROFILE_WARM" \
+    --slurpfile rows <(printf '%s\n' "$rows") --slurpfile ev <(printf '%s\n' "$evidence") '
+    [$a, $b][] as $p
+    | ([$rows[] | select(.machineId == $m and .profile == $p and .checkedAt >= $since)] | max_by(.checkedAt)) as $r
+    | ([$ev[] | select(.machineId == $m and .profile == $p)] | max_by(.checkedAt)) as $e
+    | {profile: $p, state: ($r.state // "unreported"), warm: $r.warmPool,
+       failed: [($e.checks // [])[] | select(.passed | not) | "\(.name): \(.detail // "no detail")"],
+       detail: ($e.lastError // $e.statusDetail // "")}'
+}
+deadline=$((SECONDS + READY_TIMEOUT))
+settled_at=''
+while :; do
+  snapshot=$(readiness) || snapshot=''
+  printf '%s readiness %s\n' "$(date -u +%H:%M:%S)" "$snapshot"
+  bad=$(jq -c 'select(.state == "degraded" or .state == "failed")' <<<"$snapshot")
+  if [ -n "$bad" ]; then
+    say "$(printf '[%d/5] %-13s FAIL  %s not ready' "$STEP" "$STEP_NAME" "$(jq -r .profile <<<"$bad" | paste -sd, -)")"
+    jq -r '"\(.profile) \(.state)", (.failed[] | "  failed check \(.)"),
+      (select(.failed == [] and .detail != "") | "  \(.detail)")' <<<"$bad" | cut -c1-150 | head -n 8 |
+      while IFS= read -r line; do say "      $line"; done
+    jq -r 'select(.state != "degraded" and .state != "failed") | "\(.profile) \(.state)"' <<<"$snapshot" |
+      while IFS= read -r line; do say "      $line"; done
+    RESULT=FAIL
+    exit 1
+  fi
+  if [ "$(jq -s 'length == 2 and all(.state == "ready")' <<<"$snapshot")" = true ]; then
+    settled_at=${settled_at:-$SECONDS}
+    if [ $((SECONDS - settled_at)) -ge "$SETTLE" ]; then break; fi
+  else
+    settled_at=''
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    fail "not ready after $(elapsed "$READY_TIMEOUT")" \
+      "$(jq -r '"\(.profile) \(.state) \(.detail)"' <<<"$snapshot" | cut -c1-160 | paste -sd ';' -)"
+  fi
+  sleep 15
+done
+warm_line=$(jq -r 'select(.profile == "'"$PROFILE_WARM"'") | .warm | "\(.parked // 0) parked of \(.target // 0)"' <<<"$snapshot")
+ok "$PROFILE_COLD and $PROFILE_WARM ready, held $(elapsed "$SETTLE"); warm pool $warm_line"
+
+# ---------------------------------------------------------------------------------------------
+step job
+if [ -z "$JOB_REPO" ]; then
+  say "$(printf '[%d/5] %-13s skip  no --job-repo; docs/releases.md says what it needs' "$STEP" "$STEP_NAME")"
+  exit 0
+fi
+command -v gh >/dev/null || fail 'gh is not on PATH'
+WORKFLOW=erainfra-rehearsal.yml
+if ! gh api "repos/$JOB_REPO/contents/.github/workflows/$WORKFLOW" --silent 2>/dev/null; then
+  # [skip ci] keeps the commit from triggering the repository's push workflows.
+  IFS= read -r -d '' workflow <<'YAML' || true
+name: erainfra-rehearsal
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: The staging Profile scripts/release-rehearsal in Fanzzzd/erainfra runs
+        required: true
+jobs:
+  rehearse:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "kernel: $(uname -r)"
+          curl -fsS --max-time 20 https://api.github.com/zen
+          docker run --rm hello-world
+YAML
+  gh api -X PUT "repos/$JOB_REPO/contents/.github/workflows/$WORKFLOW" \
+    -f message='ci: add the EraInfra release rehearsal workflow [skip ci]' \
+    -f content="$(printf '%s\n' "$workflow" | base64 | tr -d '\n')" --silent ||
+    fail "could not add .github/workflows/$WORKFLOW to $JOB_REPO"
+fi
+controller_token=$(convex_dev env get CONTROLLER_TOKEN 2>/dev/null || true)
+if [ -z "$controller_token" ]; then
+  controller_token=$(openssl rand -hex 32)
+  printf '%s' "$controller_token" | convex_dev env set CONTROLLER_TOKEN >/dev/null ||
+    fail "could not set CONTROLLER_TOKEN on $DEV_NAME"
+fi
+CONTROLLER_PROFILE=$PROFILE_COLD
+printf '%s\n%s\n' "$controller_token" "$(gh auth token)" |
+  remote controller "$SITE" "$CANDIDATE" "$PROFILE_COLD" \
+    --github-config-url "https://github.com/$JOB_REPO" --executor firecracker \
+    --image-release "$IMAGE_RELEASE" --vcpus 2 --memory-mib 4096 --warm-pool 0 \
+    --min-runners 0 --max-runners 1 || fail "the controller for $PROFILE_COLD did not install"
+controller_token=''
+dispatched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+gh workflow run "$WORKFLOW" --repo "$JOB_REPO" -f runs-on="$PROFILE_COLD" || fail "could not dispatch $WORKFLOW"
+run_id=''
+for _ in $(seq 20); do
+  run_id=$(gh run list --repo "$JOB_REPO" --workflow "$WORKFLOW" --event workflow_dispatch --limit 5 \
+    --json databaseId,createdAt --jq "map(select(.createdAt >= \"$dispatched_at\")) | .[0].databaseId // empty")
+  [ -z "$run_id" ] || break
+  sleep 3
+done
+[ -n "$run_id" ] || fail "the dispatched run did not appear in $JOB_REPO"
+conclusion=''
+deadline=$((SECONDS + 1200))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  conclusion=$(gh run view "$run_id" --repo "$JOB_REPO" --json status,conclusion --jq 'select(.status == "completed") | .conclusion')
+  [ -z "$conclusion" ] || break
+  sleep 15
+done
+url="https://github.com/$JOB_REPO/actions/runs/$run_id"
+[ "$conclusion" = success ] || fail "job ${conclusion:-did not finish in 20m}: $url"
+ok "$url succeeded on $PROFILE_COLD"
