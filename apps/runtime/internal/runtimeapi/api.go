@@ -134,7 +134,7 @@ func (c *Client) PrepareProfile(
 ) (executor.WarmPoolStatus, error) {
 	var response prepareResponse
 	if err := c.do(ctx, "/v1/prepare", prepareRequest{Profile: profile}, &response); err != nil {
-		return executor.WarmPoolStatus{}, err
+		return executor.WarmPoolFailed(err), err
 	}
 	if response.Error != "" {
 		return response.WarmPool, errors.New(response.Error)
@@ -342,7 +342,7 @@ func Serve(
 	metrics := jobmetrics.NewRegistry(jobmetrics.DefaultSampleInterval)
 	defer metrics.Shutdown()
 	server := &http.Server{
-		Handler:           handler(runtime, metrics),
+		Handler:           NewHandler(runtime, metrics),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		IdleTimeout:       30 * time.Second,
@@ -362,7 +362,10 @@ func Serve(
 	return err
 }
 
-func handler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handler {
+// NewHandler serves the runtime API. Serve puts it on the root-owned socket;
+// the golden tests of other packages put it on a temporary one, so the
+// documents they record cross the same wire as in production.
+func NewHandler(runtime executor.Executor, metrics *jobmetrics.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/metrics", func(response http.ResponseWriter, request *http.Request) {
 		var input metricsRequest

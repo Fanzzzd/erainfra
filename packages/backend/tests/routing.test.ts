@@ -77,8 +77,8 @@ async function holdLease(t: Harness, expiresAt = Date.now() + 30_000) {
   });
 }
 
-async function addReadyWorker(t: Harness, name: string, maxSlots = 1) {
-  const machineId = await t.run((ctx) =>
+async function addWorker(t: Harness, name: string, maxSlots = 1) {
+  return await t.run((ctx) =>
     ctx.db.insert("machines", {
       name,
       os: "linux",
@@ -89,17 +89,40 @@ async function addReadyWorker(t: Harness, name: string, maxSlots = 1) {
       token: `token-${name}`,
     }),
   );
-  await t.mutation(api.workerApi.reportReadiness, {
+}
+
+/** Reports the Profile's readiness as the Worker's Action Runner Agent does. */
+async function reportReadiness(t: Harness, name: string, state: "preparing" | "ready" | "failed") {
+  return await t.mutation(api.workerApi.reportReadiness, {
     token: `token-${name}`,
     profile: CONTRACT.profile,
     executor: CONTRACT.executor,
     imageRelease: CONTRACT.imageRelease,
     vcpus: CONTRACT.vcpus,
     memoryMiB: CONTRACT.memoryMiB,
-    state: "ready",
+    state,
     ...FIRECRACKER_FACTS,
+    ...(state === "failed"
+      ? {
+          // What the v0.2.0-rc.22 Agent reported for every Profile without a pool.
+          checks: [
+            ...FIRECRACKER_FACTS.checks,
+            {
+              name: "warm-pool",
+              passed: false,
+              detail: "the runtime reports the warm pool unhealthy",
+            },
+          ],
+          error: "the runtime reports the warm pool unhealthy",
+        }
+      : {}),
     warmPool: { target: 0, parked: 0, claimed: 0 },
   });
+}
+
+async function addReadyWorker(t: Harness, name: string, maxSlots = 1) {
+  const machineId = await addWorker(t, name, maxSlots);
+  await reportReadiness(t, name, "ready");
   return machineId;
 }
 
@@ -427,6 +450,40 @@ describe("router decisions", () => {
       },
     ]);
   });
+
+  // The 2026-11-13 incident: every ready Worker reported failed, which stored degraded. Jobs must
+  // go to the fallback until the Worker is ready again, and each answer must say why.
+  it.each([
+    { stored: "degraded", reports: ["ready", "failed"] },
+    { stored: "failed", reports: ["failed"] },
+    { stored: "preparing", reports: ["preparing"] },
+  ] as const)(
+    "answers the fallback while the only Worker is $stored, and the Profile once it is ready",
+    async ({ stored, reports }) => {
+      const t = convexTest(schema, modules);
+      await registerProfile(t);
+      await addWorker(t, "worker-a");
+      let state: string | undefined;
+      for (const report of reports) state = (await reportReadiness(t, "worker-a", report)).state;
+      expect(state).toBe(stored);
+
+      const query = `profile=${CONTRACT.profile}&fallback=ubuntu-24.04&repo=acme/web`;
+      expect((await runsOn(t, query)).body).toEqual({ "runs-on": "ubuntu-24.04" });
+      await reportReadiness(t, "worker-a", "ready");
+      expect((await runsOn(t, query)).body).toEqual({ "runs-on": CONTRACT.profile });
+
+      expect(
+        (await decisions(t)).map((row) => ({
+          answer: row.answer,
+          route: row.route,
+          reason: row.reason,
+        })),
+      ).toEqual([
+        { answer: "ubuntu-24.04", route: "fallback", reason: "no-ready-worker" },
+        { answer: CONTRACT.profile, route: "profile", reason: undefined },
+      ]);
+    },
+  );
 
   it("refuses a repo that is not OWNER/NAME and stores nothing", async () => {
     const t = convexTest(schema, modules);

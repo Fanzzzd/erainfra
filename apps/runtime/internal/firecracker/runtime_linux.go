@@ -279,21 +279,29 @@ func (r *Runtime) PrepareProfile(
 	ctx context.Context,
 	profile executor.Profile,
 ) (executor.WarmPoolStatus, error) {
+	return r.pool.prepare(ctx, profile, r.prepareImage)
+}
+
+// prepareImage checks the host can run the Profile, pulls its Image Release
+// and checks the thin pool has room for its warm pool. It returns the
+// actions/runner version the image carries, or empty when the image does not
+// say.
+func (r *Runtime) prepareImage(ctx context.Context, profile executor.Profile) (string, error) {
 	if err := profile.Validate(); err != nil {
-		return executor.WarmPoolStatus{}, err
+		return "", err
 	}
 	if _, err := r.Preflight(ctx, profile.Egress); err != nil {
-		return executor.WarmPoolStatus{}, err
+		return "", err
 	}
 	client, err := containerd.New(r.config.ContainerdAddress)
 	if err != nil {
-		return executor.WarmPoolStatus{}, fmt.Errorf("connect to containerd: %w", err)
+		return "", fmt.Errorf("connect to containerd: %w", err)
 	}
 	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
 	containerdContext := namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
 	image, err := ensureImage(containerdContext, client, r.config.Snapshotter, profile.ImageRelease)
 	if err != nil {
-		return executor.WarmPoolStatus{}, err
+		return "", err
 	}
 	// Best effort: an image whose config cannot be read reports no runner
 	// version, which the control plane treats as unknown and never as a
@@ -308,19 +316,17 @@ func (r *Runtime) PrepareProfile(
 	if profile.WarmPool > 0 {
 		storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
 		if err != nil {
-			return executor.WarmPoolStatus{}, err
+			return "", err
 		}
 		required := int64(r.pool.totalTargetWith(profile)) * r.config.MinPoolFreeMiB
 		if storage.PoolFreeMiB < required {
-			return executor.WarmPoolStatus{}, fmt.Errorf(
+			return "", fmt.Errorf(
 				"warm pools require %d MiB thin-pool headroom but %d MiB is free",
 				required, storage.PoolFreeMiB,
 			)
 		}
 	}
-	status, err := r.pool.Configure(ctx, profile)
-	status.RunnerVersion = runnerVersion
-	return status, err
+	return runnerVersion, nil
 }
 
 func (r *Runtime) RemoveProfile(ctx context.Context, profile string) error {

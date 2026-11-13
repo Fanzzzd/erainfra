@@ -102,21 +102,46 @@ func (p *warmPoolManager) changedLocked() {
 	p.changed = make(chan struct{})
 }
 
+// prepare is what `runner-center-runtime prepare` reports for a Profile.
+// prepareImage does the host's part, such as pulling the Image Release, and
+// returns the actions/runner version the image carries. The status it returns
+// is always explicit: a pool's counts, NoWarmPool, or WarmPoolFailed.
+// testdata/prepare-*.golden.json records it for each warm-pool state.
+func (p *warmPoolManager) prepare(
+	ctx context.Context,
+	profile executor.Profile,
+	prepareImage func(context.Context, executor.Profile) (string, error),
+) (executor.WarmPoolStatus, error) {
+	runnerVersion, err := prepareImage(ctx, profile)
+	if err != nil {
+		return executor.WarmPoolFailed(err), err
+	}
+	status, err := p.Configure(ctx, profile)
+	status.RunnerVersion = runnerVersion
+	return status, err
+}
+
 func (p *warmPoolManager) Configure(
 	ctx context.Context,
 	profile executor.Profile,
 ) (executor.WarmPoolStatus, error) {
 	if err := profile.Validate(); err != nil {
-		return executor.WarmPoolStatus{}, err
+		return executor.WarmPoolFailed(err), err
 	}
 	if profile.WarmPool == 0 {
-		return executor.WarmPoolStatus{}, p.Remove(ctx, profile.Name)
+		// A Profile without a pool owns its target of zero. Guests claimed
+		// before the target dropped to zero drain like any lowered target, so
+		// Status still counts them and still reports the pool healthy.
+		if err := p.Remove(ctx, profile.Name); err != nil {
+			return executor.WarmPoolFailed(err), err
+		}
+		return p.Status(profile.Name), nil
 	}
 
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return executor.WarmPoolStatus{}, errWarmPoolShutdown
+		return executor.WarmPoolFailed(errWarmPoolShutdown), errWarmPoolShutdown
 	}
 	state := p.profiles[profile.Name]
 	var obsolete []warmSlot
@@ -448,7 +473,7 @@ func (p *warmPoolManager) Status(profileName string) executor.WarmPoolStatus {
 	defer p.mu.Unlock()
 	state := p.profiles[profileName]
 	if state == nil {
-		return executor.WarmPoolStatus{Healthy: true}
+		return executor.NoWarmPool()
 	}
 	return statusOf(state)
 }

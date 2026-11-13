@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -68,4 +69,24 @@ test("a failed prune waits for the next interval instead of retrying every pass"
     stderr: "containerd unavailable",
   }));
   assert.equal(at, 42);
+});
+
+// The runtime writes what `prune-images` prints (apps/runtime/internal/runtimeapi/stdout_golden_test.go).
+test("reports the Image Releases the runtime's prune result says it deleted", async (t) => {
+  const stdout = readFileSync(
+    new URL("../../runtime/internal/runtimeapi/testdata/prune-images.golden.json", import.meta.url),
+    "utf8",
+  );
+  const { deleted } = JSON.parse(stdout) as { deleted: string[] };
+  assert.ok(deleted.length > 0);
+  const log = t.mock.method(console, "log", () => {});
+  await pruneImageReleases(profiles, Number.NEGATIVE_INFINITY, 1, async () => ({
+    exitCode: 0,
+    stdout,
+    stderr: "",
+  }));
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments[0]),
+    [`Deleted ${deleted.length} Image Release(s) no Profile uses: ${deleted.join(", ")}`],
+  );
 });

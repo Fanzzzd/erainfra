@@ -1,7 +1,6 @@
 package admission
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Fanzzzd/erainfra/internal/golden"
 )
 
 // clock is a fake time source. Sleep advances it, so a waiting Attempt moves time forward the
@@ -226,17 +227,10 @@ func TestStateJSONMatchesTheGoldenFileTheAgentAndControlPlaneRead(t *testing.T) 
 		t.Fatal(err)
 	}
 	encoded = append(encoded, '\n')
-	golden := filepath.Join("..", "..", "..", "..", "testdata", "admission-state.golden.json")
-	if os.Getenv("ERAINFRA_UPDATE_GOLDEN") == "1" {
-		if err := os.WriteFile(golden, encoded, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("State JSON changed; regenerate %s and check the agent and control plane still accept it:\n%s", golden, encoded)
-	}
+	golden.Check(
+		t,
+		filepath.Join("..", "..", "..", "..", "testdata", "admission-state.golden.json"),
+		encoded,
+		"the Action Runner Agent's and the control plane's tests",
+	)
 }

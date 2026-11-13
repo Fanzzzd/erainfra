@@ -817,16 +817,20 @@ export function warmPoolOwnsTarget(pool: { target: number; parked: number; claim
  * The error the runtime recorded for the pool, when its status says `healthy: false`. The runtime
  * sets that for a failure such as a guest that failed to boot, whatever the counts say. A status
  * without the field leaves the decision to the counts.
+ *
+ * A target of zero with no detail is not a recorded error. The v0.2.0-rc.22 runtime prints exactly
+ * that for every Profile without a pool, and treating it as a failure stopped those Profiles from
+ * taking jobs. The counts decide it instead. The runtime's `prepare-*.golden.json` files in
+ * apps/runtime/internal/firecracker/testdata record what each warm-pool state prints.
  */
 function recordedWarmPoolError(stdout: string): string | undefined {
   try {
     const parsed: unknown = JSON.parse(stdout.trim());
     if (typeof parsed !== "object" || parsed === null || !("healthy" in parsed)) return undefined;
-    const { healthy, detail } = parsed as Record<string, unknown>;
+    const { healthy, detail, target } = parsed as Record<string, unknown>;
     if (healthy !== false) return undefined;
-    return typeof detail === "string" && detail !== ""
-      ? detail
-      : "the runtime reports the warm pool unhealthy";
+    if (typeof detail === "string" && detail !== "") return detail;
+    return target === 0 ? undefined : "the runtime reports the warm pool unhealthy";
   } catch {
     return undefined;
   }
