@@ -1,7 +1,8 @@
 import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { httpRouter } from "convex/server";
+import { ConvexError } from "convex/values";
 
-import { components, internal } from "./_generated/api";
+import { api, components, internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { AGENT_RELEASE } from "./agentRelease";
 import { auth } from "./auth";
@@ -337,6 +338,26 @@ http.route({
       return jsonResponse({ error: "Server configuration error" }, 500);
     }
     return jsonResponse({ machineToken: result.machineToken, convexUrl }, 201);
+  }),
+});
+
+// The Worker installer reads this before and after it replaces the Action Runner Agent
+// (installScript.ts, `--update`). `now` is the control plane's clock, taken here because a query's
+// result may be cached: the installer counts only reports with a later checkedAt as the new Agent's.
+http.route({
+  path: "/agents/readiness",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const authorization = request.headers.get("Authorization");
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
+    if (!MACHINE_TOKEN_PATTERN.test(token)) return jsonResponse({ error: "Unauthorized" }, 401);
+    try {
+      const profiles = await ctx.runQuery(api.workerApi.readiness, { token });
+      return jsonResponse({ now: Date.now(), profiles }, 200);
+    } catch (error) {
+      if (error instanceof ConvexError) return jsonResponse({ error: "Unauthorized" }, 401);
+      throw error;
+    }
   }),
 });
 

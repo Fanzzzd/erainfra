@@ -1310,6 +1310,17 @@ UPDATE=0
 TMP_DIR=""
 RC_CLI_TMP=""
 SERVICE_KIND=""
+# How long an update waits for each Profile that was ready before it to report ready again. A
+# cached Image Release prepares in about a second, but ubuntu0 took about 3 minutes after the
+# v0.2.0-rc.22 update, and the runtime gives one warm-pool guest up to 15 minutes to boot
+# (warmBootTimeout), so 15 minutes rolls back a broken Agent without failing a slow healthy one.
+READY_TIMEOUT=900
+READY_BEFORE=""
+READINESS_SINCE=""
+READINESS_AUTH=""
+CONTROL_PLANE_MS=""
+CONTROL_PLANE_AT=""
+HEALTH_FAILURE=""
 
 fail() {
   trap - ERR
@@ -1337,7 +1348,7 @@ trap cleanup EXIT
 
 usage() {
   printf '%s\n' 'Usage: bash -s -- --token rcreg_xxx [--name NAME] [--labels a,b] [--slots N]'
-  printf '%s\n' '       bash -s -- --update [--version vX.Y.Z] [--sha256 HEX]'
+  printf '%s\n' '       bash -s -- --update [--version vX.Y.Z] [--sha256 HEX] [--ready-timeout SECONDS]'
 }
 
 while [ "$#" -gt 0 ]; do
@@ -1376,6 +1387,11 @@ while [ "$#" -gt 0 ]; do
       UPDATE=1
       shift
       ;;
+    --ready-timeout)
+      [ "$#" -ge 2 ] || fail '--ready-timeout requires a value'
+      READY_TIMEOUT=$2
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -1404,6 +1420,12 @@ if [ -n "$SHA_ARG" ]; then
   printf '%s' "$SHA_ARG" | grep -Eq '^[0-9a-f]{64}$' ||
     fail '--sha256 must be a 64-character lowercase hex digest'
 fi
+case "$READY_TIMEOUT" in
+  *[!0-9]*|'') fail '--ready-timeout must be a positive number of seconds' ;;
+esac
+# Base 10, so a leading zero is not read as octal by the arithmetic below.
+READY_TIMEOUT=$((10#$READY_TIMEOUT))
+[ "$READY_TIMEOUT" -ge 1 ] || fail '--ready-timeout must be a positive number of seconds'
 
 case "$(uname -s)" in
   Darwin)
@@ -1501,6 +1523,147 @@ restore_previous() {
   [ -d "$PREVIOUS_DIR" ] || return 1
   rm -rf "$AGENT_DIR"
   mv "$PREVIOUS_DIR" "$AGENT_DIR"
+}
+
+# Wait up to 20 seconds for the agent of version $1 to publish that it reached the control plane.
+wait_for_connection() {
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if [ "$(cat "$RC_HOME/agent.ready" 2>/dev/null || true)" = "$1" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# The update health check reads the control plane's readiness for each Profile this Worker
+# serves: GET /agents/readiness, answered by workerApi.readiness the way the scheduler judges it.
+# Usage: "now FILE" prints the control plane's clock; "ready FILE" prints each ready Profile, one
+# per line; "verdict FILE SINCE PROFILE..." judges the named Profiles on reports newer than SINCE
+# and prints "ready", "fail <why>" or "wait <profile> <why>". A named Profile this Worker no longer
+# serves is not waited for.
+READINESS_JS='
+const fs = require("node:fs");
+const [mode, file, since, ...wanted] = process.argv.slice(1);
+const answer = JSON.parse(fs.readFileSync(file, "utf8"));
+const profiles = Array.isArray(answer.profiles) ? answer.profiles : [];
+if (mode === "now") {
+  if (!Number.isFinite(answer.now)) process.exit(1);
+  process.stdout.write(String(Math.trunc(answer.now)));
+} else if (mode === "ready") {
+  for (const row of profiles) if (row.state === "ready") process.stdout.write(row.profile + "\n");
+} else {
+  const why = (row) => {
+    const reasons = Array.isArray(row.failedChecks) ? row.failedChecks.slice() : [];
+    if (reasons.length === 0 && typeof row.detail === "string") reasons.push(row.detail);
+    return reasons.length === 0 ? "" : ": " + reasons.join("; ");
+  };
+  let verdict = "ready";
+  for (const name of wanted) {
+    const row = profiles.find((candidate) => candidate.profile === name);
+    if (row === undefined) continue;
+    const fresh = typeof row.checkedAt === "number" && row.checkedAt > Number(since);
+    if (fresh && row.state === "ready") continue;
+    if (fresh && (row.state === "degraded" || row.state === "failed")) {
+      verdict = "fail Profile " + name + " reported " + row.state + why(row);
+      break;
+    }
+    if (verdict === "ready") {
+      verdict = fresh
+        ? "wait " + name + " it last reported " + row.state + why(row)
+        : "wait " + name + " it has not reported since the Agent restarted";
+    }
+  }
+  process.stdout.write(verdict + "\n");
+}
+'
+
+readiness_eval() {
+  "$NODE_BIN" -e "$READINESS_JS" "$@"
+}
+
+# Save the control plane's readiness answer to $1, and note its clock against the local one so
+# control_plane_now can tell a report the restarted Agent made from one made before.
+fetch_readiness() {
+  if [ -z "$READINESS_AUTH" ]; then
+    READINESS_AUTH="$TMP_DIR/readiness-auth"
+    (
+      umask 077
+      printf 'Authorization: Bearer %s\n' "$(grep '^MACHINE_TOKEN=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)" > "$READINESS_AUTH"
+    )
+  fi
+  readiness_status=$(curl -sS --max-time 15 -H "@$READINESS_AUTH" -o "$1" -w '%{http_code}' "$SITE_URL/agents/readiness" 2>/dev/null) || return 1
+  [ "$readiness_status" = 200 ] || return 1
+  CONTROL_PLANE_MS=$(readiness_eval now "$1") || return 1
+  CONTROL_PLANE_AT=$(date +%s)
+}
+
+# The control plane's clock now, in milliseconds, from its last answer plus local time elapsed.
+control_plane_now() {
+  printf '%s' "$((CONTROL_PLANE_MS + ($(date +%s) - CONTROL_PLANE_AT) * 1000))"
+}
+
+# Wait until each Profile named after $1 reports ready in a report newer than $1 (control-plane
+# milliseconds), for at most READY_TIMEOUT seconds. A degraded or failed report ends the wait at
+# once. On failure, HEALTH_FAILURE names the Profile and what it reported.
+wait_for_ready() {
+  ready_since=$1
+  shift
+  ready_deadline=$(($(date +%s) + READY_TIMEOUT))
+  ready_profile=$1
+  ready_status='it has not reported since the Agent restarted'
+  ready_shown=''
+  while :; do
+    if fetch_readiness "$TMP_DIR/readiness.json"; then
+      verdict=$(readiness_eval verdict "$TMP_DIR/readiness.json" "$ready_since" "$@") || verdict=''
+      case "$verdict" in
+        ready) return 0 ;;
+        'fail '*)
+          HEALTH_FAILURE=$(printf '%s' "$verdict" | cut -d ' ' -f 2-)
+          return 1
+          ;;
+        'wait '*)
+          ready_profile=$(printf '%s' "$verdict" | cut -d ' ' -f 2)
+          ready_status=$(printf '%s' "$verdict" | cut -d ' ' -f 3-)
+          ;;
+      esac
+    else
+      ready_status='the control plane did not answer GET /agents/readiness'
+    fi
+    if [ "$ready_profile $ready_status" != "$ready_shown" ]; then
+      printf '⏳ Waiting for Profile %s; %s.\n' "$ready_profile" "$ready_status"
+      ready_shown="$ready_profile $ready_status"
+    fi
+    ready_left=$((ready_deadline - $(date +%s)))
+    if [ "$ready_left" -le 0 ]; then
+      HEALTH_FAILURE="Profile $ready_profile did not report ready within $READY_TIMEOUT seconds; $ready_status"
+      return 1
+    fi
+    if [ "$ready_left" -gt 5 ]; then ready_left=5; fi
+    sleep "$ready_left"
+  done
+}
+
+# The new agent failed the update health check ($1 says how). Put the previous agent back, start
+# it, and wait for it to report the same Profiles ready. Always exits non-zero: the update did not
+# happen, and a script or operator running it must see that.
+roll_back_update() {
+  rollback_reason="Agent $VERSION failed the update health check: $1"
+  printf '❌ %s\n' "$rollback_reason" >&2
+  printf '⏳ Restoring agent %s.\n' "$PREVIOUS_VERSION"
+  stop_service
+  restore_previous || fail "$rollback_reason. No previous installation was available to restore."
+  write_meta "$PREVIOUS_VERSION"
+  rm -f "$RC_HOME/agent.ready"
+  rollback_since=$(control_plane_now)
+  start_service || fail "$rollback_reason. Restored $PREVIOUS_VERSION, but its service did not start."
+  wait_for_connection "$PREVIOUS_VERSION" ||
+    fail "$rollback_reason. Restored $PREVIOUS_VERSION, but it did not connect within 20 seconds; check ~/.runner-center/agent.log"
+  # shellcheck disable=SC2086 # READY_BEFORE holds one Profile name per line
+  if wait_for_ready "$rollback_since" $READY_BEFORE; then
+    fail "$rollback_reason. Rolled back to $PREVIOUS_VERSION, which reports every Profile ready again."
+  fi
+  fail "$rollback_reason. Rolled back to $PREVIOUS_VERSION, but it has not reported ready either: $HEALTH_FAILURE. Check rc logs."
 }
 
 write_meta() {
@@ -1660,6 +1823,18 @@ printf '✅ Installing agent dependencies from the release lockfile.\n'
   cd "$STAGE_DIR"
   "$NPM_BIN" ci --omit=dev --no-audit --no-fund
 )
+
+# An update is health-checked: the Profiles the control plane sees ready now must report ready
+# again from the new agent, or the update rolls back. A Worker with no ready Profile has nothing to
+# compare against and is updated without the check.
+if [ "$UPDATE" -eq 1 ]; then
+  fetch_readiness "$TMP_DIR/readiness-before.json" ||
+    fail "Could not read this Worker's Profile readiness from $SITE_URL/agents/readiness; the running agent was left in place"
+  READY_BEFORE=$(readiness_eval ready "$TMP_DIR/readiness-before.json")
+  if [ -n "$READY_BEFORE" ]; then
+    printf '✅ Ready before the update: %s.\n' "$(printf '%s\n' "$READY_BEFORE" | paste -sd ',' - | sed 's/,/, /g')"
+  fi
+fi
 
 printf '✅ Replacing the installed agent.\n'
 stop_service
@@ -1834,7 +2009,7 @@ is_running() {
 }
 
 usage() {
-  printf '%s\n' 'Usage: rc status | doctor | benchmark | logs [-f] | restart | stop | update [--version vX.Y.Z] | uninstall'
+  printf '%s\n' 'Usage: rc status | doctor | benchmark | logs [-f] | restart | stop | update [--version vX.Y.Z] [--sha256 HEX] [--ready-timeout SECONDS] | uninstall'
 }
 
 command='status'
@@ -2063,18 +2238,14 @@ if [ "$UPDATE" -eq 1 ] && [ "$SERVICE_KIND" = systemd ]; then
 fi
 : > "$LOG_FILE"
 rm -f "$RC_HOME/agent.ready"
+if [ -n "$READY_BEFORE" ]; then
+  # The old agent is stopped, so any report after this moment comes from the new one.
+  READINESS_SINCE=$(control_plane_now)
+fi
 start_service
 
 printf '✅ Started the EraInfra agent with %s.\n' "$SERVICE_KIND"
-CONNECTED=0
-for second in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if [ "$(cat "$RC_HOME/agent.ready" 2>/dev/null || true)" = "$VERSION" ]; then
-    CONNECTED=1
-    break
-  fi
-  sleep 1
-done
-if [ "$CONNECTED" -ne 1 ]; then
+if ! wait_for_connection "$VERSION"; then
   LAST_LOG=$(tail -n 1 "$LOG_FILE" 2>/dev/null || true)
   # Only an update can roll back: a fresh install has just registered a new
   # machine, and the preserved directory holds the previous machine's identity.
@@ -2089,9 +2260,17 @@ if [ "$CONNECTED" -ne 1 ]; then
   fail 'Agent did not connect within 20 seconds; check ~/.runner-center/agent.log'
 fi
 
-printf '✅ EraInfra %s is connected. Dashboard: %s\n' "$VERSION" "$SITE_URL"
-printf '⏳ Compatible Profiles are prewarming in the background; cold capacity is not schedulable.\n'
-printf '   Follow live progress with "rc logs -f" or in the dashboard readiness detail.\n'
+if [ -n "$READY_BEFORE" ]; then
+  READY_COUNT=$(printf '%s\n' "$READY_BEFORE" | wc -l | tr -d ' ')
+  printf '⏳ Waiting up to %s seconds for the %s Profile(s) that were ready before the update to report ready again (--ready-timeout).\n' "$READY_TIMEOUT" "$READY_COUNT"
+  # shellcheck disable=SC2086 # READY_BEFORE holds one Profile name per line
+  wait_for_ready "$READINESS_SINCE" $READY_BEFORE || roll_back_update "$HEALTH_FAILURE"
+  printf '✅ EraInfra %s is connected, and the %s Profile(s) that were ready before the update are ready again. Dashboard: %s\n' "$VERSION" "$READY_COUNT" "$SITE_URL"
+else
+  printf '✅ EraInfra %s is connected. Dashboard: %s\n' "$VERSION" "$SITE_URL"
+  printf '⏳ Compatible Profiles are prewarming in the background; cold capacity is not schedulable.\n'
+  printf '   Follow live progress with "rc logs -f" or in the dashboard readiness detail.\n'
+fi
 `;
 
 /**
