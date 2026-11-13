@@ -128,9 +128,20 @@ and no parked VM is free, the claim waits for the replacement, bounded by the
 attempt's boot timeout. It does not cold-boot, because placement counted the
 attempt against the pool's reservation, and a cold boot beside the replacement
 would put `N+1` VMs where `N` slots were reserved. If the pool has recorded a
-failure, such as a replacement that failed to boot, a parked VM that exited or
-a profile changed under a claim, the claim fails and so does the attempt. A
-broken pool is not hidden behind cold boots.
+failure, such as a replacement that failed to boot or a profile changed under a
+claim, the claim fails and so does the attempt. A broken pool is not hidden
+behind cold boots.
+
+The same rules cover three more cases. A parked VM that exits once is replaced
+like a torn-down one, and a claim waits for the replacement. If that
+replacement also exits before any attempt claims it, the pool keeps failing:
+claims fail until the next readiness check prepares the profile again, also
+after a later replacement parks. A successful claim ends the chain, so the next
+exit counts as a one-off again. Lowering `N` below the number of claimed VMs is a planned drain, not a
+failure. Every VM the pool may own is claimed, so a claim is a miss and
+cold-boots, and each finished attempt shrinks the pool toward `N`. After the
+runtime's graceful shutdown, every claim fails, so no attempt cold-boots while
+the runtime stops.
 
 The runtime owns pool state and teardown. Graceful shutdown destroys parked
 and claimed VMs. After an agent crash the runtime keeps the pool alive and a

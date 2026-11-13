@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 
@@ -12,7 +13,14 @@ import (
 	"github.com/Fanzzzd/erainfra/apps/runtime/internal/netpolicy"
 )
 
-var errWarmPoolMiss = errors.New("no parked microVM is available")
+var (
+	errWarmPoolMiss     = errors.New("no parked microVM is available")
+	errWarmPoolShutdown = errors.New("warm pool is shutting down")
+	// errParkedExitRepeated marks a pool whose replacement for an exited parked
+	// guest exited too. Booting one more guest does not show the pool works, so
+	// only Configure clears it.
+	errParkedExitRepeated = errors.New("the replacement for an exited parked microVM exited too")
+)
 
 type warmSlot interface {
 	Claim(context.Context, executor.Spec) (executor.Lease, error)
@@ -28,6 +36,37 @@ type warmPoolState struct {
 	claimed  map[uint64]warmSlot
 	attempts map[uint64]string
 	lastErr  error
+	// exitsToReplace counts parked guests that exited and have no replacement
+	// yet. replacesExit holds the parked replacements for those guests until one
+	// is claimed. A replacement that exits before its claim means the pool keeps
+	// failing, not a one-off exit.
+	exitsToReplace int
+	replacesExit   map[uint64]struct{}
+}
+
+func newWarmPoolState(profile executor.Profile) *warmPoolState {
+	return &warmPoolState{
+		profile:      profile,
+		idle:         make(map[uint64]warmSlot),
+		claimed:      make(map[uint64]warmSlot),
+		attempts:     make(map[uint64]string),
+		replacesExit: make(map[uint64]struct{}),
+	}
+}
+
+// forgetExits drops the record of exited parked guests, for a pool whose parked
+// guests were all destroyed on purpose.
+func (s *warmPoolState) forgetExits() {
+	s.exitsToReplace = 0
+	s.replacesExit = make(map[uint64]struct{})
+}
+
+// booted clears a failure that a successfully booted guest repairs. A
+// replacement that exited too stays recorded until Configure.
+func (s *warmPoolState) booted() {
+	if !errors.Is(s.lastErr, errParkedExitRepeated) {
+		s.lastErr = nil
+	}
 }
 
 // warmPoolManager owns resident VMs independently of the agent process. Its
@@ -77,17 +116,12 @@ func (p *warmPoolManager) Configure(
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return executor.WarmPoolStatus{}, errors.New("warm pool is shutting down")
+		return executor.WarmPoolStatus{}, errWarmPoolShutdown
 	}
 	state := p.profiles[profile.Name]
 	var obsolete []warmSlot
 	if state == nil {
-		state = &warmPoolState{
-			profile:  profile,
-			idle:     make(map[uint64]warmSlot),
-			claimed:  make(map[uint64]warmSlot),
-			attempts: make(map[uint64]string),
-		}
+		state = newWarmPoolState(profile)
 		p.profiles[profile.Name] = state
 	} else if !sameWarmProfile(state.profile, profile) {
 		if len(state.claimed) > 0 {
@@ -101,6 +135,7 @@ func (p *warmPoolManager) Configure(
 			obsolete = append(obsolete, slot)
 		}
 		state.idle = make(map[uint64]warmSlot)
+		state.forgetExits()
 		state.profile = profile
 	}
 	state.profile.WarmPool = profile.WarmPool
@@ -159,7 +194,7 @@ func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) err
 		owned := len(state.idle) + len(state.claimed)
 		target := state.profile.WarmPool
 		if owned == target {
-			state.lastErr = nil
+			state.booted()
 			p.mu.Unlock()
 			return nil
 		}
@@ -169,17 +204,15 @@ func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) err
 			for id, slot = range state.idle {
 				break
 			}
+			// Every guest is claimed: a target lowered below the claimed count.
+			// That is a planned drain. Each release reconciles again and shrinks
+			// the pool toward the target, and meanwhile a claim is a miss.
 			if slot == nil {
-				state.lastErr = fmt.Errorf(
-					"%d claimed microVMs exceed the reduced warm pool target %d",
-					len(state.claimed), target,
-				)
-				p.changedLocked()
-				err := state.lastErr
 				p.mu.Unlock()
-				return err
+				return nil
 			}
 			delete(state.idle, id)
+			delete(state.replacesExit, id)
 			p.mu.Unlock()
 			if err := slot.Close(ctx); err != nil {
 				return fmt.Errorf("drain parked microVM: %w", err)
@@ -216,7 +249,11 @@ func (p *warmPoolManager) reconcile(ctx context.Context, profileName string) err
 			continue
 		}
 		state.idle[id] = slot
-		state.lastErr = nil
+		if state.exitsToReplace > 0 {
+			state.exitsToReplace--
+			state.replacesExit[id] = struct{}{}
+		}
+		state.booted()
 		p.changedLocked()
 		p.mu.Unlock()
 		go p.watchIdle(profileName, id, slot)
@@ -238,7 +275,20 @@ func (p *warmPoolManager) watchIdle(profileName string, id uint64, slot warmSlot
 	if err == nil {
 		err = errors.New("parked microVM exited")
 	}
-	state.lastErr = err
+	// A parked guest that exits once is replaced like a torn-down one, and
+	// claims wait for the replacement. If that replacement exits too before
+	// any claim, the pool keeps failing and claims fail the Attempt.
+	_, repeated := state.replacesExit[id]
+	delete(state.replacesExit, id)
+	if len(state.idle)+len(state.claimed) < state.profile.WarmPool {
+		state.exitsToReplace++
+	}
+	if repeated {
+		state.lastErr = fmt.Errorf("%w: %w", errParkedExitRepeated, err)
+	} else {
+		slog.Warn("a parked microVM exited; booting its replacement",
+			"profile", profileName, "error", err)
+	}
 	p.changedLocked()
 	p.mu.Unlock()
 	go func() { _ = p.reconcile(context.Background(), profileName) }()
@@ -249,15 +299,17 @@ func (p *warmPoolManager) watchIdle(profileName string, id uint64, slot warmSlot
 //
 //   - errWarmPoolMiss: the Profile has no pool, or every guest the pool owns is
 //     already claimed. That is demand above the target, and Start cold-boots.
-//   - any other error: the pool is broken (a guest failed to boot or exited
-//     while parked) or the Attempt does not match it. The Attempt fails, so a
-//     broken pool is not hidden behind cold boots.
+//   - any other error: the pool is broken (a guest failed to boot, or the
+//     replacement for an exited parked guest exited too), the runtime is
+//     shutting down, or the Attempt does not match the pool. The Attempt fails,
+//     so a broken pool is not hidden behind cold boots.
 //
-// While the pool boots the replacement for a torn-down guest, it owns fewer
-// guests than its target. A claim within the target then waits for that
-// replacement instead of failing or cold-booting: the slot is the pool's, and a
-// cold boot beside the replacement would put one guest more on the host than
-// placement reserved. ctx, the Attempt's boot deadline, bounds the wait.
+// While the pool boots the replacement for a torn-down guest or for a parked
+// guest that exited once, it owns fewer guests than its target. A claim within
+// the target then waits for that replacement instead of failing or
+// cold-booting: the slot is the pool's, and a cold boot beside the replacement
+// would put one guest more on the host than placement reserved. ctx, the
+// Attempt's boot deadline, bounds the wait.
 func (p *warmPoolManager) Claim(
 	ctx context.Context,
 	spec executor.Spec,
@@ -267,6 +319,12 @@ func (p *warmPoolManager) Claim(
 	var id uint64
 	var slot warmSlot
 	for {
+		// Shutdown destroyed every pool guest; a cold boot now would start a
+		// guest while the runtime stops.
+		if p.closed {
+			p.mu.Unlock()
+			return nil, errWarmPoolShutdown
+		}
 		state = p.profiles[spec.Profile]
 		if state == nil || state.profile.WarmPool == 0 {
 			p.mu.Unlock()
@@ -298,11 +356,12 @@ func (p *warmPoolManager) Claim(
 		case <-ctx.Done():
 			return nil, fmt.Errorf("wait for the warm pool to replace a torn-down microVM: %w", ctx.Err())
 		case <-p.ctx.Done():
-			return nil, errors.New("warm pool is shutting down")
+			return nil, errWarmPoolShutdown
 		}
 		p.mu.Lock()
 	}
 	delete(state.idle, id)
+	delete(state.replacesExit, id)
 	state.claimed[id] = slot
 	state.attempts[id] = spec.AttemptID
 	p.mu.Unlock()
@@ -447,6 +506,7 @@ func (p *warmPoolManager) Remove(ctx context.Context, profileName string) error 
 		slots = append(slots, slot)
 	}
 	state.idle = make(map[uint64]warmSlot)
+	state.forgetExits()
 	if len(state.claimed) == 0 {
 		delete(p.profiles, profileName)
 	}
