@@ -124,6 +124,27 @@ remote() {
     "bash -c \"\$(printf %s $encoded | base64 -d)\" release-rehearsal $(printf '%q ' "$@")"
 }
 
+# The release workflow publishes a tag only when its commit carries a successful
+# erainfra/release-rehearsal status, and this is the only writer of it. Only a full rehearsal,
+# with a real job, counts; a failed one overwrites an earlier success on the same commit.
+post_status() { # result elapsed
+  local state description repo
+  [ -n "${COMMIT:-}" ] || return 0
+  if [ "$1" = PASS ] && [ -z "$JOB_REPO" ]; then
+    say "No erainfra/release-rehearsal status: the job step needs --job-repo."
+    return 0
+  fi
+  state=failure description="FAIL on $HOST at step $STEP_NAME"
+  [ "$1" = PASS ] && state=success description="PASS on $HOST in $2, job in $JOB_REPO"
+  repo=$(cd "$REPO_ROOT" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || repo=''
+  if [ -n "$repo" ] && gh api -X POST "repos/$repo/statuses/$COMMIT" -f state="$state" \
+    -f context=erainfra/release-rehearsal -f description="$description" --silent 2>/dev/null; then
+    say "Posted erainfra/release-rehearsal=$state on $repo@${COMMIT:0:7}."
+  else
+    say "Could not post erainfra/release-rehearsal on ${repo:-this repository}@${COMMIT:0:7}; the release workflow will refuse this commit."
+  fi
+}
+
 cleanup() {
   local status=$?
   set +e
@@ -142,6 +163,7 @@ cleanup() {
   fi
   [ -n "$RESULT" ] || RESULT=PASS
   say "Result: $RESULT in $(elapsed $((SECONDS - STARTED))). Log: $LOG"
+  post_status "$RESULT" "$(elapsed $((SECONDS - STARTED)))"
   [ "$RESULT" = PASS ] || status=1
   exit "$status"
 }

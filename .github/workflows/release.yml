@@ -15,6 +15,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A tag publishes only a commit that passed scripts/release-rehearsal on a staging Worker,
+  # job included. The script posts erainfra/release-rehearsal on the commit; docs/releases.md
+  # has the procedure. rc.22 passed every CI check and still stopped ubuntu0 for 55 minutes.
+  rehearsal:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: read
+    steps:
+      - name: Require a passing release rehearsal for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+            --jq '[.statuses[] | select(.context == "erainfra/release-rehearsal")][0] // empty | "\(.state)\t\(.description)"')
+          printf 'erainfra/release-rehearsal on %s: %s\n' "$GITHUB_SHA" "${state:-absent}"
+          if [ "${state%%$'\t'*}" != success ]; then
+            echo "::error::$GITHUB_SHA has no passing erainfra/release-rehearsal status. Run scripts/release-rehearsal --candidate $GITHUB_SHA --job-repo <owner>/<repo> before tagging (docs/releases.md)."
+            exit 1
+          fi
+
   # erainfra-mesh (ADR 0016) is Rust, and two of its five targets need their own OS: Apple's SDK
   # cannot be shipped to a Linux runner, and MSVC only runs on Windows. The Linux musl targets
   # cross-compile with cargo-zigbuild (see packages/release/src/mesh-assets.ts for why). Each runner
@@ -99,7 +120,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: mesh
+    needs: [rehearsal, mesh]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and upload its assets

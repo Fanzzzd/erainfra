@@ -139,21 +139,26 @@ Known differences from a production Worker:
   198.18.0.0/15, which the job network policy denies. The rule would also take the host resolver
   from audit and allowlist guests, so the staging Profiles are public.
 
-### Make it a required step before tagging
+### Required before tagging
 
-Run it on the release commit, after the pins are filled and before `git tag`:
+Run it on the exact commit you will tag, which is the release pull request's squash merge on
+`main`, after the pins are filled and before `git tag`:
 
 ```bash
-git switch release/v<version>
-scripts/release-rehearsal --candidate --job-repo <owner>/<test repository>
-git tag v<version> && git push origin v<version>     # only after "Result: PASS"
+sha=$(git rev-parse origin/main)          # the release merge commit
+scripts/release-rehearsal --candidate "$sha" --job-repo <owner>/<test repository>
+git tag v<version> "$sha" && git push origin v<version>     # only after "Result: PASS"
 ```
 
 The candidate build is byte-identical to what the tag publishes, so the summary must also say
 `committed pin matches build: yes`. A FAIL blocks the tag; fix the cause and make a new release
-commit. To enforce it rather than trust it, run the rehearsal from a self-hosted GitHub Actions
-runner on the Worker host in a `workflow_dispatch` workflow on the release branch, and make the
-release workflow refuse a tag whose commit has no successful rehearsal run.
+commit.
+
+The release workflow enforces this. At the end of each run the script posts the commit status
+`erainfra/release-rehearsal` on the rehearsed commit: `success` only for a PASS that ran the job
+step, `failure` for any FAIL, which replaces an earlier success. The workflow's `rehearsal` job
+reads that status for the tagged commit and stops the release before anything is published unless
+it is `success`. Posting the status needs `gh` with write access to this repository.
 
 Step 5 needs a repository the release manager owns and may add a workflow to, and `gh auth
 token` with the `repo` scope, which the controller uses to create the staging scale set.
