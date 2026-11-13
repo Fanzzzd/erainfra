@@ -83,6 +83,24 @@
       "env": { "browser": true }
     },
     {
+      // Copies of @era registry items (apps/dashboard/components.json). The registry lints them
+      // under its own config, which turns these rules off and adds jsx-a11y, so a
+      // `shadcn add --overwrite` lands without local edits.
+      "files": [
+        "apps/dashboard/src/components/ui/**",
+        "apps/dashboard/src/components/{app-shell,code-block,confirm-dialog,copy-button,data-table,description-list,empty-state,page-header,product-mark,stat,status}.tsx",
+        "apps/dashboard/src/hooks/use-mobile.ts",
+        "apps/dashboard/src/lib/era-root.tsx"
+      ],
+      "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y"],
+      "rules": {
+        "jsx-a11y/label-has-associated-control": "error",
+        "no-shadow": "off",
+        "react/no-object-type-as-default-prop": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
       "files": [
         ".github/probes/**",
         "apps/action-runner-agent/**",

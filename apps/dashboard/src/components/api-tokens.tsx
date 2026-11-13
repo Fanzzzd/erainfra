@@ -1,32 +1,39 @@
 import { api } from "@erainfra/backend/api";
-import type { Id } from "@erainfra/backend/dataModel";
 import { useMutation, useQuery } from "convex/react";
-import { Check, Clipboard, KeyRound } from "lucide-react";
-import { useId, useState } from "react";
+import { KeyRoundIcon } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
 
-import { EmptyState } from "@/components/empty-state";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { CodeBlock } from "@/components/code-block";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { DataTable, createDataTableColumns } from "@/components/data-table";
+import {
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { confirmDestructive } from "@/components/ui/confirm";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 
 type Scope = "read" | "admin" | "metrics";
+type Token = NonNullable<(typeof api.apiTokens.list)["_returnType"]>[number];
 
 const SCOPES: { value: Scope; label: string; description: string }[] = [
   {
@@ -42,7 +49,89 @@ const SCOPES: { value: Scope; label: string; description: string }[] = [
   },
 ];
 
+const SCOPE_ITEMS = SCOPES.map((option) => ({ value: option.value, label: option.label }));
+
 const SCOPE_BADGE = { read: "secondary", admin: "warning", metrics: "info" } as const;
+
+const column = createDataTableColumns<Token>();
+
+function tokenColumns(now: number) {
+  return column.columns([
+    column.accessor("name", {
+      header: "Name",
+      cell: (cell) => <span className="font-medium">{cell.getValue()}</span>,
+    }),
+    column.accessor("scope", {
+      header: "Scope",
+      cell: (cell) => (
+        <Badge variant={SCOPE_BADGE[cell.getValue()]} className="capitalize">
+          {cell.getValue()}
+        </Badge>
+      ),
+    }),
+    column.accessor("hint", {
+      header: "Token",
+      enableSorting: false,
+      cell: (cell) => (
+        <code className="font-mono text-xs text-muted-foreground">{cell.getValue()}…</code>
+      ),
+    }),
+    column.accessor("createdAt", {
+      header: "Created",
+      cell: (cell) => {
+        const token = cell.row.original;
+        return (
+          <span className="text-muted-foreground" title={formatAbsoluteTime(token.createdAt)}>
+            {formatRelativeTime(token.createdAt, now)}
+            {token.createdByEmail === undefined ? "" : ` by ${token.createdByEmail}`}
+          </span>
+        );
+      },
+    }),
+    column.accessor((token) => token.lastUsedAt ?? 0, {
+      id: "lastUsedAt",
+      header: "Last used",
+      cell: (cell) => {
+        const lastUsedAt = cell.row.original.lastUsedAt;
+        return (
+          <span className="text-muted-foreground">
+            {lastUsedAt === undefined ? "Never" : formatRelativeTime(lastUsedAt, now)}
+          </span>
+        );
+      },
+    }),
+    column.accessor((token) => token.revokedAt ?? 0, {
+      id: "revokedAt",
+      header: "State",
+      cell: (cell) => {
+        const revokedAt = cell.row.original.revokedAt;
+        return revokedAt === undefined ? (
+          <Badge variant="success">Active</Badge>
+        ) : (
+          <Badge variant="neutral" title={formatAbsoluteTime(revokedAt)}>
+            Revoked {formatRelativeTime(revokedAt, now)}
+          </Badge>
+        );
+      },
+    }),
+  ]);
+}
+
+/** The row menu for a token. Module-level, so the menu is not a new component on each render. */
+function tokenActions(revoke: (token: Token) => void) {
+  return {
+    label: (token: Token) => `Actions for ${token.name}`,
+    items: (token: Token) => (
+      <DropdownMenuItem
+        variant="destructive"
+        disabled={token.revokedAt !== undefined}
+        onClick={() => revoke(token)}
+      >
+        Revoke token
+      </DropdownMenuItem>
+    ),
+  };
+}
 
 /**
  * Every token the control plane accepts, whatever it is for: the `erainfra` CLI and scripts on
@@ -56,15 +145,25 @@ export function ApiTokens() {
   const create = useMutation(api.apiTokens.create);
   const revoke = useMutation(api.apiTokens.revoke);
   const now = useNow(30_000);
-  const nameId = useId();
   const [name, setName] = useState("");
   const [scope, setScope] = useState<Scope>("read");
   const [created, setCreated] = useState<{ token: string; scope: Scope }>();
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // The target outlives the open state, so the dialog keeps its text while it closes.
+  const [revoking, setRevoking] = useState<Token>();
+  const [revokeOpen, setRevokeOpen] = useState(false);
+  const columns = useMemo(() => tokenColumns(now), [now]);
+  const rowActions = useMemo(
+    () =>
+      tokenActions((token) => {
+        setRevoking(token);
+        setRevokeOpen(true);
+      }),
+    [],
+  );
 
-  async function submit(event: React.FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     setError(undefined);
     setPending(true);
@@ -79,18 +178,15 @@ export function ApiTokens() {
     }
   }
 
-  async function revokeToken(tokenId: Id<"apiTokens">, tokenName: string) {
-    const confirmed = await confirmDestructive({
-      title: `Revoke "${tokenName}"?`,
-      description: "Anything using it stops working immediately.",
-      confirmLabel: "Revoke",
-    });
-    if (!confirmed) return;
+  async function revokeToken(token: Token) {
     try {
-      await revoke({ tokenId });
+      await revoke({ tokenId: token._id });
     } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : "Could not revoke the token");
+      throw new Error(caught instanceof Error ? caught.message : "Could not revoke the token", {
+        cause: caught,
+      });
     }
+    toast.success(`Revoked ${token.name}`);
   }
 
   // A CLI token is most useful as the login command; a metrics token goes into a file.
@@ -101,84 +197,74 @@ export function ApiTokens() {
         ? created.token
         : `erainfra auth login --url ${convexSiteUrl()} --token ${created.token}`;
 
-  async function copy() {
-    if (shown === undefined) return;
-    try {
-      await navigator.clipboard.writeText(shown);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    } catch {
-      toast.error("Clipboard access was blocked", {
-        description: "Select the text above and copy it manually.",
-      });
-    }
-  }
+  const scopeDescription = SCOPES.find((option) => option.value === scope)?.description;
 
   return (
     <>
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle>Create a token</CardTitle>
+      <Card className="gap-0 py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle render={<h2 />}>Create a token</CardTitle>
           <CardDescription>
-            Sent as <code className="font-mono">Authorization: Bearer</code>. Several can be live at
-            once, so rotate by creating the replacement before revoking the old one.
+            Sent as <code className="font-mono text-foreground">Authorization: Bearer</code>.
+            Several can be live at once, so rotate by creating the replacement before revoking the
+            old one.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 py-4 text-xs text-muted-foreground">
-          <form className="space-y-3" onSubmit={(event) => void submit(event)}>
-            <div className="grid max-w-sm gap-1.5">
-              <Label htmlFor={nameId}>Name</Label>
+        <CardContent className="flex flex-col gap-4 py-4">
+          <form
+            className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-start"
+            onSubmit={(event) => void submit(event)}
+          >
+            <Field>
+              <FieldLabel>Name</FieldLabel>
               <Input
-                id={nameId}
                 placeholder="laptop, prometheus, nightly-report"
                 value={name}
                 maxLength={100}
                 required
                 onChange={(event) => setName(event.target.value)}
               />
-            </div>
-            <fieldset className="space-y-1.5">
-              <legend className="mb-1.5 text-sm font-medium text-secondary-foreground">
-                Scope
-              </legend>
-              {SCOPES.map((option) => (
-                <label key={option.value} className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="api-token-scope"
-                    value={option.value}
-                    checked={scope === option.value}
-                    onChange={() => setScope(option.value)}
-                  />
-                  <span className="text-secondary-foreground">{option.label}</span>
-                  <span>{option.description}</span>
-                </label>
-              ))}
-            </fieldset>
-            <Button type="submit" disabled={pending || name.trim().length === 0}>
-              {pending ? "Please wait…" : "Create token"}
-              {!pending && <KeyRound />}
+            </Field>
+            <Field>
+              <FieldLabel>Scope</FieldLabel>
+              <Select
+                items={SCOPE_ITEMS}
+                value={scope}
+                onValueChange={(value) => {
+                  if (value !== null) setScope(value);
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SCOPES.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldDescription>For {scopeDescription}.</FieldDescription>
+            </Field>
+            <Button
+              type="submit"
+              className="sm:mt-[1.375rem]"
+              disabled={pending || name.trim().length === 0}
+            >
+              {pending ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <KeyRoundIcon data-icon="inline-start" />
+              )}
+              Create token
             </Button>
           </form>
 
           {shown !== undefined && (
-            <div className="space-y-2">
-              <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-                <code className="block break-all font-mono text-xs leading-5 text-secondary-foreground">
-                  {shown}
-                </code>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-1.5 top-1.5 size-8"
-                  aria-label="Copy"
-                  onClick={() => void copy()}
-                >
-                  {copied ? <Check /> : <Clipboard />}
-                </Button>
-              </div>
-              <p className="leading-5">
+            <div className="flex flex-col gap-2">
+              <CodeBlock code={shown} title={`New ${created?.scope ?? ""} token`} />
+              <p className="text-xs text-muted-foreground">
                 Copy it now. Only a digest is stored, so this {created?.scope} token cannot be shown
                 again.
                 {created?.scope === "metrics" &&
@@ -195,81 +281,43 @@ export function ApiTokens() {
         </CardContent>
       </Card>
 
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b">
-          <CardTitle>Tokens</CardTitle>
+      <Card className="gap-0 py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle render={<h2 />}>Tokens</CardTitle>
           <CardDescription>
             Last use is recorded to five minutes. A revoked token is refused on its next request.
           </CardDescription>
         </CardHeader>
-        <Table className="min-w-[760px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[180px]">Name</TableHead>
-              <TableHead className="w-[90px]">Scope</TableHead>
-              <TableHead className="w-[170px]">Token</TableHead>
-              <TableHead className="w-[200px]">Created</TableHead>
-              <TableHead className="w-[120px]">Last used</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {tokens === undefined ? (
-              <TableRowsSkeleton columns={6} rows={1} />
-            ) : tokens.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="p-0">
-                  <EmptyState
-                    icon={KeyRound}
-                    title="No tokens"
-                    description="/api/v1 and /metrics refuse every request until a token exists."
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              tokens.map((token) => (
-                <TableRow key={token._id}>
-                  <TableCell className="text-sm text-secondary-foreground">{token.name}</TableCell>
-                  <TableCell>
-                    <Badge variant={SCOPE_BADGE[token.scope]}>{token.scope}</Badge>
-                  </TableCell>
-                  <TableCell className="font-mono text-[11px] text-muted-foreground">
-                    {token.hint}…
-                  </TableCell>
-                  <TableCell
-                    className="text-xs text-muted-foreground"
-                    title={formatAbsoluteTime(token.createdAt)}
-                  >
-                    {formatRelativeTime(token.createdAt, now)}
-                    {token.createdByEmail === undefined ? "" : ` by ${token.createdByEmail}`}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {token.lastUsedAt === undefined
-                      ? "Never"
-                      : formatRelativeTime(token.lastUsedAt, now)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {token.revokedAt === undefined ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void revokeToken(token._id, token.name)}
-                      >
-                        Revoke
-                      </Button>
-                    ) : (
-                      <Badge variant="outline" title={formatAbsoluteTime(token.revokedAt)}>
-                        revoked {formatRelativeTime(token.revokedAt, now)}
-                      </Badge>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+        <DataTable
+          aria-label="API tokens"
+          columns={columns}
+          data={tokens ?? []}
+          loading={tokens === undefined}
+          loadingRows={2}
+          getRowId={(token) => token._id}
+          empty={
+            <EmptyState>
+              <EmptyStateMedia>
+                <KeyRoundIcon />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No tokens</EmptyStateTitle>
+              <EmptyStateDescription>
+                /api/v1 and /metrics refuse every request until a token exists.
+              </EmptyStateDescription>
+            </EmptyState>
+          }
+          rowActions={rowActions}
+        />
       </Card>
+
+      <ConfirmDialog
+        open={revokeOpen}
+        onOpenChange={setRevokeOpen}
+        title={`Revoke "${revoking?.name ?? ""}"?`}
+        description="Anything using it stops working immediately."
+        confirmLabel="Revoke token"
+        onConfirm={() => (revoking === undefined ? undefined : revokeToken(revoking))}
+      />
     </>
   );
 }

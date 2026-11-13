@@ -3,15 +3,22 @@ import type { Id } from "@erainfra/backend/dataModel";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
-import { BellRing, Check, Clipboard, KeyRound, Plus, Send, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { BellRingIcon, KeyRoundIcon, PlusIcon, SendIcon } from "lucide-react";
+import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from "react";
 
 import { ApiTokens } from "@/components/api-tokens";
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { StatusDot, type Tone } from "@/components/status";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CodeBlock } from "@/components/code-block";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { DataTable, createDataTableColumns } from "@/components/data-table";
+import {
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import { PageHeader, PageHeaderDescription, PageHeaderTitle } from "@/components/page-header";
+import { Status, type StatusState } from "@/components/status";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +29,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { confirmDestructive } from "@/components/ui/confirm";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -32,16 +39,21 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input, inputClass } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
@@ -51,8 +63,10 @@ import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
 type Overview = (typeof api.alerts.overview)["_returnType"];
+type Incident = Overview["incidents"][number];
 type Rule = Overview["rules"][number];
 type Destination = Overview["destinations"][number];
+type Delivery = NonNullable<Destination["lastDelivery"]>;
 type Condition = Rule["condition"];
 type ConditionKind = Condition["kind"];
 
@@ -70,30 +84,56 @@ async function runOrToast(action: () => Promise<unknown>, failure: string) {
   }
 }
 
+// Runs a confirmed action. A failure rejects with a readable message, which the confirm dialog
+// shows while it stays open.
+async function runOrReject(action: () => Promise<unknown>, failure: string) {
+  try {
+    await action();
+  } catch (caught) {
+    throw new Error(errorMessage(caught, failure), { cause: caught });
+  }
+}
+
+/** A dialog or confirmation opened from a row menu. The row outlives `open`, so the text stays while it closes. */
+function useRowDialog<T>() {
+  const [row, setRow] = useState<T>();
+  const [open, setOpen] = useState(false);
+  const show = useCallback((next: T) => {
+    setRow(next);
+    setOpen(true);
+  }, []);
+  return { row, open, setOpen, show };
+}
+
 function SettingsPage() {
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Settings"
-        description="Alert rules and where they notify, the Prometheus endpoint, and the API tokens the CLI and Prometheus authenticate with."
-      />
-      <Tabs defaultValue="alerts">
-        <TabsList>
-          <TabsTrigger value="alerts">Alerts</TabsTrigger>
-          <TabsTrigger value="metrics">Metrics</TabsTrigger>
-          <TabsTrigger value="tokens">API tokens</TabsTrigger>
-        </TabsList>
-        <TabsContent value="alerts" className="mt-6 space-y-6">
+    <>
+      <PageHeader>
+        <PageHeaderTitle>Settings</PageHeaderTitle>
+        <PageHeaderDescription>
+          Alert rules and where they notify, the Prometheus endpoint, and the API tokens the CLI and
+          Prometheus authenticate with.
+        </PageHeaderDescription>
+      </PageHeader>
+      <Tabs defaultValue="alerts" className="gap-6">
+        <div className="overflow-x-auto border-b">
+          <TabsList variant="line" aria-label="Settings sections">
+            <TabsTrigger value="alerts">Alerts</TabsTrigger>
+            <TabsTrigger value="metrics">Metrics</TabsTrigger>
+            <TabsTrigger value="tokens">API tokens</TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="alerts" className="flex flex-col gap-6">
           <AlertsSettings />
         </TabsContent>
-        <TabsContent value="metrics" className="mt-6 space-y-6">
+        <TabsContent value="metrics" className="flex flex-col gap-6">
           <MetricsSettings />
         </TabsContent>
-        <TabsContent value="tokens" className="mt-6 space-y-6">
+        <TabsContent value="tokens" className="flex flex-col gap-6">
           <ApiTokens />
         </TabsContent>
       </Tabs>
-    </div>
+    </>
   );
 }
 
@@ -111,84 +151,242 @@ function AlertsSettings() {
   );
 }
 
-const INCIDENT_TONE: Record<Overview["incidents"][number]["status"], Tone> = {
-  firing: "destructive",
-  pending: "warning",
-  resolved: "success",
+// Incident and delivery states the registry's state map lacks borrow the closest registry state
+// and keep their own word.
+const INCIDENT_STATE: Record<Incident["status"], { state: StatusState; label: string }> = {
+  firing: { state: "unhealthy", label: "Firing" },
+  pending: { state: "degraded", label: "Pending" },
+  resolved: { state: "healthy", label: "Resolved" },
 };
+
+const DELIVERY_STATE: Record<Delivery["status"], { state: StatusState; label: string }> = {
+  delivered: { state: "succeeded", label: "Delivered" },
+  failed: { state: "failed", label: "Failed" },
+  pending: { state: "preparing", label: "Pending" },
+};
+
+function SectionHeader({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <CardHeader className="border-b py-4">
+      <CardTitle render={<h2 />}>{title}</CardTitle>
+      <CardDescription>{description}</CardDescription>
+      {action === undefined ? null : <CardAction>{action}</CardAction>}
+    </CardHeader>
+  );
+}
+
+function Empty({ icon, title, children }: { icon: ReactNode; title: string; children: string }) {
+  return (
+    <EmptyState>
+      <EmptyStateMedia>{icon}</EmptyStateMedia>
+      <EmptyStateTitle>{title}</EmptyStateTitle>
+      <EmptyStateDescription>{children}</EmptyStateDescription>
+    </EmptyState>
+  );
+}
+
+const incidentColumn = createDataTableColumns<Incident>();
+
+function incidentColumns(now: number) {
+  return incidentColumn.columns([
+    incidentColumn.accessor("status", {
+      header: "State",
+      enableSorting: false,
+      cell: (cell) => {
+        const incident = cell.row.original;
+        const view = INCIDENT_STATE[incident.status];
+        return (
+          <div>
+            <Status state={view.state} className="font-medium">
+              {view.label}
+            </Status>
+            {incident.status === "firing" && !incident.notified && (
+              <p className="mt-1 text-xs text-muted-foreground">Not notified</p>
+            )}
+          </div>
+        );
+      },
+    }),
+    incidentColumn.accessor("ruleName", {
+      header: "Rule and subject",
+      cell: (cell) => (
+        <div>
+          <div className="font-medium">{cell.getValue()}</div>
+          <div className="font-mono text-xs text-muted-foreground">{cell.row.original.subject}</div>
+        </div>
+      ),
+    }),
+    incidentColumn.accessor("summary", {
+      header: "Summary",
+      enableSorting: false,
+      meta: { cellClassName: "min-w-64 whitespace-normal text-muted-foreground" },
+    }),
+    incidentColumn.accessor("since", {
+      header: "Since",
+      cell: (cell) => {
+        const incident = cell.row.original;
+        return (
+          <div className="text-muted-foreground">
+            <span title={formatAbsoluteTime(incident.since)}>
+              {formatRelativeTime(incident.since, now)}
+            </span>
+            {incident.resolvedAt !== undefined && (
+              <p className="text-xs">resolved {formatRelativeTime(incident.resolvedAt, now)}</p>
+            )}
+          </div>
+        );
+      },
+    }),
+  ]);
+}
 
 function IncidentsCard({ incidents }: { incidents: Overview["incidents"] | undefined }) {
   const now = useNow();
+  const columns = useMemo(() => incidentColumns(now), [now]);
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="border-b">
-        <CardTitle>Incidents</CardTitle>
-        <CardDescription>
-          Firing and pending incidents, then the most recent resolved ones. Rules are evaluated
-          every minute.
-        </CardDescription>
-      </CardHeader>
-      <Table className="min-w-[900px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[120px]">State</TableHead>
-            <TableHead className="w-[200px]">Rule / subject</TableHead>
-            <TableHead>Summary</TableHead>
-            <TableHead className="w-[170px]">Since</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {incidents === undefined ? (
-            <TableRowsSkeleton columns={4} rows={2} />
-          ) : incidents.length === 0 ? (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={4} className="p-0">
-                <EmptyState
-                  icon={BellRing}
-                  title="No incidents"
-                  description="When a rule's condition holds, its incident shows here."
-                />
-              </TableCell>
-            </TableRow>
-          ) : (
-            incidents.map((incident) => (
-              <TableRow key={incident._id}>
-                <TableCell>
-                  <span className="flex items-center gap-2 text-xs capitalize">
-                    <StatusDot
-                      tone={INCIDENT_TONE[incident.status]}
-                      live={incident.status === "firing"}
-                    />
-                    {incident.status}
-                  </span>
-                  {incident.status === "firing" && !incident.notified && (
-                    <p className="mt-1 text-[10px] text-subtle-foreground">not notified</p>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <p className="text-sm text-secondary-foreground">{incident.ruleName}</p>
-                  <p className="font-mono text-[11px] text-muted-foreground">{incident.subject}</p>
-                </TableCell>
-                <TableCell className="whitespace-normal text-xs leading-5 text-muted-foreground">
-                  {incident.summary}
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  <span title={formatAbsoluteTime(incident.since)}>
-                    {formatRelativeTime(incident.since, now)}
-                  </span>
-                  {incident.resolvedAt !== undefined && (
-                    <p className="text-[10px] text-subtle-foreground">
-                      resolved {formatRelativeTime(incident.resolvedAt, now)}
-                    </p>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))
-          )}
-        </TableBody>
-      </Table>
+    <Card className="gap-0 py-0">
+      <SectionHeader
+        title="Incidents"
+        description="Firing and pending incidents, then the most recent resolved ones. Rules are evaluated every minute."
+      />
+      <DataTable
+        aria-label="Incidents"
+        columns={columns}
+        data={incidents ?? []}
+        loading={incidents === undefined}
+        loadingRows={2}
+        getRowId={(incident) => incident._id}
+        empty={
+          <Empty icon={<BellRingIcon />} title="No incidents">
+            When a rule's condition holds, its incident shows here.
+          </Empty>
+        }
+      />
     </Card>
   );
+}
+
+const ruleColumn = createDataTableColumns<Rule>();
+
+function ruleColumns(now: number, destinationName: Map<Id<"alertDestinations">, string>) {
+  return ruleColumn.columns([
+    ruleColumn.accessor("name", {
+      header: "Rule",
+      cell: (cell) => (
+        <div className="min-w-48">
+          <div className="font-medium">{cell.getValue()}</div>
+          <div className="text-xs whitespace-normal text-muted-foreground">
+            {cell.row.original.description}
+          </div>
+        </div>
+      ),
+    }),
+    ruleColumn.accessor((rule) => rule.profile ?? "", {
+      id: "profile",
+      header: "Scope",
+      cell: (cell) => (
+        <span className="text-muted-foreground">
+          {cell.row.original.profile ?? "Every Profile"}
+        </span>
+      ),
+    }),
+    ruleColumn.display({
+      id: "timing",
+      header: "Timing",
+      cell: (cell) => (
+        <div className="text-muted-foreground">
+          <div>pending {cell.row.original.forMinutes}m</div>
+          <div>cooldown {cell.row.original.cooldownMinutes}m</div>
+        </div>
+      ),
+    }),
+    ruleColumn.display({
+      id: "notifies",
+      header: "Notifies",
+      meta: { cellClassName: "min-w-40 whitespace-normal text-muted-foreground" },
+      cell: (cell) => {
+        const ids = cell.row.original.destinationIds;
+        return ids.length === 0
+          ? "Nowhere (dashboard and /metrics only)"
+          : ids.map((id) => destinationName.get(id) ?? "?").join(", ");
+      },
+    }),
+    ruleColumn.display({
+      id: "state",
+      header: "State",
+      cell: (cell) => {
+        const rule = cell.row.original;
+        const muted = rule.mutedUntil !== undefined && rule.mutedUntil > now;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {!rule.enabled ? (
+              <Badge variant="neutral">Off</Badge>
+            ) : rule.firing > 0 ? (
+              <Badge variant="danger">{rule.firing} firing</Badge>
+            ) : rule.pending > 0 ? (
+              <Badge variant="warning">{rule.pending} pending</Badge>
+            ) : (
+              <Badge variant="success">OK</Badge>
+            )}
+            {muted && rule.mutedUntil !== undefined && (
+              <Badge variant="outline" title={formatAbsoluteTime(rule.mutedUntil)}>
+                Muted
+              </Badge>
+            )}
+          </div>
+        );
+      },
+    }),
+  ]);
+}
+
+/** The row menu for a rule. Module-level, so the menu is not a new component on each render. */
+function ruleActions(on: {
+  edit: (rule: Rule) => void;
+  remove: (rule: Rule) => void;
+  mute: (rule: Rule, until: number | null) => void;
+  toggle: (rule: Rule) => void;
+}) {
+  return {
+    label: (rule: Rule) => `Actions for ${rule.name}`,
+    items: (rule: Rule) => {
+      const muted = rule.mutedUntil !== undefined && rule.mutedUntil > Date.now();
+      return (
+        <>
+          <DropdownMenuGroup>
+            <DropdownMenuItem onClick={() => on.edit(rule)}>Edit rule</DropdownMenuItem>
+            {muted ? (
+              <DropdownMenuItem onClick={() => on.mute(rule, null)}>Unmute</DropdownMenuItem>
+            ) : (
+              <>
+                <DropdownMenuItem onClick={() => on.mute(rule, Date.now() + 60 * 60_000)}>
+                  Mute for 1 hour
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => on.mute(rule, Date.now() + 24 * 60 * 60_000)}>
+                  Mute for 24 hours
+                </DropdownMenuItem>
+              </>
+            )}
+            <DropdownMenuItem onClick={() => on.toggle(rule)}>
+              {rule.enabled ? "Disable rule" : "Enable rule"}
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onClick={() => on.remove(rule)}>
+            Delete rule
+          </DropdownMenuItem>
+        </>
+      );
+    },
+  };
 }
 
 function RulesCard({
@@ -202,166 +400,87 @@ function RulesCard({
   const setEnabled = useMutation(api.alerts.setRuleEnabled);
   const mute = useMutation(api.alerts.muteRule);
   const remove = useMutation(api.alerts.deleteRule);
-  const destinationName = new Map(destinations.map((item) => [item._id, item.name]));
-
-  async function deleteRule(rule: Rule) {
-    const confirmed = await confirmDestructive({
-      title: `Delete the rule "${rule.name}"?`,
-      description: "Its incidents are deleted with it.",
-      confirmLabel: "Delete",
-    });
-    if (confirmed) {
-      void runOrToast(() => remove({ id: rule._id }), "Could not delete the rule");
-    }
-  }
+  const editing = useRowDialog<Rule>();
+  const deleting = useRowDialog<Rule>();
+  const destinationName = useMemo(
+    () => new Map(destinations.map((item) => [item._id, item.name])),
+    [destinations],
+  );
+  const columns = useMemo(() => ruleColumns(now, destinationName), [now, destinationName]);
+  const showEdit = editing.show;
+  const showDelete = deleting.show;
+  const rowActions = useMemo(
+    () =>
+      ruleActions({
+        edit: showEdit,
+        remove: showDelete,
+        mute: (rule, until) =>
+          void runOrToast(
+            () => mute({ id: rule._id, until }),
+            until === null ? "Could not unmute" : "Could not mute",
+          ),
+        toggle: (rule) =>
+          void runOrToast(
+            () => setEnabled({ id: rule._id, enabled: !rule.enabled }),
+            "Could not change the rule",
+          ),
+      }),
+    [showEdit, showDelete, mute, setEnabled],
+  );
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="border-b">
-        <CardTitle>Rules</CardTitle>
-        <CardDescription>
-          A rule fires once its condition has held for the pending time, notifies once per incident,
-          and notifies again when the incident resolves.
-        </CardDescription>
-        <CardAction>
-          <RuleDialog destinations={destinations} />
-        </CardAction>
-      </CardHeader>
-      <Table className="min-w-[1000px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[220px]">Rule</TableHead>
-            <TableHead className="w-[150px]">Scope</TableHead>
-            <TableHead className="w-[160px]">Timing</TableHead>
-            <TableHead className="w-[180px]">Notifies</TableHead>
-            <TableHead className="w-[130px]">State</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rules === undefined ? (
-            <TableRowsSkeleton columns={6} rows={2} />
-          ) : rules.length === 0 ? (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="p-0">
-                <EmptyState
-                  icon={BellRing}
-                  title="No alert rules"
-                  description="Start with Worker offline and queue backlog; they catch most fleet outages."
-                />
-              </TableCell>
-            </TableRow>
-          ) : (
-            rules.map((rule) => {
-              const muted = rule.mutedUntil !== undefined && rule.mutedUntil > now;
-              return (
-                <TableRow key={rule._id}>
-                  <TableCell>
-                    <p className="text-sm text-secondary-foreground">{rule.name}</p>
-                    <p className="text-[11px] text-muted-foreground">{rule.description}</p>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {rule.profile ?? "Every Profile"}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    <p>pending {rule.forMinutes}m</p>
-                    <p>cooldown {rule.cooldownMinutes}m</p>
-                  </TableCell>
-                  <TableCell className="whitespace-normal text-xs text-muted-foreground">
-                    {rule.destinationIds.length === 0
-                      ? "Nowhere (dashboard and /metrics only)"
-                      : rule.destinationIds.map((id) => destinationName.get(id) ?? "?").join(", ")}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {!rule.enabled ? (
-                        <Badge variant="outline">off</Badge>
-                      ) : rule.firing > 0 ? (
-                        <Badge variant="destructive">{rule.firing} firing</Badge>
-                      ) : rule.pending > 0 ? (
-                        <Badge variant="warning">{rule.pending} pending</Badge>
-                      ) : (
-                        <Badge variant="success">ok</Badge>
-                      )}
-                      {muted && rule.mutedUntil !== undefined && (
-                        <Badge variant="outline" title={formatAbsoluteTime(rule.mutedUntil)}>
-                          muted
-                        </Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1.5">
-                      <RuleDialog destinations={destinations} rule={rule} />
-                      {muted ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            void runOrToast(
-                              () => mute({ id: rule._id, until: null }),
-                              "Could not unmute",
-                            )
-                          }
-                        >
-                          Unmute
-                        </Button>
-                      ) : (
-                        <>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              void runOrToast(
-                                () => mute({ id: rule._id, until: Date.now() + 60 * 60_000 }),
-                                "Could not mute",
-                              )
-                            }
-                          >
-                            Mute 1h
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              void runOrToast(
-                                () => mute({ id: rule._id, until: Date.now() + 24 * 60 * 60_000 }),
-                                "Could not mute",
-                              )
-                            }
-                          >
-                            24h
-                          </Button>
-                        </>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          void runOrToast(
-                            () => setEnabled({ id: rule._id, enabled: !rule.enabled }),
-                            "Could not change the rule",
-                          )
-                        }
-                      >
-                        {rule.enabled ? "Disable" : "Enable"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label={`Delete ${rule.name}`}
-                        onClick={() => void deleteRule(rule)}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
+    <Card className="gap-0 py-0">
+      <SectionHeader
+        title="Rules"
+        description="A rule fires once its condition has held for the pending time, notifies once per incident, and notifies again when the incident resolves."
+        action={
+          <RuleDialog
+            destinations={destinations}
+            trigger={
+              <Button size="sm">
+                <PlusIcon data-icon="inline-start" />
+                Add rule
+              </Button>
+            }
+          />
+        }
+      />
+      <DataTable
+        aria-label="Alert rules"
+        columns={columns}
+        data={rules ?? []}
+        loading={rules === undefined}
+        loadingRows={2}
+        getRowId={(rule) => rule._id}
+        empty={
+          <Empty icon={<BellRingIcon />} title="No alert rules">
+            Start with Worker offline and queue backlog; they catch most fleet outages.
+          </Empty>
+        }
+        rowActions={rowActions}
+      />
+      {editing.row === undefined ? null : (
+        <RuleDialog
+          key={editing.row._id}
+          destinations={destinations}
+          rule={editing.row}
+          open={editing.open}
+          onOpenChange={editing.setOpen}
+        />
+      )}
+      <ConfirmDialog
+        open={deleting.open}
+        onOpenChange={deleting.setOpen}
+        title={`Delete the rule "${deleting.row?.name ?? ""}"?`}
+        description="Its incidents are deleted with it."
+        confirmLabel="Delete rule"
+        onConfirm={async () => {
+          const rule = deleting.row;
+          if (rule === undefined) return;
+          await runOrReject(() => remove({ id: rule._id }), "Could not delete the rule");
+          toast.success(`Deleted ${rule.name}`);
+        }}
+      />
     </Card>
   );
 }
@@ -382,6 +501,14 @@ const CONDITION_LABEL: Record<ConditionKind, string> = {
 };
 
 const CONDITION_ORDER = Object.keys(CONDITION_LABEL) as ConditionKind[];
+
+const CONDITION_ITEMS = CONDITION_ORDER.map((kind) => ({
+  value: kind,
+  label: CONDITION_LABEL[kind],
+}));
+
+// The Profile select's value for "no Profile": a rule that watches every Profile.
+const EVERY_PROFILE = "*";
 
 type ConditionForm = {
   minutes: string;
@@ -436,22 +563,37 @@ function buildCondition(kind: ConditionKind, form: ConditionForm): Condition {
   }
 }
 
-function Field({ label, id, children }: { label: string; id: string; children: ReactNode }) {
+function FormError({ error }: { error: string | undefined }) {
+  if (error === undefined) return null;
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id} className="text-xs">
-        {label}
-      </Label>
-      {children}
-    </div>
+    <Alert variant="destructive">
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
   );
 }
 
-function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?: Rule }) {
+/**
+ * Adds a rule, or edits `rule`. A new rule opens from `trigger`; an existing one opens from its
+ * row menu, which controls `open`.
+ */
+function RuleDialog({
+  destinations,
+  rule,
+  trigger,
+  open: openProp,
+  onOpenChange,
+}: {
+  destinations: Destination[];
+  rule?: Rule;
+  trigger?: ReactElement;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
   const profiles = useQuery(api.profiles.list);
   const create = useMutation(api.alerts.createRule);
   const update = useMutation(api.alerts.updateRule);
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
   const [name, setName] = useState(rule?.name ?? "");
   const [kind, setKind] = useState<ConditionKind>(rule?.condition.kind ?? "worker-offline");
   const [form, setForm] = useState<ConditionForm>(() => conditionForm(rule?.condition));
@@ -463,6 +605,20 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
   );
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+
+  const profileItems = [
+    { value: EVERY_PROFILE, label: "Every Profile" },
+    ...(profiles ?? []).map((item) => ({ value: item.name, label: item.name })),
+  ];
+
+  function setOpen(next: boolean) {
+    setOpenState(next);
+    onOpenChange?.(next);
+    if (!next) return;
+    setError(undefined);
+    // A new rule notifies every destination unless the operator unticks one.
+    if (rule === undefined) setSelected(new Set(destinations.map((item) => item._id)));
+  }
 
   function changeKind(next: ConditionKind) {
     setKind(next);
@@ -489,6 +645,7 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
       if (rule === undefined) await create(fields);
       else await update({ id: rule._id, ...fields });
       setOpen(false);
+      toast.success(rule === undefined ? `Added ${name}` : `Saved ${name}`);
     } catch (caught) {
       setError(errorMessage(caught, "Could not save the rule"));
     } finally {
@@ -497,9 +654,9 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
   }
 
   const number = (key: keyof ConditionForm, label: string) => (
-    <Field label={label} id={`rule-${key}`}>
+    <Field>
+      <FieldLabel>{label}</FieldLabel>
       <Input
-        id={`rule-${key}`}
         inputMode="numeric"
         value={form[key]}
         onChange={(event) => setForm({ ...form, [key]: event.target.value })}
@@ -508,140 +665,148 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
   );
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) return;
-        setError(undefined);
-        // A new rule notifies every destination unless the operator unticks one.
-        if (rule === undefined) setSelected(new Set(destinations.map((item) => item._id)));
-      }}
-    >
-      <DialogTrigger asChild>
-        {rule === undefined ? (
-          <Button size="sm">
-            <Plus />
-            Add rule
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline">
-            Edit
-          </Button>
-        )}
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open={open} onOpenChange={setOpen}>
+      {trigger === undefined ? null : <DialogTrigger render={trigger} />}
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>{rule === undefined ? "Add alert rule" : `Edit ${rule.name}`}</DialogTitle>
           <DialogDescription>
             Evaluated every minute against what the control plane knows about the fleet.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
-          <Field label="Condition" id="rule-kind">
-            <select
-              id="rule-kind"
-              className={inputClass}
+        <form
+          id="rule-form"
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <Field>
+            <FieldLabel>Condition</FieldLabel>
+            <Select
+              items={CONDITION_ITEMS}
               value={kind}
-              onChange={(event) => changeKind(event.target.value as ConditionKind)}
+              onValueChange={(value) => {
+                if (value !== null) changeKind(value);
+              }}
             >
-              {CONDITION_ORDER.map((item) => (
-                <option key={item} value={item}>
-                  {CONDITION_LABEL[item]}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONDITION_ITEMS.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            {kind === "worker-offline" && number("minutes", "No heartbeat for (minutes)")}
-            {kind === "queue-backlog" && number("minutes", "Oldest queued for (minutes)")}
-            {kind === "attempt-duration" && number("minutes", "Running longer than (minutes)")}
-            {kind === "controller-silent" &&
-              number("minutes", "No listening controller for (minutes)")}
-            {kind === "node-commands-blocked" && number("minutes", "Blocked for (minutes)")}
-            {kind === "node-offline" && number("minutes", "No heartbeat for (minutes)")}
-            {kind === "consecutive-failures" && number("count", "Failed Attempts in a row")}
-            {kind === "failure-rate" && (
-              <>
-                {number("percent", "Failure rate at least (%)")}
-                {number("windowMinutes", "Over the last (minutes)")}
-                {number("minAttempts", "Once at least (Attempts)")}
-              </>
-            )}
-          </div>
-          <Field label="Name" id="rule-name">
-            <Input id="rule-name" value={name} onChange={(event) => setName(event.target.value)} />
+          {(kind === "worker-offline" ||
+            kind === "queue-backlog" ||
+            kind === "attempt-duration" ||
+            kind === "controller-silent" ||
+            kind === "node-commands-blocked" ||
+            kind === "node-offline" ||
+            kind === "consecutive-failures" ||
+            kind === "failure-rate") && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {kind === "worker-offline" && number("minutes", "No heartbeat for (minutes)")}
+              {kind === "queue-backlog" && number("minutes", "Oldest queued for (minutes)")}
+              {kind === "attempt-duration" && number("minutes", "Running longer than (minutes)")}
+              {kind === "controller-silent" &&
+                number("minutes", "No listening controller for (minutes)")}
+              {kind === "node-commands-blocked" && number("minutes", "Blocked for (minutes)")}
+              {kind === "node-offline" && number("minutes", "No heartbeat for (minutes)")}
+              {kind === "consecutive-failures" && number("count", "Failed Attempts in a row")}
+              {kind === "failure-rate" && (
+                <>
+                  {number("percent", "Failure rate at least (%)")}
+                  {number("windowMinutes", "Over the last (minutes)")}
+                  {number("minAttempts", "Once at least (Attempts)")}
+                </>
+              )}
+            </div>
+          )}
+          <Field>
+            <FieldLabel>Name</FieldLabel>
+            <Input value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
-          <Field label="Profile" id="rule-profile">
-            <select
-              id="rule-profile"
-              className={inputClass}
-              value={profile}
-              onChange={(event) => setProfile(event.target.value)}
+          <Field>
+            <FieldLabel>Profile</FieldLabel>
+            <Select
+              items={profileItems}
+              value={profile.length === 0 ? EVERY_PROFILE : profile}
+              onValueChange={(value) => {
+                if (value !== null) setProfile(value === EVERY_PROFILE ? "" : value);
+              }}
             >
-              <option value="">Every Profile</option>
-              {profiles?.map((item) => (
-                <option key={item._id} value={item.name}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {profileItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Pending before firing (minutes)" id="rule-for">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field>
+              <FieldLabel>Pending before firing (minutes)</FieldLabel>
               <Input
-                id="rule-for"
                 inputMode="numeric"
                 value={forMinutes}
                 onChange={(event) => setForMinutes(event.target.value)}
               />
             </Field>
-            <Field label="Cooldown between notices (minutes)" id="rule-cooldown">
+            <Field>
+              <FieldLabel>Cooldown between notices (minutes)</FieldLabel>
               <Input
-                id="rule-cooldown"
                 inputMode="numeric"
                 value={cooldownMinutes}
                 onChange={(event) => setCooldownMinutes(event.target.value)}
               />
             </Field>
           </div>
-          <fieldset className="space-y-2">
-            <legend className="text-xs font-medium">Notify</legend>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-2 text-sm font-medium">Notify</legend>
             {destinations.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 No destinations yet. The rule still opens incidents here and in /metrics.
               </p>
             ) : (
               destinations.map((destination) => (
-                <label
-                  key={destination._id}
-                  className="flex items-center gap-2 text-sm text-secondary-foreground"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(destination._id)}
-                    onChange={(event) => {
-                      const next = new Set(selected);
-                      if (event.target.checked) next.add(destination._id);
-                      else next.delete(destination._id);
-                      setSelected(next);
-                    }}
-                  />
-                  {destination.name}
-                  <span className="text-xs text-muted-foreground">{destination.kind}</span>
-                </label>
+                <Field key={destination._id} orientation="horizontal">
+                  <FieldLabel className="font-normal">
+                    <Checkbox
+                      checked={selected.has(destination._id)}
+                      onCheckedChange={(checked) => {
+                        const next = new Set(selected);
+                        if (checked) next.add(destination._id);
+                        else next.delete(destination._id);
+                        setSelected(next);
+                      }}
+                    />
+                    {destination.name}
+                    <span className="text-xs text-muted-foreground">{destination.kind}</span>
+                  </FieldLabel>
+                </Field>
               ))
             )}
           </fieldset>
-          {error !== undefined && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-        </div>
+          <FormError error={error} />
+        </form>
         <DialogFooter>
-          <Button type="button" disabled={pending} onClick={() => void submit()}>
-            {pending ? "Saving…" : rule === undefined ? "Add rule" : "Save"}
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" form="rule-form" disabled={pending}>
+            {pending ? <Spinner data-icon="inline-start" /> : null}
+            {rule === undefined ? "Add rule" : "Save rule"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -649,53 +814,135 @@ function RuleDialog({ destinations, rule }: { destinations: Destination[]; rule?
   );
 }
 
+const destinationColumn = createDataTableColumns<Destination>();
+
+function destinationColumns(now: number) {
+  return destinationColumn.columns([
+    destinationColumn.accessor("name", {
+      header: "Destination",
+      cell: (cell) => {
+        const destination = cell.row.original;
+        return (
+          <div>
+            <div className="font-medium">{destination.name}</div>
+            <div className="mt-1 flex gap-1">
+              <Badge variant="outline">{destination.kind}</Badge>
+              {destination.signed && <Badge variant="outline">signed</Badge>}
+              {!destination.enabled && <Badge variant="warning">disabled</Badge>}
+            </div>
+          </div>
+        );
+      },
+    }),
+    destinationColumn.accessor("urlHint", {
+      header: "URL",
+      enableSorting: false,
+      cell: (cell) => (
+        <code className="font-mono text-xs text-muted-foreground">{cell.getValue()}</code>
+      ),
+    }),
+    destinationColumn.display({
+      id: "lastDelivery",
+      header: "Last delivery",
+      meta: { cellClassName: "min-w-48 whitespace-normal" },
+      cell: (cell) => {
+        const last = cell.row.original.lastDelivery;
+        if (last === undefined) return <span className="text-muted-foreground">Never</span>;
+        const view = DELIVERY_STATE[last.status];
+        return (
+          <div>
+            <Status state={view.state}>{view.label}</Status>
+            <p className="text-xs text-muted-foreground">
+              {last.event}, {formatRelativeTime(last.createdAt, now)}
+            </p>
+            {last.lastError !== undefined && last.status !== "delivered" && (
+              <p className="mt-1 text-xs text-danger">
+                {last.lastError} (attempt {last.attempts})
+              </p>
+            )}
+          </div>
+        );
+      },
+    }),
+  ]);
+}
+
+/** The row menu for a destination. Module-level, so the menu is not a new component on each render. */
+function destinationActions(on: {
+  test: (destination: Destination) => void;
+  replace: (destination: Destination) => void;
+  rotate: (destination: Destination) => void;
+  toggle: (destination: Destination) => void;
+  remove: (destination: Destination) => void;
+}) {
+  return {
+    label: (destination: Destination) => `Actions for ${destination.name}`,
+    items: (destination: Destination) => (
+      <>
+        <DropdownMenuGroup>
+          <DropdownMenuItem onClick={() => on.test(destination)}>Send test</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => on.replace(destination)}>Replace URL</DropdownMenuItem>
+          {destination.kind === "webhook" && (
+            <DropdownMenuItem onClick={() => on.rotate(destination)}>
+              Rotate signing secret
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onClick={() => on.toggle(destination)}>
+            {destination.enabled ? "Disable destination" : "Enable destination"}
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onClick={() => on.remove(destination)}>
+          Delete destination
+        </DropdownMenuItem>
+      </>
+    ),
+  };
+}
+
+type Revealed = { name: string; secret: string };
+
 function DestinationsCard({ destinations }: { destinations: Destination[] | undefined }) {
   const now = useNow();
   const sendTest = useMutation(api.alerts.sendTest);
   const update = useMutation(api.alerts.updateDestination);
   const rotate = useMutation(api.alerts.rotateSigningSecret);
   const remove = useMutation(api.alerts.deleteDestination);
-  const [revealed, setRevealed] = useState<{ name: string; secret: string }>();
-
-  async function rotateSecret(destination: Destination) {
-    const confirmed = await confirmDestructive({
-      title: `Rotate the signing secret for ${destination.name}?`,
-      description: "The old secret stops working at once.",
-      confirmLabel: "Rotate",
-    });
-    if (confirmed) {
-      void runOrToast(async () => {
-        const result = await rotate({ id: destination._id });
-        setRevealed({
-          name: destination.name,
-          secret: result.signingSecret,
-        });
-      }, "Could not rotate the secret");
-    }
-  }
-
-  async function deleteDestination(destination: Destination) {
-    const confirmed = await confirmDestructive({
-      title: `Delete the destination "${destination.name}"?`,
-      confirmLabel: "Delete",
-    });
-    if (confirmed) {
-      void runOrToast(() => remove({ id: destination._id }), "Could not delete the destination");
-    }
-  }
+  const [revealed, setRevealed] = useState<Revealed>();
+  const replacing = useRowDialog<Destination>();
+  const rotating = useRowDialog<Destination>();
+  const deleting = useRowDialog<Destination>();
+  const columns = useMemo(() => destinationColumns(now), [now]);
+  const showReplace = replacing.show;
+  const showRotate = rotating.show;
+  const showDelete = deleting.show;
+  const rowActions = useMemo(
+    () =>
+      destinationActions({
+        test: (destination) =>
+          void runOrToast(async () => {
+            await sendTest({ id: destination._id });
+            toast.success("Test notification queued");
+          }, "Could not queue a test"),
+        replace: showReplace,
+        rotate: showRotate,
+        toggle: (destination) =>
+          void runOrToast(
+            () => update({ id: destination._id, enabled: !destination.enabled }),
+            "Could not change the destination",
+          ),
+        remove: showDelete,
+      }),
+    [sendTest, update, showReplace, showRotate, showDelete],
+  );
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="border-b">
-        <CardTitle>Destinations</CardTitle>
-        <CardDescription>
-          A generic webhook receives signed JSON; a Slack destination posts to an incoming webhook.
-          URLs and signing secrets can be replaced but never read back.
-        </CardDescription>
-        <CardAction>
-          <DestinationDialog onSecret={setRevealed} />
-        </CardAction>
-      </CardHeader>
+    <Card className="gap-0 py-0">
+      <SectionHeader
+        title="Destinations"
+        description="A generic webhook receives signed JSON; a Slack destination posts to an incoming webhook. URLs and signing secrets can be replaced but never read back."
+        action={<DestinationDialog onSecret={setRevealed} />}
+      />
       {revealed !== undefined && (
         <CardContent className="border-b py-4">
           <SecretOnce
@@ -706,133 +953,68 @@ function DestinationsCard({ destinations }: { destinations: Destination[] | unde
           />
         </CardContent>
       )}
-      <Table className="min-w-[900px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[200px]">Destination</TableHead>
-            <TableHead className="w-[260px]">URL</TableHead>
-            <TableHead className="w-[220px]">Last delivery</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {destinations === undefined ? (
-            <TableRowsSkeleton columns={4} rows={1} />
-          ) : destinations.length === 0 ? (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={4} className="p-0">
-                <EmptyState
-                  icon={Send}
-                  title="No destinations"
-                  description="Add a Slack incoming webhook or a generic webhook to receive notifications."
-                />
-              </TableCell>
-            </TableRow>
-          ) : (
-            destinations.map((destination) => {
-              const last = destination.lastDelivery;
-              return (
-                <TableRow key={destination._id}>
-                  <TableCell>
-                    <p className="text-sm text-secondary-foreground">{destination.name}</p>
-                    <div className="mt-1 flex gap-1">
-                      <Badge variant="outline">{destination.kind}</Badge>
-                      {destination.signed && <Badge variant="outline">signed</Badge>}
-                      {!destination.enabled && <Badge variant="warning">disabled</Badge>}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-[11px] text-muted-foreground">
-                    {destination.urlHint}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {last === undefined ? (
-                      "Never"
-                    ) : (
-                      <>
-                        <span className="flex items-center gap-2">
-                          <StatusDot
-                            tone={
-                              last.status === "delivered"
-                                ? "success"
-                                : last.status === "failed"
-                                  ? "destructive"
-                                  : "warning"
-                            }
-                            live={last.status === "pending"}
-                          />
-                          {last.event} {last.status} {formatRelativeTime(last.createdAt, now)}
-                        </span>
-                        {last.lastError !== undefined && last.status !== "delivered" && (
-                          <p className="mt-1 text-[10px] text-destructive">
-                            {last.lastError} (attempt {last.attempts})
-                          </p>
-                        )}
-                      </>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          void runOrToast(async () => {
-                            await sendTest({ id: destination._id });
-                            toast.success("Test notification queued");
-                          }, "Could not queue a test")
-                        }
-                      >
-                        <Send />
-                        Test
-                      </Button>
-                      <ReplaceUrlDialog destination={destination} />
-                      {destination.kind === "webhook" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void rotateSecret(destination)}
-                        >
-                          <KeyRound />
-                          Rotate
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          void runOrToast(
-                            () => update({ id: destination._id, enabled: !destination.enabled }),
-                            "Could not change the destination",
-                          )
-                        }
-                      >
-                        {destination.enabled ? "Disable" : "Enable"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label={`Delete ${destination.name}`}
-                        onClick={() => void deleteDestination(destination)}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
+      <DataTable
+        aria-label="Alert destinations"
+        columns={columns}
+        data={destinations ?? []}
+        loading={destinations === undefined}
+        loadingRows={1}
+        getRowId={(destination) => destination._id}
+        empty={
+          <Empty icon={<SendIcon />} title="No destinations">
+            Add a Slack incoming webhook or a generic webhook to receive notifications.
+          </Empty>
+        }
+        rowActions={rowActions}
+      />
+      {replacing.row === undefined ? null : (
+        <ReplaceUrlDialog
+          key={replacing.row._id}
+          destination={replacing.row}
+          open={replacing.open}
+          onOpenChange={replacing.setOpen}
+        />
+      )}
+      <ConfirmDialog
+        open={rotating.open}
+        onOpenChange={rotating.setOpen}
+        title={`Rotate the signing secret for ${rotating.row?.name ?? ""}?`}
+        description="The old secret stops working at once."
+        confirmLabel="Rotate secret"
+        onConfirm={async () => {
+          const destination = rotating.row;
+          if (destination === undefined) return;
+          await runOrReject(async () => {
+            const result = await rotate({ id: destination._id });
+            setRevealed({ name: destination.name, secret: result.signingSecret });
+          }, "Could not rotate the secret");
+        }}
+      />
+      <ConfirmDialog
+        open={deleting.open}
+        onOpenChange={deleting.setOpen}
+        title={`Delete the destination "${deleting.row?.name ?? ""}"?`}
+        confirmLabel="Delete destination"
+        onConfirm={async () => {
+          const destination = deleting.row;
+          if (destination === undefined) return;
+          await runOrReject(
+            () => remove({ id: destination._id }),
+            "Could not delete the destination",
+          );
+          toast.success(`Deleted ${destination.name}`);
+        }}
+      />
     </Card>
   );
 }
 
-function DestinationDialog({
-  onSecret,
-}: {
-  onSecret: (revealed: { name: string; secret: string }) => void;
-}) {
+const KIND_ITEMS = [
+  { value: "slack", label: "Slack incoming webhook (or a Slack-compatible one)" },
+  { value: "webhook", label: "Generic webhook, JSON signed with HMAC-SHA256" },
+] as const;
+
+function DestinationDialog({ onSecret }: { onSecret: (revealed: Revealed) => void }) {
   const create = useMutation(api.alerts.createDestination);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -850,6 +1032,7 @@ function DestinationDialog({
       setOpen(false);
       setName("");
       setUrl("");
+      toast.success(`Added ${name}`);
     } catch (caught) {
       setError(errorMessage(caught, "Could not add the destination"));
     } finally {
@@ -859,42 +1042,61 @@ function DestinationDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus />
-          Add destination
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      <DialogTrigger
+        render={
+          <Button size="sm">
+            <PlusIcon data-icon="inline-start" />
+            Add destination
+          </Button>
+        }
+      />
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Add destination</DialogTitle>
           <DialogDescription>
             The URL is stored for sending only; the dashboard shows its host and last characters.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
-          <Field label="Kind" id="destination-kind">
-            <select
-              id="destination-kind"
-              className={inputClass}
+        <form
+          id="destination-form"
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <Field>
+            <FieldLabel>Kind</FieldLabel>
+            <Select
+              items={KIND_ITEMS}
               value={kind}
-              onChange={(event) => setKind(event.target.value as "webhook" | "slack")}
+              onValueChange={(value) => {
+                if (value !== null) setKind(value);
+              }}
             >
-              <option value="slack">Slack incoming webhook (or a Slack-compatible one)</option>
-              <option value="webhook">Generic webhook, JSON signed with HMAC-SHA256</option>
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KIND_ITEMS.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
-          <Field label="Name" id="destination-name">
+          <Field>
+            <FieldLabel>Name</FieldLabel>
             <Input
-              id="destination-name"
               value={name}
               placeholder={kind === "slack" ? "#ci-alerts" : "pager"}
               onChange={(event) => setName(event.target.value)}
             />
           </Field>
-          <Field label="URL" id="destination-url">
+          <Field>
+            <FieldLabel>URL</FieldLabel>
             <Input
-              id="destination-url"
               type="url"
               autoComplete="off"
               value={url}
@@ -905,21 +1107,21 @@ function DestinationDialog({
               }
               onChange={(event) => setUrl(event.target.value)}
             />
+            {kind === "webhook" && (
+              <FieldDescription>
+                A signing secret is generated for the webhook and shown once after you add it.
+              </FieldDescription>
+            )}
           </Field>
-          {kind === "webhook" && (
-            <p className="text-xs leading-5 text-muted-foreground">
-              A signing secret is generated for the webhook and shown once after you add it.
-            </p>
-          )}
-          {error !== undefined && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-        </div>
+          <FormError error={error} />
+        </form>
         <DialogFooter>
-          <Button type="button" disabled={pending} onClick={() => void submit()}>
-            {pending ? "Adding…" : "Add destination"}
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" form="destination-form" disabled={pending}>
+            {pending ? <Spinner data-icon="inline-start" /> : null}
+            Add destination
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -927,50 +1129,70 @@ function DestinationDialog({
   );
 }
 
-function ReplaceUrlDialog({ destination }: { destination: Destination }) {
+function ReplaceUrlDialog({
+  destination,
+  open,
+  onOpenChange,
+}: {
+  destination: Destination;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const update = useMutation(api.alerts.updateDestination);
-  const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
 
   async function submit() {
     setError(undefined);
+    setPending(true);
     try {
       await update({ id: destination._id, url });
-      setOpen(false);
+      onOpenChange(false);
       setUrl("");
+      toast.success(`Replaced the URL for ${destination.name}`);
     } catch (caught) {
       setError(errorMessage(caught, "Could not replace the URL"));
+    } finally {
+      setPending(false);
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm" variant="outline">
-          Replace URL
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Replace URL for {destination.name}</DialogTitle>
-          <DialogDescription>Currently {destination.urlHint}</DialogDescription>
+          <DialogDescription>
+            Currently <code className="font-mono">{destination.urlHint}</code>
+          </DialogDescription>
         </DialogHeader>
-        <Input
-          type="url"
-          autoComplete="off"
-          aria-label="New URL"
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-        />
-        {error !== undefined && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+        <form
+          id="replace-url-form"
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <Field>
+            <FieldLabel>New URL</FieldLabel>
+            <Input
+              type="url"
+              autoComplete="off"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+            />
+          </Field>
+          <FormError error={error} />
+        </form>
         <DialogFooter>
-          <Button type="button" onClick={() => void submit()}>
-            Replace
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" form="replace-url-form" disabled={pending}>
+            {pending ? <Spinner data-icon="inline-start" /> : null}
+            Replace URL
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -978,6 +1200,7 @@ function ReplaceUrlDialog({ destination }: { destination: Destination }) {
   );
 }
 
+/** A secret the control plane shows once: the value with a copy button, and a dismiss button. */
 function SecretOnce({
   title,
   value,
@@ -991,40 +1214,19 @@ function SecretOnce({
   onDismiss: () => void;
   children?: ReactNode;
 }) {
-  const [copied, setCopied] = useState(false);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    } catch {
-      toast.error("Clipboard access was blocked", { description: "Select and copy it manually." });
-    }
-  }
   return (
-    <div className="space-y-3 text-xs text-muted-foreground">
-      <p className="text-sm font-medium text-secondary-foreground">{title}</p>
-      <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-        <code className="block break-all font-mono text-xs leading-5 text-secondary-foreground">
-          {value}
-        </code>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="absolute right-1.5 top-1.5 size-8"
-          aria-label="Copy"
-          onClick={() => void copy()}
-        >
-          {copied ? <Check /> : <Clipboard />}
+    <Alert>
+      <KeyRoundIcon />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="flex flex-col gap-3">
+        <CodeBlock code={value} className="[&_pre]:break-all [&_pre]:whitespace-pre-wrap" />
+        <p>{note}</p>
+        {children}
+        <Button type="button" size="sm" variant="outline" className="w-fit" onClick={onDismiss}>
+          I have stored it
         </Button>
-      </div>
-      <p className="leading-5">{note}</p>
-      {children}
-      <Button type="button" size="sm" variant="outline" onClick={onDismiss}>
-        I have stored it
-      </Button>
-    </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -1051,47 +1253,51 @@ function MetricsSettings() {
   const [label, setLabel] = useState("prometheus");
   const [minted, setMinted] = useState<string>();
   const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
   const endpoint = new URL("/metrics", convexSiteUrl());
 
   async function mint() {
     setError(undefined);
+    setPending(true);
     try {
       const result = await create({ name: label, scope: "metrics" });
       setMinted(result.token);
     } catch (caught) {
       setError(errorMessage(caught, "Could not create a token"));
+    } finally {
+      setPending(false);
     }
   }
 
   return (
-    <Card>
-      <CardHeader className="border-b">
-        <CardTitle>Prometheus endpoint</CardTitle>
-        <CardDescription>
-          Fleet state in Prometheus text format: Workers by readiness, slots, queue depth and age,
-          recent queue wait and run time, benchmark scores. docs/monitoring.md lists every metric.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4 py-4 text-xs text-muted-foreground">
-        <code className="block rounded-md border border-border bg-sunken px-3 py-2 font-mono text-secondary-foreground">
-          GET {endpoint.toString()}
-        </code>
+    <Card className="gap-0 py-0">
+      <SectionHeader
+        title="Prometheus endpoint"
+        description="Fleet state in Prometheus text format: Workers by readiness, slots, queue depth and age, recent queue wait and run time, benchmark scores. docs/monitoring.md lists every metric."
+      />
+      <CardContent className="flex flex-col gap-4 py-4">
+        <CodeBlock title="Scrape with GET" code={endpoint.toString()} />
         {minted === undefined ? (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-            <div className="flex-1">
-              <Field label="Token name" id="metrics-label">
-                <Input
-                  id="metrics-label"
-                  value={label}
-                  onChange={(event) => setLabel(event.target.value)}
-                />
-              </Field>
-            </div>
-            <Button type="button" onClick={() => void mint()}>
-              <KeyRound />
+          <form
+            className="grid gap-3 sm:grid-cols-[minmax(0,20rem)_auto] sm:items-end"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void mint();
+            }}
+          >
+            <Field>
+              <FieldLabel>Token name</FieldLabel>
+              <Input value={label} onChange={(event) => setLabel(event.target.value)} />
+            </Field>
+            <Button type="submit" disabled={pending}>
+              {pending ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <KeyRoundIcon data-icon="inline-start" />
+              )}
               Create metrics token
             </Button>
-          </div>
+          </form>
         ) : (
           <SecretOnce
             title="Metrics token"
@@ -1099,20 +1305,14 @@ function MetricsSettings() {
             note="Shown once; only its SHA-256 is stored. Save it to the credentials file below. To rotate, create a new token, reload Prometheus, then revoke the old one under API tokens."
             onDismiss={() => setMinted(undefined)}
           >
-            <pre className="overflow-x-auto rounded-md border border-border bg-sunken p-3 font-mono text-[11px] leading-5 text-secondary-foreground">
-              {scrapeConfig(endpoint)}
-            </pre>
+            <CodeBlock title="prometheus.yml" code={scrapeConfig(endpoint)} />
           </SecretOnce>
         )}
-        <p className="leading-5">
+        <p className="text-sm text-muted-foreground">
           A metrics token can scrape and do nothing else. Read and admin tokens can scrape too.
           Every token is listed, and revoked, under API tokens.
         </p>
-        {error !== undefined && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+        <FormError error={error} />
       </CardContent>
     </Card>
   );

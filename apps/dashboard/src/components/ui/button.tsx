@@ -1,36 +1,35 @@
-import { renderElement } from "@ui-sdk/react/primitive";
+import { Button as ButtonPrimitive } from "@base-ui/react/button";
 import { cva, type VariantProps } from "class-variance-authority";
-import type { ComponentProps } from "react";
 
-import { asChildElement } from "@/components/ui/slot";
 import { cn } from "@/lib/utils";
 
 /**
- * The shared Era button: control height and radius from the tokens, 12px of side padding,
- * `--era-text-md` at weight 500. `default` is the primary button on the product accent,
- * `outline` and `secondary` are the bordered secondary button, and `destructive` is the danger
- * button: danger text and border on the surface. A destructive dialog's confirm button is the
- * filled `danger` variant.
+ * Class names for the Era button. Use them to style a link or another element
+ * as a button when `render` does not fit.
  */
 const buttonVariants = cva(
-  "inline-flex shrink-0 cursor-default items-center justify-center gap-2 whitespace-nowrap rounded-md border text-(length:--era-text-md) font-medium leading-none disabled:pointer-events-none disabled:opacity-45 aria-disabled:pointer-events-none aria-disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,opacity] select-none motion-safe:active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground hover:bg-primary/90",
-        destructive: "border-destructive bg-card text-destructive hover:bg-destructive-soft",
-        danger:
-          "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/90",
-        outline: "border-input bg-card text-foreground hover:bg-sunken",
-        secondary: "border-input bg-card text-foreground hover:bg-sunken",
-        ghost: "border-transparent text-muted-foreground hover:bg-sunken hover:text-foreground",
-        link: "border-transparent text-primary underline-offset-4 hover:underline",
+        default: "bg-primary text-primary-foreground hover:bg-primary/85",
+        outline: "border-border bg-background hover:bg-muted aria-expanded:bg-muted",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklab,var(--secondary),var(--foreground)_6%)] aria-expanded:bg-[color-mix(in_oklab,var(--secondary),var(--foreground)_6%)]",
+        ghost: "hover:bg-muted aria-expanded:bg-muted",
+        destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        link: "h-auto! px-0! text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground",
       },
       size: {
-        default: "h-(--era-control-height) px-3",
-        // Kept for the call sites that ask for it; every button shares the token height.
-        sm: "h-(--era-control-height) px-3",
-        icon: "size-(--era-control-height)",
+        default:
+          "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
+        xs: "h-6 gap-1 rounded-md px-2 text-xs has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
+        sm: "h-7 gap-1 rounded-md px-2.5 text-[0.8rem] has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3.5",
+        lg: "h-9 gap-1.5 px-3 has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",
+        icon: "size-8",
+        "icon-xs": "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
+        "icon-sm": "size-7 rounded-md",
+        "icon-lg": "size-9",
       },
     },
     defaultVariants: {
@@ -40,23 +39,23 @@ const buttonVariants = cva(
   },
 );
 
-type ButtonProps = ComponentProps<"button"> &
-  VariantProps<typeof buttonVariants> & {
-    /** Renders the single child element, such as a link, with the button's look and props. */
-    asChild?: boolean;
-  };
+/** Props for {@link Button}: Base UI button props plus the Era variants. */
+type ButtonProps = ButtonPrimitive.Props & VariantProps<typeof buttonVariants>;
 
-function Button({ className, variant, size, asChild = false, children, ...props }: ButtonProps) {
-  const own = {
-    "data-slot": "button",
-    className: cn(buttonVariants({ variant, size, className })),
-  };
-  const child = asChildElement(asChild, children);
-  return renderElement(
-    "button",
-    { ...own, ...props, children: child ? undefined : children },
-    child,
+/**
+ * A button. Icon-only buttons need an `aria-label`. Mark a leading or
+ * trailing icon with `data-icon="inline-start"` or `"inline-end"` to tighten
+ * the padding on that side. Show progress by composing a `Spinner` and
+ * `disabled`, not with a loading prop.
+ */
+function Button({ className, variant = "default", size = "default", ...props }: ButtonProps) {
+  return (
+    <ButtonPrimitive
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
   );
 }
 
-export { Button, buttonVariants };
+export { Button, buttonVariants, type ButtonProps };

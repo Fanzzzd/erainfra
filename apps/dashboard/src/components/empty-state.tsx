@@ -1,29 +1,103 @@
-import type { ComponentType, ReactNode } from "react";
+import { mergeProps } from "@base-ui/react/merge-props";
+import { useRender } from "@base-ui/react/use-render";
+import { cva, type VariantProps } from "class-variance-authority";
+import type * as React from "react";
+
+import { cn } from "@/lib/utils";
+
+const emptyStateVariants = cva(
+  "flex w-full min-w-0 flex-col items-center justify-center gap-3 p-8 text-center text-balance",
+  {
+    variants: {
+      variant: {
+        plain: "",
+        outline: "rounded-xl border border-dashed",
+      },
+    },
+    defaultVariants: { variant: "plain" },
+  },
+);
 
 /**
- * An empty table is ambiguous on its own — nothing has happened yet, or a
- * filter is hiding everything. Every empty state here says which, and offers
- * the next action when there is one.
+ * What a list or page shows when it has nothing yet: an icon, a title, one
+ * sentence that says why, and the next step. `outline` draws a dashed frame
+ * for use on a bare page; inside a card or table use `plain`.
  */
-export function EmptyState({
-  icon: Icon,
-  title,
-  description,
-  children,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: string;
-  children?: ReactNode;
-}) {
+function EmptyState({
+  className,
+  variant = "plain",
+  ...props
+}: React.ComponentProps<"div"> & VariantProps<typeof emptyStateVariants>) {
   return (
-    <div className="mx-auto flex max-w-sm flex-col items-center px-6 py-14 text-center">
-      <div className="grid size-9 place-items-center rounded-md border border-border bg-muted text-muted-foreground">
-        <Icon className="size-4" />
-      </div>
-      <p className="mt-4 text-sm font-medium text-secondary-foreground">{title}</p>
-      <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
-      {children !== undefined && <div className="mt-4">{children}</div>}
-    </div>
+    <div
+      data-slot="empty-state"
+      className={cn(emptyStateVariants({ variant }), className)}
+      {...props}
+    />
   );
 }
+
+/** An icon on a muted tile. Decorative; the title carries the meaning. */
+function EmptyStateMedia({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="empty-state-media"
+      aria-hidden="true"
+      className={cn(
+        "mb-1 flex size-10 shrink-0 items-center justify-center rounded-lg border bg-subtle text-muted-foreground [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-5",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/**
+ * The title, for example "No machines yet". It renders a `div`; pass
+ * `render={<h2 />}` when it should be in the page outline.
+ */
+function EmptyStateTitle({ className, render, ...props }: useRender.ComponentProps<"div">) {
+  return useRender({
+    defaultTagName: "div",
+    props: mergeProps<"div">(
+      { className: cn("font-heading text-sm font-semibold tracking-title", className) },
+      props,
+    ),
+    render,
+    state: { slot: "empty-state-title" },
+  });
+}
+
+/** One sentence that says why it is empty or what fills it. */
+function EmptyStateDescription({ className, ...props }: React.ComponentProps<"p">) {
+  return (
+    <p
+      data-slot="empty-state-description"
+      className={cn(
+        "max-w-sm text-sm text-muted-foreground [&>a]:underline [&>a]:underline-offset-4 [&>a:hover]:text-foreground",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/** The next step: a button or a command. */
+function EmptyStateActions({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="empty-state-actions"
+      className={cn("mt-1 flex flex-wrap items-center justify-center gap-2", className)}
+      {...props}
+    />
+  );
+}
+
+export {
+  EmptyState,
+  EmptyStateActions,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+  emptyStateVariants,
+};

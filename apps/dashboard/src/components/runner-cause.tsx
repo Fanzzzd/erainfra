@@ -14,7 +14,7 @@ export type RunnerCause = {
  */
 export function RunnerCauseNote({ cause }: { cause: RunnerCause }) {
   return (
-    <Alert variant="warning">
+    <Alert className="*:[svg]:text-warning">
       <ServerCrash />
       <AlertTitle>The runner failed this run</AlertTitle>
       <AlertDescription>
@@ -22,7 +22,7 @@ export function RunnerCauseNote({ cause }: { cause: RunnerCause }) {
         <ul className="list-disc pl-4">
           {cause.docs.map((doc) => (
             <li key={doc.url}>
-              <a href={doc.url} target="_blank" rel="noreferrer" className="underline">
+              <a href={doc.url} target="_blank" rel="noreferrer" className="text-foreground">
                 {doc.title}
               </a>
             </li>

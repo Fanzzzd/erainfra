@@ -3,23 +3,42 @@ import { controllerLiveness, type ControllerLiveness } from "@erainfra/backend/c
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
-  Check,
-  ChevronRight,
-  CircleCheck,
-  CircleX,
-  Clipboard,
-  Plus,
-  Server,
-  ShieldAlert,
-  ShieldCheck,
-  UserPlus,
+  CheckIcon,
+  ChevronRightIcon,
+  CircleCheckIcon,
+  CircleXIcon,
+  PlusIcon,
+  ServerIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  UserPlusIcon,
 } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { type MouseEvent, type ReactNode, useId, useMemo, useState } from "react";
 
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { StatusDot } from "@/components/status";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { CodeBlock } from "@/components/code-block";
+import { CopyButton, copyText } from "@/components/copy-button";
+import { createDataTableColumns, DataTable } from "@/components/data-table";
+import {
+  DescriptionDetails,
+  DescriptionList,
+  DescriptionListItem,
+  DescriptionTerm,
+} from "@/components/description-list";
+import {
+  EmptyState,
+  EmptyStateActions,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+} from "@/components/page-header";
+import { Stat, StatGroup, StatHint, StatLabel, StatUnit, StatValue } from "@/components/stat";
+import { LiveIndicator, Status, StatusDot, statusStates } from "@/components/status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,8 +59,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -56,6 +78,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useNow } from "@/hooks/use-now";
 import { convexSiteUrl } from "@/lib/convex-site";
 import { describeProfileEgress, egressTooltip } from "@/lib/egress";
+import { attemptView, experimentView, onlineView, type StateView } from "@/lib/states";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -80,6 +103,11 @@ const INSTALL_OS_LABEL: Record<InstallOs, string> = {
   win: "Windows",
 };
 
+const INSTALL_OS_SHELL: Record<InstallOs, string> = {
+  posix: "Shell",
+  win: "PowerShell",
+};
+
 const INSTALL_OS_ORDER: readonly InstallOs[] = ["posix", "win"];
 
 const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
@@ -90,6 +118,17 @@ const REGISTRATION_TTL_MS = 15 * 60 * 1_000;
  * against a checksum this deployment pins.
  */
 type MachineRole = "worker" | "node";
+
+type Machine = (typeof api.machines.list)["_returnType"][number];
+
+// Long install commands wrap inside the code block instead of scrolling a narrow dialog sideways.
+const WRAP_CODE = "[&_pre]:break-all [&_pre]:whitespace-pre-wrap";
+
+function copyFailed() {
+  toast.error("Clipboard access was blocked", {
+    description: "Select the text above and copy it by hand.",
+  });
+}
 
 function MachinesPage() {
   const machines = useQuery(api.machines.list);
@@ -105,7 +144,6 @@ function MachinesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [registration, setRegistration] = useState<RegistrationCommand>();
-  const [copiedCommand, setCopiedCommand] = useState<string>();
 
   const summary = useMemo(() => {
     const list = machines ?? [];
@@ -131,11 +169,12 @@ function MachinesPage() {
     );
   }, [machines, registration]);
 
+  const fleetColumns = useMemo(() => buildFleetColumns(now), [now]);
+
   async function beginRegistration() {
     setSubmitting(true);
     setError(undefined);
     setRegistration(undefined);
-    setCopiedCommand(undefined);
 
     try {
       const result = await createRegistrationToken({});
@@ -160,18 +199,6 @@ function MachinesPage() {
     }
   }
 
-  async function copyCommand(value: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedCommand(value);
-      window.setTimeout(() => setCopiedCommand(undefined), 1_500);
-    } catch {
-      toast.error("Clipboard access was blocked", {
-        description: "Select the command above and copy it manually.",
-      });
-    }
-  }
-
   function changeDialog(open: boolean) {
     setDialogOpen(open);
     if (open) {
@@ -179,128 +206,113 @@ function MachinesPage() {
     } else {
       setRegistration(undefined);
       setError(undefined);
-      setCopiedCommand(undefined);
       setSubmitting(false);
     }
   }
 
   // A Node's credential comes from enrolling it on the Nodes page, so switching to that role
   // neither needs nor spends a registration token.
-  // Switching which body to run does not touch the registration: the token is already minted and
-  // both commands carry the same one.
-  function changeInstallOs(next: InstallOs) {
-    setInstallOs(next);
-    setCopiedCommand(undefined);
-  }
-
   function changeRole(next: MachineRole) {
     setRole(next);
-    setCopiedCommand(undefined);
     if (next === "worker" && registration === undefined && !submitting) {
       void beginRegistration();
     }
   }
 
   const machineCount = machines?.length;
+  const expired = registration !== undefined && now >= registration.expiresAt;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Machines"
-        description="Manage connected runner hosts, capacity, and active assignments."
-      >
-        <Dialog open={dialogOpen} onOpenChange={changeDialog}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus />
+    <>
+      <PageHeader>
+        <PageHeaderTitle>Machines</PageHeaderTitle>
+        <PageHeaderDescription>
+          Manage connected runner hosts, capacity, and active assignments.
+        </PageHeaderDescription>
+        <PageHeaderActions>
+          <Dialog open={dialogOpen} onOpenChange={changeDialog}>
+            <DialogTrigger render={<Button />}>
+              <PlusIcon data-icon="inline-start" />
               Add machine
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>Add machine</DialogTitle>
-              <DialogDescription>
-                Run one command on the new host. The installer verifies what it downloads against a
-                checksum this deployment pins, and refuses to install on a mismatch.
-              </DialogDescription>
-            </DialogHeader>
+            </DialogTrigger>
+            <DialogContent size="lg" className="gap-5">
+              <DialogHeader>
+                <DialogTitle>Add machine</DialogTitle>
+                <DialogDescription>
+                  Run one command on the new host. The installer verifies what it downloads against
+                  a checksum this deployment pins, and refuses to install on a mismatch.
+                </DialogDescription>
+              </DialogHeader>
 
-            {/* Each trigger's aria-controls names a panel, so both panels have to exist: a tab list
-                whose triggers point at nothing announces controls that are not there. */}
-            <Tabs value={role} onValueChange={(value) => changeRole(value as MachineRole)}>
-              <TabsList>
-                <TabsTrigger value="worker">Worker · runs CI jobs</TabsTrigger>
-                <TabsTrigger value="node">Node · runs deployed Apps</TabsTrigger>
-              </TabsList>
+              {/* Each trigger's aria-controls names a panel, so both panels have to exist: a tab
+                  list whose triggers point at nothing announces controls that are not there. */}
+              <Tabs
+                value={role}
+                onValueChange={(value) => changeRole(value as MachineRole)}
+                className="gap-4"
+              >
+                <TabsList variant="line" aria-label="Machine role" className="w-full border-b">
+                  <TabsTrigger value="worker" className="flex-none">
+                    Worker, runs CI jobs
+                  </TabsTrigger>
+                  <TabsTrigger value="node" className="flex-none">
+                    Node, runs deployed Apps
+                  </TabsTrigger>
+                </TabsList>
 
-              <TabsContent value="node">
-                <AddNodeInstructions onCopy={copyCommand} copied={copiedCommand} />
-              </TabsContent>
+                <TabsContent value="node">
+                  <AddNodeInstructions />
+                </TabsContent>
 
-              <TabsContent value="worker">
-                <div className="space-y-4 py-1">
+                <TabsContent value="worker" className="flex flex-col gap-4">
                   {submitting && (
-                    <div className="flex items-center gap-3 rounded-md border border-border bg-muted px-4 py-5 text-sm text-secondary-foreground">
-                      <StatusDot tone="success" live />
+                    <div
+                      role="status"
+                      className="flex items-center gap-3 rounded-lg border bg-subtle px-4 py-5 text-muted-foreground"
+                    >
+                      <Spinner />
                       Creating a short-lived registration command…
                     </div>
                   )}
 
                   {registration && (
                     <>
-                      <div className="space-y-2">
+                      {/* One registration token, two installer bodies. The token is the same
+                          either way, so switching here re-renders the command and never spends a
+                          second token. */}
+                      <Tabs
+                        value={installOs}
+                        onValueChange={(value) => setInstallOs(value as InstallOs)}
+                        className="gap-2"
+                      >
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-medium text-secondary-foreground">
-                            Run on the new machine
-                          </span>
-                          <span className="text-[11px] text-warning">
+                          <span className="font-medium">Host</span>
+                          <span className="text-xs text-warning">
                             Expires in{" "}
                             {Math.max(0, Math.ceil((registration.expiresAt - now) / 60_000))} min
                           </span>
                         </div>
-                        {/* One registration token, two installer bodies. The token is the same
-                            either way, so switching here re-renders the command and never spends a
-                            second token. */}
-                        <Tabs
-                          value={installOs}
-                          onValueChange={(value) => changeInstallOs(value as InstallOs)}
-                        >
-                          <TabsList>
-                            {INSTALL_OS_ORDER.map((value) => (
-                              <TabsTrigger key={value} value={value}>
-                                {INSTALL_OS_LABEL[value]}
-                              </TabsTrigger>
-                            ))}
-                          </TabsList>
+                        <TabsList aria-label="Host operating system" className="w-full">
                           {INSTALL_OS_ORDER.map((value) => (
-                            <TabsContent key={value} value={value}>
-                              <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-                                <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
-                                  <code>{registration.commands[value]}</code>
-                                </pre>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="absolute right-1.5 top-1.5 size-8"
-                                  aria-label={`Copy the ${INSTALL_OS_LABEL[value]} install command`}
-                                  onClick={() => void copyCommand(registration.commands[value])}
-                                >
-                                  {copiedCommand === registration.commands[value] ? (
-                                    <Check />
-                                  ) : (
-                                    <Clipboard />
-                                  )}
-                                </Button>
-                              </div>
-                            </TabsContent>
+                            <TabsTrigger key={value} value={value}>
+                              {INSTALL_OS_LABEL[value]}
+                            </TabsTrigger>
                           ))}
-                        </Tabs>
-                        <p className="text-xs leading-5 text-muted-foreground">
-                          The registration token expires in 15 minutes and can be used once.
-                        </p>
+                        </TabsList>
+                        {INSTALL_OS_ORDER.map((value) => (
+                          <TabsContent key={value} value={value}>
+                            <CodeBlock
+                              title={`${INSTALL_OS_SHELL[value]}, run on the new machine`}
+                              code={registration.commands[value]}
+                              className={WRAP_CODE}
+                            />
+                          </TabsContent>
+                        ))}
+                      </Tabs>
+                      <div className="-mt-2 flex flex-col gap-2 text-xs text-muted-foreground">
+                        <p>The registration token expires in 15 minutes and can be used once.</p>
                         {installOs === "win" && (
-                          <p className="text-xs leading-5 text-muted-foreground">
+                          <p>
                             The installer registers a Scheduled Task for the installing account, at
                             logon. A Windows Worker is scheduled onto once readiness proves the
                             Hyper-V module, the VM switch, a parent VHDX under
@@ -310,50 +322,49 @@ function MachinesPage() {
                       </div>
 
                       {connectedMachine ? (
-                        <Alert variant="success">
-                          <Check />
+                        <Alert className="text-success">
+                          <CheckIcon />
                           <AlertTitle>{connectedMachine.name} connected</AlertTitle>
                           <AlertDescription>
                             The machine is registered and will report online after its first
                             heartbeat.
                           </AlertDescription>
                         </Alert>
-                      ) : now >= registration.expiresAt ? (
-                        <Alert variant="warning">
+                      ) : expired ? (
+                        <Alert className="text-warning">
                           <AlertTitle>This command has expired</AlertTitle>
                           <AlertDescription>
                             Generate a new command before installing.
                           </AlertDescription>
                         </Alert>
                       ) : (
-                        <div className="flex items-center gap-3 rounded-md border border-border bg-muted p-3 text-sm text-secondary-foreground">
-                          <StatusDot tone="success" live />
-                          Waiting for machine…
+                        <div role="status" className="rounded-lg border bg-subtle p-3">
+                          <LiveIndicator className="text-sm">Waiting for machine…</LiveIndicator>
                         </div>
                       )}
 
-                      <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-                        <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
+                      <details className="rounded-lg border bg-subtle px-3 py-2.5 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer font-medium text-foreground select-none">
                           Advanced options
                         </summary>
-                        <div className="mt-3 space-y-2 leading-5">
+                        <div className="mt-3 flex flex-col gap-2">
                           <p>
                             Append{" "}
-                            <code className="text-secondary-foreground">
+                            <code className="text-foreground">
                               {installOs === "win" ? "-Name build-win-01" : "--name build-linux-01"}
                             </code>{" "}
                             to override the hostname.
                           </p>
                           <p>
                             Append{" "}
-                            <code className="text-secondary-foreground">
+                            <code className="text-foreground">
                               {installOs === "win" ? "-Labels gpu,hyperv" : "--labels gpu,docker"}
                             </code>{" "}
                             for host labels, which pin Profiles to this Worker.
                           </p>
                           <p>
                             Append{" "}
-                            <code className="text-secondary-foreground">
+                            <code className="text-foreground">
                               {installOs === "win" ? "-Slots 2" : "--slots 2"}
                             </code>{" "}
                             to override detected concurrency.
@@ -368,102 +379,131 @@ function MachinesPage() {
                       <AlertDescription>{error}</AlertDescription>
                     </Alert>
                   )}
-                </div>
-              </TabsContent>
-            </Tabs>
+                </TabsContent>
+              </Tabs>
 
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => changeDialog(false)}>
-                {connectedMachine && role === "worker" ? "Done" : "Cancel"}
-              </Button>
-              {role === "worker" && (error || (registration && now >= registration.expiresAt)) && (
-                <Button
-                  type="button"
-                  onClick={() => void beginRegistration()}
-                  disabled={submitting}
-                >
-                  Generate new command
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => changeDialog(false)}>
+                  {connectedMachine && role === "worker" ? "Done" : "Cancel"}
                 </Button>
-              )}
-              {role === "worker" &&
-                registration &&
-                !connectedMachine &&
-                now < registration.expiresAt && (
+                {role === "worker" && (error || expired) && (
                   <Button
                     type="button"
-                    onClick={() => void copyCommand(registration.commands[installOs])}
+                    onClick={() => void beginRegistration()}
+                    disabled={submitting}
                   >
-                    {copiedCommand === registration.commands[installOs] ? <Check /> : <Clipboard />}
-                    {copiedCommand === registration.commands[installOs]
-                      ? "Copied"
-                      : `Copy the ${INSTALL_OS_LABEL[installOs]} command`}
+                    Generate new command
                   </Button>
                 )}
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+                {role === "worker" && registration && !connectedMachine && !expired && (
+                  <CopyButton
+                    variant="default"
+                    size="default"
+                    value={registration.commands[installOs]}
+                    onCopy={(ok) => {
+                      if (ok) toast.success("Command copied");
+                      else copyFailed();
+                    }}
+                  >
+                    Copy the {INSTALL_OS_LABEL[installOs]} command
+                  </CopyButton>
+                )}
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </PageHeaderActions>
       </PageHeader>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <StatTile
-          label="Machines online"
-          value={machines === undefined ? undefined : `${summary.online}/${summary.totalMachines}`}
-          detail={
-            machines === undefined
+      <StatGroup className="@5xl:grid-cols-3">
+        <Stat>
+          <StatLabel>Machines online</StatLabel>
+          <StatValue>
+            {machines === undefined ? (
+              <Skeleton className="my-1 h-6 w-16" />
+            ) : (
+              <>
+                {summary.online}
+                <StatUnit>/{summary.totalMachines}</StatUnit>
+              </>
+            )}
+          </StatValue>
+          <StatHint>
+            {machines === undefined
               ? "Loading fleet"
-              : `${summary.totalMachines} registered ${summary.totalMachines === 1 ? "host" : "hosts"}`
-          }
-          live
-        />
-        <StatTile
-          label="Slots in use"
-          value={machines === undefined ? undefined : `${summary.usedSlots}/${summary.totalSlots}`}
-          detail="Concurrent runner capacity"
-        />
-        <StatTile
-          label="Runs today"
-          value={attempts === undefined ? undefined : String(summary.runsToday)}
-          detail="Scale-set Attempts since midnight"
-        />
-      </div>
+              : `${summary.totalMachines} registered ${summary.totalMachines === 1 ? "host" : "hosts"}`}
+          </StatHint>
+        </Stat>
+        <Stat>
+          <StatLabel>Slots in use</StatLabel>
+          <StatValue>
+            {machines === undefined ? (
+              <Skeleton className="my-1 h-6 w-16" />
+            ) : (
+              <>
+                {summary.usedSlots}
+                <StatUnit>/{summary.totalSlots}</StatUnit>
+              </>
+            )}
+          </StatValue>
+          <StatHint>Concurrent runner capacity</StatHint>
+        </Stat>
+        <Stat>
+          <StatLabel>Runs today</StatLabel>
+          <StatValue>
+            {attempts === undefined ? <Skeleton className="my-1 h-6 w-16" /> : summary.runsToday}
+          </StatValue>
+          <StatHint>Scale-set Attempts since midnight</StatHint>
+        </Stat>
+      </StatGroup>
 
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b">
-          <CardTitle>Runner Profiles</CardTitle>
+      <Card className="gap-0 py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle render={<h2 />}>Runner Profiles</CardTitle>
           <CardDescription>
             Workflows target a Profile, never a machine. Compatible Workers discover and prewarm its
             immutable image automatically.
           </CardDescription>
-          <CardAction>
-            <code className="whitespace-nowrap rounded-md border border-border bg-sunken px-2.5 py-1.5 text-xs text-primary">
+          <p className="mt-1 hidden sm:block">
+            <code className="rounded-md border bg-subtle px-2 py-1 text-xs whitespace-nowrap">
               runs-on: {profiles?.[0]?.name ?? "erainfra-4vcpu-ubuntu-2404"}
             </code>
-          </CardAction>
+          </p>
         </CardHeader>
-        <Table className="min-w-[1300px]">
+        <Table aria-label="Runner Profiles" className="min-w-[960px] text-[13px]">
           <TableHeader>
-            <TableRow>
-              <TableHead className="w-[240px]">Profile / scale set</TableHead>
-              <TableHead className="w-[200px]">Controller</TableHead>
-              <TableHead className="w-[190px]">Isolation boundary</TableHead>
-              <TableHead className="w-[150px]">Resources</TableHead>
-              <TableHead className="w-[130px]">Ready Workers</TableHead>
-              <TableHead className="w-[110px]">Capacity</TableHead>
-              <TableHead className="w-[220px]">Last job</TableHead>
-              <TableHead>Image Release</TableHead>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-[250px] pl-4">Profile and scale set</TableHead>
+              <TableHead className="w-[190px]">Controller</TableHead>
+              <TableHead className="w-[200px]">Isolation boundary</TableHead>
+              <TableHead className="w-[200px]">Resources and image</TableHead>
+              <TableHead className="w-[150px]">Capacity</TableHead>
+              <TableHead className="pr-4">Last job</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {profiles === undefined ? (
-              <TableRowsSkeleton columns={8} rows={2} />
+              Array.from({ length: 2 }, (_unused, row) => (
+                <TableRow key={`loading-${row}`} className="hover:bg-transparent">
+                  {Array.from({ length: 6 }, (_alsoUnused, cell) => (
+                    <TableCell key={cell} className={cn(cell === 0 && "pl-4")}>
+                      <Skeleton className={cn("h-4", cell === 0 ? "w-32" : "w-full max-w-24")} />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
             ) : profiles.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={8} className="p-0">
-                  <EmptyState
-                    icon={ShieldCheck}
-                    title="No Profiles registered"
-                    description="Start a scale-set controller to register its Profile and the isolation boundary it can promise."
-                  />
+                <TableCell colSpan={6} className="p-0 whitespace-normal">
+                  <EmptyState>
+                    <EmptyStateMedia>
+                      <ShieldCheckIcon />
+                    </EmptyStateMedia>
+                    <EmptyStateTitle>No Profiles registered</EmptyStateTitle>
+                    <EmptyStateDescription>
+                      Start a scale-set controller to register its Profile and the isolation
+                      boundary it can promise.
+                    </EmptyStateDescription>
+                  </EmptyState>
                 </TableCell>
               </TableRow>
             ) : (
@@ -488,158 +528,216 @@ function MachinesPage() {
         </Table>
       </Card>
 
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b">
-          <CardTitle className="flex items-center gap-2.5">
+      <Card className="gap-0 py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle render={<h2 />} className="flex items-center gap-2">
             Registered fleet
             {machineCount !== undefined && (
-              <span className="tabular-nums text-xs font-normal text-subtle-foreground">
+              <Badge variant="neutral" className="rounded-full">
                 {machineCount}
-              </span>
+              </Badge>
             )}
           </CardTitle>
           <CardDescription>
             Every host that holds a machine credential, and what it is running right now.
           </CardDescription>
           <CardAction>
-            <span className="flex items-center gap-2 text-xs text-muted-foreground">
-              <StatusDot tone="success" live />
-              Live
-            </span>
+            <LiveIndicator />
           </CardAction>
         </CardHeader>
 
-        <Table className="min-w-[1040px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[112px]">Status</TableHead>
-              <TableHead className="w-[170px]">Machine</TableHead>
-              <TableHead className="w-[90px]">OS</TableHead>
-              <TableHead className="w-[210px]">Ready Profiles</TableHead>
-              <TableHead className="w-[130px]">Slots</TableHead>
-              <TableHead className="w-[112px]">Last seen</TableHead>
-              <TableHead>Active runs</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {machines === undefined ? (
-              <TableRowsSkeleton columns={7} rows={3} />
-            ) : machines.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={7} className="p-0">
-                  <EmptyState
-                    icon={Server}
-                    title="No machines registered"
-                    description="Add a host to make capacity available to the scheduler."
-                  >
-                    <Button size="sm" onClick={() => changeDialog(true)}>
-                      <Plus />
-                      Add machine
-                    </Button>
-                  </EmptyState>
-                </TableCell>
-              </TableRow>
-            ) : (
-              machines.map((machine) => {
-                const online = isMachineOnline(machine.lastSeen, now);
-                const slotPercent = Math.min(
-                  100,
-                  Math.max(0, (machine.usedSlots / machine.maxSlots) * 100),
-                );
-
-                return (
-                  <TableRow key={machine._id}>
-                    <TableCell>
-                      <MachineStatus online={online} />
-                    </TableCell>
-                    <TableCell>
-                      <div className="font-medium text-foreground">{machine.name}</div>
-                      {machine.arch && (
-                        <div className="mt-0.5 text-[10px] text-subtle-foreground">
-                          {machine.arch}
-                          {machine.cpus && ` · ${machine.cpus} CPU`}
-                          {machine.memoryMiB && ` · ${formatMemory(machine.memoryMiB)}`}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="font-mono">
-                        {formatOs(machine.os)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <ProfileReadiness readiness={machine.readiness} />
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <span className="tabular-nums w-7 text-secondary-foreground">
-                          {machine.usedSlots}/{machine.maxSlots}
-                        </span>
-                        <div
-                          className="h-1 w-12 overflow-hidden rounded-full bg-accent"
-                          role="progressbar"
-                          aria-label={`${machine.usedSlots} of ${machine.maxSlots} slots in use`}
-                          aria-valuemin={0}
-                          aria-valuemax={machine.maxSlots}
-                          aria-valuenow={machine.usedSlots}
-                        >
-                          <div
-                            className={cn(
-                              "h-full rounded-full",
-                              machine.usedSlots >= machine.maxSlots
-                                ? "bg-warning"
-                                : "bg-muted-foreground",
-                            )}
-                            style={{ width: `${slotPercent}%` }}
-                          />
-                        </div>
-                      </div>
-                      {machine.recommendedSlots !== undefined && (
-                        <p className="mt-1 text-[10px] text-subtle-foreground">
-                          {machine.slotPolicy === "fixed" ? "fixed" : "auto"} · configured{" "}
-                          {machine.configuredSlots ?? "auto"} · resource{" "}
-                          {machine.resourceRecommendedSlots ?? machine.recommendedSlots} ·
-                          recommended {machine.recommendedSlots} · effective {machine.maxSlots}
-                        </p>
-                      )}
-                      {machine.benchmark && (
-                        <p
-                          className="mt-1 text-[10px] text-subtle-foreground"
-                          title={`CPU ${machine.benchmark.cpuSha256MiBps?.toFixed(0) ?? "n/a"} MiB/s · memory ${machine.benchmark.memoryCopyMiBps?.toFixed(0) ?? "n/a"} MiB/s · disk ${machine.benchmark.diskWriteMiBps?.toFixed(0) ?? "n/a"}/${machine.benchmark.diskReadMiBps?.toFixed(0) ?? "n/a"} MiB/s · fsync ${machine.benchmark.diskFsyncLatencyMs?.toFixed(1) ?? "n/a"} ms · package-link ${machine.benchmark.packageLinkOpsPerSec?.toFixed(0) ?? "n/a"} files/s · ${machine.benchmark.network.map((observation) => `${observation.target} ${observation.ttfbMs?.toFixed(0) ?? "n/a"} ms/${observation.throughputMbps?.toFixed(1) ?? "n/a"} Mbps`).join(" · ")} · measured ${formatAbsoluteTime(machine.benchmark.measuredAt)} · ${machine.benchmark.confidence}${machine.benchmark.errors.length > 0 ? ` · ${machine.benchmark.errors.join("; ")}` : ""}`}
-                        >
-                          benchmark {machine.benchmark.scores.balanced}/100 · CPU{" "}
-                          {machine.benchmark.scores.cpu} · I/O {machine.benchmark.scores.disk} · net{" "}
-                          {machine.benchmark.scores.network}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <span
-                        className="tabular-nums whitespace-nowrap text-muted-foreground"
-                        title={
-                          machine.lastSeen > 0
-                            ? formatAbsoluteTime(machine.lastSeen)
-                            : "No heartbeat received"
-                        }
-                      >
-                        {formatRelativeTime(machine.lastSeen, now)}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <ActiveRuns
-                        attempts={machine.currentAttempts}
-                        experiments={machine.currentExperiments}
-                      />
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+        {machines !== undefined && machines.length > 0 && (
+          <ul aria-label="Registered fleet" className="divide-y md:hidden">
+            {machines.map((machine) => (
+              <MachineListItem key={machine._id} machine={machine} now={now} />
+            ))}
+          </ul>
+        )}
+        <div className={cn(machines !== undefined && machines.length > 0 && "hidden md:block")}>
+          <DataTable
+            aria-label="Registered fleet"
+            className="min-w-[860px] text-[13px]"
+            columns={fleetColumns}
+            data={machines ?? []}
+            loading={machines === undefined}
+            loadingRows={3}
+            getRowId={(machine) => machine._id}
+            rowActions={machineActions}
+            empty={
+              <EmptyState>
+                <EmptyStateMedia>
+                  <ServerIcon />
+                </EmptyStateMedia>
+                <EmptyStateTitle>No machines registered</EmptyStateTitle>
+                <EmptyStateDescription>
+                  Add a host to make capacity available to the scheduler.
+                </EmptyStateDescription>
+                <EmptyStateActions>
+                  <Button size="sm" onClick={() => changeDialog(true)}>
+                    <PlusIcon data-icon="inline-start" />
+                    Add machine
+                  </Button>
+                </EmptyStateActions>
+              </EmptyState>
+            }
+          />
+        </div>
       </Card>
 
       <InviteOperator />
+    </>
+  );
+}
+
+const machineColumn = createDataTableColumns<Machine>();
+
+/** The fleet columns. Liveness and "last seen" read the page clock, so they rebuild with it. */
+function buildFleetColumns(now: number) {
+  return machineColumn.columns([
+    machineColumn.accessor("name", {
+      header: "Machine",
+      meta: { headerClassName: "w-[240px] pl-4", cellClassName: "pl-4" },
+      cell: (cell) => {
+        const machine = cell.row.original;
+        const online = isMachineOnline(machine.lastSeen, now);
+        return (
+          <div>
+            <span className="flex items-center gap-2 font-medium">
+              <MachineStatus online={online} label={false} />
+              {machine.name}
+              <span className="sr-only">, {online ? "online" : "offline"}</span>
+            </span>
+            <div className="mt-0.5 pl-4 text-xs text-muted-foreground">
+              {formatOs(machine.os)}
+              {machine.arch && `, ${hardwareLine(machine)}`}
+            </div>
+          </div>
+        );
+      },
+    }),
+    machineColumn.display({
+      id: "readiness",
+      header: "Ready Profiles",
+      meta: { headerClassName: "w-[220px]" },
+      cell: (cell) => <ProfileReadiness readiness={cell.row.original.readiness} />,
+    }),
+    machineColumn.accessor("usedSlots", {
+      header: "Slots",
+      meta: { headerClassName: "w-[150px]" },
+      cell: (cell) => <MachineSlots machine={cell.row.original} />,
+    }),
+    machineColumn.accessor("lastSeen", {
+      header: "Last seen",
+      meta: { headerClassName: "w-[110px]" },
+      cell: (cell) => <LastSeen lastSeen={cell.getValue()} now={now} />,
+    }),
+    machineColumn.display({
+      id: "active",
+      header: "Active runs",
+      cell: (cell) => (
+        <ActiveRuns
+          attempts={cell.row.original.currentAttempts}
+          experiments={cell.row.original.currentExperiments}
+        />
+      ),
+    }),
+  ]);
+}
+
+async function copyMachineName(name: string) {
+  if (await copyText(name)) toast.success("Machine name copied", { description: name });
+  else copyFailed();
+}
+
+/** Module-level, so the menu items are not a new component on each render. */
+const machineActions = {
+  label: (machine: Machine) => `Actions for ${machine.name}`,
+  items: (machine: Machine) => (
+    <DropdownMenuItem onClick={() => void copyMachineName(machine.name)}>
+      Copy machine name
+    </DropdownMenuItem>
+  ),
+};
+
+/** One machine as a stacked row, for screens too narrow for the fleet table. */
+function MachineListItem({ machine, now }: { machine: Machine; now: number }) {
+  const online = isMachineOnline(machine.lastSeen, now);
+  return (
+    <li className="flex flex-col gap-2 px-4 py-3 text-[13px]">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          <MachineStatus online={online} label={false} />
+          <span className="truncate font-medium">{machine.name}</span>
+          <span className="sr-only">, {online ? "online" : "offline"}</span>
+        </span>
+        <LastSeen lastSeen={machine.lastSeen} now={now} />
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {formatOs(machine.os)}
+        {machine.arch && `, ${hardwareLine(machine)}`}
+      </div>
+      <MachineSlots machine={machine} compact />
+      <ProfileReadiness readiness={machine.readiness} />
+      <ActiveRuns attempts={machine.currentAttempts} experiments={machine.currentExperiments} />
+    </li>
+  );
+}
+
+function hardwareLine(machine: Machine) {
+  return [
+    machine.arch,
+    machine.cpus ? `${machine.cpus} CPU` : undefined,
+    machine.memoryMiB ? formatMemory(machine.memoryMiB) : undefined,
+  ]
+    .filter((part) => part !== undefined)
+    .join(", ");
+}
+
+function LastSeen({ lastSeen, now }: { lastSeen: number; now: number }) {
+  return (
+    <span
+      className="whitespace-nowrap text-muted-foreground tabular-nums"
+      title={lastSeen > 0 ? formatAbsoluteTime(lastSeen) : "No heartbeat received"}
+    >
+      {formatRelativeTime(lastSeen, now)}
+    </span>
+  );
+}
+
+function MachineSlots({ machine, compact = false }: { machine: Machine; compact?: boolean }) {
+  const full = machine.usedSlots >= machine.maxSlots;
+  return (
+    <div>
+      <div className="flex items-center gap-2.5">
+        <Progress
+          value={Math.min(machine.usedSlots, machine.maxSlots)}
+          max={Math.max(1, machine.maxSlots)}
+          tone={full ? "warning" : "default"}
+          aria-label={`${machine.usedSlots} of ${machine.maxSlots} slots in use`}
+          className="w-12 shrink-0"
+        />
+        <span className="tabular-nums">
+          {machine.usedSlots}/{machine.maxSlots}
+          {compact && " slots"}
+        </span>
+      </div>
+      {!compact && machine.recommendedSlots !== undefined && (
+        <p className="mt-1 max-w-52 text-xs whitespace-normal text-muted-foreground">
+          {machine.slotPolicy === "fixed" ? "fixed" : "auto"}, configured{" "}
+          {machine.configuredSlots ?? "auto"}, resource{" "}
+          {machine.resourceRecommendedSlots ?? machine.recommendedSlots}, recommended{" "}
+          {machine.recommendedSlots}, effective {machine.maxSlots}
+        </p>
+      )}
+      {!compact && machine.benchmark && (
+        <p
+          className="mt-1 text-xs text-muted-foreground"
+          title={`CPU ${machine.benchmark.cpuSha256MiBps?.toFixed(0) ?? "n/a"} MiB/s · memory ${machine.benchmark.memoryCopyMiBps?.toFixed(0) ?? "n/a"} MiB/s · disk ${machine.benchmark.diskWriteMiBps?.toFixed(0) ?? "n/a"}/${machine.benchmark.diskReadMiBps?.toFixed(0) ?? "n/a"} MiB/s · fsync ${machine.benchmark.diskFsyncLatencyMs?.toFixed(1) ?? "n/a"} ms · package-link ${machine.benchmark.packageLinkOpsPerSec?.toFixed(0) ?? "n/a"} files/s · ${machine.benchmark.network.map((observation) => `${observation.target} ${observation.ttfbMs?.toFixed(0) ?? "n/a"} ms/${observation.throughputMbps?.toFixed(1) ?? "n/a"} Mbps`).join(" · ")} · measured ${formatAbsoluteTime(machine.benchmark.measuredAt)} · ${machine.benchmark.confidence}${machine.benchmark.errors.length > 0 ? ` · ${machine.benchmark.errors.join("; ")}` : ""}`}
+        >
+          benchmark {machine.benchmark.scores.balanced}/100, CPU {machine.benchmark.scores.cpu}, I/O{" "}
+          {machine.benchmark.scores.disk}, net {machine.benchmark.scores.network}
+        </p>
+      )}
     </div>
   );
 }
@@ -649,62 +747,41 @@ function MachinesPage() {
  * Convex mode (`connect-convex`), which needs Linux with systemd, and authenticates with a
  * credential issued when it is enrolled on the Nodes page, so there is no token to mint here.
  */
-function AddNodeInstructions({
-  copied,
-  onCopy,
-}: {
-  copied: string | undefined;
-  onCopy: (value: string) => Promise<void>;
-}) {
+function AddNodeInstructions() {
   const site = convexSiteUrl();
   const command = `curl -fsSL ${site}/install | sudo bash -s -- --role node --credential-file /root/node.credential`;
 
   return (
-    <div className="space-y-4 py-1">
-      <p className="text-xs leading-5 text-muted-foreground">
+    <div className="flex flex-col gap-4">
+      <p className="text-muted-foreground">
         Enroll the Node on the Nodes page first, then save its credential on the Node in a file only
-        root can read (<code className="text-secondary-foreground">chmod 600</code>). On the Node,
-        which must run Linux with systemd:
+        root can read (<code className="text-foreground">chmod 600</code>). On the Node, which must
+        run Linux with systemd:
       </p>
-      <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-        <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-5 text-secondary-foreground">
-          <code>{command}</code>
-        </pre>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="absolute right-1.5 top-1.5 size-8"
-          aria-label="Copy the Node install command"
-          onClick={() => void onCopy(command)}
-        >
-          {copied === command ? <Check /> : <Clipboard />}
-        </Button>
-      </div>
+      <CodeBlock title="Shell, run on the Node" code={command} className={WRAP_CODE} />
 
-      <p className="text-xs leading-5 text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         This deployment serves the installer and the checksum; the binary itself comes from the
         release, and the install stops if the two disagree. The installer copies the credential to
-        <code className="text-secondary-foreground"> /etc/erainfra-node.credential</code>; delete
-        the file you saved afterwards.
+        <code className="text-foreground"> /etc/erainfra-node.credential</code>; delete the file you
+        saved afterwards.
       </p>
 
-      <details className="rounded-md border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-        <summary className="cursor-pointer select-none font-medium text-secondary-foreground">
+      <details className="rounded-lg border bg-subtle px-3 py-2.5 text-xs text-muted-foreground">
+        <summary className="cursor-pointer font-medium text-foreground select-none">
           Air-gapped
         </summary>
-        <div className="mt-3 space-y-2 leading-5">
+        <div className="mt-3 flex flex-col gap-2">
           <p>
-            Append{" "}
-            <code className="text-secondary-foreground">--source file:///path/to/infra-agent</code>{" "}
-            to take the bytes off local disk instead of the release.
+            Append <code className="text-foreground">--source file:///path/to/infra-agent</code> to
+            take the bytes off local disk instead of the release.
           </p>
           <p>
             Verification is identical either way: the digest arrives with this script over TLS from
             this deployment, so where the bytes come from does not have to be trusted.
           </p>
           <p>
-            Append <code className="text-secondary-foreground">--no-docker</code> to skip the
+            Append <code className="text-foreground">--no-docker</code> to skip the
             container-runtime install.
           </p>
         </div>
@@ -713,77 +790,30 @@ function AddNodeInstructions({
   );
 }
 
-function StatTile({
-  label,
-  value,
-  detail,
-  live = false,
-}: {
-  label: string;
-  value: string | undefined;
-  detail: string;
-  live?: boolean;
-}) {
-  return (
-    <Card className="px-4 py-3.5">
-      <div className="flex items-center gap-2 text-(length:--era-text-sm) font-medium text-muted-foreground">
-        {live && <StatusDot tone="success" live />}
-        {label}
-      </div>
-      <div className="mt-2 flex items-baseline justify-between gap-3">
-        {value === undefined ? (
-          <Skeleton className="h-6 w-16" />
-        ) : (
-          <span className="tabular-nums text-xl font-semibold tracking-tight text-foreground">
-            {value}
-          </span>
-        )}
-        <span className="truncate text-[11px] text-subtle-foreground">{detail}</span>
-      </div>
-    </Card>
-  );
+function MachineStatus({ online, label = true }: { online: boolean; label?: boolean }) {
+  const view = onlineView(online);
+  if (label) return <Status state={view.state}>{view.label}</Status>;
+  const def = statusStates[view.state];
+  return <StatusDot tone={def.tone} hollow={"hollow" in def && def.hollow} />;
 }
 
-function MachineStatus({ online }: { online: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-2",
-        online ? "text-success" : "text-muted-foreground",
-      )}
-    >
-      <StatusDot tone={online ? "success" : "muted"} live={online} />
-      {online ? "Online" : "Offline"}
-    </span>
-  );
-}
+type Readiness = Machine["readiness"][number];
 
-function ProfileReadiness({
-  readiness,
-}: {
-  readiness: Array<{
-    profile: string;
-    state: "preparing" | "ready" | "degraded" | "failed";
-    statusDetail?: string;
-    lastError?: string;
-  }>;
-}) {
-  if (readiness.length === 0) return <span className="text-subtle-foreground">Discovering…</span>;
+const READINESS_BADGE = {
+  ready: "success",
+  failed: "danger",
+  degraded: "warning",
+  preparing: "warning",
+} as const satisfies Record<Readiness["state"], "success" | "danger" | "warning">;
+
+function ProfileReadiness({ readiness }: { readiness: Readiness[] }) {
+  if (readiness.length === 0) return <span className="text-muted-foreground">Discovering…</span>;
 
   return (
-    <div className="flex max-w-[240px] flex-wrap gap-1">
+    <div className="flex max-w-[260px] flex-wrap gap-1">
       {readiness.map((entry) => {
         const badge = (
-          <Badge
-            variant={
-              entry.state === "ready"
-                ? "success"
-                : entry.state === "failed"
-                  ? "destructive"
-                  : "warning"
-            }
-            className="font-mono"
-          >
+          <Badge variant={READINESS_BADGE[entry.state]} className="font-mono">
             {entry.profile}
           </Badge>
         );
@@ -795,12 +825,12 @@ function ProfileReadiness({
           // The detail also shows in the Worker row under the expanded Profile, so this trigger
           // stays out of the tab order; the group name and the tooltip still reach a screen reader.
           <Tooltip key={entry.profile}>
-            <TooltipTrigger asChild>
-              <div role="group" aria-label={`${entry.profile}, ${entry.state}`}>
-                {badge}
-              </div>
+            <TooltipTrigger
+              render={<div role="group" aria-label={`${entry.profile}, ${entry.state}`} />}
+            >
+              {badge}
             </TooltipTrigger>
-            <TooltipContent side="top">{detail}</TooltipContent>
+            <TooltipContent>{detail}</TooltipContent>
           </Tooltip>
         );
       })}
@@ -808,50 +838,41 @@ function ProfileReadiness({
   );
 }
 
+/** A state, with the dashboard's label, followed by what it belongs to. */
+function StateLine({ view, children }: { view: StateView; children: ReactNode }) {
+  return (
+    <Status state={view.state} className="min-w-0 text-xs">
+      {children}
+      <span className="text-muted-foreground">{view.label ?? statusStates[view.state].label}</span>
+    </Status>
+  );
+}
+
 function ActiveRuns({
   attempts,
   experiments,
 }: {
-  attempts: Array<{
-    _id: string;
-    profile: string;
-    state: "pending" | "preparing" | "ready" | "running";
-  }>;
-  experiments: Array<{
-    _id: string;
-    name: string;
-    state: "queued" | "preparing" | "running";
-  }>;
+  attempts: Machine["currentAttempts"];
+  experiments: Machine["currentExperiments"];
 }) {
   if (attempts.length === 0 && experiments.length === 0) {
-    return <span className="text-subtle-foreground">—</span>;
+    return <span className="text-muted-foreground">None</span>;
   }
 
   return (
-    <div className="space-y-1.5">
+    <div className="flex flex-col gap-1.5">
       {attempts.map((attempt) => (
-        <div key={attempt._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-          <StatusDot
-            tone={attempt.state === "running" ? "success" : "warning"}
-            live={attempt.state === "running"}
-          />
-          <span className="max-w-40 truncate font-mono text-[12px] text-secondary-foreground">
-            {attempt.profile}
-          </span>
-          <span className="text-xs text-subtle-foreground">{attempt.state}</span>
-        </div>
+        <StateLine key={attempt._id} view={attemptView(attempt.state)}>
+          <span className="max-w-44 truncate font-mono text-foreground">{attempt.profile}</span>
+        </StateLine>
       ))}
       {experiments.map((experiment) => (
-        <div key={experiment._id} className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-          <StatusDot
-            tone={experiment.state === "running" ? "info" : "warning"}
-            live={experiment.state === "running"}
-          />
-          <span className="max-w-40 truncate text-[12px] text-secondary-foreground">
-            {experiment.name}
-          </span>
-          <span className="text-xs text-subtle-foreground">experiment</span>
-        </div>
+        <StateLine
+          key={experiment._id}
+          view={{ ...experimentView(experiment.state), label: "experiment" }}
+        >
+          <span className="max-w-44 truncate text-foreground">{experiment.name}</span>
+        </StateLine>
       ))}
     </div>
   );
@@ -873,7 +894,7 @@ const BOUNDARY_COPY = {
   "shared-kernel": {
     label: "shared kernel",
     tooltip:
-      "Every Job shares this host's kernel and Docker daemon. Trusted repositories only — one Job's kernel exploit is every other Job's problem.",
+      "Every Job shares this host's kernel and Docker daemon. Trusted repositories only: one Job's kernel exploit is every other Job's problem.",
   },
 } as const;
 
@@ -910,60 +931,67 @@ function ProfileRow({
 
   return (
     <>
-      <TableRow className="cursor-pointer" onClick={() => setExpanded((open) => !open)}>
-        <TableCell>
+      <TableRow
+        className="cursor-pointer align-top"
+        data-state={expanded ? "selected" : undefined}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        <TableCell className="pl-4">
           <div className="flex items-start gap-2">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
               aria-expanded={expanded}
               aria-controls={panelId}
-              className="mt-px grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="-ml-1 text-muted-foreground"
               onClick={(event) => {
                 event.stopPropagation();
                 setExpanded((open) => !open);
               }}
             >
-              <ChevronRight
-                className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
+              <ChevronRightIcon
+                aria-hidden="true"
+                className={cn("transition-transform", expanded && "rotate-90")}
               />
               <span className="sr-only">
                 {expanded ? "Hide" : "Show"} Worker readiness for {profile.name}
               </span>
-            </button>
+            </Button>
             <div className="min-w-0">
-              <code className="text-xs text-foreground">{profile.name}</code>
-              <p className="mt-0.5 text-[10px] text-subtle-foreground">{profile.scaleSetName}</p>
+              <div className="font-medium">{profile.name}</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">{profile.scaleSetName}</p>
             </div>
           </div>
         </TableCell>
-        <TableCell className="text-xs">
+        <TableCell>
           <ControllerStatus liveness={controller} paused={profile.state === "paused"} now={now} />
         </TableCell>
         <TableCell>
           {/* A button, so the keyboard reaches the explanation, which shows nowhere else. */}
           <Tooltip>
-            <TooltipTrigger className="rounded-sm">
-              <Badge variant={guestKernel ? "success" : "warning"} className="text-[11px]">
+            <TooltipTrigger
+              className="rounded-sm"
+              onClick={(event: MouseEvent) => event.stopPropagation()}
+            >
+              <Badge variant={guestKernel ? "success" : "warning"}>
                 {guestKernel ? (
-                  <ShieldCheck aria-hidden="true" />
+                  <ShieldCheckIcon aria-hidden="true" />
                 ) : (
-                  <ShieldAlert aria-hidden="true" />
+                  <ShieldAlertIcon aria-hidden="true" />
                 )}
                 {boundary.label}
               </Badge>
             </TooltipTrigger>
-            <TooltipContent side="top">{boundary.tooltip}</TooltipContent>
+            <TooltipContent>{boundary.tooltip}</TooltipContent>
           </Tooltip>
-          <p className="mt-1 font-mono text-[10px] text-subtle-foreground">
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
             {profile.executor}
-            {profile.trustedOnly && " · trusted only"}
+            {profile.trustedOnly && ", trusted only"}
           </p>
           <p
             className={cn(
-              "mt-0.5 font-mono text-[10px]",
-              profile.egress.mode === "public"
-                ? "text-subtle-foreground"
-                : "text-secondary-foreground",
+              "mt-0.5 font-mono text-xs",
+              profile.egress.mode === "public" ? "text-muted-foreground" : "text-foreground",
             )}
             title={egressTooltip(profile.egress)}
           >
@@ -971,82 +999,75 @@ function ProfileRow({
           </p>
           {profile.workerLabels.length > 0 && (
             <p
-              className="mt-0.5 font-mono text-[10px] text-secondary-foreground"
+              className="mt-0.5 font-mono text-xs text-foreground"
               title="Only Workers carrying every one of these host labels serve this Profile"
             >
               pinned to {profile.workerLabels.join(", ")}
             </p>
           )}
           {profile.labelConflicts.length > 0 && (
-            <p
-              className="mt-0.5 text-[10px] text-warning"
-              title={profile.labelConflicts.join("\n")}
-            >
+            <p className="mt-0.5 text-xs text-warning" title={profile.labelConflicts.join("\n")}>
               scale-set labels overlap another Profile
             </p>
           )}
         </TableCell>
-        <TableCell className="tabular-nums text-xs text-secondary-foreground">
-          {profile.vcpus} vCPU · {formatMemory(profile.memoryMiB)}
-          {profile.warmPool > 0 && ` · ${profile.warmPool} warm`}
-          <p className="mt-0.5 text-[10px] text-subtle-foreground">
-            {profile.fitPolicy} benchmark fit
+        <TableCell className="tabular-nums">
+          {profile.vcpus} vCPU, {formatMemory(profile.memoryMiB)}
+          {profile.warmPool > 0 && `, ${profile.warmPool} warm`}
+          <p className="mt-0.5 text-xs text-muted-foreground">{profile.fitPolicy} benchmark fit</p>
+          <p
+            className="mt-0.5 max-w-[220px] truncate font-mono text-xs text-muted-foreground"
+            title={`Image Release ${profile.imageRelease}`}
+          >
+            {profile.imageRelease}
           </p>
         </TableCell>
-        <TableCell className="tabular-nums text-xs text-secondary-foreground">
-          {profile.readyWorkers}
-          {unhealthy.length > 0 && (
-            <span className="ml-1.5 text-[10px] text-warning">+{unhealthy.length} not ready</span>
-          )}
-        </TableCell>
-        <TableCell className="tabular-nums text-xs text-secondary-foreground">
+        <TableCell className="tabular-nums">
           {profile.freeSlots}/{profile.readySlots} free
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {profile.readyWorkers} ready {profile.readyWorkers === 1 ? "Worker" : "Workers"}
+            {unhealthy.length > 0 && (
+              <span className="text-warning">, {unhealthy.length} not ready</span>
+            )}
+          </p>
         </TableCell>
-        <TableCell className="text-xs">
+        <TableCell className="pr-4">
           {activity === undefined ? (
-            <Skeleton className="h-3.5 w-28" />
+            <Skeleton className="h-4 w-28" />
           ) : lastJob === undefined ? (
             <span className={cn("text-muted-foreground", idle && "text-warning")}>
               No job started here yet
             </span>
           ) : (
             <>
-              <code
-                className="block max-w-[210px] truncate text-[11px] text-foreground"
+              <span
+                className="block max-w-[200px] truncate font-mono text-xs"
                 title={lastJob.displayName ?? lastJob.repo}
               >
                 {lastJob.repo}
-              </code>
+              </span>
               <p
                 className={cn(
-                  "mt-0.5 tabular-nums text-[10px] text-subtle-foreground",
+                  "mt-0.5 text-xs text-muted-foreground tabular-nums",
                   idle && "text-warning",
                 )}
               >
-                {formatRelativeTime(lastJob.at, now)} · {activity.jobsInWindow}
+                {formatRelativeTime(lastJob.at, now)}, {activity.jobsInWindow}
                 {activity.sampleExhausted && "+"} in 7 d
               </p>
             </>
           )}
         </TableCell>
-        <TableCell>
-          <code
-            className="block max-w-[270px] truncate text-[10px] text-subtle-foreground"
-            title={profile.imageRelease}
-          >
-            {profile.imageRelease}
-          </code>
-        </TableCell>
       </TableRow>
       {expanded && (
         <TableRow className="hover:bg-transparent">
-          <TableCell colSpan={8} id={panelId} className="bg-sunken px-4 py-3.5">
+          <TableCell colSpan={6} id={panelId} className="bg-subtle px-4 py-3.5 whitespace-normal">
             {profile.workers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground">
                 No Worker has reported readiness for this Profile yet.
               </p>
             ) : (
-              <div className="space-y-2.5">
+              <div className="flex flex-col gap-2.5">
                 {profile.workers.map((worker) => (
                   <WorkerReadiness key={worker.machineId} worker={worker} now={now} />
                 ))}
@@ -1058,12 +1079,6 @@ function ProfileRow({
     </>
   );
 }
-
-const CONTROLLER_COPY = {
-  online: { label: "Online", tone: "success" },
-  waiting: { label: "Waiting for session", tone: "warning" },
-  offline: { label: "Offline", tone: "destructive" },
-} as const;
 
 const SESSION_COPY = {
   starting: "starting",
@@ -1080,6 +1095,13 @@ const TOKEN_SLOT_COPY = {
   machine: "Worker credential",
 } as const;
 
+/** A controller's liveness in the registry's state map. A dead controller is a fault. */
+const CONTROLLER_VIEW: Record<"online" | "waiting" | "offline", StateView> = {
+  online: { state: "online" },
+  waiting: { state: "connecting", label: "Waiting for session" },
+  offline: { state: "unhealthy", label: "Offline" },
+};
+
 /**
  * Whether anything is listening for the Profile's jobs. A dead controller creates no Attempts, so
  * without this column it reads exactly like an idle Profile. Status is computed here against the
@@ -1095,19 +1117,29 @@ function ControllerStatus({
   paused: boolean;
   now: number;
 }) {
-  if (liveness === undefined) return <Skeleton className="h-3.5 w-24" />;
+  if (liveness === undefined) return <Skeleton className="h-4 w-24" />;
   if (liveness.status === "unknown") {
     return (
       <Tooltip>
-        <TooltipTrigger className="rounded-sm text-muted-foreground">Not reporting</TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs">
+        <TooltipTrigger
+          className="rounded-sm text-muted-foreground"
+          onClick={(event: MouseEvent) => event.stopPropagation()}
+        >
+          Not reporting
+        </TooltipTrigger>
+        <TooltipContent>
           No controller has ever reported a heartbeat for this Profile. Controllers built before the
           heartbeat do not send one; liveness is tracked from the first report on.
         </TooltipContent>
       </Tooltip>
     );
   }
-  const copy = CONTROLLER_COPY[liveness.status];
+  const base = CONTROLLER_VIEW[liveness.status];
+  // A retired Profile's controller is meant to be stopped, so it reads as quiet, not as a fault.
+  const view: StateView =
+    paused && liveness.status !== "online"
+      ? { state: "offline", label: base.label ?? statusStates[base.state].label }
+      : base;
   const primary = liveness.primary;
   const lastHeartbeatAt = liveness.lastHeartbeatAt;
   const detail =
@@ -1116,30 +1148,24 @@ function ControllerStatus({
       : lastHeartbeatAt === undefined
         ? undefined
         : `reported ${formatRelativeTime(lastHeartbeatAt, now)}`;
-  // A retired Profile's controller is meant to be stopped.
-  const tone = paused && liveness.status !== "online" ? "muted" : copy.tone;
   return (
     <Tooltip>
       {/* A button, so the keyboard reaches the job counts and controller rows in the tooltip. */}
-      <TooltipTrigger className="block min-w-0 max-w-full rounded-sm text-left">
-        <span className="inline-flex items-center gap-2">
-          <StatusDot tone={tone} live={liveness.status === "online"} />
-          <span className={cn(tone === "muted" ? "text-muted-foreground" : "text-foreground")}>
-            {copy.label}
-          </span>
-        </span>
+      <TooltipTrigger
+        className="block max-w-full min-w-0 rounded-sm text-left"
+        onClick={(event: MouseEvent) => event.stopPropagation()}
+      >
+        <Status state={view.state}>{view.label}</Status>
         {primary !== undefined && (
-          <span className="mt-0.5 block truncate font-mono text-[10px] text-subtle-foreground">
-            {primary.hostname} · {primary.version}
+          <span className="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
+            {primary.hostname}, {primary.version}
           </span>
         )}
         {detail !== undefined && (
-          <span className="mt-0.5 block tabular-nums text-[10px] text-subtle-foreground">
-            {detail}
-          </span>
+          <span className="mt-0.5 block text-xs text-muted-foreground tabular-nums">{detail}</span>
         )}
       </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-sm space-y-1">
+      <TooltipContent className="flex max-w-sm flex-col items-start gap-1">
         {liveness.primary?.lastError !== undefined && (
           <p className="break-words">{liveness.primary.lastError}</p>
         )}
@@ -1148,7 +1174,7 @@ function ControllerStatus({
           running jobs.
         </p>
         {liveness.controllers.map((row) => (
-          <p key={row.hostname} className="font-mono text-[11px]">
+          <p key={row.hostname} className="font-mono">
             {row.hostname} · {row.version} · {SESSION_COPY[row.sessionState]} ·{" "}
             {TOKEN_SLOT_COPY[row.tokenSlot]} ·{" "}
             {row.leaseRole === "holder" && row.leaseEpoch !== undefined
@@ -1220,9 +1246,14 @@ function workerFacts(worker: ProfileSummary["workers"][number]): Fact[] {
   return facts;
 }
 
+const WORKER_BADGE = {
+  ready: "success",
+  failed: "danger",
+} as const;
+
 /**
  * The evidence layer under a Profile: what this Worker proved, then the host
- * facts it measured. Checks come first and stay legible on their own — a named
+ * facts it measured. Checks come first and stay legible on their own: a named
  * check with its detail is the difference between "not ready" and a fix.
  */
 function WorkerReadiness({
@@ -1234,102 +1265,97 @@ function WorkerReadiness({
 }) {
   const facts = workerFacts(worker);
   const checks = worker.checks ?? [];
+  const badge =
+    worker.state === "ready" || worker.state === "failed" ? WORKER_BADGE[worker.state] : "warning";
 
   return (
-    <div className="rounded-md border border-border bg-card px-3 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <code className="text-xs text-foreground">{worker.machineName}</code>
-        <Badge
-          variant={
-            worker.state === "ready"
-              ? "success"
-              : worker.state === "failed"
-                ? "destructive"
-                : "warning"
-          }
-        >
-          {worker.state}
-        </Badge>
-        {!worker.online && <Badge variant="outline">offline</Badge>}
-        <span className="tabular-nums ml-auto text-[10px] text-subtle-foreground">
-          {worker.usedSlots}/{worker.maxSlots} slots used
-        </span>
-      </div>
-
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] leading-4 text-subtle-foreground">
-        {worker.statusDetail !== undefined && worker.statusDetail !== "" && (
-          <span>{worker.statusDetail}</span>
-        )}
-        <span title={formatAbsoluteTime(worker.checkedAt)}>
-          checked {formatRelativeTime(worker.checkedAt, now)}
-        </span>
-        {worker.preparedAt !== undefined && (
-          <span title={formatAbsoluteTime(worker.preparedAt)}>
-            last ready {formatRelativeTime(worker.preparedAt, now)}
+    <Card size="sm" className="gap-0 py-3 @container">
+      <CardContent>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-xs font-medium">{worker.machineName}</span>
+          <Badge variant={badge}>{worker.state}</Badge>
+          {!worker.online && <Badge variant="outline">offline</Badge>}
+          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+            {worker.usedSlots}/{worker.maxSlots} slots used
           </span>
-        )}
-      </div>
+        </div>
 
-      {checks.length > 0 && (
-        <ul className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-          {checks.map((check) => (
-            <li key={check.name} className="flex items-start gap-2">
-              {check.passed ? (
-                <CircleCheck className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
-              ) : (
-                <CircleX className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden="true" />
-              )}
-              <span className="min-w-0">
-                <span className="sr-only">{check.passed ? "Passed: " : "Failed: "}</span>
-                <span
-                  className={cn(
-                    "font-mono text-[11px] leading-4",
-                    check.passed ? "text-secondary-foreground" : "text-destructive",
-                  )}
-                >
-                  {check.name}
-                </span>
-                {check.detail !== undefined && check.detail !== "" && (
-                  <span className="block break-words text-[10px] leading-4 text-muted-foreground">
-                    {check.detail}
-                  </span>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          {worker.statusDetail !== undefined && worker.statusDetail !== "" && (
+            <span>{worker.statusDetail}</span>
+          )}
+          <span title={formatAbsoluteTime(worker.checkedAt)}>
+            checked {formatRelativeTime(worker.checkedAt, now)}
+          </span>
+          {worker.preparedAt !== undefined && (
+            <span title={formatAbsoluteTime(worker.preparedAt)}>
+              last ready {formatRelativeTime(worker.preparedAt, now)}
+            </span>
+          )}
+        </div>
+
+        {checks.length > 0 && (
+          <ul className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
+            {checks.map((check) => (
+              <li key={check.name} className="flex items-start gap-2">
+                {check.passed ? (
+                  <CircleCheckIcon
+                    className="mt-0.5 size-3.5 shrink-0 text-success"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <CircleXIcon
+                    className="mt-0.5 size-3.5 shrink-0 text-destructive"
+                    aria-hidden="true"
+                  />
                 )}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {facts.length > 0 && (
-        <>
-          <Separator className="my-2.5" />
-          <dl className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
-            {facts.map((fact) => (
-              <div key={fact.label} className="min-w-0">
-                <dt className="text-(length:--era-text-xs) font-medium text-muted-foreground">
-                  {fact.label}
-                </dt>
-                <dd
-                  className={cn(
-                    "break-words text-[11px] leading-4",
-                    fact.tone === "warning" ? "text-warning" : "text-muted-foreground",
+                <span className="min-w-0">
+                  <span className="sr-only">{check.passed ? "Passed: " : "Failed: "}</span>
+                  <span
+                    className={cn(
+                      "font-mono text-xs",
+                      check.passed ? "text-foreground" : "text-destructive",
+                    )}
+                  >
+                    {check.name}
+                  </span>
+                  {check.detail !== undefined && check.detail !== "" && (
+                    <span className="block text-xs break-words text-muted-foreground">
+                      {check.detail}
+                    </span>
                   )}
-                >
-                  {fact.value}
-                </dd>
-              </div>
+                </span>
+              </li>
             ))}
-          </dl>
-        </>
-      )}
+          </ul>
+        )}
 
-      {worker.lastError !== undefined && worker.lastError !== "" && (
-        <p className="mt-2.5 break-words text-[11px] leading-4 text-destructive">
-          <span className="sr-only">Last error: </span>
-          {worker.lastError}
-        </p>
-      )}
-    </div>
+        {facts.length > 0 && (
+          <>
+            <Separator className="my-2.5" />
+            <DescriptionList layout="grid" className="text-xs">
+              {facts.map((fact) => (
+                <DescriptionListItem key={fact.label}>
+                  <DescriptionTerm className="font-medium">{fact.label}</DescriptionTerm>
+                  <DescriptionDetails
+                    className={fact.tone === "warning" ? "text-warning" : "text-muted-foreground"}
+                  >
+                    {fact.value}
+                  </DescriptionDetails>
+                </DescriptionListItem>
+              ))}
+            </DescriptionList>
+          </>
+        )}
+
+        {worker.lastError !== undefined && worker.lastError !== "" && (
+          <p className="mt-2.5 text-xs break-words text-destructive">
+            <span className="sr-only">Last error: </span>
+            {worker.lastError}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1346,7 +1372,6 @@ function InviteOperator() {
   const invite = useMutation(api.bootstrap.invite);
   const [grant, setGrant] = useState<{ token: string; expiresAt: number }>();
   const [error, setError] = useState<string>();
-  const [copied, setCopied] = useState(false);
   const [pending, setPending] = useState(false);
 
   async function generate() {
@@ -1362,70 +1387,51 @@ function InviteOperator() {
     }
   }
 
-  async function copy() {
-    if (grant === undefined) return;
-    try {
-      await navigator.clipboard.writeText(grant.token);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    } catch {
-      toast.error("Clipboard access was blocked", {
-        description: "Select the invitation above and copy it manually.",
-      });
-    }
-  }
-
   return (
     <Card>
-      <CardContent className="px-0 pb-0">
-        <details>
-          <summary className="cursor-pointer select-none px-4 py-3.5 text-sm font-medium text-secondary-foreground">
-            Invite another operator
-          </summary>
-          <div className="space-y-3 border-t border-border px-4 py-4 text-xs text-muted-foreground">
-            <p className="leading-5">
-              Sign-up is closed. An invitation is the only way to add an account after the first
-              one. It is single-use, expires in ten minutes, and is shown here once — send it over a
-              channel you trust.
-            </p>
-
-            {grant === undefined ? (
-              <Button type="button" disabled={pending} onClick={() => void generate()}>
-                {pending ? "Please wait…" : "Create an invitation"}
-                {!pending && <UserPlus />}
-              </Button>
-            ) : (
-              <>
-                <div className="relative rounded-md border border-border bg-sunken p-3 pr-11">
-                  <code className="block break-all font-mono text-xs leading-5 text-secondary-foreground">
-                    {grant.token}
-                  </code>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1.5 top-1.5 size-8"
-                    aria-label="Copy invitation"
-                    onClick={() => void copy()}
-                  >
-                    {copied ? <Check /> : <Clipboard />}
-                  </Button>
-                </div>
-                <p className="leading-5">
-                  Expires {formatAbsoluteTime(grant.expiresAt)}. The recipient enters it on the
-                  sign-in page under “Accept an invitation”.
-                </p>
-              </>
-            )}
-
-            {error !== undefined && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-          </div>
-        </details>
-      </CardContent>
+      <CardHeader>
+        <CardTitle render={<h2 />}>Invite another operator</CardTitle>
+        <CardDescription>
+          Sign-up is closed. An invitation is the only way to add an account after the first one. It
+          is single-use, expires in ten minutes, and is shown here once. Send it over a channel you
+          trust.
+        </CardDescription>
+        {grant === undefined && (
+          <CardAction>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={() => void generate()}
+            >
+              {pending ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <UserPlusIcon data-icon="inline-start" />
+              )}
+              Create an invitation
+            </Button>
+          </CardAction>
+        )}
+      </CardHeader>
+      {(grant !== undefined || error !== undefined) && (
+        <CardContent className="flex flex-col gap-3">
+          {grant !== undefined && (
+            <>
+              <CodeBlock title="Invitation" code={grant.token} className={WRAP_CODE} />
+              <p className="text-xs text-muted-foreground">
+                Expires {formatAbsoluteTime(grant.expiresAt)}. The recipient enters it on the
+                sign-in page under “Accept an invitation”.
+              </p>
+            </>
+          )}
+          {error !== undefined && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      )}
     </Card>
   );
 }
@@ -1437,5 +1443,5 @@ function isMachineOnline(lastSeen: number, now: number) {
 function formatOs(os: "linux" | "mac" | "win") {
   if (os === "mac") return "macOS";
   if (os === "win") return "Windows";
-  return "linux";
+  return "Linux";
 }

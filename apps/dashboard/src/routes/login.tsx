@@ -7,15 +7,16 @@ import {
 } from "@erainfra/backend/authPolicy";
 import { createFileRoute } from "@tanstack/react-router";
 import { useConvex } from "convex/react";
-import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { ArrowRightIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
 
+import { ProductWordmark } from "@/components/product-mark";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Wordmark } from "@/components/wordmark";
 
 export const Route = createFileRoute("/login")({ component: LoginPage });
 
@@ -58,7 +59,7 @@ const COPY: Record<Mode, { tab: string; heading: string; blurb: string; submit: 
 const FAILURE_COPY: Record<Mode, string> = {
   signIn: INVALID_CREDENTIALS,
   invite:
-    "That invitation could not be used. Invitations are single-use and expire ten minutes after they are created — ask an admin for a new one.",
+    "That invitation could not be used. Invitations are single-use and expire ten minutes after they are created. Ask an admin for a new one.",
   bootstrap: "This deployment would not create an account with that secret.",
 };
 
@@ -148,147 +149,143 @@ function LoginPage() {
   const copy = COPY[mode];
 
   return (
-    <main className="grid min-h-screen justify-items-center border-t-[3px] border-t-primary bg-background px-4 py-12 sm:py-20">
+    <main className="grid min-h-screen justify-items-center bg-subtle px-4 py-12 sm:py-20">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex justify-center">
-          <Wordmark className="text-(length:--era-text-xl)" />
+          <ProductWordmark product="infra" size="lg" />
         </div>
 
-        <section
-          className="rounded-lg border border-border bg-card p-5"
-          aria-labelledby={`${fieldId}-heading-${mode}`}
-        >
-          <form className="space-y-4" onSubmit={(event) => void submit(event)}>
-            <fieldset disabled={submitting} className="space-y-4">
-              <legend className="sr-only">{copy.heading}</legend>
+        <section aria-labelledby={`${fieldId}-heading-${mode}`}>
+          <Card>
+            <CardContent>
+              <form className="flex flex-col gap-4" onSubmit={(event) => void submit(event)}>
+                <fieldset disabled={submitting} className="flex min-w-0 flex-col gap-4">
+                  <legend className="sr-only">{copy.heading}</legend>
 
-              <Tabs value={mode} onValueChange={changeMode}>
-                <TabsList className="grid w-full grid-cols-3">
-                  {MODES.map((value) => (
-                    <TabsTrigger key={value} value={value}>
-                      {COPY[value].tab}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
+                  <Tabs value={mode} onValueChange={changeMode} className="gap-4">
+                    <TabsList className="grid w-full grid-cols-3">
+                      {MODES.map((value) => (
+                        <TabsTrigger key={value} value={value}>
+                          {COPY[value].tab}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
 
-                {MODES.map((value) => (
-                  <TabsContent key={value} value={value} className="space-y-4">
-                    <div>
-                      <h1
-                        id={`${fieldId}-heading-${value}`}
-                        className="font-display text-(length:--era-text-xl) font-semibold text-foreground"
-                      >
-                        {COPY[value].heading}
-                      </h1>
-                      <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                        {COPY[value].blurb}
-                      </p>
-                    </div>
+                    {MODES.map((value) => (
+                      <TabsContent key={value} value={value} className="flex flex-col gap-4">
+                        <div className="flex flex-col gap-1">
+                          <h1
+                            id={`${fieldId}-heading-${value}`}
+                            className="font-heading text-xl font-semibold tracking-title"
+                          >
+                            {COPY[value].heading}
+                          </h1>
+                          <p className="text-sm text-muted-foreground">{COPY[value].blurb}</p>
+                        </div>
 
-                    {value === "invite" && (
-                      <div className="space-y-1.5">
-                        <Label htmlFor={`${fieldId}-invitation`}>Invitation</Label>
-                        <Input
-                          id={`${fieldId}-invitation`}
-                          name="invitation"
-                          type="password"
-                          autoComplete="off"
-                          spellCheck={false}
-                          placeholder="Single-use invitation token"
-                          required
-                        />
-                      </div>
-                    )}
+                        {value === "invite" && (
+                          <Field>
+                            <FieldLabel>Invitation</FieldLabel>
+                            <Input
+                              name="invitation"
+                              type="password"
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder="Single-use invitation token"
+                              required
+                            />
+                          </Field>
+                        )}
 
-                    {value === "bootstrap" && (
-                      <div className="space-y-1.5">
-                        <Label htmlFor={`${fieldId}-secret`}>Bootstrap secret</Label>
-                        <Input
-                          id={`${fieldId}-secret`}
-                          name="secret"
-                          type="password"
-                          autoComplete="off"
-                          spellCheck={false}
-                          placeholder="BOOTSTRAP_SECRET"
-                          required
-                        />
-                      </div>
-                    )}
+                        {value === "bootstrap" && (
+                          <Field>
+                            <FieldLabel>Bootstrap secret</FieldLabel>
+                            <Input
+                              name="secret"
+                              type="password"
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder="BOOTSTRAP_SECRET"
+                              required
+                            />
+                          </Field>
+                        )}
 
-                    <div className="space-y-1.5">
-                      <Label htmlFor={`${fieldId}-${value}-email`}>Email</Label>
-                      <Input
-                        id={`${fieldId}-${value}-email`}
-                        name="email"
-                        type="email"
-                        autoComplete="username"
-                        placeholder="you@example.com"
-                        required
-                      />
-                    </div>
+                        <Field>
+                          <FieldLabel>Email</FieldLabel>
+                          <Input
+                            name="email"
+                            type="email"
+                            autoComplete="username"
+                            placeholder="you@example.com"
+                            required
+                          />
+                        </Field>
 
-                    <div className="space-y-1.5">
-                      <Label htmlFor={`${fieldId}-${value}-password`}>Password</Label>
-                      <div className="relative">
-                        <Input
-                          id={`${fieldId}-${value}-password`}
-                          name="password"
-                          type={revealPassword ? "text" : "password"}
-                          autoComplete={value === "signIn" ? "current-password" : "new-password"}
-                          className="pr-10"
-                          // Only on the sign-up flows: an account created before this
-                          // rule existed must still be able to sign in.
-                          {...(value === "signIn" ? {} : { minLength: MIN_PASSWORD_LENGTH })}
-                          required
-                        />
-                        <button
-                          type="button"
-                          aria-label={revealPassword ? "Hide password" : "Show password"}
-                          aria-pressed={revealPassword}
-                          aria-controls={`${fieldId}-${value}-password`}
-                          className="absolute right-0.5 top-0.5 grid size-7 place-items-center rounded-sm text-muted-foreground hover:text-foreground"
-                          onClick={() => setRevealPassword((shown) => !shown)}
-                        >
-                          {revealPassword ? (
-                            <EyeOff className="size-4" />
-                          ) : (
-                            <Eye className="size-4" />
+                        <Field>
+                          <FieldLabel>Password</FieldLabel>
+                          <div className="relative">
+                            <Input
+                              id={`${fieldId}-${value}-password`}
+                              name="password"
+                              type={revealPassword ? "text" : "password"}
+                              autoComplete={
+                                value === "signIn" ? "current-password" : "new-password"
+                              }
+                              className="pr-9"
+                              // Only on the sign-up flows: an account created before this
+                              // rule existed must still be able to sign in.
+                              {...(value === "signIn" ? {} : { minLength: MIN_PASSWORD_LENGTH })}
+                              required
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={revealPassword ? "Hide password" : "Show password"}
+                              aria-pressed={revealPassword}
+                              aria-controls={`${fieldId}-${value}-password`}
+                              className="absolute top-0.5 right-0.5 text-muted-foreground hover:text-foreground"
+                              onClick={() => setRevealPassword((shown) => !shown)}
+                            >
+                              {revealPassword ? <EyeOffIcon /> : <EyeIcon />}
+                            </Button>
+                          </div>
+                          {value !== "signIn" && (
+                            <FieldDescription className="text-xs">
+                              At least {MIN_PASSWORD_LENGTH} characters. This account can read every
+                              machine token and GitHub credential on the deployment.
+                            </FieldDescription>
                           )}
-                        </button>
-                      </div>
-                      {value !== "signIn" && (
-                        <p className="text-[11px] leading-4 text-muted-foreground">
-                          At least {MIN_PASSWORD_LENGTH} characters. This account can read every
-                          machine token and GitHub credential on the deployment.
-                        </p>
-                      )}
-                    </div>
-                  </TabsContent>
-                ))}
-              </Tabs>
-            </fieldset>
+                        </Field>
+                      </TabsContent>
+                    ))}
+                  </Tabs>
+                </fieldset>
 
-            <Button className="w-full" type="submit" disabled={submitting}>
-              {submitting ? "Please wait…" : copy.submit}
-              {!submitting && <ArrowRight />}
-            </Button>
+                <Button className="w-full" size="lg" type="submit" disabled={submitting}>
+                  {submitting ? "Please wait…" : copy.submit}
+                  {!submitting && <ArrowRightIcon data-icon="inline-end" />}
+                </Button>
 
-            {/* Below the button, on a page laid out from the top: a refusal
-                grows the card downwards and no field or control the operator is
-                already pointing at moves. Refusals vary from one line to five,
-                so reserving a fixed height would either still shift or leave a
-                permanent gap. */}
-            <div aria-live="polite">
-              {error !== undefined && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-            </div>
-          </form>
+                {/* Below the button, on a page laid out from the top: a refusal
+                  grows the card downwards and no field or control the operator is
+                  already pointing at moves. Refusals vary from one line to five,
+                  so reserving a fixed height would either still shift or leave a
+                  permanent gap. */}
+                <div aria-live="polite">
+                  {error !== undefined && (
+                    <Alert variant="destructive">
+                      <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              </form>
+            </CardContent>
+          </Card>
         </section>
 
-        <p className="mt-4 text-center text-xs leading-5 text-subtle-foreground">
+        <p className="mt-4 text-center text-xs text-muted-foreground">
           Sign-up is closed. An account can only be created from an admin&apos;s invitation, or once
           from this deployment&apos;s bootstrap secret.
         </p>

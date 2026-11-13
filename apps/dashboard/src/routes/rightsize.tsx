@@ -2,24 +2,27 @@ import { api } from "@erainfra/backend/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { useConvex } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { Gauge, RefreshCw } from "lucide-react";
+import { GaugeIcon, RefreshCwIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { createDataTableColumns, DataTable } from "@/components/data-table";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+} from "@/components/page-header";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBytes, formatVcpus } from "@/lib/metrics";
 import { formatAbsoluteTime } from "@/lib/time";
@@ -37,16 +40,116 @@ const windows = [
 
 const verdicts: Record<
   Recommendation["verdict"],
-  { label: string; variant: "destructive" | "success" | "outline" | "secondary" }
+  { label: string; variant: NonNullable<BadgeProps["variant"]> }
 > = {
-  upsize: { label: "Larger", variant: "destructive" },
+  upsize: { label: "Larger", variant: "danger" },
   downsize: { label: "Smaller", variant: "success" },
   keep: { label: "Right size", variant: "secondary" },
   insufficient_data: { label: "Not enough data", variant: "outline" },
 };
 
 function size(value: { vcpus: number; memoryMiB: number }) {
-  return `${value.vcpus} vCPU · ${formatBytes(value.memoryMiB * 1024 * 1024)}`;
+  return `${value.vcpus} vCPU, ${formatBytes(value.memoryMiB * 1024 * 1024)}`;
+}
+
+const column = createDataTableColumns<Recommendation>();
+
+const columns = column.columns([
+  column.accessor("verdict", {
+    header: "Verdict",
+    cell: (cell) => (
+      <Badge variant={verdicts[cell.getValue()].variant}>{verdicts[cell.getValue()].label}</Badge>
+    ),
+    meta: { cellClassName: "align-top" },
+  }),
+  column.accessor("repo", {
+    header: "Repository and job",
+    cell: (cell) => (
+      <div className="max-w-56 whitespace-normal">
+        <div className="font-medium break-all">{cell.getValue()}</div>
+        <div className="text-xs break-all text-muted-foreground">{cell.row.original.job}</div>
+      </div>
+    ),
+    meta: { cellClassName: "align-top" },
+  }),
+  column.accessor("profile", {
+    header: "Profile now",
+    cell: (cell) => (
+      <div>
+        <code className="text-[13px]">{cell.getValue()}</code>
+        <div className="text-xs text-muted-foreground">{size(cell.row.original.current)}</div>
+      </div>
+    ),
+    meta: { cellClassName: "align-top" },
+  }),
+  column.display({
+    id: "move",
+    header: "Move to",
+    cell: (cell) => {
+      const entry = cell.row.original;
+      return (
+        <div>
+          {entry.recommendedProfile !== null ? (
+            <code className="text-[13px] font-medium">{entry.recommendedProfile}</code>
+          ) : entry.suggestedProfile !== null ? (
+            <>
+              <code className="text-[13px]">{entry.suggestedProfile}</code>
+              <div className="text-xs text-warning">Not registered</div>
+            </>
+          ) : entry.target !== null ? (
+            <div className="text-warning">Register {size(entry.target)}</div>
+          ) : (
+            <span className="text-muted-foreground">None</span>
+          )}
+          {entry.target !== null &&
+            (entry.recommendedProfile !== null || entry.suggestedProfile !== null) && (
+              <div className="text-xs text-muted-foreground">{size(entry.target)}</div>
+            )}
+        </div>
+      );
+    },
+    meta: { cellClassName: "align-top" },
+  }),
+  column.accessor("attempts", {
+    header: "Measured",
+    cell: (cell) => {
+      const entry = cell.row.original;
+      return (
+        <div className="text-xs leading-5 text-muted-foreground">
+          <div>
+            CPU p95 {formatVcpus(entry.cpu.p95Vcpus)}/{entry.current.vcpus}
+          </div>
+          <div>
+            Peak {formatBytes(entry.memory.peakBytes)}
+            {entry.memory.measure === "host-resident" && (
+              <span title="Firecracker: host-resident memory, page cache included"> (host)</span>
+            )}
+          </div>
+          <div>
+            {entry.attempts} runs
+            {entry.memory.oomAttempts > 0 && (
+              <span className="text-danger">, {entry.memory.oomAttempts} OOM</span>
+            )}
+          </div>
+        </div>
+      );
+    },
+    meta: { cellClassName: "align-top" },
+  }),
+  column.accessor("explanation", {
+    header: "Why",
+    enableSorting: false,
+    cell: (cell) => (
+      <p className="max-w-md min-w-64 text-[13px] leading-5 whitespace-normal text-muted-foreground">
+        {cell.getValue()}
+      </p>
+    ),
+    meta: { cellClassName: "align-top" },
+  }),
+]);
+
+function rowId(entry: Recommendation) {
+  return `${entry.repo}\u0000${entry.job}\u0000${entry.profile}`;
 }
 
 /**
@@ -96,160 +199,120 @@ function RightsizePage() {
       .length ?? 0;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Rightsize"
-        description="Which Profile each workflow job should run on, from the CPU and memory its own runs used."
-      >
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setRefreshes((count) => count + 1)}
-          disabled={loading}
-        >
-          <RefreshCw className={loading ? "animate-spin" : undefined} />
-          Refresh
-        </Button>
+    <>
+      <PageHeader>
+        <PageHeaderTitle>Rightsize</PageHeaderTitle>
+        <PageHeaderDescription>
+          Which Profile each workflow job should run on, from the CPU and memory its own runs used.
+        </PageHeaderDescription>
+        <PageHeaderActions>
+          <Button
+            variant="outline"
+            onClick={() => setRefreshes((count) => count + 1)}
+            disabled={loading}
+          >
+            <RefreshCwIcon
+              data-icon="inline-start"
+              className={loading ? "motion-safe:animate-spin" : undefined}
+            />
+            Refresh
+          </Button>
+        </PageHeaderActions>
       </PageHeader>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <Tabs value={String(days)} onValueChange={(value) => setDays(Number(value))}>
-          <TabsList aria-label="Window">
-            {windows.map((item) => (
-              <TabsTrigger key={item.days} value={String(item.days)}>
-                {item.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <form
-          className="flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setRepo(repoInput.trim());
-          }}
-        >
-          <Input
-            aria-label="Repository"
-            placeholder="owner/name"
-            value={repoInput}
-            maxLength={201}
-            onChange={(event) => setRepoInput(event.target.value)}
-            className="w-56"
-          />
-          <Button type="submit" variant="secondary" size="sm">
-            Filter
-          </Button>
-        </form>
-        {report !== undefined && (
-          <p className="text-xs text-muted-foreground sm:ml-auto">
-            {actionable} to move · {report.scanned} measured runs since{" "}
-            {formatAbsoluteTime(report.windowStart)}
-            {report.truncated && " (newest only: narrow the window or the repository)"}
-          </p>
-        )}
-      </div>
-
       {error !== undefined && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
-      <Card className="overflow-hidden">
-        <Table className="min-w-[1100px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[130px]">Verdict</TableHead>
-              <TableHead className="w-[220px]">Repository / job</TableHead>
-              <TableHead className="w-[210px]">Profile now</TableHead>
-              <TableHead className="w-[230px]">Move to</TableHead>
-              <TableHead className="w-[150px]">Measured</TableHead>
-              <TableHead>Why</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {recommendations === undefined ? (
-              <TableRowsSkeleton columns={6} rows={4} />
-            ) : recommendations.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="p-0">
-                  <EmptyState
-                    icon={Gauge}
-                    title="No measured runs in this window"
-                    description="Linux Attempts on Firecracker and Docker are measured. A job needs five finished runs before it gets a recommendation."
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              recommendations.map((entry) => (
-                <TableRow key={`${entry.repo}\u0000${entry.job}\u0000${entry.profile}`}>
-                  <TableCell className="align-top">
-                    <Badge variant={verdicts[entry.verdict].variant}>
-                      {verdicts[entry.verdict].label}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <p className="break-all text-xs text-secondary-foreground">{entry.repo}</p>
-                    <p className="mt-0.5 break-all text-xs text-muted-foreground">{entry.job}</p>
-                  </TableCell>
-                  <TableCell className="align-top">
-                    <code className="text-xs text-secondary-foreground">{entry.profile}</code>
-                    <p className="mt-0.5 text-[11px] text-subtle-foreground">
-                      {size(entry.current)}
-                    </p>
-                  </TableCell>
-                  <TableCell className="align-top">
-                    {entry.recommendedProfile !== null ? (
-                      <code className="text-xs text-foreground">{entry.recommendedProfile}</code>
-                    ) : entry.suggestedProfile !== null ? (
-                      <>
-                        <code className="text-xs text-secondary-foreground">
-                          {entry.suggestedProfile}
-                        </code>
-                        <p className="mt-0.5 text-[11px] text-warning">not registered</p>
-                      </>
-                    ) : entry.target !== null ? (
-                      <p className="text-xs text-warning">register {size(entry.target)}</p>
-                    ) : (
-                      <span className="text-xs text-subtle-foreground">—</span>
-                    )}
-                    {entry.target !== null &&
-                      (entry.recommendedProfile !== null || entry.suggestedProfile !== null) && (
-                        <p className="mt-0.5 text-[11px] text-subtle-foreground">
-                          {size(entry.target)}
-                        </p>
-                      )}
-                  </TableCell>
-                  <TableCell className="align-top text-xs tabular-nums text-muted-foreground">
-                    <p>
-                      cpu p95 {formatVcpus(entry.cpu.p95Vcpus)}/{entry.current.vcpus}
-                    </p>
-                    <p>
-                      peak {formatBytes(entry.memory.peakBytes)}
-                      {entry.memory.measure === "host-resident" && (
-                        <span title="Firecracker: host-resident memory, page cache included">
-                          {" "}
-                          (host)
-                        </span>
-                      )}
-                    </p>
-                    <p>
-                      {entry.attempts} runs
-                      {entry.memory.oomAttempts > 0 && (
-                        <span className="text-destructive"> · {entry.memory.oomAttempts} OOM</span>
-                      )}
-                    </p>
-                  </TableCell>
-                  <TableCell className="align-top text-xs leading-5 text-secondary-foreground">
-                    {entry.explanation}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+      <Card className="gap-0 py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle render={<h2 />}>Recommendations</CardTitle>
+          <CardDescription>
+            {report === undefined
+              ? "Reading measured runs."
+              : `${actionable} to move, from ${report.scanned} measured runs since ${formatAbsoluteTime(report.windowStart)}.`}
+            {report?.truncated && " Newest runs only: narrow the window or the repository."}
+          </CardDescription>
+        </CardHeader>
+        <div className="border-b px-4 py-3">
+          <Filters
+            days={days}
+            setDays={setDays}
+            repoInput={repoInput}
+            setRepoInput={setRepoInput}
+            apply={() => setRepo(repoInput.trim())}
+          />
+        </div>
+        <DataTable
+          aria-label="Rightsize recommendations"
+          columns={columns}
+          data={recommendations ?? []}
+          getRowId={rowId}
+          loading={recommendations === undefined}
+          loadingRows={4}
+          empty={
+            <EmptyState>
+              <EmptyStateMedia>
+                <GaugeIcon />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No measured runs in this window</EmptyStateTitle>
+              <EmptyStateDescription>
+                Linux Attempts on Firecracker and Docker are measured. A job needs five finished
+                runs before it gets a recommendation.
+              </EmptyStateDescription>
+            </EmptyState>
+          }
+        />
       </Card>
+    </>
+  );
+}
+
+function Filters({
+  days,
+  setDays,
+  repoInput,
+  setRepoInput,
+  apply,
+}: {
+  days: number;
+  setDays: (days: number) => void;
+  repoInput: string;
+  setRepoInput: (value: string) => void;
+  apply: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Tabs value={String(days)} onValueChange={(value) => setDays(Number(value))}>
+        <TabsList aria-label="Window">
+          {windows.map((item) => (
+            <TabsTrigger key={item.days} value={String(item.days)}>
+              {item.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      <form
+        className="flex gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          apply();
+        }}
+      >
+        <Input
+          aria-label="Repository"
+          placeholder="owner/name"
+          value={repoInput}
+          maxLength={201}
+          onChange={(event) => setRepoInput(event.target.value)}
+          className="w-44"
+        />
+        <Button type="submit" variant="outline">
+          Filter
+        </Button>
+      </form>
     </div>
   );
 }

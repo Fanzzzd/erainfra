@@ -1,38 +1,152 @@
 import { api } from "@erainfra/backend/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
-import { Link2, Plus, Trash2 } from "lucide-react";
-import { type FormEvent, useId, useState } from "react";
+import type { FunctionReturnType } from "convex/server";
+import { Link2Icon, PlusIcon } from "lucide-react";
+import { type FormEvent, useMemo, useState } from "react";
 
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { LiveBadge, StatusDot, type Tone } from "@/components/status";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { DataTable, createDataTableColumns } from "@/components/data-table";
+import {
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+} from "@/components/page-header";
+import { LiveIndicator, Status } from "@/components/status";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { confirmDestructive } from "@/components/ui/confirm";
-import { Input, inputClass } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
-import { heartbeatsByName, type LinkState, linkState } from "@/lib/infra";
+import { heartbeatsByName, linkState } from "@/lib/infra";
+import { type LinkState, linkView } from "@/lib/states";
 
 export const Route = createFileRoute("/links")({ component: LinksPage });
 
-const STATE_TONE: Record<LinkState, Tone> = {
-  active: "success",
-  degraded: "destructive",
-  pending: "warning",
-};
+type MeshLink = FunctionReturnType<typeof api.infra.operator.links>[number];
+
+/** A link with its state re-judged against the dashboard's clock. */
+type LinkRow = MeshLink & { id: string; liveState: LinkState; reason: string | null };
+
+const column = createDataTableColumns<LinkRow>();
+
+const columns = column.columns([
+  column.accessor("name", {
+    header: "Link",
+    cell: (cell) => {
+      const link = cell.row.original;
+      return (
+        <div>
+          <div className="font-medium">{link.name}</div>
+          <div className="text-xs text-muted-foreground">
+            {link.app !== null
+              ? `dependency of ${link.app}`
+              : link.createdBy === "deploy"
+                ? "managed by the deploy pipeline"
+                : "standalone"}
+          </div>
+        </div>
+      );
+    },
+  }),
+  column.display({
+    id: "from",
+    header: "From",
+    cell: (cell) => (
+      <span className="text-muted-foreground">
+        {cell.row.original.provider ?? "?"}:{cell.row.original.providerPort}
+      </span>
+    ),
+  }),
+  column.display({
+    id: "surfaced",
+    header: "Surfaced on",
+    cell: (cell) => (
+      <span className="text-muted-foreground">
+        {cell.row.original.consumer ?? "?"}{" "}
+        <code className="text-xs">{cell.row.original.listen}</code>
+      </span>
+    ),
+  }),
+  column.accessor("liveState", {
+    header: "State",
+    cell: (cell) => {
+      const view = linkView(cell.getValue());
+      const reason = cell.row.original.reason;
+      return (
+        <div>
+          <Status state={view.state}>{view.label}</Status>
+          {reason !== null && (
+            <div className="max-w-xs text-xs whitespace-normal text-muted-foreground">{reason}</div>
+          )}
+        </div>
+      );
+    },
+  }),
+]);
+
+/** The row menu. Built once per page, so the menu items are not new components on each render. */
+function linkActions(onRemove: (name: string) => void) {
+  return {
+    label: (link: LinkRow) => `Actions for ${link.name}`,
+    items: (link: LinkRow) => (
+      <DropdownMenuItem
+        variant="destructive"
+        disabled={link.kind !== "standalone"}
+        onClick={() => onRemove(link.name)}
+      >
+        Remove link
+      </DropdownMenuItem>
+    ),
+  };
+}
+
+function NodeSelect({
+  value,
+  onValueChange,
+  names,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  names: string[];
+}) {
+  return (
+    <Select
+      required
+      value={value === "" ? null : value}
+      onValueChange={(next) => onValueChange(typeof next === "string" ? next : "")}
+    >
+      <SelectTrigger className="w-full">
+        <SelectValue placeholder="Select Node" />
+      </SelectTrigger>
+      <SelectContent>
+        {names.map((name) => (
+          <SelectItem key={name} value={name}>
+            {name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 function LinksPage() {
   const links = useQuery(api.infra.operator.links);
@@ -40,15 +154,30 @@ function LinksPage() {
   const declare = useMutation(api.infra.operator.link);
   const unlink = useMutation(api.infra.operator.unlink);
   const now = useNow();
-  const fieldId = useId();
   const [provider, setProvider] = useState("");
   const [providerPort, setProviderPort] = useState("");
   const [consumer, setConsumer] = useState("");
   const [localPort, setLocalPort] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  // The target outlives `open`, so the dialog keeps its text while it closes.
+  const [removing, setRemoving] = useState<{ open: boolean; name?: string }>({ open: false });
+  const rowActions = useMemo(
+    () => linkActions((name) => setRemoving({ open: true, name })),
+    [setRemoving],
+  );
   const heartbeats = heartbeatsByName(nodes ?? []);
   const nodeNames = (nodes ?? []).map((node) => node.name);
+
+  const rows = links?.map((link) => {
+    const { state, reason } = linkState(link, heartbeats, now);
+    return {
+      ...link,
+      id: `${link.kind}:${link.app ?? ""}:${link.name}`,
+      liveState: state,
+      reason,
+    };
+  });
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -74,64 +203,44 @@ function LinksPage() {
   }
 
   async function remove(name: string) {
-    const confirmed = await confirmDestructive({
-      title: `Remove ${name}?`,
+    await unlink({ name });
+    toast.success(`Removed ${name}`, {
       description: "Both Nodes drop the link on their next snapshot.",
-      confirmLabel: "Remove",
     });
-    if (!confirmed) return;
-    try {
-      await unlink({ name });
-    } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : "Could not remove the link");
-    }
   }
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Links"
-        description="Node-to-Node links over erainfra-mesh: standalone links and each App's dependency links."
-      >
-        <LiveBadge />
+    <>
+      <PageHeader>
+        <PageHeaderTitle>Links</PageHeaderTitle>
+        <PageHeaderDescription>
+          Node-to-Node links over erainfra-mesh: standalone links and each App's dependency links.
+        </PageHeaderDescription>
+        <PageHeaderActions>
+          <LiveIndicator />
+        </PageHeaderActions>
       </PageHeader>
 
       <Card>
-        <CardHeader className="border-b">
-          <CardTitle>Declare a link</CardTitle>
+        <CardHeader>
+          <CardTitle render={<h2 />}>Declare a link</CardTitle>
           <CardDescription>
             The consumer reaches the provider's <code>127.0.0.1:&lt;port&gt;</code> at its own
             loopback port. Both Nodes need a proven endpoint before the link carries traffic.
           </CardDescription>
         </CardHeader>
-        <CardContent className="pt-4">
+        <CardContent>
           <form
-            className="grid gap-4 lg:grid-cols-[1fr_120px_1fr_120px_auto]"
+            className="grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_120px_1fr_120px_auto]"
             onSubmit={(event) => void submit(event)}
           >
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-provider`}>Provider Node</Label>
-              <select
-                id={`${fieldId}-provider`}
-                required
-                className={inputClass}
-                value={provider}
-                onChange={(event) => setProvider(event.target.value)}
-              >
-                <option value="" disabled>
-                  Select Node
-                </option>
-                {nodeNames.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-port`}>Port</Label>
+            <Field>
+              <FieldLabel>Provider Node</FieldLabel>
+              <NodeSelect value={provider} onValueChange={setProvider} names={nodeNames} />
+            </Field>
+            <Field>
+              <FieldLabel>Port</FieldLabel>
               <Input
-                id={`${fieldId}-port`}
                 required
                 type="number"
                 min={1}
@@ -139,32 +248,18 @@ function LinksPage() {
                 value={providerPort}
                 onChange={(event) => setProviderPort(event.target.value)}
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-consumer`}>Consumer Node</Label>
-              <select
-                id={`${fieldId}-consumer`}
-                required
-                className={inputClass}
+            </Field>
+            <Field>
+              <FieldLabel>Consumer Node</FieldLabel>
+              <NodeSelect
                 value={consumer}
-                onChange={(event) => setConsumer(event.target.value)}
-              >
-                <option value="" disabled>
-                  Select Node
-                </option>
-                {nodeNames
-                  .filter((name) => name !== provider)
-                  .map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${fieldId}-local`}>Local port</Label>
+                onValueChange={setConsumer}
+                names={nodeNames.filter((name) => name !== provider)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel>Local port</FieldLabel>
               <Input
-                id={`${fieldId}-local`}
                 type="number"
                 min={1}
                 max={65_535}
@@ -172,13 +267,17 @@ function LinksPage() {
                 value={localPort}
                 onChange={(event) => setLocalPort(event.target.value)}
               />
-            </div>
+            </Field>
             <Button className="self-end" type="submit" disabled={pending}>
-              <Plus />
-              {pending ? "Declaring…" : "Declare"}
+              {pending ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <PlusIcon data-icon="inline-start" />
+              )}
+              {pending ? "Declaring" : "Declare"}
             </Button>
             {error !== undefined && (
-              <Alert variant="destructive" className="lg:col-span-5">
+              <Alert variant="destructive" className="sm:col-span-2 lg:col-span-5">
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
@@ -186,89 +285,49 @@ function LinksPage() {
         </CardContent>
       </Card>
 
-      <Card className="overflow-hidden">
-        <Table className="min-w-[840px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[220px]">Link</TableHead>
-              <TableHead className="w-[180px]">From</TableHead>
-              <TableHead className="w-[220px]">Surfaced on</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead className="w-[60px]">
-                <span className="sr-only">Actions</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {links === undefined ? (
-              <TableRowsSkeleton columns={5} rows={3} />
-            ) : links.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={5} className="p-0">
-                  <EmptyState
-                    icon={Link2}
-                    title="No links yet"
-                    description="Declare one above, or deploy an App whose services need each other across Nodes."
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              links.map((link) => {
-                const { state, reason } = linkState(link, heartbeats, now);
-                return (
-                  <TableRow key={`${link.kind}:${link.app ?? ""}:${link.name}`}>
-                    <TableCell>
-                      <p className="text-xs font-medium text-secondary-foreground">{link.name}</p>
-                      <p className="mt-0.5 text-[10px] text-subtle-foreground">
-                        {link.app !== null
-                          ? `dependency of ${link.app}`
-                          : link.createdBy === "deploy"
-                            ? "managed by the deploy pipeline"
-                            : "standalone"}
-                      </p>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {link.provider ?? "?"}:{link.providerPort}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {link.consumer ?? "?"} <code className="text-[10px]">{link.listen}</code>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      <span className="flex items-center gap-2 capitalize">
-                        <StatusDot tone={STATE_TONE[state]} />
-                        {state}
-                      </span>
-                      {reason !== null && (
-                        <p className="mt-0.5 text-[10px] leading-4 text-subtle-foreground">
-                          {reason}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {link.kind === "standalone" && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          aria-label={`Remove ${link.name}`}
-                          onClick={() => void remove(link.name)}
-                        >
-                          <Trash2 />
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+      <Card className="gap-0 py-0">
+        <CardHeader className="border-b py-4">
+          <CardTitle render={<h2 />}>Links</CardTitle>
+          <CardDescription>
+            Standalone links can be removed here. Dependency links follow their App.
+          </CardDescription>
+        </CardHeader>
+        <DataTable
+          aria-label="Links"
+          columns={columns}
+          data={rows ?? []}
+          loading={rows === undefined}
+          loadingRows={3}
+          getRowId={(link) => link.id}
+          empty={
+            <EmptyState>
+              <EmptyStateMedia>
+                <Link2Icon />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No links yet</EmptyStateTitle>
+              <EmptyStateDescription>
+                Declare one above, or deploy an App whose services need each other across Nodes.
+              </EmptyStateDescription>
+            </EmptyState>
+          }
+          rowActions={rowActions}
+        />
       </Card>
+
       <p className="text-xs leading-5 text-muted-foreground">
         Convex grants a link over erainfra-mesh once both Nodes have a proven endpoint and a live
         credential; until then it is pending. State comes from endpoint proofs and heartbeats, not
         from traffic.
       </p>
-    </div>
+
+      <ConfirmDialog
+        open={removing.open}
+        onOpenChange={(open) => setRemoving((current) => ({ ...current, open }))}
+        title={`Remove ${removing.name ?? "this link"}?`}
+        description="Both Nodes drop the link on their next snapshot."
+        confirmLabel="Remove"
+        onConfirm={() => (removing.name === undefined ? undefined : remove(removing.name))}
+      />
+    </>
   );
 }

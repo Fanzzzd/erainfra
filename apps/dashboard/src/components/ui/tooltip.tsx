@@ -1,61 +1,62 @@
-import {
-  Tooltip as TooltipPrimitive,
-  TooltipContent as TooltipContentPrimitive,
-  TooltipTrigger as TooltipTriggerPrimitive,
-} from "@ui-sdk/react/tooltip";
-import { createContext, useContext, type ComponentProps, type ReactNode } from "react";
+import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 
-import { asChildElement } from "@/components/ui/slot";
+import { usePortalContainer } from "@/lib/era-root";
 import { cn } from "@/lib/utils";
 
+/** Shares open delays between tooltips, so moving along a toolbar feels instant. */
+function TooltipProvider({ delay = 400, ...props }: TooltipPrimitive.Provider.Props) {
+  return <TooltipPrimitive.Provider delay={delay} {...props} />;
+}
+
 /**
- * ui-sdk groups tooltips without a provider: once one is open, the next opens at once. The
- * provider here only sets the hover delay for the tooltips inside it.
+ * A tooltip. It opens on hover and on keyboard focus. Use it for a name or a
+ * shortcut, never for the only copy of important text, since touch screens
+ * cannot open it.
  */
-const TooltipDelay = createContext(120);
-
-function TooltipProvider({
-  delayDuration = 120,
-  children,
-}: {
-  delayDuration?: number;
-  children?: ReactNode;
-}) {
-  return <TooltipDelay value={delayDuration}>{children}</TooltipDelay>;
+function Tooltip(props: TooltipPrimitive.Root.Props) {
+  return <TooltipPrimitive.Root {...props} />;
 }
 
-function Tooltip({ delay, ...props }: ComponentProps<typeof TooltipPrimitive>) {
-  const providerDelay = useContext(TooltipDelay);
-  return <TooltipPrimitive delay={delay ?? providerDelay} {...props} />;
+/** The element the tooltip describes. Pass `render` to use your own button. */
+function TooltipTrigger(props: TooltipPrimitive.Trigger.Props) {
+  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
 }
 
-/** `asChild` makes the single child element, such as a link, the trigger. */
-function TooltipTrigger({
-  asChild = false,
-  children,
-  ...props
-}: ComponentProps<typeof TooltipTriggerPrimitive> & { asChild?: boolean }) {
-  const child = asChildElement(asChild, children);
-  if (child) return <TooltipTriggerPrimitive render={child} {...props} />;
-  return <TooltipTriggerPrimitive {...props}>{children}</TooltipTriggerPrimitive>;
-}
-
+/** The tooltip bubble, inverted from the page so it reads in both themes. */
 function TooltipContent({
   className,
+  side = "top",
   sideOffset = 6,
-  collisionPadding = 8,
+  align = "center",
+  alignOffset = 0,
+  children,
   ...props
-}: ComponentProps<typeof TooltipContentPrimitive>) {
+}: TooltipPrimitive.Popup.Props & { className?: string } & Pick<
+    TooltipPrimitive.Positioner.Props,
+    "align" | "alignOffset" | "side" | "sideOffset"
+  >) {
+  const container = usePortalContainer();
   return (
-    <TooltipContentPrimitive
-      sideOffset={sideOffset}
-      collisionPadding={collisionPadding}
-      className={cn(
-        "z-50 w-fit max-w-xs origin-(--transform-origin) text-balance rounded-md border border-border bg-popover px-2 py-1 text-left text-(length:--era-text-xs) font-normal normal-case leading-4 tracking-normal text-popover-foreground shadow-popup transition-[opacity,scale] data-ending-style:scale-95 data-ending-style:opacity-0 data-instant:transition-none data-starting-style:scale-95 data-starting-style:opacity-0",
-        className,
-      )}
-      {...props}
-    />
+    <TooltipPrimitive.Portal container={container}>
+      <TooltipPrimitive.Positioner
+        align={align}
+        alignOffset={alignOffset}
+        side={side}
+        sideOffset={sideOffset}
+        className="isolate z-50"
+      >
+        <TooltipPrimitive.Popup
+          data-slot="tooltip-content"
+          className={cn(
+            "z-50 inline-flex w-fit max-w-xs origin-(--transform-origin) items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1.5 text-xs text-background has-data-[slot=kbd]:pr-1.5 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-instant:animate-none",
+            className,
+          )}
+          {...props}
+        >
+          {children}
+        </TooltipPrimitive.Popup>
+      </TooltipPrimitive.Positioner>
+    </TooltipPrimitive.Portal>
   );
 }
 

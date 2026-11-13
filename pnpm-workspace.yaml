@@ -20,12 +20,9 @@ allowBuilds:
   # ADR 0019); its postinstall fetches the platform binary.
   workerd: true
 
-# pnpm 12 holds back a release younger than its minimum age. The dashboard pins ui-sdk's first
-# beta, published the day before it was adopted, and the root pins oxlint-tsgolint 7.0.2007,
-# published two days before it was adopted. Drop these entries once each pin moves on.
+# pnpm 12 holds back a release younger than its minimum age. The root pins oxlint-tsgolint
+# 7.0.2007, published two days before it was adopted. Drop these entries once the pin moves on.
 minimumReleaseAgeExclude:
-  - "@ui-sdk/core@0.1.0-beta.1"
-  - "@ui-sdk/react@0.1.0-beta.1"
   - "oxlint-tsgolint@7.0.2007"
   - "@oxlint-tsgolint/darwin-arm64@7.0.2007"
   - "@oxlint-tsgolint/linux-arm64@7.0.2007"
