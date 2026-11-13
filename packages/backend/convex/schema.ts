@@ -12,6 +12,7 @@ import {
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
+import { placementStorageValidator, readinessFactsValidator } from "./isolation";
 import { readinessStateValidator } from "./readinessStates";
 import { routerDecisionFields } from "./routerDecisionsModel";
 import { storedStartBudgetValidator } from "./startBudgetModel";
@@ -466,8 +467,9 @@ export default defineSchema({
   // executor and immutable Image Release locally. Online heartbeats alone are
   // never enough to advertise capacity.
   //
-  // This hot row carries only what scheduling reads. What the Worker proved
-  // (isolation boundary, checks, hardware, storage, network) lives in the
+  // This hot row carries only what scheduling reads; its storage is exactly
+  // PLACEMENT_STORAGE_FIELDS (isolation.ts). What the Worker proved (isolation
+  // boundary, checks, hardware, storage, network) lives in the
   // readinessEvidence row with the same machineId, profile and checkedAt.
   workerReadiness: defineTable({
     machineId: v.id("machines"),
@@ -485,13 +487,7 @@ export default defineSchema({
     checkedAt: v.number(),
     preparedAt: v.optional(v.number()),
     warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),
-    storage: v.optional(
-      v.object({
-        poolTotalMiB: v.optional(v.number()),
-        poolFreeMiB: v.optional(v.number()),
-        poolReserveMiB: v.optional(v.number()),
-      }),
-    ),
+    storage: v.optional(placementStorageValidator),
   })
     .index("by_machine_profile", ["machineId", "profile"])
     .index("by_profile_state", ["profile", "state"]),
@@ -535,15 +531,7 @@ export default defineSchema({
         kvm: v.optional(v.boolean()),
       }),
     ),
-    storage: v.optional(
-      v.object({
-        snapshotter: v.optional(v.string()),
-        poolName: v.optional(v.string()),
-        poolTotalMiB: v.optional(v.number()),
-        poolFreeMiB: v.optional(v.number()),
-        poolReserveMiB: v.optional(v.number()),
-      }),
-    ),
+    storage: readinessFactsValidator.storage,
     network: v.optional(
       v.object({
         policyName: v.optional(v.string()),

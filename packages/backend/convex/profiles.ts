@@ -13,6 +13,7 @@ import {
   isTrustedOnly,
   readinessAdmissionError,
   readinessCheckValidator,
+  readinessFactsValidator,
 } from "./isolation";
 import { readinessStateValidator } from "./readinessStates";
 import { conflictsOf } from "./scaleSetLabels";
@@ -83,15 +84,7 @@ export const list = query({
               kvm: v.optional(v.boolean()),
             }),
           ),
-          storage: v.optional(
-            v.object({
-              snapshotter: v.optional(v.string()),
-              poolName: v.optional(v.string()),
-              poolTotalMiB: v.optional(v.number()),
-              poolFreeMiB: v.optional(v.number()),
-              poolReserveMiB: v.optional(v.number()),
-            }),
-          ),
+          storage: readinessFactsValidator.storage,
           network: v.optional(
             v.object({
               policyName: v.optional(v.string()),

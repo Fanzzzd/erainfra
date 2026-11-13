@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,8 +121,20 @@ func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.Profile
 	r.checkSnapshotter(ctx, &report)
 	r.checkAddressReservations(ctx, &report)
 
+	// Read what live guests wrote before sampling the pool, so no write made
+	// after the sample is credited back to it.
+	roots := r.roots.list()
+	written := r.rootsWrittenBytes(ctx, roots)
 	storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
 	storage.PoolReserveMiB = r.config.MinPoolFreeMiB
+	if err == nil {
+		live := r.roots.stillLive(roots)
+		liveWritten := make([]int64, 0, len(live))
+		for _, key := range live {
+			liveWritten = append(liveWritten, written[key])
+		}
+		storage.PoolReserveUsedMiB = reserveUsedMiB(liveWritten, r.config.MinPoolFreeMiB)
+	}
 	report.Storage = storage
 	switch {
 	case err != nil:
@@ -163,6 +176,36 @@ func (r *Runtime) Preflight(ctx context.Context, profileEgress netpolicy.Profile
 		return report, errors.New(report.FailureSummary())
 	}
 	return report, nil
+}
+
+// rootsWrittenBytes reads, for each live guest root, the bytes it has mapped
+// beyond its image: the devmapper snapshotter's Usage, which is the root's
+// mapped sectors minus its parent's. That is at most what deleting the root
+// gives back to the pool, because a block the guest overwrote in place is
+// exclusive to the root without being counted. A root it cannot read is left
+// out, which credits less, never more.
+func (r *Runtime) rootsWrittenBytes(ctx context.Context, keys []string) map[string]int64 {
+	written := make(map[string]int64, len(keys))
+	if len(keys) == 0 {
+		return written
+	}
+	client, err := containerd.New(r.config.ContainerdAddress, containerd.WithTimeout(5*time.Second))
+	if err != nil {
+		slog.Warn("could not read guest root usage", "error", err)
+		return written
+	}
+	defer client.Close() //nolint:errcheck // closes the gRPC connection; nothing is buffered
+	snapshotter := client.SnapshotService(r.config.Snapshotter)
+	namespaced := namespaces.WithNamespace(ctx, r.config.ContainerdNamespace)
+	for _, key := range keys {
+		usage, err := snapshotter.Usage(namespaced, key)
+		if err != nil {
+			slog.Warn("could not read guest root usage", "error", err, "snapshot", key)
+			continue
+		}
+		written[key] = usage.Size
+	}
+	return written
 }
 
 func (r *Runtime) checkSnapshotter(ctx context.Context, report *executor.Report) {

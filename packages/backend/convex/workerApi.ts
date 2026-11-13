@@ -22,7 +22,7 @@ import {
   profileEgressValidator,
 } from "./egress";
 import { missingHostLabels, missingHostLabelsDetail } from "./hostLabels";
-import { assertReadinessContract, readinessFactsValidator } from "./isolation";
+import { assertReadinessContract, placementStorageOf, readinessFactsValidator } from "./isolation";
 import { readinessStateValidator } from "./readinessStates";
 import { runnerVersionOf } from "./runnerReleaseModel";
 import { recordAttemptTests } from "./testReports";
@@ -715,15 +715,8 @@ export const reportReadiness = mutation({
       state,
       checkedAt,
       preparedAt,
-      // Scheduling needs only numeric capacity facts. The rest goes to readinessEvidence below.
-      storage:
-        args.storage === undefined
-          ? undefined
-          : {
-              poolTotalMiB: args.storage.poolTotalMiB,
-              poolFreeMiB: args.storage.poolFreeMiB,
-              poolReserveMiB: args.storage.poolReserveMiB,
-            },
+      // Placement reads only these storage facts. The rest goes to readinessEvidence below.
+      storage: placementStorageOf(args.storage),
       warmPool: args.warmPool ?? (sameContract ? existing?.warmPool : undefined),
     };
     if (existing === null) {
