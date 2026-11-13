@@ -87,6 +87,7 @@ import type * as operatorApi from "../operatorApi.js";
 import type * as operatorHttp from "../operatorHttp.js";
 import type * as operatorTestsHttp from "../operatorTestsHttp.js";
 import type * as profiles from "../profiles.js";
+import type * as readinessStates from "../readinessStates.js";
 import type * as reconcile from "../reconcile.js";
 import type * as rightsize from "../rightsize.js";
 import type * as rightsizeModel from "../rightsizeModel.js";
@@ -191,6 +192,7 @@ declare const fullApi: ApiFromModules<{
   operatorHttp: typeof operatorHttp;
   operatorTestsHttp: typeof operatorTestsHttp;
   profiles: typeof profiles;
+  readinessStates: typeof readinessStates;
   reconcile: typeof reconcile;
   rightsize: typeof rightsize;
   rightsizeModel: typeof rightsizeModel;

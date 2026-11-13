@@ -12,6 +12,7 @@ import {
 import { egressEvidenceValidator, egressRecordValidator, profileEgressValidator } from "./egress";
 import { nodeTransportTables } from "./infra/nodeCommandModel";
 import { infraTables, permissionRoleValidator } from "./infra/tables";
+import { readinessStateValidator } from "./readinessStates";
 import { routerDecisionFields } from "./routerDecisionsModel";
 import { storedStartBudgetValidator } from "./startBudgetModel";
 import { scaleSetJobFields } from "./strandedJobsModel";
@@ -480,12 +481,7 @@ export default defineSchema({
     imageRelease: v.string(),
     vcpus: v.optional(v.number()),
     memoryMiB: v.optional(v.number()),
-    state: v.union(
-      v.literal("preparing"),
-      v.literal("ready"),
-      v.literal("degraded"),
-      v.literal("failed"),
-    ),
+    state: readinessStateValidator,
     checkedAt: v.number(),
     preparedAt: v.optional(v.number()),
     warmPool: v.optional(v.object({ target: v.number(), parked: v.number(), claimed: v.number() })),

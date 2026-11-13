@@ -16,7 +16,8 @@
 
 import { ACTIVE_ATTEMPT_STATES } from "./attemptStates";
 import type { BenchmarkDimension, FleetObservation, ObservedProfile } from "./fleetObservation";
-import { ATTEMPT_OUTCOMES, BENCHMARK_DIMENSIONS, READINESS_STATES } from "./fleetObservation";
+import { ATTEMPT_OUTCOMES, BENCHMARK_DIMENSIONS } from "./fleetObservation";
+import { READINESS_STATES } from "./readinessStates";
 import { runnerReleaseStanding } from "./runnerReleaseModel";
 
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
