@@ -20,6 +20,9 @@ Run the gate for every language you touched before you open a pull request. CI r
 commands.
 
 JavaScript and TypeScript, for the whole workspace: lint, formatting, type checking and tests.
+`pnpm lint` runs Oxlint with its type-aware pass (oxlint-tsgolint) and fails on any warning. An
+Oxlint exception names its rule and gives a reason on the same line:
+`// oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- <reason>`.
 
 ```bash
 pnpm check

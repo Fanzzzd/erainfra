@@ -6,6 +6,10 @@
     "suspicious": "error",
     "perf": "warn"
   },
+  "options": {
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true
+  },
   "env": {
     "builtin": true,
     "es2024": true
@@ -26,7 +30,52 @@
     // Convex documents expose `_id` / `_creationTime`.
     "no-underscore-dangle": "off",
     // React 19 automatic JSX runtime — no `React` import needed.
-    "react/react-in-jsx-scope": "off"
+    "react/react-in-jsx-scope": "off",
+
+    // Type-aware rules. tsgolint runs them because options.typeAware is true.
+    // The correctness and suspicious categories enable the rest of them.
+    "typescript/no-floating-promises": [
+      "error",
+      {
+        "allowForKnownSafeCalls": [
+          {
+            "from": "package",
+            "package": "node:test",
+            "name": ["test", "describe", "it", "suite"]
+          }
+        ]
+      }
+    ],
+    "typescript/no-misused-promises": "error",
+    "typescript/no-mixed-enums": "error",
+    "typescript/only-throw-error": [
+      "error",
+      { "allowRethrowing": true, "allowThrowingUnknown": true }
+    ],
+    "typescript/prefer-promise-reject-errors": [
+      "error",
+      { "allowThrowingAny": true, "allowThrowingUnknown": true }
+    ],
+    "typescript/require-array-sort-compare": ["error", { "ignoreStringArrays": true }],
+    "typescript/restrict-plus-operands": "error",
+    "typescript/restrict-template-expressions": ["error", { "allowNever": true }],
+    "typescript/return-await": ["error", "in-try-catch"],
+    "typescript/switch-exhaustiveness-check": [
+      "error",
+      { "considerDefaultExhaustiveForUnions": true }
+    ],
+    // 9 hits, none real: exhaustive switches that TypeScript already checks, and one effect that
+    // returns a cleanup only when it subscribes.
+    "typescript/consistent-return": "off",
+    // 16 hits, none real: FormData text fields and test fetch doubles that receive strings.
+    "typescript/no-base-to-string": "off",
+    // 18 hits, none real: `ok === false` narrows a result union inside a test assertion.
+    "typescript/no-unnecessary-boolean-literal-compare": "off",
+    // 4 hits, none real: String() guards an env value or a caught error whose runtime value can be
+    // undefined despite its declared type.
+    "typescript/no-unnecessary-type-conversion": "off",
+    // 338 hits: request decoders, Convex documents and test doubles assert by design.
+    "typescript/no-unsafe-type-assertion": "off"
   },
   "overrides": [
     {
