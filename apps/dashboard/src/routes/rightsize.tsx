@@ -135,9 +135,9 @@ function RightsizePage() {
             value={repoInput}
             maxLength={201}
             onChange={(event) => setRepoInput(event.target.value)}
-            className="h-9 w-56"
+            className="w-56"
           />
-          <Button type="submit" variant="secondary" size="sm" className="h-9">
+          <Button type="submit" variant="secondary" size="sm">
             Filter
           </Button>
         </form>

@@ -3,7 +3,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { Link2, Plus, Trash2 } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
-import { toast } from "sonner";
 
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
@@ -12,7 +11,8 @@ import { TableRowsSkeleton } from "@/components/table-skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { confirmDestructive } from "@/components/ui/confirm";
+import { Input, inputClass } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { heartbeatsByName, type LinkState, linkState } from "@/lib/infra";
 
@@ -32,10 +33,6 @@ const STATE_TONE: Record<LinkState, Tone> = {
   degraded: "destructive",
   pending: "warning",
 };
-
-// The native control keeps keyboard and mobile behaviour; it only needs the console's styling.
-const selectClassName =
-  "flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none transition-[color,border-color,box-shadow] duration-150 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50";
 
 function LinksPage() {
   const links = useQuery(api.infra.operator.links);
@@ -77,7 +74,12 @@ function LinksPage() {
   }
 
   async function remove(name: string) {
-    if (!window.confirm(`Remove ${name}? Both Nodes drop it on their next snapshot.`)) return;
+    const confirmed = await confirmDestructive({
+      title: `Remove ${name}?`,
+      description: "Both Nodes drop the link on their next snapshot.",
+      confirmLabel: "Remove",
+    });
+    if (!confirmed) return;
     try {
       await unlink({ name });
     } catch (caught) {
@@ -112,7 +114,7 @@ function LinksPage() {
               <select
                 id={`${fieldId}-provider`}
                 required
-                className={selectClassName}
+                className={inputClass}
                 value={provider}
                 onChange={(event) => setProvider(event.target.value)}
               >
@@ -143,7 +145,7 @@ function LinksPage() {
               <select
                 id={`${fieldId}-consumer`}
                 required
-                className={selectClassName}
+                className={inputClass}
                 value={consumer}
                 onChange={(event) => setConsumer(event.target.value)}
               >

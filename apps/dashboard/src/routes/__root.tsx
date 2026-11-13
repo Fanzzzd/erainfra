@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type { ComponentType } from "react";
 
+import { ConfirmDialog } from "@/components/ui/confirm";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,8 +33,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
-import { Toaster } from "@/components/ui/sonner";
+import { Toaster } from "@/components/ui/toast";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Wordmark } from "@/components/wordmark";
 import { cn } from "@/lib/utils";
 
 export const Route = createRootRoute({ component: RootComponent });
@@ -50,10 +52,10 @@ function LoadingScreen() {
 }
 
 const railItemClass =
-  "group relative grid size-10 place-items-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:bg-accent hover:text-secondary-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40";
+  "group relative grid size-10 place-items-center rounded-md text-muted-foreground hover:bg-sunken hover:text-foreground";
 
 const railActiveClass =
-  "bg-accent text-foreground before:absolute before:-left-[7px] before:h-5 before:w-0.5 before:rounded-full before:bg-primary";
+  "bg-sunken text-foreground before:absolute before:-left-[7px] before:h-5 before:w-0.5 before:rounded-full before:bg-primary";
 
 type NavItem = { to: LinkProps["to"]; label: string; icon: ComponentType<{ className?: string }> };
 
@@ -109,38 +111,23 @@ function RootComponent() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-background">
-        <aside className="fixed inset-y-0 left-0 z-40 flex w-14 flex-col items-center border-r border-border bg-card py-3">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Link
-                to="/"
-                aria-label="EraInfra"
-                className="grid size-9 place-items-center rounded-md border border-border bg-secondary font-mono text-[11px] font-semibold tracking-[-0.04em] text-foreground outline-none transition-colors duration-150 hover:border-input focus-visible:ring-[3px] focus-visible:ring-ring/40"
-              >
-                EI
-              </Link>
-            </TooltipTrigger>
-            <TooltipContent side="right">EraInfra</TooltipContent>
-          </Tooltip>
-
-          <nav className="mt-6 flex flex-col gap-1.5" aria-label="Primary navigation">
-            {PRIMARY_NAV.map((item) => (
-              <RailLink key={item.label} item={item} />
-            ))}
-            <Separator className="my-1.5 w-6 self-center" />
-            {INFRA_NAV.map((item) => (
-              <RailLink key={item.label} item={item} />
-            ))}
-          </nav>
+        {/* The Era header: a 3px band in the product accent across the full top edge. */}
+        <header className="sticky top-0 z-40 flex h-12 items-center border-b border-t-[3px] border-b-border border-t-primary bg-card pl-4 pr-2">
+          <Link to="/" className="rounded-sm">
+            <Wordmark />
+          </Link>
 
           <DropdownMenu>
             <DropdownMenuTrigger
               aria-label="Account"
-              className={cn(railItemClass, "mt-auto data-[state=open]:bg-accent")}
+              className={cn(
+                railItemClass,
+                "ml-auto size-(--era-control-height) data-open:bg-sunken",
+              )}
             >
               <UserRound className="size-[17px]" />
             </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="end" className="min-w-48">
+            <DropdownMenuContent side="bottom" align="end" className="min-w-48">
               <DropdownMenuLabel className="text-muted-foreground">
                 Signed in to this deployment
               </DropdownMenuLabel>
@@ -151,6 +138,18 @@ function RootComponent() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+        </header>
+
+        <aside className="fixed bottom-0 left-0 top-12 z-30 flex w-14 flex-col items-center border-r border-border bg-card py-3">
+          <nav className="flex flex-col gap-1.5" aria-label="Primary navigation">
+            {PRIMARY_NAV.map((item) => (
+              <RailLink key={item.label} item={item} />
+            ))}
+            <Separator className="my-1.5 w-6 self-center" />
+            {INFRA_NAV.map((item) => (
+              <RailLink key={item.label} item={item} />
+            ))}
+          </nav>
         </aside>
 
         <div className="pl-14">
@@ -160,6 +159,7 @@ function RootComponent() {
         </div>
       </div>
       <Toaster />
+      <ConfirmDialog />
     </TooltipProvider>
   );
 }

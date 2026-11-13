@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Wordmark } from "@/components/wordmark";
 
 export const Route = createFileRoute("/login")({ component: LoginPage });
 
@@ -147,13 +148,10 @@ function LoginPage() {
   const copy = COPY[mode];
 
   return (
-    <main className="grid min-h-screen justify-items-center bg-background px-4 py-12 sm:py-20">
+    <main className="grid min-h-screen justify-items-center border-t-[3px] border-t-primary bg-background px-4 py-12 sm:py-20">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex flex-col items-center">
-          <div className="grid size-10 place-items-center rounded-md border border-border bg-secondary font-mono text-xs font-semibold tracking-[-0.04em] text-foreground">
-            EI
-          </div>
-          <span className="mt-3 text-sm font-medium text-secondary-foreground">EraInfra</span>
+        <div className="mb-6 flex justify-center">
+          <Wordmark className="text-(length:--era-text-xl)" />
         </div>
 
         <section
@@ -178,7 +176,7 @@ function LoginPage() {
                     <div>
                       <h1
                         id={`${fieldId}-heading-${value}`}
-                        className="text-lg font-semibold tracking-tight text-foreground"
+                        className="font-display text-(length:--era-text-xl) font-semibold text-foreground"
                       >
                         {COPY[value].heading}
                       </h1>
@@ -248,7 +246,7 @@ function LoginPage() {
                           aria-label={revealPassword ? "Hide password" : "Show password"}
                           aria-pressed={revealPassword}
                           aria-controls={`${fieldId}-${value}-password`}
-                          className="absolute right-1 top-1 grid size-8 place-items-center rounded-md text-muted-foreground outline-none transition-colors duration-150 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+                          className="absolute right-0.5 top-0.5 grid size-7 place-items-center rounded-sm text-muted-foreground hover:text-foreground"
                           onClick={() => setRevealPassword((shown) => !shown)}
                         >
                           {revealPassword ? (

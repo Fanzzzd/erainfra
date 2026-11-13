@@ -16,6 +16,7 @@ import {
 } from "@/components/test-results";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { inputClass } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -28,6 +29,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNow } from "@/hooks/use-now";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/tests")({ component: TestsPage });
 
@@ -45,9 +47,6 @@ const windows = [
 ] as const;
 
 const DAY_MS = 86_400_000;
-
-const selectClass =
-  "h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40";
 
 function TestsPage() {
   const now = useNow();
@@ -81,7 +80,7 @@ function TestsPage() {
         </Tabs>
         <select
           aria-label="Repository"
-          className={selectClass}
+          className={cn(inputClass, "w-auto")}
           value={repository}
           onChange={(event) => setRepository(event.target.value)}
         >
@@ -94,7 +93,7 @@ function TestsPage() {
         </select>
         <select
           aria-label="Time window"
-          className={selectClass}
+          className={cn(inputClass, "w-auto")}
           value={days}
           onChange={(event) => setDays(event.target.value)}
         >

@@ -4,16 +4,16 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 
 const alertVariants = cva(
-  "relative grid w-full grid-cols-[0_1fr] items-start gap-y-1 rounded-lg border px-4 py-3 text-sm has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] has-[>svg]:gap-x-3 [&>svg]:size-4 [&>svg]:translate-y-0.5",
+  "relative grid w-full grid-cols-[0_1fr] items-start gap-y-1 rounded-lg border px-4 py-3 text-(length:--era-text-md) has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] has-[>svg]:gap-x-3 [&>svg]:size-4 [&>svg]:translate-y-0.5",
   {
     variants: {
       variant: {
         default: "border-border bg-card text-card-foreground [&>svg]:text-muted-foreground",
-        info: "border-info/20 bg-info/[0.07] text-info [&>svg]:text-info",
-        success: "border-success/20 bg-success/[0.07] text-success [&>svg]:text-success",
-        warning: "border-warning/20 bg-warning/[0.07] text-warning [&>svg]:text-warning",
+        info: "border-transparent bg-info-soft text-info [&>svg]:text-info",
+        success: "border-transparent bg-success-soft text-success [&>svg]:text-success",
+        warning: "border-transparent bg-warning-soft text-warning [&>svg]:text-warning",
         destructive:
-          "border-destructive/20 bg-destructive/[0.07] text-destructive [&>svg]:text-destructive",
+          "border-transparent bg-destructive-soft text-destructive [&>svg]:text-destructive",
       },
     },
     defaultVariants: { variant: "default" },
@@ -50,7 +50,7 @@ function AlertDescription({ className, ...props }: React.ComponentProps<"div">) 
     <div
       data-slot="alert-description"
       className={cn(
-        "col-start-2 grid justify-items-start gap-1 text-xs leading-5 opacity-85 [&_p]:leading-5",
+        "col-start-2 grid justify-items-start gap-1 text-(length:--era-text-sm) leading-5 [&_p]:leading-5",
         className,
       )}
       {...props}

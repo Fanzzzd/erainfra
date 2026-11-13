@@ -3,7 +3,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import { Check, Clipboard, HardDrive, KeyRound } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
-import { toast } from "sonner";
 
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
@@ -13,6 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { confirmDestructive } from "@/components/ui/confirm";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -23,6 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "@/components/ui/toast";
 import { useNow } from "@/hooks/use-now";
 import { nodeOnline } from "@/lib/infra";
 import { formatRelativeTime } from "@/lib/time";
@@ -71,13 +72,12 @@ function NodesPage() {
 
   async function revokeAll(node: NonNullable<typeof nodes>[number]) {
     const live = node.credentials.filter((credential) => credential.revokedAt === null);
-    if (
-      !window.confirm(
-        `Revoke every credential of ${node.name}? Its next request is refused and it leaves the mesh.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmDestructive({
+      title: `Revoke every credential of ${node.name}?`,
+      description: "Its next request is refused and it leaves the mesh.",
+      confirmLabel: "Revoke",
+    });
+    if (!confirmed) return;
     try {
       for (const credential of live) await revoke({ credentialId: credential.id });
     } catch (caught) {
