@@ -38,7 +38,8 @@ arguments, output and exit code. `rc` keeps working unchanged and stays the stab
 
 `rc update` installs the release this deployment pins, or `--version vX.Y.Z --sha256 HEX`. It
 checks the new Action Runner Agent's health and puts the previous one back when the check fails.
-The same installer serves Linux (systemd) and macOS (launchd) Workers.
+The same installer serves Linux (systemd) and macOS (launchd) Workers. On Windows, `rc.ps1 update`
+runs the same check, with `-ReadyTimeout SECONDS` in place of `--ready-timeout`.
 
 1. Before it stops the running Agent, the installer asks the control plane which Profiles this
    Worker is `ready` for (`GET /agents/readiness`). It reads the state the scheduler acts on, so a
@@ -58,8 +59,7 @@ The same installer serves Linux (systemd) and macOS (launchd) Workers.
 
 A Profile that was not ready before the update is not checked, and a Worker with no ready Profile
 is updated without the check. A Profile the Worker stops serving during the update is not waited
-for. The Windows installer (`-Update`) does not run this check yet: it rolls back only when the new
-Agent fails to connect.
+for.
 
 A Worker that stops reporting for 10 minutes during a job may only have lost its link to Convex,
 so its job is not stopped. Its Attempt shows as `Retiring` in `erainfra jobs view`, and the
@@ -299,10 +299,10 @@ A fresh Windows Server has no Node.js, so the installer fetches the official Nod
 build from nodejs.org and verifies it against nodejs.org's own `SHASUMS256.txt` before running it.
 This is the same source and the same check the POSIX installer already uses when a host has no runtime.
 Everything lands under `%USERPROFILE%\.runner-center`, which is the `ERAINFRA_HOME` (or `RC_HOME`) the Hyper-V
-provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-Sha256`, and rollback
-through `agent.previous` work as they do on POSIX, except that `-Update` does not run the Profile
-readiness check described under [Updates roll back on their own](#updates-roll-back-on-their-own),
-and `rc.ps1` under
+provisioner and `build-image.ps1` already default to. `-Update`, `-Version`, `-Sha256`,
+`-ReadyTimeout`, and rollback through `agent.previous` work as they do on POSIX, including the
+Profile readiness check described under
+[Updates roll back on their own](#updates-roll-back-on-their-own). `rc.ps1` under
 `%USERPROFILE%\.runner-center\bin` is the `rc` equivalent.
 
 Persistence is a Scheduled Task registered **for the installing account, at logon**, not a Windows
