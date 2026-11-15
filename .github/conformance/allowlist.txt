@@ -77,11 +77,11 @@ never-allow sysctl_vm_max_map_count_meets_floor  # the value may differ; clearin
 allow kernel_release  # a GitHub-hosted job runs on Azure's kernel; a Profile runs on the Worker's, or on the guest kernel deploy/provision-firecracker-host.sh pins. Both are pinned deliberately and neither tracks the other
 allow virtualisation  # hosted is an Azure VM; the transitional Docker executor is a container and Firecracker is a microVM (ADR 0001)
 allow lsm_profile  # a hosted job runs unconfined on Azure's kernel while the pinned 6.1 guest kernel reports `kernel` (run 32343905771); the LSM state is a property of the kernel each leg boots, and neither tracks the other. Docker's AppArmor profile, which this entry used to describe, died with the executor
-allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; the shared-kernel Docker executor exposes no device nodes at all, which #80's own evidence records as kvm=absent. Firecracker guests get real vCPUs instead (#17)
-allow dev_fuse  # measured absent on the fleet, and the same decision as dev_kvm above: provision-docker.sh passes no --device and no --cap-add, and the daily smoke canary fails if a host mount ever appears
-allow dev_net_tun  # same: no device node reaches an Attempt, which is what a shared-kernel boundary buys
-allow dev_vhost_vsock  # same
-allow dev_dri  # same; no GPU is exposed to any Profile today. The five device keys are listed in #96 too, so the record of what a shared-kernel Attempt does not get lives in one place
+allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; a Firecracker guest gets real vCPUs (#17) but no nested KVM, which the pinned guest kernel and the VMM do not offer
+allow dev_fuse  # measured absent in conformance run 43474237567: the Firecracker guest kernel deploy/provision-firecracker-host.sh pins (6.1.141) is built without CONFIG_FUSE_FS. #383 owns adding it; the device would stay inside the microVM
+allow dev_net_tun  # same cause, CONFIG_TUN unset in the pinned guest kernel, and the same owner, #383. Egress policy is enforced on the host tap, so a guest TUN device could not route around it
+allow dev_vhost_vsock  # the guest kernel is a vsock guest, not a host; no Profile offers nested VMs
+allow dev_dri  # no GPU is passed through to any Profile today
 
 # ---------------------------------------------------------------------------
 # Size. A Profile is a contract for a size, and it is not ubuntu-latest's
@@ -275,6 +275,7 @@ allow rlimit_max_processes_soft  # 64053 against 63838 hosted, same run: a real 
 allow rlimit_max_processes_hard  # as above, hard limit
 allow rlimit_max_pending_signals_soft  # 64053 against 63838 hosted, same run, same derivation
 allow rlimit_max_pending_signals_hard  # as above, hard limit
+allow net_default_mtu  # hosted measured 9001 from 2026-11-15 (conformance run 43672291351, twice; 1500 in run 43474237567 two days earlier), the jumbo-frame MTU of the cloud network GitHub's VM sits on. A guest's link is 1500 by decision in apps/runtime/internal/netpolicy/policy.go, matching the Worker's uplink; traffic to the internet runs at 1500 on both legs, so only a job that reads the link MTU sees this
 allow net_ipv6_disabled  # the isolation contract forbids hosted parity here. Guests boot with ipv6.disable=1 because the job network policy is IPv4 nftables and a dual-stack guest could route around it (apps/runtime/internal/firecracker/config.go, ADR 0002); netpolicy.RequiredKernelArgs puts the argument in the policy identity and readiness refuses a kernel command line without it. So /proc/sys/net/ipv6 does not exist (unavailable) against 0 on hosted. Hosted offers less than `0` suggests: GitHub-hosted runners have no IPv6 egress (actions/runner-images#668), so the reachable difference is ::1 on loopback. A job that binds or dials ::1 fails here and must use 127.0.0.1. Revisit only together with an IPv6 job network policy
 allow sysctl_kernel_unprivileged_userns_clone  # a Debian-specific knob that does not exist on the vanilla 6.1 guest kernel (measured unavailable against 1 hosted, run 32330383534). The capability it gates is on by default there — sysctl_user_max_user_namespaces measures non-zero in the same run — so the absent knob is a kernel-flavor difference, not a capability difference
 allow dns_nameserver_count  # the guest writes exactly the resolvers its Profile's network policy names (netpolicy.Policy.Nameservers, default 1.1.1.1 and 9.9.9.9, each validated as reachable under that policy), copied from the kernel's ip= publication by resolverConfig in runner-center-guest. Hosted's single nameserver is its local systemd-resolved stub with its own upstreams behind it; two direct resolvers give glibc the same failover. All four dns_resolves_* probes are identical on both legs
