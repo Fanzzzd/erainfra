@@ -54,6 +54,9 @@ type Reporter struct {
 	mu      sync.Mutex
 	current fleet.ControllerHeartbeat
 	wake    chan struct{}
+	// counts is the last job counts GitHub sent, so a change is logged once.
+	counts    scaleset.RunnerScaleSetStatistic
+	hasCounts bool
 }
 
 // Option configures a Reporter.
@@ -68,7 +71,8 @@ func WithInterval(interval time.Duration) Option {
 	}
 }
 
-// WithLogger records failed reports. Without it they are discarded.
+// WithLogger records failed reports and changes in GitHub's job counts.
+// Without it they are discarded.
 func WithLogger(logger *slog.Logger) Option {
 	return func(r *Reporter) {
 		if logger != nil {
@@ -151,15 +155,31 @@ func (r *Reporter) RecordPoll() {
 	r.current.LastMessageAt = now
 }
 
-// RecordStatistics keeps GitHub's newest job counts for the scale set.
+// RecordStatistics keeps GitHub's newest job counts for the scale set, and logs
+// them whenever they change. The log is the record of when GitHub held a job
+// for this scale set: a job that waits while totalAvailableJobs stays above
+// zero was not offered to this listener, and one that never shows up there
+// was never queued for it.
 func (r *Reporter) RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic) {
 	if statistics == nil {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.current.AssignedJobs = statistics.TotalAssignedJobs
 	r.current.RunningJobs = statistics.TotalRunningJobs
+	changed := !r.hasCounts || r.counts != *statistics
+	r.counts, r.hasCounts = *statistics, true
+	r.mu.Unlock()
+	if changed {
+		r.logger.Info("GitHub job counts changed",
+			"available", statistics.TotalAvailableJobs,
+			"acquired", statistics.TotalAcquiredJobs,
+			"assigned", statistics.TotalAssignedJobs,
+			"running", statistics.TotalRunningJobs,
+			"registeredRunners", statistics.TotalRegisteredRunners,
+			"busyRunners", statistics.TotalBusyRunners,
+			"idleRunners", statistics.TotalIdleRunners)
+	}
 }
 
 // Run reports at once, then every interval and on every state change, until
