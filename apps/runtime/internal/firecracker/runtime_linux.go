@@ -314,15 +314,28 @@ func (r *Runtime) prepareImage(ctx context.Context, profile executor.Profile) (s
 		runnerVersion = imageRunnerVersion(spec)
 	}
 	if profile.WarmPool > 0 {
+		// Parked guests are already in the pool and their writes are already
+		// missing from the free space, so credit those writes back before
+		// charging every target guest a full reserve. Read the writes before
+		// sampling the pool, as Preflight does.
+		parked := r.pool.parkedTotal()
+		roots := r.roots.list()
+		written := r.rootsWrittenBytes(ctx, roots)
 		storage, err := thinPoolStorage(ctx, r.config.Snapshotter, r.config.ThinPoolName)
 		if err != nil {
 			return "", err
 		}
+		live := r.roots.stillLive(roots)
+		liveWritten := make([]int64, 0, len(live))
+		for _, key := range live {
+			liveWritten = append(liveWritten, written[key])
+		}
+		credit := parkedReserveUsedMiB(liveWritten, parked, r.config.MinPoolFreeMiB)
 		required := int64(r.pool.totalTargetWith(profile)) * r.config.MinPoolFreeMiB
-		if storage.PoolFreeMiB < required {
+		if storage.PoolFreeMiB+credit < required {
 			return "", fmt.Errorf(
-				"warm pools require %d MiB thin-pool headroom but %d MiB is free",
-				required, storage.PoolFreeMiB,
+				"warm pools require %d MiB thin-pool headroom but %d MiB is free (%d MiB credited for parked guests)",
+				required, storage.PoolFreeMiB, credit,
 			)
 		}
 	}

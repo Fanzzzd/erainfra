@@ -23,6 +23,31 @@ func TestReserveUsedCreditsAtMostOneReservePerGuest(t *testing.T) {
 	}
 }
 
+func TestParkedReserveCreditNeverExceedsWhatParkedGuestsWrote(t *testing.T) {
+	const reserve = int64(8 * 1024)
+	const mib = int64(1 << 20)
+	// Two parked guests wrote 100 and 300 MiB; a running job wrote 5 GiB.
+	written := []int64{5 * 1024 * mib, 300 * mib, 100 * mib}
+	cases := []struct {
+		parked int
+		want   int64
+	}{
+		{parked: 0, want: 0},
+		{parked: 1, want: 100},
+		{parked: 2, want: 400},
+		{parked: 3, want: 400 + 5*1024},
+		{parked: 5, want: 400 + 5*1024}, // more parked than live roots: only the live ones count
+	}
+	for _, c := range cases {
+		if got := parkedReserveUsedMiB(written, c.parked, reserve); got != c.want {
+			t.Errorf("parkedReserveUsedMiB(parked=%d) = %d MiB, want %d MiB", c.parked, got, c.want)
+		}
+	}
+	if !slices.Equal(written, []int64{5 * 1024 * mib, 300 * mib, 100 * mib}) {
+		t.Fatalf("parkedReserveUsedMiB reordered its input: %v", written)
+	}
+}
+
 func TestLiveRootsCreditsOnlyRootsLiveAcrossThePoolSample(t *testing.T) {
 	var roots liveRoots
 	roots.add("runner-center-a")

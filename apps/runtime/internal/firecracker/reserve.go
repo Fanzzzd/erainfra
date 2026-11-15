@@ -22,6 +22,21 @@ func reserveUsedMiB(writtenBytes []int64, reserveMiB int64) int64 {
 	return used
 }
 
+// parkedReserveUsedMiB is the reserve credit for parked guests when only the
+// count of parked guests is known, not which live roots they own. It credits
+// the parked smallest writes among the live roots: no parked guests can have
+// written less than that, so the credit never exceeds what they wrote. The
+// warm-pool setup check adds it back, as the control plane adds back
+// reserveUsedMiB, so a parked guest is not charged its own writes twice.
+func parkedReserveUsedMiB(writtenBytes []int64, parked int, reserveMiB int64) int64 {
+	if parked <= 0 {
+		return 0
+	}
+	smallest := slices.Clone(writtenBytes)
+	slices.Sort(smallest)
+	return reserveUsedMiB(smallest[:min(parked, len(smallest))], reserveMiB)
+}
+
 // liveRoots is the set of containerd snapshot keys of the root disks of the
 // guests this runtime holds, cold-booted and warm alike. A guest is added once
 // its root snapshot exists and removed before its containerd lease is released,
