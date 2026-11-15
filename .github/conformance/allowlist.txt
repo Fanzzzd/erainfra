@@ -77,11 +77,11 @@ never-allow sysctl_vm_max_map_count_meets_floor  # the value may differ; clearin
 allow kernel_release  # a GitHub-hosted job runs on Azure's kernel; a Profile runs on the Worker's, or on the guest kernel deploy/provision-firecracker-host.sh pins. Both are pinned deliberately and neither tracks the other
 allow virtualisation  # hosted is an Azure VM; the transitional Docker executor is a container and Firecracker is a microVM (ADR 0001)
 allow lsm_profile  # a hosted job runs unconfined on Azure's kernel while the pinned 6.1 guest kernel reports `kernel` (run 32343905771); the LSM state is a property of the kernel each leg boots, and neither tracks the other. Docker's AppArmor profile, which this entry used to describe, died with the executor
-allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; the shared-kernel Docker executor exposes no device nodes at all, which #80's own evidence records as kvm=absent. Firecracker guests get real vCPUs instead (#17)
-allow dev_fuse  # measured absent on the fleet, and the same decision as dev_kvm above: provision-docker.sh passes no --device and no --cap-add, and the daily smoke canary fails if a host mount ever appears
-allow dev_net_tun  # same: no device node reaches an Attempt, which is what a shared-kernel boundary buys
-allow dev_vhost_vsock  # same
-allow dev_dri  # same; no GPU is exposed to any Profile today. The five device keys are listed in #96 too, so the record of what a shared-kernel Attempt does not get lives in one place
+allow dev_kvm  # GitHub enabled nested virtualisation on hosted Linux runners; a Firecracker guest gets real vCPUs (#17) but no nested KVM, which the pinned guest kernel and the VMM do not offer
+allow dev_fuse  # measured absent in conformance run 43474237567: the Firecracker guest kernel deploy/provision-firecracker-host.sh pins (6.1.141) is built without CONFIG_FUSE_FS. #383 owns adding it; the device would stay inside the microVM
+allow dev_net_tun  # same cause, CONFIG_TUN unset in the pinned guest kernel, and the same owner, #383. Egress policy is enforced on the host tap, so a guest TUN device could not route around it
+allow dev_vhost_vsock  # the guest kernel is a vsock guest, not a host; no Profile offers nested VMs
+allow dev_dri  # no GPU is passed through to any Profile today
 
 # ---------------------------------------------------------------------------
 # Size. A Profile is a contract for a size, and it is not ubuntu-latest's
