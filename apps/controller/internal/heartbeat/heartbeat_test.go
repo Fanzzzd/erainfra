@@ -1,8 +1,11 @@
 package heartbeat
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,6 +224,23 @@ func TestRecordStatisticsKeepsGitHubsCounts(t *testing.T) {
 	snapshot := reporter.Snapshot()
 	if snapshot.AssignedJobs != 5 || snapshot.RunningJobs != 3 {
 		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+func TestRecordStatisticsLogsEachChangeOnce(t *testing.T) {
+	var logs bytes.Buffer
+	reporter := New(newRecordingSender(), base(), WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	idle := &scaleset.RunnerScaleSetStatistic{TotalRegisteredRunners: 2, TotalIdleRunners: 2}
+	queued := &scaleset.RunnerScaleSetStatistic{TotalAvailableJobs: 1, TotalRegisteredRunners: 2, TotalIdleRunners: 2}
+	for _, statistics := range []*scaleset.RunnerScaleSetStatistic{idle, idle, queued, queued, nil, idle} {
+		reporter.RecordStatistics(statistics)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("logged %d lines, want 3 (first counts, the queued job, back to idle):\n%s", len(lines), logs.String())
+	}
+	if !strings.Contains(lines[1], "available=1") || !strings.Contains(lines[2], "available=0") {
+		t.Fatalf("log lines do not carry the available count:\n%s", logs.String())
 	}
 }
 
