@@ -1,5 +1,9 @@
 # @erainfra/backend
 
+## 0.2.0-rc.25
+
+No changes in this release.
+
 ## 0.2.0-rc.24
 
 ### Patch Changes

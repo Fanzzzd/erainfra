@@ -1,5 +1,11 @@
 # @erainfra/controller
 
+## 0.2.0-rc.25
+
+### Patch Changes
+
+- [#388](https://github.com/Fanzzzd/erainfra/pull/388) [`fc3bcfc`](https://github.com/Fanzzzd/erainfra/commit/fc3bcfca505c12d0484762f748acffccc1ecc6a7) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The controller logs GitHub's job counts for its scale set whenever they change: available, acquired, assigned and running jobs, and registered, busy and idle runners. A job that waits while `available` stays above zero was not offered to this listener; a job that never appears there was never queued for this scale set. The counts do not change while the fleet is idle, so an idle controller logs nothing new.
+
 ## 0.2.0-rc.24
 
 No changes in this release.
