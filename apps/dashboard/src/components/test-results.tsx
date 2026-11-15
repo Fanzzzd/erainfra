@@ -30,9 +30,9 @@ export type TestTotalsView = {
 
 const statusVariant = {
   passed: "success",
-  failed: "destructive",
-  errored: "destructive",
-  skipped: "outline",
+  failed: "danger",
+  errored: "danger",
+  skipped: "neutral",
   flaky: "warning",
 } as const;
 
@@ -66,11 +66,11 @@ export function TestName({ name, suite, file }: { name: string; suite?: string; 
   const context = [suite, file].filter((value) => value !== undefined && value !== "").join(" · ");
   return (
     <div className="min-w-0">
-      <p className="truncate font-mono text-xs text-foreground" title={name}>
+      <p className="truncate font-mono text-[13px] text-foreground" title={name}>
         {name}
       </p>
       {context !== "" && (
-        <p className="truncate text-[11px] text-subtle-foreground" title={context}>
+        <p className="truncate text-xs text-muted-foreground" title={context}>
           {context}
         </p>
       )}
@@ -81,7 +81,7 @@ export function TestName({ name, suite, file }: { name: string; suite?: string; 
 export function TestMessage({ message }: { message?: string }) {
   if (message === undefined || message === "") return null;
   return (
-    <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted px-2.5 py-2 font-mono text-[11px] leading-4 text-muted-foreground">
+    <pre className="mt-1.5 max-h-40 overflow-auto rounded-lg border bg-subtle px-3 py-2 font-mono text-xs leading-5 break-words whitespace-pre-wrap text-muted-foreground">
       {message}
     </pre>
   );
@@ -90,20 +90,20 @@ export function TestMessage({ message }: { message?: string }) {
 /** The cases one run listed, failures first as the report orders them. */
 export function TestCaseList({ cases }: { cases: TestCaseView[] }) {
   return (
-    <ul className="divide-y divide-border">
+    <ul className="divide-y">
       {cases.map((testCase) => (
-        <li key={testCase.testId} className="flex gap-3 px-4 py-2.5">
-          <div className="w-[76px] shrink-0 pt-0.5">
+        <li key={testCase.testId} className="flex gap-3 px-4 py-3">
+          <div className="w-20 shrink-0 pt-0.5">
             <TestStatusBadge status={testCase.status} />
           </div>
           <div className="min-w-0 flex-1">
             <TestName name={testCase.name} suite={testCase.suite} file={testCase.file} />
             {testCase.status !== "passed" && <TestMessage message={testCase.message} />}
           </div>
-          <div className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+          <div className="shrink-0 text-right text-[13px] tabular-nums text-muted-foreground">
             {formatTestDuration(testCase.durationMs)}
             {testCase.retries !== undefined && testCase.retries > 0 && (
-              <p className="text-[11px] text-subtle-foreground">
+              <p className="text-xs text-muted-foreground">
                 {testCase.retries} {testCase.retries === 1 ? "retry" : "retries"}
               </p>
             )}

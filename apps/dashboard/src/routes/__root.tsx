@@ -8,100 +8,160 @@ import {
   useLocation,
 } from "@tanstack/react-router";
 import {
-  Activity,
-  Boxes,
-  FlaskConical,
-  Gauge,
-  HardDrive,
-  Link2,
-  Rocket,
-  LogOut,
-  Server,
-  Settings,
-  TestTubeDiagonal,
-  UserRound,
+  ActivityIcon,
+  BookOpenIcon,
+  BoxesIcon,
+  FlaskConicalIcon,
+  GaugeIcon,
+  LinkIcon,
+  LogOutIcon,
+  RocketIcon,
+  ServerIcon,
+  SettingsIcon,
+  TestTubeDiagonalIcon,
+  WaypointsIcon,
 } from "lucide-react";
 import type { ComponentType } from "react";
 
-import { ConfirmDialog } from "@/components/ui/confirm";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Separator } from "@/components/ui/separator";
+  AppShell,
+  AppShellAccountMenu,
+  AppShellBrand,
+  AppShellContent,
+  AppShellMain,
+  AppShellNav,
+  AppShellNavGroup,
+  AppShellNavItem,
+  AppShellSidebar,
+  AppShellSidebarFooter,
+  AppShellTopBar,
+  AppShellTopBarActions,
+} from "@/components/app-shell";
+import { StatusDot } from "@/components/status";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Button } from "@/components/ui/button";
+import { DropdownMenuGroup, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Toaster } from "@/components/ui/toast";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Wordmark } from "@/components/wordmark";
-import { cn } from "@/lib/utils";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { convexDeploymentName } from "@/lib/convex-site";
 
 export const Route = createRootRoute({ component: RootComponent });
+
+const DOCS_URL = "https://github.com/Fanzzzd/erainfra#readme";
+
+type NavItem = {
+  to: LinkProps["to"] & string;
+  label: string;
+  icon: ComponentType;
+};
+
+type NavGroup = { label: string; items: NavItem[] };
+
+// CI runs jobs on Machines; Deploy runs Apps on Nodes from Convex since the Hub's state moved
+// here (ADR 0016). Two groups, so they read as two surfaces of one product.
+const NAV: NavGroup[] = [
+  {
+    label: "CI",
+    items: [
+      { to: "/", label: "Machines", icon: ServerIcon },
+      { to: "/attempts", label: "Runs", icon: ActivityIcon },
+      { to: "/rightsize", label: "Rightsize", icon: GaugeIcon },
+      { to: "/tests", label: "Tests", icon: TestTubeDiagonalIcon },
+      { to: "/experiments", label: "Experiments", icon: FlaskConicalIcon },
+    ],
+  },
+  {
+    label: "Deploy",
+    items: [
+      { to: "/nodes", label: "Nodes", icon: WaypointsIcon },
+      { to: "/apps", label: "Apps", icon: BoxesIcon },
+      { to: "/deployments", label: "Deployments", icon: RocketIcon },
+      { to: "/links", label: "Links", icon: LinkIcon },
+    ],
+  },
+];
+
+const SETTINGS: NavItem = { to: "/settings", label: "Settings", icon: SettingsIcon };
+
+const ALL_ITEMS = [...NAV.flatMap((group) => group.items), SETTINGS];
+
+/** The nav item a path belongs to. A Run's detail page belongs to Runs. */
+function itemForPath(pathname: string): NavItem | undefined {
+  if (pathname.startsWith("/attempts/")) return ALL_ITEMS.find((item) => item.to === "/attempts");
+  return ALL_ITEMS.find((item) => item.to === pathname);
+}
 
 function LoadingScreen() {
   return (
     <div className="grid min-h-screen place-items-center bg-background">
       <div className="flex items-center gap-3 text-sm text-muted-foreground" role="status">
-        <span className="status-pulse size-2 rounded-full bg-primary" />
+        <StatusDot tone="product" pulse />
         Connecting to EraInfra
       </div>
     </div>
   );
 }
 
-const railItemClass =
-  "group relative grid size-10 place-items-center rounded-md text-muted-foreground hover:bg-sunken hover:text-foreground";
-
-const railActiveClass =
-  "bg-sunken text-foreground before:absolute before:-left-[7px] before:h-5 before:w-0.5 before:rounded-full before:bg-primary";
-
-type NavItem = { to: LinkProps["to"]; label: string; icon: ComponentType<{ className?: string }> };
-
-const PRIMARY_NAV: NavItem[] = [
-  { to: "/", label: "Machines", icon: Server },
-  { to: "/attempts", label: "Runs", icon: Activity },
-  { to: "/rightsize", label: "Rightsize", icon: Gauge },
-  { to: "/tests", label: "Tests", icon: TestTubeDiagonal },
-  { to: "/experiments", label: "Experiments", icon: FlaskConical },
-  { to: "/settings", label: "Alerts and metrics", icon: Settings },
-];
-
-// Infrastructure management: the Apps on Nodes, run from Convex since the Hub's state moved here
-// (ADR 0016). A group of its own, so CI and infrastructure read as two surfaces of one product.
-const INFRA_NAV: NavItem[] = [
-  { to: "/nodes", label: "Nodes", icon: HardDrive },
-  { to: "/apps", label: "Apps", icon: Boxes },
-  { to: "/deployments", label: "Deployments", icon: Rocket },
-  { to: "/links", label: "Links", icon: Link2 },
-];
-
-function RailLink({ item }: { item: NavItem }) {
+function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
   const Icon = item.icon;
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Link
-          to={item.to}
-          activeOptions={item.to === "/" ? { exact: true } : undefined}
-          aria-label={item.label}
-          className={railItemClass}
-          activeProps={{ className: railActiveClass }}
-        >
-          <Icon className="size-[17px]" />
-        </Link>
-      </TooltipTrigger>
-      <TooltipContent side="right">{item.label}</TooltipContent>
-    </Tooltip>
+    <AppShellNavItem active={itemForPath(pathname) === item} render={<Link to={item.to} />}>
+      <Icon />
+      <span>{item.label}</span>
+    </AppShellNavItem>
+  );
+}
+
+function TopBarBreadcrumb({ pathname, workspace }: { pathname: string; workspace: string }) {
+  const item = itemForPath(pathname);
+  const detail = pathname.startsWith("/attempts/");
+  return (
+    <Breadcrumb className="min-w-0 flex-1">
+      <BreadcrumbList className="flex-nowrap">
+        <BreadcrumbItem className="min-w-0 truncate">{workspace}</BreadcrumbItem>
+        <BreadcrumbSeparator />
+        {item === undefined ? null : detail ? (
+          <>
+            <BreadcrumbItem>
+              <BreadcrumbLink render={<Link to={item.to} />}>{item.label}</BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem className="min-w-0">
+              <BreadcrumbPage className="truncate">Run</BreadcrumbPage>
+            </BreadcrumbItem>
+          </>
+        ) : (
+          <BreadcrumbItem>
+            <BreadcrumbPage>{item.label}</BreadcrumbPage>
+          </BreadcrumbItem>
+        )}
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }
 
 function RootComponent() {
+  return (
+    <TooltipProvider>
+      <RootContent />
+      <Toaster />
+    </TooltipProvider>
+  );
+}
+
+function RootContent() {
   const { isLoading, isAuthenticated } = useConvexAuth();
   const { signOut } = useAuthActions();
   const pathname = useLocation({ select: (location) => location.pathname });
   const isLogin = pathname === "/login";
+  const workspace = convexDeploymentName();
 
   if (isLoading) return <LoadingScreen />;
   if (!isAuthenticated && !isLogin) return <Navigate to="/login" replace />;
@@ -109,57 +169,54 @@ function RootComponent() {
   if (isLogin) return <Outlet />;
 
   return (
-    <TooltipProvider>
-      <div className="min-h-screen bg-background">
-        {/* The Era header: a 3px band in the product accent across the full top edge. */}
-        <header className="sticky top-0 z-40 flex h-12 items-center border-b border-t-[3px] border-b-border border-t-primary bg-card pl-4 pr-2">
-          <Link to="/" className="rounded-sm">
-            <Wordmark />
-          </Link>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label="Account"
-              className={cn(
-                railItemClass,
-                "ml-auto size-(--era-control-height) data-open:bg-sunken",
-              )}
+    <AppShell product="infra">
+      <AppShellSidebar label="EraInfra navigation">
+        <AppShellBrand>{workspace}</AppShellBrand>
+        <AppShellNav>
+          {NAV.map((group) => (
+            <AppShellNavGroup key={group.label} label={group.label}>
+              {group.items.map((item) => (
+                <NavLink key={item.to} item={item} pathname={pathname} />
+              ))}
+            </AppShellNavGroup>
+          ))}
+        </AppShellNav>
+        <AppShellSidebarFooter>
+          <NavLink item={SETTINGS} pathname={pathname} />
+        </AppShellSidebarFooter>
+      </AppShellSidebar>
+      <AppShellMain>
+        <AppShellTopBar>
+          <TopBarBreadcrumb pathname={pathname} workspace={workspace} />
+          <AppShellTopBarActions>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden text-muted-foreground sm:inline-flex"
+              render={<a href={DOCS_URL} target="_blank" rel="noreferrer" />}
+              nativeButton={false}
             >
-              <UserRound className="size-[17px]" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="bottom" align="end" className="min-w-48">
-              <DropdownMenuLabel className="text-muted-foreground">
-                Signed in to this deployment
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => void signOut()}>
-                <LogOut />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </header>
-
-        <aside className="fixed bottom-0 left-0 top-12 z-30 flex w-14 flex-col items-center border-r border-border bg-card py-3">
-          <nav className="flex flex-col gap-1.5" aria-label="Primary navigation">
-            {PRIMARY_NAV.map((item) => (
-              <RailLink key={item.label} item={item} />
-            ))}
-            <Separator className="my-1.5 w-6 self-center" />
-            {INFRA_NAV.map((item) => (
-              <RailLink key={item.label} item={item} />
-            ))}
-          </nav>
-        </aside>
-
-        <div className="pl-14">
-          <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
-            <Outlet />
-          </main>
-        </div>
-      </div>
-      <Toaster />
-      <ConfirmDialog />
-    </TooltipProvider>
+              <BookOpenIcon data-icon="inline-start" />
+              Docs
+            </Button>
+            <AppShellAccountMenu name="Operator" email="Signed in to this deployment">
+              <DropdownMenuGroup>
+                <DropdownMenuItem render={<Link to="/settings" />}>
+                  <SettingsIcon />
+                  Settings
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void signOut()}>
+                  <LogOutIcon />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </AppShellAccountMenu>
+          </AppShellTopBarActions>
+        </AppShellTopBar>
+        <AppShellContent>
+          <Outlet />
+        </AppShellContent>
+      </AppShellMain>
+    </AppShell>
   );
 }

@@ -1,12 +1,24 @@
 import { api } from "@erainfra/backend/api";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { ListX, Shuffle, Timer } from "lucide-react";
-import { useState } from "react";
+import type { FunctionReturnType } from "convex/server";
+import { ListXIcon, ShuffleIcon, TimerIcon } from "lucide-react";
+import { type ComponentType, type ReactNode, useMemo, useState } from "react";
 
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { LiveBadge } from "@/components/status";
+import { createDataTableColumns, DataTable } from "@/components/data-table";
+import {
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+} from "@/components/page-header";
+import { LiveIndicator } from "@/components/status";
 import {
   formatTestDuration,
   TestCaseList,
@@ -15,21 +27,18 @@ import {
   totalsLine,
 } from "@/components/test-results";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { inputClass } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNow } from "@/hooks/use-now";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/tests")({ component: TestsPage });
 
@@ -46,7 +55,12 @@ const windows = [
   { value: "30", label: "Last 30 days" },
 ] as const;
 
+// The Select needs a non-empty value for "All repositories"; the query gets no repository.
+const ALL_REPOSITORIES = "__all__";
+
 const DAY_MS = 86_400_000;
+
+const linkClass = "font-medium text-foreground underline-offset-4 hover:underline";
 
 function TestsPage() {
   const now = useNow();
@@ -58,17 +72,24 @@ function TestsPage() {
   const since = Math.floor((now - Number(days) * DAY_MS) / 60_000) * 60_000;
   const filter = { ...(repository === "" ? {} : { repository }), since };
   const repositories = useQuery(api.testReports.repositories, {});
+  const repositoryItems = [
+    { value: ALL_REPOSITORIES, label: "All repositories" },
+    ...(repositories ?? []).map((name) => ({ value: name, label: name })),
+  ];
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Tests"
-        description="Results parsed from the JUnit XML each run leaves in its workspace."
-      >
-        <LiveBadge />
+    <>
+      <PageHeader>
+        <PageHeaderTitle>Tests</PageHeaderTitle>
+        <PageHeaderDescription>
+          Results parsed from the JUnit XML each run leaves in its workspace.
+        </PageHeaderDescription>
+        <PageHeaderActions>
+          <LiveIndicator />
+        </PageHeaderActions>
       </PageHeader>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <Tabs value={view} onValueChange={(value) => setView(value as View)}>
           <TabsList aria-label="Choose a test view">
             {views.map((item) => (
@@ -78,37 +99,50 @@ function TestsPage() {
             ))}
           </TabsList>
         </Tabs>
-        <select
-          aria-label="Repository"
-          className={cn(inputClass, "w-auto")}
-          value={repository}
-          onChange={(event) => setRepository(event.target.value)}
-        >
-          <option value="">All repositories</option>
-          {repositories?.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Time window"
-          className={cn(inputClass, "w-auto")}
-          value={days}
-          onChange={(event) => setDays(event.target.value)}
-        >
-          {windows.map((item) => (
-            <option key={item.value} value={item.value}>
-              {item.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+          <Select
+            items={repositoryItems}
+            value={repository === "" ? ALL_REPOSITORIES : repository}
+            onValueChange={(value) =>
+              setRepository(value === null || value === ALL_REPOSITORIES ? "" : value)
+            }
+          >
+            <SelectTrigger aria-label="Repository" className="max-w-64 min-w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {repositoryItems.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            items={windows}
+            value={days}
+            onValueChange={(value) => {
+              if (value !== null) setDays(value);
+            }}
+          >
+            <SelectTrigger aria-label="Time window" className="min-w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {windows.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {view === "failures" && <FailuresView filter={filter} now={now} />}
       {view === "flaky" && <FlakyView filter={filter} now={now} />}
       {view === "slowest" && <SlowestView filter={filter} now={now} />}
-    </div>
+    </>
   );
 }
 
@@ -116,11 +150,31 @@ type Filter = { repository?: string; since: number };
 
 function Loading() {
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3" aria-busy="true">
       {[0, 1, 2].map((index) => (
-        <Skeleton key={index} className="h-24" />
+        <Skeleton key={index} className="h-24 rounded-xl" />
       ))}
     </div>
+  );
+}
+
+function Empty({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: ComponentType;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <EmptyState>
+      <EmptyStateMedia>
+        <Icon />
+      </EmptyStateMedia>
+      <EmptyStateTitle>{title}</EmptyStateTitle>
+      <EmptyStateDescription>{children}</EmptyStateDescription>
+    </EmptyState>
   );
 }
 
@@ -129,46 +183,43 @@ function FailuresView({ filter, now }: { filter: Filter; now: number }) {
   if (runs === undefined) return <Loading />;
   if (runs.length === 0) {
     return (
-      <Card>
-        <EmptyState
-          icon={ListX}
-          title="No failing runs in this window"
-          description="A run appears here when a test in its JUnit files failed or errored. Runs that wrote no JUnit file report no tests."
-        />
+      <Card className="py-0">
+        <Empty icon={ListXIcon} title="No failing runs in this window">
+          A run appears here when a test in its JUnit files failed or errored. Runs that wrote no
+          JUnit file report no tests.
+        </Empty>
       </Card>
     );
   }
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {runs.map((run) => (
-        <Card key={run.reportId} className="gap-0 overflow-hidden py-0">
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-foreground">
-                {[run.repository, run.jobName].filter(Boolean).join(" / ") || "Unbound run"}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {totalsLine(run.totals)}
-                {run.branch !== undefined && ` · ${run.branch}`}
-                {run.commitSha !== undefined && (
-                  <span className="font-mono"> · {run.commitSha.slice(0, 8)}</span>
-                )}
-                {run.truncated && " · report truncated"}
-              </p>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              <span title={formatAbsoluteTime(run.recordedAt)}>
+        <Card key={run.reportId} className="gap-0 py-0">
+          <CardHeader className="border-b py-3">
+            <CardTitle render={<h2 />} className="truncate text-sm">
+              {[run.repository, run.jobName].filter(Boolean).join(" / ") || "Unbound run"}
+            </CardTitle>
+            <CardDescription className="text-xs">
+              {totalsLine(run.totals)}
+              {run.branch !== undefined && ` · ${run.branch}`}
+              {run.commitSha !== undefined && (
+                <span className="font-mono"> · {run.commitSha.slice(0, 8)}</span>
+              )}
+              {run.truncated && " · report truncated"}
+            </CardDescription>
+            <CardAction className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="hidden sm:inline" title={formatAbsoluteTime(run.recordedAt)}>
                 {formatRelativeTime(run.recordedAt, now)}
               </span>
               <Link
                 to="/attempts/$attemptId"
                 params={{ attemptId: run.attemptId }}
-                className="text-primary hover:underline"
+                className={linkClass}
               >
                 Run details
               </Link>
-            </div>
-          </div>
+            </CardAction>
+          </CardHeader>
           <TestCaseList cases={run.failures} />
         </Card>
       ))}
@@ -176,124 +227,167 @@ function FailuresView({ filter, now }: { filter: Filter; now: number }) {
   );
 }
 
-function FlakyView({ filter, now }: { filter: Filter; now: number }) {
-  const rows = useQuery(api.testReports.flaky, { ...filter, limit: 100 });
-  if (rows === undefined) return <Loading />;
-  if (rows.length === 0) {
-    return (
-      <Card>
-        <EmptyState
-          icon={Shuffle}
-          title="No flaky tests in this window"
-          description="A test is flaky when it failed and passed in two runs of the same code (a rerun, or another push or scheduled run of the same branch and commit), or when its test runner retried it into a pass."
-        />
-      </Card>
-    );
-  }
-  return (
-    <Card className="overflow-hidden py-0">
-      <Table className="min-w-[900px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Test</TableHead>
-            <TableHead className="w-[160px]">Repository</TableHead>
-            <TableHead className="w-[110px]">Seen flaky</TableHead>
-            <TableHead className="w-[150px]">Evidence</TableHead>
-            <TableHead className="w-[120px]">Last seen</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={`${row.repository}:${row.testId}`} className="align-top">
-              <TableCell className="max-w-0">
-                <TestName name={row.name} suite={row.suite} file={row.file} />
-                <TestMessage message={row.lastMessage} />
-              </TableCell>
-              <TableCell className="truncate text-xs">{row.repository}</TableCell>
-              <TableCell className="text-xs tabular-nums">
-                {row.occurrences} {row.occurrences === 1 ? "run" : "runs"}
-              </TableCell>
-              <TableCell>
-                <Badge variant="warning">
-                  {row.lastEvidence === "retried" ? "retried into a pass" : "failed, then passed"}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-xs text-muted-foreground">
-                <span title={formatAbsoluteTime(row.lastSeenAt)}>
-                  {formatRelativeTime(row.lastSeenAt, now)}
-                </span>
-                {row.attemptIds[0] !== undefined && (
+type FlakyRow = FunctionReturnType<typeof api.testReports.flaky>[number];
+type SlowRow = FunctionReturnType<typeof api.testReports.slowest>[number];
+
+const flakyColumn = createDataTableColumns<FlakyRow>();
+const slowColumn = createDataTableColumns<SlowRow>();
+
+function useFlakyColumns(now: number) {
+  return useMemo(
+    () =>
+      flakyColumn.columns([
+        flakyColumn.accessor("name", {
+          header: "Test",
+          cell: (cell) => (
+            <div className="max-w-xl min-w-64 whitespace-normal">
+              <TestName
+                name={cell.getValue()}
+                suite={cell.row.original.suite}
+                file={cell.row.original.file}
+              />
+              <TestMessage message={cell.row.original.lastMessage} />
+            </div>
+          ),
+          meta: { cellClassName: "align-top" },
+        }),
+        flakyColumn.accessor("repository", {
+          header: "Repository",
+          meta: { cellClassName: "align-top" },
+        }),
+        flakyColumn.accessor("occurrences", {
+          header: "Seen flaky",
+          cell: (cell) => `${cell.getValue()} ${cell.getValue() === 1 ? "run" : "runs"}`,
+          meta: { align: "end", cellClassName: "align-top" },
+        }),
+        flakyColumn.accessor("lastEvidence", {
+          header: "Evidence",
+          enableSorting: false,
+          cell: (cell) => (
+            <Badge variant="warning">
+              {cell.getValue() === "retried" ? "Retried into a pass" : "Failed, then passed"}
+            </Badge>
+          ),
+          meta: { cellClassName: "align-top" },
+        }),
+        flakyColumn.accessor("lastSeenAt", {
+          header: "Last seen",
+          cell: (cell) => {
+            const latest = cell.row.original.attemptIds[0];
+            return (
+              <div>
+                <div className="text-muted-foreground" title={formatAbsoluteTime(cell.getValue())}>
+                  {formatRelativeTime(cell.getValue(), now)}
+                </div>
+                {latest !== undefined && (
                   <Link
                     to="/attempts/$attemptId"
-                    params={{ attemptId: row.attemptIds[0] }}
-                    className="block text-primary hover:underline"
+                    params={{ attemptId: latest }}
+                    className={`${linkClass} text-xs`}
                   >
                     Latest run
                   </Link>
                 )}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+              </div>
+            );
+          },
+          meta: { cellClassName: "align-top" },
+        }),
+      ]),
+    [now],
+  );
+}
+
+function FlakyView({ filter, now }: { filter: Filter; now: number }) {
+  const rows = useQuery(api.testReports.flaky, { ...filter, limit: 100 });
+  const columns = useFlakyColumns(now);
+  return (
+    <Card className="gap-0 py-0">
+      <DataTable
+        aria-label="Flaky tests"
+        columns={columns}
+        data={rows ?? []}
+        getRowId={(row) => `${row.repository}:${row.testId}`}
+        loading={rows === undefined}
+        loadingRows={4}
+        empty={
+          <Empty icon={ShuffleIcon} title="No flaky tests in this window">
+            A test is flaky when it failed and passed in two runs of the same code (a rerun, or
+            another push or scheduled run of the same branch and commit), or when its test runner
+            retried it into a pass.
+          </Empty>
+        }
+      />
     </Card>
+  );
+}
+
+function useSlowColumns(now: number) {
+  return useMemo(
+    () =>
+      slowColumn.columns([
+        slowColumn.accessor("name", {
+          header: "Test",
+          cell: (cell) => (
+            <div className="max-w-xl min-w-64 whitespace-normal">
+              <TestName name={cell.getValue()} suite={cell.row.original.suite} />
+            </div>
+          ),
+        }),
+        slowColumn.accessor("meanDurationMs", {
+          header: "Mean",
+          cell: (cell) => formatTestDuration(cell.getValue()),
+          meta: { align: "end" },
+        }),
+        slowColumn.accessor("maxDurationMs", {
+          header: "Slowest",
+          cell: (cell) => formatTestDuration(cell.getValue()),
+          meta: { align: "end" },
+        }),
+        slowColumn.accessor("lastDurationMs", {
+          header: "Last",
+          cell: (cell) => formatTestDuration(cell.getValue()),
+          meta: { align: "end" },
+        }),
+        slowColumn.accessor("runs", { header: "Runs", meta: { align: "end" } }),
+        slowColumn.accessor("lastSeenAt", {
+          header: "Last seen",
+          cell: (cell) => (
+            <span className="text-muted-foreground">
+              {formatRelativeTime(cell.getValue(), now)}
+            </span>
+          ),
+        }),
+      ]),
+    [now],
   );
 }
 
 function SlowestView({ filter, now }: { filter: Filter; now: number }) {
   const rows = useQuery(api.testReports.slowest, { ...filter, limit: 50 });
-  if (rows === undefined) return <Loading />;
-  if (rows.length === 0) {
-    return (
-      <Card>
-        <EmptyState
-          icon={Timer}
-          title="No timed tests in this window"
-          description="Each run keeps its 50 slowest passing tests. They appear here once a run with JUnit files has finished."
-        />
-      </Card>
-    );
-  }
+  const columns = useSlowColumns(now);
   return (
-    <Card className="overflow-hidden py-0">
-      <Table className="min-w-[800px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Test</TableHead>
-            <TableHead className="w-[110px] text-right">Mean</TableHead>
-            <TableHead className="w-[110px] text-right">Slowest</TableHead>
-            <TableHead className="w-[110px] text-right">Last</TableHead>
-            <TableHead className="w-[80px] text-right">Runs</TableHead>
-            <TableHead className="w-[110px]">Last seen</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={row.testId}>
-              <TableCell className="max-w-0">
-                <TestName name={row.name} suite={row.suite} />
-              </TableCell>
-              <TableCell className="text-right text-xs tabular-nums">
-                {formatTestDuration(row.meanDurationMs)}
-              </TableCell>
-              <TableCell className="text-right text-xs tabular-nums">
-                {formatTestDuration(row.maxDurationMs)}
-              </TableCell>
-              <TableCell className="text-right text-xs tabular-nums">
-                {formatTestDuration(row.lastDurationMs)}
-              </TableCell>
-              <TableCell className="text-right text-xs tabular-nums">{row.runs}</TableCell>
-              <TableCell className="text-xs text-muted-foreground">
-                {formatRelativeTime(row.lastSeenAt, now)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      <p className="border-t border-border px-4 py-2 text-[11px] text-subtle-foreground">
-        Built from the slowest 50 passing tests each run kept, so a test that is slow only now and
-        then shows fewer runs than it had.
-      </p>
+    <Card className="gap-0 py-0">
+      <DataTable
+        aria-label="Slowest tests"
+        columns={columns}
+        data={rows ?? []}
+        getRowId={(row) => row.testId}
+        loading={rows === undefined}
+        loadingRows={4}
+        empty={
+          <Empty icon={TimerIcon} title="No timed tests in this window">
+            Each run keeps its 50 slowest passing tests. They appear here once a run with JUnit
+            files has finished.
+          </Empty>
+        }
+      />
+      {rows !== undefined && rows.length > 0 && (
+        <p className="border-t bg-subtle px-4 py-2.5 text-xs text-muted-foreground">
+          Built from the slowest 50 passing tests each run kept, so a test that is slow only now and
+          then shows fewer runs than it had.
+        </p>
+      )}
     </Card>
   );
 }

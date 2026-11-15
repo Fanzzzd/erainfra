@@ -1,25 +1,28 @@
 import { api } from "@erainfra/backend/api";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Rocket } from "lucide-react";
+import type { FunctionReturnType } from "convex/server";
+import { RocketIcon } from "lucide-react";
 
-import { EmptyState } from "@/components/empty-state";
-import { PageHeader } from "@/components/page-header";
-import { LiveBadge, StatusDot } from "@/components/status";
-import { TableRowsSkeleton } from "@/components/table-skeleton";
+import { DataTable, createDataTableColumns } from "@/components/data-table";
+import { DeployStageStatus } from "@/components/deploy-stage";
+import {
+  EmptyState,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/empty-state";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+} from "@/components/page-header";
+import { LiveIndicator } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useNow } from "@/hooks/use-now";
-import { DEPLOY_STAGE_TONE } from "@/lib/infra";
 import { formatAbsoluteTime, formatDuration, formatRelativeTime } from "@/lib/time";
 
 type Search = { app?: string };
@@ -34,6 +37,107 @@ export const Route = createFileRoute("/deployments")({
 
 const TERMINAL = new Set(["done", "failed"]);
 
+type Run = FunctionReturnType<typeof api.infra.deployments.list>[number];
+
+/** A run with the values judged against the dashboard's clock. */
+type RunRow = Run & { live: boolean; now: number };
+
+const column = createDataTableColumns<RunRow>();
+
+const columns = column.columns([
+  column.accessor("stage", {
+    header: "Stage",
+    cell: (cell) => {
+      const run = cell.row.original;
+      return (
+        <div className="flex flex-col items-start gap-1">
+          <DeployStageStatus stage={run.stage} />
+          {run.operation === "failover" && <Badge variant="warning">failover</Badge>}
+        </div>
+      );
+    },
+  }),
+  column.accessor("app", {
+    header: "App",
+    cell: (cell) => {
+      const run = cell.row.original;
+      return (
+        <div>
+          <Link
+            to="/deployments"
+            search={{ app: run.app }}
+            className="font-medium hover:underline hover:underline-offset-4"
+          >
+            {run.app}
+          </Link>
+          <code className="block text-xs text-muted-foreground">{run._id}</code>
+        </div>
+      );
+    },
+  }),
+  column.display({
+    id: "detail",
+    header: "Detail",
+    cell: (cell) => {
+      const run = cell.row.original;
+      return (
+        <div className="max-w-md min-w-60 whitespace-normal">
+          <div className="text-muted-foreground">{run.detail}</div>
+          {run.error !== undefined && (
+            <p className="text-xs break-words text-danger">{run.error}</p>
+          )}
+          {run.urls.map((url) => (
+            <a
+              key={url}
+              className="block text-xs text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {url}
+            </a>
+          ))}
+        </div>
+      );
+    },
+  }),
+  column.display({
+    id: "trigger",
+    header: "Trigger",
+    cell: (cell) => {
+      const run = cell.row.original;
+      return (
+        <div>
+          <div>
+            {run.trigger ?? "Hub"}
+            {run.sha !== undefined && (
+              <code className="ml-1 text-xs text-muted-foreground">{run.sha.slice(0, 7)}</code>
+            )}
+          </div>
+          {run.actor !== undefined && (
+            <div className="max-w-44 truncate text-xs text-muted-foreground">{run.actor}</div>
+          )}
+        </div>
+      );
+    },
+  }),
+  column.accessor("startedAt", {
+    header: "Timing",
+    cell: (cell) => {
+      const run = cell.row.original;
+      return (
+        <div title={formatAbsoluteTime(run.startedAt)}>
+          <div>{formatRelativeTime(run.startedAt, run.now)}</div>
+          <div className="text-xs text-muted-foreground">
+            {run.live ? "running " : "took "}
+            {formatDuration((run.finishedAt ?? run.now) - run.startedAt)}
+          </div>
+        </div>
+      );
+    },
+  }),
+]);
+
 function DeploymentsPage() {
   const { app } = Route.useSearch();
   const runs = useQuery(api.infra.deployments.list, {
@@ -41,126 +145,54 @@ function DeploymentsPage() {
     limit: 100,
   });
   const now = useNow();
+  const rows = runs?.map((run) => ({ ...run, live: !TERMINAL.has(run.stage), now }));
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Deployments"
-        description={
-          app === undefined
+    <>
+      <PageHeader>
+        <PageHeaderTitle>Deployments</PageHeaderTitle>
+        <PageHeaderDescription>
+          {app === undefined
             ? "Deploy and failover runs of every App, newest first."
-            : `Deploy and failover runs of ${app}, newest first.`
-        }
-      >
-        {app !== undefined && (
-          <Button asChild variant="outline" size="sm">
-            <Link to="/deployments" search={{}}>
+            : `Deploy and failover runs of ${app}, newest first.`}
+        </PageHeaderDescription>
+        <PageHeaderActions>
+          <LiveIndicator />
+          {app !== undefined && (
+            <Button
+              variant="outline"
+              size="sm"
+              nativeButton={false}
+              render={<Link to="/deployments" search={{}} />}
+            >
               All Apps
-            </Link>
-          </Button>
-        )}
-        <LiveBadge />
+            </Button>
+          )}
+        </PageHeaderActions>
       </PageHeader>
 
-      <Card className="overflow-hidden">
-        <Table className="min-w-[900px]">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[150px]">Stage</TableHead>
-              <TableHead className="w-[180px]">App</TableHead>
-              <TableHead>Detail</TableHead>
-              <TableHead className="w-[170px]">Trigger</TableHead>
-              <TableHead className="w-[160px]">Timing</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {runs === undefined ? (
-              <TableRowsSkeleton columns={5} rows={4} />
-            ) : runs.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={5} className="p-0">
-                  <EmptyState
-                    icon={Rocket}
-                    title="No deployments yet"
-                    description="Runs appear here when erainfra deploy, a push to a bound branch, or a failover starts one."
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              runs.map((run) => {
-                const live = !TERMINAL.has(run.stage);
-                return (
-                  <TableRow key={run._id}>
-                    <TableCell className="text-xs text-muted-foreground">
-                      <span className="flex items-center gap-2">
-                        <StatusDot tone={DEPLOY_STAGE_TONE[run.stage] ?? "muted"} live={live} />
-                        <span className="capitalize">{run.stage}</span>
-                      </span>
-                      {run.operation === "failover" && (
-                        <Badge variant="warning" className="mt-1">
-                          failover
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Link
-                        to="/deployments"
-                        search={{ app: run.app }}
-                        className="text-xs font-medium text-secondary-foreground hover:underline"
-                      >
-                        {run.app}
-                      </Link>
-                      <code className="mt-0.5 block text-[10px] text-subtle-foreground">
-                        {run._id}
-                      </code>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {run.detail}
-                      {run.error !== undefined && (
-                        <p className="mt-0.5 break-words text-[10px] leading-4 text-destructive">
-                          {run.error}
-                        </p>
-                      )}
-                      {run.urls.map((url) => (
-                        <a
-                          key={url}
-                          className="mt-0.5 block text-[10px] text-primary underline-offset-2 hover:underline"
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {url}
-                        </a>
-                      ))}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {run.trigger ?? "Hub"}
-                      {run.sha !== undefined && (
-                        <code className="ml-1 text-[10px]">{run.sha.slice(0, 7)}</code>
-                      )}
-                      {run.actor !== undefined && (
-                        <p className="mt-0.5 truncate text-[10px] text-subtle-foreground">
-                          {run.actor}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell
-                      className="tabular-nums text-xs text-muted-foreground"
-                      title={formatAbsoluteTime(run.startedAt)}
-                    >
-                      {formatRelativeTime(run.startedAt, now)}
-                      <p className="mt-0.5 text-[10px] text-subtle-foreground">
-                        {live ? "running " : "took "}
-                        {formatDuration((run.finishedAt ?? now) - run.startedAt)}
-                      </p>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+      <Card className="gap-0 py-0">
+        <DataTable
+          aria-label="Deployments"
+          columns={columns}
+          data={rows ?? []}
+          loading={rows === undefined}
+          loadingRows={4}
+          getRowId={(run) => run._id}
+          empty={
+            <EmptyState>
+              <EmptyStateMedia>
+                <RocketIcon />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No deployments yet</EmptyStateTitle>
+              <EmptyStateDescription>
+                Runs appear here when <code>erainfra deploy</code>, a push to a bound branch, or a
+                failover starts one.
+              </EmptyStateDescription>
+            </EmptyState>
+          }
+        />
       </Card>
-    </div>
+    </>
   );
 }

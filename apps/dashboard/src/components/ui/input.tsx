@@ -1,13 +1,25 @@
+import { Input as InputPrimitive } from "@base-ui/react/input";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-/** The shared Era input: control height and radius, the surface, a 1px strong border. */
-const inputClass =
-  "flex h-(--era-control-height) w-full min-w-0 rounded-md border border-input bg-card px-2.5 text-(length:--era-text-md) text-foreground placeholder:text-subtle-foreground file:h-6 file:border-0 file:bg-transparent file:text-(length:--era-text-md) file:font-medium disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive";
-
+/**
+ * A single-line text input. The 1px edge uses `--input`, which meets 3:1 on
+ * every surface. Set `aria-invalid` to show an error edge; inside a `Field`
+ * the error text is linked for you.
+ */
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
-  return <input type={type} data-slot="input" className={cn(inputClass, className)} {...props} />;
+  return (
+    <InputPrimitive
+      type={type}
+      data-slot="input"
+      className={cn(
+        "h-8 w-full min-w-0 rounded-lg border border-input bg-field px-2.5 py-1 text-base transition-colors file:inline-flex file:h-6 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-offset-0 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive data-invalid:border-destructive md:text-sm",
+        className,
+      )}
+      {...props}
+    />
+  );
 }
 
-export { Input, inputClass };
+export { Input };

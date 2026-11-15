@@ -1,6 +1,6 @@
 import { isNodeLive } from "@erainfra/backend/infraPolicy";
 
-import type { Tone } from "@/components/status";
+import type { AppStatus, LinkState } from "@/lib/states";
 
 // Infrastructure-management views (convex/infra/operator.ts) carry timestamps, and the dashboard
 // judges liveness against its own clock. A Convex query re-runs when a Node heartbeats, not when a
@@ -15,8 +15,6 @@ export function nodeOnline(lastSeenAt: number | null, now: number) {
 export function heartbeatsByName(nodes: readonly { name: string; lastSeenAt: number | null }[]) {
   return new Map(nodes.map((node) => [node.name, node.lastSeenAt]));
 }
-
-export type AppStatus = "deploying" | "running" | "node-offline";
 
 /**
  * The server's status, with `running` re-judged against the current time: a Node that stopped
@@ -33,14 +31,6 @@ export function appStatus(
   );
   return offline ? "node-offline" : "running";
 }
-
-export const APP_STATUS: Record<AppStatus, { label: string; tone: Tone }> = {
-  deploying: { label: "Deploying", tone: "info" },
-  running: { label: "Running", tone: "success" },
-  "node-offline": { label: "Node offline", tone: "destructive" },
-};
-
-export type LinkState = "active" | "degraded" | "pending";
 
 /** Same re-judgement for a link on the mesh: an end that stopped heartbeating degrades it. */
 export function linkState(
@@ -63,14 +53,3 @@ export function linkState(
     reason: `${silent.map((name) => name ?? "a removed Node").join(" and ")} stopped heartbeating`,
   };
 }
-
-export const DEPLOY_STAGE_TONE: Record<string, Tone> = {
-  queued: "muted",
-  "reading-spec": "info",
-  planning: "info",
-  building: "info",
-  deploying: "info",
-  linking: "info",
-  done: "success",
-  failed: "destructive",
-};

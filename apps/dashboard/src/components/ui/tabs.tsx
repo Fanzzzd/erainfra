@@ -1,40 +1,71 @@
-import {
-  Tabs as TabsPrimitive,
-  TabsList as TabsListPrimitive,
-  TabsPanel,
-  TabsTab,
-} from "@ui-sdk/react/tabs";
-import type * as React from "react";
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
+import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
 
-type TabsProps = Omit<
-  React.ComponentProps<typeof TabsPrimitive>,
-  "value" | "defaultValue" | "onValueChange"
-> & {
-  value?: string;
-  defaultValue?: string;
-  /** Called with the newly selected tab. A selection of nothing is not reported. */
-  onValueChange?: (value: string) => void;
-};
-
-function Tabs({ className, onValueChange, ...props }: TabsProps) {
+/**
+ * Tabs with arrow-key navigation between triggers. Use the `line` list for
+ * filters and page sections, and the default segmented list for small
+ * switches inside a panel.
+ */
+function Tabs({
+  className,
+  orientation = "horizontal",
+  ...props
+}: TabsPrimitive.Root.Props & { className?: string }) {
   return (
-    <TabsPrimitive
-      className={cn("flex flex-col gap-4", className)}
-      onValueChange={(value) => {
-        if (value !== null) onValueChange?.(value);
-      }}
+    <TabsPrimitive.Root
+      data-slot="tabs"
+      data-orientation={orientation}
+      orientation={orientation}
+      className={cn("group/tabs flex gap-2 data-horizontal:flex-col", className)}
       {...props}
     />
   );
 }
 
-function TabsList({ className, ...props }: React.ComponentProps<typeof TabsListPrimitive>) {
+const tabsListVariants = cva(
+  "group/tabs-list relative inline-flex w-fit items-center text-muted-foreground group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col group-data-vertical/tabs:items-stretch",
+  {
+    variants: {
+      variant: {
+        default: "h-8 rounded-lg bg-muted p-[3px]",
+        line: "h-9 gap-1",
+      },
+    },
+    defaultVariants: { variant: "default" },
+  },
+);
+
+/** The row of triggers. Give it an `aria-label` when the page has no heading for it. */
+function TabsList({
+  className,
+  variant = "default",
+  ...props
+}: TabsPrimitive.List.Props & { className?: string } & VariantProps<typeof tabsListVariants>) {
   return (
-    <TabsListPrimitive
+    <TabsPrimitive.List
+      data-slot="tabs-list"
+      data-variant={variant}
+      className={cn(tabsListVariants({ variant }), className)}
+      {...props}
+    />
+  );
+}
+
+/**
+ * One tab. A count goes in a `Badge` after the label. In a `line` list the
+ * active tab gets a 2px underline in `--product`.
+ */
+function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props & { className?: string }) {
+  return (
+    <TabsPrimitive.Tab
+      data-slot="tabs-trigger"
       className={cn(
-        "inline-flex w-fit max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-border bg-sunken p-1",
+        "relative inline-flex h-full flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 text-sm font-medium whitespace-nowrap transition-colors hover:text-foreground data-active:text-foreground data-disabled:pointer-events-none data-disabled:opacity-50 group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "group-data-[variant=default]/tabs-list:data-active:bg-background group-data-[variant=default]/tabs-list:data-active:shadow-xs group-data-[variant=default]/tabs-list:data-active:ring-1 group-data-[variant=default]/tabs-list:data-active:ring-border",
+        "group-data-[variant=line]/tabs-list:focus-visible:-outline-offset-2",
+        "after:absolute after:rounded-full after:bg-product after:opacity-0 after:transition-opacity group-data-[variant=line]/tabs-list:data-active:after:opacity-100 group-data-horizontal/tabs:after:inset-x-1 group-data-horizontal/tabs:after:-bottom-px group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-1 group-data-vertical/tabs:after:-left-px group-data-vertical/tabs:after:w-0.5",
         className,
       )}
       {...props}
@@ -42,20 +73,15 @@ function TabsList({ className, ...props }: React.ComponentProps<typeof TabsListP
   );
 }
 
-function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsTab>) {
+/** The panel for one tab. It is focusable so keyboard users can reach its content. */
+function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props & { className?: string }) {
   return (
-    <TabsTab
-      className={cn(
-        "inline-flex h-7 flex-1 cursor-default items-center justify-center gap-2 whitespace-nowrap rounded-md border border-transparent px-2.5 text-(length:--era-text-sm) font-medium text-muted-foreground hover:text-foreground data-disabled:pointer-events-none data-disabled:opacity-50 data-selected:bg-card data-selected:text-foreground data-selected:border-border [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        className,
-      )}
+    <TabsPrimitive.Panel
+      data-slot="tabs-content"
+      className={cn("flex-1 text-sm focus-visible:outline-offset-4", className)}
       {...props}
     />
   );
 }
 
-function TabsContent({ className, ...props }: React.ComponentProps<typeof TabsPanel>) {
-  return <TabsPanel className={cn("flex-1", className)} {...props} />;
-}
-
-export { Tabs, TabsList, TabsTrigger, TabsContent };
+export { Tabs, TabsContent, TabsList, TabsTrigger, tabsListVariants };

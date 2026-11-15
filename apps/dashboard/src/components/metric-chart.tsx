@@ -7,11 +7,11 @@ import { formatElapsed } from "@/lib/metrics";
  * series, an optional dashed reference line (what the Attempt was allotted), and a crosshair
  * that reads every series at the hovered bucket.
  *
- * The two series use the product accent and the info colour from the Era tokens. Both meet
- * WCAG AA as text on the card surface in each theme, so each also clears the 3:1 a chart mark
- * needs, and the second series is drawn as a line over the first one's area.
+ * The two series use the first two Era chart colours: `--chart-1` is the product colour and
+ * `--chart-2` a neutral grey. The registry's contrast check holds every chart series at 3:1 on
+ * the card in both themes, and the second series is drawn as a line over the first one's area.
  */
-const SERIES_COLORS = ["var(--era-accent)", "var(--era-info)"] as const;
+const SERIES_COLORS = ["var(--chart-1)", "var(--chart-2)"] as const;
 
 /** The first series is drawn as an area, a second one as a line over it. */
 export type ChartSeries = {
@@ -90,11 +90,11 @@ export function MetricChart({
 
   const ticks = [0, yMax / 2, yMax];
   return (
-    <figure className="min-w-0 rounded-lg border border-border bg-card p-4">
+    <figure className="min-w-0 rounded-xl border bg-card p-4">
       <figcaption className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-sm font-medium text-foreground">{title}</span>
         {series.length > 1 && (
-          <span className="flex items-center gap-3 text-[11px] text-muted-foreground">
+          <span className="flex items-center gap-3 text-xs text-muted-foreground">
             {series.map((line, index) => (
               <span key={line.name} className="flex items-center gap-1.5">
                 <span
@@ -136,7 +136,7 @@ export function MetricChart({
                 y={y(tick)}
                 dy="0.32em"
                 textAnchor="end"
-                className="fill-subtle-foreground text-[10px] tabular-nums"
+                className="fill-muted-foreground text-[11px] tabular-nums"
               >
                 {format(tick)}
               </text>
@@ -148,7 +148,7 @@ export function MetricChart({
               x={x(second)}
               y={HEIGHT - 6}
               textAnchor={index === 0 ? "start" : index === 2 ? "end" : "middle"}
-              className="fill-subtle-foreground text-[10px] tabular-nums"
+              className="fill-muted-foreground text-[11px] tabular-nums"
             >
               {formatElapsed(second)}
             </text>
@@ -195,7 +195,7 @@ export function MetricChart({
                 x={WIDTH - PAD.right}
                 y={y(reference.value) - 4}
                 textAnchor="end"
-                className="fill-muted-foreground text-[10px]"
+                className="fill-muted-foreground text-[11px]"
               >
                 {reference.label}
               </text>
@@ -214,14 +214,14 @@ export function MetricChart({
         </svg>
         {hover !== undefined && (
           <div
-            className="pointer-events-none absolute top-0 z-10 min-w-36 rounded-md border border-border bg-popover px-2.5 py-2 text-[11px] shadow-lg"
+            className="pointer-events-none absolute top-0 z-10 min-w-36 rounded-lg border bg-popover px-2.5 py-2 text-xs text-popover-foreground shadow-lg"
             style={
               x(seconds[hover]) > WIDTH / 2
                 ? { right: `${(1 - (x(seconds[hover]) - 8) / WIDTH) * 100}%` }
                 : { left: `${((x(seconds[hover]) + 8) / WIDTH) * 100}%` }
             }
           >
-            <p className="mb-1 tabular-nums text-subtle-foreground">
+            <p className="mb-1 tabular-nums text-muted-foreground">
               {formatElapsed(seconds[hover])}
             </p>
             {series.map((line, index) => (
