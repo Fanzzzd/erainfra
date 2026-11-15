@@ -478,6 +478,17 @@ func (p *warmPoolManager) Status(profileName string) executor.WarmPoolStatus {
 	return statusOf(state)
 }
 
+// parkedTotal counts the parked guests across every Profile's pool.
+func (p *warmPoolManager) parkedTotal() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	total := 0
+	for _, state := range p.profiles {
+		total += len(state.idle)
+	}
+	return total
+}
+
 // imageReleases lists the Image Release of every Profile the pool manages.
 func (p *warmPoolManager) imageReleases() []string {
 	p.mu.Lock()
