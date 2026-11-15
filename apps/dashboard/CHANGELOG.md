@@ -1,5 +1,12 @@
 # @erainfra/dashboard
 
+## 0.2.0-rc.25
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @erainfra/backend@0.2.0-rc.25
+
 ## 0.2.0-rc.24
 
 ### Patch Changes
