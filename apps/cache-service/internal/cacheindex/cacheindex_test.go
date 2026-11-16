@@ -233,3 +233,105 @@ func TestRepositorySegmentIsCaseFolded(t *testing.T) {
 		t.Fatal("the repository should stay readable in the object key")
 	}
 }
+
+// longKey is a key of n bytes that starts with stem, the shape of a
+// restore-keys prefix followed by hashes.
+func longKey(stem string, n int) string {
+	return stem + strings.Repeat("0123456789abcdef", n/16+1)[:n-len(stem)]
+}
+
+// ubuntu0's cache service refused three saves from 2026-11-15 to 16 with
+// MinIO's XMinioInvalidObjectName, because a hex-encoded key over 119 bytes
+// made one segment longer than 255 bytes. The fake store now refuses those
+// names the way MinIO does.
+func TestALongKeyIsSavedAndFoundByItselfAndByPrefix(t *testing.T) {
+	index, store, _ := newTestIndex(t)
+	ctx := context.Background()
+	claims := cachetoken.Claims{Repository: "Fanzzzd/erainfra", RepositoryID: testRepositoryID, Ref: "refs/heads/main"}
+	store.Overwrite("blobs/long", []byte("long"))
+	store.Overwrite("blobs/twin", []byte("twin"))
+	key := longKey("node-cache-Linux-x64-pnpm-", 512)
+	twin := key[:300] + strings.Repeat("z", 212) // shares the first 300 bytes
+	for _, entry := range []Entry{
+		{Key: key, Blob: "blobs/long"},
+		{Key: twin, Blob: "blobs/twin"},
+	} {
+		entry.Version, entry.Repository, entry.RepositoryID, entry.Ref, entry.Size = "v1", "Fanzzzd/erainfra", testRepositoryID, "refs/heads/main", 4
+		if err := index.Commit(ctx, entry); err != nil {
+			t.Fatalf("Commit(%d-byte key): %v", len(entry.Key), err)
+		}
+	}
+	for _, row := range []struct {
+		asked []string
+		want  string
+	}{
+		{[]string{key}, "blobs/long"},
+		{[]string{twin}, "blobs/twin"},
+		{[]string{key[:400]}, "blobs/long"},
+		{[]string{twin[:400]}, "blobs/twin"},
+		{[]string{key[:300]}, ""}, // both match; either is a correct prefix hit
+		{[]string{"node-cache-Linux-x64-pnpm-"}, ""},
+		{[]string{key[:399] + "y"}, "miss"},
+	} {
+		entry, err := index.Lookup(ctx, claims, row.asked, "v1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case row.want == "miss" && entry != nil:
+			t.Errorf("Lookup(%d bytes) = %s, want a miss", len(row.asked[0]), entry.Blob)
+		case row.want == "" && entry == nil:
+			t.Errorf("Lookup(%d bytes) missed, want a prefix hit", len(row.asked[0]))
+		case row.want != "" && row.want != "miss" && (entry == nil || entry.Blob != row.want):
+			t.Errorf("Lookup(%d bytes) = %+v, want %s", len(row.asked[0]), entry, row.want)
+		}
+	}
+	if entry, err := index.LookupExact(ctx, claims, key, "v1"); err != nil || entry == nil || entry.Blob != "blobs/long" {
+		t.Fatalf("LookupExact = %+v, %v; want blobs/long", entry, err)
+	}
+	if exists, err := index.Exists(ctx, claims, key, "v1"); err != nil || !exists {
+		t.Fatalf("Exists = %v, %v; want true", exists, err)
+	}
+}
+
+// Every name an entry can get, with its access and adoption markers, fits the
+// store's limits for any key GitHub accepts (512 bytes) beside the longest
+// repository (39-byte owner, 100-byte name) and a ref at the one-segment limit.
+func TestEveryEntryNameFitsTheObjectStoresLimits(t *testing.T) {
+	repository := strings.Repeat("o", 39) + "/" + strings.Repeat("n", 100)
+	ref := "refs/heads/" + strings.Repeat("~", 80) // escapes to 255 bytes
+	if got := len(refSegment(ref)); got != 255 {
+		t.Fatalf("refSegment length = %d, want the 255-byte worst case", got)
+	}
+	for n := 1; n <= 512; n++ {
+		object := scopePrefix(repository, ref, versionSegment("v")) + keyName(longKey("k", n)) + "." + recencySuffix(1)
+		for _, name := range []string{object, accessRoot + object, accessRoot + object + adoptedSuffix} {
+			if !fakes3.ValidObjectName(name) {
+				t.Fatalf("a %d-byte key makes %d-byte name %q, which the store refuses", n, len(name), name)
+			}
+		}
+	}
+}
+
+func TestAKeyShortEnoughForOneSegmentIsNamedAsBefore(t *testing.T) {
+	for _, n := range []int{1, 64, 115} {
+		key := longKey("k", n)
+		if got, want := keyName(key), hex.EncodeToString([]byte(key)); got != want {
+			t.Errorf("keyName(%d bytes) = %q, want the plain hex %q", n, got, want)
+		}
+	}
+	if got := keyName(longKey("k", 116)); !strings.Contains(got, "/") {
+		t.Errorf("keyName(116 bytes) = %q, want it cut into segments", got)
+	}
+}
+
+func TestARefTooLongForOneSegmentIsHashed(t *testing.T) {
+	long := "refs/heads/" + strings.Repeat("a/", 130)
+	segment := refSegment(long)
+	if !strings.HasPrefix(segment, "~H") || len(segment) != 66 {
+		t.Fatalf("refSegment(long) = %q, want ~H and a SHA-256", segment)
+	}
+	if refSegment(long+"b") == segment {
+		t.Fatal("two long refs share a segment")
+	}
+}
