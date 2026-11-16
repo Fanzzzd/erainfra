@@ -48,7 +48,7 @@ const (
 	tombstoneRoot = "tombstones/"
 
 	// adoptedSuffix names an adoption marker beside an entry's access marker.
-	// An entry object's last segment is hex, a dot and hex, so the suffix can
+	// An entry object's last segment is hex or "~" and hex, a dot and hex, so the suffix can
 	// never be part of an entry's own name.
 	adoptedSuffix = "~adopted"
 

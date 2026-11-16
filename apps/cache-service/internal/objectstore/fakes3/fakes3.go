@@ -182,6 +182,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if writes := r.Method == http.MethodPut || (r.Method == http.MethodPost && query.Has("uploads")); writes && !ValidObjectName(key) {
+		http.Error(w, "<Error><Code>XMinioInvalidObjectName</Code><Message>Object name contains unsupported characters.</Message></Error>", http.StatusBadRequest)
+		return
+	}
+
 	switch {
 	case r.Method == http.MethodGet && key == "" && query.Get("list-type") == "2":
 		s.list(w, query)
@@ -386,4 +391,22 @@ func first(query map[string][]string, name string) string {
 
 func etagOf(body []byte) string {
 	return fmt.Sprintf("%q", fmt.Sprintf("fake-%d", len(body)))
+}
+
+// ValidObjectName applies the object name limits of the MinIO deployments the
+// cache service runs on, which keep each "/"-separated segment as a file or
+// directory name: at most 1024 bytes in all and 255 bytes per segment. S3 and R2
+// allow longer segments, so a name that fits here fits there too. MinIO answers
+// a longer segment with XMinioInvalidObjectName, "Object name contains
+// unsupported characters", whatever the characters are.
+func ValidObjectName(key string) bool {
+	if key == "" || len(key) > 1024 {
+		return false
+	}
+	for segment := range strings.SplitSeq(key, "/") {
+		if len(segment) > 255 {
+			return false
+		}
+	}
+	return true
 }
