@@ -25,7 +25,7 @@ export const PREVIEW_OPT_IN_LABEL = "rc-preview";
 // a Worker. Kept equal to the runner pin in the provisioners and the Image
 // Release by .github/workflows/pin-bump.yml (scripts/pinbump).
 const ACTIONS_RUNNER_IMAGE =
-  "ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232";
+  "ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300";
 
 // Pinned by digest, not by `:latest`, because `:latest` is mutable and moves
 // without notice: this digest is the one four end-to-end Tart runs were executed

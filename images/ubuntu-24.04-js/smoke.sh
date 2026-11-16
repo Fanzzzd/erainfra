@@ -87,19 +87,19 @@ for lib in libnss3.so libnspr4.so libgbm.so.1 libasound.so.2 libatk-bridge-2.0.s
   grep -qF "$lib" <<<"$shared_libs" || { echo "missing $lib" >&2; exit 1; }
 done
 command -v Xvfb >/dev/null
-out_matches -Fx 'v22.23.4' node --version
+out_matches -Fx 'v22.23.5' node --version
 # The second Node is in the tool cache for setup-node, not on PATH: the default
 # above must stay 22, and setup-node only takes 24 without a download if the
 # .complete marker is beside it.
-ls /opt/hostedtoolcache/node/24.22.2/*.complete >/dev/null
-for node24 in /opt/hostedtoolcache/node/24.22.2/*/bin/node; do
-  out_matches -Fx 'v24.22.2' "$node24" --version
+ls /opt/hostedtoolcache/node/24.22.3/*.complete >/dev/null
+for node24 in /opt/hostedtoolcache/node/24.22.3/*/bin/node; do
+  out_matches -Fx 'v24.22.3' "$node24" --version
 done
 out_matches -Fx '11.21.0' pnpm --version
 # A tool answering is not the pinned tool shipping. go and gh are pinned in the
 # Dockerfile, so assert the pin rather than that something by that name exists.
 out_matches -E '^go version go1\.27\.4 ' go version
-out_matches -E '^gh version 2\.103\.3( |$)' gh --version
+out_matches -E '^gh version 2\.104\.0( |$)' gh --version
 # actions/setup-go only skips its download if the marker beside the version
 # directory is there, which is the whole reason Go lives in the tool cache.
 ls /opt/hostedtoolcache/go/1.27.4/*.complete >/dev/null
