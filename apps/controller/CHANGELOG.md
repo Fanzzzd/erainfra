@@ -1,5 +1,9 @@
 # @erainfra/controller
 
+## 0.2.0-rc.26
+
+No changes in this release.
+
 ## 0.2.0-rc.25
 
 ### Patch Changes
