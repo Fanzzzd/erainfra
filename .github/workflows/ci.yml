@@ -437,3 +437,20 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-gnu
           cargo-zigbuild clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+
+  # The reusable router must answer the fallback whenever it cannot reach the control plane: that
+  # is the case a caller relies on it for. .invalid never resolves (RFC 6761).
+  route-unreachable:
+    uses: ./.github/workflows/route.yml
+    with:
+      profile: erainfra-4vcpu-ubuntu-2404
+      control-plane: https://control-plane.invalid
+      fallback: ubuntu-24.04
+  route:
+    needs: route-unreachable
+    runs-on: ubuntu-latest
+    steps:
+      - name: An unreachable control plane routes to the fallback
+        env:
+          LABEL: ${{ needs.route-unreachable.outputs.runs-on }}
+        run: test "$LABEL" = ubuntu-24.04
