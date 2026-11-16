@@ -141,9 +141,8 @@ repository with it, as the router step above does. The parameter is optional and
 UTC day, route and reason for a repository and time range, for billing reconciliation.
 
 A Worker over its start budget answers the fallback too (`over-start-budget`). Its runtime holds
-an Attempt's start while two others are still in their first 60 seconds or the host's I/O pressure
-(io "some" avg10) is at 30% or more, for at most 120 seconds, and the Agent reports that state
-every 30 seconds. A job already sent to the Worker waits out the hold. The router sends the next
+an Attempt's start while its learned start window is full or the host's I/O stall is at the limit,
+for at most 120 seconds, and the Agent reports that state every 30 seconds. A job already sent to the Worker waits out the hold. The router sends the next
 one to the fallback while every ready Worker is over budget. [Start budget](workers.md#start-budget)
 lists the settings.
 

@@ -1,5 +1,5 @@
 {
-  "maxStarting": 2,
+  "maxStarting": 4,
   "startWindowSeconds": 60,
   "ioPressureLimit": 30,
   "maxHoldSeconds": 120,
