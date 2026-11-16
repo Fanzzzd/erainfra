@@ -107,7 +107,11 @@ func (l *machineLease) runnerExit() *runnerexit.Report {
 		slog.Warn("dropped the guest's runner exit report", "error", err)
 		return nil
 	}
-	if report != nil {
+	switch {
+	case report == nil:
+	case report.Clean():
+		slog.Info("GitHub runner exited", "exitCode", report.ExitCode, "ranJob", report.RanJob)
+	default:
 		slog.Info("GitHub runner exited",
 			"exitCode", report.ExitCode,
 			"ranJob", report.RanJob,

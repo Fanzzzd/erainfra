@@ -86,6 +86,12 @@ func (r *Report) Validate() error {
 	return nil
 }
 
+// Clean says the runner ran a job and exited 0. Its diagnostic then carries
+// the runner's own shutdown noise: an ephemeral runner cancels its message
+// poll as it leaves and logs "SocketException (125): Operation canceled" as an
+// error on every clean exit. The diagnostic explains only an unclean exit.
+func (r Report) Clean() bool { return r.RanJob && r.ExitCode == 0 }
+
 // Line returns the console line for a report, ending in a newline.
 func Line(report Report) (string, error) {
 	report.Diagnostic = Sanitize(report.Diagnostic)
