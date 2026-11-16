@@ -145,12 +145,12 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 		if key == "" {
 			continue
 		}
-		encoded := hex.EncodeToString([]byte(key))
-		// Exact first. The metadata object's name is the key's hex followed by
-		// a dot, and hex never contains a dot, so this prefix cannot reach a
-		// longer key by accident.
+		exact := func(saved string) bool { return saved == key }
+		// Exact first. The metadata object's name is the key's name followed by
+		// a dot, and a key name never contains a dot, so this prefix cannot
+		// reach a longer key by accident.
 		for _, ref := range scopes {
-			entry, err := i.newest(ctx, claims, ref, versionSegment, encoded+".", version)
+			entry, err := i.newest(ctx, claims, ref, versionSegment, keyName(key)+".", version, exact)
 			if err != nil {
 				return nil, err
 			}
@@ -159,11 +159,13 @@ func (i *Index) Lookup(ctx context.Context, claims cachetoken.Claims, keys []str
 				return entry, nil
 			}
 		}
-		// Then prefix. Hex is a byte-for-byte encoding, so a hex prefix of even
-		// length is exactly a prefix of the decoded key — which is what makes
-		// the store's own prefix listing the whole of the prefix match.
+		// Then prefix. A key name is a byte-for-byte encoding of the key's first
+		// keyPrefixBytes, so the store's own prefix listing does the prefix
+		// match; past those bytes the listing narrows and the saved key decides.
+		prefix := key
+		startsWith := func(saved string) bool { return strings.HasPrefix(saved, prefix) }
 		for _, ref := range scopes {
-			entry, err := i.newest(ctx, claims, ref, versionSegment, encoded, version)
+			entry, err := i.newest(ctx, claims, ref, versionSegment, keyPrefixName(key), version, startsWith)
 			if err != nil {
 				return nil, err
 			}
@@ -186,9 +188,9 @@ func (i *Index) LookupExact(ctx context.Context, claims cachetoken.Claims, key, 
 		return nil, nil
 	}
 	versionSegment := versionSegment(version)
-	encoded := hex.EncodeToString([]byte(key)) + "."
+	exact := func(saved string) bool { return saved == key }
 	for _, ref := range claims.ReadScopes() {
-		entry, err := i.newest(ctx, claims, ref, versionSegment, encoded, version)
+		entry, err := i.newest(ctx, claims, ref, versionSegment, keyName(key)+".", version, exact)
 		if err != nil {
 			return nil, err
 		}
@@ -205,7 +207,7 @@ func (i *Index) LookupExact(ctx context.Context, claims cachetoken.Claims, key, 
 // read past, as if it were not there: a token never restores an entry saved
 // under a different GitHub repository ID, or without one. A token without an
 // ID restores nothing.
-func (i *Index) newest(ctx context.Context, claims cachetoken.Claims, ref, versionSegment, encodedKey, version string) (*Entry, error) {
+func (i *Index) newest(ctx context.Context, claims cachetoken.Claims, ref, versionSegment, encodedKey, version string, matches func(savedKey string) bool) (*Entry, error) {
 	if claims.RepositoryID <= 0 {
 		return nil, nil
 	}
@@ -238,6 +240,9 @@ func (i *Index) newest(ctx context.Context, claims cachetoken.Claims, ref, versi
 		entry, err := i.candidate(ctx, object, repository, ref, version)
 		if err != nil {
 			return nil, err
+		}
+		if entry != nil && !matches(entry.Key) {
+			entry = nil // a longer key that shares the listed name; not this lookup's
 		}
 		if entry != nil {
 			if ownedBy(claims, entry) {
@@ -336,7 +341,7 @@ func (i *Index) Exists(ctx context.Context, claims cachetoken.Claims, key, versi
 		return false, err
 	}
 	prefix := scopePrefix(claims.Repository, claims.WriteScope(), versionSegment(version)) +
-		hex.EncodeToString([]byte(key)) + "."
+		keyName(key) + "."
 	objects, _, err := i.store.List(ctx, prefix, 1)
 	if err != nil {
 		return false, err
@@ -393,7 +398,7 @@ func (i *Index) Commit(ctx context.Context, entry Entry) error {
 		return err
 	}
 	object := scopePrefix(entry.Repository, entry.Ref, versionSegment(entry.Version)) +
-		hex.EncodeToString([]byte(entry.Key)) + "." + recencySuffix(entry.CreatedAt)
+		keyName(entry.Key) + "." + recencySuffix(entry.CreatedAt)
 	if err := i.store.PutBytes(ctx, object, "application/json", body); err != nil {
 		return err
 	}
@@ -446,6 +451,66 @@ func refSegment(ref string) string {
 		out.WriteString("~")
 		out.WriteString(strings.ToUpper(hex.EncodeToString([]byte{c})))
 	}
+	if out.Len() > 255 {
+		// Too long for one segment. "~H" cannot start an escaped ref, whose
+		// escapes are "~" and two hex digits, so a hashed ref never meets a
+		// spelled-out one. Cutting it into segments instead would let a crafted
+		// ref end where another ref's version segment begins.
+		sum := sha256.Sum256([]byte(ref))
+		return "~H" + hex.EncodeToString(sum[:])
+	}
+	return out.String()
+}
+
+// Object stores bound names: MinIO, which keeps every "/"-separated segment
+// as a file or directory name, takes at most 255 bytes per segment and 1024 in
+// all (fakes3.ValidObjectName). A key is the client's and runs to 512 bytes, so
+// its name is cut to fit both.
+const (
+	// keySegmentHex is the longest run of a key's hex in one segment: 255 less
+	// the dot and recency stamp (17) and the access marker's adoptedSuffix (8).
+	keySegmentHex = 230
+	// keyPrefixBytes is how much of a key its name spells out. A longer key's
+	// name ends in a hash of the whole key instead, so the longest name fits
+	// in 1024 bytes beside the longest repository, ref and version segments.
+	keyPrefixBytes = 200
+)
+
+// keyName is a key's part of its entry's object name: the hex of the key, cut
+// into keySegmentHex runs, then for a key longer than keyPrefixBytes a "~" and
+// the SHA-256 of the whole key in place of the rest. A key short enough for one
+// run (115 bytes) is named exactly as before the cut existed. Hex and "~" never
+// contain a dot, so the dot before the recency stamp still ends the key.
+func keyName(key string) string {
+	if len(key) <= keyPrefixBytes {
+		return cutHex(key)
+	}
+	sum := sha256.Sum256([]byte(key))
+	return cutHex(key[:keyPrefixBytes]) + "/~" + hex.EncodeToString(sum[:])
+}
+
+// keyPrefixName is the listing prefix of every key name whose key starts with
+// prefix. Up to keyPrefixBytes it is exact; past them it lists every key that
+// shares those bytes and the lookup compares the saved key itself.
+func keyPrefixName(prefix string) string {
+	if len(prefix) <= keyPrefixBytes {
+		return cutHex(prefix)
+	}
+	return cutHex(prefix[:keyPrefixBytes]) + "/~"
+}
+
+// cutHex hex-encodes s with a "/" after every keySegmentHex characters. The
+// cuts sit at fixed offsets, so the cut hex of a prefix is a prefix of the cut
+// hex of the whole.
+func cutHex(s string) string {
+	encoded := hex.EncodeToString([]byte(s))
+	var out strings.Builder
+	for len(encoded) > keySegmentHex {
+		out.WriteString(encoded[:keySegmentHex])
+		out.WriteByte('/')
+		encoded = encoded[keySegmentHex:]
+	}
+	out.WriteString(encoded)
 	return out.String()
 }
 

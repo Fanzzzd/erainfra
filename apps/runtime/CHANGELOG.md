@@ -1,5 +1,13 @@
 # @erainfra/runtime
 
+## 0.2.0-rc.26
+
+### Patch Changes
+
+- [#394](https://github.com/Fanzzzd/erainfra/pull/394) [`16ed499`](https://github.com/Fanzzzd/erainfra/commit/16ed4993889e4cbfc0ad75ef3343a78b30feee85) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The start budget learns how many Attempts may start at once instead of allowing a fixed 2 per 60 seconds. The window opens at `MAX_STARTING` (now 8), halves when the host's I/O stall reaches `IO_PRESSURE_LIMIT` (at most once per start window), and grows by one for each start window that ends with no congestion. The stall is now measured from the kernel's cumulative counter between readings a second or more apart, so a burst's end shows within a second or two instead of the ten seconds avg10 trails by. On ubuntu0 the fixed window held 329 of 338 Attempts while io "some" averaged 3.7%, for a median wait of 61 seconds before each job. The state the Agent forwards keeps its shape: `maxStarting` reports the current window and `ioSomeAvg10` the measured stall.
+
+- [#390](https://github.com/Fanzzzd/erainfra/pull/390) [`257b4ec`](https://github.com/Fanzzzd/erainfra/commit/257b4ec00525ab2bece2c5740b9356cd4d702562) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - The runtime no longer logs the runner's diagnostic when the runner ran a job and exited 0. An ephemeral runner logs "SocketException (125): Operation canceled" as an error on every clean exit, so the line appeared on all 265 clean exits on ubuntu0 since 2026-11-15 and explained nothing. Unclean exits still log it.
+
 ## 0.2.0-rc.25
 
 ### Patch Changes

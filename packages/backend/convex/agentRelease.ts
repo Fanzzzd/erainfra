@@ -66,36 +66,36 @@ export type AgentRelease = {
  */
 export const AGENT_RELEASE: AgentRelease = {
   repo: "Fanzzzd/erainfra",
-  version: "0.2.0-rc.25",
+  version: "0.2.0-rc.26",
   // Filled at v0.2.0-rc.11, the first release to publish erainfra-mesh, from the sidecars the
   // release workflow's mesh jobs wrote after building each target twice and comparing.
   mesh: {
-    "linux-x86_64": "da0a70f0547b066407fed877739ce10ec52d28594a0a95f637dbfae43499dbd4",
-    "linux-arm64": "45fd81e78ec4d7830e6b1fd4c4b51ebe5e1387fedc1b526c460859da94bad82e",
-    "darwin-x86_64": "159d9caaef982d18b34c3a4d72ff6ae6ef1c59d821a0943f398721545cce23c1",
-    "darwin-arm64": "f2fd64e2582ccead786b867d76199500560b11e981f95d3db7a76e96f0a8ddea",
-    "windows-x86_64": "a6883be901b203c6979f425c347d59a66ef1bd81d97c49fe0cf8b3c55fc833a6",
+    "linux-x86_64": "652805e84196233d4de16b36e6c793c1bbb7cdbe0f446d9d9e6568a3808ce9e4",
+    "linux-arm64": "44d599d65b8b61737d75f1f0482238070e0a6c4ff92d752c2a54e8e3a465ca99",
+    "darwin-x86_64": "39850a9fc897d135519ce7452f7b9fd926db1545205b0243e5dbdb1e83e169d7",
+    "darwin-arm64": "2d3276ce9e5a893da793091d908a2497a4aac26d4e90b9fe509c64415ac48479",
+    "windows-x86_64": "b356367a44c300857deb4e608edf1b747ed96bb5597a61a82161b7b234feb629",
   },
-  sha256: "fe2dbdc960ea29ce046b12b93730a242f7aa8bbce45f76eb39e92bf219d40942",
+  sha256: "d78fd7bdee6c8c14e8e56e88213e1352539271cb321afff323cb97edcca90b67",
   infraAgent: {
-    "linux-x86_64": "bb2d3adcbb51b8fb6922179eb216c6766a257856df84e150c05838a5f59790fb",
-    "linux-arm64": "506b0524280f9d081b6bfc7d9a26844941c3f9631c73797e88013de6fd02ddd8",
-    "darwin-x86_64": "e150adfc149217589851e5332054cdbc722f69b584b5ef6969416f44a5af51ed",
-    "darwin-arm64": "f8f98627591c78831a4a41b3775d042f91cab734eba3b579e2e05e88758dd9ef",
-    "windows-x86_64": "c09b4fb8c5161822e5def0d0c6858492483b833d503ec079e1f61237ce0b437d",
+    "linux-x86_64": "a13c65140ac266d4d052263dce4fc164793193afd1b9093da30a4c23736c16fa",
+    "linux-arm64": "791dd315077d8793bf3eb15090b57e1a95ca282eaecdd3e40cf48c5c4aee13d2",
+    "darwin-x86_64": "daf8867d40ef902133cd403c58193a6e733a6a4b2cae4d10512474e49ee8fea4",
+    "darwin-arm64": "3dbd5a0da7d3777bd14f8f7e9aef69eb8c373d3f2337c02f65ef43862b91e1c5",
+    "windows-x86_64": "ded9b8cbc639c114750a44dc274bf5b1849d7ffbbedfdaf18bd08e10a4252f0f",
   },
   // Populated at v0.2.0-rc.9, the first release to publish the cache-service binary (ADR 0009),
   // exactly as `infraAgent` was filled at v0.2.0-rc.6. Version-only, so the digest is a pure
   // function of source and version, not the release commit it is written into.
   cacheService: {
-    "linux-x86_64": "32a99cbbb1f66f743aa8cd6b1cb387c84b7df8ae93ec985ff718aca758a7c192",
+    "linux-x86_64": "571f2509fc46c6d931591d6d49466d69c08565c980ac7afb992fcb0250fe52ba",
   },
   // Filled at v0.2.0-rc.11, the first release to build the controller version-only (rc.10 and
   // earlier stamped -X main.commitSHA, so no digest of theirs can be pinned), exactly as
   // `infraAgent` was at rc.6 and `cacheService` at rc.9.
   controller: {
-    "linux-x86_64": "c82999cb3b7e88b2957d5762e6cb2b43767edeea424b941dda6ce09c1c9a21a7",
-    "linux-arm64": "4eb72a262918b7112a49069a4275df2edab51995304070fe0029fa49543e2a31",
+    "linux-x86_64": "c0da959c505972c738e2ae8b59558c067c1e0d6ff20f618b6fb7e979cbe27df5",
+    "linux-arm64": "1cb41ad04be419303faeda69db73ea18a311daa01f2f12f5bd9d02ee7e2c05a9",
   },
 };
 
