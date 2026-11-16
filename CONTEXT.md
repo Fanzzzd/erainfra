@@ -86,8 +86,9 @@ retirement made for its silence (`convex/attemptRetirement.ts`). Not the retirem
 Profile's scale set (`runner-center-controller retire`).
 
 **Start budget**: how much starting a Firecracker Worker allows at once: Attempts still in their
-start window, and the host's I/O pressure. The runtime holds an Attempt's start while either is at
-its limit, for a bounded time, then starts it anyway (`apps/runtime/internal/admission`). `/runs-on`
+start window, against a window the runtime learns from the host's I/O stall, and the stall itself.
+The runtime holds an Attempt's start while either is at its limit, for a bounded time, then starts
+it anyway (`apps/runtime/internal/admission`). `/runs-on`
 answers the fallback while every ready Worker is over budget (`convex/startBudget.ts`). It spaces
 starts on a shared disk; it is not a capacity limit, which slots and `maxRunners` set.
 

@@ -229,22 +229,39 @@ as a JSON array on stdin and refuses an empty one.
 
 Every guest on a Worker shares its disk. ubuntu0's thin pool sits on a RAID1 of two SATA SSDs
 behind a RAID controller with write-through cache. Six Attempts starting together there held the
-host's I/O stall (io "some") at 40 to 60% for minutes, and every job on the Worker slowed. The runtime therefore spaces starts out. An Attempt waits in `Start`, warm claims
-included, while either limit is reached:
+host's I/O stall (io "some") at 40 to 60% for minutes, and every job on the Worker slowed. The
+runtime therefore holds the head of the line in `Start`, warm claims included, while either limit
+is reached:
 
-| Setting (`ERAINFRA_` or `RC_`) | Default | Limit                                                    |
-| ------------------------------ | ------- | -------------------------------------------------------- |
-| `MAX_STARTING`                 | 2       | Attempts still in their start window                     |
-| `START_WINDOW_S`               | 60      | Seconds an admitted Attempt counts as starting           |
-| `IO_PRESSURE_LIMIT`            | 30      | io "some" avg10 percentage at or above which starts wait |
-| `MAX_START_HOLD_S`             | 120     | Longest wait; the Attempt then starts anyway             |
+- **The start window**: how many Attempts may be in their first `START_WINDOW_S` at once. The
+  runtime learns it the way TCP learns its congestion window. It opens at `MAX_STARTING`. It halves
+  when the stall share reaches `IO_PRESSURE_LIMIT`, at most once per start window. It grows by one
+  each time an Attempt finishes its start window with no congestion seen since it was admitted.
+  On a disk with headroom a burst of up to `MAX_STARTING` starts at once.
+- **I/O pressure**: the host's io "some" stall share, measured from the kernel's cumulative stall
+  counter (`total=` in `/proc/pressure/io`) between readings at least a second apart. The kernel's
+  avg10 trails a burst by about ten seconds, so the runtime uses it only when it has no reading
+  from the last ten seconds to measure against.
+
+| Setting (`ERAINFRA_` or `RC_`) | Default | Meaning                                                              |
+| ------------------------------ | ------- | -------------------------------------------------------------------- |
+| `MAX_STARTING`                 | 8       | Largest start window, the one used while the disk is quiet           |
+| `START_WINDOW_S`               | 60      | Seconds an admitted Attempt counts as starting                       |
+| `IO_PRESSURE_LIMIT`            | 30      | Stall percentage at or above which starts wait and the window halves |
+| `MAX_START_HOLD_S`             | 120     | Longest wait; the Attempt then starts anyway                         |
 
 Attempts start in arrival order. A 0 turns that limit off. Set them on
 `runner-center-runtime.service` and restart it. The wait counts against `RC_BOOT_TIMEOUT_S`
 (300 seconds), so keep `MAX_START_HOLD_S` well below it. The runtime logs each hold as
-`held Attempt for the start budget`. `runner-center-runtime admission` prints the current state,
-which the Agent forwards every 30 seconds; `/runs-on` answers the fallback while every ready
-Worker is over budget ([workflows](workflows.md)).
+`held Attempt for the start budget`. `runner-center-runtime admission` prints the current state:
+`maxStarting` is the start window now and `ioSomeAvg10` the stall share last measured. The Agent
+forwards it every 30 seconds; `/runs-on` answers the fallback while every ready Worker is over
+budget ([workflows](workflows.md)).
+
+Until 2026-11-16 the window was a fixed 2 per 60 seconds. After guests began keeping job writes in
+memory ([Guest writeback](#guest-writeback)) that held 329 of 338 Attempts on ubuntu0 for
+`starting` while io "some" averaged 3.7%, and the wait from claim to job start had a median of
+61 seconds against a median job of 74 seconds.
 
 EraInfra does not silently create or wipe a dedicated thin-pool device: selecting that device
 is an explicit operator storage decision, and the provisioner destroys only the devices you name.
