@@ -98,29 +98,18 @@ rules are the scheduler's own. An unknown or paused Profile, no controller, no r
 answer the fallback, which defaults to `ubuntu-latest` (`macos-latest` for Tart, `windows-latest` for
 Hyper-V).
 
-A small router job at the top of the workflow asks once and every other job reads its answer:
+A router job at the top of the workflow asks once and every other job reads its answer. The
+reusable workflow `.github/workflows/route.yml` in this repository is that job; call it pinned to a
+commit:
 
 ```yaml
 jobs:
   route:
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      runs-on: ${{ steps.route.outputs.runs-on }}
-    steps:
-      - id: route
-        env:
-          CONTROL_PLANE: https://<deployment>.convex.site
-          PROFILE: erainfra-4vcpu-ubuntu-2404
-          FALLBACK: ubuntu-24.04
-        run: |
-          # Any failure (control plane down, timeout, unexpected body) routes to FALLBACK.
-          label=$(curl --fail --silent --show-error --max-time 10 --retry 2 --get \
-            --data-urlencode "profile=$PROFILE" --data-urlencode "fallback=$FALLBACK" \
-            --data-urlencode "repo=$GITHUB_REPOSITORY" \
-            "$CONTROL_PLANE/runs-on" | jq -er '."runs-on" | strings') || label=$FALLBACK
-          echo "routing to $label"
-          echo "runs-on=$label" >> "$GITHUB_OUTPUT"
+    uses: Fanzzzd/erainfra/.github/workflows/route.yml@<commit-sha>
+    with:
+      profile: erainfra-4vcpu-ubuntu-2404
+      control-plane: https://<deployment>.convex.site
+      fallback: ubuntu-24.04 # the default
 
   test:
     needs: route
@@ -129,6 +118,12 @@ jobs:
       - uses: actions/checkout@<commit-sha>
       - run: pnpm test
 ```
+
+Any failure routes to the fallback: the control plane down, a timeout, or an answer that is
+neither the Profile nor the fallback. CI calls it against an unreachable control plane on every
+pull request and checks that it answers the fallback. An organization that allows only its own
+workflows can copy the job from `route.yml` into the workflow; it is one `curl` step on
+`ubuntu-latest`.
 
 The endpoint takes no credential, on purpose. Pull requests from forks get no secrets, so an
 authenticated probe would fail exactly where routing matters, or need a token committed to the
