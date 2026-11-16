@@ -1,0 +1,68 @@
+name: EraInfra route
+
+# A reusable /runs-on router. A workflow calls it once and every other job reads its answer:
+#
+#   jobs:
+#     route:
+#       uses: Fanzzzd/erainfra/.github/workflows/route.yml@<commit-sha>
+#       with:
+#         profile: erainfra-4vcpu-ubuntu-2404
+#         control-plane: https://<deployment>.convex.site
+#     test:
+#       needs: route
+#       runs-on: ${{ needs.route.outputs.runs-on }}
+#
+# The answer is the Profile when a job sent there now would start without waiting, and the
+# fallback label otherwise (docs/workflows.md, "Fall back to GitHub-hosted runners"). Any failure
+# routes to the fallback: the control plane down, a timeout, or an answer that is neither label.
+# The inputs reach the script through env vars, never through ${{ }} in the script, so a caller's
+# value cannot run as shell.
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: The Profile to run on when it has room.
+        type: string
+        required: true
+      control-plane:
+        description: The control plane's site URL, https://<deployment>.convex.site.
+        type: string
+        required: true
+      fallback:
+        description: The GitHub-hosted label to run on when the Profile has no room.
+        type: string
+        default: ubuntu-24.04
+    outputs:
+      runs-on:
+        description: The label every routed job puts in runs-on.
+        value: ${{ jobs.route.outputs.runs-on }}
+
+permissions: {}
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runs-on: ${{ steps.route.outputs.runs-on }}
+    steps:
+      - id: route
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          FALLBACK: ${{ inputs.fallback }}
+          CONTROL_PLANE: ${{ inputs.control-plane }}
+        run: |
+          set -u
+          label=$(curl --fail --silent --show-error --max-time 10 --retry 2 --get \
+            --data-urlencode "profile=$PROFILE" --data-urlencode "fallback=$FALLBACK" \
+            --data-urlencode "repo=$GITHUB_REPOSITORY" \
+            "${CONTROL_PLANE%/}/runs-on" | jq -er '."runs-on" | strings') || label=$FALLBACK
+          case "$label" in
+            "$PROFILE" | "$FALLBACK") ;;
+            # The answer is not echoed: it could carry a workflow command.
+            *) echo "::warning::The control plane answered neither label; routing to the fallback." >&2; label=$FALLBACK ;;
+          esac
+          echo "Routing to $label."
+          echo "runs-on=$label" >> "$GITHUB_OUTPUT"
