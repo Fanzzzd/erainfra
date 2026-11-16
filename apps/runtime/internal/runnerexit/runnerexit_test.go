@@ -118,3 +118,21 @@ func TestDecodeRefusesWhatTheGuestMayNotWrite(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyARunnerThatRanAJobAndExitedZeroIsClean(t *testing.T) {
+	// Every clean exit on ubuntu0 from 2026-11-15 on carried this diagnostic.
+	noise := "System.Net.Sockets.SocketException (125): Operation canceled"
+	for _, c := range []struct {
+		report Report
+		clean  bool
+	}{
+		{Report{ExitCode: 0, RanJob: true, Diagnostic: noise}, true},
+		{Report{ExitCode: 0, RanJob: false, Diagnostic: noise}, false},
+		{Report{ExitCode: 1, RanJob: true, Diagnostic: noise}, false},
+		{Report{ExitCode: 1, RanJob: false}, false},
+	} {
+		if got := c.report.Clean(); got != c.clean {
+			t.Errorf("%+v.Clean() = %v, want %v", c.report, got, c.clean)
+		}
+	}
+}
