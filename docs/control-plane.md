@@ -38,6 +38,7 @@ Set these deployment variables before production use, from `packages/backend` wi
 | `CONTROLLER_GITHUB_APP_PRIVATE_KEY` | That App's private key. It never leaves Convex.                                                                                                     |
 | `RELAY_ACCESS_TOKEN`                | Secret a fleet relay sends to `/api/v1/relay/access`; omit without a fleet relay ([runbook](runbooks/run-a-fleet-relay.md)).                        |
 | `RELAY_ACCESS_TOKEN_NEXT`           | Optional second relay secret, accepted beside `RELAY_ACCESS_TOKEN` during a rotation.                                                               |
+| `RELAY_GUEST_ENDPOINT_IDS`          | Optional EndpointIds, separated by commas or spaces, that a fleet relay admits besides the Nodes ([runbook](runbooks/run-a-fleet-relay.md#guests)). |
 
 The dashboard creates short-lived, single-use Worker enrollment commands. Machine credentials are
 stored in `~/.runner-center/agent/.env` with mode `600`; JIT configurations travel from Convex to the

@@ -21,6 +21,12 @@ import { grantable } from "./nodeState";
  * Revocation does not cut a relay connection that is already open, but every sidecar already
  * refuses a peer outside its fleet after the QUIC handshake, so that connection carries nothing.
  *
+ * RELAY_GUEST_ENDPOINT_IDS admits endpoints that are not Nodes, such as the owner's own devices on
+ * another iroh mesh, so they can use the relay as a fallback path. It lists EndpointIds separated
+ * by commas or whitespace. A guest is admitted to the relay only: it is in no fleet, so every
+ * sidecar still refuses it after the QUIC handshake. An entry that is not an EndpointId admits
+ * nothing and is logged. Removing an id stops its next connection, as revoking a Node does.
+ *
  * The route needs RELAY_ACCESS_TOKEN (or RELAY_ACCESS_TOKEN_NEXT during a rotation). Without the
  * secret it answers 401 before reading the id, so it tells a stranger nothing about who is in the
  * fleet. With the secret unset it answers 503, which the relay treats as a denial: it fails closed.
@@ -36,6 +42,7 @@ export const admits = internalQuery({
   returns: v.boolean(),
   handler: async (ctx, { endpointId }) => {
     if (!ENDPOINT_ID.test(endpointId)) return false;
+    if (guestEndpointIds().has(endpointId)) return true;
     // nodeState.assertEndpointAvailable keeps an EndpointId on at most one Node; two rows are read
     // so a row that predates that rule cannot hide a second one.
     const nodes = await ctx.db
@@ -46,6 +53,17 @@ export const admits = internalQuery({
     return false;
   },
 });
+
+function guestEndpointIds(): Set<string> {
+  const guests = new Set<string>();
+  for (const entry of (process.env.RELAY_GUEST_ENDPOINT_IDS ?? "").split(/[\s,]+/)) {
+    if (entry === "") continue;
+    if (ENDPOINT_ID.test(entry)) guests.add(entry);
+    else
+      console.error(`RELAY_GUEST_ENDPOINT_IDS has an entry that is not an EndpointId: "${entry}"`);
+  }
+  return guests;
+}
 
 function answer(allowed: boolean, status: number) {
   return new Response(allowed ? "true" : "false", {

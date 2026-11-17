@@ -255,6 +255,23 @@ through a gateway answers.
 3. Set `RELAY_ACCESS_TOKEN` to the new secret and unset `RELAY_ACCESS_TOKEN_NEXT`
    (`npx convex env remove --prod RELAY_ACCESS_TOKEN_NEXT`).
 
+## Guests
+
+The relay admits a Node by its proven EndpointId. To let other iroh endpoints use it as a fallback
+path, such as the owner's devices on another mesh, list their EndpointIds (64 lowercase hex
+characters) in `RELAY_GUEST_ENDPOINT_IDS`, separated by commas or spaces:
+
+```bash
+npx convex env set --prod RELAY_GUEST_ENDPOINT_IDS "<id1>,<id2>"
+```
+
+The relay reads it at the next connection; no relay or Node restart. A guest gets relay access
+only. It belongs to no fleet, so every `erainfra-mesh` sidecar refuses it after the QUIC handshake.
+An entry that is not an EndpointId admits nothing and appears in the Convex logs. To remove a
+guest, set the list without it: its next connection is refused, and one already open stays until
+it drops. Each guest connection costs a Convex HTTP action like a Node's, so a guest should hold
+one long connection rather than reconnect.
+
 ## More than one relay
 
 Run `relay.sh` on each public Node with the same secret file and list every URL in

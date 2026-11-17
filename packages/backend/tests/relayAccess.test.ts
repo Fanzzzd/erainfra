@@ -211,6 +211,37 @@ describe("relay access check", () => {
       expect(await verdict(await ask(id))).toEqual({ status: 400, body: "false" });
   });
 
+  it("admits a guest EndpointId listed in RELAY_GUEST_ENDPOINT_IDS, and stops when it is removed", async () => {
+    const { ask } = await fixture();
+    const [guest, other, stranger] = [await newKey(), await newKey(), await newKey()];
+    process.env.RELAY_GUEST_ENDPOINT_IDS = ` ${guest.id},\n${other.id} `;
+    try {
+      expect(await verdict(await ask(guest.id))).toEqual({ status: 200, body: "true" });
+      expect((await ask(other.id)).status).toBe(200);
+      expect((await ask(stranger.id)).status).toBe(403);
+      // The guest list sits behind the relay secret like everything else.
+      expect((await ask(guest.id, "wrong")).status).toBe(401);
+      process.env.RELAY_GUEST_ENDPOINT_IDS = other.id;
+      expect((await ask(guest.id)).status).toBe(403);
+    } finally {
+      delete process.env.RELAY_GUEST_ENDPOINT_IDS;
+    }
+  });
+
+  it("ignores and logs a guest entry that is not an EndpointId", async () => {
+    const { ask } = await fixture();
+    const guest = await newKey();
+    process.env.RELAY_GUEST_ENDPOINT_IDS = `${guest.id.toUpperCase()},${guest.id.slice(2)}`;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await ask(guest.id)).status).toBe(403);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("RELAY_GUEST_ENDPOINT_IDS"));
+    } finally {
+      error.mockRestore();
+      delete process.env.RELAY_GUEST_ENDPOINT_IDS;
+    }
+  });
+
   it("serves only POST, the method iroh-relay uses", async () => {
     const { t, node, prove } = await fixture();
     const key = await newKey();
