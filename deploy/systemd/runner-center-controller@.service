@@ -1,6 +1,6 @@
 [Unit]
 Description=EraInfra scale-set controller for %i
-Documentation=https://github.com/Fanzzzd/EraInfra
+Documentation=https://github.com/Fanzzzd/erainfra
 After=network-online.target
 Wants=network-online.target
 

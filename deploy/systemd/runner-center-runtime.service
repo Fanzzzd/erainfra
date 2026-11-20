@@ -1,6 +1,6 @@
 [Unit]
 Description=EraInfra privileged Firecracker runtime
-Documentation=https://github.com/Fanzzzd/EraInfra
+Documentation=https://github.com/Fanzzzd/erainfra
 # The EraInfra runtime talks to its own containerd, not whatever else the
 # host runs. Naming the host's containerd.service here would start the runtime
 # before its snapshotter exists on a Docker host, and refuse to start at all on

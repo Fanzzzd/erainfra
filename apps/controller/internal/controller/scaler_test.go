@@ -372,7 +372,7 @@ func TestScalerPublishesColdCacheFactsWithoutGitHub(t *testing.T) {
 
 	want := cachefacts.Facts{
 		Runner:         "erainfra-4vcpu-ubuntu-2404-a",
-		Repository:     "Fanzzzd/EraInfra",
+		Repository:     "Fanzzzd/erainfra",
 		HeadRepository: unverifiedHeadRepository,
 		Event:          "push",
 		Ref:            unresolvedRef,
