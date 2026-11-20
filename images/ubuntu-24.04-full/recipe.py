@@ -158,7 +158,7 @@ def pack(root, destination, evidence, repo):
         "config": {
             "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"],
             "Cmd": ["/sbin/init"], "StopSignal": "SIGRTMIN+3",
-            "Labels": {"org.opencontainers.image.source": "https://github.com/Fanzzzd/EraInfra", "org.opencontainers.image.revision": revision, "org.opencontainers.image.licenses": "Apache-2.0", "dev.erainfra.actions-runner.version": runner_version, "dev.erainfra.runner-images.commit": lock["commit"]},
+            "Labels": {"org.opencontainers.image.source": "https://github.com/Fanzzzd/erainfra", "org.opencontainers.image.revision": revision, "org.opencontainers.image.licenses": "Apache-2.0", "dev.erainfra.actions-runner.version": runner_version, "dev.erainfra.runner-images.commit": lock["commit"]},
         },
         "rootfs": {"type": "layers", "diff_ids": ["sha256:" + item["diff_id"] for item in layers]},
     }, "application/vnd.oci.image.config.v1+json")

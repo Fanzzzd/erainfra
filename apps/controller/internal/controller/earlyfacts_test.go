@@ -55,7 +55,7 @@ func (assignedRuns) RefExists(_ context.Context, _, ref string) (bool, error) {
 func pushRun() githubapi.WorkflowRun {
 	return githubapi.WorkflowRun{
 		ID: 7, Event: "push", HeadBranch: "main", HeadSHA: "abc", Path: ".github/workflows/ci.yml",
-		Repository: githubapi.Repository{ID: 1, FullName: "Fanzzzd/EraInfra"},
+		Repository: githubapi.Repository{ID: 1, FullName: "Fanzzzd/erainfra"},
 	}
 }
 
@@ -76,12 +76,12 @@ func runPoller(t *testing.T, cache *hintingCache, runs assignedRuns) {
 // A hint GitHub confirms becomes the runner's facts, without JobStarted.
 func TestConfirmedJobHintPublishesTheRunnersFacts(t *testing.T) {
 	cache := &hintingCache{hints: []cachefacts.Hint{{
-		Runner: "erainfra-4vcpu-ubuntu-2404-a", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
+		Runner: "erainfra-4vcpu-ubuntu-2404-a", Repository: "Fanzzzd/erainfra", RunID: 7, RunAttempt: 1,
 	}}}
 	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"erainfra-4vcpu-ubuntu-2404-a"}}})
 
 	pushed := cache.facts()
-	if len(pushed) != 1 || pushed[0].Runner != "erainfra-4vcpu-ubuntu-2404-a" || pushed[0].Repository != "Fanzzzd/EraInfra" ||
+	if len(pushed) != 1 || pushed[0].Runner != "erainfra-4vcpu-ubuntu-2404-a" || pushed[0].Repository != "Fanzzzd/erainfra" ||
 		pushed[0].Ref != "refs/heads/main" {
 		t.Fatalf("pushed = %#v, want the facts of erainfra-4vcpu-ubuntu-2404-a on refs/heads/main", pushed)
 	}
@@ -94,7 +94,7 @@ func TestConfirmedJobHintPublishesTheRunnersFacts(t *testing.T) {
 // decides, not the hint.
 func TestJobHintGitHubDoesNotConfirmIsIgnored(t *testing.T) {
 	cache := &hintingCache{hints: []cachefacts.Hint{{
-		Runner: "erainfra-4vcpu-ubuntu-2404-liar", Repository: "Fanzzzd/EraInfra", RunID: 7, RunAttempt: 1,
+		Runner: "erainfra-4vcpu-ubuntu-2404-liar", Repository: "Fanzzzd/erainfra", RunID: 7, RunAttempt: 1,
 	}}}
 	runPoller(t, cache, assignedRuns{fakeRuns: fakeRuns{run: pushRun()}, runners: map[int64][]string{7: {"erainfra-4vcpu-ubuntu-2404-a"}}})
 

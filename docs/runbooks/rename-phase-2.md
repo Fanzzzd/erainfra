@@ -16,7 +16,10 @@ Existing `rc.3` and `rc.4` installations can depend on all of these names:
 - the guest/runtime `RUNNER_CENTER_RESULT` console protocol marker;
 - `/etc/runner-center`, `/var/lib/runner-center`, `/opt/runner-center`, the runtime socket, service,
   group, containerd namespace, CNI state, thin-pool, and nftables names;
-- the current `runner-center-*` image and non-Agent release asset names; and
+- the current `runner-center-*` image and non-Agent release asset names;
+- the `Documentation=https://github.com/Fanzzzd/EraInfra` line in both systemd units and in
+  `deploy/provision-firecracker-host.sh`. The backend embeds those files byte for byte, so the
+  lowercase link ships with the phase 2 units; and
 - the `/install`, `/agents/*`, `/controller/*`, and other routes declared in `convex/http.ts`.
 
 Do not rename the Convex deployment, tables, or function modules as part of this migration. They do

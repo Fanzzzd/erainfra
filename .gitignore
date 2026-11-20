@@ -23,3 +23,7 @@ apps/mesh/target/
 dist-cloudflare/
 # Generated from convex/ by the backend's build:cloudflare, dev:cloudflare and deploy:cloudflare.
 packages/backend/cloudflare/modules.generated.ts
+
+# Python bytecode
+__pycache__/
+*.pyc
