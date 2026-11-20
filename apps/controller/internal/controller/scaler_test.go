@@ -305,7 +305,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{
 			RunnerRequestID: 7,
-			RepositoryName:  "EraInfra",
+			RepositoryName:  "erainfra",
 			OwnerName:       "Fanzzzd",
 			JobID:           "job-1",
 			JobWorkflowRef:  "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
@@ -331,7 +331,7 @@ func TestScalerMapsLifecycleMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if started := store.startedEvents(true); len(started) != 1 || started[0].Repository != "EraInfra" {
+	if started := store.startedEvents(true); len(started) != 1 || started[0].Repository != "erainfra" {
 		t.Fatalf("started events = %#v", started)
 	}
 	if len(store.completed) != 1 || store.completed[0].FinishedAt != finishedAt {
@@ -358,7 +358,7 @@ func TestScalerPublishesColdCacheFactsWithoutGitHub(t *testing.T) {
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
 		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{
-			RepositoryName: "EraInfra",
+			RepositoryName: "erainfra",
 			OwnerName:      "Fanzzzd",
 			JobWorkflowRef: "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
 			EventName:      "push",
@@ -402,7 +402,7 @@ func TestScalerToleratesCacheFactsFailure(t *testing.T) {
 	err = scaler.HandleJobStarted(t.Context(), &scaleset.JobStarted{
 		RunnerName: "erainfra-4vcpu-ubuntu-2404-a",
 		JobMessageBase: scaleset.JobMessageBase{
-			RepositoryName: "EraInfra",
+			RepositoryName: "erainfra",
 			OwnerName:      "Fanzzzd",
 			JobWorkflowRef: "Fanzzzd/erainfra/.github/workflows/ci.yml@refs/heads/main",
 			EventName:      "push",

@@ -604,7 +604,7 @@ chmod 0755 "$RC_LIB_DIR/thinpool-setup.sh"
 cat > "/etc/systemd/system/$THINPOOL_UNIT" <<UNIT
 [Unit]
 Description=EraInfra device-mapper thin-pool
-Documentation=https://github.com/Fanzzzd/erainfra
+Documentation=https://github.com/Fanzzzd/EraInfra
 DefaultDependencies=no
 After=local-fs.target
 Before=$CONTAINERD_UNIT
@@ -647,7 +647,7 @@ chmod 0600 "$RC_ETC_DIR/containerd.toml"
 cat > "/etc/systemd/system/$CONTAINERD_UNIT" <<UNIT
 [Unit]
 Description=EraInfra containerd (devmapper snapshotter)
-Documentation=https://github.com/Fanzzzd/erainfra
+Documentation=https://github.com/Fanzzzd/EraInfra
 After=network.target $THINPOOL_UNIT
 Requires=$THINPOOL_UNIT
 
