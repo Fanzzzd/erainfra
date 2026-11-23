@@ -220,7 +220,7 @@ Runbooks for operators:
 
 ## Develop
 
-You need Node.js 22.13 or later (`.nvmrc` pins 22.23.4, the version CI uses), pnpm 12.18.0,
+You need Node.js 22.13 or later (`.nvmrc` pins 22.23.5, the version CI uses), pnpm 12.18.0,
 Go 1.27.4 or later (as `go.mod` names), and a Convex account or local deployment; `apps/mesh` also
 needs rustup. Run `pnpm install`, then `pnpm check`: it runs lint, the format check, type checks,
 the 900-line file limit and every package's tests, including the Go tests.
