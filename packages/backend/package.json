@@ -39,7 +39,7 @@
   "dependencies": {
     "@auth/core": "0.41.3",
     "@convex-dev/auth": "0.0.96",
-    "@convex-dev/static-hosting": "0.2.1",
+    "@convex-dev/static-hosting": "0.2.2",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "convex": "catalog:",
@@ -51,11 +51,11 @@
     "@erainfra/platform": "workspace:*",
     "@erainfra/typescript-config": "workspace:*",
     "@types/node": "catalog:",
-    "convex-test": "0.0.69",
+    "convex-test": "0.0.71",
     "typescript": "catalog:",
     "typescript-compiler-api": "npm:typescript@5.9.3",
-    "vite": "8.3.6",
+    "vite": "8.3.8",
     "vitest": "5.1.0",
-    "wrangler": "4.160.0"
+    "wrangler": "4.162.0"
   }
 }

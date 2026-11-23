@@ -19,7 +19,7 @@
   "devDependencies": {
     "@erainfra/typescript-config": "workspace:*",
     "@types/node": "catalog:",
-    "convex-test": "0.0.69",
+    "convex-test": "0.0.71",
     "typescript": "catalog:",
     "vitest": "5.1.0"
   }

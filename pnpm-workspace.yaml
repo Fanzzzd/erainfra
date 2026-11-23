@@ -8,7 +8,7 @@ packages:
 # which does not understand the `catalog:` or `workspace:` protocols.
 catalog:
   "@types/node": 22.20.5
-  convex: 1.49.0
+  convex: 1.50.0
   typescript: 7.0.2
 
 # pnpm 11 raises ERR_PNPM_IGNORED_BUILDS for any dependency with an install script that is not
