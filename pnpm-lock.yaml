@@ -235,8 +235,8 @@ importers:
         specifier: 0.1.0-beta.1
         version: 0.1.0-beta.1
       '@ui-sdk/react':
-        specifier: 0.1.0-beta.1
-        version: 0.1.0-beta.1(@types/react@19.3.0)(@ui-sdk/core@0.1.0-beta.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: 0.1.0-beta.5
+        version: 0.1.0-beta.5(@types/react@19.3.0)(@ui-sdk/core@0.1.0-beta.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2003,11 +2003,11 @@ packages:
   '@ui-sdk/core@0.1.0-beta.1':
     resolution: {integrity: sha512-sWsZW8RN6Gviir7REQYuDIafm9hierHQE31OJ+2g+1Pp3lDVKp/dk0+0dxFvqOQRmBveRvlE9FiARgNlQ9dMFw==}
 
-  '@ui-sdk/react@0.1.0-beta.1':
-    resolution: {integrity: sha512-7wcUsZI+WoG2uo3N+PHrWntk97qI9ez2cUrHV9H507FiL118Pi4tuhWUCMDtWwEUCNQLybpBm1QRLkEXVOPAUg==}
+  '@ui-sdk/react@0.1.0-beta.5':
+    resolution: {integrity: sha512-Zfvl94ulACX511lQKQDnK7wVjhYUYsR5LLnCZ800NzQ3983TxZasHxXyC+KYNlvppkYfpELPlAbVslsSIGQ9/A==}
     peerDependencies:
       '@types/react': '>=19.2.10'
-      '@ui-sdk/core': ^0.1.0-beta.1
+      '@ui-sdk/core': ^0.1.0-beta.5
       react: '>=19'
       react-dom: '>=19'
     peerDependenciesMeta:
@@ -4085,7 +4085,7 @@ snapshots:
 
   '@ui-sdk/core@0.1.0-beta.1': {}
 
-  '@ui-sdk/react@0.1.0-beta.1(@types/react@19.3.0)(@ui-sdk/core@0.1.0-beta.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@ui-sdk/react@0.1.0-beta.5(@types/react@19.3.0)(@ui-sdk/core@0.1.0-beta.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@ui-sdk/core': 0.1.0-beta.1
       react: 19.3.1
