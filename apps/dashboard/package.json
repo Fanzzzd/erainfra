@@ -14,7 +14,7 @@
     "@erainfra/backend": "workspace:*",
     "@tanstack/react-router": "1.170.46",
     "@ui-sdk/core": "0.1.0-beta.1",
-    "@ui-sdk/react": "0.1.0-beta.1",
+    "@ui-sdk/react": "0.1.0-beta.5",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "convex": "catalog:",
